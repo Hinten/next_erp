@@ -108,7 +108,8 @@ token **raw** after `Basic ` (not base64-encoded by us).
   (`idDoRecursoLi`), the one the product import reads `filhos` and `pai` with,
   never by a copy. The stock list is read one page at a time through
   `lerPaginaLi`, at most `MAX_LIMITE_PAGINA_ESTOQUE_LI` rows a page (the largest
-  page the store honours: 100 in full, 200 a 400; it lives in
+  page measured honoured: 100 in full; 200 is a 400, and 101–199 were not
+  probed; it lives in
   `@delfrance/schemas` and is re-exported, because the
   reconcile cursor's stored page size is held to the same binding), with exactly
   `limit` and

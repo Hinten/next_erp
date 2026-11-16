@@ -26,11 +26,13 @@ Every other file in this folder is one fixture envelope, `<nome>.json`, written 
   close a run the check-digit scan reads as a CPF or CNPJ is an upper-case letter
   instead. Never key a test on a particular SKU value.
 - Catalogue ids are not: in a `catalogo` fixture every Loja Integrada id (a row's `id`
-  or `*_id`, the ids inside `resource_uri`, `categoria_pai`, an option's `grade` and its
+  or `*_id`, the ids inside `resource_uri`, `categoria_pai`, a product's `filhos` and
+  `pai`, a stock row's `produto`, an option's `grade` and its
   `/grade/<g>/variacao/<v>`, the ids of the request path and of `meta.next`/
   `meta.previous`, and a `produto=` query value) is a keyed 12-digit pseudonym
   (`scripts/README.md`, "The pseudonym key"). One real id is one pseudonym in every
-  file and both stores, so the relations hold: a row's URI ends in its id, a
+  file and both stores, so the relations hold: a row's URI ends in its id (a stock
+  row's ends in the id of the produto its `produto` names, never in its own), a
   `categoria_pai` names a category of the same store, a grade detail is a row of its
   store's grade list, and distinct rows keep distinct ids. Never key a test on a
   particular id value; the whole catalogue corpus shares ONE key, which outlives the

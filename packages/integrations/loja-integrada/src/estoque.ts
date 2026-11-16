@@ -81,9 +81,11 @@
  *
  * Exactly as {@link lerPaginaLi} returns it: the caller stores the offset and
  * asks again; the page is always requested at {@link CAMINHO_ESTOQUE_LI} with
- * exactly `limit` and `offset`, whatever `next` says. The captured `next` is
+ * exactly `limit` and `offset`, whatever `next` says. The captured `next` of
+ * every page before the last is
  * `/api/v1/produto_estoque?limit=<same>&offset=<offset + limit>` — the `/api`
- * prefix and no slash before `?` — and it is never followed as a path. A page
+ * prefix and no slash before `?` — and it is never followed as a path. The
+ * last page answers `next` null, with offset + rows = `total_count`. A page
  * past the end answers 200 with no row, `next` null and the same
  * `total_count`. An offset list edited while it is read can repeat or skip a
  * row: the caller must tolerate both.

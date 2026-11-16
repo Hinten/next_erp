@@ -17,8 +17,9 @@
  *
  * What this file pins, each on the captures themselves:
  *
- *  - (a) every request the package builds is a captured one, up to the one difference
- *    {@link consultaComparavel} names, and every capture a case replays is consumed;
+ *  - (a) every request the package builds is a captured one — a GET with no body, at the store's
+ *    own origin, on the captured path and query up to the one difference
+ *    {@link consultaComparavel} names — and every capture a case replays is consumed;
  *  - (b) the path form, for GET only: the list and the detail answer the same with and without a
  *    trailing slash, with no redirect, and the package sends the no-slash form. These are GET-only
  *    captures, so the stock PUT's path form is NOT covered here;
@@ -26,14 +27,19 @@
  *    (the `/api` prefix, no slash before `?`), and `limit=200` answers the API gateway's 400;
  *  - (d) the package's own next offsets walk the smaller store's whole list: every row read, the
  *    last page ends at `total_count`, every produto and every row id distinct; a page past the end
- *    is empty; a page re-read minutes later holds the same rows in the same positions;
+ *    is empty; a page re-read minutes later holds the same rows in the same positions. In every
+ *    capture `next` is one page on, or null on a short page, so the walk alone cannot tell a reader
+ *    of `next` from one that counts rows: real pages with their `next` edited pin that the next
+ *    offset is READ from `next`;
  *  - (e) every row and every detail has exactly the nine leaves, every integer a JSON number,
  *    `quantidade_disponivel = quantidade − quantidade_reservada`, and a `resource_uri` naming the
  *    PRODUTO's id while the row's own `id` is another number;
- *  - (f) a detail is its list row, leaf for leaf, and the detail path id IS the produto id: a
+ *  - (f) a detail is its list row, leaf for leaf, wherever that row is on a committed page (four
+ *    of the seven details asked the package's way), and the detail path id IS the produto id: a
  *    row's own id answers 404, the same as an id that is no product;
- *  - (g) the list holds a row for every product of the product captures — live parents, their
- *    variations and the trash — which also pins that both rounds share one pseudonym key;
+ *  - (g) the smaller store's whole list holds a row for every product of its product captures —
+ *    live parents, their variations and the trash — and the larger store's details name products
+ *    of its own, which also pins that both rounds share one pseudonym key;
  *  - (h) the stock plan's decisions on real rows: what already shows the four-field body, what a
  *    reservation adds, and what is always a candidate.
  *
@@ -55,6 +61,7 @@ import {
   LiNotFoundError,
   MAX_LIMITE_PAGINA_ESTOQUE_LI,
   type PaginaEstoqueLi,
+  URL_BASE_LI,
   buscarEstoqueProdutoLi,
   criarClienteLeituraLi,
   lerPaginaEstoqueLi,
@@ -148,6 +155,9 @@ const PASSEIO_LOJA2 = ['estoque', 'estoque-p2', 'estoque-p3', 'estoque-p4', 'est
 
 /** The larger store's committed pages, each with the offset it was asked at. */
 const PAGINAS_LOJA1 = ['estoque', 'estoque-p3', 'estoque-p71', 'estoque-p82'] as const;
+
+/** The larger store's product-list captures: three live pages and the trash. */
+const PRODUTOS_LOJA1 = ['produtos', 'produtos-p2', 'produtos-p162', 'produtos-lixeira'] as const;
 
 /** The page size of the walks: the package's ceiling, which the walks were captured at. */
 const PAGINA = 100;
@@ -268,19 +278,21 @@ function respostaDe(c: Captura): Response {
 
 /**
  * The package's reads over the REAL client, against a platform answering ONLY a request that is
- * one of `fixtures` (a 500 otherwise). Counts the fixtures consumed (and how often), the requests
- * sent and the ones that matched none.
+ * one of `fixtures` (a 500 otherwise): every capture is a GET with no body at the store's own
+ * origin, so another origin, another verb or a body is no capture, whatever its path. Counts the
+ * fixtures consumed (and how often), the requests sent and the ones that matched none.
  */
 function replay(fixtures: readonly Captura[]) {
   const consumidas = new Map<string, number>();
   let enviadas = 0;
   let semCaptura = 0;
-  const fetch: typeof globalThis.fetch = (input) => {
+  const fetch: typeof globalThis.fetch = (input, init) => {
     enviadas += 1;
     const url = new URL(String(input));
-    const c = fixtures.find((f) =>
-      mesmaRequisicao(url.pathname, [...url.searchParams], f.envelope),
-    );
+    const leitura = url.origin === URL_BASE_LI && init?.method === 'GET' && init.body === undefined;
+    const c = leitura
+      ? fixtures.find((f) => mesmaRequisicao(url.pathname, [...url.searchParams], f.envelope))
+      : undefined;
     if (c === undefined) {
       semCaptura += 1;
       return Promise.resolve(new Response('{}', { status: 500 }));
@@ -289,7 +301,7 @@ function replay(fixtures: readonly Captura[]) {
     return Promise.resolve(respostaDe(c));
   };
   const cliente = criarClienteLeituraLi({ obterCredencial: () => CREDENCIAL_DE_TESTE, fetch });
-  return { cliente, consumidas, enviadas: () => enviadas, semCaptura: () => semCaptura };
+  return { cliente, fetch, consumidas, enviadas: () => enviadas, semCaptura: () => semCaptura };
 }
 
 /** A promise's rejection, or `null` when it resolved — never a catch clause. */
@@ -529,6 +541,19 @@ describe('the replay: which differences are one request', () => {
       ]),
     ).toBe(false);
   });
+
+  it('NEAR-MISS: the captured path and query at another origin, under another verb or with a body, is no capture', async () => {
+    const r = replay([pagina1]);
+    const caminho = `${CAMINHO_ESTOQUE_LI}?limit=${String(PAGINA)}`;
+    const naLoja = `${URL_BASE_LI}${caminho}`;
+    // EQUAL: the store's origin, a GET with no body.
+    expect((await r.fetch(naLoja, { method: 'GET' })).status).toBe(200);
+    expect((await r.fetch(`${BASE_INVALIDA}${caminho}`, { method: 'GET' })).status).toBe(500);
+    expect((await r.fetch(naLoja, { method: 'PUT' })).status).toBe(500);
+    expect((await r.fetch(naLoja, { method: 'GET', body: '{}' })).status).toBe(500);
+    expect(r.semCaptura()).toBe(3);
+    expect([...r.consumidas.entries()]).toEqual([[pagina1.nome, 1]]);
+  });
 });
 
 describe('(b) the path form, GET only — these captures hold no PUT, so the stock write’s path form stays unproven', () => {
@@ -639,7 +664,7 @@ describe('(c) the page size', () => {
     },
   );
 
-  it('100 is the ceiling the package and the reconcile cursor hold, one binding: 100 is accepted, 200 refused', () => {
+  it('100 is the package’s ceiling, the same value as the reconcile cursor’s bound: 100 is accepted, 200 refused', () => {
     expect(MAX_LIMITE_PAGINA_ESTOQUE_LI).toBe(PAGINA);
     expect(MAX_LIMITE_PAGINA_ESTOQUE_LI).toBe(MAX_LIMITE_DO_CURSOR);
     const cursor = (limite: number) =>
@@ -773,6 +798,43 @@ describe('(d) paging', () => {
       );
     }
     expect(new Set(produtos).size === produtos.length).toBe(true);
+  });
+
+  it('NEAR-MISS: the next offset is READ from meta.next, never counted from the rows — a full page whose next is null ends the walk, a short page whose next points on continues it', async () => {
+    /** A captured page with its `meta.next` replaced, everything else as captured. */
+    const comNext = (c: Captura, next: string | null): Captura => {
+      const corpo = corpoObjeto(c);
+      const { meta } = corpo;
+      if (meta === undefined || !ehObjetoJson(meta)) throw new Error(`${c.nome}: no meta object`);
+      const resposta = { ...c.envelope.resposta, corpo: { ...corpo, meta: { ...meta, next } } };
+      return { ...c, envelope: { ...c.envelope, resposta } };
+    };
+    const cheia = captura('loja2', 'estoque-p2');
+    const curta = captura('loja2', 'estoque-p5');
+    /** The captured `next`, pointing at another offset. */
+    const nextEm = (offset: number): string => {
+      const url = new URL(listaDe(cheia).meta.next ?? '', BASE_INVALIDA);
+      url.searchParams.set('offset', String(offset));
+      return `${url.pathname}${url.search}`;
+    };
+    const proximo = async (c: Captura) => {
+      const lida = await lerPagina(c);
+      expect(lida.semCaptura === 0 && lida.consumidas === 1, c.nome).toBe(true);
+      return lida.pagina.proximoOffset;
+    };
+    // As captured: the full page points one page on, the short last page ends the walk.
+    expect(listaDe(cheia).objects.length === PAGINA).toBe(true);
+    expect(listaDe(curta).objects.length < PAGINA).toBe(true);
+    expect(await proximo(cheia)).toBe(offsetDe(cheia) + PAGINA);
+    expect(await proximo(curta)).toBe(null);
+    // Edited: the full page ends the walk, or skips a page; the short page continues it.
+    expect(await proximo(comNext(cheia, null))).toBe(null);
+    expect(await proximo(comNext(cheia, nextEm(offsetDe(cheia) + 2 * PAGINA)))).toBe(
+      offsetDe(cheia) + 2 * PAGINA,
+    );
+    expect(await proximo(comNext(curta, nextEm(offsetDe(curta) + PAGINA)))).toBe(
+      offsetDe(curta) + PAGINA,
+    );
   });
 
   it.each(LOJAS)(
@@ -926,7 +988,7 @@ describe('(e) the values the stores hold, counted on the captures', () => {
     expect(linhas.filter((l) => !l.gerenciado).length).toBe(114);
   });
 
-  it('the larger store’s committed pages: every managed row carries exactly the stock write’s two situações, every unmanaged row zeros', () => {
+  it('the larger store’s committed pages: every managed row carries exactly the stock write’s two situações, every unmanaged row situações 0 / 0', () => {
     const linhas = linhasDaLoja1();
     const geridas = linhas.filter((l) => l.gerenciado);
     const naoGeridas = linhas.filter((l) => !l.gerenciado);
@@ -1021,13 +1083,34 @@ describe('(f) the details, and the key the detail path takes', () => {
     },
   );
 
-  it.each(LOJAS)(
-    '%s: an id that is no product is a 404 with an empty body, which the package reads as LiNotFoundError',
-    async (loja) => {
+  /**
+   * The produto ids each store's committed captures name: every one for the smaller store (its
+   * whole list); for the larger, only its committed pages and its product captures, a partial check.
+   */
+  const PRODUTOS_CONHECIDOS = [
+    ['loja2', 'its whole list', () => linhasDoPasseio().map((l) => produtoDe(l, 'loja2 walk'))],
+    [
+      'loja1',
+      'a sample: its committed pages and product captures',
+      () => [
+        ...linhasDaLoja1().map((l) => produtoDe(l, 'loja1 pages')),
+        ...PRODUTOS_LOJA1.flatMap((t) => produtosDe('loja1', t)).flatMap((p) => [
+          p.id,
+          ...filhosDe(p),
+        ]),
+      ],
+    ],
+  ] as const;
+
+  it.each(PRODUTOS_CONHECIDOS)(
+    '%s: an id that is no product (checked against %s) is a 404 with an empty body, which the package reads as LiNotFoundError',
+    async (loja, _onde, conhecidos) => {
       const c = captura(loja, 'estoque-inexistente');
       const id = idDoCaminho(c);
-      // The smaller store's walk is complete: no product of it carries the id.
-      expect(linhasDoPasseio().some((l) => produtoDe(l, 'loja2 walk') === id)).toBe(false);
+      const ids = conhecidos();
+      expect(ids.includes(id)).toBe(false);
+      // NEAR-MISS: the trashed parent's detail id is among them, so the check reads the right ids.
+      expect(ids.includes(idDoCaminho(captura(loja, 'estoque-lixeira')))).toBe(true);
       const r = replay([c]);
       const erro = await rejeicaoDe(buscarEstoqueProdutoLi(r.cliente, id));
       expect(r.semCaptura()).toBe(0);
@@ -1134,9 +1217,7 @@ describe('(g) every product has a stock row — and both capture rounds share on
 
   it('NEAR-MISS: no product of the larger store’s product captures has a row in the smaller store’s whole list', () => {
     const doOutro = new Set(linhasDoPasseio().map((l) => produtoDe(l, 'loja2 walk')));
-    const loja1 = ['produtos', 'produtos-p2', 'produtos-p162', 'produtos-lixeira'].flatMap((t) =>
-      produtosDe('loja1', t),
-    );
+    const loja1 = PRODUTOS_LOJA1.flatMap((t) => produtosDe('loja1', t));
     const ids = [...loja1.map((p) => p.id), ...loja1.flatMap(filhosDe)];
     expect(ids.length > 0).toBe(true);
     expect(ids.some((id) => id !== null && doOutro.has(id))).toBe(false);
@@ -1167,7 +1248,7 @@ describe('(h) the stock plan’s decisions on real rows', () => {
     l.situacao_sem_estoque === ESTOQUE_FIXO_ESCRITA_LI.situacao_sem_estoque &&
     l.quantidade >= Math.max(0, l.quantidade_reservada);
 
-  it('every managed row at the body’s situações is REFLECTED for S = quantidade − reservada, and in sync for the reconcile', () => {
+  it('every managed row at the body’s situações with a sendable quantity (quantidade ≥ max(0, reservada)) is REFLECTED for S = quantidade − reservada, and in sync for the reconcile', () => {
     const linhas = linhasDistintas().filter(jaNoCorpo);
     expect(linhas.length).toBe(639);
     for (const [i, l] of linhas.entries()) {
@@ -1203,6 +1284,38 @@ describe('(h) the stock plan’s decisions on real rows', () => {
     for (const [i, l] of linhas.entries()) {
       expect(refletidoLi(l, l.quantidade), `row ${String(i)}`).toBe(false);
       const d = diff(l, Math.max(0, l.quantidade));
+      expect(d.tipo === 'candidato' && d.delta === DELTA_SEM_LIMITE_LI, `row ${String(i)}`).toBe(
+        true,
+      );
+    }
+  });
+
+  it('NEAR-MISS gerenciado: every unmanaged row given the body’s own situações is still never reflected, a write and an unbounded candidate', () => {
+    const linhas = linhasDistintas().filter((l) => !l.gerenciado);
+    // Why this case exists: no captured unmanaged row shows the body's situações (0, −1) — most
+    // are at 0 / 0, the rest carry lead times — so on the rows as captured a situação alone already
+    // makes each a candidate, and only this case reaches the `gerenciado` guard.
+    const corpo = ESTOQUE_FIXO_ESCRITA_LI;
+    const noCorpo = (l: LinhaCrua) =>
+      l.situacao_em_estoque === corpo.situacao_em_estoque &&
+      l.situacao_sem_estoque === corpo.situacao_sem_estoque;
+    expect(linhas.filter(noCorpo).length).toBe(0);
+    expect(
+      linhas.filter((l) => l.situacao_em_estoque === 0 && l.situacao_sem_estoque === 0).length,
+    ).toBe(149);
+    expect(
+      linhas.filter((l) => l.situacao_em_estoque > 0 && l.situacao_sem_estoque > 0).length,
+    ).toBe(12);
+    for (const [i, l] of linhas.entries()) {
+      const quase: LinhaCrua = {
+        ...l,
+        situacao_em_estoque: corpo.situacao_em_estoque,
+        situacao_sem_estoque: corpo.situacao_sem_estoque,
+      };
+      const S = Math.max(0, l.quantidade);
+      expect(refletidoLi(quase, l.quantidade), `row ${String(i)}`).toBe(false);
+      expect(decidir(quase, S).tipo === 'escrever', `row ${String(i)}`).toBe(true);
+      const d = diff(quase, S);
       expect(d.tipo === 'candidato' && d.delta === DELTA_SEM_LIMITE_LI, `row ${String(i)}`).toBe(
         true,
       );
