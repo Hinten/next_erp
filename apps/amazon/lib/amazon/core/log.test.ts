@@ -520,6 +520,55 @@ describe('registrarEventoAmazon', () => {
     ]);
   });
 
+  it.each(['estoque', 'preco', 'feed'] as const)(
+    'step 12a adds `%s`: written as given, with its `conta` and `fluxo` envelope',
+    (evento) => {
+      const { logger, linhas } = loggerEspiao();
+      registrarEventoAmazon(
+        logger,
+        evento,
+        'INFO',
+        'm',
+        { fase: 'feed', mensagens: 31, bytes: 4096 },
+        { conta: CONTA, fluxo: 'estoque' },
+      );
+      expect(linhas).toEqual([
+        {
+          nivel: 'info',
+          mensagem: 'm',
+          meta: {
+            fase: 'feed',
+            mensagens: 31,
+            bytes: 4096,
+            evento,
+            conta: CONTA,
+            fluxo: 'estoque',
+          },
+        },
+      ]);
+    },
+  );
+
+  it('step 12a: near-misses of the three new names are <invalido>', () => {
+    const { logger, linhas } = loggerEspiao();
+    for (const evento of [
+      'estoques',
+      'Estoque',
+      'stock',
+      'precos',
+      'preço',
+      'price',
+      'feeds',
+      'FEED',
+      'feed ',
+      'lote',
+      'json-listings-feed',
+    ]) {
+      registrarEventoAmazon(logger, evento as never, 'INFO', 'm', {});
+    }
+    expect(linhas.map((l) => l.meta?.evento)).toEqual(Array.from({ length: 11 }, () => INVALIDO));
+  });
+
   it('an evento outside the closed set is <invalido> (near-misses of the step-3, step-4, step-5, step-14, step-15 and step-20 names)', () => {
     const { logger, linhas } = loggerEspiao();
     registrarEventoAmazon(logger, 'tarefas' as never, 'INFO', 'm', {});

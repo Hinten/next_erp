@@ -117,6 +117,9 @@ export const TIPO_AVISO_LABELS = {
   lojaIntegradaCategoriaSemVinculo: 'Categoria da Loja Integrada sem vínculo',
   lojaIntegradaRevisaoFiscal: 'Produtos da Loja Integrada para revisão fiscal',
   lojaIntegradaImportacaoComPendencias: 'Importação de produtos da Loja Integrada com pendências',
+  lojaIntegradaEstoqueSemErp: 'Produtos da Loja Integrada sem estoque no ERP',
+  lojaIntegradaEstoqueRecusado: 'Estoque recusado pela Loja Integrada',
+  lojaIntegradaEstoqueVinculo: 'Estoque da Loja Integrada parado por um vínculo',
   amazonReconexaoPendente: 'Autorização da Amazon recusada',
   amazonReautorizacaoExpirando: 'Autorização da Amazon expirando',
   amazonSegredoLwaExpirando: 'Segredo do aplicativo da Amazon expirando',
@@ -1266,6 +1269,78 @@ export const TIPO_AVISO_LABELS = {
  *    `concluido` with ZERO actionable pendências; and the orphan pass once the
  *    conta is gone. A `selecionados`, `naoNoErp` or `jaNoErp` job never
  *    resolves it: its scope does not contain the raising job's.
+ *
+ * ---
+ *
+ * **The three stock-sync tipos** (Loja Integrada step 12, #1823 — producers:
+ * the stock send run and the daily reconcile of `apps/loja-integrada`). Shared
+ * by all three:
+ *
+ *  - **Severity `atencao`**, canal `lojaIntegrada`, in-app only: the store
+ *    keeps selling on its own number, and `critico` escalates out of the app.
+ *  - **`params.loja`** is the conta name.
+ *  - **Raised and resolved only by a run whose write decision was `on`** —
+ *    never under dry-run, outside the canary list or with the valve off (the
+ *    dry-run logs the same counts instead).
+ *  - **`relogioEvento`** = the producing run's start, in µs (its ms stamp,
+ *    converted once by the app's aviso module): the reconcile run's for the
+ *    two reconcile tipos, the send run's dispatch for the refusal. A later run
+ *    starts later, so an older one can neither reopen nor close a newer one's
+ *    row. ⚠️ Never compare it with another tipo's.
+ *  - **`amostra`** (where present) is TEXT: up to the first
+ *    {@link MAX_AMOSTRA_AVISO_ESTOQUE_LI} ERP produto ids of the cases, in id
+ *    order, joined by `, ` — where the operator starts; the NUMBER beside it
+ *    is the full count.
+ *  - All three join the expiry sweep's orphan pass: a deleted conta's rows are
+ *    closed (`conta-removida`).
+ *
+ * **`lojaIntegradaEstoqueSemErp`** — linked children of the conta that never
+ *    had an ERP stock record at ANY depósito are HELD: never pushed, not as 0
+ *    and not as nothing, so the store keeps its own number ("sem estoque no
+ *    ERP"). A produto with a record at another depósito is not held: the
+ *    conta depósito's real 0 is pushed.
+ *
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId })` — one row per conta.
+ *  - **`params`**: `loja`, `produtos` (a NUMBER: the held children) and
+ *    `amostra`.
+ *  - **Route**: the conta page (`ROTAS_AVISO.canalLojaIntegrada`).
+ *  - **Machine resolvers**: the end of a later reconcile run that holds none;
+ *    and the orphan pass once the conta is gone. A repeat replaces `params`.
+ *
+ * **`lojaIntegradaEstoqueRecusado`** — Loja Integrada refused a child's stock
+ *    write with a 4xx other than 429 on the task's LAST attempt (401/403 park
+ *    the conta instead, through `lojaIntegradaReconexaoPendente`): the store's
+ *    number for that product was not updated.
+ *
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId, entidade: produtoId })`
+ *    — one row per child produto.
+ *  - **`params`**: `loja`, `produto` (the ERP produto id), `idLi` (the store
+ *    product id, as text) and `status` (the HTTP status, a NUMBER).
+ *  - **Route**: the produto (`ROTAS_AVISO.produto`).
+ *  - **Machine resolvers**: a later run for the same (conta, produto) under
+ *    `on` that ends written or already reflected — the daily reconcile
+ *    re-enqueues a child whose store row still differs, so a fixed cause
+ *    closes the row within a day; and the orphan pass once the conta is gone.
+ *    Residue, accepted: a produto unlinked after the refusal is never run
+ *    again, so its row stands until retention.
+ *
+ * **`lojaIntegradaEstoqueVinculo`** — linked children whose stock is NOT sent
+ *    because of how they are linked or stocked, one row per reason — a
+ *    {@link MOTIVO_ESTOQUE_VINCULO_LI} CODE: two store products linked on one
+ *    ERP produto (`ambiguo`), one store product linked from two ERP produtos
+ *    (`duplicado`), a link whose store product has no row in the store's stock
+ *    list (`sem-linha-na-loja`), a link whose ERP produto no longer exists
+ *    (`ausente`), two stock records at the conta's depósito neither of which is
+ *    the canonical one (`estoque-ambiguo`).
+ *
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId, entidade: motivo })`
+ *    — one row per (conta, motivo).
+ *  - **`params`**: `loja`, `motivo` (the code; `motivo` the field too),
+ *    `produtos` (a NUMBER: the cases) and `amostra`.
+ *  - **Route**: the conta page (`ROTAS_AVISO.canalLojaIntegrada`).
+ *  - **Machine resolvers**: the end of a later reconcile run that counts zero
+ *    cases of that motivo for the conta (each run raises or resolves every
+ *    motivo once); and the orphan pass once the conta is gone.
  */
 export const tipoAvisoSchema = z
   .enum([
@@ -1298,6 +1373,9 @@ export const tipoAvisoSchema = z
     'lojaIntegradaCategoriaSemVinculo',
     'lojaIntegradaRevisaoFiscal',
     'lojaIntegradaImportacaoComPendencias',
+    'lojaIntegradaEstoqueSemErp',
+    'lojaIntegradaEstoqueRecusado',
+    'lojaIntegradaEstoqueVinculo',
     'amazonReconexaoPendente',
     'amazonReautorizacaoExpirando',
     'amazonSegredoLwaExpirando',
@@ -1340,6 +1418,9 @@ export const TIPO_AVISO = {
   lojaIntegradaCategoriaSemVinculo: 'lojaIntegradaCategoriaSemVinculo',
   lojaIntegradaRevisaoFiscal: 'lojaIntegradaRevisaoFiscal',
   lojaIntegradaImportacaoComPendencias: 'lojaIntegradaImportacaoComPendencias',
+  lojaIntegradaEstoqueSemErp: 'lojaIntegradaEstoqueSemErp',
+  lojaIntegradaEstoqueRecusado: 'lojaIntegradaEstoqueRecusado',
+  lojaIntegradaEstoqueVinculo: 'lojaIntegradaEstoqueVinculo',
   amazonReconexaoPendente: 'amazonReconexaoPendente',
   amazonReautorizacaoExpirando: 'amazonReautorizacaoExpirando',
   amazonSegredoLwaExpirando: 'amazonSegredoLwaExpirando',
@@ -1772,6 +1853,49 @@ export const MOTIVO_CATEGORIA_SEM_VINCULO_LI = {
   ciclo: 'ciclo',
   profundidade: 'profundidade',
 } as const satisfies Record<string, MotivoCategoriaSemVinculoLi>;
+
+/**
+ * Why linked children of a Loja Integrada conta get no stock send — the
+ * `lojaIntegradaEstoqueVinculo` aviso's `params.motivo` AND its key's entity, a
+ * CODE the wording in `apps/web/lib/avisos/mensagens.ts` renders (a wording fix
+ * is retroactive):
+ *
+ *  - `ambiguo`: one ERP produto carries two counting child links of the conta;
+ *  - `duplicado`: one store product id is linked from two ERP produtos;
+ *  - `sem-linha-na-loja`: the store's stock list, read whole, has no row for a
+ *    linked child (a send's read answered "not found" is the same fact, seen
+ *    one product at a time);
+ *  - `ausente`: a link whose ERP produto document no longer exists;
+ *  - `estoque-ambiguo`: two stock records at the conta's depósito, neither the
+ *    canonical one.
+ *
+ * Stored as an aviso PARAM, with the same fallback contract as
+ * {@link MOTIVO_PEDIDO_CONTESTADO_LI}.
+ */
+export const motivoEstoqueVinculoLiSchema = z.enum([
+  'ambiguo',
+  'duplicado',
+  'sem-linha-na-loja',
+  'ausente',
+  'estoque-ambiguo',
+]);
+export type MotivoEstoqueVinculoLi = z.infer<typeof motivoEstoqueVinculoLiSchema>;
+
+/** Named members of {@link motivoEstoqueVinculoLiSchema} — see `delfrance/prefer-schema-enum`. */
+export const MOTIVO_ESTOQUE_VINCULO_LI = {
+  ambiguo: 'ambiguo',
+  duplicado: 'duplicado',
+  semLinhaNaLoja: 'sem-linha-na-loja',
+  ausente: 'ausente',
+  estoqueAmbiguo: 'estoque-ambiguo',
+} as const satisfies Record<string, MotivoEstoqueVinculoLi>;
+
+/**
+ * The most ERP produto ids a stock-sync aviso's `params.amostra` lists (the
+ * `lojaIntegradaEstoqueSemErp` and `lojaIntegradaEstoqueVinculo` rows); the
+ * NUMBER beside it is the full count.
+ */
+export const MAX_AMOSTRA_AVISO_ESTOQUE_LI = 200;
 
 /**
  * Why an `anuncioForaDaSincronizacao` anúncio is out of reach — the aviso's

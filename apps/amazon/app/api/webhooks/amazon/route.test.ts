@@ -5,11 +5,13 @@
  * the instance memory lives at module scope.
  *
  * Mocked: the Admin singleton (the fake db) and the queue root (a recording
- * producer). D11: nothing reaches Amazon or Cloud Tasks.
+ * producer per queue: the reads queue's and, since step 12a (PR 12-c), the jobs
+ * queue's). D11: nothing reaches Amazon or Cloud Tasks.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CABECALHO_CHAVE_RELAY_AMAZON, CAMINHO_RECEPTOR_AMAZON } from '@delfrance/schemas';
 
+import type { AgendadorLotesAmazon } from '@/lib/amazon/feeds/agendadorLotes';
 import type { AgendadorAmazon } from '@/lib/amazon/notificacoes/agendador';
 import type { PayloadNotificacaoAmazon } from '@/lib/amazon/notificacoes/notificacao';
 import { FakeDb, asDb } from '@/lib/amazon/testing/fakeDb';
@@ -25,6 +27,8 @@ const h = vi.hoisted(() => ({
   db: undefined as unknown,
   enfileirados: [] as unknown[],
   agendador: undefined as unknown,
+  lotes: [] as unknown[],
+  agendadorLotes: undefined as unknown,
 }));
 
 vi.mock('@/lib/firebase/admin', () => ({
@@ -37,6 +41,7 @@ vi.mock('@/lib/firebase/admin', () => ({
 vi.mock('@/lib/firebase/filaLeitura', () => ({
   regiaoDaFilaLeituraAmazon: () => 'xx-regiao-1',
   agendadorDaFilaLeituraAmazon: () => h.agendador,
+  agendadorDaFilaLotesAmazon: () => h.agendadorLotes,
 }));
 
 const rota = await import('./route');
@@ -58,11 +63,38 @@ function corpo(): Record<string, unknown> {
   };
 }
 
-function post(chave: string | null = SEGREDO_RELAY): Promise<Response> {
+/** A FEED_PROCESSING_FINISHED of one of our listings feeds (camelCase, placeholder ids). */
+function corpoFeed(): Record<string, unknown> {
+  return {
+    notificationType: 'FEED_PROCESSING_FINISHED',
+    payload: {
+      feedProcessingFinishedNotification: {
+        sellerId: SPID_A,
+        accountId: 'amzn1.merchant.o.AXXXXXXXXXXXXX',
+        feedId: '00000000000',
+        feedType: 'JSON_LISTINGS_FEED',
+        processingStatus: 'DONE',
+      },
+    },
+    notificationMetadata: {
+      applicationId: APPLICATION_ID,
+      notificationId: '00000000-0000-0000-0000-000000000002',
+    },
+  };
+}
+
+function post(
+  chave: string | null = SEGREDO_RELAY,
+  envelope: Record<string, unknown> = corpo(),
+): Promise<Response> {
   const headers = new Headers({ 'content-type': 'application/json' });
   if (chave !== null) headers.set(CABECALHO_CHAVE_RELAY_AMAZON, chave);
   return POST(
-    new Request(URL_RECEPTOR, { method: 'POST', headers, body: JSON.stringify({ body: corpo() }) }),
+    new Request(URL_RECEPTOR, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ body: envelope }),
+    }),
   );
 }
 
@@ -73,6 +105,13 @@ const aceita: AgendadorAmazon = {
   enfileirar(p: PayloadNotificacaoAmazon) {
     h.enfileirados.push(p);
     return Promise.resolve();
+  },
+};
+
+const aceitaLotes: AgendadorLotesAmazon = {
+  enfileirarLote(tarefa, pedido) {
+    h.lotes.push({ tarefa, pedido });
+    return Promise.resolve('enfileirada');
   },
 };
 
@@ -88,6 +127,8 @@ beforeEach(() => {
   h.db = asDb(db);
   h.enfileirados.length = 0;
   h.agendador = aceita;
+  h.lotes.length = 0;
+  h.agendadorLotes = aceitaLotes;
   vi.stubEnv('AMAZON_RELAY_SECRET', SEGREDO_RELAY);
   vi.stubEnv('AMAZON_RELAY_PREVIOUS_SECRET', '');
   vi.stubEnv('AMAZON_APPLICATION_ID', APPLICATION_ID);
@@ -110,7 +151,27 @@ describe('POST /api/webhooks/amazon', () => {
   it('a valid delivery ⇒ 200, an EMPTY body, no-store and no-referrer; enqueued', async () => {
     await resposta(await post(), 200);
     expect(h.enfileirados).toHaveLength(1);
+    expect(h.lotes).toEqual([]);
     expect(db.operacoes).toBe(0);
+  });
+
+  it('★ binds the jobs producer beside the reads one: a feed wake-up goes to the jobs queue alone ⇒ 200, empty', async () => {
+    await resposta(await post(SEGREDO_RELAY, corpoFeed()), 200);
+    expect(h.lotes).toHaveLength(1);
+    expect(h.lotes[0]).toMatchObject({
+      tarefa: { tipo: 'feed-resultado', contaId: null, feedId: '00000000000', rodada: 0 },
+    });
+    expect(h.enfileirados).toEqual([]);
+    expect(db.operacoes).toBe(0);
+  });
+
+  it('a feed wake-up the jobs queue refuses ⇒ still 200, nothing persisted', async () => {
+    const { AmazonLotesTarefasDesligadasError } = await import('@/lib/amazon/feeds/agendadorLotes');
+    h.agendadorLotes = {
+      enfileirarLote: () => Promise.reject(new AmazonLotesTarefasDesligadasError()),
+    } satisfies AgendadorLotesAmazon;
+    await resposta(await post(SEGREDO_RELAY, corpoFeed()), 200);
+    expect(db.caminhos()).toEqual([]);
   });
 
   it('passes the receptor’s 401 and 503 through, empty and uncached', async () => {

@@ -114,7 +114,12 @@ export interface LoggerAmazon {
  * engine's dry-run line, and the scheduling task's and the label route's own
  * lines — ids, closed codes, grammar-checked rejection codes and counts only,
  * never the label's pre-signed URL, the Restricted Data Token, a label byte, a
- * tracking, package or slot id, or Amazon's text).
+ * tracking, package or slot id, or Amazon's text) or a `JSON_LISTINGS_FEED`
+ * batch (step 12a: `estoque` and `preco`, the write engine's batch dry-run line
+ * of each fluxo — and, for stock, the per-SKU write's dry-run line too — and
+ * `feed`, a feed line that names no fluxo yet, such as a wake-up for a feed no
+ * record knows; message and byte counts, ids and closed codes only, never a
+ * SKU list, an issue message or a document URL).
  */
 export type EventoAmazon =
   | 'chamada'
@@ -127,7 +132,10 @@ export type EventoAmazon =
   | 'int-frete'
   | 'pedido'
   | 'nfe'
-  | 'agendamento';
+  | 'agendamento'
+  | 'estoque'
+  | 'preco'
+  | 'feed';
 
 /** What a NON-call line is about: `chamada` is written by the observer alone. */
 export type EventoAvulsoAmazon = Exclude<EventoAmazon, 'chamada'>;
@@ -144,6 +152,9 @@ const EVENTOS_AVULSOS: Readonly<Record<EventoAvulsoAmazon, true>> = {
   pedido: true,
   nfe: true,
   agendamento: true,
+  estoque: true,
+  preco: true,
+  feed: true,
 };
 
 /** The body excerpt's cap, in UTF-8 bytes, applied AFTER the regex layer. */
