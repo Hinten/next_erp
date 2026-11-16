@@ -14,7 +14,8 @@
  * Neither name, nor the factory's, nor `LiEscritaClient`, is used anywhere else,
  * so the app guards by name that a single module of its own calls them (its
  * write engine, master-plan step 7) and a single one builds the client. The two
- * operations of master-plan step 7 are in `pedidosEscrita.ts`.
+ * operations of master-plan step 7 are in `pedidosEscrita.ts`; the stock write
+ * of master-plan step 12 is in `estoqueEscrita.ts`.
  *
  * ## What `enviarEscritaLi` sends
  *
@@ -25,9 +26,13 @@
  *  - **Only that route's body.** The body sent is the ROUTE schema's OUTPUT,
  *    never the caller's object, and the caller cannot bring a schema of its
  *    own: a codigo outside the three write-back situações, a cleared or blank
- *    tracking code, a stray key — each is `LiConfigError('corpo')`. Both
+ *    tracking code, a stock write that is not managed stock at a non-negative
+ *    integer quantity, a stray key — each is `LiConfigError('corpo')`. Both
  *    refusals come before the credential is read, with nothing fetched.
- *  - Bodies hold strings only, so nothing numeric is coerced on the way out.
+ *  - Bodies hold JSON scalars only, each exactly as its route's schema output
+ *    it: a string stays a string and a number goes out as a JSON number,
+ *    unquoted (the stock write's `quantidade`). Nothing is coerced on the way
+ *    out, and a route's schema refuses a quoted number rather than read it.
  *  - The serialised body is refused when it carries the token
  *    (`LiConfigError('token-no-corpo')`), checked on the exact text sent.
  *  - `Content-Type: application/json`, `redirect: 'manual'`: a 3xx is a visible

@@ -10,6 +10,7 @@ import {
   ID_PAIS_SNAPSHOT_ESTOQUE_LI,
   MAX_KITS_EM_LINHA_ESTOQUE_LI,
   MAX_KITS_POR_FATIA_ESTOQUE_LI,
+  MAX_LIMITE_PAGINA_ESTOQUE_LI,
   SUBCOLECOES_SINC_ESTOQUE_LI,
   baldeSnapshotEstoqueLi,
   entradaSnapshotEstoqueLiSchema,
@@ -91,13 +92,16 @@ describe('sincEstoqueLojaIntegradaSchema (the per-conta root)', () => {
     ).toBe(false);
   });
 
-  it('the page size is at most 1 000: 1 000 is a page, 1 001 is not', () => {
+  it('the page size is held to the ONE bound the page reader refuses above: 100 is a page, 101 is not', () => {
     const ok = (limite: number) =>
       sincEstoqueLojaIntegradaSchema.safeParse({
         reconcile: { offset: 0, limite, iniciadoEmMs: AGORA_MS },
       }).success;
-    expect(ok(1000)).toBe(true);
-    expect(ok(1001)).toBe(false);
+    expect(MAX_LIMITE_PAGINA_ESTOQUE_LI).toBe(100);
+    expect(ok(MAX_LIMITE_PAGINA_ESTOQUE_LI)).toBe(true);
+    // A stored size above it would refuse every page read from it, so it never parses.
+    expect(ok(MAX_LIMITE_PAGINA_ESTOQUE_LI + 1)).toBe(false);
+    expect(ok(1000)).toBe(false);
   });
 
   it('a counter name is an identifier, and a count a non-negative integer', () => {
