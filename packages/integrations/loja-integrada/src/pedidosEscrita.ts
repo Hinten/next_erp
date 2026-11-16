@@ -35,8 +35,9 @@
  *    character is never sent (`LiConfigError('corpo')`, nothing fetched). The
  *    app's write-back flow is to check the same predicate first, to tell a
  *    person (master-plan step 7, PR 7-d); this is the backstop.
- *  - **No other path:** a path that is not one of the two routes, in exactly
- *    the form below, is `LiConfigError('rota-nao-permitida')`.
+ *  - **No other path:** a path that is not one of the write routes — these
+ *    two, in exactly the form below, and the stock route of
+ *    `estoqueEscrita.ts` — is `LiConfigError('rota-nao-permitida')`.
  *  - **Ids** go through the shared path-id reader (`idsDeCaminho.ts`).
  *
  * ## Paths: NO trailing slash, unlike the reads

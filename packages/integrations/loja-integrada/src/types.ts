@@ -3,8 +3,10 @@
  * something consumes: the Tastypie paging envelope, the pedido search row (the
  * order poller, master-plan step 3), the catalogue rows the catalogue reads
  * parse (`catalogo.ts`, master-plan step 10): categoria, marca, grade, and a
- * grade's detail with its options; and the produto list row, detail and image
- * the product import reads (`produtos.ts`, master-plan step 9).
+ * grade's detail with its options; the produto list row, detail and image
+ * the product import reads (`produtos.ts`, master-plan step 9); and the stock
+ * row, its detail and the stock write's echo (`estoque.ts`, `estoqueEscrita.ts`,
+ * master-plan step 12).
  *
  * The catalogue rows were written against the leaf shapes of the owner's
  * catalogue capture C9 (every list and both kinds of grade detail answered 200
@@ -29,9 +31,15 @@
  * shapes of the owner's produto capture C10 (the list with and without
  * `removido`, its trash, a parent's and a child's detail).
  *
- * Every other resource (estoque, preço, imagem, envio) arrives with its first
- * consumer, written against captured responses rather than the public
- * document's examples (the pedido detail and situação are in `pedidoTipos.ts`).
+ * The stock schemas (`produto_estoque`, master-plan step 12), at the very end,
+ * are the one exception to "against captures": they ship ahead of the owner's
+ * read-only stock captures, written against the public document's schema and
+ * examples alone, and the change that adds those captures pins real rows
+ * against them before anything consumes them.
+ *
+ * Every other resource (preço, imagem, envio) arrives with its first consumer,
+ * written against captured responses rather than the public document's
+ * examples (the pedido detail and situação are in `pedidoTipos.ts`).
  *
  * ## Passthrough
  *
@@ -42,9 +50,12 @@
  * ## Numbers
  *
  * ⚠️ This file, `pedidoTipos.ts` and `vazio.ts` are the only ones under `src/`
- * that use Zod for numbers, and every one goes through `wireInt()` /
+ * that use Zod for RESPONSE numbers, and every one goes through `wireInt()` /
  * `wireNumber()` from `@delfrance/core/wire`: a serializer that quotes ONE
- * field must not cost the whole page (#1087).
+ * field must not cost the whole page (#1087). The one other Zod number under
+ * `src/` is a REQUEST leaf, the stock write's `quantidade` (`rotasEscrita.ts`):
+ * strict on purpose, because a quoted number must never be forwarded, and
+ * carved out by its exact line in the guard below.
  * Enforced by
  * `packages/config-eslint/rules/integration-response-numbers-tolerant.test.js`,
  * which scans every file under `src/` and anchors on three lines of this file.
@@ -364,3 +375,82 @@ export const liProdutoDetalheSchema = liProdutoLinhaSchema.extend({
   imagem_principal: vazioComoNulo(liImagemProdutoSchema),
   imagens: listaOuVazia(liImagemProdutoSchema),
 });
+
+/* -------------------------------------------------------------------------- */
+/*                  The stock (master-plan step 12, `estoque.ts`)             */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * One row of `GET /v1/produto_estoque` and, leaf for leaf, the answer of
+ * `GET /v1/produto_estoque/{produto_id}`: the public document gives both (and
+ * the stock write's echo) the same nine leaves — `gerenciado`, `id`, `produto`,
+ * `quantidade`, `quantidade_disponivel`, `quantidade_reservada`, `resource_uri`,
+ * `situacao_em_estoque`, `situacao_sem_estoque`.
+ *
+ * ⚠️ Written against the public document ALONE (header): the owner's read-only
+ * stock captures are not in yet, and the change that adds them pins real rows
+ * against this schema before anything consumes it.
+ *
+ * Declared: the leaves a stock decision reads, each REQUIRED, because a row
+ * without one cannot be judged by anyone.
+ *
+ *  - `produto`: the produto's resource URI (`/api/v1/produto/<id>` in the
+ *    document), a string. It is read into an id by `produtoIdDoEstoqueLi`
+ *    (`estoque.ts`), never here. The document's examples give the row an `id`
+ *    of its own, different from the produto id in `produto` and in
+ *    `resource_uri`, so the produto is never read from `id`.
+ *  - `gerenciado`: a boolean — whether the store manages the product's stock.
+ *  - `quantidade`, `quantidade_reservada`, `situacao_em_estoque`,
+ *    `situacao_sem_estoque`: integers through `wireInt()`, so a quoted one
+ *    (`'5'`) reads as the number and never costs the page. Any sign: the
+ *    document's own rows carry `quantidade: -2` and `-4`, and
+ *    `situacao_sem_estoque: -1`. Never a fraction.
+ *
+ * Not declared, and kept by `.passthrough()`: the row's own `id`,
+ * `resource_uri` (`/api/v1/produto_estoque/<produto id>`) and
+ * `quantidade_disponivel`. Nothing here reads them, and a declared leaf can
+ * only add a way to refuse a row.
+ *
+ * ⚠️ A row whose declared leaf is missing or of another type refuses its WHOLE
+ * page (`LiSchemaError`, naming the field path), so one odd row costs every row
+ * beside it. Deliberate until the captures show the store's real rows: a leaf
+ * they show to need per-row tolerance gets it then, beside its capture.
+ */
+export const liEstoqueProdutoLinhaSchema = z
+  .object({
+    produto: z.string(),
+    gerenciado: z.boolean(),
+    quantidade: wireInt(),
+    quantidade_reservada: wireInt(),
+    situacao_em_estoque: wireInt(),
+    situacao_sem_estoque: wireInt(),
+  })
+  .passthrough();
+
+export type EstoqueProdutoLinhaLi = z.infer<typeof liEstoqueProdutoLinhaSchema>;
+
+/**
+ * `GET /v1/produto_estoque/{produto_id}`: the row's leaves (above). One schema
+ * under two names, so a capture that shows the detail to differ changes this
+ * line and no caller. A stock write decides on this read, so a detail without a
+ * leaf the write decides on refuses the read, and nothing is written.
+ */
+export const liEstoqueProdutoDetalheSchema = liEstoqueProdutoLinhaSchema;
+
+export type EstoqueProdutoDetalheLi = z.infer<typeof liEstoqueProdutoDetalheSchema>;
+
+/**
+ * The echo of `PUT /v1/produto_estoque/{produto_id}`: per the public document,
+ * the stock row as stored. Diagnostic only, so EVERY field is optional, as on
+ * the order write echoes (`pedidoTipos.ts`): whether a stock write took effect
+ * is never read from its echo (a fresh `GET` decides), and an echo that does
+ * not parse is reported, never thrown (`escrita.ts`). Only `quantidade` is
+ * typed; `.passthrough()` keeps the rest as received.
+ */
+export const liEcoEstoqueProdutoSchema = z
+  .object({
+    quantidade: inteiroOpcional(),
+  })
+  .passthrough();
+
+export type EcoEstoqueProdutoLi = z.infer<typeof liEcoEstoqueProdutoSchema>;

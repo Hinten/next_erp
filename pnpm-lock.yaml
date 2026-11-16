@@ -1338,6 +1338,9 @@ importers:
       '@delfrance/core':
         specifier: workspace:*
         version: link:../../core
+      '@delfrance/schemas':
+        specifier: workspace:*
+        version: link:../../schemas
       zod:
         specifier: 'catalog:'
         version: 4.4.3
