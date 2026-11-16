@@ -15,6 +15,7 @@ import {
   startUptinMigration,
   UptinError,
   UPTIN_CHECK_DELAY_SECONDS,
+  UPTIN_CHECK_TOPIC,
 } from '@/lib/marketplace/importacao/importMigration';
 import {
   createMlTaskScheduler,
@@ -84,11 +85,11 @@ export async function POST(req: Request): Promise<NextResponse> {
     const estado =
       acao === 'reverificar'
         ? await handleUptinMigration(deps, target.itemId, target)
-        : await startUptinMigration(deps, target.itemId, target, async () => {
+        : await startUptinMigration(deps, target.itemId, target, async (attempt) => {
             const payload: MlNotificationPayload = {
-              id: null,
+              id: attempt,
               resource: `/items/${target.itemId}`,
-              topic: 'items',
+              topic: UPTIN_CHECK_TOPIC,
               user_id: sellerUserId,
               application_id: null,
               attempts: null,

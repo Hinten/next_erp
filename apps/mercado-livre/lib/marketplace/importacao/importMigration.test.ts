@@ -1,16 +1,19 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Firestore } from 'firebase-admin/firestore';
 import {
   MercadoLivreHttpError,
   MercadoLivreNetworkError,
   UPTIN_DESTINATION_TAG,
+  UPTIN_PENDING_TAG,
   UPTIN_SOURCE_TAG,
+  type MlItem,
 } from '@delfrance/integrations-mercado-livre';
 import { toOuterRef } from '@delfrance/schemas';
 import {
   handleUptinMigration,
   startUptinMigration,
   type UptinMigrationDeps,
+  UPTIN_CHECK_DELAY_SECONDS,
 } from './importMigration';
 
 type Data = Record<string, unknown>;
@@ -22,6 +25,10 @@ class Db {
 
   collection(path: string) {
     return { doc: (id: string) => this.ref(`${path}/${id}`) };
+  }
+
+  getAll(...refs: Array<{ get: () => Promise<unknown> }>) {
+    return Promise.all(refs.map((ref) => ref.get()));
   }
 
   ref(path: string) {
@@ -129,7 +136,7 @@ function fixture() {
     produtoVariacaoOuterRef: 'produtos/right',
   });
   const api = {
-    getItem: vi.fn(async () => active),
+    getItem: vi.fn(async (): Promise<MlItem> => active),
     validateUptin: vi.fn(async () => ({ is_valid: true, cause: [] as Array<{ message: string }> })),
     startUptin: vi.fn(async () => {}),
     getLastModeration: vi.fn(async () => []),
@@ -225,6 +232,79 @@ describe('startUptinMigration', () => {
 });
 
 describe('handleUptinMigration', () => {
+  const noReport = new MercadoLivreHttpError('sem migração', 404, {});
+  const lostPost = new MercadoLivreNetworkError('socket lost', null);
+  const startTime = 1_800_000_000_000;
+  const grace = UPTIN_CHECK_DELAY_SECONDS * 1000;
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it('releases an unconfirmed dispatch only after the grace period and allows a fresh start', async () => {
+    const { deps, store, arm, api } = fixture();
+    const now = vi.spyOn(Date, 'now').mockReturnValue(startTime);
+    api.startUptin.mockRejectedValueOnce(lostPost);
+    api.getMigrationLiveListing.mockRejectedValue(noReport);
+    expect(await startUptinMigration(deps, itemId, target, arm)).toBe('incerta');
+    now.mockReturnValue(startTime + grace - 1);
+    expect(await handleUptinMigration(deps, itemId, target)).toBe('incerta');
+    expect(store.docs.get(parent)?.estado).toBe('am');
+
+    now.mockReturnValue(startTime + grace);
+    expect(await handleUptinMigration(deps, itemId, target)).toBe('liberada');
+    expect(store.docs.get(parent)?.estado).toBe('p');
+    expect(api.startUptin).toHaveBeenCalledTimes(1);
+    expect(await startUptinMigration(deps, itemId, target, arm)).toBe('iniciada');
+    expect(api.startUptin).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps an acknowledged POST pending even when the report is temporarily absent', async () => {
+    const { deps, store, arm, api } = fixture();
+    const now = vi.spyOn(Date, 'now').mockReturnValue(startTime);
+    api.getMigrationLiveListing.mockRejectedValue(noReport);
+    expect(await startUptinMigration(deps, itemId, target, arm)).toBe('iniciada');
+    now.mockReturnValue(startTime + grace);
+    expect(await handleUptinMigration(deps, itemId, target)).toBe('pendente');
+    expect(store.docs.get(parent)?.estado).toBe('am');
+    expect(await startUptinMigration(deps, itemId, target, arm)).toBe('pendente');
+    expect(api.startUptin).toHaveBeenCalledTimes(1);
+  });
+
+  it('retains fresh provider evidence even if the report and original item later lag', async () => {
+    const { deps, store, arm, api } = fixture();
+    const now = vi.spyOn(Date, 'now').mockReturnValue(startTime);
+    api.startUptin.mockRejectedValueOnce(lostPost);
+    api.getMigrationLiveListing.mockRejectedValue(noReport);
+    expect(await startUptinMigration(deps, itemId, target, arm)).toBe('incerta');
+    now.mockReturnValue(startTime + grace);
+
+    // The queued check started with an older untagged item snapshot.
+    api.getItem.mockResolvedValueOnce({ ...active, tags: [UPTIN_PENDING_TAG] });
+    expect(await handleUptinMigration(deps, itemId, target, active)).toBe('pendente');
+    expect(await handleUptinMigration(deps, itemId, target, active)).toBe('pendente');
+    expect(store.docs.get(parent)?.estado).toBe('am');
+    expect(api.startUptin).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the claim when a concurrent check confirms the provider migration before release', async () => {
+    const { deps, store, arm, api } = fixture();
+    const now = vi.spyOn(Date, 'now').mockReturnValue(startTime);
+    api.startUptin.mockRejectedValueOnce(lostPost);
+    api.getMigrationLiveListing.mockRejectedValueOnce(noReport);
+    expect(await startUptinMigration(deps, itemId, target, arm)).toBe('incerta');
+    now.mockReturnValue(startTime + grace);
+    api.getItem.mockImplementationOnce(async () => {
+      const result = await handleUptinMigration(deps, itemId, target, {
+        ...active,
+        tags: [UPTIN_SOURCE_TAG, UPTIN_PENDING_TAG],
+      });
+      expect(result).toBe('pendente');
+      return active;
+    });
+    expect(await handleUptinMigration(deps, itemId, target, active)).toBe('pendente');
+    expect(store.docs.get(parent)?.estado).toBe('am');
+    expect(api.startUptin).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps provider families separate when a migration splits the listing', async () => {
     const { deps, store, api } = fixture();
     const members = await api.getItemsByIds();

@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Firestore } from 'firebase-admin/firestore';
+import { sha256Hex } from '@delfrance/data/admin';
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
+import { migracaoUptinMercadoLivreCollection } from '@delfrance/data/admin/collections';
 import { MercadoLivreHttpError } from '@delfrance/integrations-mercado-livre';
+import type { UptinOutcome } from '../importacao/importMigration';
 import type { OrderImportResult } from '../pedidos/orderImport';
 import type { PaymentImportResult } from '../pedidos/orderPaymentImport';
 import type { ShipmentImportResult } from '../pedidos/orderShipmentImport';
@@ -72,7 +75,10 @@ const h = vi.hoisted(() => ({
   // `tryGetAdminBucket` — a sentinel here proves it is threaded verbatim.
   fakeBucket: { __bucket: true },
 }));
-vi.mock('../importacao/importMigration', () => ({ handleUptinMigration: h.handleUptinMigration }));
+vi.mock('../importacao/importMigration', async (load) => ({
+  ...(await load<typeof import('../importacao/importMigration')>()),
+  handleUptinMigration: h.handleUptinMigration,
+}));
 vi.mock('../pedidos/orderImport', () => ({ importPedidoMercadoLivre: h.importPedidoMercadoLivre }));
 vi.mock('../pedidos/orderPaymentImport', () => ({
   importPagamentoMercadoLivre: h.importPagamentoMercadoLivre,
@@ -1288,6 +1294,52 @@ describe('handleNotificationTask — #441 migration takeover wiring', () => {
     );
     expect(h.handleUptinMigration).not.toHaveBeenCalled(); // default bypassed entirely
     expect(h.loadMercadoLivreContext).not.toHaveBeenCalled();
+  });
+
+  it('keeps one pending recovery check for the sweep and reconciles without a completion webhook', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    seedMigrationLink(db);
+    const attempt = 'attempt-up';
+    db.seed(migracaoUptinMercadoLivreCollection.resolvePath({}), sha256Hex('conta-A|MLB1'), {
+      produtoId: 'prod1',
+      linkDocId: 'link1',
+      sellerUserId: 55,
+      attempt,
+      claimedAt: Date.now(),
+      dispatching: true,
+      providerConfirmed: true,
+      previousState: 'p',
+      variations: [],
+    });
+    const payload = payloadOf({ id: attempt, resource: '/items/MLB1', topic: 'uptin-check' });
+    const migrationRunner = vi.fn<() => Promise<UptinOutcome>>().mockResolvedValue('pendente');
+    const runners = { resolveItemsApi: migrationResolveItemsApi(), migrationRunner };
+
+    expect(parseNotificationBody(payload)).toBeNull();
+    const stale = await handleNotificationTask(
+      asDb(db),
+      { ...payload, id: 'old-attempt' },
+      0,
+      runners,
+    );
+    expect(stale.outcome).toBe('done');
+    expect(runners.resolveItemsApi).not.toHaveBeenCalled();
+
+    const first = await handleNotificationTask(asDb(db), payload, 0, runners);
+    const duplicate = await handleNotificationTask(asDb(db), payload, 0, runners);
+    expect(first).toMatchObject({ outcome: 'failed', detail: 'deferred-migration-source' });
+    expect(duplicate.outcome).toBe('failed');
+    expect(db.docs(NOTIF).size).toBe(1);
+    expect(db.docs(NOTIF).get(attempt)?.status).toBe('failed');
+
+    const now = Date.now() + 2 * 60 * 60 * 1000;
+    await reprocessNotifications(asDb(db), { now }, runners);
+    expect(db.docs(NOTIF).get(attempt)?.tentativas).toBe(1);
+    migrationRunner.mockResolvedValue('concluida');
+    await reprocessNotifications(asDb(db), { now: now + 2 * 60 * 60 * 1000 }, runners);
+    expect(db.docs(NOTIF).size).toBe(0);
+    expect(migrationRunner).toHaveBeenCalledTimes(4);
   });
 
   it('a non-migration items notification is unaffected by the #441 wiring (no runner call at all)', async () => {

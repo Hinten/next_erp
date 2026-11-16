@@ -56,10 +56,12 @@ beforeEach(() => {
     conta: { user_id: 42 },
     resolveChannelContext: async () => ({ getAccessToken: async () => 'fake' }),
   });
-  h.start.mockImplementation(async (_deps, _item, _target, arm: () => Promise<void>) => {
-    await arm();
-    return 'iniciada';
-  });
+  h.start.mockImplementation(
+    async (_deps, _item, _target, arm: (attempt: string) => Promise<void>) => {
+      await arm('test-attempt');
+      return 'iniciada';
+    },
+  );
 });
 
 describe('POST /migrar-anuncio', () => {
@@ -84,7 +86,8 @@ describe('POST /migrar-anuncio', () => {
     const response = await POST(request());
     expect(response.status).toBe(202);
     const payload = expect.objectContaining({
-      topic: 'items',
+      id: 'test-attempt',
+      topic: 'uptin-check',
       resource: '/items/MLB111',
       user_id: 42,
     });

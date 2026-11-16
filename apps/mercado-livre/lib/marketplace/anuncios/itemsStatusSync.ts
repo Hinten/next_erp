@@ -190,6 +190,7 @@ export type ItemsSyncOutcome =
   | 'unchanged' // estado/status/sub_status all already current (idempotent no-op)
   | 'no-link' // no linked produto for this item on this account
   | 'migrated' // a migration-source listing went closed → #441 takeover ran
+  | 'migration-released' // ML did not start the migration and the legacy link was restored
   | 'deferred-migration-source' // ML is migrating this listing; it has not closed yet
   | 'deferred-migration-uptin' // the migration DESTINATION listing — never a takeover trigger
   | 'no-migration-runner' // the takeover was due and no runner was supplied (a WIRING defect)
@@ -330,7 +331,9 @@ export async function syncItemStatus(
       linkDocId: link.docId,
     };
     const result = await migrationRunner(db, integracaoId, itemId, sourceLink, item);
-    return result === 'concluida' ? 'migrated' : 'deferred-migration-source';
+    if (result === 'concluida') return 'migrated';
+    if (result === 'liberada') return 'migration-released';
+    return 'deferred-migration-source';
   }
   // Of the two DEFERRALS the uptin one is tested first (the takeover above still
   // outranks both): that tag marks the migration's DESTINATION, so a listing

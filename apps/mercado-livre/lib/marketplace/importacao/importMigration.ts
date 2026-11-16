@@ -67,11 +67,13 @@ export interface UptinSourceLink {
   linkDocId: string;
 }
 
-export type UptinOutcome = 'iniciada' | 'pendente' | 'incerta' | 'concluida';
+export type UptinOutcome = 'iniciada' | 'pendente' | 'incerta' | 'liberada' | 'concluida';
 
 const itemIdPattern = /^MLB\d+$/;
 const waiting = ESTADO_PUBLICACAO_ML.aguardandoMigracao;
 export const UPTIN_CHECK_DELAY_SECONDS = 300;
+const CONFIRMATION_GRACE_MS = UPTIN_CHECK_DELAY_SECONDS * 1000;
+export const UPTIN_CHECK_TOPIC = 'uptin-check';
 
 function operationRef(deps: Pick<UptinMigrationDeps, 'db' | 'integracaoId'>, itemId: string) {
   return operations.docRef(deps.db, {}, sha256Hex(`${deps.integracaoId}|${itemId}`));
@@ -79,6 +81,19 @@ function operationRef(deps: Pick<UptinMigrationDeps, 'db' | 'integracaoId'>, ite
 
 export async function hasUptinOperation(db: Firestore, integracaoId: string, itemId: string) {
   return (await operationRef({ db, integracaoId }, itemId).get()).exists;
+}
+
+export async function isCurrentUptinCheck(
+  db: Firestore,
+  integracaoId: string,
+  itemId: string,
+  attempt: string | null,
+): Promise<boolean> {
+  if (attempt == null) return false;
+  const op = await operationRef({ db, integracaoId }, itemId).get();
+  if (!op.exists) return false;
+  const claim = operations.parse(op.data());
+  return claim.attempt === attempt && !claim.completed;
 }
 
 function sourceRef(db: Firestore, target: UptinSourceLink) {
@@ -212,12 +227,17 @@ async function releaseClaim(
 ) {
   const opRef = operationRef(deps, itemId);
   const ref = sourceRef(deps.db, target);
-  await deps.db.runTransaction(async (tx) => {
+  return deps.db.runTransaction(async (tx) => {
     const [op, source] = await tx.getAll(opRef, ref);
-    if (!op?.exists) return;
+    if (!op?.exists) return false;
     const claim = operations.parse(op.data());
-    if (claim.completed || claim.attempt !== attempt || (onlyBeforeDispatch && claim.dispatching))
-      return;
+    if (
+      claim.completed ||
+      claim.providerConfirmed ||
+      claim.attempt !== attempt ||
+      (onlyBeforeDispatch && claim.dispatching)
+    )
+      return false;
     const raw = source?.data();
     if (ownedLegacy(raw, deps.integracaoId, itemId) && raw?.estado === waiting) {
       tx.update(ref, {
@@ -226,6 +246,19 @@ async function releaseClaim(
       });
     }
     tx.delete(opRef);
+    return true;
+  });
+}
+
+async function confirmClaim(deps: UptinMigrationDeps, itemId: string, attempt: string) {
+  const ref = operationRef(deps, itemId);
+  await deps.db.runTransaction(async (tx) => {
+    const op = await tx.get(ref);
+    if (!op.exists) return;
+    const claim = operations.parse(op.data());
+    if (claim.attempt === attempt && !claim.completed && !claim.providerConfirmed) {
+      tx.update(ref, { providerConfirmed: true });
+    }
   });
 }
 
@@ -233,7 +266,7 @@ export async function startUptinMigration(
   deps: UptinMigrationDeps,
   itemId: string,
   target: UptinSourceLink,
-  armCheck: () => Promise<void>,
+  armCheck: (attempt: string) => Promise<void>,
 ): Promise<UptinOutcome> {
   const { db, api, integracaoId, sellerUserId } = deps;
   const ref = sourceRef(db, target);
@@ -304,27 +337,31 @@ export async function startUptinMigration(
   // If the backstop cannot be armed, the POST has yet to leave this process.
   let armed = false;
   try {
-    await armCheck();
+    await armCheck(attempt);
     armed = true;
   } finally {
     if (!armed) await releaseClaim(deps, target, itemId, attempt, true);
   }
-  // A process can die while arming recovery. Mark the attempt before sending
-  // so a recheck may release only a claim that never reached dispatch.
+  // Start the grace period at dispatch, even if arming recovery took a while.
   const dispatch = await db.runTransaction(async (tx) => {
     const [op, current] = await tx.getAll(opRef, ref);
     const raw = current?.data();
     if (!op?.exists || !ownedLegacy(raw, integracaoId, itemId) || raw?.estado !== waiting)
       return false;
     const claim = operations.parse(op.data());
-    if (claim.completed || claim.attempt !== attempt || claim.dispatching) return false;
-    tx.update(opRef, { dispatching: true });
+    if (
+      claim.completed ||
+      claim.attempt !== attempt ||
+      claim.dispatching ||
+      claim.providerConfirmed
+    )
+      return false;
+    tx.update(opRef, { dispatching: true, dispatchedAt: Date.now() });
     return true;
   });
   if (!dispatch) return 'pendente';
   try {
     await api.startUptin(itemId);
-    return 'iniciada';
   } catch (err) {
     if (
       err instanceof MercadoLivreReauthRequiredError ||
@@ -334,9 +371,9 @@ export async function startUptinMigration(
       // claim on ambiguous conflicts and consult the provider before releasing.
       if (!(err instanceof MercadoLivreReauthRequiredError)) {
         const result = await handleUptinMigration(deps, itemId, target);
-        if (result !== 'incerta') return result;
+        if (result !== 'incerta' && result !== 'liberada') return result;
       }
-      await releaseClaim(deps, target, itemId, attempt);
+      if (!(await releaseClaim(deps, target, itemId, attempt))) return 'pendente';
       throw err;
     }
     if (err instanceof MercadoLivreError) {
@@ -350,6 +387,8 @@ export async function startUptinMigration(
     }
     throw err;
   }
+  await confirmClaim(deps, itemId, attempt);
+  return 'iniciada';
 }
 
 async function stampWaiting(deps: UptinMigrationDeps, target: UptinSourceLink, itemId: string) {
@@ -371,10 +410,11 @@ export async function handleUptinMigration(
   const { db, api, integracaoId, sellerUserId } = deps;
   const ref = sourceRef(db, target);
   const opRef = operationRef(deps, itemId);
-  const source = (await ref.get()).data();
+  const [sourceSnap, claimSnap] = await db.getAll(ref, opRef);
+  const source = sourceSnap?.data();
+  const claim = claimSnap?.exists ? operations.parse(claimSnap.data()) : null;
+  if (claim?.completed) return 'concluida';
   if (source == null) {
-    const claim = await opRef.get();
-    if (claim.exists && operations.parse(claim.data()).completed) return 'concluida';
     throw new UptinError('O vínculo de origem não está mais no ERP. Atualize a página.', 404);
   }
   if (!ownedLegacy(source, integracaoId, itemId))
@@ -382,25 +422,44 @@ export async function handleUptinMigration(
   const item = observedItem ?? (await api.getItem(itemId));
   verifySeller(deps, itemId, item);
   const isSource = item.tags?.includes(UPTIN_SOURCE_TAG) === true;
-  if (isSource) await stampWaiting(deps, target, itemId);
-  if (!isSource) {
-    const claimSnap = await opRef.get();
-    if (claimSnap.exists) {
-      const claim = operations.parse(claimSnap.data());
-      if (!claim.dispatching && Date.now() - claim.claimedAt >= UPTIN_CHECK_DELAY_SECONDS * 1000) {
-        await releaseClaim(deps, target, itemId, claim.attempt, true);
-        return 'incerta';
-      }
-    }
+  const hasMigrationTag = isSource || item.tags?.includes(UPTIN_PENDING_TAG) === true;
+  if (claim && !claim.providerConfirmed && hasMigrationTag) {
+    await confirmClaim(deps, itemId, claim.attempt);
   }
+  if (isSource) await stampWaiting(deps, target, itemId);
+  // Test the age before requesting evidence so an old read cannot expire a
+  // newly dispatched attempt. Fall back to claimedAt for earlier claim rows.
+  const graceElapsed =
+    claim != null && Date.now() - (claim.dispatchedAt ?? claim.claimedAt) >= CONFIRMATION_GRACE_MS;
   let report;
   try {
     report = await api.getMigrationLiveListing(itemId);
   } catch (err) {
-    if (err instanceof MercadoLivreHttpError && err.status === 404 && !isSource) {
+    if (err instanceof MercadoLivreHttpError && err.status === 404 && !hasMigrationTag) {
+      if (claim) {
+        if (claim.providerConfirmed) return 'pendente';
+        if (!graceElapsed) return 'incerta';
+        // Read the source again after the report's 404. An items webhook may
+        // have fetched its snapshot before Mercado Livre tagged the item.
+        const freshItem = await api.getItem(itemId);
+        verifySeller(deps, itemId, freshItem);
+        if (freshItem.tags?.some((tag) => tag === UPTIN_SOURCE_TAG || tag === UPTIN_PENDING_TAG)) {
+          await confirmClaim(deps, itemId, claim.attempt);
+          return 'pendente';
+        }
+        if (!freshItem.status || freshItem.status === 'closed') return 'pendente';
+        const released = await releaseClaim(
+          deps,
+          target,
+          itemId,
+          claim.attempt,
+          !claim.dispatching,
+        );
+        return released ? 'liberada' : 'pendente';
+      }
       // Flutter-era waiting links carry no claim. An open, untagged source
       // with no provider migration can return to its observed status.
-      await db.runTransaction(async (tx) => {
+      const restored = await db.runTransaction(async (tx) => {
         const [current, op] = await tx.getAll(ref, opRef);
         const raw = current?.data();
         if (
@@ -411,20 +470,29 @@ export async function handleUptinMigration(
           !item.status ||
           item.status === 'closed'
         )
-          return;
+          return false;
         tx.update(ref, {
           estado: estadoFromMlStatus(item.status, item.sub_status ?? null),
           status: item.status,
           sub_status: item.sub_status ?? null,
           ultimaModificacao: Date.now(),
         });
+        return true;
       });
-      return 'incerta';
+      return restored ? 'liberada' : 'incerta';
     }
     throw err;
   }
   if (report.item_id != null && report.item_id !== itemId) {
     throw new UptinError('O Mercado Livre retornou o status de outro anúncio.');
+  }
+  const hasReport =
+    report.date_created != null ||
+    report.migration_completed != null ||
+    report.activation_completed != null ||
+    report.new_items.length > 0;
+  if (claim && !claim.providerConfirmed && !hasMigrationTag && hasReport) {
+    await confirmClaim(deps, itemId, claim.attempt);
   }
   if (report.activation_completed == null || item.status !== 'closed' || !isSource) {
     if (item.status === 'closed' && isSource) {
@@ -432,7 +500,7 @@ export async function handleUptinMigration(
         'O anúncio de origem foi encerrado, mas o Mercado Livre ainda não confirmou a ativação das variações.',
       );
     }
-    return isSource || report.date_created || report.new_items.length ? 'pendente' : 'incerta';
+    return hasMigrationTag || hasReport ? 'pendente' : 'incerta';
   }
 
   const replacements = new Map<string, string>();

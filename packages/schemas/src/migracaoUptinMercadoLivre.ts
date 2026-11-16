@@ -15,6 +15,8 @@ export const migracaoUptinMercadoLivreSchema = z.object({
   attempt: z.string(),
   claimedAt: z.number(),
   dispatching: z.boolean(),
+  dispatchedAt: z.number().nullable().default(null),
+  providerConfirmed: z.boolean().default(false),
   completed: z.boolean().default(false),
   previousState: z.string().nullable(),
   variations: z.array(variation),

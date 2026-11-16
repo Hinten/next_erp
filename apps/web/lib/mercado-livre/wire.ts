@@ -140,7 +140,7 @@ export const reverificarResultSchema = z.object({
 export type MercadoLivreReverificarResult = z.infer<typeof reverificarResultSchema>;
 
 export const uptinResultSchema = z.object({
-  estado: z.enum(['iniciada', 'pendente', 'incerta', 'concluida']),
+  estado: z.enum(['iniciada', 'pendente', 'incerta', 'liberada', 'concluida']),
 });
 
 export const importarResultSchema = z.object({

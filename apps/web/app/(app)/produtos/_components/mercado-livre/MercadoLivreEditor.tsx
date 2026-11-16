@@ -740,6 +740,8 @@ export function MercadoLivreEditor({
         pendente: 'Aguardando a conclusão da migração no Mercado Livre.',
         incerta:
           'O Mercado Livre ainda não confirmou a migração. Use “Verificar migração” novamente.',
+        liberada:
+          'O Mercado Livre não iniciou a migração. Você pode solicitar a migração novamente.',
         concluida: 'Migração concluída. Os novos anúncios estão vinculados ao produto.',
       };
       notifications.show({

@@ -28,6 +28,10 @@ photos, variations and the link doc. The inverse direction (ERP → ML) is
   `grupoDeVariacoes` candidates, runs `planTaxonomia`, persists misses.
 - `importMigration.ts` — starts User Products (UPtin) for a single listing and
   verifies Mercado Livre's activation report. It atomically replaces the old
-  ERP links using the original variation IDs and the existing produtos.
+  ERP links using the original variation IDs and the existing produtos. The
+  delayed check uses the existing notification failure sweep while migration is
+  pending. An unconfirmed submission can be released after five minutes when
+  Mercado Livre reports no migration and the original listing is still open and
+  untagged. A later submission requires a new operator request.
 - `taxonomiaCore.ts` — the pure ML → ERP taxonomy resolver
   (`attribute_combinations[]` → grupoDeVariacoes / Variante).
