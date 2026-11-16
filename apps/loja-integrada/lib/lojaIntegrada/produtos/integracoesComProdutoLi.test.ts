@@ -1,49 +1,52 @@
 /**
  * The Loja Integrada binding of the shared `integracoesComProduto` core: what the binding CHOSE —
- * the conta field, the counts predicate, the unfiltered survivor read and the sentinels. The
- * core's own behaviour (the plan's arms, the NOT_FOUND narrow, the guarded remove) is the core's
- * suite (`packages/data/src/admin/produtos/integracoesComProduto.test.ts`); the counts predicate's
- * own pairs are `packages/schemas/src/produto/collection/lojaIntegradaLink.test.ts`. The pairs
- * are repeated HERE through the binding, because a binding that passed another reader would
- * leave both of those suites green.
+ * the conta field, the counts predicate, the survivor read it binds and the sentinels. The core's
+ * own behaviour (the plan's arms, the NOT_FOUND narrow, the guarded remove) is the core's suite
+ * (`packages/data/src/admin/produtos/integracoesComProduto.test.ts`); the conta reader's and the
+ * counts predicate's own pairs are `packages/schemas/src/produto/collection/lojaIntegradaLink.test.ts`;
+ * the survivor read's own pairs and its unfiltered read are
+ * `packages/data/src/admin/produtos/sobreviventesLi.test.ts`. The plan's pairs are repeated HERE
+ * through the binding, because a binding that passed another reader would leave all of those
+ * suites green.
  *
  * ⚠️ The core's guarded remove runs the multi-document read-and-write API, which this app's fake
  * does not model and which no file of this app may name. So `removerContaSeOrfa` is the ONE stub
  * below — it records what the binding hands it, and the survivor closure is then driven by hand
  * with a read-only `tx` over the fake. Everything else is real: `planLinkChange`,
- * `contaIdFromRef`, `vinculoLiConta`, and `adicionarConta` against the fake. The remove's real
- * run is the emulator suite `functions/src/onProdutoLojaIntegradaLinkChanged.tasks.test.ts`.
+ * `contaIdFromRef`, `vinculoLiConta`, `adicionarConta` against the fake, and the shared survivor
+ * read, which a spy only records so the remove's test can pin that the closure it hands the core
+ * IS the one the shared read built (a local copy of that read would pass every behavioural check
+ * here). The remove's real run is the emulator suite
+ * `functions/src/onProdutoLojaIntegradaLinkChanged.tasks.test.ts`.
  */
 import { FieldValue, type Transaction } from 'firebase-admin/firestore';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { SentinelasDeArray } from '@delfrance/data/admin/produtos';
+import { contaDoLinkLi as contaDoLinkLiCompartilhado } from '@delfrance/schemas';
 
 import { FakeDb, asDb, type DocData } from '../testing/fakeDb';
 
 const core = vi.hoisted(() => ({
   removerContaSeOrfa: vi.fn(async () => true),
   adicionarConta: vi.fn(),
+  sobrevivemVinculosDoProdutoLi: vi.fn(),
 }));
 vi.mock('@delfrance/data/admin/produtos', async (importOriginal) => {
   const real = await importOriginal<typeof import('@delfrance/data/admin/produtos')>();
   // The add stays REAL (it is one `update` the fake models); only the spy records it.
   core.adicionarConta.mockImplementation(real.adicionarConta);
+  // So does the survivor read: the spy records each closure it builds, and the closure is real.
+  core.sobrevivemVinculosDoProdutoLi.mockImplementation(real.sobrevivemVinculosDoProdutoLi);
   return { ...real, ...core };
 });
 
-const {
-  adicionarContaLi,
-  contaDoLinkLi,
-  planejarMudancaDeLinkLi,
-  removerContaLiSeOrfa,
-  sobrevivemVinculosDoProdutoLi,
-} = await import('./integracoesComProdutoLi');
+const { adicionarContaLi, contaDoLinkLi, planejarMudancaDeLinkLi, removerContaLiSeOrfa } =
+  await import('./integracoesComProdutoLi');
 
 /* ---------------------------------- fixtures ------------------------------ */
 
 const PRODUTO = 'produto-li-1';
-const OUTRO_PRODUTO = 'produto-li-2';
 const C1 = 'C1';
 const C2 = 'C2';
 /** The spec's public example produto id. */
@@ -97,6 +100,7 @@ function chamadaDoRemove(): {
 beforeEach(() => {
   core.removerContaSeOrfa.mockClear();
   core.adicionarConta.mockClear();
+  core.sobrevivemVinculosDoProdutoLi.mockClear();
 });
 
 /* -------------------------------------------------------------------------- */
@@ -104,29 +108,11 @@ beforeEach(() => {
 /* -------------------------------------------------------------------------- */
 
 describe('contaDoLinkLi', () => {
-  it("EQUAL: 'documents/integracao/C1' and 'integracao/C1' are the same conta, C1", () => {
-    expect(contaDoLinkLi(link({ contaLojaIntegrada: 'documents/integracao/C1' }))).toBe(C1);
-    expect(contaDoLinkLi(link({ contaLojaIntegrada: 'integracao/C1' }))).toBe(C1);
-  });
-
-  it("NEAR-MISS: 'documents/integracao/C2' is C2 — never C1", () => {
-    expect(contaDoLinkLi(link({ contaLojaIntegrada: 'documents/integracao/C2' }))).toBe(C2);
-    // No case fold: `c1` is another conta.
-    expect(contaDoLinkLi(link({ contaLojaIntegrada: 'documents/integracao/c1' }))).toBe('c1');
-  });
-
-  it.each([
-    ['another collection', 'documents/categorias/C1'],
-    ['a bare id (not a ref)', 'C1'],
-    ['the collection alone', 'integracao'],
-    ['an empty string', ''],
-    ['null', null],
-    ['a number', 42],
-    // NEAR-MISS for a coercing reader: `String([ref])` is the ref itself, so a reader that
-    // stringifies before it parses would read this array as C1.
-    ['the ref inside an array', [`documents/integracao/${C1}`]],
-  ])('a malformed ref (%s) reads null — never C1', (_caso, ref) => {
-    expect(contaDoLinkLi(link({ contaLojaIntegrada: ref }))).toBeNull();
+  it('⛔ re-exports the ONE shared reader — never a local copy', () => {
+    // Its pairs and near-misses live with it (`lojaIntegradaLink.test.ts`). A local
+    // re-implementation here would leave that suite green while it drifted, so the binding's
+    // export must BE the shared function.
+    expect(contaDoLinkLi).toBe(contaDoLinkLiCompartilhado);
   });
 
   it('⛔ reads contaLojaIntegrada and no other channel’s field: such a link plans NOTHING', () => {
@@ -218,6 +204,15 @@ describe('planejarMudancaDeLinkLi — the arms of one write', () => {
     ).toEqual(NADA);
   });
 
+  it('EQUAL: a ref stored with a leading slash is the same conta — its create adds C1, a rewrite to it moves nothing', () => {
+    // Through the binding, because the plan is handed the reader HERE: a binding that kept the
+    // shared export but planned through a local copy dropping this form would leave the
+    // reader's own suite green.
+    const comBarra = link({ contaLojaIntegrada: `/documents/integracao/${C1}` });
+    expect(planejarMudancaDeLinkLi(null, comBarra)).toEqual({ add: [C1], check: [] });
+    expect(planejarMudancaDeLinkLi(link(), comBarra)).toEqual(NADA);
+  });
+
   it('an id change between two store product ids moves no membership ⇒ nothing', () => {
     expect(planejarMudancaDeLinkLi(link(), link({ id: ID_LI + 1 }))).toEqual(NADA);
   });
@@ -244,122 +239,7 @@ describe('planejarMudancaDeLinkLi — the arms of one write', () => {
 });
 
 /* -------------------------------------------------------------------------- */
-/*          (3) sobrevivemVinculosDoProdutoLi — the UNFILTERED survivor read      */
-/* -------------------------------------------------------------------------- */
-
-describe('sobrevivemVinculosDoProdutoLi', () => {
-  async function sobrevive(db: FakeDb, conta = C1, produto = PRODUTO): Promise<boolean> {
-    return sobrevivemVinculosDoProdutoLi(asDb(db), produto, conta)(txLeitura());
-  }
-
-  it('a counting sibling of the SAME conta survives', async () => {
-    const db = new FakeDb();
-    semearLink(db, 'l1', { removido: true });
-    semearLink(db, 'l2');
-
-    await expect(sobrevive(db)).resolves.toBe(true);
-  });
-
-  it.each([
-    ['a hidden one', { ativo: false }],
-    ['a blocked one', { bloqueado: true }],
-    ['its id as decimal text', { id: '182904918' }],
-    ['its ref in the bare form', { contaLojaIntegrada: `integracao/${C1}` }],
-    ['its ref with a leading slash', { contaLojaIntegrada: `/documents/integracao/${C1}` }],
-  ])('EQUAL: %s survives too — the filter is the plan’s own readers', async (_caso, over) => {
-    // Each of these COUNTS for C1 in the plan, so each must survive here: a query filtered on
-    // the two canonical ref forms, or typed on `id`, would miss it and drop a live conta.
-    const db = new FakeDb();
-    semearLink(db, 'l1', over);
-
-    await expect(sobrevive(db)).resolves.toBe(true);
-  });
-
-  it.each([
-    ['of ANOTHER conta', { contaLojaIntegrada: `documents/integracao/${C2}` }],
-    ['in the trash', { removido: true }],
-    ["with id '07'", { id: '07' }],
-    ['with id null', { id: null }],
-    ['with a malformed conta ref', { contaLojaIntegrada: 'documents/categorias/C1' }],
-    ['with its conta ref inside an array', { contaLojaIntegrada: [`documents/integracao/${C1}`] }],
-  ])('NEAR-MISS: a sibling %s does not survive', async (_caso, over) => {
-    const db = new FakeDb();
-    semearLink(db, 'l1', over);
-
-    await expect(sobrevive(db)).resolves.toBe(false);
-  });
-
-  it('an empty subcollection answers false', async () => {
-    await expect(sobrevive(new FakeDb())).resolves.toBe(false);
-  });
-
-  it('a counting link under ANOTHER produto is not this produto’s survivor', async () => {
-    const db = new FakeDb();
-    semearLink(db, 'l1', {}, OUTRO_PRODUTO);
-
-    await expect(sobrevive(db)).resolves.toBe(false);
-    await expect(sobrevive(db, C1, OUTRO_PRODUTO)).resolves.toBe(true);
-  });
-
-  it('⛔ the verdict is the TRANSACTION’s read, never a read beside it', async () => {
-    // Rule 7: only a read inside the guarded write's read set is a guard. A plain `get()` beside
-    // it would miss a counting link written between that read and the commit, and drop a live
-    // conta. So the transaction here answers the OPPOSITE of what is stored, both ways, and the
-    // verdict must follow the transaction each time.
-    const db = new FakeDb();
-    const alvos: { get: () => Promise<unknown> }[] = [];
-    const txQueVe = (docs: DocData[]): Transaction =>
-      ({
-        get: async (alvo: { get: () => Promise<unknown> }) => {
-          alvos.push(alvo);
-          return { docs: docs.map((d) => ({ data: () => d })) };
-        },
-      }) as unknown as Transaction;
-
-    // Nothing stored, a counting link in the transaction's snapshot ⇒ it survives.
-    await expect(
-      sobrevivemVinculosDoProdutoLi(asDb(db), PRODUTO, C1)(txQueVe([link()])),
-    ).resolves.toBe(true);
-    // A counting link stored, none in the transaction's snapshot ⇒ nothing survives.
-    semearLink(db, 'l1');
-    await expect(sobrevivemVinculosDoProdutoLi(asDb(db), PRODUTO, C1)(txQueVe([]))).resolves.toBe(
-      false,
-    );
-
-    // Nothing was read beside the transaction...
-    expect(db.consultas).toEqual([]);
-    // ...and what it was handed is this produto's own link collection.
-    expect(alvos).toHaveLength(2);
-    for (const alvo of alvos) await alvo.get();
-    expect(db.consultas.map((c) => c.colecao)).toEqual([
-      `produtos/${PRODUTO}/produtolojaintegrada`,
-      `produtos/${PRODUTO}/produtolojaintegrada`,
-    ]);
-  });
-
-  it('reads the produto’s WHOLE subcollection: no where, no order, no limit', async () => {
-    // THE INDEX DECISION, pinned (the module's docblock): no `produtolojaintegrada` COLLECTION
-    // index exists, and the conta filter must stay in code.
-    const db = new FakeDb();
-    semearLink(db, 'l1');
-    semearLink(db, 'l2', { contaLojaIntegrada: `documents/integracao/${C2}` });
-
-    await sobrevive(db);
-
-    expect(db.consultas).toEqual([
-      {
-        colecao: `produtos/${PRODUTO}/produtolojaintegrada`,
-        filtros: [],
-        ordens: [],
-        limite: null,
-        apos: null,
-      },
-    ]);
-  });
-});
-
-/* -------------------------------------------------------------------------- */
-/*                 (4) the two writers — what the binding hands the core          */
+/*                 (3) the two writers — what the binding hands the core          */
 /* -------------------------------------------------------------------------- */
 
 describe('adicionarContaLi', () => {
@@ -407,12 +287,24 @@ describe('removerContaLiSeOrfa', () => {
     expect(remocao.isEqual(FieldValue.arrayRemove(C1))).toBe(true);
     expect(remocao.isEqual(FieldValue.arrayUnion(C1))).toBe(false);
 
-    // ⚠️ And the closure really is THIS binding's reader, bound to the path's produto and this
-    // conta: `expect.any(Function)` would accept a closure bound to another produto, which would
-    // conclude "no survivors" and drop a live conta.
+    // ⛔ The closure IS the one the SHARED survivor read built, for this produto and this conta.
+    // A survivor re-spelled here could pass any behavioural check that misses the one stored
+    // form it drops, while it drifted from the copy a migration script's guarded add calls: the
+    // add and this remove would then disagree about a link and undo each other. So the identity
+    // is the pin, as it is for the conta reader; the shared read's own pairs are its suite's.
+    expect(core.sobrevivemVinculosDoProdutoLi).toHaveBeenCalledTimes(1);
+    const [dbDaLeitura, ...alvoDaLeitura] = core.sobrevivemVinculosDoProdutoLi.mock.calls[0] ?? [];
+    expect(dbDaLeitura).toBe(asDb(db));
+    expect(alvoDaLeitura).toEqual([PRODUTO, C1]);
+    expect(sobrevivem).toBe(core.sobrevivemVinculosDoProdutoLi.mock.results[0]?.value);
+
+    // And it runs, bound to the path's produto and this conta: `expect.any(Function)` would accept
+    // a closure bound to another produto, which would conclude "no survivors" and drop a live
+    // conta. The surviving link is stored with a leading slash, which a match on the two
+    // canonical forms would miss.
     semearLink(db, 'l1', { contaLojaIntegrada: `documents/integracao/${C2}` });
     await expect(sobrevivem(txLeitura())).resolves.toBe(false);
-    semearLink(db, 'l2');
+    semearLink(db, 'l2', { contaLojaIntegrada: `/documents/integracao/${C1}` });
     await expect(sobrevivem(txLeitura())).resolves.toBe(true);
     expect(db.consultas.map((c) => c.colecao)).toEqual([
       `produtos/${PRODUTO}/produtolojaintegrada`,

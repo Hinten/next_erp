@@ -4,6 +4,8 @@ import {
   CAMPO_RASCUNHO_SHOPEE,
   TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE,
   estadoPublicacaoRascunhoShopee,
+  type AtributoDto,
+  type AtributoInfoDto,
   type EstadoPublicacaoRascunhoShopee,
 } from '@delfrance/schemas';
 import type { ObjectViewSections } from '@delfrance/ui';
@@ -38,6 +40,7 @@ import {
   textoDaEtapaShopee,
   textoDoProblemaShopee,
 } from '@/lib/shopee/anuncioProduto';
+import { linhasDoEditorDeAtributosShopee } from '@/lib/shopee/atributosRascunho';
 import {
   textoDaPublicacaoParadaDoRascunhoShopee,
   type SaidaDoProblemaShopee,
@@ -73,6 +76,8 @@ const {
   TITULO_PUBLICACAO_RECUSADA_SHOPEE,
   idDoCampoRascunhoShopee,
 } = await import('./DesfechoAcaoShopee');
+const { AtributosRascunhoShopee, TIPO_LEITURA_ATRIBUTOS_RASCUNHO_SHOPEE } =
+  await import('./AtributosRascunhoShopee');
 
 const CONTA = 'int-1';
 const PRODUTO = 'prod-1';
@@ -529,6 +534,77 @@ describe('DesfechoAcaoShopee — #2015: one `logistica-nao-confirmada` copy per 
   });
 });
 
+describe('DesfechoAcaoShopee — #2099 CPY-4: `logistica-sem-valor-gravado` sem botão de peso, uma cópia por motivo', () => {
+  /** apps/shopee's CPY-4 sentence; `canal` is «nome» (id) or the bare id (invented name, fixture ids). */
+  const cpy4 = (canal: string) =>
+    `O canal obrigatório ${canal} precisa de um tamanho ou de uma tarifa de frete que este ` +
+    'vínculo não tem gravados, e o ERP não tem registro de ter gravado a lista de logística ' +
+    'dele. Se o valor já está no Seller Centre, importe o anúncio 123 e publique de novo; se ' +
+    'não está, defina-o no Seller Centre antes.';
+  /** apps/shopee's N1 (#2015). */
+  const n1 = (canal: number) =>
+    `O canal obrigatório ${String(canal)} precisa de um tamanho, e o ERP não tem registro de ` +
+    'ter lido da Shopee nem de ter enviado a ela o valor gravado neste vínculo, então esse ' +
+    'valor não é reenviado. Importe o anúncio 123 para gravar os valores atuais da Shopee e ' +
+    'publique de novo.';
+  const comMotivo = (motivo: string, mensagem: string) =>
+    problema({ campo: 'logistic_info', motivo, mensagem });
+  const M = MOTIVO_ANUNCIO_SHOPEE;
+  const copiaCpy4 = TEXTO_MOTIVO_ANUNCIO_SHOPEE[M.logisticaSemValorGravado] ?? '?';
+  const copiaN1 = TEXTO_MOTIVO_ANUNCIO_SHOPEE[M.logisticaNaoConfirmada] ?? '?';
+  const SEM_CANAL = 'Nenhum canal obrigatório da loja pôde ser habilitado para este item.';
+  const peso = { name: 'Abrir no produto: Dimensões e peso' };
+  const vezes = (texto: string, trecho: string) => texto.split(trecho).length - 1;
+
+  beforeEach(() => {
+    h.secoes = {
+      activeSection: 'Shopee',
+      goToSection: vi.fn(),
+      sectionOfField: (k) => (k === 'pesoBrutoKg' ? 'Dimensões e peso' : null),
+    };
+  });
+
+  it('uma recusa só CPY-4 (o servidor não junta as frases da loja) ⇒ NENHUM botão de peso, a cópia uma vez e cada canal no seu «Detalhe:» ⟷ QUASE-PAR: uma linha `logistica-sem-canal` ao lado ganha exatamente UM', () => {
+    const r = show({
+      desfecho: recusado([
+        comMotivo(M.logisticaSemValorGravado, cpy4('«Canal inventado» (90007)')),
+        comMotivo(M.logisticaSemValorGravado, cpy4('90008')),
+      ]),
+      rascunho: null,
+    });
+    expect(linha(0).textContent).toBe(`${copiaCpy4} Detalhe: ${cpy4('«Canal inventado» (90007)')}`);
+    expect(linha(1).textContent).toBe(`Detalhe: ${cpy4('90008')}`);
+    expect(vezes(painel().textContent ?? '', copiaCpy4)).toBe(1);
+    expect(within(painel()).queryAllByRole('button', peso)).toEqual([]);
+    expect(painel().textContent).not.toMatch(/confira peso/);
+
+    r.rerender({
+      desfecho: recusado([
+        comMotivo(M.logisticaSemValorGravado, cpy4('90007')),
+        comMotivo('logistica-sem-canal', SEM_CANAL),
+      ]),
+      rascunho: null,
+    });
+    // Anti-vacuity: the same tab context DOES route `logistica-sem-canal` to the weight.
+    expect(within(painel()).getAllByRole('button', peso)).toHaveLength(1);
+    expect(within(linha(1)).getAllByRole('button', peso)).toHaveLength(1);
+    expect(within(linha(0)).queryAllByRole('button', peso)).toEqual([]);
+  });
+
+  it('N1 + CPY-4 na MESMA recusa ⇒ as duas cópias, uma vez cada, e nenhum botão de peso — N1 mantém o seu comportamento', () => {
+    show({
+      desfecho: recusado([
+        comMotivo(M.logisticaNaoConfirmada, n1(80003)),
+        comMotivo(M.logisticaSemValorGravado, cpy4('90007')),
+      ]),
+      rascunho: doRascunho(),
+    });
+    expect(linha(0).textContent).toBe(`${copiaN1} Detalhe: ${n1(80003)}`);
+    expect(linha(1).textContent).toBe(`${copiaCpy4} Detalhe: ${cpy4('90007')}`);
+    expect(within(painel()).queryAllByRole('button', peso)).toEqual([]);
+  });
+});
+
 describe('DesfechoAcaoShopee — K2-13: a draft is never published through a refusal row', () => {
   it('`republicar{linkDocId: <the draft>}` (P1’s rascunho-nao-nomeado) ⇒ NO button — a draft is not addressable', () => {
     const enderecavel = vi.fn(() => false);
@@ -819,6 +895,216 @@ describe('DesfechoAcaoShopee — the Seller-Centre attestation exits (§C #7, #8
   });
 });
 
+/*
+ * #1911 P13 — `attribute_list` on a draft routes to the «Atributos» section,
+ * whose ROOT carries the field id (`AtributosRascunhoShopee` stamps it): the
+ * section is rendered for REAL over the REAL model, so the focus lands on what
+ * Mantine actually renders. Public BR taxonomy (100408 «Tipo de Conexão»,
+ * 2498 / 2530); no stored value.
+ */
+const infoDoAtributo = (p: Partial<AtributoInfoDto>): AtributoInfoDto => ({
+  inputType: null,
+  inputValidationType: 0,
+  formatType: 1,
+  dateFormatType: null,
+  attributeUnitList: null,
+  maxValueCount: null,
+  introduction: null,
+  isOem: false,
+  supportSearchValue: false,
+  ...p,
+});
+const TIPO_DE_CONEXAO: AtributoDto = {
+  attributeId: 100408,
+  mandatory: true,
+  name: 'Tipo de Conexão',
+  attributeInfo: infoDoAtributo({ inputType: 1 }),
+  attributeValueList: [
+    {
+      valueId: 2498,
+      name: 'Com fio, Sem conexão ou Outros',
+      valueUnit: null,
+      childAttributeList: [],
+    },
+    {
+      valueId: 2530,
+      name: 'Sem fio (Bluetooth, Wifi, Radiofrequência)',
+      valueUnit: null,
+      childAttributeList: [],
+    },
+  ],
+};
+
+/** 100134 «Material» (input 5: a MultiSelect plus custom chips), public BR taxonomy. */
+const MATERIAL: AtributoDto = {
+  attributeId: 100134,
+  mandatory: false,
+  name: 'Material',
+  attributeInfo: infoDoAtributo({ inputType: 5, inputValidationType: 2, maxValueCount: 5 }),
+  attributeValueList: [
+    { valueId: 1207, name: 'Plástico', valueUnit: null, childAttributeList: [] },
+    { valueId: 1218, name: 'Vidro', valueUnit: null, childAttributeList: [] },
+  ],
+};
+/** Synthetic: a list-less input 5 — custom chips and a composer only. */
+const TEXTOS: AtributoDto = {
+  attributeId: 900011,
+  mandatory: false,
+  name: 'Sintético textos',
+  attributeInfo: infoDoAtributo({ inputType: 5, inputValidationType: 2 }),
+  attributeValueList: [],
+};
+
+/** The REAL section of this draft, beside the panel: `editavel` as the block would say. */
+function secaoDeAtributos(
+  editavel: boolean,
+  arvore: readonly AtributoDto[] = [TIPO_DE_CONEXAO],
+  lista: Parameters<typeof linhasDoEditorDeAtributosShopee>[0]['lista'] = null,
+) {
+  const { linhas, semLugar, removidosAoSalvar } = linhasDoEditorDeAtributosShopee({
+    arvore: { atributos: [...arvore], truncated: false },
+    lista,
+    guardados: lista,
+    digitacoes: {},
+  });
+  render(
+    <MantineTestProvider>
+      <AtributosRascunhoShopee
+        linkDocId={LINK}
+        leitura={{
+          tipo: TIPO_LEITURA_ATRIBUTOS_RASCUNHO_SHOPEE.lida,
+          truncated: false,
+          warning: null,
+        }}
+        linhas={linhas}
+        semLugar={semLugar}
+        removidosAoSalvar={removidosAoSalvar}
+        publicacao={LIVRE}
+        editavel={editavel}
+        onAtributo={vi.fn()}
+        ensaiarAdicao={() => null}
+      />
+    </MantineTestProvider>,
+  );
+  return screen.getByTestId(`shopee-rascunho-atributos-${LINK}`);
+}
+
+describe('DesfechoAcaoShopee — «Corrigir no rascunho: Atributos» (#1911 P13)', () => {
+  it.each(['attribute_list', 'attribute_list[COLOR]'])(
+    'o `%s` de um rascunho ⇒ «Corrigir no rascunho: Atributos», que FOCA o primeiro controle habilitado da seção — o campo da primeira linha',
+    (campo) => {
+      const secao = secaoDeAtributos(true);
+      // The field id is the section's OWN root — the attributes', never the category's.
+      expect(secao.id).toBe(idDoCampoRascunhoShopee(LINK, CAMPO_RASCUNHO_SHOPEE.attributes));
+      show({ desfecho: recusado([problema({ campo, motivo: 'atributo-obrigatorio' })]) });
+      expect(botoes()).toEqual(['Corrigir no rascunho: Atributos']);
+      fireEvent.click(
+        within(painel()).getByRole('button', { name: 'Corrigir no rascunho: Atributos' }),
+      );
+      const campoDoAtributo = within(secao).getByRole('combobox', { name: /Tipo de Conexão/ });
+      expect(document.activeElement).toBe(campoDoAtributo);
+      expect(campoDoAtributo.getAttribute('type')).not.toBe('hidden');
+    },
+  );
+
+  it('QUASE-PAR: uma seção SOMENTE LEITURA (todo controle desabilitado) não recebe o foco — nada mais se move', () => {
+    const secao = secaoDeAtributos(false);
+    show({
+      desfecho: recusado([problema({ campo: 'attribute_list', motivo: 'atributo-obrigatorio' })]),
+    });
+    fireEvent.click(
+      within(painel()).getByRole('button', { name: 'Corrigir no rascunho: Atributos' }),
+    );
+    expect(secao.contains(document.activeElement)).toBe(false);
+  });
+
+  it('o primeiro controle habilitado nunca é um input OCULTO (o Mantine guarda um ao lado de cada Select) ⟷ QUASE-PAR: nem um desabilitado', () => {
+    const wrapper = document.createElement('div');
+    wrapper.id = idDoCampoRascunhoShopee(LINK, CAMPO_RASCUNHO_SHOPEE.attributes);
+    const oculto = document.createElement('input');
+    oculto.type = 'hidden';
+    const desligado = document.createElement('input');
+    desligado.disabled = true;
+    const ligado = document.createElement('input');
+    wrapper.append(oculto, desligado, ligado);
+    document.body.appendChild(wrapper);
+    show({
+      desfecho: recusado([problema({ campo: 'attribute_list', motivo: 'atributo-obrigatorio' })]),
+    });
+    fireEvent.click(
+      within(painel()).getByRole('button', { name: 'Corrigir no rascunho: Atributos' }),
+    );
+    expect(document.activeElement).toBe(ligado);
+  });
+
+  it('a primeira linha é um MultiSelect COM valor (100134 Material, 1207 gravado) ⇒ o foco vai para o campo de busca do MultiSelect, nunca para o X do pill', () => {
+    const secao = secaoDeAtributos(
+      true,
+      [MATERIAL],
+      [{ attribute_id: 100134, attribute_value_list: [{ value_id: 1207 }] }],
+    );
+    show({
+      desfecho: recusado([problema({ campo: 'attribute_list', motivo: 'atributo-obrigatorio' })]),
+    });
+    fireEvent.click(
+      within(painel()).getByRole('button', { name: 'Corrigir no rascunho: Atributos' }),
+    );
+    const ativo = document.activeElement as HTMLElement;
+    expect(ativo.tagName).toBe('INPUT');
+    expect(ativo).toBe(within(secao).getByRole('combobox', { name: /Material/ }));
+  });
+
+  it('QUASE-PAR: uma linha de textos múltiplos com um chip ⇒ o foco vai para o compositor (Adicionar outro valor), nunca para «Remover …»', () => {
+    const secao = secaoDeAtributos(
+      true,
+      [TEXTOS],
+      [
+        {
+          attribute_id: 900011,
+          attribute_value_list: [{ value_id: 0, original_value_name: 'Valor A' }],
+        },
+      ],
+    );
+    expect(within(secao).getByRole('button', { name: 'Remover Valor A' })).toBeTruthy();
+    show({
+      desfecho: recusado([problema({ campo: 'attribute_list', motivo: 'atributo-obrigatorio' })]),
+    });
+    fireEvent.click(
+      within(painel()).getByRole('button', { name: 'Corrigir no rascunho: Atributos' }),
+    );
+    expect(document.activeElement).toBe(
+      within(secao).getByRole('textbox', { name: 'Adicionar outro valor' }),
+    );
+  });
+
+  it('QUASE-PAR: um wrapper só com botões (o seletor de categoria) foca o botão habilitado — nunca um fora da ordem de tabulação ou oculto', () => {
+    const wrapper = document.createElement('div');
+    wrapper.id = idDoCampoRascunhoShopee(LINK, CAMPO_RASCUNHO_SHOPEE.attributes);
+    const oculto = document.createElement('button');
+    oculto.tabIndex = -1;
+    oculto.setAttribute('aria-hidden', 'true');
+    const ligado = document.createElement('button');
+    wrapper.append(oculto, ligado);
+    document.body.appendChild(wrapper);
+    show({
+      desfecho: recusado([problema({ campo: 'attribute_list', motivo: 'atributo-obrigatorio' })]),
+    });
+    fireEvent.click(
+      within(painel()).getByRole('button', { name: 'Corrigir no rascunho: Atributos' }),
+    );
+    expect(document.activeElement).toBe(ligado);
+  });
+
+  it('QUASE-PAR: o `attribute_list` de um anúncio PUBLICADO ⇒ «Corrigir no Seller Centre», texto sem botão', () => {
+    show({
+      desfecho: recusado([problema({ campo: 'attribute_list', motivo: 'atributo-obrigatorio' })]),
+      rascunho: null,
+    });
+    expect(botoes()).toEqual([]);
+    expect(linha().textContent).toContain(FRASE_CORRIGIR_NO_SELLER_CENTRE_SHOPEE);
+  });
+});
+
 describe('DesfechoAcaoShopee — campo → the surface that fixes it (D17, DC §2.9)', () => {
   it('a draft’s `item_name` ⇒ «Corrigir no rascunho: Título», which FOCUSES that field of this draft', () => {
     const campo = document.createElement('input');
@@ -967,7 +1253,9 @@ describe('DesfechoAcaoShopee — campo → the surface that fixes it (D17, DC §
     ).toBe('/medidas/m-1');
   });
 
-  it.each(['linkDocId', 'item_names', 'shop', 'attribute_list[COLOR]'])(
+  // `attribute_list[COLOR]` left this list in #1911 P13 (it routes to «Atributos»
+  // now — the describe below); `attribute_lists` is its near miss.
+  it.each(['linkDocId', 'item_names', 'shop', 'attribute_lists'])(
     'NEAR-MISS: an unmapped campo on a draft (%s) ⇒ the sentence, no button',
     (campo) => {
       h.secoes = {

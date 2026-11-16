@@ -11,6 +11,13 @@
  * so the dialog cannot open on a default the backend does not have. The choices
  * are preferences and persist across opens (no safety opt-in here, unlike the
  * price dialog's `baixarPreco`), and the body always carries all of them.
+ *
+ * A «Sobrescrever …» box counts only while the box it depends on is ticked:
+ * greyed out, it is shown unticked and sent `false` — never omitted, because
+ * the route's sanitizer fills an omitted key from the defaults, where
+ * `sobrescreverPreco` is `true` (#2099). The labels are still Mercado Livre's,
+ * but these SEMANTICS now differ from ML's dialog on purpose (#2099; ML's own
+ * copy of the trap is #2123).
  */
 import { useState } from 'react';
 import { Button, Checkbox, Group, Modal, Stack, Text } from '@mantine/core';
@@ -23,6 +30,7 @@ import {
 
 import { ContasSelecionadas } from '@/components/contaJobs/ContasSelecionadas';
 import {
+  DESCRICAO_IMPORTAR_FOTOS_SHOPEE,
   ROTULO_OPCAO_IMPORTACAO_SHOPEE,
   ROTULO_STATUS_IMPORTACAO_SHOPEE,
 } from '@/lib/shopee/rotulosImportacaoShopee';
@@ -65,6 +73,14 @@ export function ImportarTodosShopeeDialog({ state }: { state: ImportarTodosShope
   );
   const [janela, setJanela] = useState<[string | null, string | null]>([null, null]);
 
+  // A «Sobrescrever …» box counts only while the box it depends on is ticked:
+  // greyed out, it is neither shown ticked nor sent — sent `false`, never
+  // omitted (an omitted key takes the server default, `sobrescreverPreco:
+  // true`) (#2099). The preference survives in state for a re-tick.
+  const sobrescreverEstoqueEfetivo = importarEstoque && sobrescreverEstoque;
+  const sobrescreverPrecoEfetivo = importarPreco && sobrescreverPreco;
+  const sobrescreverDadosProdutoEfetivo = atualizarProdutoPai && sobrescreverDadosProduto;
+
   const semStatus = statuses.length === 0;
   // Both ends or neither: half a window is a mistake to point out, not a filter
   // to guess the other half of.
@@ -104,7 +120,7 @@ export function ImportarTodosShopeeDialog({ state }: { state: ImportarTodosShope
         />
         <Checkbox
           label={ROTULO.sobrescreverEstoque}
-          checked={sobrescreverEstoque}
+          checked={sobrescreverEstoqueEfetivo}
           onChange={(e) => setSobrescreverEstoque(e.currentTarget.checked)}
           disabled={!importarEstoque}
         />
@@ -115,12 +131,13 @@ export function ImportarTodosShopeeDialog({ state }: { state: ImportarTodosShope
         />
         <Checkbox
           label={ROTULO.sobrescreverPreco}
-          checked={sobrescreverPreco}
+          checked={sobrescreverPrecoEfetivo}
           onChange={(e) => setSobrescreverPreco(e.currentTarget.checked)}
           disabled={!importarPreco}
         />
         <Checkbox
           label={ROTULO.importarFotos}
+          description={DESCRICAO_IMPORTAR_FOTOS_SHOPEE}
           checked={importarFotos}
           onChange={(e) => setImportarFotos(e.currentTarget.checked)}
         />
@@ -137,7 +154,7 @@ export function ImportarTodosShopeeDialog({ state }: { state: ImportarTodosShope
         <Checkbox
           label={ROTULO.sobrescreverDadosProduto}
           description="Por padrão a importação só preenche campos vazios. Marque para substituir também os valores já cadastrados. A descrição e a categoria nunca são substituídas."
-          checked={sobrescreverDadosProduto}
+          checked={sobrescreverDadosProdutoEfetivo}
           onChange={(e) => setSobrescreverDadosProduto(e.currentTarget.checked)}
           disabled={!atualizarProdutoPai}
         />
@@ -163,13 +180,13 @@ export function ImportarTodosShopeeDialog({ state }: { state: ImportarTodosShope
             void state.start({
               statuses: [...statuses],
               importarEstoque,
-              sobrescreverEstoque,
+              sobrescreverEstoque: sobrescreverEstoqueEfetivo,
               importarPreco,
-              sobrescreverPreco,
+              sobrescreverPreco: sobrescreverPrecoEfetivo,
               importarFotos,
               importarCategorias,
               atualizarProdutoPai,
-              sobrescreverDadosProduto,
+              sobrescreverDadosProduto: sobrescreverDadosProdutoEfetivo,
               atualizarCadastrados,
               updateTimeFromS: janelaEmSegundos?.[0] ?? null,
               updateTimeToS: janelaEmSegundos?.[1] ?? null,

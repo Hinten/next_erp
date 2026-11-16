@@ -1109,11 +1109,13 @@ describe('aplicarPublicacao — a ORDEM dos onze passos', () => {
       (e: unknown) => e,
     );
     expect(err).toBeInstanceOf(ShopeePublishBlockedError);
+    // S1 (#1911 P14b, P14a open point 5): the live tier is CUSTOM, so only a rename
+    // exits — the sentence no longer offers the import, which cannot heal it.
     const esperado = {
       campo: 'standardise_tier_variation',
       motivo: MOTIVO_PUBLICACAO_BLOQUEADA.variacaoSemVinculo,
       mensagem:
-        'O tier "Cor" não casa pelo nome com nenhum tier do anúncio (grupo renomeado, ou anúncio exportado pelo app antigo) — republicar reescreveria as opções. Importe o anúncio ou ajuste o nome do grupo.',
+        'O tier "Cor" não casa pelo nome com nenhum tier do anúncio (grupo renomeado, ou anúncio exportado pelo app antigo) — republicar reescreveria as opções. Ajuste o nome do grupo em Variações, ou o do tier no Seller Centre, para que os dois fiquem iguais.',
     };
     expect((err as ShopeePublishBlockedError).problemas).toEqual([esperado]);
 

@@ -48,10 +48,12 @@
  *
  * - {@link MOTIVO_PUBLICACAO_BLOQUEADA} — what the publisher may REFUSE with
  *   before writing the listing (the model leg's update-path refusals of
- *   `variacao-sem-vinculo` / `opcoes-demais` aside). 59 members: step 11's
- *   22, #2015's `logistica-nao-confirmada` (`anuncios/logisticaPublicacao.ts`:
- *   a compulsory channel's size or fee held only by a stored list with no
- *   record that this app wrote it), the nineteen native-kit
+ *   `variacao-sem-vinculo` / `opcoes-demais` aside). 60 members: step 11's
+ *   22, #2015's `logistica-nao-confirmada` and #1911 P14b's (CPY-4)
+ *   `logistica-sem-valor-gravado` (both `anuncios/logisticaPublicacao.ts`: a
+ *   compulsory channel's size or fee held only by — or, for the second, absent
+ *   from — a stored list with no record that this app wrote it, on a listing an
+ *   import would re-read), the nineteen native-kit
  *   refusals of step 19's kit core (`kits/planoKit.ts`, PR 5), the recriar's
  *   safety net `recriacao-sem-diferenca` (`kits/recriarKit.ts`, PR 6), the
  *   seven refusals only the publish dispatcher produces
@@ -66,7 +68,7 @@
  *   attestation's expectation on a draft that no longer records the attempt,
  *   refused by the reservation before any look-up.
  * - {@link MOTIVO_PROBLEMA_PUBLICACAO} — what a `problemas[]` entry may carry:
- *   those 59 plus the thirteen only a WIRE rejection can produce (step 18 added
+ *   those 60 plus the thirteen only a WIRE rejection can produce (step 18 added
  *   the two size-chart refusals on `size_chart_info`; step 19 the seven
  *   native-kit refusals, whose ONE producer is `kits/recusaKit.ts`; #1911 P5 the
  *   duplicate-listing refusal `error_repeated_mtsku`, a row of
@@ -188,14 +190,32 @@ export type MotivoPublicacaoBloqueada =
    * absence of a record and nothing stronger. Produced ONLY by `anuncios/logisticaPublicacao.ts`,
    * spelled there through this constant, and only when the listing exists at
    * Shopee: the remedy is importing it (its `item_id` is in the sentence), so
-   * the value the shop holds today is recorded and stamped. Every other lost
-   * compulsory channel — a draft, a trusted list, an unreadable or absent
-   * value, a parcel that does not fit — stays `logistica-sem-canal`. When EVERY
-   * lost compulsory channel took it, the builder adds neither shop-wide
-   * `logistica-sem-canal` sentence (see `construirLogistica`). Campo
+   * the value the shop holds today is recorded and stamped. The same channel
+   * with NO readable value stored is `logistica-sem-valor-gravado` (#2099,
+   * below); every other lost compulsory channel — a draft, a trusted list, a
+   * parcel that does not fit — stays `logistica-sem-canal`. When EVERY lost
+   * compulsory channel took it or its #2099 sibling, the builder adds neither
+   * shop-wide `logistica-sem-canal` sentence (see `construirLogistica`). Campo
    * `logistic_info`, no `acao`.
    */
   | 'logistica-nao-confirmada'
+  /**
+   * #2099 (CPY-4, Lucas's sentence): a COMPULSORY `SIZE_SELECTION` /
+   * `CUSTOM_PRICE` channel whose `size_id` / `shipping_fee` NO stored entry
+   * holds readably — absent, or unreadable (`''`, `'12.5'`, `'0'`, a fee of
+   * `'grátis'`) — on a stored list with no record that this app wrote it, for
+   * a listing that exists at Shopee. Produced ONLY by
+   * `anuncios/logisticaPublicacao.ts`, spelled there through this constant.
+   * Before #1911 P14b this case kept `logistica-sem-canal`'s «só o Seller Centre
+   * define» sentence — a dead end, because a distrusted list never sends a
+   * stored value, so a value set in Seller Centre failed the same way. The
+   * remedy is the import (the listing's `item_id` is in the sentence), after
+   * setting the value in Seller Centre when it is not there yet; the channel
+   * is named `«name» (id)`, or by its id alone when the shop's list carries no
+   * usable name. Shares `logistica-nao-confirmada`'s shop-wide suppression.
+   * Campo `logistic_info`, no `acao`.
+   */
+  | 'logistica-sem-valor-gravado'
   /**
    * The stored `estadoAnuncio` says the listing is gone. Refused rather than
    * re-created: a `removido` listing keeps its `item_id`, and `update_item`
@@ -451,6 +471,7 @@ export const MOTIVO_PUBLICACAO_BLOQUEADA = {
   estoqueAbaixoDoMinimo: 'estoque-abaixo-do-minimo',
   logisticaSemCanal: 'logistica-sem-canal',
   logisticaNaoConfirmada: 'logistica-nao-confirmada',
+  logisticaSemValorGravado: 'logistica-sem-valor-gravado',
   listagemRemovida: 'listagem-removida',
   produtoEFilho: 'produto-e-filho',
   produtoEKit: 'produto-e-kit',

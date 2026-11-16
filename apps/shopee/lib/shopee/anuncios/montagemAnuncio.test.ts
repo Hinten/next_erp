@@ -481,12 +481,13 @@ describe('montarAnuncio — o vocabulário de recusa', () => {
     ]);
     const outros = Object.values(MOTIVO_PUBLICACAO_BLOQUEADA).filter((m) => !cobertos.has(m));
     // The four step-11 members other step-11 files produce, plus #2015's second
-    // logistics refusal (the docblock test below names them all) — the kit arm reuses
-    // some of them, so they are NOT subtracted as "kit" here.
+    // logistics refusal and #1911 P14b's (CPY-4) third (the docblock test below names them all) —
+    // the kit arm reuses some of them, so they are NOT subtracted as "kit" here.
     const doPasso11Fora = [
       'combinacao-duplicada',
       'logistica-nao-confirmada',
       'logistica-sem-canal',
+      'logistica-sem-valor-gravado',
       'opcoes-demais',
       'variacao-sem-vinculo',
     ];
@@ -498,7 +499,7 @@ describe('montarAnuncio — o vocabulário de recusa', () => {
     ).toEqual([]);
   });
 
-  it('o docblock nomeia os treze membros que este módulo NÃO produz, com o arquivo produtor', () => {
+  it('o docblock nomeia os catorze membros que este módulo NÃO produz, com o arquivo produtor', () => {
     const fonte = readFileSync(fileURLToPath(new URL('./montagemAnuncio.ts', import.meta.url)), {
       encoding: 'utf8',
     });
@@ -508,6 +509,7 @@ describe('montarAnuncio — o vocabulário de recusa', () => {
       'opcoes-demais',
       'logistica-sem-canal',
       'logistica-nao-confirmada',
+      'logistica-sem-valor-gravado',
       'criacao-incerta-ambigua',
       'busca-de-anuncio-incompleta',
       'criacao-incerta-sem-sku',
@@ -523,7 +525,7 @@ describe('montarAnuncio — o vocabulário de recusa', () => {
     expect(fonte).toContain('anuncios/logisticaPublicacao.ts');
     expect(fonte).toContain('anuncios/problemasPublicacao.ts');
     expect(fonte).toContain('anuncios/criacaoIncerta.ts');
-    expect(fonte).toContain('(nineteen of thirty-two)');
+    expect(fonte).toContain('(nineteen of thirty-three)');
   });
 
   it('problemas é a UNIÃO de todas as recusas, nunca a primeira', () => {

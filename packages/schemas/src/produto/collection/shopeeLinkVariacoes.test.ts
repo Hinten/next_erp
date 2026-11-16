@@ -11,6 +11,7 @@ import {
   idDoRef,
   linkVariacaoOpcaoShopeeSchema,
   linkVariacoesShopeeSchema,
+  nomeDeTierShopee,
   resolverEntradaShopeeDoGrupo,
   type LinkVariacoesShopee,
   type ResolucaoEntradaShopeeDoGrupo,
@@ -806,5 +807,40 @@ describe('camposRecusados — os campos de um parse recusado, numa grafia só (#
     // The precondition: zod reports `a` twice.
     expect(lido.error.issues.filter((i) => i.path.join('.') === 'a')).toHaveLength(2);
     expect(camposRecusados(lido.error)).toEqual(['a', 'b', 'o.0.e', 'o.1.e', 'z']);
+  });
+});
+
+/*
+ * The tier/option NAME fold, defined here since #1911 P14b (it moved from the
+ * import's pure core, which re-exports it): the publisher, the import and the
+ * web's binding editor decide "the same name" with this one function.
+ */
+describe('nomeDeTierShopee — a dobra de NOME de tier/opção, definida aqui (#1911 P14b: a publicação, a importação e o editor de vínculos)', () => {
+  it.each(['Azul', 'Azul ', ' Azul', '\tAzul\n', '\u00a0Azul\u00a0', '\r\n Azul \r\n'])(
+    '⚠️ PAR: %j dobra para "Azul" — só as pontas saem (espaço, tab, quebra de linha, NBSP)',
+    (nome) => {
+      expect(nomeDeTierShopee(nome)).toBe('Azul');
+    },
+  );
+
+  it.each([
+    ['azul', 'a caixa'],
+    ['AZUL', 'a caixa'],
+    ['Azul  Claro', 'o espaço de DENTRO'],
+    ['\u200bAzul', 'o espaço de largura zero (U+200B não é espaço para o trim)'],
+  ])('⛔ QUASE: %j NÃO dobra para "Azul" — %s fica', (nome) => {
+    expect(nomeDeTierShopee(nome)).not.toBe('Azul');
+    expect(nomeDeTierShopee(nome)).toBe(nome);
+  });
+
+  it('⛔ QUASE: o espaço de dentro é mantido mesmo quando as pontas saem', () => {
+    expect(nomeDeTierShopee(' Azul  Claro ')).toBe('Azul  Claro');
+    expect(nomeDeTierShopee(' Azul  Claro ')).not.toBe(nomeDeTierShopee('Azul Claro'));
+  });
+
+  it('ausente, nulo, não-string e só espaço são o nome em BRANCO', () => {
+    for (const nada of [null, undefined, 42 as never, '', '   ', '\u00a0\t']) {
+      expect(nomeDeTierShopee(nada), JSON.stringify(nada)).toBe('');
+    }
   });
 });

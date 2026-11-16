@@ -2468,3 +2468,45 @@ describe('#2015 — logistic_info vazio quando todo obrigatório perdido tomou l
     expect(texto.slice(problemas)).toContain(MOTIVO_PUBLICACAO_BLOQUEADA.logisticaNaoConfirmada);
   });
 });
+
+/* ========================================================================== */
+/*  #2099 · logistic_info vazio porque TODO obrigatório perdido tomou CPY-4    */
+/* ========================================================================== */
+
+describe('#2099 CPY-4 — logistic_info vazio quando todo obrigatório perdido tomou logistica-sem-valor-gravado', () => {
+  const CPY4: ProblemaDeBloqueio = {
+    campo: 'logistic_info',
+    motivo: MOTIVO_PUBLICACAO_BLOQUEADA.logisticaSemValorGravado,
+    mensagem:
+      'O canal obrigatório «Canal inventado» (90007) precisa de um tamanho ou de uma tarifa de ' +
+      'frete que este vínculo não tem gravados, e o ERP não tem registro de ter gravado a lista ' +
+      'de logística dele. Se o valor já está no Seller Centre, importe o anúncio 1000123 e ' +
+      'publique de novo; se não está, defina-o no Seller Centre antes.',
+  };
+  const soCpy4 = plano({
+    logistica: {
+      logistic_info: [],
+      canaisHabilitados: [],
+      pulados: [{ logisticId: 90_007, motivo: 'size-selection-sem-size-id' }],
+      problemas: [CPY4],
+    },
+    problemas: [CPY4],
+  });
+
+  it('a linha da seção aponta para os problemas, que só trazem a CPY-4 — e a frase sai VERBATIM, com o nome do canal', () => {
+    const linhas = renderizarPlano(soCpy4, contexto());
+    const secao = linhas.indexOf('### logistic_info (0 a enviar)');
+    expect(secao).toBeGreaterThanOrEqual(0);
+    expect(linhas[secao + 1]).toBe(
+      '  (nenhum — a publicação está bloqueada: veja os problemas de logistic_info abaixo)',
+    );
+    const texto = linhas.join('\n');
+    const problemas = texto.indexOf('### problemas (1) — NADA seria enviado');
+    expect(problemas).toBeGreaterThan(texto.indexOf('### logistic_info (0 a enviar)'));
+    expect(texto.slice(problemas)).toContain(MOTIVO_PUBLICACAO_BLOQUEADA.logisticaSemValorGravado);
+    expect(texto.slice(problemas)).toContain(CPY4.mensagem);
+    // ⛔ Nothing names the motivo this refusal did NOT take, nor its old dead end.
+    expect(texto).not.toContain(MOTIVO_PUBLICACAO_BLOQUEADA.logisticaSemCanal);
+    expect(texto).not.toContain('não pôde ser habilitado');
+  });
+});

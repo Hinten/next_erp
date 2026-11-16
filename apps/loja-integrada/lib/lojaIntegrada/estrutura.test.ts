@@ -544,7 +544,7 @@ const ARQUIVO_DO_MOTOR = 'lib/lojaIntegrada/core/escrita.ts';
 const DONOS_DA_ESCRITA: readonly { readonly nome: RegExp; readonly donos: readonly string[] }[] = [
   { nome: /\bcriarClienteEscritaLi\b/, donos: [MODULO_DO_CONTEXTO_DE_ESCRITA] },
   {
-    nome: /\b(?:atualizarObjetoEnvioLi|alterarSituacaoPedidoLi|lerAntesDeEscreverLi|enviarEscritaLi)\b/,
+    nome: /\b(?:atualizarObjetoEnvioLi|alterarSituacaoPedidoLi|atualizarEstoqueProdutoLi|lerAntesDeEscreverLi|enviarEscritaLi)\b/,
     donos: [ARQUIVO_DO_MOTOR],
   },
   { nome: /\bLiEscritaClient\b/, donos: [MODULO_DO_CONTEXTO_DE_ESCRITA, ARQUIVO_DO_MOTOR] },
@@ -1433,6 +1433,12 @@ describe('the guards, on synthetic source', () => {
       "import { alterarSituacaoPedidoLi as mudar } from '@delfrance/integrations-loja-integrada';\n" +
         "await mudar(c, 1, 'pedido_enviado');",
     ],
+    [
+      'a caller of the stock write operation',
+      OUTRO,
+      "import { atualizarEstoqueProdutoLi } from '@delfrance/integrations-loja-integrada';\n" +
+        'await atualizarEstoqueProdutoLi(c, 1001, 5);',
+    ],
     ['a method reference', OUTRO, 'const ler = contexto.escrita.lerAntesDeEscreverLi;'],
     ['a destructured method', OUTRO, 'const { enviarEscritaLi } = contexto.escrita;'],
     [
@@ -1492,6 +1498,7 @@ describe('the guards, on synthetic source', () => {
         ARQUIVO_DO_MOTOR,
         "await atualizarObjetoEnvioLi(c, 801, 'X');\n" +
           "await alterarSituacaoPedidoLi(c, 1, 'pedido_enviado');\n" +
+          'await atualizarEstoqueProdutoLi(c, 1001, 5);\n' +
           'await contexto.escrita.lerAntesDeEscreverLi(p);\n' +
           'type C = LiEscritaClient;',
       ),

@@ -11,6 +11,7 @@ import {
 import {
   INTEGRACAO_TIPO,
   TIPO_VARIACAO,
+  nomeDeTierShopee as nomeDeTierShopeeDeSchemas,
   resolverEntradaShopeeDoGrupo,
   type LinkVariacoesShopee,
 } from '@delfrance/schemas';
@@ -212,6 +213,13 @@ describe('nomeDeTierShopee — a ÚNICA dobra de nome de tier/opção (#1911 bat
     for (const nada of [null, undefined, 42 as never, '', '   ']) {
       expect(nomeDeTierShopee(nada)).toBe('');
     }
+  });
+
+  it('a re-exportação É a função de @delfrance/schemas (uma dobra só, #1369)', () => {
+    // #1911 P14b moved the definition beside the binding key so the web's
+    // binding editor folds with it too. The SAME function object, never a
+    // second trim that a comment keeps equal.
+    expect(nomeDeTierShopee).toBe(nomeDeTierShopeeDeSchemas);
   });
 });
 
@@ -982,6 +990,149 @@ describe('fundirLinksVariacoesShopee', () => {
     expect((r.array[0] as LinkVariacoesShopee).integracaoShopeeId).toBe('int-1');
     expect(JSON.stringify(r.array)).not.toContain('documents/integracao');
   });
+
+  /*
+   * #1911 P14b (#2108 open point 8): the "same variation" the option block is
+   * gated on. EQUAL: a stored `0` (filled with ours, the heal) and a stored id
+   * equal to ours — ids AND seller-typed id-0 rows enter. DISTINCT: a stored
+   * non-zero id against ANOTHER one of ours, and against our `0` (a custom live
+   * tier, a kit). The entry's `name` is the category's label, outside the gate.
+   */
+  describe('#1911 P14b (#2108 ponto 8): as linhas só entram numa entrada da MESMA variação — um 0 armazenado ou a nossa', () => {
+    const linha = (
+      shopee_option_id: number,
+      shopee_option_name: string,
+      arakene_variation_id: string[],
+    ) => ({ shopee_option_id, shopee_option_name, arakene_variation_id });
+    const fundida = (r: { readonly array: unknown[] }) => r.array[0] as LinkVariacoesShopee;
+    /** A stored entry of variation 88 that binds only Azul (option 9). */
+    const entrada88 = (opcoes = [linha(9, 'Azul', ['v-azul'])]) => ({
+      ...entrada({ variation_id: 88, variationOptions: opcoes }),
+    });
+
+    it('⚠️ PAR: a MESMA variação não-zero (88 e 88) une `arakene_variation_id` e anexa a opção nova', () => {
+      const r = fundirLinksVariacoesShopee(
+        [entrada88([linha(9, 'Azul', ['v-do-op'])])],
+        entrada({
+          variation_id: 88,
+          variationOptions: [linha(9, 'Azul', ['v-nosso']), linha(10, 'Verde', ['v-verde'])],
+        }),
+      );
+      expect(r.mudou).toBe(true);
+      expect(fundida(r).variationOptions).toEqual([
+        linha(9, 'Azul', ['v-do-op', 'v-nosso']),
+        linha(10, 'Verde', ['v-verde']),
+      ]);
+    });
+
+    it("⚠️ PAR: a MESMA variação 88 recebe uma opção do VENDEDOR (id 0) — o formato da captura BR: a linha {0, 'Opção inventada 1', [v-x]} é anexada ao lado de {9}", () => {
+      const r = fundirLinksVariacoesShopee(
+        [entrada88()],
+        entrada({ variation_id: 88, variationOptions: [linha(0, 'Opção inventada 1', ['v-x'])] }),
+      );
+      expect(r.mudou).toBe(true);
+      expect(fundida(r).variationOptions).toEqual([
+        linha(9, 'Azul', ['v-azul']),
+        linha(0, 'Opção inventada 1', ['v-x']),
+      ]);
+    });
+
+    it('⚠️ PAR: um `variation_id` 0 armazenado recebe o nosso 77 E as nossas linhas — a cura', () => {
+      // ⚠️ RESIDUAL, outside point 8 ("beside a non-zero id"): the stored custom
+      // row stays FIRST, and the publisher authors an option from the first row
+      // that binds the variante — so Verde would still go out under 77 as a
+      // seller-typed id-0 option, not as option 6.
+      const r = fundirLinksVariacoesShopee(
+        [{ ...entrada({ variation_id: 0, variationOptions: [linha(0, 'Verde', ['v-verde'])] }) }],
+        entrada({ variation_id: 77, variationOptions: [linha(6, 'Verde', ['v-verde'])] }),
+      );
+      expect(r.mudou).toBe(true);
+      expect(fundida(r).variation_id).toBe(77);
+      expect(fundida(r).variationOptions).toEqual([
+        linha(0, 'Verde', ['v-verde']),
+        linha(6, 'Verde', ['v-verde']),
+      ]);
+    });
+
+    it('⚠️ PAR (escopo): ao lado de OUTRA variação, o `name` em branco da entrada ainda é preenchido — é o rótulo da categoria; as linhas ficam', () => {
+      const armazenada = { ...entrada88(), name: '' };
+      const r = fundirLinksVariacoesShopee(
+        [armazenada],
+        entrada({ variation_id: 77, variationOptions: [linha(6, 'Verde', ['v-verde'])] }),
+      );
+      expect(r.mudou).toBe(true);
+      expect(r.array).toHaveLength(1);
+      expect(fundida(r).name).toBe('Camisetas');
+      expect(fundida(r).variation_id).toBe(88);
+      // The stored ARRAY itself — never re-serialised from the parse.
+      expect(fundida(r).variationOptions).toBe(armazenada.variationOptions);
+    });
+
+    it('⛔ QUASE: a entrada 88 e o nosso tier 77 — as linhas de 77 NÃO entram, nada muda, e nenhuma gêmea é anexada', () => {
+      const armazenada = entrada88();
+      const r = fundirLinksVariacoesShopee(
+        [armazenada],
+        entrada({
+          variation_id: 77,
+          variationOptions: [linha(6, 'Verde', ['v-verde']), linha(5, 'Azul', ['v-azul'])],
+        }),
+      );
+      expect(r.mudou).toBe(false);
+      expect(r.array).toHaveLength(1);
+      expect(r.array[0]).toBe(armazenada);
+    });
+
+    it("⛔ QUASE: a entrada 88 e um tier vivo CUSTOM (0 — um kit, ou um anúncio personalizado) — a linha {0, 'Opção inventada 1'} NÃO entra", () => {
+      const armazenada = entrada88();
+      const r = fundirLinksVariacoesShopee(
+        [armazenada],
+        entrada({ variation_id: 0, variationOptions: [linha(0, 'Opção inventada 1', ['v-x'])] }),
+      );
+      expect(r.mudou).toBe(false);
+      expect(r.array[0]).toBe(armazenada);
+      expect(fundida(r).variationOptions.map((o) => o.shopee_option_id)).toEqual([9]);
+    });
+
+    it("⛔ QUASE: a entrada 88 com a linha {0, 'Opção inventada 2', [v-op]} e o nosso tier 0 com a linha {0, 'Opção inventada 2', [v-outra]} — a união NÃO atravessa a variação", () => {
+      const armazenada = entrada88([linha(0, 'Opção inventada 2', ['v-op'])]);
+      const r = fundirLinksVariacoesShopee(
+        [armazenada],
+        entrada({
+          variation_id: 0,
+          variationOptions: [linha(0, 'Opção inventada 2', ['v-outra'])],
+        }),
+      );
+      expect(r.mudou).toBe(false);
+      expect(fundida(r).variationOptions).toEqual([linha(0, 'Opção inventada 2', ['v-op'])]);
+    });
+
+    it("⛔ QUASE: nem pelo id — a entrada 88 com a linha {9, '', [v-op]} e o nosso 77 com {9, 'Azul', [v-outra]}: o nome fica em branco e a lista fica [v-op]", () => {
+      // Whether option ids are scoped to their variation is unmeasured; a
+      // colliding id from ANOTHER variation is still not this binding's row.
+      const armazenada = entrada88([linha(9, '', ['v-op'])]);
+      const r = fundirLinksVariacoesShopee(
+        [armazenada],
+        entrada({ variation_id: 77, variationOptions: [linha(9, 'Azul', ['v-outra'])] }),
+      );
+      expect(r.mudou).toBe(false);
+      expect(fundida(r).variationOptions).toEqual([linha(9, '', ['v-op'])]);
+    });
+
+    it('⚠️ PAR: duas importações sobre uma entrada 0 — primeiro 77, depois 88 — a primeira leva a variação E as linhas; a segunda não anexa nada', () => {
+      const de77 = [linha(6, 'Verde', ['v-verde'])];
+      const primeira = fundirLinksVariacoesShopee(
+        [{ ...entrada() }],
+        entrada({ variation_id: 77, variationOptions: de77 }),
+      );
+      expect(primeira.mudou).toBe(true);
+      const segunda = fundirLinksVariacoesShopee(
+        primeira.array,
+        entrada({ variation_id: 88, variationOptions: [linha(9, 'Azul', ['v-azul'])] }),
+      );
+      expect(segunda.mudou).toBe(false);
+      expect(fundida(segunda)).toEqual(entrada({ variation_id: 77, variationOptions: de77 }));
+    });
+  });
 });
 
 /* -------- 6b. o grupo de variação de DOIS níveis (#1911, BR 2026-11-04) -------- */
@@ -1284,9 +1435,73 @@ describe('o grupo de variação (`variation_group_id`) — lido do anúncio, gra
       );
       expect(plano.grupos[0]?.grupoId).toBe('g-tam');
       expect([nossa?.variation_id, nossa?.variation_group_list]).toEqual([999, 0]);
+      // …and not the 101056 tier's rows either (#1911 P14b, #2108 point 8): the
+      // custom `M` row minted here stays out of the 999 entry.
+      expect(nossa?.variationOptions).toEqual([]);
     });
 
-    it('⭐ ⛔ NEAR-MISS: a entrada armazenada 88 contra o tier vivo 77 mantém o 88 — a fusão só ANEXA as linhas vivas, por isso reimportar não tira a recusa do #2043', () => {
+    it('⚠️ PAR / ⛔ QUASE (escopo, no plano — #1911 P14b): ao lado de OUTRA variação (a 88 armazenada contra o tier 101056), um `name` EM BRANCO da entrada é a ÚNICA escrita; preenchido, nada é escrito', () => {
+      // The rule-7 sentence of the PR body, at the planner: a foreign entry receives
+      // none of our rows or our group, and the patch is `null` unless its blank
+      // `name` (the category's label) is filled or another change is due.
+      const LINHA_88 = {
+        shopee_option_id: 9,
+        shopee_option_name: 'M',
+        arakene_variation_id: ['v-m'],
+      };
+      const comEntrada88 = (name: string) =>
+        memo([
+          {
+            id: 'shopee-101056',
+            raw: {
+              nome: 'Tamanho',
+              variacoes: [
+                {
+                  id: 'v-m',
+                  nome: 'M',
+                  externalVariacaoLinks: [
+                    {
+                      tipo: INTEGRACAO_TIPO.shopee,
+                      integracaoId: INTEGRACAO,
+                      externalId: 'M',
+                      externalName: 'M',
+                      timestamp: AGORA,
+                    },
+                  ],
+                },
+              ],
+              variacoesIds: ['v-m'],
+              linksVariacoesShopee: [
+                entrada({ name, variation_id: 88, variationOptions: [LINHA_88] }),
+              ],
+            },
+          },
+        ]);
+
+      // PAR: blank name ⇒ a patch whose ONLY change is the entry's name.
+      const emBranco = planejarTaxonomia({
+        ...base,
+        tiers: [tamanho],
+        candidatos: comEntrada88(''),
+      });
+      expect(emBranco.grupos[0]?.criar).toBe(false);
+      expect(emBranco.grupos[0]?.patch).not.toBeNull();
+      expect(entradasDe(emBranco.grupos[0]?.patch?.linksVariacoesShopee)).toEqual([
+        entrada({ name: 'Camisetas', variation_id: 88, variationOptions: [LINHA_88] }),
+      ]);
+      expect(emBranco.grupos[0]?.varianteIds).toEqual(['v-m']);
+
+      // ⛔ QUASE: the same foreign entry with its name filled ⇒ nothing is written.
+      const preenchido = planejarTaxonomia({
+        ...base,
+        tiers: [tamanho],
+        candidatos: comEntrada88('Camisetas'),
+      });
+      expect(preenchido.grupos[0]?.criar).toBe(false);
+      expect(preenchido.grupos[0]?.patch).toBeNull();
+    });
+
+    it('⭐ ⛔ NEAR-MISS: a entrada armazenada 88 contra o tier vivo 77 mantém o 88 E as linhas dela — a fusão não anexa linhas de OUTRA variação, e reimportar não tira a recusa do #2043', () => {
       const plano = planejarTaxonomia({
         ...base,
         tiers: [
@@ -1324,10 +1539,97 @@ describe('o grupo de variação (`variation_group_id`) — lido do anúncio, gra
           },
         ]),
       });
+      // The variantes are still stamped, so the grupo is still written, and the
+      // produto's combos still bind by name; only the 88 entry is left alone
+      // (#1911 P14b, #2108 point 8 — it used to receive 77's rows 6 and 5).
       expect(plano.grupos[0]?.patch).not.toBeNull();
+      expect(plano.grupos[0]?.varianteIds).toEqual(['v-verde', 'v-azul']);
       const nossa = entradasDe(plano.grupos[0]?.patch?.linksVariacoesShopee)[0];
       expect(nossa?.variation_id).toBe(88);
-      expect(nossa?.variationOptions.map((o) => o.shopee_option_id)).toEqual([9, 6, 5]);
+      expect(nossa?.variationOptions.map((o) => o.shopee_option_id)).toEqual([9]);
+    });
+
+    /** The live standard tier 77 of the #2043 fixtures: Verde (6) at 0, Azul (5) at 1. */
+    const tier77 = () =>
+      tier({
+        nome: 'Cor',
+        variationId: 77,
+        opcoes: [
+          { nome: 'Verde', optionId: 6, indice: 0 },
+          { nome: 'Azul', optionId: 5, indice: 1 },
+        ],
+      });
+    const linhaAzul9 = {
+      shopee_option_id: 9,
+      shopee_option_name: 'Azul',
+      arakene_variation_id: ['v-azul'],
+    };
+
+    it('⛔ QUASE: o grupo achado pelo rung 1(b) — a entrada da categoria 100087 carrega 77 — não leva as linhas de 77 para a entrada 88 desta categoria; a de 100087 fica intacta', () => {
+      const daOutraCategoria = entrada({
+        category_id: 100087,
+        variation_id: 77,
+        variationOptions: [
+          { shopee_option_id: 6, shopee_option_name: 'Verde', arakene_variation_id: ['v-verde'] },
+        ],
+      });
+      const desta = entrada({ variation_id: 88, variationOptions: [linhaAzul9] });
+      const plano = planejarTaxonomia({
+        ...base,
+        tiers: [tier77()],
+        candidatos: memo([
+          {
+            id: 'g-cor',
+            raw: {
+              // ÂNCORA: another name and no `tipo`, so ONLY rung 1(b) finds it.
+              nome: 'Cor do Operador',
+              variacoes: [
+                { id: 'v-azul', nome: 'Azul' },
+                { id: 'v-verde', nome: 'Verde' },
+              ],
+              linksVariacoesShopee: [daOutraCategoria, desta],
+            },
+          },
+        ]),
+      });
+      const g = plano.grupos[0];
+      expect(g?.grupoId).toBe('g-cor');
+      expect(g?.criar).toBe(false);
+      const links = (g?.patch?.linksVariacoesShopee ?? []) as unknown[];
+      expect(links).toHaveLength(2);
+      expect(links[0]).toBe(daOutraCategoria);
+      expect(links[1]).toBe(desta);
+    });
+
+    it('⚠️ RESÍDUO (#2108 ponto 8): sem as linhas de 77 na entrada 88, reimportar depois de renomear a variante no ERP cunha shopee-6 — o rung 1 não tem mais essa memória', () => {
+      // Before P14b the first import appended row {6, [v-verde]} to the 88
+      // entry, and rung 1 of the second import still bound option 6 to v-verde
+      // through it. Pinned so that changing this back is a decision.
+      const grupo = (variacoes: unknown[], links: unknown) =>
+        memo([{ id: 'g-cor', raw: { nome: 'Cor', variacoes, linksVariacoesShopee: links } }]);
+      const primeira = planejarTaxonomia({
+        ...base,
+        tiers: [tier77()],
+        candidatos: grupo(
+          [
+            { id: 'v-azul', nome: 'Azul' },
+            { id: 'v-verde', nome: 'Verde' },
+          ],
+          [entrada({ variation_id: 88, variationOptions: [linhaAzul9] })],
+        ),
+      });
+      expect(primeira.grupos[0]?.varianteIds).toEqual(['v-verde', 'v-azul']);
+      const gravado = primeira.grupos[0]?.patch;
+      // The operator then renames the variante in the ERP.
+      const renomeadas = ((gravado?.variacoes ?? []) as Record<string, unknown>[]).map((v) =>
+        v.id === 'v-verde' ? { ...v, nome: 'Tom inventado' } : v,
+      );
+      const segunda = planejarTaxonomia({
+        ...base,
+        tiers: [tier77()],
+        candidatos: grupo(renomeadas, gravado?.linksVariacoesShopee),
+      });
+      expect(segunda.grupos[0]?.varianteIds).toEqual(['shopee-6', 'v-azul']);
     });
   });
 });

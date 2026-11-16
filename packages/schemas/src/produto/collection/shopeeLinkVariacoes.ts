@@ -47,6 +47,13 @@ import { idDoRef } from './vinculosShopee';
  * import, which then appended a twin entry that the publisher never read (first
  * match wins). That is the #1369 shape, and it is why all three import the key
  * from here.
+ *
+ * ## The tier NAME fold (#1911 batch-A; here since #1911 P14b)
+ *
+ * {@link nomeDeTierShopee} is the ONE fold of a Shopee tier or option NAME. It
+ * moved here from the import's pure core, which re-exports it, so a surface that
+ * cannot import `apps/shopee` (the binding editor in `apps/web`) decides "the
+ * same name" with the very function the publisher sends and pairs with.
  */
 
 /** One Shopee tier OPTION of a {@link linkVariacoesShopeeSchema} entry. */
@@ -248,4 +255,50 @@ export function resolverEntradaShopeeDoGrupo(
     }
   }
   return ilegivel ?? PERSONALIZADA_IMPLICITA;
+}
+
+/**
+ * THE fold of a Shopee tier NAME or tier-option NAME: the ends trimmed
+ * (`String.prototype.trim`, so an NBSP too) and nothing else. ONE function for
+ * every side of the wire (#1911 batch-A, the #1369 shape):
+ *
+ * - the READER: the import's `tiersDoItem`
+ *   (`apps/shopee/lib/shopee/produtos/taxonomiaShopeeCore.ts`, which re-exports
+ *   this function) reads every live tier and option name through it, so a
+ *   listing's names always arrive trimmed;
+ * - the PUBLISHER: `apps/shopee/lib/shopee/anuncios/tiersPublicacao.ts` folds
+ *   every name it SENDS (`variation_name` and `variation_option_name`, on the
+ *   create, the init and the update) and BOTH sides of every name it PAIRS (a
+ *   grupo with a live custom tier; a variante, or a stored
+ *   `shopee_option_name`, with a live option);
+ * - the binding editor on `/variacoes/[id]` (#1911 P14b), which is why it lives
+ *   in this package: `apps/web` has no dependency edge to `apps/shopee`, and a
+ *   second trim kept equal by a comment is the #1369 smell.
+ *
+ * So the string sent, the string read back and the string compared are one.
+ * Before this, the reader trimmed while the publisher sent and compared
+ * `grupo.nome` / `variante.nome` verbatim: a grupo `'Cor '` was refused on every
+ * update of the listing its own create had made, and a variante `'Azul '`
+ * appended a ghost option on every republish.
+ *
+ * EQUAL: `'Azul '` ≡ `' Azul'` ≡ `'Azul'` (space, tab, newline, NBSP at the
+ * ends); `null`, absent and a non-string ≡ `''`. DISTINCT: case (`'Azul'` vs
+ * `'azul'`), inner whitespace (`'Azul Claro'` vs `'Azul  Claro'`) and a
+ * zero-width space (U+200B is not whitespace to `trim`). Pinned by
+ * `shopeeLinkVariacoes.test.ts` (the pair and its near-miss), by "nomeDeTierShopee
+ * — IGUAL: as pontas; DISTINTO: a caixa e o espaço de dentro" in
+ * `taxonomiaShopeeCore.test.ts` (through the re-export, which a test there holds
+ * to be THIS function) and by the `(2d)` pairs and near-misses of
+ * `tiersPublicacao.test.ts`.
+ *
+ * ⚠️ Not the import's cascades: rung 2 of the import's `planejarTaxonomia`
+ * compares a STORED ERP grupo/variante name verbatim against this fold's output
+ * (`'Cor '` ≠ `'Cor'` is pinned there), and its option merge (`mesmaOpcao`)
+ * compares two stored option names byte-exact. Those are step 9's decisions;
+ * #1911 did not change them. The ONE import consumer is rung 1's custom-option
+ * arm (#1911 P14a), which reads the stored id-`0` row the publisher pairs a live
+ * custom option with — so it folds both sides exactly as the publisher does.
+ */
+export function nomeDeTierShopee(nome: string | null | undefined): string {
+  return typeof nome === 'string' ? nome.trim() : '';
 }

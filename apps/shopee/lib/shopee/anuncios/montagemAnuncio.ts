@@ -48,7 +48,7 @@
  * operator can never give a listing a marketplace-optimised name of its own).
  * The produto is the fallback, which is what a first publish uses.
  *
- * ## The vocabulary this file PRODUCES (nineteen of thirty-two)
+ * ## The vocabulary this file PRODUCES (nineteen of thirty-three)
  *
  * `sem-nome`, `nome-fora-da-faixa`, `sem-descricao`, `descricao-fora-da-faixa`,
  * `sem-preco`, `filho-sem-preco`, `preco-fora-da-faixa`, `sem-peso`,
@@ -60,11 +60,13 @@
  * `ehAtualizacao` like the five create-only members: a draft has no `item_id`,
  * so it only ever reaches the create body, and the flag alone decides.
  *
- * The other thirteen are produced ELSEWHERE and are listed here so a reader does
+ * The other fourteen are produced ELSEWHERE and are listed here so a reader does
  * not hunt for them in this file: `variacao-sem-vinculo`, `combinacao-duplicada`
- * and `opcoes-demais` are `anuncios/tiersPublicacao.ts`'s; `logistica-sem-canal`
- * and, since #2015, `logistica-nao-confirmada` (a compulsory channel whose size
- * or fee only a stored list holds, with no record that this app wrote it) are
+ * and `opcoes-demais` are `anuncios/tiersPublicacao.ts`'s; `logistica-sem-canal`,
+ * since #2015 `logistica-nao-confirmada` (a compulsory channel whose size or fee
+ * only a stored list holds, with no record that this app wrote it) and, since
+ * #1911 P14b (CPY-4), `logistica-sem-valor-gravado` (the same channel when that list holds no
+ * usable value at all) are
  * `anuncios/logisticaPublicacao.ts`'s, and this module RELAYS that module's
  * `problemas[]` rather than re-deciding it; and, since #1911 (P5, D5),
  * `criacao-incerta-ambigua`, `busca-de-anuncio-incompleta`,

@@ -25,10 +25,14 @@ Master plan: `.master_plans/loja-integrada/loja-integrada-marketplace-integratio
   `produtos/{produtoId}/produtolojaintegrada/{linkId}` keeps `produtos.integracoesComProduto`
   (the stock and price sweeps' pre-filter) in step with the link docs, through the app's ONE
   binding of the shared core, `lib/lojaIntegrada/produtos/integracoesComProdutoLi.ts`: the conta
-  from `contaLojaIntegrada` (`contaIdFromRef`, both stored forms), the counts predicate
-  `vinculoLiConta` (a store product id, not in the trash; hidden and blocked links count), an
-  UNFILTERED read of the produto's own links as the survivor reader (no index; the filter is the
-  plan's own two readers, in code). The decision comes from the event payload before `getDb()`,
+  from `contaLojaIntegrada` (`contaDoLinkLi`: `contaIdFromRef`, both stored forms), the counts
+  predicate `vinculoLiConta` (a store product id, not in the trash; hidden and blocked links
+  count), and as the survivor reader an UNFILTERED read of the produto's own links (no index; the
+  filter is the plan's own two readers, in code). The two readers live in `@delfrance/schemas`
+  (`lojaIntegradaLink.ts`) and the survivor read in `@delfrance/data/admin/produtos`
+  (`sobreviventesLi.ts`), because a `tools/migrations` script needs the same three and cannot
+  import an app; the binding re-exports `contaDoLinkLi` and binds the survivor read to the
+  guarded remove. The decision comes from the event payload before `getDb()`,
   so an edit that moves no membership costs zero reads (the test hands out a handle that throws).
   Add tier 0 (`arrayUnion`), remove tier 1 inside the core's inventoried site: no transaction
   call here, no inventory row. ⚠️ The add reads nothing, so one handled after its link's close
@@ -1050,9 +1054,11 @@ firebase.loja-integrada.tasks.json --only firestore,functions,tasks` (ports 8085
   observed writes). It does NOT prove "keeps": a check that keeps writes nothing, and the
   functions emulator may run two invocations at once, so a later sentinel orders that check only
   as far as the emulator serializes them. The keep verdict and the survivor read's fold of both
-  stored ref forms are pinned offline (`lib/lojaIntegrada/produtos/integracoesComProdutoLi.test.ts`);
-  the emulator case shows only that the real guarded write runs and that losing the last
-  counting link removes the conta.
+  stored ref forms are pinned offline (the survivor read's own suite,
+  `packages/data/src/admin/produtos/sobreviventesLi.test.ts`, and the binding's, which pins by
+  identity that the remove is handed the closure that shared read built for its produto and
+  conta: `lib/lojaIntegrada/produtos/integracoesComProdutoLi.test.ts`); the emulator case shows only
+  that the real guarded write runs and that losing the last counting link removes the conta.
 - The lane cannot prove: Cloud Scheduler firing (`onSchedule` is ignored),
   `scheduleDelaySeconds` (firebase-tools#8254), index declarations, rules, that the
   emulator honours `maxConcurrentDispatches` or the instance limits, named-task dedup

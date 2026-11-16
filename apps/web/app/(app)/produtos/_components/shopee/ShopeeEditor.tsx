@@ -10,6 +10,7 @@ import {
   useQueries,
   useQuery,
   useQueryClient,
+  type UseQueryResult,
 } from '@tanstack/react-query';
 import { useFormContext, useFormState } from 'react-hook-form';
 import { Alert, Anchor, Badge, Button, Group, Loader, Modal, Stack, Text } from '@mantine/core';
@@ -29,6 +30,7 @@ import {
   naoDocId,
   vinculoShopeeEhDaConta,
   type AcaoStatusAnuncio,
+  type ArvoreAtributosShopee,
   type CamposRascunhoShopee,
   type EstadoPublicacaoRascunhoShopee,
   type Integracao,
@@ -59,6 +61,7 @@ import {
   ehFraseDeTerminal,
   esperaDoKitIncerto,
   formatarInstanteShopee,
+  fraseDosAtributosNaoLidosShopee,
   gravarIncerto,
   itemIdDoAnuncioShopee,
   lerIncerto,
@@ -68,6 +71,11 @@ import {
   type IncertoKitShopee,
   type OperacaoRascunhoShopee,
 } from '@/lib/shopee/anuncioProduto';
+import {
+  linhasDoEditorDeAtributosShopee,
+  type ArgsDoEditorDeAtributosShopee,
+  type EdicaoDoAtributoShopee,
+} from '@/lib/shopee/atributosRascunho';
 import {
   ShopeeClientHttpError,
   ShopeeClientNetworkError,
@@ -79,8 +87,10 @@ import { CODIGO_FALHA_SHOPEE, descreverFalhaShopee, shopeeQueryRetry } from '@/l
 import {
   algumRascunhoShopeeSujo,
   categoriaAceitaNoBlocoShopee,
+  comAtributoRascunhoShopee,
   comCampoRascunhoShopee,
   conciliarEdicaoRascunhoShopee,
+  conflitosAntesDeSalvarShopee,
   conflitosAtualizadosDoRascunhoShopee,
   corpoAtualizarRascunhoShopee,
   corpoCriarRascunhoShopee,
@@ -104,7 +114,7 @@ import {
   rebasearEdicaoRascunhoShopee,
   segundoAnuncioNaContaShopee,
   type BlocoRascunhoShopee,
-  type CampoDoFormularioRascunhoShopee,
+  type CampoSimplesDoFormularioRascunhoShopee,
   type DescarteDoRascunhoShopee,
   type EdicaoRascunhoShopee,
   type ExistentesNaContaShopee,
@@ -113,6 +123,7 @@ import {
   type SaidaDoProblemaShopee,
 } from '@/lib/shopee/rascunho';
 import { useReceitaKitShopee } from '@/lib/shopee/useReceitaKitShopee';
+import type { RespostaAtributosShopee } from '@/lib/shopee/wire';
 import { ContaTabs, type ContaTabItem } from '../marketplace/ContaTabs';
 import type {
   AcaoDoAnuncioShopee,
@@ -120,6 +131,11 @@ import type {
   ArmaKitShopee,
   IncertoKitNaTela,
 } from './AcoesAnuncioShopee';
+import {
+  TIPO_LEITURA_ATRIBUTOS_RASCUNHO_SHOPEE,
+  ensaioDaAdicaoAtributoShopee,
+  leituraDaRespostaDeAtributosShopee,
+} from './AtributosRascunhoShopee';
 import {
   ContaShopeePanel,
   type AvisoDeRascunhoShopee,
@@ -141,6 +157,7 @@ import type {
 import { KitNativoShopeeModal, type AlvoDoKitShopee } from './KitNativoShopeeModal';
 import type {
   AcaoDoBlocoRascunhoShopee,
+  AtributosDoRascunhoShopee,
   ConfirmacaoDePublicacaoShopee,
   FalhaDaLeituraDoRascunhoShopee,
   RascunhoShopeeProps,
@@ -173,9 +190,11 @@ import type {
  * opens a LOCAL draft (a minted id, nothing written) — behind the
  * second-listing confirmation when the conta already holds one of the
  * produto's listings or drafts (D15); its block edits Título, Descrição,
- * Categoria and Marca; «Salvar rascunho» sends a create or an edit, «Descartar»
- * a discard, each through the draft route (P8's client methods) and the SAME
- * one-write lock as every other action.
+ * Categoria, Marca and (#1911 P13) Atributos — over the attribute tree of the
+ * category the draft is EDITED to, which this tab reads beside its bands;
+ * «Salvar rascunho» sends a create or an edit, «Descartar» a discard, each
+ * through the draft route (P8's client methods) and the SAME one-write lock as
+ * every other action.
  *
  * «Publicar» (#1911 P11) sends the STORED draft to the `publicar` route by its
  * `linkDocId` — never a `categoryId`, never a kit flag — under that lock too.
@@ -183,7 +202,9 @@ import type {
  * produto FORM clean as well (the route reads the stored produto, K2-7 — read
  * from the surrounding ObjectView form, plus the page's staged variation
  * edits it threads in, see {@link ShopeeEditor}), no
- * pendência, the bands loaded, a reading that is not `em-andamento`, and no
+ * pendência, the bands loaded, the category's attribute tree loaded (P13: a
+ * mandatory attribute left empty is a pendência only the tree can show), a
+ * reading that is not `em-andamento`, and no
  * OTHER draft of the produto on the conta that may have created a listing
  * (`irmao-incerto`, `rascunhosIrmaosIncertosShopee` over the same links
  * snapshot — the server refuses every publish meanwhile). The
@@ -513,18 +534,59 @@ function destinoDasVariacoes(grupoDeVariacoesUid: unknown): string | null {
   return ids.size === 1 && unico !== undefined ? `/variacoes/${unico}` : null;
 }
 
-/** `limitesDoItem`'s cache key part for one conta's category. */
-function chaveDeLimites(contaId: string, categoryId: number): string {
+/** One conta's category — the key of its bands read and of its attribute tree read (the SAME request set). */
+function chaveDaCategoria(contaId: string, categoryId: number): string {
   return `${contaId}/${String(categoryId)}`;
 }
 
-/** One category's bands read: the slice, and — only when the read FAILED with nothing to show — why. */
-interface LeituraDosLimitesShopee {
-  readonly limites: RascunhoShopeeProps['limites'];
+/** Whether a category read failed, and its re-read — the bands' and the tree's ONE rule. */
+interface FalhaDaConsultaShopee {
   /** `descreverFalhaShopee`'s sentence of a FAILED read (never a pending one), else `null`. */
   readonly falha: string | null;
   readonly relendo: boolean;
   readonly lerDeNovo: () => void;
+}
+
+/**
+ * A category read's {@link FalhaDaConsultaShopee}: FAILED with nothing to show
+ * — never while pending, so a failed read is never left reading as "still
+ * loading" (review R7-roundtrip#3); and its own refetch, since
+ * `shopeeQueryRetry` never repeats a 502 and the app never refetches on focus
+ * (without it only a reload would ask again).
+ */
+function falhaDaConsultaShopee(q: UseQueryResult<unknown> | undefined): FalhaDaConsultaShopee {
+  return {
+    falha:
+      q !== undefined && q.isError && q.data === undefined
+        ? descreverFalhaShopee(q.error, { desconhecido: '' }).mensagem
+        : null,
+    relendo: q?.isFetching === true,
+    lerDeNovo: () => {
+      void q?.refetch();
+    },
+  };
+}
+
+/** One category's bands read: the slice, and — only when the read FAILED with nothing to show — why. */
+interface LeituraDosLimitesShopee extends FalhaDaConsultaShopee {
+  readonly limites: RascunhoShopeeProps['limites'];
+}
+
+/** One category's attribute tree read (#1911 P13): the answer, and — only when the read FAILED with nothing to show — why. */
+interface LeituraDaArvoreShopee extends FalhaDaConsultaShopee {
+  readonly resposta: RespostaAtributosShopee | null;
+}
+
+/**
+ * The tree an answer stands for: a NON-LEAF category's is the complete EMPTY
+ * one (apps/shopee answers it empty, and the listing assembly refuses a
+ * non-leaf on its own — P10's posture), never `null`: `null` is a tree NOT
+ * READ, which holds «Publicar» (`atributos-desconhecidos`).
+ */
+function arvoreDaRespostaShopee(resposta: RespostaAtributosShopee): ArvoreAtributosShopee {
+  return resposta.leaf
+    ? { atributos: resposta.atributos, truncated: resposta.truncated }
+    : { atributos: [], truncated: false };
 }
 
 /**
@@ -1319,6 +1381,9 @@ function EditorShopee({
   const [conflitoRascunho, setConflitoRascunho] = useState<ConflitoRascunhoShopeeAberto | null>(
     null,
   );
+  // How many times «Desfazer alterações» ran on each draft — the key that
+  // remounts its «Atributos» section (screen-only state starts over).
+  const [desfeitos, setDesfeitos] = useState<ReadonlyMap<string, number>>(() => new Map());
   const [segundoAnuncio, setSegundoAnuncio] = useState<PedidoDeSegundoAnuncio | null>(null);
   const [descarte, setDescarte] = useState<DescarteAberto | null>(null);
   /** The drafts whose second listing the operator confirmed: their create carries `confirmarSegundoAnuncio`. */
@@ -1464,18 +1529,20 @@ function EditorShopee({
   // (a draft with no category asks apps/shopee nothing on render), and only
   // for a conta whose document was found: apps/shopee can only answer 404 for
   // a «não encontrada» / unreadable / still-loading tab's conta.
-  const pedidosDeLimites: { readonly contaId: string; readonly categoryId: number }[] = [];
+  const pedidosDaCategoria: { readonly contaId: string; readonly categoryId: number }[] = [];
   for (const { contaId, bloco } of blocos.values()) {
     if (contaPorId.get(contaId)?.encontrada !== true) continue;
     const categoryId = bloco.valores.category_id;
     // A positive id only: the picker offers leaves, and a legacy `0` asks nothing.
     if (!idDeCategoriaShopeeValido(categoryId)) continue;
-    const chave = chaveDeLimites(contaId, categoryId);
-    if (pedidosDeLimites.some((p) => chaveDeLimites(p.contaId, p.categoryId) === chave)) continue;
-    pedidosDeLimites.push({ contaId, categoryId });
+    const chave = chaveDaCategoria(contaId, categoryId);
+    if (pedidosDaCategoria.some((p) => chaveDaCategoria(p.contaId, p.categoryId) === chave)) {
+      continue;
+    }
+    pedidosDaCategoria.push({ contaId, categoryId });
   }
   const limitesLidos = useQueries({
-    queries: pedidosDeLimites.map(({ contaId, categoryId }) => ({
+    queries: pedidosDaCategoria.map(({ contaId, categoryId }) => ({
       queryKey: ['shopee', 'limitesDoItem', contaId, categoryId],
       queryFn:
         client === null
@@ -1486,25 +1553,34 @@ function EditorShopee({
     })),
   });
   const leiturasDosLimites = new Map<string, LeituraDosLimitesShopee>(
-    pedidosDeLimites.map(({ contaId, categoryId }, i) => {
+    pedidosDaCategoria.map(({ contaId, categoryId }, i) => {
       const q = limitesLidos[i];
       return [
-        chaveDeLimites(contaId, categoryId),
-        {
-          limites: q?.data?.limites ?? null,
-          // FAILED with nothing to show — never while pending: a failed read is
-          // never left reading as "still loading" (review R7-roundtrip#3).
-          falha:
-            q !== undefined && q.isError && q.data === undefined
-              ? descreverFalhaShopee(q.error, { desconhecido: '' }).mensagem
-              : null,
-          relendo: q?.isFetching === true,
-          // `shopeeQueryRetry` never repeats a 502 and the app never refetches
-          // on focus: without this, only a reload would ask again.
-          lerDeNovo: () => {
-            void q?.refetch();
-          },
-        },
+        chaveDaCategoria(contaId, categoryId),
+        { limites: q?.data?.limites ?? null, ...falhaDaConsultaShopee(q) },
+      ];
+    }),
+  );
+  // #1911 P13 — the attribute tree of the SAME categories, over the SAME
+  // request set (a draft with no category, a legacy `0` or a conta that cannot
+  // answer asks nothing), kept as long as apps/shopee's own cache keeps it.
+  // Keyed by the EDITED category: after a pick the new key starts unread, so
+  // the held category's tree is never read for the new one.
+  const arvoresLidas = useQueries({
+    queries: pedidosDaCategoria.map(({ contaId, categoryId }) => ({
+      queryKey: ['shopee', 'atributos', contaId, categoryId],
+      queryFn:
+        client === null ? skipToken : () => client.atributos({ integracaoId: contaId, categoryId }),
+      staleTime: CATEGORIAS_SHOPEE_STALE_MS,
+      retry: shopeeQueryRetry,
+    })),
+  });
+  const leiturasDasArvores = new Map<string, LeituraDaArvoreShopee>(
+    pedidosDaCategoria.map(({ contaId, categoryId }, i) => {
+      const q = arvoresLidas[i];
+      return [
+        chaveDaCategoria(contaId, categoryId),
+        { resposta: q?.data ?? null, ...falhaDaConsultaShopee(q) },
       ];
     }),
   );
@@ -1524,11 +1600,31 @@ function EditorShopee({
     const categoryId = bloco.valores.category_id;
     return categoryId === null
       ? null
-      : (leiturasDosLimites.get(chaveDeLimites(contaId, categoryId)) ?? null);
+      : (leiturasDosLimites.get(chaveDaCategoria(contaId, categoryId)) ?? null);
   };
   /** The bands one block is read against — `null` while they load, after a failed read, or with none asked. */
   const limitesDoBloco = (entrada: BlocoDoEditor): RascunhoShopeeProps['limites'] =>
     leituraDosLimitesDoBloco(entrada)?.limites ?? null;
+  /**
+   * The attribute tree read of one block (#1911 P13): its EDITED category's,
+   * or `null` with none asked — the bands' twin, for the same reason (a draft
+   * with no category, or a legacy `0`, is held by `categoria-ausente` /
+   * `categoria-inexistente` before an unknown tree could hold it).
+   */
+  const leituraDaArvoreDoBloco = ({
+    contaId,
+    bloco,
+  }: BlocoDoEditor): LeituraDaArvoreShopee | null => {
+    const categoryId = bloco.valores.category_id;
+    return categoryId === null
+      ? null
+      : (leiturasDasArvores.get(chaveDaCategoria(contaId, categoryId)) ?? null);
+  };
+  /** The tree one block is read against — `null` while it loads, after a failed read, or with none asked. */
+  const arvoreDoBloco = (entrada: BlocoDoEditor): ArvoreAtributosShopee | null => {
+    const resposta = leituraDaArvoreDoBloco(entrada)?.resposta ?? null;
+    return resposta === null ? null : arvoreDaRespostaShopee(resposta);
+  };
 
   /**
    * The READ whose failure is why a block's «Publicar» waits, or `null`
@@ -1538,6 +1634,8 @@ function EditorShopee({
    *  - `faixas-desconhecidas` after the bands read FAILED: the failure's own
    *    sentence and «Ler de novo» — never the pending «Publicar fica
    *    disponível quando os limites … forem lidos», a promise nothing keeps;
+   *  - `atributos-desconhecidos` after the attribute tree read FAILED (#1911
+   *    P13): the same, in the tree's words (`fraseDosAtributosNaoLidosShopee`);
    *  - `carregando` after the stored produto description's listener FAILED
    *    (the pendências need it): the listener re-subscribes only on a reload.
    */
@@ -1550,6 +1648,15 @@ function EditorShopee({
       if (leitura === null || leitura.falha === null) return null;
       return {
         mensagem: fraseDosLimitesNaoLidosShopee(leitura.falha),
+        lerDeNovo: leitura.lerDeNovo,
+        relendo: leitura.relendo,
+      };
+    }
+    if (decisao.impedimento === 'atributos-desconhecidos') {
+      const leitura = leituraDaArvoreDoBloco(entrada);
+      if (leitura === null || leitura.falha === null) return null;
+      return {
+        mensagem: fraseDosAtributosNaoLidosShopee(leitura.falha),
         lerDeNovo: leitura.lerDeNovo,
         relendo: leitura.relendo,
       };
@@ -1580,6 +1687,9 @@ function EditorShopee({
         produtoSujo,
         textosDoProduto,
         limites: limitesDoBloco(entrada),
+        // The EDITED category's tree (P13): its mandatory attributes are
+        // pendências, and `null` (not read yet, or failed) holds Publicar.
+        arvore: arvoreDoBloco(entrada),
         // The SAME links snapshot the D15 count reads (`abrirPublicacao`):
         // another draft that may have created a listing holds this one back.
         rascunhosIrmaosIncertos: rascunhosIrmaosIncertosShopee(
@@ -1783,11 +1893,25 @@ function EditorShopee({
     return entrada.podeEditar && !entrada.bloco.kitVirtual;
   }
 
-  /** «Salvar rascunho» on a block — only what its decision allows. */
+  /**
+   * «Salvar rascunho» on a block — only what its decision allows. An edited
+   * attribute list whose category another writer moved is refused HERE
+   * (`conflitosAntesDeSalvarShopee`): the route would refuse it too (the base
+   * of an attributes-only patch names the category, P13 Q1), so nothing is
+   * sent — the request is spared, and the conflict modal shows the rows.
+   */
   function salvarDoBloco(linkDocId: string) {
     const entrada = blocos.get(linkDocId);
     const edicao = efetivas.get(linkDocId);
     if (entrada === undefined || edicao === undefined || !entrada.bloco.podeSalvar) return;
+    const antes =
+      entrada.link === null || edicao.novo
+        ? null
+        : conflitosAntesDeSalvarShopee(edicao, entrada.link);
+    if (antes !== null) {
+      setConflitoRascunho({ linkDocId, operacao: 'atualizar', conflitos: antes });
+      return;
+    }
     enviarSalvar(
       edicao,
       entrada.contaId,
@@ -1801,9 +1925,10 @@ function EditorShopee({
    * entry from the snapshot — only under server truth, which the block's
    * `camposEditaveis` says (and the category only as the block accepts it:
    * any pick while `categoriaEditavel`; in `incerta`, only the held category
-   * put back — `categoriaAceitaNoBlocoShopee`).
+   * put back — `categoriaAceitaNoBlocoShopee`). Never `attributes`: the type
+   * refuses it, a list goes only through {@link definirAtributo}.
    */
-  function definirCampo<C extends CampoDoFormularioRascunhoShopee>(
+  function definirCampo<C extends CampoSimplesDoFormularioRascunhoShopee>(
     linkDocId: string,
     campo: C,
     valor: FormularioRascunhoShopee[C],
@@ -1832,11 +1957,139 @@ function EditorShopee({
     });
   }
 
-  /** «Desfazer alterações»: the entry is dropped; nothing is sent. */
+  /**
+   * One attribute edited (#1911 P13): `comAtributoRascunhoShopee` over the
+   * tree of the category the block is EDITED to, and only once that tree is
+   * LOADED — never the held category's after a change, never a tree still
+   * loading or failed: the visible filter would judge the list against the
+   * wrong walk. The same entry rule as {@link definirCampo} (under
+   * `camposEditaveis` only; the first edit of a stored draft creates its entry
+   * from the snapshot), except that an edit the model refuses or that changes
+   * nothing (it answers the entry ITSELF) stores nothing.
+   */
+  function definirAtributo(
+    linkDocId: string,
+    attributeId: number,
+    edicaoDoAtributo: EdicaoDoAtributoShopee,
+  ) {
+    const entrada = blocos.get(linkDocId);
+    if (entrada === undefined || !entrada.bloco.camposEditaveis) return;
+    const arvore = arvoreDoBloco(entrada);
+    if (arvore === null) return;
+    const categoryId = entrada.bloco.valores.category_id;
+    const { contaId, link } = entrada;
+    const naRender = edicoes.get(linkDocId);
+    const efetiva = efetivas.get(linkDocId) ?? null;
+    setEdicoes((prev) => {
+      const anterior = prev.get(linkDocId);
+      // Set since this render (a second call in the same tick): build on it.
+      const edicao =
+        anterior !== undefined && anterior !== naRender
+          ? anterior
+          : (efetiva ??
+            (link === null ? null : edicaoDoRascunhoGuardadoShopee({ linkDocId, contaId, link })));
+      if (edicao === null) return prev;
+      // A category picked since this render: the tree above is another category's.
+      if (edicao.atual.category_id !== categoryId) return prev;
+      const editada = comAtributoRascunhoShopee(edicao, arvore, attributeId, edicaoDoAtributo);
+      return editada === edicao ? prev : new Map(prev).set(linkDocId, editada);
+    });
+  }
+
+  /**
+   * The «Atributos» section of one block (#1911 P13): the reading of its
+   * EDITED category's tree and, once the tree ANSWERED, the rows over the SAME
+   * state {@link definirAtributo} edits — the entry's form list, its HELD base
+   * and its typings; with no entry, the snapshot's list as both and no typing
+   * (what the first edit's entry starts from). So the rows and the composer's
+   * dry run are exactly what an edit applies to. A JUST-SAVED entry shows what
+   * was saved, read-only, until its echo: nothing is pending, so its list is
+   * its own base (no «Serão removidos ao salvar» for a save already made).
+   *
+   * The reading, in order: no conta that can answer ⇒ `sem-conta` with the
+   * held list's count (nothing is read); no valid category ⇒ `sem-categoria`;
+   * the read FAILED with nothing to show ⇒ `falha` with its cause and re-read;
+   * an answer ⇒ the answer's own reading; else `carregando`.
+   */
+  function atributosDoBloco(
+    entrada: BlocoDoEditor,
+    edicao: EdicaoRascunhoShopee | null,
+    contaEncontrada: boolean,
+  ): AtributosDoRascunhoShopee {
+    const { bloco, link } = entrada;
+    const semLinhas = {
+      linhas: [],
+      semLugar: [],
+      removidosAoSalvar: [],
+      ensaiarAdicao: () => null,
+    } as const satisfies Omit<AtributosDoRascunhoShopee, 'leitura'>;
+    if (!contaEncontrada) {
+      const guardados =
+        link === null
+          ? (edicao?.base.attributes ?? null)
+          : projecaoGuardadaDoRascunhoShopee(edicao, link).attributes;
+      return {
+        leitura: {
+          tipo: TIPO_LEITURA_ATRIBUTOS_RASCUNHO_SHOPEE.semConta,
+          gravados: guardados?.length ?? 0,
+        },
+        ...semLinhas,
+      };
+    }
+    if (!idDeCategoriaShopeeValido(bloco.valores.category_id)) {
+      return {
+        leitura: { tipo: TIPO_LEITURA_ATRIBUTOS_RASCUNHO_SHOPEE.semCategoria },
+        ...semLinhas,
+      };
+    }
+    const leitura = leituraDaArvoreDoBloco(entrada);
+    const resposta = leitura?.resposta ?? null;
+    if (resposta === null) {
+      return {
+        leitura:
+          leitura !== null && leitura.falha !== null
+            ? {
+                tipo: TIPO_LEITURA_ATRIBUTOS_RASCUNHO_SHOPEE.falha,
+                causa: leitura.falha,
+                relendo: leitura.relendo,
+                onLerDeNovo: leitura.lerDeNovo,
+              }
+            : { tipo: TIPO_LEITURA_ATRIBUTOS_RASCUNHO_SHOPEE.carregando },
+        ...semLinhas,
+      };
+    }
+    const estado: ArgsDoEditorDeAtributosShopee =
+      edicao === null
+        ? {
+            arvore: arvoreDaRespostaShopee(resposta),
+            lista: bloco.valores.attributes,
+            guardados: bloco.valores.attributes,
+            digitacoes: {},
+          }
+        : {
+            arvore: arvoreDaRespostaShopee(resposta),
+            lista: edicao.atual.attributes,
+            guardados: edicao.salvo === null ? edicao.base.attributes : edicao.atual.attributes,
+            digitacoes: edicao.digitacoesAtributos,
+          };
+    return {
+      leitura: leituraDaRespostaDeAtributosShopee(resposta),
+      ...linhasDoEditorDeAtributosShopee(estado),
+      ensaiarAdicao: ensaioDaAdicaoAtributoShopee(estado),
+    };
+  }
+
+  /**
+   * «Desfazer alterações»: the entry is dropped; nothing is sent. The block's
+   * «Atributos» section is remounted too (`revisaoDoDesfazer`), so its
+   * screen-only state — «Outro valor…» chosen, a composer's un-added text —
+   * starts over with the stored draft.
+   */
   function desfazerRascunho(linkDocId: string) {
     if (blocos.get(linkDocId)?.bloco.podeDesfazer !== true) return;
     largarEdicao(linkDocId);
     definirResultado(linkDocId, null);
+    setDesfeitos((prev) => new Map(prev).set(linkDocId, (prev.get(linkDocId) ?? 0) + 1));
   }
 
   /** «Descartar»: its confirmation, holding what the operator SAW now. */
@@ -2253,12 +2506,16 @@ function EditorShopee({
           ? emVoo.acao
           : null,
       resultado: resultadosRascunho.get(linkDocId) ?? null,
-      onCampo: <C extends CampoDoFormularioRascunhoShopee>(
+      onCampo: <C extends CampoSimplesDoFormularioRascunhoShopee>(
         campo: C,
         valor: FormularioRascunhoShopee[C],
       ) => definirCampo(linkDocId, campo, valor),
+      atributos: atributosDoBloco(entrada, edicao, conta.encontrada),
+      onAtributo: (attributeId, edicaoDoAtributo) =>
+        definirAtributo(linkDocId, attributeId, edicaoDoAtributo),
       onSalvar: () => salvarDoBloco(linkDocId),
       onDesfazer: () => desfazerRascunho(linkDocId),
+      revisaoDoDesfazer: desfeitos.get(linkDocId) ?? 0,
       onDescartar: (tipo) => pedirDescarte(linkDocId, tipo),
       decisaoDePublicar,
       falhaDaLeitura: falhaDaLeituraDoBloco(entrada, decisaoDePublicar),

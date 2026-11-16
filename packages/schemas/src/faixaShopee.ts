@@ -37,9 +37,13 @@ import type { FaixaDto } from './taxonomiaShopeeDto';
  *
  * Readers today: the publisher (`montagemAnuncio.ts`, the tier modules
  * above, and `publicarAnuncio.ts`'s no-link mint, which asks
- * {@link textoUtilizavelShopee} whether the produto has a name), the draft
- * route (`rascunho.ts`), this package's `produto/collection/shopeeRascunho.ts`
- * (the draft's pendências), `marcaShopee.ts` and `atributosShopee.ts`, and
+ * {@link textoUtilizavelShopee} whether the produto has a name), the
+ * logistics builder (`logisticaPublicacao.ts`, the channel name CPY-4's
+ * `canalNomeado` puts in its sentence) and the `canais` route's read
+ * (`canaisDoRascunho.ts`, the DTO's `nome` — #1911 P15, so the two never name
+ * one channel two ways), the draft route (`rascunho.ts`), this package's
+ * `produto/collection/shopeeRascunho.ts` (the draft's pendências),
+ * `marcaShopee.ts` and `atributosShopee.ts`, and
  * `apps/web`'s Shopee tab (the draft editor's blank tests, character counter
  * and band sentences) and Marcas dialog (#1911 P9–P11).
  */

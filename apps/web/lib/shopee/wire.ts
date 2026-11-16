@@ -19,7 +19,8 @@
  * browser code keeps importing every answer shape
  * from this one file: the size-chart envelopes (step 18), the taxonomy answers
  * (the category tree, the item bands whole and cut to the size-chart slice,
- * Shopee's category suggestion, and a category's page of brands — #1911), the
+ * Shopee's category suggestion, a category's page of brands, its attribute
+ * tree and its variation tree — #1911), the
  * listing-draft route's answers and error items, and the publish's 202 for a
  * draft's uncertain first create (#1911).
  *
@@ -435,10 +436,11 @@ export const shopeeReclamacaoAcaoRespostaSchema = z.object({
 export type ShopeeReclamacaoAcaoResposta = z.infer<typeof shopeeReclamacaoAcaoRespostaSchema>;
 
 /* ---------------------------------------------------------------------------
- * The taxonomy reads (`GET …/taxonomia/{categorias,limites,recomendacao-categoria,marcas,variacoes}`,
+ * The taxonomy reads (`GET …/taxonomia/{categorias,limites,recomendacao-categoria,atributos,marcas,variacoes}`,
  * step 10's routes — the `/medidas` Shopee tab since step 18, the listing-draft
- * editor and a conta's Marcas section since #1911, a grupo's Shopee tab since
- * #1911 P14) and the two size-chart reads
+ * editor and a conta's Marcas section since #1911, the draft's «Atributos»
+ * section since #1911 P13, a grupo's Shopee tab since #1911 P14) and the two
+ * size-chart reads
  * (`GET …/tabela-medidas/{lista,detalhe}`, #1526, step 18)
  * ------------------------------------------------------------------------- */
 
@@ -504,6 +506,33 @@ export {
 export {
   respostaRecomendacaoCategoriaShopeeSchema,
   type RespostaRecomendacaoCategoriaShopee,
+} from '@delfrance/schemas';
+
+/**
+ * The attribute tree of one leaf category —
+ * `GET …/taxonomia/atributos?integracaoId=&categoryId=` (#1911 P13), for a
+ * listing draft's «Atributos» section and its publish gate. A non-leaf category
+ * answers the same shape, empty (`leaf: false`). The envelope, one attribute,
+ * its editor metadata and one value; a value's `childAttributeList` holds the
+ * attributes it unlocks, so the tree recurses through both levels.
+ *
+ * - ⚠️ `truncated: true` ⇒ a level was dropped: the tree is NOT complete, so an
+ *   attribute missing from it is not one Shopee does not ask for.
+ * - `valueId: 0` is a legal value id — never read it as "absent".
+ * - `inputType` / `inputValidationType` / `formatType` are Shopee's INTEGER
+ *   enums: decide through `tipoDeEntradaShopee` and the named constants of
+ *   `@delfrance/schemas`' `atributosShopee.ts`, never on a raw number.
+ * - Ids decide; a name never does.
+ */
+export {
+  atributoDtoSchema,
+  atributoInfoDtoSchema,
+  atributoValorDtoSchema,
+  respostaAtributosShopeeSchema,
+  type AtributoDto,
+  type AtributoInfoDto,
+  type AtributoValorDto,
+  type RespostaAtributosShopee,
 } from '@delfrance/schemas';
 
 /**

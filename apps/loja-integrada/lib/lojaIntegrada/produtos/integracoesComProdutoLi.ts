@@ -8,27 +8,32 @@
  * live link with no conta entry is a SILENT stock and price outage, so when in doubt
  * over-include), the race discipline of the two writes (rule 7: the add is tier 0, an
  * `arrayUnion`; the remove is tier 1, re-derived inside the core's guarded write from the
- * survivor read below), and why only the array key is ever written. Nothing here restates it.
+ * survivor read of point 3), and why only the array key is ever written. Nothing here restates
+ * it.
  * The Shopee binding (`apps/shopee/lib/shopee/anuncios/integracoesComProdutoShopee.ts`) is the
  * shape this file mirrors.
  *
- * What is Loja Integrada's and lives here:
+ * What is Loja Integrada's, and where it lives:
  *
- * 1. **The conta ref is `contaLojaIntegrada`**, read through `contaIdFromRef` — the ONE conta-ref
- *    reader every channel binding and the product import's link decisions share. Both stored
- *    forms (`documents/integracao/<id>` and the bare `integracao/<id>`) name the same conta; a
- *    malformed ref names none. ⚠️ A copy of another channel's binding compiles here and reads
- *    `null` on every Loja Integrada link, so both sides of the plan's comparison are `null`, the
- *    zero-cost fast path swallows every write and the trigger does nothing, silently — which is
- *    why {@link contaDoLinkLi} carries near-miss tests of its own.
+ * 1. **The conta ref is `contaLojaIntegrada`**, read by {@link contaDoLinkLi} through
+ *    `contaIdFromRef` — the ONE conta-ref reader every channel binding and the product import's
+ *    link decisions share. Both stored forms (`documents/integracao/<id>` and the bare
+ *    `integracao/<id>`) name the same conta; a malformed ref names none. ⚠️ A copy of another
+ *    channel's binding compiles here and reads `null` on every Loja Integrada link, so both sides
+ *    of the plan's comparison are `null`, the zero-cost fast path swallows every write and the
+ *    trigger does nothing, silently. `contaDoLinkLi` lives in `@delfrance/schemas`
+ *    (`lojaIntegradaLink.ts`, beside the counts predicate, with its near-miss tests) and is
+ *    re-exported here, so no importer changed; this binding's suite pins that it IS that copy.
  * 2. **The counts predicate is `vinculoLiConta`** (`@delfrance/schemas`, beside the link schema):
  *    the link names a store product (`id` a canonical positive integer, as a number or its
  *    decimal text) that is not in the trash (`removido !== true`). Hidden and blocked links
  *    COUNT; `estadoPublicacao` is not read. Total and non-throwing over a raw document, because
  *    it is handed whatever is on disk — and a throw inside the trigger's zero-read fast path
  *    would ride the Eventarc `retry: true` redelivery for ever.
- * 3. **The survivor read, and it is an INDEX decision** — see
- *    {@link sobrevivemVinculosDoProdutoLi}.
+ * 3. **The survivor read, and it is an INDEX decision** — {@link sobrevivemVinculosDoProdutoLi},
+ *    which lives in `@delfrance/data/admin/produtos` (`sobreviventesLi.ts`, where its header
+ *    argues the unfiltered read and its suite pins it): a `tools/migrations` script needs the
+ *    identical read and cannot import an app. This module binds it to the guarded remove.
  * 4. **The `FieldValue` sentinels**, supplied at this app boundary because
  *    `packages/data/src/admin/**` may only `import type` from `firebase-admin`.
  *
@@ -44,19 +49,21 @@
  *
  * ⚠️ **Narrow subpaths only.** This module sits in the Cloud Functions ENTRYPOINT graph
  * (`functions/src/onProdutoLojaIntegradaLinkChanged.ts`), so it imports
- * `@delfrance/data/admin/collections` and `@delfrance/data/admin/produtos` and never the
- * `@delfrance/data/admin` barrel. Clock-free: nothing here reads a clock or the environment.
+ * `@delfrance/data/admin/produtos` and never the `@delfrance/data/admin` barrel. Clock-free:
+ * nothing here reads a clock or the environment.
  */
-import { FieldValue, type Firestore, type Transaction } from 'firebase-admin/firestore';
-import { produtoLojaIntegradaLinkCollection } from '@delfrance/data/admin/collections';
+import { FieldValue, type Firestore } from 'firebase-admin/firestore';
 import {
   adicionarConta as adicionarContaCore,
-  contaIdFromRef,
   planLinkChange,
   removerContaSeOrfa as removerContaSeOrfaCore,
+  sobrevivemVinculosDoProdutoLi,
   type SentinelasDeArray,
 } from '@delfrance/data/admin/produtos';
-import { vinculoLiConta } from '@delfrance/schemas';
+import { contaDoLinkLi, vinculoLiConta } from '@delfrance/schemas';
+
+/** The anchor's conta reader — the ONE copy, in `@delfrance/schemas` (the header's point 1). */
+export { contaDoLinkLi };
 
 /**
  * The array sentinels the promoted writers cannot import for themselves (the header's point 4).
@@ -73,18 +80,6 @@ const SENTINELAS: SentinelasDeArray = {
 /* --------------------------------------------------------------------------
  * Pure helpers
  * ------------------------------------------------------------------------ */
-
-/**
- * The integração doc id a `produtolojaintegrada` link belongs to, or `null`.
- *
- * ⚠️ **`contaLojaIntegrada`** — the header's point 1. Both stored forms read as the same conta
- * (`'documents/integracao/C1'` ≡ `'integracao/C1'` ⇒ `C1`); another conta's ref reads as THAT
- * conta, and a malformed ref (another collection, a bare id, a non-string) as `null` — never as
- * some other conta. Non-throwing, because `contaIdFromRef` is.
- */
-export function contaDoLinkLi(link: Record<string, unknown>): string | null {
-  return contaIdFromRef(link.contaLojaIntegrada);
-}
 
 /**
  * What a `produtolojaintegrada` write means for the array, decided from the event payload ALONE —
@@ -111,45 +106,6 @@ export function planejarMudancaDeLinkLi(
 /* --------------------------------------------------------------------------
  * IO
  * ------------------------------------------------------------------------ */
-
-/**
- * Does this produto still hold a `produtolojaintegrada` link that COUNTS for this conta? The
- * reader the guarded removal evaluates inside its own read set.
- *
- * ⚠️ **The read is UNFILTERED, and that is the index decision.** `firestore.indexes.json`
- * declares the COLLECTION_GROUP composite `produtolojaintegrada (contaLojaIntegrada, id)` for
- * the order import's lookup, and NO `produtolojaintegrada` COLLECTION index — so a `where` on
- * the conta ref here would be an undeclared predicate, and on Firestore Enterprise an undeclared
- * predicate does not throw: it silently full-scans, billed by data SCANNED (root `CLAUDE.md`
- * rule 1). A produto carries a handful of link documents — one per conta it is listed under —
- * so reading them all and filtering in code needs NO index at all, which is the Shopee binding's
- * argument for its own scan. This step declares no index for it.
- *
- * ⚠️ **And a filter would also disagree with the plan.** The trigger decides its candidate with
- * {@link contaDoLinkLi} and `vinculoLiConta`; filtering here with the SAME two readers is what
- * keeps the survivor verdict consistent with that decision. A query could not: `contaIdFromRef`
- * also folds a ref stored with a leading slash or an empty segment, which an `in` over the two
- * canonical forms would miss, and `vinculoLiConta` counts an `id` stored as its decimal TEXT,
- * which a typed range on `id` would miss. Either miss reads "no survivor" for a link that
- * counts, and drops the conta — the silent-outage direction.
- *
- * ⚠️ The verdict comes from the `tx.get` result and from nothing captured before the write
- * opened: a retry of the core's guarded write re-runs this callback, but re-applies any outer
- * closure verbatim.
- */
-export function sobrevivemVinculosDoProdutoLi(
-  db: Firestore,
-  produtoId: string,
-  contaId: string,
-): (tx: Transaction) => Promise<boolean> {
-  return async (tx) => {
-    const snap = await tx.get(produtoLojaIntegradaLinkCollection.ref(db, { produtoId }));
-    return snap.docs.some((d) => {
-      const data = (d.data() ?? {}) as Record<string, unknown>;
-      return contaDoLinkLi(data) === contaId && vinculoLiConta(data);
-    });
-  };
-}
 
 /**
  * Add a conta to the produto's array — the promoted tier-0 write, bound to this app's

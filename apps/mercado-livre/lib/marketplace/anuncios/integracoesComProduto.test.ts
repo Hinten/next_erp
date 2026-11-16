@@ -281,6 +281,39 @@ describe('planLinkChange', () => {
       check: [],
     });
   });
+
+  // The binding hands the shared plan its conta reader, and exports none, so these pairs are the
+  // only pin that the plan reads the way the shared reader does. A local reader dropping a stored
+  // form, or falling back to another channel's field, would leave the reader's own suite green.
+  it.each([
+    ['the bare form', `integracao/${CONTA}`],
+    ['a leading slash', `/documents/integracao/${CONTA}`],
+  ])(
+    'EQUAL: %s is the same conta — its create adds it, a rewrite to it moves nothing',
+    (_r, ref) => {
+      const outraForma = { ...live, contaOuterRef: ref };
+      expect(planLinkChange(null, outraForma, linkHasLiveListing)).toEqual({
+        add: [CONTA],
+        check: [],
+      });
+      expect(planLinkChange(live, outraForma, linkHasLiveListing)).toEqual({ add: [], check: [] });
+    },
+  );
+
+  it.each([['contaLojaIntegrada'], ['contaProdutoShopeeOuterRef']])(
+    'NEAR-MISS: a live link carrying ONLY %s (another channel’s conta field) plans NOTHING',
+    (campo) => {
+      const soOutroCampo = { [campo]: REF_CANONICO, id: 'MLB1', estado: 'p' };
+      expect(planLinkChange(null, soOutroCampo, linkHasLiveListing)).toEqual({
+        add: [],
+        check: [],
+      });
+      expect(planLinkChange(soOutroCampo, null, linkHasLiveListing)).toEqual({
+        add: [],
+        check: [],
+      });
+    },
+  );
 });
 
 describe('variacaoPodeMudarMembership', () => {

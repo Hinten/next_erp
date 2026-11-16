@@ -1140,6 +1140,20 @@ export {
   type RespostaRecomendacaoCategoriaShopee,
 } from './taxonomiaShopeeDto';
 
+// The Shopee CHANNELS route envelope (#1911, P15), declared once like the
+// taxonomy ones above: `apps/shopee`'s `canais` route builds its 200 against it
+// and `apps/web` (P16) parses with it. Not a collection, so no `registry.ts`
+// entry.
+export {
+  motivoIndisponivelCanalShopeeSchema,
+  MOTIVO_INDISPONIVEL_CANAL_SHOPEE,
+  canalDaLojaShopeeDtoSchema,
+  respostaCanaisShopeeSchema,
+  type MotivoIndisponivelCanalShopee,
+  type CanalDaLojaShopeeDto,
+  type RespostaCanaisShopee,
+} from './logisticaShopeeDto';
+
 // …and THE band check + text resolution the publisher applies to a listing's
 // name and description — the draft editor's counter and pendências call the
 // same functions (#1369 — one copy).
@@ -1168,6 +1182,8 @@ export {
   validarAtributosShopee,
   atributosParaGravarShopee,
   atributosParaEnvioShopee,
+  decimalShopeeDaTela,
+  decimalShopeeParaTela,
   lerDataDeAtributoShopee,
   timestampDeDataShopee,
   origemValorAtributoShopeeSchema,
@@ -1776,6 +1792,9 @@ export {
   MOTIVO_RASTREIO_DIVERGENTE_LI,
   motivoCategoriaSemVinculoLiSchema,
   MOTIVO_CATEGORIA_SEM_VINCULO_LI,
+  motivoEstoqueVinculoLiSchema,
+  MOTIVO_ESTOQUE_VINCULO_LI,
+  MAX_AMOSTRA_AVISO_ESTOQUE_LI,
   situacaoAnuncioForaDaSincronizacaoSchema,
   SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO,
   chaveDeAviso,
@@ -1802,6 +1821,7 @@ export {
   type MotivoReversaoComEtiquetaLi,
   type MotivoRastreioDivergenteLi,
   type MotivoCategoriaSemVinculoLi,
+  type MotivoEstoqueVinculoLi,
   type SituacaoAnuncioForaDaSincronizacao,
 } from './aviso';
 export * from './shared/inicio';
@@ -1846,6 +1866,15 @@ export * from './faseRetirada';
 // Bare: no Meta, never a combined `{ schema, meta }`, so `registry.test.ts` sees
 // nothing to register.
 export * from './notificacaoEscritaLojaIntegrada';
+
+// Admin-only / default-deny (NOT in ALL_DOMAINS) — the Loja Integrada stock sync
+// (master plan step 12, PR 12-a): the per-conta cursor, snapshot and kits map, the
+// daily reconcile's run document, and the stock tasks' ids-only payloads. Bare: no
+// Meta, never a combined `{ schema, meta }`, so `registry.test.ts` sees nothing to
+// register and the rules generator emits nothing.
+export * from './sincEstoqueLojaIntegrada';
+export * from './reconcileEstoqueLojaIntegrada';
+export * from './tarefaEstoqueLojaIntegrada';
 
 // The machine-readable next step of a Shopee publish refusal (step 21, #1529):
 // the refusal sites in `apps/shopee` produce it, the web's wire parses it per row

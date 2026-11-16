@@ -60,14 +60,16 @@ import {
   achadosDaLeituraShopee,
   achadosDoVinculadorShopee,
   agruparVinculosShopee,
+  avisosDaRemocaoShopee,
   definirGrupoDoVinculoShopee,
   definirOpcaoDaVarianteShopee,
   escolhaAtualDaVariante,
   escolhaDaLinhaShopee,
+  escolhaPersonalizadaDaVarianteShopee,
   grupoAusenteShopee,
   linkDoSeedShopee,
   mensagemDoAchadoShopee,
-  nomePersonalizadoAusenteShopee,
+  mensagemDoAvisoDeRemocaoShopee,
   novoVinculoShopee,
   removerVinculoShopee,
   situacaoDaChaveShopee,
@@ -99,11 +101,17 @@ import { ehObjeto, nomesDasVariantes, proprio } from './vinculosDeCanal';
  *    may be using it. "Stored" means the draft's rows AND the seed's
  *    (`linkDoSeedShopee`), so an edit that took such an option off its last variante
  *    never takes it out of the list.
- *  - **Names are never typed or folded here.** A standard row stores Shopee's string
- *    verbatim and a custom row the variante's; labels trim for display, and a
- *    `Select`'s value is never a label. Mantine's search only narrows the list, so it
- *    decides no equality. A variante with no name yet offers its custom option
- *    disabled: there is no name to store.
+ *  - **Names are never typed here, and only the rules module folds one.** A standard
+ *    row stores Shopee's string verbatim, a stored row keeps its own, and a NEW custom
+ *    row stores the variante's name ends-trimmed (`escolhaPersonalizadaDaVarianteShopee`,
+ *    #1911 P14b); labels trim for display, and a `Select`'s value is never a label.
+ *    Mantine's search only narrows the list, so it decides no equality. A variante with
+ *    no name yet offers its custom option disabled: there is no name to store.
+ *  - **A staged removal says what the next publication does without the entry**
+ *    (`avisosDaRemocaoShopee`), wherever a publication could read it: an active conta's
+ *    block, an inactive Shopee conta, or ANY conta while the conta list is loading or
+ *    failed (it may be Shopee's). Never under a conta the READ list says is not Shopee's
+ *    or does not exist.
  *  - **Shopee is read only while this tab is the active one**, and without a tree a
  *    card still offers «Sem opção», the stored rows (the draft's and the seed's) and
  *    the custom option.
@@ -220,7 +228,10 @@ export function VinculadorDaShopee({
   );
 }
 
-/** A live variante of the form. `nome` is verbatim, blank included: a custom row stores it. */
+/**
+ * A live variante of the form. `nome` is verbatim, blank included: a NEW custom row
+ * stores it ends-trimmed, and a blank one offers no custom option.
+ */
 interface VarianteOferecida {
   readonly id: string;
   readonly nome: string;
@@ -325,7 +336,13 @@ function BlocoContaShopee({
               contexto={contexto}
             />
           ) : (
-            <VinculoSomenteLeitura key={item.indice} item={item} conta={null} contexto={contexto} />
+            <VinculoSomenteLeitura
+              key={item.indice}
+              item={item}
+              conta={null}
+              contaPublicavel
+              contexto={contexto}
+            />
           ),
         )}
       </Stack>
@@ -814,7 +831,16 @@ function CartaoVinculoShopee({
             }
           />
         ))}
-        <AvisosDoVinculo item={item} achadosDaLeitura={achados} contexto={contexto} />
+        <AvisosDoVinculo
+          item={item}
+          achadosDaLeitura={achados}
+          // A card exists only inside an ACTIVE conta's block: a publication reads it.
+          contaPublicavel
+          // `categoriaDesconhecida || disabled`, never `!editavel`: a card waiting for its
+          // group becomes editable after the pick, so its «Escolha uma.» stays.
+          somenteLeitura={categoriaDesconhecida || contexto.disabled}
+          contexto={contexto}
+        />
       </Stack>
     </Paper>
   );
@@ -851,14 +877,18 @@ function rotuloDaLinhaShopee(
  *
  * ⚠️ `valorDaLinhaShopee` builds every value, so a stored row and a tree option of one
  * id are one item, a row in both the draft and the seed is one item (the draft's,
- * first), and a stored custom row named like the variante does not repeat the custom
- * item (Mantine THROWS on a repeated value).
+ * first), and a stored custom row named like the variante's TRIMMED name does not
+ * repeat the custom item (Mantine THROWS on a repeated value). The custom item stores
+ * that trimmed name (`escolhaPersonalizadaDaVarianteShopee`, #1911 P14b); a legacy row
+ * stored with edge spaces keeps its own value, so beside a variante of the same
+ * trimmed name the two items share one label — re-picking either is harmless.
  *
  * An option the tree sends with no name has nothing to store verbatim, and the
  * publisher would send that blank beside a standard id: it shows, disabled, unless a
  * stored row already carries its name. No capture has shown one. A variante with no
  * name yet is the same case for its custom option: shown, disabled
- * (`nomePersonalizadoAusenteShopee`, the finding's own measure).
+ * (`escolhaPersonalizadaDaVarianteShopee` answers `null` exactly when
+ * `nomePersonalizadoAusenteShopee`, the finding's own measure, reads no name).
  */
 function itensDaVariante(
   variante: VarianteOferecida,
@@ -899,12 +929,17 @@ function itensDaVariante(
       escolha: escolhaDaLinhaShopee(linha),
     });
   }
+  const personalizada = escolhaPersonalizadaDaVarianteShopee(variante.nome);
   itens.push({
-    value: valorDaLinhaShopee({ shopee_option_id: 0, shopee_option_name: variante.nome }),
-    label: `Personalizada: «${nomeDaVariante(variante.id)}»`,
-    escolha: nomePersonalizadoAusenteShopee(variante.nome)
-      ? null
-      : { tipo: 'personalizada', nome: variante.nome },
+    value: valorDaLinhaShopee({
+      shopee_option_id: 0,
+      shopee_option_name: personalizada?.nome ?? variante.nome,
+    }),
+    label:
+      personalizada === null
+        ? `Personalizada: «${nomeDaVariante(variante.id)}»`
+        : rotuloDaLinhaShopee({ shopee_option_id: 0, shopee_option_name: personalizada.nome }),
+    escolha: personalizada,
   });
   return itensSemRepetir(itens);
 }
@@ -1016,16 +1051,26 @@ function BotaoRemocaoShopee({
 }
 
 /**
- * A conflict merge's note and this element's findings. ⚠️ `chave-repetida`'s sentence
- * says ANOTHER entry comes first, so it shows on the twin alone, though it names both.
+ * A conflict merge's note, a staged removal's warnings and this element's findings.
+ * ⚠️ `chave-repetida`'s sentence says ANOTHER entry comes first, so it shows on the
+ * twin alone, though it names both.
  */
 function AvisosDoVinculo({
   item,
   achadosDaLeitura,
+  contaPublicavel,
+  somenteLeitura,
   contexto,
 }: {
   item: ItemVinculoShopee;
   achadosDaLeitura: readonly AchadoVinculoShopee[];
+  /**
+   * A publication may read this element's conta: an active or inactive Shopee conta, or
+   * one the conta list has not answered for yet. Gates the staged-removal warnings.
+   */
+  contaPublicavel: boolean;
+  /** The card offers nothing to choose (`CartaoDoAchadoShopee`). */
+  somenteLeitura: boolean;
   contexto: ContextoDoVinculador;
 }) {
   const gemea = item.tipo !== TIPO_ITEM_VINCULO_SHOPEE.ilegivel && item.gemea;
@@ -1036,6 +1081,10 @@ function AvisosDoVinculo({
     ),
     ...achadosDaLeitura,
   ];
+  const avisosDaRemocao =
+    item.removida && contaPublicavel
+      ? avisosDaRemocaoShopee(contexto.valor, item.indice, contexto.variantes)
+      : [];
   return (
     <>
       {item.conflito === CONFLITO_VINCULO_SHOPEE.alterado && (
@@ -1050,6 +1099,11 @@ function AvisosDoVinculo({
           mantê-lo.
         </Alert>
       )}
+      {avisosDaRemocao.map((aviso, i) => (
+        <Alert key={`${aviso.tipo}-${String(i)}`} color="orange" variant="light" p="xs">
+          <Text size="sm">{mensagemDoAvisoDeRemocaoShopee(aviso)}</Text>
+        </Alert>
+      ))}
       {achados.map((achado, i) => (
         <Alert
           key={`${achado.tipo}-${String(i)}`}
@@ -1057,7 +1111,9 @@ function AvisosDoVinculo({
           variant="light"
           p="xs"
         >
-          <Text size="sm">{mensagemDoAchadoShopee(achado, contexto.nomeDaVariante)}</Text>
+          <Text size="sm">
+            {mensagemDoAchadoShopee(achado, contexto.nomeDaVariante, { somenteLeitura })}
+          </Text>
         </Alert>
       ))}
     </>
@@ -1071,10 +1127,13 @@ function AvisosDoVinculo({
 function VinculoSomenteLeitura({
   item,
   conta,
+  contaPublicavel,
   contexto,
 }: {
   item: ItemVinculoShopee;
   conta: string | null;
+  /** See `AvisosDoVinculo`. */
+  contaPublicavel: boolean;
   contexto: ContextoDoVinculador;
 }) {
   const link = item.tipo === TIPO_ITEM_VINCULO_SHOPEE.ilegivel ? null : item.link;
@@ -1120,7 +1179,13 @@ function VinculoSomenteLeitura({
             {`${rotuloDaLinhaShopee(opcao)} → ${opcao.arakene_variation_id.map(contexto.nomeDaVariante).join(', ')}`}
           </Text>
         ))}
-        <AvisosDoVinculo item={item} achadosDaLeitura={[]} contexto={contexto} />
+        <AvisosDoVinculo
+          item={item}
+          achadosDaLeitura={[]}
+          contaPublicavel={contaPublicavel}
+          somenteLeitura
+          contexto={contexto}
+        />
       </Stack>
     </Paper>
   );
@@ -1173,6 +1238,12 @@ function OutrosVinculosShopee({
             key={item.indice}
             item={item}
             conta={rotuloDaConta(item.chave?.integracaoId ?? null, contas, statusContas)}
+            // An inactive Shopee conta, or a list not read (yet): a publication may read
+            // it. A conta that is not Shopee's, or does not exist, is read by none.
+            contaPublicavel={
+              statusContas !== 'success' ||
+              contas.get(item.chave?.integracaoId ?? '')?.tipo === INTEGRACAO_TIPO.shopee
+            }
             contexto={contexto}
           />
         ))}

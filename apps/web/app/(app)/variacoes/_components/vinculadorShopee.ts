@@ -21,9 +21,20 @@
  *
  * A standard row is matched by `shopee_option_id` whatever the name says, so two
  * options Shopee names alike are two rows. A custom row (`id 0`) has only its
- * name. No name here is ever folded: this module never trims, lowers or compares
- * a name loosely, and a name reaches storage VERBATIM (`' Azul '` stays so; the
- * publisher folds what it sends). Display copy trims; nothing decides on it.
+ * name, and a row is matched by it byte-exact: this module never lowers a name or
+ * compares one loosely to pick a row. A STANDARD name and any STORED row reach
+ * storage verbatim (`' Azul '` stays so). A NEW custom row stores the variante's
+ * name ends-trimmed through `nomeDeTierShopee` (#1911 P14b), the fold the
+ * publisher sends a custom option with and the import reads it back with, so the
+ * import's byte-exact merge finds the row instead of adding a twin. Display copy
+ * trims too; nothing decides on it.
+ *
+ * ## The one fold that decides something: a staged removal's warning
+ *
+ * `avisosDaRemocaoShopee` predicts what the publisher does once a staged entry is
+ * gone, so it compares names exactly as the publisher pairs them: both sides
+ * through `nomeDeTierShopee` (the ends trimmed; case and inner whitespace kept).
+ * It decides only whether a warning shows; nothing is written from it.
  *
  * ## What never leaves
  *
@@ -59,6 +70,7 @@ import {
   chaveDaEntradaShopee,
   descreverFaixaShopee,
   linkVariacoesShopeeSchema,
+  nomeDeTierShopee,
   resolverEntradaShopeeDoGrupo,
   textoNaFaixaShopee,
   type FaixaDto,
@@ -291,7 +303,10 @@ export type EscolhaDaVarianteShopee =
   | { readonly tipo: 'nenhuma' }
   /** An option of the tree or a stored row: `nome` is Shopee's string, verbatim. */
   | { readonly tipo: 'padrao'; readonly optionId: number; readonly nome: string }
-  /** A custom row: `nome` is the variante's own name, verbatim, or a stored row's. */
+  /**
+   * A custom row: `nome` is a stored row's, verbatim, or a NEW row's — the
+   * variante's name ends-trimmed ({@link escolhaPersonalizadaDaVarianteShopee}).
+   */
   | { readonly tipo: 'personalizada'; readonly nome: string };
 
 /** Which stored rows hold a variante now; the `Select`'s current value derives from it. */
@@ -325,13 +340,28 @@ export function valorDaLinhaShopee(
     : String(linha.shopee_option_id);
 }
 
-/** The choice that re-selects a stored row. */
+/** The choice that re-selects a stored row: its name verbatim, never re-spelled. */
 export function escolhaDaLinhaShopee(
   linha: Pick<LinkVariacaoOpcaoShopee, 'shopee_option_id' | 'shopee_option_name'>,
 ): EscolhaDaVarianteShopee {
   return linha.shopee_option_id === 0
     ? { tipo: 'personalizada', nome: linha.shopee_option_name }
     : { tipo: 'padrao', optionId: linha.shopee_option_id, nome: linha.shopee_option_name };
+}
+
+/**
+ * The choice «Personalizada» offers a variante (#1911 P14b, P14 Q1): its name through
+ * `nomeDeTierShopee` — the fold the publisher sends a custom option with and the
+ * import reads it back with — so a NEW custom row stores the string Shopee will hold
+ * and the import's byte-exact merge finds it (no twin). Case and inner whitespace stay
+ * as typed. `null` when nothing is left (the item is offered disabled). A STORED row is
+ * never re-spelled: {@link escolhaDaLinhaShopee} keeps its name verbatim.
+ */
+export function escolhaPersonalizadaDaVarianteShopee(
+  nome: string,
+): Extract<EscolhaDaVarianteShopee, { readonly tipo: 'personalizada' }> | null {
+  const aparado = nomeDeTierShopee(nome);
+  return aparado === '' ? null : { tipo: 'personalizada', nome: aparado };
 }
 
 /** A row is the choice: the same non-zero id, or id `0` and the byte-exact name. */
@@ -350,7 +380,9 @@ function linhaEhDaEscolha(linha: Registro, escolha: EscolhaDaVarianteShopee): bo
  *     takes the variante: a row stored twice would otherwise keep it in two rows,
  *     the very finding the operator came to clear.
  *  2. That row gets the variante appended when absent; every other row loses it.
- *  3. No row is the choice's and it is not `nenhuma` ⇒ a new row, the name VERBATIM.
+ *  3. No row is the choice's and it is not `nenhuma` ⇒ a new row, the choice's name
+ *     as it came (a custom choice is already trimmed by
+ *     {@link escolhaPersonalizadaDaVarianteShopee}; nothing is trimmed here).
  *  4. A row THIS call emptied is dropped; a row stored empty stays.
  *  5. Nothing changed ⇒ the SAME object, marks included, so re-choosing the current
  *     option is not an edit. A change is one: the conflict note goes with the rest.
@@ -505,6 +537,132 @@ export function removerVinculoShopee(
     lista.filter((_, i) => i !== indice),
     seedLinks,
   );
+}
+
+/* -------------------------------------------------------------------------- */
+/*                   What a staged removal changes in a publish                */
+/* -------------------------------------------------------------------------- */
+
+export const TIPO_AVISO_REMOCAO_SHOPEE = {
+  /** A custom entry's live option will be re-appended under a variante's name (P14 Q2). */
+  opcaoAcrescentada: 'opcao-acrescentada',
+  /** A listing of this standard variation will be refused on republish (P14 Q3b). */
+  variacaoRecusada: 'variacao-recusada',
+} as const;
+
+/** One warning on a staged removal; names are folded through `nomeDeTierShopee`. */
+export type AvisoDeRemocaoShopee =
+  | {
+      readonly tipo: typeof TIPO_AVISO_REMOCAO_SHOPEE.opcaoAcrescentada;
+      readonly variante: string;
+      readonly opcao: string;
+    }
+  | {
+      readonly tipo: typeof TIPO_AVISO_REMOCAO_SHOPEE.variacaoRecusada;
+      readonly variationId: number;
+    };
+
+/**
+ * What the publisher does differently once the STAGED element at `indice` is gone
+ * (#1911 P14b, P14 Q2 and Q3b). Form only: no read, so it says what a published
+ * listing in this (conta, category) WOULD meet, never whether one exists.
+ *
+ *  1. Nothing unless the element is staged, readable and names a key.
+ *  2. Nothing unless it is the element the publisher reads for that key today: a twin
+ *     behind another one was never read, so dropping it changes nothing.
+ *  3. A STANDARD entry: a warning unless what this save writes still answers the key
+ *     with an entry of the SAME `variation_id` (a later twin of it). Anything else — no
+ *     entry, another variation, an unreadable one — refuses a listing that uses it.
+ *  4. A CUSTOM entry: only when nothing answers the key afterwards (the publisher falls
+ *     back to the implicit custom tier, which pairs live options with variantes BY
+ *     NAME). For each id-`0` row, each variante of the grupo it binds whose folded name
+ *     is not the name of ANY id-`0` row of this entry (that variante re-pairs a live
+ *     option by name, so nothing is appended) is appended as a new option and takes
+ *     the model, leaving the row's option without one. A nameless variante is refused
+ *     by the publisher (it moves nothing); a variante the grupo no longer offers is
+ *     never published. One warning per distinct (variante, opção) pair.
+ *
+ * `variantes` is the form's live list (`id`, `nome` verbatim); names are compared
+ * through `nomeDeTierShopee` on both sides, exactly as the publisher pairs them: the
+ * ends fold, case and inner whitespace do not. See the module header.
+ */
+export function avisosDaRemocaoShopee(
+  valor: unknown,
+  indice: number,
+  variantes: readonly { readonly id: string; readonly nome: string }[],
+): AvisoDeRemocaoShopee[] {
+  if (!Array.isArray(valor)) return [];
+  const lista: readonly unknown[] = valor;
+  const bruto = lista[indice];
+  if (!removidaNoFormularioShopee(bruto)) return [];
+  const lido = linkVariacoesShopeeSchema.safeParse(normalizarEntradaShopee(bruto));
+  if (!lido.success) return [];
+  const link = lido.data;
+  const chave = chaveDaEntradaShopee(link);
+  if (chave === null) return [];
+
+  const antes = prepararVinculosShopeeComOrigem(alternarRemocaoShopee(lista, indice));
+  const lidaAntes = resolverEntradaShopeeDoGrupo(antes.lista, chave.integracaoId, chave.categoryId);
+  if (lidaAntes.tipo !== 'armazenada' || antes.origem[lidaAntes.indice] !== indice) return [];
+  const depois = resolverEntradaShopeeDoGrupo(
+    prepararVinculosShopeeComOrigem(lista).lista,
+    chave.integracaoId,
+    chave.categoryId,
+  );
+
+  if (link.variation_id !== 0) {
+    const mesmaVariacao =
+      depois.tipo === 'armazenada' && depois.entrada.variation_id === link.variation_id;
+    return mesmaVariacao
+      ? []
+      : [{ tipo: TIPO_AVISO_REMOCAO_SHOPEE.variacaoRecusada, variationId: link.variation_id }];
+  }
+  if (depois.tipo !== 'personalizada-implicita') return [];
+
+  const nomesDasVariantesDoGrupo = new Map<string, string>();
+  for (const v of variantes) {
+    if (!nomesDasVariantesDoGrupo.has(v.id))
+      nomesDasVariantesDoGrupo.set(v.id, nomeDeTierShopee(v.nome));
+  }
+  // The import's record of the live custom options. It holds this row's own option
+  // too, so "the variante re-pairs the option it is on" is the same test.
+  const vivas = new Set(
+    link.variationOptions
+      .filter((o) => o.shopee_option_id === 0)
+      .map((o) => nomeDeTierShopee(o.shopee_option_name)),
+  );
+  const avisos: AvisoDeRemocaoShopee[] = [];
+  const vistos = new Set<string>();
+  for (const linha of link.variationOptions) {
+    if (linha.shopee_option_id !== 0) continue;
+    const opcao = nomeDeTierShopee(linha.shopee_option_name);
+    if (opcao === '') continue;
+    for (const id of linha.arakene_variation_id) {
+      const variante = nomesDasVariantesDoGrupo.get(id);
+      if (variante === undefined || variante === '' || vivas.has(variante)) continue;
+      const par = JSON.stringify([variante, opcao]);
+      if (vistos.has(par)) continue;
+      vistos.add(par);
+      avisos.push({ tipo: TIPO_AVISO_REMOCAO_SHOPEE.opcaoAcrescentada, variante, opcao });
+    }
+  }
+  return avisos;
+}
+
+/** The card's copy of one staged-removal warning (pt-BR, decided verbatim). */
+export function mensagemDoAvisoDeRemocaoShopee(aviso: AvisoDeRemocaoShopee): string {
+  switch (aviso.tipo) {
+    case TIPO_AVISO_REMOCAO_SHOPEE.opcaoAcrescentada:
+      return (
+        `Ao remover este vínculo, a próxima publicação acrescenta a opção «${aviso.variante}» ` +
+        `e move o modelo para ela; «${aviso.opcao}» fica sem modelo.`
+      );
+    case TIPO_AVISO_REMOCAO_SHOPEE.variacaoRecusada:
+      return (
+        `Um anúncio publicado nesta categoria que use a variação ${String(aviso.variationId)} ` +
+        'será recusado ao republicar até que este vínculo seja recriado.'
+      );
+  }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -809,6 +967,16 @@ function rotuloDaOpcao(opcao: OpcaoDoAchadoShopee): string {
   return opcao.id === 0 ? nome : `${nome} (${String(opcao.id)})`;
 }
 
+/** Where a finding's sentence is shown (#1911 P14b, P14 Q4). */
+export interface CartaoDoAchadoShopee {
+  /**
+   * The card offers no `Select` to act on: a custom entry, another conta's, an unknown
+   * category, or a form the operator may not edit. `variante-em-duas-opcoes` then drops
+   * its imperative «Escolha uma.»; every other sentence is the same on both cards.
+   */
+  readonly somenteLeitura: boolean;
+}
+
 /**
  * The card's copy of one finding (pt-BR). `nomeDaVariante` labels a variante id.
  * ⚠️ `chave-repetida`'s sentence says another entry comes FIRST, so it belongs on
@@ -817,6 +985,7 @@ function rotuloDaOpcao(opcao: OpcaoDoAchadoShopee): string {
 export function mensagemDoAchadoShopee(
   achado: AchadoVinculoShopee,
   nomeDaVariante: (id: string) => string,
+  cartao: CartaoDoAchadoShopee,
 ): string {
   switch (achado.tipo) {
     case TIPO_ACHADO_SHOPEE.chaveRepetida:
@@ -828,7 +997,8 @@ export function mensagemDoAchadoShopee(
       return (
         `A variante «${nomeDaVariante(achado.varianteId)}» está em mais de uma opção ` +
         `(${achado.opcoes.map(rotuloDaOpcao).join(', ')}) — a publicação pode usar qualquer ` +
-        'uma delas, ou recusar o anúncio. Escolha uma.'
+        'uma delas, ou recusar o anúncio.' +
+        (cartao.somenteLeitura ? '' : ' Escolha uma.')
       );
     case TIPO_ACHADO_SHOPEE.opcaoPersonalizadaSemNome:
       return (

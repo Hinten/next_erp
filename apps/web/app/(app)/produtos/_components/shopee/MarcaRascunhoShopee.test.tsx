@@ -195,6 +195,33 @@ describe('MarcaRascunhoShopee — what a pick sends (D10, §H Q1)', () => {
     show({ editavel: true });
     expect((select() as HTMLInputElement).disabled).toBe(false);
   });
+
+  it('⛔ Enter with the list closed, or filtered with nothing highlighted, never submits the produto form ⟷ NEAR-MISS: ↓ then Enter still picks the first option («Sem marca»)', () => {
+    // The draft sits INSIDE the produto's <form>: an Enter whose default is not
+    // prevented there is an implicit submission of THAT form.
+    const { onEscolher } = show({ marca: null });
+    const campo = select();
+    expect(fireEvent.keyDown(campo, { key: 'Enter', code: 'Enter' })).toBe(false);
+    // NumpadEnter carries `key: 'Enter'` too — the guard reads the key, not the code.
+    expect(fireEvent.keyDown(campo, { key: 'Enter', code: 'NumpadEnter' })).toBe(false);
+    expect(onEscolher).not.toHaveBeenCalled();
+
+    fireEvent.click(campo);
+    fireEvent.change(campo, { target: { value: 'zz' } });
+    expect(fireEvent.keyDown(campo, { key: 'Enter', code: 'Enter' })).toBe(false);
+    expect(onEscolher).not.toHaveBeenCalled();
+
+    fireEvent.change(campo, { target: { value: '' } });
+    fireEvent.keyDown(campo, { key: 'ArrowDown', code: 'ArrowDown' });
+    fireEvent.keyDown(campo, { key: 'Enter', code: 'Enter' });
+    expect(onEscolher).toHaveBeenCalledTimes(1);
+    expect(onEscolher).toHaveBeenCalledWith({ brand_id: 0, original_brand_name: null });
+  });
+
+  it('NEAR-MISS: any other key types normally', () => {
+    show({ marca: null });
+    expect(fireEvent.keyDown(select(), { key: 'a', code: 'KeyA' })).toBe(true);
+  });
 });
 
 describe('MarcaRascunhoShopee — the held pair', () => {
