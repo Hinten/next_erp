@@ -125,6 +125,18 @@ export const contadoresEstoqueLiSchema = z.record(
 /* -------------------------------------------------------------------------- */
 
 /**
+ * The largest page the store's stock list is asked for: a BOUND, not a measurement. The
+ * produto list answered `limit=100` in full and refused 200 and above with a 400; the stock
+ * list's own ceiling is not measured yet.
+ *
+ * ⚠️ The ONE bound. The cursor below holds its `limite` to it and the wire's page reader
+ * (`lerPaginaEstoqueLi`, which re-exports this binding) refuses anything above it, so a page
+ * size a run stored can never be one every resume refuses. A configured page size is clamped
+ * to it, never to a copy.
+ */
+export const MAX_LIMITE_PAGINA_ESTOQUE_LI = 100;
+
+/**
  * Where the reconcile stands in the store's stock list for this conta. The list has no filter,
  * so it is read whole, one page per call, `limite` rows at a time from `offset`: a run cut
  * short at page 13 of 25 resumes at 13. `null` = no run is reading this conta's list.
@@ -133,7 +145,7 @@ export const reconcileContaEstoqueLiSchema = z.object({
   /** The next row to read, 0-based. */
   offset: z.number().int().nonnegative(),
   /** The page size the run started with; a run never changes it mid-list. */
-  limite: z.number().int().min(1).max(1000),
+  limite: z.number().int().min(1).max(MAX_LIMITE_PAGINA_ESTOQUE_LI),
   /** MS. When this conta's list read began. */
   iniciadoEmMs: millisSinceEpoch(),
 });

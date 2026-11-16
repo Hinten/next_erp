@@ -96,7 +96,7 @@
  * names. It keeps no rule of its own.
  */
 import { camposInvalidos } from '@delfrance/core/wire';
-import { idDoRecursoLi, RECURSO_URI_LI } from '@delfrance/schemas';
+import { idDoRecursoLi, MAX_LIMITE_PAGINA_ESTOQUE_LI, RECURSO_URI_LI } from '@delfrance/schemas';
 import { z } from 'zod';
 
 import type { LiLeituraClient, RespostaLi } from './client';
@@ -118,19 +118,15 @@ import {
 export const CAMINHO_ESTOQUE_LI = '/v1/produto_estoque';
 
 /**
- * The largest page the stock list is asked for: a BOUND, not a measurement. The
- * produto list answered `limit=100` in full and refused 200 and above with a 400
- * (`produtos.ts`, "Page size"); the stock list's own ceiling is not measured
- * yet, and nothing asks it for more than this. The page applied is read back in
- * `meta.limit`, never assumed.
- *
- * ⚠️ The ONE bound. A caller that keeps a page size — read from its
- * environment, or stored in a resumable cursor — bounds it by THIS constant,
- * never by a copy of its own: a stored size above it refuses every page read
- * from it (`LiConfigError('limite')`), so a cursor that accepted one would stall
- * its run at every resume.
+ * The largest page the stock list is asked for: a BOUND, not a measurement. It is
+ * `@delfrance/schemas`' `MAX_LIMITE_PAGINA_ESTOQUE_LI`, re-exported here as the
+ * same binding, never a copy: the reconcile cursor's stored `limite` is held to
+ * it, so a size a run stored is never one this reader refuses at every resume.
+ * The produto list answered `limit=100` in full and refused 200 and above with a
+ * 400 (`produtos.ts`, "Page size"); the stock list's own ceiling is not measured
+ * yet. The page applied is read back in `meta.limit`, never assumed.
  */
-export const MAX_LIMITE_PAGINA_ESTOQUE_LI = 100;
+export { MAX_LIMITE_PAGINA_ESTOQUE_LI };
 
 export interface OpcoesPaginaEstoqueLi {
   /** The page's offset: 0, then each page's `proximoOffset`. */

@@ -1,3 +1,4 @@
+import * as schemas from '@delfrance/schemas';
 import { idDoRecursoLi, RECURSO_URI_LI } from '@delfrance/schemas';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -520,8 +521,15 @@ describe('lerPaginaEstoqueLi — ONE page of the stock list', () => {
     expect(err).toMatchObject({ motivo: 'formato', status: 200, operacao: 'lerPaginaEstoque' });
   });
 
-  it('pins the page bound', () => {
+  it('pins the page bound: the schemas binding the reconcile cursor is held to', () => {
     expect(MAX_LIMITE_PAGINA_ESTOQUE_LI).toBe(100);
+    expect(MAX_LIMITE_PAGINA_ESTOQUE_LI).toBe(schemas.MAX_LIMITE_PAGINA_ESTOQUE_LI);
+    // The cursor refuses a stored size this reader would refuse.
+    const cursor = (limite: number) =>
+      schemas.reconcileContaEstoqueLiSchema.safeParse({ offset: 0, limite, iniciadoEmMs: 0 })
+        .success;
+    expect(cursor(MAX_LIMITE_PAGINA_ESTOQUE_LI)).toBe(true);
+    expect(cursor(MAX_LIMITE_PAGINA_ESTOQUE_LI + 1)).toBe(false);
     expect(CAMINHO_ESTOQUE_LI).toBe('/v1/produto_estoque');
   });
 

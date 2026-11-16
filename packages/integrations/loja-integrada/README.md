@@ -106,10 +106,11 @@ token **raw** after `Basic ` (not base64-encoded by us).
   product a row belongs to and what a missing row means are the app's. The
   produto a row names is read by `@delfrance/schemas`' resource-URI reader
   (`idDoRecursoLi`), the one the product import reads `filhos` and `pai` with,
-  never by a copy — the package's one use of that dependency. The stock list is
-  read one page at a time through `lerPaginaLi`, at most
-  `MAX_LIMITE_PAGINA_ESTOQUE_LI` rows a page (a bound, not yet measured, and the
-  one bound a caller's stored page size is held to), with exactly `limit` and
+  never by a copy. The stock list is read one page at a time through
+  `lerPaginaLi`, at most `MAX_LIMITE_PAGINA_ESTOQUE_LI` rows a page (a bound, not
+  yet measured; it lives in `@delfrance/schemas` and is re-exported, because the
+  reconcile cursor's stored page size is held to the same binding), with exactly
+  `limit` and
   `offset` and no filter (the list has none). Each row is read on its own: a row
   the schema refuses is reported in `ilegiveis` (its position, the produto it
   names, the field paths) and never costs the rows beside it; only a malformed
