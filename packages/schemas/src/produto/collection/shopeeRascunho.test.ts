@@ -38,7 +38,9 @@ import {
   idRascunhoShopeeSchema,
   inicioDaJanelaDaCriacaoShopeeS,
   janelaDaCriacaoIncertaShopee,
+  logisticaDoSistemaAnteriorShopee,
   MARGEM_ENVIO_SHOPEE_MS,
+  MAX_CANAIS_LOGISTICA_RASCUNHO_SHOPEE,
   MAX_DESCRIPTION_RASCUNHO_SHOPEE,
   MAX_ITEM_NAME_RASCUNHO_SHOPEE,
   mesmoValorDoRascunhoShopee,
@@ -49,6 +51,8 @@ import {
   MSG_BASE_SEM_ATRIBUTOS_NA_TROCA_DE_CATEGORIA_RASCUNHO_SHOPEE,
   MSG_BASE_SEM_CATEGORIA_NOS_ATRIBUTOS_RASCUNHO_SHOPEE,
   MSG_ITEM_NAME_EM_BRANCO_RASCUNHO_SHOPEE,
+  MSG_LOGISTICA_CANAL_REPETIDO_RASCUNHO_SHOPEE,
+  MSG_LOGISTICA_SEM_CANAL_LIGADO_RASCUNHO_SHOPEE,
   MSG_PATCH_VAZIO_RASCUNHO_SHOPEE,
   PADRAO_ID_RASCUNHO_SHOPEE,
   pendenciasDoRascunhoShopee,
@@ -64,6 +68,7 @@ import {
   type ArgsPendenciasRascunhoShopee,
   type CampoRascunhoShopee,
   type CamposRascunhoShopee,
+  type CanalLogisticaRascunhoShopee,
   type EstadoPublicacaoRascunhoShopee,
   type PendenciaRascunhoShopee,
   type PosicaoNaJanelaShopee,
@@ -1189,7 +1194,19 @@ const VAZIO: CamposRascunhoShopee = {
   category_id: null,
   marca: null,
   attributes: null,
+  // #1911 P15: produced ALWAYS — `null` («Automática») with nothing stamped.
+  logistic_info: null,
 };
+
+/**
+ * A provenance stamp (#2015) — MILLISECONDS, a literal: this file reads no
+ * clock. Only `logisticaGravadaPeloErpShopee` decides what counts as one.
+ */
+const CARIMBO_LOGISTICA = 1_730_000_000_000;
+
+/** Two channels in the draft's shape (#1911 P15) — synthetic ids, A < B. */
+const CANAL_A: CanalLogisticaRascunhoShopee = { logistic_id: 90003, enabled: true, is_free: false };
+const CANAL_B: CanalLogisticaRascunhoShopee = { logistic_id: 90005, enabled: false, is_free: true };
 
 /** A request-shape attribute list (what the draft route writes). */
 const ATRIBUTOS = [
@@ -1219,6 +1236,17 @@ function gravado(conteudo: z.output<typeof conteudoRascunhoShopeeSchema>): Recor
           original_brand_name: marca === null ? null : marca.original_brand_name,
         }),
   };
+}
+
+/**
+ * What the draft EDIT stores for a logistics write (#1911 P15): {@link gravado}
+ * plus the provenance stamp in the same write — the edit writes both or
+ * neither (#2015's rule).
+ */
+function gravadoComCarimbo(
+  conteudo: z.output<typeof conteudoRascunhoShopeeSchema>,
+): Record<string, unknown> {
+  return { ...gravado(conteudo), logisticaGravadaEm: CARIMBO_LOGISTICA };
 }
 
 /**
@@ -1314,18 +1342,27 @@ describe('camposDoRascunhoShopee — A projeção de um rascunho guardado (K2-4,
     });
   });
 
-  it('o campo RESERVADO (logistic_info) não é projetado, mesmo quando guardado; attributes SIM (P6)', () => {
-    const campos = camposDoRascunhoShopee({
+  // #1911 P15 — antes: «o campo RESERVADO (logistic_info) não é projetado, mesmo
+  // quando guardado; attributes SIM (P6)».
+  it('⚠️ PAR (P15): logistic_info é projetado SÓ quando carimbado — sem carimbo, null; attributes SIM (P6)', () => {
+    const guardado = {
       attributes: [{ attribute_id: 1 }],
       logistic_info: [{ logistic_id: 2 }],
-    });
+    };
+    const campos = camposDoRascunhoShopee(guardado);
     expect(Object.keys(campos)).toEqual([
       'item_name',
       'description',
       'category_id',
       'marca',
       'attributes',
+      'logistic_info',
     ]);
+    expect(campos.attributes).toEqual([]);
+    expect(campos.logistic_info).toBeNull();
+    expect(
+      camposDoRascunhoShopee({ ...guardado, logisticaGravadaEm: CARIMBO_LOGISTICA }).logistic_info,
+    ).toStrictEqual([{ logistic_id: 2, enabled: true, is_free: null }]);
   });
 
   it('attributes (P6): a forma de REQUISIÇÃO guardada é projetada como está, na ordem guardada', () => {
@@ -1505,11 +1542,10 @@ describe('mesmoValorDoRascunhoShopee — a comparação ESTREITA', () => {
     expect(mesmoValorDoRascunhoShopee(C.marca, 77, null)).toBe(false);
   });
 
-  it('RESERVADO: logistic_info é SEMPRE distinto, até `null` vs `null` (até o P15)', () => {
-    expect(mesmoValorDoRascunhoShopee(C.logisticInfo, null, null)).toBe(false);
-    expect(mesmoValorDoRascunhoShopee(C.logisticInfo, undefined, undefined)).toBe(false);
-    expect(mesmoValorDoRascunhoShopee(C.logisticInfo, [], [])).toBe(false);
-  });
+  // #1911 P15: «RESERVADO: logistic_info é SEMPRE distinto, até `null` vs `null`
+  // (até o P15)» saiu — a comparação estrutural chegou; o par e os quase-pares
+  // estão em «logistic_info no rascunho (#1911 P15) — a projeção, a comparação
+  // e os corpos».
 });
 
 describe('mesmoValorDoRascunhoShopee — attributes (P6, K2-5): ESTRUTURAL e estreita', () => {
@@ -1637,6 +1673,9 @@ describe('mesmoValorGravadoDoRascunhoShopee — a pergunta da ESCRITA (a marca �
       [C.attributes, ATRIBUTOS, [...ATRIBUTOS].reverse()],
       [C.attributes, ATRIBUTOS, JSON.parse(JSON.stringify(ATRIBUTOS)) as unknown],
       [C.logisticInfo, null, null],
+      // #1911 P15: the list pair and its order near-miss
+      [C.logisticInfo, [CANAL_A, CANAL_B], [{ ...CANAL_A }, { ...CANAL_B }]],
+      [C.logisticInfo, [CANAL_A, CANAL_B], [CANAL_B, CANAL_A]],
     ];
     for (const [campo, a, b] of casos) {
       const x = a as never;
@@ -1712,6 +1751,21 @@ describe('camposDaBaseDoRascunhoShopee — o que a base PRECISA nomear (K1-12 e 
     expect(camposDaBaseDoRascunhoShopee({ marca: null })).toEqual(['marca']);
     expect(camposDaBaseDoRascunhoShopee({ description: null })).toEqual(['description']);
     expect(camposDaBaseDoRascunhoShopee({})).toEqual([]);
+  });
+
+  it("logistic_info nunca é o extra: ({logistic_info}) ⇒ ['logistic_info']; ({attributes, logistic_info}) ⇒ ['category_id', 'attributes', 'logistic_info']", () => {
+    expect(camposDaBaseDoRascunhoShopee({ logistic_info: null })).toEqual(['logistic_info']);
+    expect(camposDaBaseDoRascunhoShopee({ logistic_info: [CANAL_A] })).toEqual(['logistic_info']);
+    expect(camposDaBaseDoRascunhoShopee({ attributes: null, logistic_info: null })).toEqual([
+      'category_id',
+      'attributes',
+      'logistic_info',
+    ]);
+    expect(camposDaBaseDoRascunhoShopee({ logistic_info: null, category_id: 1 })).toEqual([
+      'category_id',
+      'attributes',
+      'logistic_info',
+    ]);
   });
 
   it('⛔ QUASE-PAR: `attributes: undefined` NÃO nomeia o campo — o patch de título não ganha a categoria', () => {
@@ -1831,14 +1885,18 @@ describe('conteudoRascunhoShopeeSchema — a whitelist de escrita (normaliza)', 
     }
   });
 
-  it('⛔ a whitelist: item_id, um campo de ciclo de vida, o RESERVADO e chaves desconhecidas são recusados', () => {
+  // #1911 P15 — antes: «⛔ a whitelist: item_id, um campo de ciclo de vida, o
+  // RESERVADO e chaves desconhecidas são recusados». A linha `{ logistic_info: [] }`
+  // foi para «logistic_info no rascunho (#1911 P15)…», com a sua mensagem.
+  it('⛔ a whitelist: item_id, um campo de ciclo de vida, o carimbo do servidor e chaves desconhecidas são recusados', () => {
     for (const ruim of [
       { item_id: 2500139861 },
       { item_status: 'NORMAL' },
       { brand_id: 77 },
       { original_brand_name: 'Acme' },
       { publicacaoEmCurso: null },
-      { logistic_info: [] },
+      { logisticaGravadaEm: 1 },
+      { logistic_info: null, logisticaGravadaEm: CARIMBO_LOGISTICA },
       { item_name: 'Camiseta', foo: 1 },
     ]) {
       expect(conteudoRascunhoShopeeSchema.safeParse(ruim).success, JSON.stringify(ruim)).toBe(
@@ -2005,10 +2063,14 @@ describe('baseRascunhoShopeeSchema — o que o operador VIU, verbatim (K2-4)', (
     }
   });
 
-  it('⛔ estrita: chave desconhecida, campo RESERVADO, par incompleto e tipo errado são recusados', () => {
+  // #1911 P15 — antes: «⛔ estrita: chave desconhecida, campo RESERVADO, par
+  // incompleto e tipo errado são recusados» (a linha `{ logistic_info: null }` hoje PASSA).
+  it('⛔ estrita: chave desconhecida, o carimbo do servidor, um canal sem is_free, par incompleto e tipo errado são recusados', () => {
     for (const ruim of [
       { foo: 1 },
-      { logistic_info: null },
+      { logisticaGravadaEm: 1 },
+      { logistic_info: [{ logistic_id: 90003, enabled: true }] },
+      { logistic_info: [{ ...CANAL_A, size_id: 7 }] },
       { brand_id: 77 },
       { marca: { brand_id: 77 } },
       { marca: { brand_id: 77, original_brand_name: null, extra: 1 } },
@@ -2042,6 +2104,23 @@ describe('baseRascunhoShopeeSchema — o que o operador VIU, verbatim (K2-4)', (
           { attribute_id: 'lixo' },
         ],
       },
+      // #1911 P15: every shape a STAMPED list can project to — the base never
+      // re-applies the write's rules (no minimum, no unique, no ≥ 1 ON, a
+      // nullable is_free), or that draft could be neither edited nor discarded.
+      { logistic_info: [], logisticaGravadaEm: CARIMBO_LOGISTICA },
+      {
+        logistic_info: [
+          { logistic_id: 90005, enabled: false, is_free: 'x' },
+          { logistic_id: 90005 },
+        ],
+        logisticaGravadaEm: CARIMBO_LOGISTICA,
+      },
+      { logistic_info: [{ logistic_id: 90003, enabled: false }], logisticaGravadaEm: 0 },
+      {
+        logistic_info: [{ logistic_id: 90005 }, { logistic_id: 90003 }],
+        logisticaGravadaEm: CARIMBO_LOGISTICA,
+      },
+      { logistic_info: [{ logistic_id: 90005 }, { logistic_id: 90003 }] },
     ];
     const descarte = corpoDescartarRascunhoShopeeSchema.shape.base;
     for (const guardado of guardados) {
@@ -2049,6 +2128,23 @@ describe('baseRascunhoShopeeSchema — o que o operador VIU, verbatim (K2-4)', (
       expect(baseRascunhoShopeeSchema.parse(projecao)).toEqual(projecao);
       expect(descarte.parse(projecao)).toEqual(projecao);
     }
+    // ÂNCORA (#1911 P15): the four stamped rows really project LISTS — `[]`, a
+    // duplicate with `is_free: null`, an all-off one — so the base meets them.
+    const listas = guardados
+      .map((guardado) => camposDoRascunhoShopee(guardado).logistic_info)
+      .filter((lista) => lista !== null && lista !== undefined);
+    expect(listas).toEqual([
+      [],
+      [
+        { logistic_id: 90005, enabled: false, is_free: null },
+        { logistic_id: 90005, enabled: true, is_free: null },
+      ],
+      [{ logistic_id: 90003, enabled: false, is_free: null }],
+      [
+        { logistic_id: 90003, enabled: true, is_free: null },
+        { logistic_id: 90005, enabled: true, is_free: null },
+      ],
+    ]);
   });
 });
 
@@ -2453,10 +2549,25 @@ describe('corpoAtualizarRascunhoShopeeSchema — POST rascunho/atualizar', () =>
     }
   });
 
-  it('⛔ o patch passa pela whitelist: item_id, o RESERVADO, atributos na forma de LEITURA ou um título em branco são 400', () => {
+  // #1911 P15 — antes: «⛔ o patch passa pela whitelist: item_id, o RESERVADO,
+  // atributos na forma de LEITURA ou um título em branco são 400». A linha
+  // `[{ logistic_info: null }, { logistic_info: [] }]` saiu do laço: hoje ela
+  // recusa PELA REGRA de ≥ 1 canal ligado, pinada abaixo pela mensagem.
+  it('⛔ o patch passa pela whitelist: item_id, uma logística sem canal ligado, atributos na forma de LEITURA ou um título em branco são 400', () => {
+    const semCanal = corpoAtualizarRascunhoShopeeSchema.safeParse(
+      atualizar({ logistic_info: null }, { logistic_info: [] }),
+    );
+    expect(semCanal.success).toBe(false);
+    expect(mensagens(semCanal)).toEqual([MSG_LOGISTICA_SEM_CANAL_LIGADO_RASCUNHO_SHOPEE]);
+    expect(semCanal.error?.issues[0]?.path).toEqual(['patch', 'logistic_info']);
+    // PAR: the `null` patch («Automática»), with its base, is accepted.
+    expect(
+      corpoAtualizarRascunhoShopeeSchema.parse(
+        atualizar({ logistic_info: [CANAL_A] }, { logistic_info: null }),
+      ).patch,
+    ).toEqual({ logistic_info: null });
     for (const [base, patch] of [
       [{}, { item_id: 2500139861 }],
-      [{ logistic_info: null }, { logistic_info: [] }],
       [
         // the base the mirror demands (P13 Q1), so only the PATCH can refuse
         { category_id: 1, attributes: null },
@@ -2496,7 +2607,9 @@ describe('corpoDescartarRascunhoShopeeSchema — POST rascunho/descartar (K1-13,
     }
   });
 
-  it('⛔ a base precisa trazer TODO campo projetado — faltar um é 400', () => {
+  // #1911 P15 — antes: «⛔ a base precisa trazer TODO campo projetado — faltar um é 400».
+  it('⛔ a base precisa trazer os CINCO campos do formulário — faltar um é 400 (logistic_info é opcional, D-LOG-10)', () => {
+    expect(Object.keys(BASE_COMPLETA)).toHaveLength(5);
     for (const campo of Object.keys(BASE_COMPLETA)) {
       const { [campo]: _fora, ...incompleta } = BASE_COMPLETA as Record<string, unknown>;
       expect(
@@ -2509,9 +2622,11 @@ describe('corpoDescartarRascunhoShopeeSchema — POST rascunho/descartar (K1-13,
     );
   });
 
-  it('⛔ base com RESERVADO ou chave desconhecida, atestação não booleana, corpo sem base: 400', () => {
+  // #1911 P15 — antes: «⛔ base com RESERVADO ou chave desconhecida, atestação não
+  // booleana, corpo sem base: 400» (a linha `logistic_info: null` hoje PASSA).
+  it('⛔ base com chave desconhecida (o carimbo do servidor incluído), atestação não booleana, corpo sem base: 400', () => {
     for (const ruim of [
-      { ...corpo, base: { ...BASE_COMPLETA, logistic_info: null } },
+      { ...corpo, base: { ...BASE_COMPLETA, logisticaGravadaEm: 1 } },
       { ...corpo, base: { ...BASE_COMPLETA, foo: 1 } },
       { ...corpo, confirmarCriacaoIncerta: 'sim' },
       { ...IDS, linkDocId: ID_RASCUNHO },
@@ -2731,6 +2846,457 @@ describe('shopeeRascunho.ts — o texto do arquivo', () => {
     // not use (and `valuesEqual` must NOT get one: the stale-entry test).
     expect(FONTE).not.toMatch(/\bdeepEqual\b/);
     expect(FONTE).not.toContain('JSON.stringify');
+  });
+
+  it('(#1911 P15) a projeção COMPÕE o leitor e o predicado de shopeeLinkLeitura.ts e nunca lê o carimbo cru', () => {
+    // The body of one top-level function, by its signature (the pendências
+    // pin's slicing).
+    const corpoDe = (assinatura: string): string => {
+      const inicio = FONTE.indexOf(assinatura);
+      expect(inicio, assinatura).toBeGreaterThan(0);
+      return FONTE.slice(inicio, FONTE.indexOf('\n}\n', inicio));
+    };
+    const leitura = corpoDe('function logisticaGuardada(');
+    expect(leitura).toContain('logisticaGravadaPeloErpShopee(link)');
+    expect(leitura).toContain('lerLogisticaArmazenadaShopee(link.logistic_info)');
+    expect(corpoDe('export function camposDoRascunhoShopee(')).toContain(
+      'logistic_info: logisticaGuardada(link)',
+    );
+    expect(corpoDe('export function logisticaDoSistemaAnteriorShopee(')).toContain(
+      '!logisticaGravadaPeloErpShopee(link)',
+    );
+    // ⛔ the stamp is read ONLY by the predicate: never as a property here,
+    // comments included (the same ban `logisticaProveniencia.test.ts` keeps in
+    // `apps/shopee`, whose universe does not reach this package).
+    expect(FONTE).not.toMatch(/\.logisticaGravadaEm\b|\[['"]logisticaGravadaEm['"]\]/);
+    // ⛔ and the entries only through the reader: no private copy of its rules.
+    expect(FONTE).not.toMatch(/function\s+(paraInteiroWire|paraNumeroWire|campo)\s*\(/);
+    expect(FONTE).not.toMatch(/enabled\s*!==\s*false|enabled\s*===\s*true/);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*          (19) logistic_info — the projection, the compare, the bodies       */
+/* -------------------------------------------------------------------------- */
+
+describe('logistic_info no rascunho (#1911 P15) — a projeção, a comparação e os corpos', () => {
+  /** A stored list as the draft edit leaves it: stamped. */
+  const carimbada = (logistic_info: unknown): CamposRascunhoShopee['logistic_info'] =>
+    camposDoRascunhoShopee({ item_id: null, logistic_info, logisticaGravadaEm: CARIMBO_LOGISTICA })
+      .logistic_info;
+
+  // --- the projection ----------------------------------------------------
+
+  it('⚠️ PAR: a lista CARIMBADA é projetada ordenada por logistic_id ([90005, 90003] ⇒ [90003, 90005]) como {logistic_id, enabled, is_free}', () => {
+    const guardada = [
+      { logistic_id: 90005, enabled: false, is_free: true, logistic_name: 'B', size_id: 7 },
+      { logistic_id: 90003, enabled: true, is_free: false, shipping_fee: 12.9 },
+    ];
+    expect(carimbada(guardada)).toStrictEqual([
+      { logistic_id: 90003, enabled: true, is_free: false },
+      { logistic_id: 90005, enabled: false, is_free: true },
+    ]);
+    // the stored list is read, never reordered in place
+    expect(guardada.map((c) => c.logistic_id)).toEqual([90005, 90003]);
+  });
+
+  it("⛔ QUASE: a MESMA lista sem carimbo ⇒ null; com carimbo string '1730000000000' ⇒ null; carimbada null ⇒ null; ausente ⇒ null", () => {
+    const lista = [CANAL_A];
+    // ÂNCORA: stamped, the same list IS projected.
+    expect(carimbada(lista)).toStrictEqual([CANAL_A]);
+    const casos: [string, Record<string, unknown>][] = [
+      ['sem carimbo', { logistic_info: lista }],
+      ['carimbo string', { logistic_info: lista, logisticaGravadaEm: '1730000000000' }],
+      ['carimbo null', { logistic_info: lista, logisticaGravadaEm: null }],
+      ['carimbo fracionário', { logistic_info: lista, logisticaGravadaEm: 1.5 }],
+      ['carimbada null', { logistic_info: null, logisticaGravadaEm: CARIMBO_LOGISTICA }],
+      [
+        'carimbada não-lista',
+        { logistic_info: { logistic_id: 90003 }, logisticaGravadaEm: CARIMBO_LOGISTICA },
+      ],
+      ['ausente, carimbada', { logisticaGravadaEm: CARIMBO_LOGISTICA }],
+      ['ausente', {}],
+    ];
+    for (const [rotulo, guardado] of casos) {
+      expect(camposDoRascunhoShopee(guardado).logistic_info, rotulo).toBeNull();
+    }
+  });
+
+  it('carimbada [] ⇒ []', () => {
+    expect(carimbada([])).toEqual([]);
+    // ⛔ QUASE: unstamped, the same `[]` is «Automática».
+    expect(camposDoRascunhoShopee({ logistic_info: [] }).logistic_info).toBeNull();
+  });
+
+  it("a projeção lê pelo leitor único: enabled ausente/null/'false' ⇒ true e false ⇒ false; is_free 'true'/1/ausente ⇒ null; '90003' ⇒ 90003; ' 90003', '90003.0' e 0 saem", () => {
+    expect(
+      carimbada([
+        { logistic_id: 90003, is_free: true },
+        { logistic_id: 90004, enabled: null, is_free: true },
+        { logistic_id: 90005, enabled: 'false', is_free: true },
+        { logistic_id: 90006, enabled: false, is_free: true },
+      ])?.map((c) => c.enabled),
+    ).toEqual([true, true, true, false]);
+    expect(
+      carimbada([
+        { logistic_id: 90003, enabled: true, is_free: 'true' },
+        { logistic_id: 90004, enabled: true, is_free: 1 },
+        { logistic_id: 90005, enabled: true },
+        { logistic_id: 90006, enabled: true, is_free: false },
+      ])?.map((c) => c.is_free),
+    ).toEqual([null, null, null, false]);
+    expect(carimbada([{ logistic_id: '90003', enabled: true, is_free: false }])).toStrictEqual([
+      CANAL_A,
+    ]);
+    expect(
+      carimbada([
+        { logistic_id: ' 90003', enabled: true, is_free: false },
+        { logistic_id: '90003.0', enabled: true, is_free: false },
+        { logistic_id: 0, enabled: true, is_free: false },
+        { logistic_id: 90004, enabled: true, is_free: false },
+      ]),
+    ).toStrictEqual([{ logistic_id: 90004, enabled: true, is_free: false }]);
+  });
+
+  it('⛔ QUASE: um logistic_id repetido fica DUAS vezes, na ordem guardada (a ordenação é estável) — deduplicar seria uma decisão', () => {
+    expect(
+      carimbada([
+        { logistic_id: 90005, enabled: true, is_free: true },
+        { logistic_id: 90003, enabled: false, is_free: false },
+        { logistic_id: 90005, enabled: false },
+      ]),
+    ).toStrictEqual([
+      { logistic_id: 90003, enabled: false, is_free: false },
+      { logistic_id: 90005, enabled: true, is_free: true },
+      { logistic_id: 90005, enabled: false, is_free: null },
+    ]);
+    // the same two copies stored the other way round keep THAT order
+    expect(
+      carimbada([
+        { logistic_id: 90005, enabled: false },
+        { logistic_id: 90005, enabled: true, is_free: true },
+      ])?.map((c) => c.enabled),
+    ).toEqual([false, true]);
+  });
+
+  // --- the compare -------------------------------------------------------
+
+  it('PAR: undefined ≡ null; as mesmas entradas com as chaves em outra ordem', () => {
+    expect(mesmoValorDoRascunhoShopee(C.logisticInfo, undefined, null)).toBe(true);
+    expect(mesmoValorDoRascunhoShopee(C.logisticInfo, null, null)).toBe(true);
+    expect(mesmoValorDoRascunhoShopee(C.logisticInfo, undefined, undefined)).toBe(true);
+    expect(mesmoValorDoRascunhoShopee(C.logisticInfo, [], [])).toBe(true);
+    const reordenadas = [
+      { is_free: false, enabled: true, logistic_id: 90003 },
+      { enabled: false, logistic_id: 90005, is_free: true },
+    ];
+    expect(mesmoValorDoRascunhoShopee(C.logisticInfo, [CANAL_A, CANAL_B], reordenadas)).toBe(true);
+  });
+
+  it('⛔ QUASE: enabled true/false; is_free false/null/true; um canal a mais; [] vs null — distintos', () => {
+    const casos: [string, readonly CanalLogisticaRascunhoShopee[] | null][] = [
+      ['enabled false', [{ ...CANAL_A, enabled: false }]],
+      ['is_free true', [{ ...CANAL_A, is_free: true }]],
+      ['is_free null', [{ ...CANAL_A, is_free: null }]],
+      ['um canal a mais', [CANAL_A, CANAL_B]],
+      ['[]', []],
+      ['null', null],
+    ];
+    for (const [rotulo, outro] of casos) {
+      expect(mesmoValorDoRascunhoShopee(C.logisticInfo, [CANAL_A], outro), rotulo).toBe(false);
+    }
+    expect(mesmoValorDoRascunhoShopee(C.logisticInfo, [], null)).toBe(false);
+    expect(mesmoValorDoRascunhoShopee(C.logisticInfo, undefined, [])).toBe(false);
+    expect(
+      mesmoValorDoRascunhoShopee(
+        C.logisticInfo,
+        [{ ...CANAL_A, is_free: null }],
+        [{ ...CANAL_A, is_free: false }],
+      ),
+    ).toBe(false);
+  });
+
+  it('⛔ QUASE (o escopo da dobra): [A, B] vs [B, A] apresentados DIRETO à comparação são DISTINTOS — só a projeção ordena; uma base em outra ordem é conflito', () => {
+    expect(mesmoValorDoRascunhoShopee(C.logisticInfo, [CANAL_A, CANAL_B], [CANAL_B, CANAL_A])).toBe(
+      false,
+    );
+    // THROUGH the projection the stored order is folded: stored [B, A] ≡ the base [A, B] …
+    const guardada = carimbada([CANAL_B, CANAL_A]);
+    expect(mesmoValorDoRascunhoShopee(C.logisticInfo, guardada, [CANAL_A, CANAL_B])).toBe(true);
+    // … and a stored '90003' ≡ 90003, an unstamped list ≡ null
+    expect(
+      mesmoValorDoRascunhoShopee(
+        C.logisticInfo,
+        carimbada([{ ...CANAL_A, logistic_id: '90003' }]),
+        [CANAL_A],
+      ),
+    ).toBe(true);
+    expect(
+      mesmoValorDoRascunhoShopee(
+        C.logisticInfo,
+        camposDoRascunhoShopee({ logistic_info: [CANAL_A] }).logistic_info,
+        null,
+      ),
+    ).toBe(true);
+    // … but a BASE sent in the other order is a conflict.
+    expect(mesmoValorDoRascunhoShopee(C.logisticInfo, guardada, [CANAL_B, CANAL_A])).toBe(false);
+  });
+
+  it('mesmoValorGravado… em logistic_info é EXATAMENTE a pergunta do conflito (o mesmo par e o mesmo quase-par)', () => {
+    const pares: [string, unknown, unknown][] = [
+      ['null ≡ undefined', null, undefined],
+      ['a mesma lista', [CANAL_A, CANAL_B], [{ ...CANAL_A }, { ...CANAL_B }]],
+      ['outra ordem', [CANAL_A, CANAL_B], [CANAL_B, CANAL_A]],
+      ['enabled', [CANAL_A], [{ ...CANAL_A, enabled: false }]],
+      ['is_free null', [CANAL_A], [{ ...CANAL_A, is_free: null }]],
+      ['[] vs null', [], null],
+    ];
+    for (const [rotulo, a, b] of pares) {
+      const x = a as never;
+      const y = b as never;
+      expect(mesmoValorGravadoDoRascunhoShopee(C.logisticInfo, x, y), rotulo).toBe(
+        mesmoValorDoRascunhoShopee(C.logisticInfo, x, y),
+      );
+    }
+    // ÂNCORA: the table holds both answers.
+    expect(mesmoValorGravadoDoRascunhoShopee(C.logisticInfo, [CANAL_A], [{ ...CANAL_A }])).toBe(
+      true,
+    );
+    expect(mesmoValorGravadoDoRascunhoShopee(C.logisticInfo, [], null)).toBe(false);
+  });
+
+  // --- the write whitelist -----------------------------------------------
+
+  it('a whitelist aceita uma lista e a devolve ORDENADA; aceita null (Automática)', () => {
+    expect(conteudoRascunhoShopeeSchema.parse({ logistic_info: [CANAL_B, CANAL_A] })).toStrictEqual(
+      { logistic_info: [CANAL_A, CANAL_B] },
+    );
+    expect(conteudoRascunhoShopeeSchema.parse({ logistic_info: [CANAL_A] })).toStrictEqual({
+      logistic_info: [CANAL_A],
+    });
+    expect(conteudoRascunhoShopeeSchema.parse({ logistic_info: null })).toStrictEqual({
+      logistic_info: null,
+    });
+  });
+
+  it('⛔ [] recusa com UMA mensagem só: a de nenhum canal ligado', () => {
+    const lido = conteudoRascunhoShopeeSchema.safeParse({ logistic_info: [] });
+    expect(lido.success).toBe(false);
+    expect(mensagens(lido)).toEqual([MSG_LOGISTICA_SEM_CANAL_LIGADO_RASCUNHO_SHOPEE]);
+    expect(lido.error?.issues[0]?.path).toEqual(['logistic_info']);
+  });
+
+  it('⛔ todos enabled:false recusa com a de nenhum canal ligado; ⛔ um logistic_id repetido recusa com a de canal repetido', () => {
+    const desligados = conteudoRascunhoShopeeSchema.safeParse({
+      logistic_info: [CANAL_B, { ...CANAL_A, enabled: false }],
+    });
+    expect(mensagens(desligados)).toEqual([MSG_LOGISTICA_SEM_CANAL_LIGADO_RASCUNHO_SHOPEE]);
+    const repetido = conteudoRascunhoShopeeSchema.safeParse({
+      logistic_info: [CANAL_A, { ...CANAL_A, is_free: true }],
+    });
+    expect(mensagens(repetido)).toEqual([MSG_LOGISTICA_CANAL_REPETIDO_RASCUNHO_SHOPEE]);
+    // the two rules are independent: both fire on a repeated all-off list
+    const osDois = conteudoRascunhoShopeeSchema.safeParse({ logistic_info: [CANAL_B, CANAL_B] });
+    expect(mensagens(osDois)).toEqual([
+      MSG_LOGISTICA_CANAL_REPETIDO_RASCUNHO_SHOPEE,
+      MSG_LOGISTICA_SEM_CANAL_LIGADO_RASCUNHO_SHOPEE,
+    ]);
+  });
+
+  it('as duas frases do 400 (§7), VERBATIM', () => {
+    expect(MSG_LOGISTICA_SEM_CANAL_LIGADO_RASCUNHO_SHOPEE).toBe(
+      'logistic_info deve ligar ao menos um canal (enabled: true); para a escolha automática, envie null.',
+    );
+    expect(MSG_LOGISTICA_CANAL_REPETIDO_RASCUNHO_SHOPEE).toBe(
+      'logistic_info não pode repetir um logistic_id.',
+    );
+    expect(MAX_CANAIS_LOGISTICA_RASCUNHO_SHOPEE).toBe(50);
+  });
+
+  const canaisDistintos = (n: number): CanalLogisticaRascunhoShopee[] =>
+    Array.from({ length: n }, (_, i) => ({
+      logistic_id: 90_000 + i + 1,
+      enabled: true,
+      is_free: false,
+    }));
+
+  it.each([
+    ['logistic_id 0', [{ ...CANAL_A, logistic_id: 0 }]],
+    ['logistic_id -1', [{ ...CANAL_A, logistic_id: -1 }]],
+    ['logistic_id 1.5', [{ ...CANAL_A, logistic_id: 1.5 }]],
+    ["logistic_id '90003'", [{ ...CANAL_A, logistic_id: '90003' }]],
+    ['logistic_id 2**53', [{ ...CANAL_A, logistic_id: 2 ** 53 }]],
+    ['is_free ausente', [{ logistic_id: 90003, enabled: true }]],
+    ['is_free null', [{ ...CANAL_A, is_free: null }]],
+    ['enabled ausente', [{ logistic_id: 90003, is_free: false }]],
+    ['size_id a mais', [{ ...CANAL_A, size_id: 7 }]],
+    ['shipping_fee a mais', [{ ...CANAL_A, shipping_fee: 12.9 }]],
+    ['logistic_name a mais', [{ ...CANAL_A, logistic_name: 'Entrega Padrão' }]],
+    ['MAX + 1 entradas', canaisDistintos(MAX_CANAIS_LOGISTICA_RASCUNHO_SHOPEE + 1)],
+    ['uma lista que não é lista', { ...CANAL_A }],
+  ] as const)('⛔ QUASE: %s recusa (estrito)', (_rotulo, logistic_info) => {
+    const lido = conteudoRascunhoShopeeSchema.safeParse({ logistic_info });
+    expect(lido.success).toBe(false);
+    // refused by the SHAPE, never by the two list rules (each row has one
+    // channel ON and unique ids): the near-miss is not vacuous
+    expect(mensagens(lido)).not.toContain(MSG_LOGISTICA_SEM_CANAL_LIGADO_RASCUNHO_SHOPEE);
+    expect(mensagens(lido)).not.toContain(MSG_LOGISTICA_CANAL_REPETIDO_RASCUNHO_SHOPEE);
+  });
+
+  it('PAR: MAX entradas passam', () => {
+    const lido = conteudoRascunhoShopeeSchema.safeParse({
+      logistic_info: canaisDistintos(MAX_CANAIS_LOGISTICA_RASCUNHO_SHOPEE).reverse(),
+    });
+    expect(lido.success).toBe(true);
+    expect(lido.data?.logistic_info?.map((c) => c.logistic_id)).toEqual(
+      canaisDistintos(MAX_CANAIS_LOGISTICA_RASCUNHO_SHOPEE).map((c) => c.logistic_id),
+    );
+  });
+
+  it('IDA E VOLTA: toda lista aceita, gravada COM o carimbo, volta IGUAL pela pergunta da escrita ⟷ QUASE: gravada SEM o carimbo é DISTINTA (a dobra da proveniência)', () => {
+    const aceitas: unknown[] = [
+      [CANAL_A],
+      [CANAL_B, CANAL_A],
+      [CANAL_A, { logistic_id: 90004, enabled: false, is_free: false }, CANAL_B],
+      canaisDistintos(MAX_CANAIS_LOGISTICA_RASCUNHO_SHOPEE),
+    ];
+    for (const bruto of aceitas) {
+      const conteudo = conteudoRascunhoShopeeSchema.parse({ logistic_info: bruto });
+      const comCarimbo = camposDoRascunhoShopee(gravadoComCarimbo(conteudo));
+      expect(todosIguais(comCarimbo, conteudo)).toBe(true);
+      // and BYTE for byte: the write already stores the projection's form
+      expect(comCarimbo.logistic_info).toStrictEqual(conteudo.logistic_info);
+      // ⛔ QUASE: the same list with no stamp reads «Automática» — not what was written
+      expect(todosIguais(camposDoRascunhoShopee(gravado(conteudo)), conteudo)).toBe(false);
+    }
+    // `null` reads back `null` either way (a stamped `null` is «Automática» too)
+    const automatica = conteudoRascunhoShopeeSchema.parse({ logistic_info: null });
+    expect(todosIguais(camposDoRascunhoShopee(gravadoComCarimbo(automatica)), automatica)).toBe(
+      true,
+    );
+    expect(todosIguais(camposDoRascunhoShopee(gravado(automatica)), automatica)).toBe(true);
+  });
+
+  // --- the bodies --------------------------------------------------------
+
+  it('⛔ criar com conteudo.logistic_info (lista ou null) é 400 — a logística se escolhe num rascunho SALVO (D-13) ⟷ PAR: o mesmo corpo sem a chave passa', () => {
+    for (const logistic_info of [[CANAL_A], null]) {
+      const lido = corpoCriarRascunhoShopeeSchema.safeParse({
+        ...IDS,
+        linkDocId: ID_RASCUNHO,
+        conteudo: { item_name: 'Camiseta', logistic_info },
+      });
+      expect(lido.success, JSON.stringify(logistic_info)).toBe(false);
+      expect(lido.error?.issues.map((i) => [i.code, i.path])).toEqual([
+        ['unrecognized_keys', ['conteudo']],
+      ]);
+    }
+    expect(
+      corpoCriarRascunhoShopeeSchema.parse({
+        ...IDS,
+        linkDocId: ID_RASCUNHO,
+        conteudo: { item_name: 'Camiseta' },
+      }).conteudo,
+    ).toEqual({ item_name: 'Camiseta' });
+    // the omitted whitelist is still STRICT for every other key
+    expect(
+      corpoCriarRascunhoShopeeSchema.safeParse({
+        ...IDS,
+        linkDocId: ID_RASCUNHO,
+        conteudo: { item_name: 'Camiseta', logisticaGravadaEm: 1 },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("⛔ patch.logistic_info sem base.logistic_info ⇒ a mensagem de base diferente, em ['base']", () => {
+    for (const [base, patch] of [
+      [{}, { logistic_info: null }],
+      [{ item_name: 'A' }, { item_name: 'B', logistic_info: [CANAL_A] }],
+      [{ logistic_info: null }, { item_name: 'B' }],
+    ] as const) {
+      const lido = corpoAtualizarRascunhoShopeeSchema.safeParse(atualizar(base, patch));
+      expect(lido.success, JSON.stringify([base, patch])).toBe(false);
+      expect(mensagens(lido)).toEqual([MSG_BASE_DIFERENTE_DO_PATCH_RASCUNHO_SHOPEE]);
+      expect(lido.error?.issues[0]?.path).toEqual(['base']);
+    }
+    // PAR: with the base naming it, accepted
+    expect(
+      corpoAtualizarRascunhoShopeeSchema.safeParse(
+        atualizar(
+          { item_name: 'A', logistic_info: null },
+          { item_name: 'B', logistic_info: [CANAL_A] },
+        ),
+      ).success,
+    ).toBe(true);
+  });
+
+  it('(P14b) patch {attributes, logistic_info} com base {attributes, logistic_info} ⇒ a mensagem de base sem categoria ⟷ QUASE: com category_id na base passa', () => {
+    const patch = { attributes: ATRIBUTOS, logistic_info: [CANAL_A] };
+    const semCategoria = corpoAtualizarRascunhoShopeeSchema.safeParse(
+      atualizar({ attributes: null, logistic_info: null }, patch),
+    );
+    expect(semCategoria.success).toBe(false);
+    expect(mensagens(semCategoria)).toEqual([MSG_BASE_SEM_CATEGORIA_NOS_ATRIBUTOS_RASCUNHO_SHOPEE]);
+    expect(semCategoria.error?.issues[0]?.path).toEqual(['base']);
+    const comCategoria = corpoAtualizarRascunhoShopeeSchema.parse(
+      atualizar({ category_id: 100087, attributes: null, logistic_info: null }, patch),
+    );
+    expect(comCategoria.patch).toEqual(patch);
+  });
+
+  it('a base de descarte com os cinco campos e SEM logistic_info passa (a janela P15 → P16) ⟷ com logistic_info null ou uma lista, passa VERBATIM (sem ordenar)', () => {
+    const corpo = { ...IDS, linkDocId: ID_RASCUNHO, base: BASE_COMPLETA };
+    const cinco = corpoDescartarRascunhoShopeeSchema.parse(corpo);
+    expect(cinco.base).toEqual(BASE_COMPLETA);
+    expect(cinco.base).not.toHaveProperty('logistic_info');
+    const vistas: unknown[] = [
+      null,
+      [],
+      [CANAL_B, CANAL_A],
+      [
+        { logistic_id: 90005, enabled: false, is_free: null },
+        { logistic_id: 90005, enabled: false, is_free: true },
+      ],
+    ];
+    for (const logistic_info of vistas) {
+      const seis = corpoDescartarRascunhoShopeeSchema.parse({
+        ...corpo,
+        base: { ...BASE_COMPLETA, logistic_info },
+      });
+      expect(seis.base.logistic_info, JSON.stringify(logistic_info)).toStrictEqual(logistic_info);
+      // the edit's base reads it the same way: verbatim, never sorted
+      expect(baseRascunhoShopeeSchema.parse({ logistic_info }).logistic_info).toStrictEqual(
+        logistic_info,
+      );
+    }
+  });
+
+  // --- the legacy helper -------------------------------------------------
+
+  it('logisticaDoSistemaAnteriorShopee: lista não vazia sem carimbo ⇒ true ⟷ QUASE: carimbada ⇒ false; carimbo string ⇒ true; sem carimbo [], null ou ausente ⇒ false', () => {
+    const verdadeiros: [string, Record<string, unknown>][] = [
+      ['sem carimbo', { logistic_info: [CANAL_A] }],
+      ['carimbo string', { logistic_info: [CANAL_A], logisticaGravadaEm: '1730000000000' }],
+      ['carimbo null', { logistic_info: [CANAL_A], logisticaGravadaEm: null }],
+      // entries the reader drops are still channels the old system stored
+      ['só entradas ilegíveis', { logistic_info: [{ logistic_id: ' 90003' }, 7] }],
+    ];
+    for (const [rotulo, link] of verdadeiros) {
+      expect(logisticaDoSistemaAnteriorShopee(link), rotulo).toBe(true);
+      // … and every one of them projects «Automática»
+      expect(camposDoRascunhoShopee(link).logistic_info, rotulo).toBeNull();
+    }
+    const falsos: [string, Record<string, unknown>][] = [
+      ['carimbada', { logistic_info: [CANAL_A], logisticaGravadaEm: CARIMBO_LOGISTICA }],
+      ['carimbada em 0', { logistic_info: [CANAL_A], logisticaGravadaEm: 0 }],
+      ['sem carimbo []', { logistic_info: [] }],
+      ['sem carimbo null', { logistic_info: null }],
+      ['ausente', {}],
+      ['não-lista', { logistic_info: { logistic_id: 90003 } }],
+    ];
+    for (const [rotulo, link] of falsos) {
+      expect(logisticaDoSistemaAnteriorShopee(link), rotulo).toBe(false);
+    }
   });
 });
 

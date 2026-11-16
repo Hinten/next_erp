@@ -4,9 +4,13 @@
  * when a stored refusal is still worth showing, whether the stock sync is
  * currently skipping the listing, whether the listing is still "vivo" and
  * which conta it counts for in `integracoesComProduto`, whether the link is a
- * DRAFT that was never a listing at all (#1911), and whether its stored
+ * DRAFT that was never a listing at all (#1911), whether its stored
  * `logistic_info` is one THIS app wrote and may re-send (#2015,
- * {@link logisticaGravadaPeloErpShopee} — the stamp alone decides).
+ * {@link logisticaGravadaPeloErpShopee} — the stamp alone decides), and how
+ * each entry of a stored `logistic_info` is read
+ * ({@link lerLogisticaArmazenadaShopee}, #1911 P15, MOVED from
+ * `apps/shopee/lib/shopee/anuncios/logisticaPublicacao.ts`, which now imports
+ * it — its helpers were private there, so there is nothing to re-export).
  *
  * ⚠️ ONE module (#1369). `apps/shopee` decides with these (the stock gate, the
  * `integracoesComProduto` trigger, the stock sweep) and the produto's Shopee tab
@@ -374,9 +378,11 @@ export function ehRascunhoShopee(
 
 /**
  * Did THIS app write the stored `logistic_info` of this `prodshopee` document —
- * a list a publish sent or one Shopee answered — so a publish may re-send it?
+ * a list a publish sent or one Shopee answered, or the one the operator chose
+ * on a draft (#1911 P15) — so a publish may re-send it?
  * THE one reading of `logisticaGravadaEm` (#1369): the item plan's projection
- * and the kit plan decide with it, and nothing reads the stamp raw.
+ * and the kit plan decide with it, and since #1911 P15 the draft projection
+ * (`./shopeeRascunho.ts`) too; nothing reads the stamp raw.
  *
  * - **EQUAL (trusted):** a stamp that is a safe integer `>= 0`, `0` included —
  *   the signal is PRESENCE, never a clock, so no value is "too old".
@@ -399,4 +405,125 @@ export function logisticaGravadaPeloErpShopee(
   if (link === null) return false;
   const v = link.logisticaGravadaEm;
   return typeof v === 'number' && Number.isSafeInteger(v) && v >= 0;
+}
+
+/* -------------------------------------------------------------------------- */
+/*            The stored logistics list reader (#1911 P15, #1369)              */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * One entry of a stored `logistic_info`, as read — exactly these five keys,
+ * whatever else the stored entry carries.
+ */
+export interface EntradaLogisticaArmazenadaShopee {
+  /** A positive safe integer, from a number or a digits-only string (`'090003'` ⇒ `90003`, main's rule). */
+  readonly logisticId: number;
+  /** `enabled !== false` — ONLY a boolean `false` is off (D-12); absent, `null`, `'false'` and `0` read ON. */
+  readonly ligado: boolean;
+  /** A boolean `is_free`, else `null`. Never coerced. */
+  readonly isFree: boolean | null;
+  /** `size_id` through the same id reader as `logisticId` — `0`, `'0'`, `''` and `'12.5'` read `null` (C32). */
+  readonly sizeId: number | null;
+  /** `shipping_fee`: a finite number, or a `/^\d+(\.\d+)?$/` string; anything else `null`. */
+  readonly shippingFee: number | null;
+}
+
+/**
+ * THE one reading of a stored `logistic_info` (#1369). The publisher's stored
+ * pass and its import remedy (`logisticaPublicacao.ts`, where these readers
+ * lived until #1911 P15) and the draft projection (`./shopeeRascunho.ts`) all
+ * read the list through it, so a `logistic_id` the publisher re-sends and the
+ * one the draft editor shows can never be read two ways.
+ *
+ * - `null` ⇔ the value is not an array (a legacy `null`, an absent key, an
+ *   object). `[]` reads `[]`.
+ * - An entry without a readable `logistic_id` is DROPPED, and so is an entry
+ *   that is not an object (`null`, a number, a string, an array); its readable
+ *   neighbours stay.
+ * - The STORED order and duplicates are kept: deduplicating or sorting is a
+ *   decision each caller makes (the draft projection sorts; the publisher sends
+ *   in stored order), never the reader's.
+ * - It reads `logistic_id`, `enabled`, `is_free`, `size_id` and `shipping_fee`,
+ *   and nothing else — never `logistic_name`, `include_pickup` or
+ *   `estimated_shipping_fee`, which ride a read-back and are not a seller's
+ *   choice.
+ *
+ * ## Why it is not a Zod parse
+ *
+ * The stored array is OUR persisted copy, not a Shopee response body. The
+ * package's `shopeeLogisticInfoSchema` reads `size_id` through `wireInt()`,
+ * which COERCES where C32 requires a refusal, and a whole-object parse failure
+ * would throw away the `logistic_id` of an entry whose only defect is one
+ * unreadable field. Each field is read explicitly and refused rather than
+ * coerced — see {@link paraInteiroWire}.
+ *
+ * ## ⚠️ The fold, and what it treats as EQUAL
+ *
+ * **EQUAL (one entry):** `logistic_id` `90003` ≡ `'90003'` ≡ `'090003'` (the
+ * leading zero is main's digits-only rule, kept); `shipping_fee` `12.9` ≡
+ * `'12.90'`; `enabled` `true` ≡ `null` ≡ absent ≡ `'false'` ≡ `0` — all ON,
+ * because only a boolean `false` is an off.
+ *
+ * **DISTINCT / dropped:** a `logistic_id` of `''`, `' 90003'`, `'90003.0'`,
+ * `'+90003'`, `'1e5'`, `0`, `'0'`, `-1`, `1.5` or an unsafe integer drops the
+ * entry; a `shipping_fee` of `'12,90'`, `'-5'`, `NaN` or `Infinity` reads
+ * `null`; an `estimated_shipping_fee` in place of `shipping_fee` reads `null`
+ * — an estimate is never the seller's fee.
+ *
+ * **RESIDUAL:** the fee's NUMBER branch keeps main's acceptance of `0` and of a
+ * negative number — stated, pinned, not changed.
+ *
+ * Pure, total over `unknown`, no clock. In memory only — never a Firestore
+ * `where`.
+ */
+export function lerLogisticaArmazenadaShopee(
+  bruto: unknown,
+): readonly EntradaLogisticaArmazenadaShopee[] | null {
+  if (!Array.isArray(bruto)) return null;
+  const lidas: EntradaLogisticaArmazenadaShopee[] = [];
+  for (const entrada of bruto as readonly unknown[]) {
+    const logisticId = paraInteiroWire(campo(entrada, 'logistic_id'));
+    if (logisticId === null) continue;
+    const isFree = campo(entrada, 'is_free');
+    lidas.push({
+      logisticId,
+      ligado: campo(entrada, 'enabled') !== false,
+      isFree: typeof isFree === 'boolean' ? isFree : null,
+      sizeId: paraInteiroWire(campo(entrada, 'size_id')),
+      shippingFee: paraNumeroWire(campo(entrada, 'shipping_fee')),
+    });
+  }
+  return lidas;
+}
+
+/**
+ * A wire integer that is safe to send as an `int32` id, or `null`.
+ *
+ * ⚠️ `Number()` is reached ONLY behind a digits-only test, and that is the whole
+ * point of the function: `Number('')` is `0`, `Number(' 12 ')` is `12` and
+ * `Number('12.5')` is `12.5`, so a bare coercion invents ids. `0` is refused
+ * here as well — no Shopee channel or size id is `0`, and a `'0'` that
+ * round-tripped would send a size the seller did not pick (C32).
+ */
+function paraInteiroWire(bruto: unknown): number | null {
+  if (typeof bruto === 'number') {
+    return Number.isSafeInteger(bruto) && bruto > 0 ? bruto : null;
+  }
+  if (typeof bruto !== 'string' || !/^\d+$/.test(bruto)) return null;
+  const n = Number(bruto);
+  return Number.isSafeInteger(n) && n > 0 ? n : null;
+}
+
+/** A finite wire number (a shipping fee), or `null`. Same refuse-don't-coerce rule. */
+function paraNumeroWire(bruto: unknown): number | null {
+  if (typeof bruto === 'number') return Number.isFinite(bruto) ? bruto : null;
+  if (typeof bruto !== 'string' || !/^\d+(\.\d+)?$/.test(bruto)) return null;
+  const n = Number(bruto);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** Read one field off an unvalidated stored entry. */
+function campo(bruto: unknown, nome: string): unknown {
+  if (bruto == null || typeof bruto !== 'object' || Array.isArray(bruto)) return undefined;
+  return (bruto as Record<string, unknown>)[nome];
 }

@@ -544,8 +544,15 @@ function ordemDeProduto(bruto: unknown): number {
   return numeroOuNull(bruto) ?? ORDEM_AUSENTE;
 }
 
-/** One produto document, projected for the mappers. */
-function produtoParaPublicar(id: string, raw: Record<string, unknown>): ProdutoParaPublicar {
+/**
+ * One produto document, projected for the mappers.
+ *
+ * Exported because it is also the `canais` route's reader (#1911 P15): the
+ * route judges each channel's fit from the SAME projection publish uses, so
+ * the editor and the publish can never read a produto's weight or dimensions
+ * two ways (#1369).
+ */
+export function produtoParaPublicar(id: string, raw: Record<string, unknown>): ProdutoParaPublicar {
   return {
     id,
     nome: textoOuNull(raw.nome) ?? '',
@@ -1095,7 +1102,8 @@ export async function lerGrupos(
  * channel must not cost the whole build.
  *
  * Exported for step 19's kit arm, which reads the channels UNCACHED for the same
- * reason.
+ * reason, and for the `canais` route (#1911 P15), uncached for the same reason
+ * too: the editor must show the channels a publish would read now.
  */
 export async function lerCanaisDaLoja(
   client: ShopeeClient,

@@ -2032,6 +2032,32 @@ describe('#2015 — kit-recriar e kit-criar: sem anúncio a importar, a frase (1
   });
 });
 
+/*
+ * #1911 P15 (wiring): the kit arm reaches the "a trusted off is honoured" rule
+ * through the ONE builder, `construirLogistica` — no rule of its own. The
+ * rule's pairs and near-misses live in `logisticaPublicacao.test.ts`.
+ */
+describe('#1911 P15 — kit: a lista do alvo CARIMBADA desliga um canal só com enabled: false', () => {
+  it('alvo carimbado [{CANAL, on}, {IRMAO, enabled: false}] ⇒ conteudo.logisticInfo = só CANAL', () => {
+    const lista = [
+      { logistic_id: CANAL, enabled: true, is_free: false },
+      { logistic_id: CANAL_IRMAO, enabled: false, is_free: false },
+    ];
+    const carimbada = planejarKit(
+      atualizarCom({ logistic_info: lista, logisticaGravadaEm: CARIMBO }),
+      fotos(),
+    );
+    expect(carimbada.problemas).toEqual([]);
+    expect(carimbada.conteudo?.logisticInfo).toEqual([
+      { logistic_id: CANAL, enabled: true, is_free: false },
+    ]);
+    // ⛔ QUASE-PAR: the SAME list unstamped is distrusted — its off is never
+    // honoured, so the full pass sends IRMAO too.
+    const legada = planejarKit(atualizarCom({ logistic_info: lista }), fotos());
+    expect(legada.conteudo?.logisticInfo).toEqual(PASSE_COMPLETO);
+  });
+});
+
 describe('step 21 (K1/K2) — o `acao` de cada recusa que nomeia um comando de CLI', () => {
   it('K1 — cada produtor exportado carrega o `acao` EXATO', () => {
     expect(

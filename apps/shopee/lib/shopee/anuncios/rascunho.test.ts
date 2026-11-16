@@ -257,6 +257,50 @@ function comEscritaConcorrente(
   });
 }
 
+/**
+ * A db whose `update` of `alvo` records the `lastUpdateTime` it was handed and
+ * then runs the double's own (which still enforces it) — the proof that a
+ * write is GUARDED, not just that it landed (#1911 P15). The double's own
+ * refs, wrapped; the {@link comEscritaConcorrente} shape.
+ */
+function comPrecondicoesRegistradas(
+  db: FakeDb,
+  alvo: string,
+): { readonly db: FakeDb; readonly precondicoes: unknown[] } {
+  const precondicoes: unknown[] = [];
+  const colecao = db.collection.bind(db);
+  const comRegistro = new Proxy(db, {
+    get(t, prop, r) {
+      if (prop !== 'collection') return Reflect.get(t, prop, r) as unknown;
+      return (colPath: string) => {
+        const col = colecao(colPath);
+        return new Proxy(col, {
+          get(ct, cp, cr) {
+            const original = Reflect.get(ct, cp, cr) as unknown;
+            if (cp !== 'doc') return original;
+            const construirRef = original as typeof ct.doc;
+            return (id?: string) => {
+              const ref = construirRef(id);
+              if (ref.path !== alvo) return ref;
+              return {
+                ...ref,
+                update: (
+                  patch: Record<string, unknown>,
+                  precond?: { lastUpdateTime?: unknown },
+                ) => {
+                  precondicoes.push(precond?.lastUpdateTime);
+                  return ref.update(patch, precond);
+                },
+              };
+            };
+          },
+        });
+      };
+    },
+  });
+  return { db: comRegistro, precondicoes };
+}
+
 let avisos: unknown[][];
 
 beforeEach(() => {
@@ -314,7 +358,9 @@ describe('criarRascunhoShopee — create() no id do cliente (nível 0)', () => {
     // ONE write, the create.
     expect(escritasEm(db)).toHaveLength(1);
     // The projection reads back exactly what was asked — no attributes named,
-    // none stored (P6: `attributes: null`, never absent).
+    // none stored (P6: `attributes: null`, never absent) — and, since #1911
+    // P15, a created draft projects `logistic_info: null` («Automática»): the
+    // create writes the link schema's `null` with no stamp, never a list.
     expect(salvo?.attributes).toBeNull();
     expect(camposDoRascunhoShopee(salvo ?? {})).toEqual({
       item_name: 'Camiseta Azul ',
@@ -322,6 +368,7 @@ describe('criarRascunhoShopee — create() no id do cliente (nível 0)', () => {
       category_id: 100_017,
       marca: { brand_id: 77, original_brand_name: 'Marca X' },
       attributes: null,
+      logistic_info: null,
     });
   });
 
@@ -630,6 +677,51 @@ describe('criarRascunhoShopee — create() no id do cliente (nível 0)', () => {
       }
       expect(doc(db)).toEqual(antes);
       expect(escritasEm(db)).toHaveLength(1);
+    });
+
+    it('(K1-9) repetir a criação sobre um rascunho cuja lista outra aba escolheu (carimbada) ⇒ 409 CONFLITO na linha logistic_info ⟷ PAR: sobre uma lista legada sem carimbo ⇒ 200 criado: false', async () => {
+      // #1911 P15: the create writes the link schema's `null` with no stamp, so
+      // the document a retry would write projects `logistic_info: null`.
+      const corpo = corpoCriar({ conteudo: { item_name: 'Camiseta' } });
+      // Another tab's choice, STORED in another order than the projection's.
+      const escolhida = [
+        { logistic_id: 90_005, enabled: false, is_free: true },
+        { logistic_id: 90_003, enabled: true, is_free: false },
+      ];
+
+      const db = base();
+      await criarRascunhoShopee(deps(db), corpo);
+      db.seed(CAMINHO, {
+        ...(doc(db) ?? {}),
+        logistic_info: escolhida,
+        logisticaGravadaEm: AGORA + 1_000,
+      });
+      const antes = structuredClone(doc(db));
+
+      const err = await recusaDe(criarRascunhoShopee(deps(db), corpo));
+
+      expect(err.code).toBe(CODIGO_RASCUNHO_SHOPEE.conflito);
+      // ONE row — every other field is what this create writes — and `atual`
+      // in the projection's form: sorted by `logistic_id`.
+      expect(err.conflitos).toEqual([
+        { campo: CAMPO_RASCUNHO_SHOPEE.logisticInfo, atual: [escolhida[1], escolhida[0]] },
+      ]);
+      expect(doc(db)).toEqual(antes);
+      expect(escritasEm(db)).toHaveLength(1);
+
+      // PAR: the SAME list with NO stamp (a legacy draft's) projects `null` —
+      // exactly what this create writes — so the retry is the same draft.
+      const db2 = base();
+      await criarRascunhoShopee(deps(db2), corpo);
+      db2.seed(CAMINHO, { ...(doc(db2) ?? {}), logistic_info: escolhida });
+      const antes2 = structuredClone(doc(db2));
+
+      expect(await criarRascunhoShopee(deps(db2), corpo)).toEqual({
+        linkDocId: RASCUNHO,
+        criado: false,
+      });
+      expect(doc(db2)).toEqual(antes2);
+      expect(escritasEm(db2)).toHaveLength(1);
     });
 
     it('o id já é de um rascunho de OUTRA conta ⇒ 409 ID_EM_USO, documento intacto', async () => {
@@ -2294,10 +2386,16 @@ describe('atualizarRascunhoShopee — base conferida (nível 3) + update guardad
 });
 
 /* -------------------------------------------------------------------------- */
-/*            2b · #2015 — the draft routes never write the provenance stamp    */
+/*      2b · #2015 — the draft CREATE never writes the provenance stamp;      */
+/*                  an EDIT only beside the list (#1911 P15)                  */
 /* -------------------------------------------------------------------------- */
 
-describe('o carimbo da logística (#2015) — criar e editar um rascunho NUNCA o escrevem', () => {
+// #1911 P15 retitled this describe (it was «o carimbo da logística (#2015) —
+// criar e editar um rascunho NUNCA o escrevem»): the draft edit now writes the
+// stamp beside the list it writes. Its three tests are unedited — they are the
+// near-misses of section 2c below (the create, which writes the unstamped
+// `null`, and two edits that do not name the list).
+describe('o carimbo da logística (#2015) — criar NUNCA o escreve; editar só o escreve com a lista', () => {
   /** A list the LEGACY app left on a draft — `is_free: true` and a CUSTOM_PRICE fee. */
   const LISTA_LEGADA = [
     { logistic_id: 90_003, enabled: true, is_free: true },
@@ -2364,10 +2462,340 @@ describe('o carimbo da logística (#2015) — criar e editar um rascunho NUNCA o
 });
 
 /* -------------------------------------------------------------------------- */
+/*        2c · #1911 P15 — the draft EDIT writes logistic_info and its        */
+/*           stamp in ONE literal of ONE update (the fifth writer)            */
+/* -------------------------------------------------------------------------- */
+
+describe('#1911 P15 — logistic_info no rascunho: a lista e o carimbo no MESMO update (o quinto escritor)', () => {
+  /** Channels in the whitelist's shape — `is_free` always a boolean. Invented ids. */
+  const CANAL_A = { logistic_id: 90_003, enabled: true, is_free: false };
+  const CANAL_B = { logistic_id: 90_004, enabled: false, is_free: true };
+  const CANAL_C = { logistic_id: 90_005, enabled: true, is_free: true };
+  /** A stamp an EARLIER write left — a literal, never a clock. */
+  const CARIMBO = AGORA - 86_400_000;
+
+  /** A draft whose list THIS app wrote (stamped), stored in the order given. */
+  function carimbado(
+    lista: readonly Record<string, unknown>[] | null,
+    extra: Record<string, unknown> = {},
+  ): Record<string, unknown> {
+    return rascunho({ logistic_info: lista, logisticaGravadaEm: CARIMBO, ...extra });
+  }
+
+  it("grava EXATAMENTE {logistic_info: a lista ordenada, logisticaGravadaEm: AGORA, ultimaModificacao: AGORA} com lastUpdateTime; gravados ['logistic_info']; depois logisticaGravadaPeloErpShopee(doc) é true", async () => {
+    const db = new FakeDb();
+    db.seed(CAMINHO, rascunho());
+    const lido = db.store[CAMINHO]?.updateTime;
+    const { db: registrado, precondicoes } = comPrecondicoesRegistradas(db, CAMINHO);
+
+    const r = await atualizarRascunhoShopee(
+      deps(registrado),
+      // The operator's order is not the stored one: the whitelist sorts.
+      corpoAtualizar({ logistic_info: null }, { logistic_info: [CANAL_C, CANAL_B, CANAL_A] }),
+    );
+
+    expect(respostaAtualizarRascunhoShopeeSchema.parse(r)).toEqual({
+      linkDocId: RASCUNHO,
+      gravados: [CAMPO_RASCUNHO_SHOPEE.logisticInfo],
+    });
+    // ONE update, and the list, its stamp and the clock are the WHOLE patch.
+    expect(db.patches).toEqual([
+      {
+        path: CAMINHO,
+        patch: {
+          logistic_info: [CANAL_A, CANAL_B, CANAL_C],
+          logisticaGravadaEm: AGORA,
+          ultimaModificacao: AGORA,
+        },
+      },
+    ]);
+    // GUARDED by the snapshot that decided (tier 1).
+    expect(lido).toBeDefined();
+    expect(precondicoes).toHaveLength(1);
+    expect(precondicoes[0]).toBe(lido);
+    // The stamp vouches for the list now: the ONE predicate, and the projection reads it back.
+    expect(logisticaGravadaPeloErpShopee(doc(db) ?? null)).toBe(true);
+    expect(camposDoRascunhoShopee(doc(db) ?? {}).logistic_info).toEqual([
+      CANAL_A,
+      CANAL_B,
+      CANAL_C,
+    ]);
+  });
+
+  it('⛔ MESMA CONDIÇÃO: uma edição só de título sobre uma lista carimbada não escreve nem logistic_info nem logisticaGravadaEm', async () => {
+    const db = new FakeDb();
+    db.seed(CAMINHO, carimbado([CANAL_C, CANAL_A]));
+
+    const r = await atualizarRascunhoShopee(
+      deps(db),
+      corpoAtualizar({ item_name: 'Camiseta do rascunho' }, { item_name: 'Camiseta Azul' }),
+    );
+
+    expect(r.gravados).toEqual([CAMPO_RASCUNHO_SHOPEE.itemName]);
+    expect(db.patches).toEqual([
+      { path: CAMINHO, patch: { item_name: 'Camiseta Azul', ultimaModificacao: AGORA } },
+    ]);
+    expect(doc(db)?.logisticaGravadaEm).toBe(CARIMBO);
+    expect(doc(db)?.logistic_info).toEqual([CANAL_C, CANAL_A]);
+  });
+
+  it('null sobre uma lista carimbada grava logistic_info: null E o carimbo ⟷ QUASE: null sobre uma lista LEGADA sem carimbo ⇒ gravados [] e nada escrito (a dobra da proveniência)', async () => {
+    // «Automática» is a CHOICE over a list this app wrote: written, and stamped.
+    const db = new FakeDb();
+    db.seed(CAMINHO, carimbado([CANAL_C, CANAL_A]));
+
+    const r = await atualizarRascunhoShopee(
+      deps(db),
+      corpoAtualizar({ logistic_info: [CANAL_A, CANAL_C] }, { logistic_info: null }),
+    );
+
+    expect(r.gravados).toEqual([CAMPO_RASCUNHO_SHOPEE.logisticInfo]);
+    expect(db.patches).toEqual([
+      {
+        path: CAMINHO,
+        patch: { logistic_info: null, logisticaGravadaEm: AGORA, ultimaModificacao: AGORA },
+      },
+    ]);
+    expect(doc(db)?.logisticaGravadaEm).toBe(AGORA);
+    expect(camposDoRascunhoShopee(doc(db) ?? {}).logistic_info).toBeNull();
+
+    // QUASE: an UNSTAMPED legacy list already projects `null` — the same
+    // choice — so there is nothing to write: neither the list nor the stamp.
+    const legado = rascunho({ logistic_info: [CANAL_A, CANAL_C] });
+    const db2 = new FakeDb();
+    db2.seed(CAMINHO, legado);
+
+    const r2 = await atualizarRascunhoShopee(
+      deps(db2),
+      corpoAtualizar({ logistic_info: null }, { logistic_info: null }),
+    );
+
+    expect(r2).toEqual({ linkDocId: RASCUNHO, gravados: [] });
+    expect(db2.writes).toEqual([]);
+    expect(doc(db2)).toEqual(legado);
+  });
+
+  it('a MESMA lista sobre uma carimbada guardada em OUTRA ordem ⇒ gravados [] e nada escrito', async () => {
+    const raw = carimbado([CANAL_C, CANAL_A]);
+    const db = new FakeDb();
+    db.seed(CAMINHO, raw);
+    // ÂNCORA: the projection — what the tab shows and sends back as `base` — is sorted.
+    expect(vista(raw).logistic_info).toEqual([CANAL_A, CANAL_C]);
+
+    const r = await atualizarRascunhoShopee(
+      deps(db),
+      corpoAtualizar(
+        { logistic_info: vista(raw).logistic_info },
+        { logistic_info: [CANAL_C, CANAL_A] },
+      ),
+    );
+
+    expect(r).toEqual({ linkDocId: RASCUNHO, gravados: [] });
+    expect(db.writes).toEqual([]);
+    expect(doc(db)).toEqual(raw);
+  });
+
+  it('uma lista sobre uma lista legada sem carimbo (a base null que a projeção dá) ⇒ gravada e carimbada', async () => {
+    // The SAME channels the legacy list holds — unstamped, they read
+    // «Automática», so choosing them is a write (the provenance fold).
+    const legado = rascunho({ logistic_info: [CANAL_A, CANAL_C] });
+    const db = new FakeDb();
+    db.seed(CAMINHO, legado);
+    expect(vista(legado).logistic_info).toBeNull();
+
+    const r = await atualizarRascunhoShopee(
+      deps(db),
+      corpoAtualizar({ logistic_info: null }, { logistic_info: [CANAL_A, CANAL_C] }),
+    );
+
+    expect(r.gravados).toEqual([CAMPO_RASCUNHO_SHOPEE.logisticInfo]);
+    expect(db.patches).toEqual([
+      {
+        path: CAMINHO,
+        patch: {
+          logistic_info: [CANAL_A, CANAL_C],
+          logisticaGravadaEm: AGORA,
+          ultimaModificacao: AGORA,
+        },
+      },
+    ]);
+    expect(logisticaGravadaPeloErpShopee(doc(db) ?? null)).toBe(true);
+  });
+
+  it('409 CONFLITO: base null contra uma lista carimbada (outra aba escolheu) ⇒ atual = a lista ordenada, nada escrito ⟷ base uma lista contra null guardado ⇒ atual null', async () => {
+    const outraAba = carimbado([CANAL_C, CANAL_A]);
+    const db = new FakeDb();
+    db.seed(CAMINHO, outraAba);
+
+    const err = await recusaDe(
+      atualizarRascunhoShopee(
+        deps(db),
+        corpoAtualizar({ logistic_info: null }, { logistic_info: [CANAL_A, CANAL_B] }),
+      ),
+    );
+
+    expect(err.code).toBe(CODIGO_RASCUNHO_SHOPEE.conflito);
+    expect(err.conflitos).toEqual([
+      { campo: CAMPO_RASCUNHO_SHOPEE.logisticInfo, atual: [CANAL_A, CANAL_C] },
+    ]);
+    for (const c of corpoDaRecusaDeRascunhoShopee(err).conflitos ?? []) {
+      expect(conflitoRascunhoShopeeSchema.parse(c)).toEqual(c);
+    }
+    expect(db.writes).toEqual([]);
+    expect(doc(db)).toEqual(outraAba);
+
+    // The mirror: the tab saw a list, and what is stored now is «Automática».
+    const db2 = new FakeDb();
+    db2.seed(CAMINHO, rascunho({ logistic_info: null }));
+    const err2 = await recusaDe(
+      atualizarRascunhoShopee(
+        deps(db2),
+        corpoAtualizar({ logistic_info: [CANAL_A] }, { logistic_info: [CANAL_C] }),
+      ),
+    );
+    expect(err2.code).toBe(CODIGO_RASCUNHO_SHOPEE.conflito);
+    expect(err2.conflitos).toEqual([{ campo: CAMPO_RASCUNHO_SHOPEE.logisticInfo, atual: null }]);
+    expect(db2.writes).toEqual([]);
+  });
+
+  it('corrida: uma lista carimbada chega entre a leitura e o update ⇒ 409, nada escrito ⟷ QUASE: a corrida na descrição ⇒ a logística é gravada e carimbada no re-decidir', async () => {
+    // Another tab chooses channels right after THIS edit read the draft: the
+    // precondition refuses, the re-read sees the conflict — never a re-apply.
+    const outraAba = carimbado([CANAL_C]);
+    const db = new FakeDb();
+    db.seed(CAMINHO, rascunho());
+    const corrida = comEscritaConcorrente(db, CAMINHO, () => db.seed(CAMINHO, outraAba));
+
+    const err = await recusaDe(
+      atualizarRascunhoShopee(
+        deps(corrida),
+        corpoAtualizar({ logistic_info: null }, { logistic_info: [CANAL_A] }),
+      ),
+    );
+
+    expect(err.code).toBe(CODIGO_RASCUNHO_SHOPEE.conflito);
+    expect(err.conflitos).toEqual([
+      { campo: CAMPO_RASCUNHO_SHOPEE.logisticInfo, atual: [CANAL_C] },
+    ]);
+    expect(db.writes).toEqual([]);
+    expect(doc(db)).toEqual(outraAba);
+    expect(db.opLog.filter((o) => o.op === 'get' && o.path === CAMINHO)).toHaveLength(2);
+
+    // QUASE: the race touched ANOTHER field — the re-decide passes and writes
+    // the list with THIS request's stamp; both edits survive.
+    const db2 = new FakeDb();
+    db2.seed(CAMINHO, rascunho());
+    const corrida2 = comEscritaConcorrente(db2, CAMINHO, () =>
+      db2.seed(CAMINHO, rascunho({ description: 'Escrita pela outra aba' })),
+    );
+
+    const r2 = await atualizarRascunhoShopee(
+      deps(corrida2),
+      corpoAtualizar({ logistic_info: null }, { logistic_info: [CANAL_A] }),
+    );
+
+    expect(r2.gravados).toEqual([CAMPO_RASCUNHO_SHOPEE.logisticInfo]);
+    expect(doc(db2)).toMatchObject({
+      description: 'Escrita pela outra aba',
+      logistic_info: [CANAL_A],
+      logisticaGravadaEm: AGORA,
+      ultimaModificacao: AGORA,
+    });
+    expect(db2.patches).toHaveLength(1);
+    expect(db2.opLog.filter((o) => o.op === 'get' && o.path === CAMINHO)).toHaveLength(2);
+  });
+
+  it('em-andamento ⇒ 409 EM_ANDAMENTO antes de qualquer comparação', async () => {
+    // The base is WRONG on purpose (stored stamped [C], seen `null`): the lock
+    // answers first, so the 409 is EM_ANDAMENTO, never CONFLITO.
+    const raw = carimbado([CANAL_C], { publicacaoEmCurso: travaAlheia(AGORA + 60_000) });
+    const db = new FakeDb();
+    db.seed(CAMINHO, raw);
+
+    const err = await recusaDe(
+      atualizarRascunhoShopee(
+        deps(db),
+        corpoAtualizar({ logistic_info: null }, { logistic_info: [CANAL_A] }),
+      ),
+    );
+
+    expect(err.code).toBe(CODIGO_RASCUNHO_SHOPEE.publicacaoEmAndamento);
+    expect(err.aguardarMs).toBe(60_000);
+    expect(err.conflitos).toBeNull();
+    expect(db.writes).toEqual([]);
+    expect(doc(db)).toEqual(raw);
+  });
+
+  it('incerta + patch só de logística ⇒ gravado (só category_id trava)', async () => {
+    const trava = travaAlheia(AGORA - AGUARDAR_ANUNCIO_INCERTO_SHOPEE_MS);
+    const raw = rascunho({ publicacaoEmCurso: trava });
+    // ÂNCORA: the lock reads `incerta` — the state whose category is locked.
+    expect(estadoPublicacaoRascunhoShopee(raw, AGORA).tipo).toBe('incerta');
+    const db = new FakeDb();
+    db.seed(CAMINHO, raw);
+
+    const r = await atualizarRascunhoShopee(
+      deps(db),
+      corpoAtualizar({ logistic_info: null }, { logistic_info: [CANAL_A] }),
+    );
+
+    expect(r.gravados).toEqual([CAMPO_RASCUNHO_SHOPEE.logisticInfo]);
+    expect(doc(db)).toMatchObject({ logistic_info: [CANAL_A], logisticaGravadaEm: AGORA });
+    // The lock is read, never written: it survives byte-identical.
+    expect(doc(db)?.publicacaoEmCurso).toEqual(trava);
+    expect(db.patches[0]?.patch).not.toHaveProperty('publicacaoEmCurso');
+  });
+
+  it('um anúncio (item_id) ⇒ 409 JA_PUBLICADO', async () => {
+    const anuncio = carimbado([CANAL_C], { item_id: ITEM_VIVO });
+    const db = new FakeDb();
+    db.seed(CAMINHO, anuncio);
+
+    const err = await recusaDe(
+      atualizarRascunhoShopee(
+        deps(db),
+        corpoAtualizar({ logistic_info: [CANAL_C] }, { logistic_info: [CANAL_A] }),
+      ),
+    );
+
+    expect(err.code).toBe(CODIGO_RASCUNHO_SHOPEE.jaPublicado);
+    expect(db.writes).toEqual([]);
+    expect(doc(db)).toEqual(anuncio);
+  });
+
+  it('(P14b) patch {attributes, logistic_info} com a categoria mudada por outra aba ⇒ 409 em category_id, nem a lista nem o carimbo gravados', async () => {
+    // P13 Q1's mirror holds beside a logistics write: the attributes were
+    // chosen in 100_017, another tab moved the draft to 100_020.
+    const movido = rascunho({ category_id: 100_020 });
+    const db = new FakeDb();
+    db.seed(CAMINHO, movido);
+
+    const err = await recusaDe(
+      atualizarRascunhoShopee(
+        deps(db),
+        corpoAtualizar(
+          { category_id: 100_017, attributes: null, logistic_info: null },
+          { attributes: ATRIBUTOS, logistic_info: [CANAL_A] },
+        ),
+      ),
+    );
+
+    expect(err.code).toBe(CODIGO_RASCUNHO_SHOPEE.conflito);
+    expect(err.conflitos).toEqual([{ campo: CAMPO_RASCUNHO_SHOPEE.categoryId, atual: 100_020 }]);
+    expect(db.writes).toEqual([]);
+    expect(doc(db)).toEqual(movido);
+    expect(doc(db)).not.toHaveProperty('logisticaGravadaEm');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
 /*                          3 · descartarRascunhoShopee                        */
 /* -------------------------------------------------------------------------- */
 
-describe('descartarRascunhoShopee — base INTEIRA conferida + delete guardado', () => {
+// #1911 P15 retitled this describe (it was «descartarRascunhoShopee — base
+// INTEIRA conferida + delete guardado»): `logistic_info` is optional in the
+// base until P16 (D-LOG-10), so the base is the five form fields at least.
+describe('descartarRascunhoShopee — a base conferida (os cinco campos, e logistic_info quando nomeada) + delete guardado', () => {
   it('LIVRE e a base é o gravado ⇒ apaga com a precondição, sem atestação, criacaoIncerta: false', async () => {
     const db = new FakeDb();
     db.seed(CAMINHO, rascunho());
@@ -2634,6 +3062,75 @@ describe('descartarRascunhoShopee — base INTEIRA conferida + delete guardado',
       expect(err.code).toBe(CODIGO_RASCUNHO_SHOPEE.conflito);
       expect(doc(db2)).toEqual(legado);
     });
+
+    describe('#1911 P15 — logistic_info na base do descarte (D-LOG-10)', () => {
+      const CANAL_A = { logistic_id: 90_003, enabled: true, is_free: false };
+      const CANAL_C = { logistic_id: 90_005, enabled: false, is_free: true };
+      /** Another tab chose these channels — STORED in another order than the projection's. */
+      const escolhida = rascunho({
+        logistic_info: [CANAL_C, CANAL_A],
+        logisticaGravadaEm: AGORA - 86_400_000,
+      });
+
+      it('(D-LOG-10) a base de CINCO chaves — a da web já implantada, montada à mão, não vista() — sobre uma lista carimbada ⇒ descartado sem comparar ⟷ a base com logistic_info null sobre a mesma ⇒ 409 CONFLITO [logistic_info]', async () => {
+        // What a web deployed before P16 sends: the five form fields, by name.
+        const cincoChaves = {
+          item_name: 'Camiseta do rascunho',
+          description: null,
+          category_id: 100_017,
+          marca: { brand_id: 0, original_brand_name: null },
+          attributes: null,
+        };
+        // ÂNCORA: the projection has a SIXTH key, and it is not «Automática» here.
+        expect(Object.keys(vista(escolhida))).toHaveLength(6);
+        expect(vista(escolhida).logistic_info).toEqual([CANAL_A, CANAL_C]);
+
+        // The base that NAMES the list as «Automática» is a conflict…
+        const db = new FakeDb();
+        db.seed(CAMINHO, escolhida);
+        const err = await recusaDe(
+          descartarRascunhoShopee(
+            deps(db),
+            corpoDescartar({ ...cincoChaves, logistic_info: null }),
+          ),
+        );
+        expect(err.code).toBe(CODIGO_RASCUNHO_SHOPEE.conflito);
+        expect(err.conflitos).toEqual([
+          { campo: CAMPO_RASCUNHO_SHOPEE.logisticInfo, atual: [CANAL_A, CANAL_C] },
+        ]);
+        expect(doc(db)).toEqual(escolhida);
+        expect(db.deletes).toEqual([]);
+
+        // …while the five-key base compares only what it names (the P15 → P16 gap).
+        const r = await descartarRascunhoShopee(deps(db), corpoDescartar(cincoChaves));
+        expect(r).toEqual({ linkDocId: RASCUNHO, descartado: true, criacaoIncerta: false });
+        expect(db.deletes).toEqual([{ path: CAMINHO, comPrecondicao: true }]);
+      });
+
+      it('PAR: a base de SEIS chaves = a projeção ordenada sobre uma lista carimbada guardada em outra ordem ⇒ descartado ⟷ QUASE: a mesma base invertida ⇒ 409 [logistic_info]', async () => {
+        // QUASE: the order fold is the PROJECTION's — a base sent in the
+        // stored order (not the projection's) is not what the tab showed.
+        const db = new FakeDb();
+        db.seed(CAMINHO, escolhida);
+        const err = await recusaDe(
+          descartarRascunhoShopee(
+            deps(db),
+            corpoDescartar({ ...vista(escolhida), logistic_info: [CANAL_C, CANAL_A] }),
+          ),
+        );
+        expect(err.code).toBe(CODIGO_RASCUNHO_SHOPEE.conflito);
+        expect(err.conflitos).toEqual([
+          { campo: CAMPO_RASCUNHO_SHOPEE.logisticInfo, atual: [CANAL_A, CANAL_C] },
+        ]);
+        expect(db.deletes).toEqual([]);
+
+        // PAR: the projection itself — six keys, the list sorted.
+        const r = await descartarRascunhoShopee(deps(db), corpoDescartar(vista(escolhida)));
+        expect(r.descartado).toBe(true);
+        expect(doc(db)).toBeUndefined();
+        expect(db.deletes).toEqual([{ path: CAMINHO, comPrecondicao: true }]);
+      });
+    });
   });
 
   it('ausente ⇒ 404; de OUTRA conta ⇒ 404; um ANÚNCIO ⇒ 409 JA_PUBLICADO — nada apagado', async () => {
@@ -2749,6 +3246,16 @@ const LEITURAS_CRUAS_DE_ATRIBUTOS = [
   ['lerAtributos', 'ArmazenadosShopee'].join(''),
   ['attribute', '_value_list'].join(''),
 ];
+/**
+ * #1911 P15: `rascunho.ts` decides about logistics ONLY through the projection
+ * (`camposDoRascunhoShopee`) — never the stored-list reader or the provenance
+ * predicate called here, which would be a second reading of what the
+ * projection already folded (provenance, order, the id fold).
+ */
+const LEITURAS_CRUAS_DA_LOGISTICA = [
+  ['lerLogistica', 'ArmazenadaShopee'].join(''),
+  ['logisticaGravada', 'PeloErpShopee'].join(''),
+];
 
 describe('rascunho.ts decide com o módulo do @delfrance/schemas, nunca com uma cópia', () => {
   it('nenhuma comparação feita à mão e nenhuma leitura crua dos atributos: só a projeção e a comparação de shopeeRascunho.ts', () => {
@@ -2765,7 +3272,11 @@ describe('rascunho.ts decide com o módulo do @delfrance/schemas, nunca com uma 
     expect(fonte).toContain('camposDoRascunhoShopee(');
     expect(fonte).toContain('camposDaBaseDoRascunhoShopee(');
 
-    for (const proibido of [...COMPARACOES_DE_MAO, ...LEITURAS_CRUAS_DE_ATRIBUTOS]) {
+    for (const proibido of [
+      ...COMPARACOES_DE_MAO,
+      ...LEITURAS_CRUAS_DE_ATRIBUTOS,
+      ...LEITURAS_CRUAS_DA_LOGISTICA,
+    ]) {
       expect(fonte, `rascunho.ts nomeia ${proibido}`).not.toContain(proibido);
     }
   });

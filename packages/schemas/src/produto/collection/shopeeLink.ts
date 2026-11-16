@@ -108,7 +108,7 @@ import { ACAO_STATUS_ANUNCIO, type AcaoStatusAnuncio } from './mercadoLivreLink'
  *    `criacaoIncertaDesde` (the `incerto` re-arm, the takeover) and cleared by
  *    the same four; read only through `janelaDaCriacaoIncertaShopee`'s `sku`;
  *  - **`logistic_info` + `logisticaGravadaEm`** (#2015) — the stored logistics
- *    list and the stamp that vouches THIS app wrote it. FOUR writer sites, all
+ *    list and the stamp that vouches THIS app wrote it. FIVE writer sites, all
  *    in `apps/shopee`, under ONE rule — the stamp rides the SAME patch, under
  *    the SAME condition, as the list:
  *    - step 11's write-back #1 (`anuncios/publicarAnuncio.ts`), the list the
@@ -120,15 +120,21 @@ import { ACAO_STATUS_ANUNCIO, type AcaoStatusAnuncio } from './mercadoLivreLink'
  *      Shopee read (`get_item_base_info`, or `get_kit_item_info`'s
  *      `product_info` for a kit);
  *    - the kit create's `escreverVinculoDoKit` (`kits/vinculosKit.ts`), the
- *      list `add_kit_item` was sent.
+ *      list `add_kit_item` was sent;
+ *    - the draft route's EDIT `atualizarRascunhoShopee`
+ *      (`anuncios/rascunho.ts`, #1911 P15): the list the operator chose, or
+ *      `null` («Automática»), stamped in the same `update` and only when the
+ *      edit WRITES the list (a stamped `null` included).
  *    The ONE write of the list with no stamp is the draft create's schema
  *    default `null` on a NEW doc — a `null` list vouches for nothing. Every
  *    other write to the link (ENSURE's adoption, the lock, the failure stamp,
- *    the stock and price syncs, the kit read-back) names neither key, and
- *    nothing in a browser writes either. The legacy app wrote the list but
- *    never the stamp, so a migrated list reads as distrusted until its first
- *    publish or import. Read only through `logisticaGravadaPeloErpShopee`
- *    (`./shopeeLinkLeitura.ts`), never raw.
+ *    the stock and price syncs, the kit read-back, a draft edit that does not
+ *    name `logistic_info`) names neither key, and nothing in a browser writes
+ *    either. The legacy app wrote the list but never the stamp, so a migrated
+ *    list reads as distrusted until its first publish or import (or, on a
+ *    draft, the first edit that writes the list). Read only through
+ *    `logisticaGravadaPeloErpShopee` (`./shopeeLinkLeitura.ts`), never raw;
+ *    each entry only through `lerLogisticaArmazenadaShopee` (#1911 P15).
  * The stock sender READS `item_status` and `estadoAnuncio` into its refusal
  * fingerprint and never writes either, so it can never race the five above.
  * The price sender writes neither.
@@ -934,7 +940,9 @@ export const produtoShopeeLinkSchema = z
     /**
      * MILLISECONDS — when THIS app last wrote {@link logistic_info}: a list a
      * publish SENT (write-back #1, the draft claim, the kit create) or one
-     * Shopee ANSWERED (write-back #2, the product import). `null` or absent =
+     * Shopee ANSWERED (write-back #2, the product import),
+     * or the one the operator chose on a draft (the draft edit, #1911 P15).
+     * `null` or absent =
      * this app cannot vouch for the stored list, and the publish planners
      * rebuild the logistics instead of re-sending it.
      *
@@ -948,14 +956,15 @@ export const produtoShopeeLinkSchema = z
      * `item_status`, so a migrated list is an older import's read or a legacy
      * screen's edit — no record of what was last sent or of what Shopee holds.
      * Absent ⇒ distrusted, and there is NO backfill: a link heals at its first
-     * successful publish or import, because a stamp a script wrote would
-     * vouch for a list nobody re-read.
+     * successful publish or import (a draft also at the first edit that
+     * writes its list), because a stamp a script wrote would vouch for a list
+     * nobody re-read.
      *
      * ⚠️ Written only in the SAME patch, under the SAME condition, as the list
      * it vouches for: a write that leaves the list alone leaves the stamp
      * alone. The draft create writes none — its list is the schema's `null`,
      * which takes the full pass anyway. The header's writer inventory names
-     * the four sites.
+     * the five sites.
      *
      * ⚠️ Never read raw: `logisticaGravadaPeloErpShopee`
      * (`./shopeeLinkLeitura.ts`) is the ONE reading (#1369). In memory only —
