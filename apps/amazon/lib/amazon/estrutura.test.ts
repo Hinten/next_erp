@@ -112,7 +112,15 @@
  *    refuses the engine and the scheduling modules. The route's own files write
  *    no Firestore document, name no aviso writer and enqueue nothing; and the two
  *    document helpers are named, comments included, by ONE production file,
- *    `agendamento/etiquetaAmazon.ts`.
+ *    `agendamento/etiquetaAmazon.ts`;
+ *  - (step 12a, PR 12-b) `feeds/` is Next-free, reads no process environment
+ *    and never imports the `@/` alias; the write engine's SECOND entry, the
+ *    batch entry `executarLoteEscritaAmazon`, has its OWN caller roster, kept
+ *    apart from the first entry's and EMPTY until a feed is wired (no
+ *    production file calls it, and only the engine names it); both entries
+ *    reach the write client through the engine's one private write helper, so
+ *    the write-client builder keeps its three places and the observer seam its
+ *    four sites.
  */
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, posix, relative, sep } from 'node:path';
@@ -1285,6 +1293,40 @@ const nomeiaOEasyShip = (texto: string) => CHAMADA_DO_EASY_SHIP.test(semComentar
 /** The write engine's one client builder (step-15 plan §2, PR 15-b). */
 const CONSTRUTOR_LOCAL_DO_MOTOR = 'construirClienteEscrita';
 
+/* --------------------- step 12a (PR 12-b): the batch entry --------------------- */
+
+/**
+ * The ONLY production callers of the write engine's batch entry: NONE until a
+ * feed is wired. A roster of its own, never merged into
+ * {@link CHAMADORES_DO_MOTOR_DE_ESCRITA}: that one is one caller per write
+ * flow of the FIRST entry, and its regexes would refuse a batch caller anyway.
+ */
+const CHAMADORES_DO_LOTE_DE_ESCRITA: readonly string[] = [];
+
+/**
+ * A CALL of the batch entry, in comment-free code — a type argument list
+ * allowed, its own declaration (`function executarLoteEscritaAmazon<…>(`) not.
+ */
+const CHAMADA_DO_LOTE_DE_ESCRITA =
+  /(?<!\bfunction\s+)\bexecutarLoteEscritaAmazon\s*(?:<[^()]*>\s*)?\(/;
+
+const chamaOLoteDeEscrita = (texto: string) =>
+  CHAMADA_DO_LOTE_DE_ESCRITA.test(semComentarios(texto));
+
+/**
+ * The production files that may NAME the batch entry at all: the engine (the
+ * declaration) and the batch roster. As for the first entry, the NAME scan
+ * fails closed where the call scan cannot (an alias, a bound reference, a
+ * re-export).
+ */
+const NOMEIAM_O_LOTE_DE_ESCRITA = [MOTOR_DE_ESCRITA, ...CHAMADORES_DO_LOTE_DE_ESCRITA].sort();
+
+const nomeiaOLoteDeEscrita = (texto: string) =>
+  /\bexecutarLoteEscritaAmazon\b/.test(semComentarios(texto));
+
+/** The engine's one private write helper: both entries reach the write client through it. */
+const ESCRITA_UNICA_DO_MOTOR = 'escreverUmaVez';
+
 /** The source text of the top-level function `nome` in `texto`, or `null`. */
 function textoDaFuncao(texto: string, nome: string): string | null {
   const fonte = ts.createSourceFile('x.ts', texto, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
@@ -1334,6 +1376,12 @@ describe('lib/amazon layout', () => {
         'core/renovacaoUnica.ts',
         'core/respond.ts',
         'core/valvulas.ts',
+        'feeds/escadaFeed.ts',
+        'feeds/provedorLote.ts',
+        'feeds/registroFeed.ts',
+        'feeds/relatorioFeed.ts',
+        'feeds/tarefaLote.ts',
+        'feeds/vezFeed.ts',
         'frete/estadoFreteAmazon.ts',
         'frete/intFrete.ts',
         'nfe/agendadorNfe.ts',
@@ -2934,6 +2982,134 @@ describe('the step-15 label route guards (15-d)', () => {
       'extrairEtiquetaZpl(bytes);',
     ]) {
       expect(nomeiamOsDocumentos([[fora, texto]]), texto).toEqual([]);
+    }
+  });
+});
+
+describe('the step-12a feed core guards (12-b)', () => {
+  const feeds = arquivosTs(join(RAIZ_LIB, 'feeds')).filter((p) => !ehTeste(p));
+
+  it('★ (1) feeds/ is Next-free, reads no process environment and never imports the @/ alias', () => {
+    expect(feeds.map(rel).sort()).toEqual([
+      'feeds/escadaFeed.ts',
+      'feeds/provedorLote.ts',
+      'feeds/registroFeed.ts',
+      'feeds/relatorioFeed.ts',
+      'feeds/tarefaLote.ts',
+      'feeds/vezFeed.ts',
+    ]);
+    for (const arquivo of feeds) {
+      const texto = readFileSync(arquivo, 'utf8');
+      expect(texto, rel(arquivo)).not.toMatch(/process\s*\.\s*env/);
+      expect(/from 'next(\/[^']*)?'/.test(texto), rel(arquivo)).toBe(false);
+      expect(
+        especificadores(texto).filter((e) => e.startsWith('@/')),
+        rel(arquivo),
+      ).toEqual([]);
+    }
+  });
+
+  // An app-wide parse: CI headroom, not a budget.
+  it(
+    '★ (2) the batch entry is CALLED by no production file and NAMED only by the engine: its roster is pinned EMPTY',
+    { timeout: 30_000 },
+    () => {
+      expect(CHAMADORES_DO_LOTE_DE_ESCRITA).toEqual([]);
+      const fontes = fontesDoChamadorDeSearchOrders();
+      const chamam = fontes
+        .filter((p) => chamaOLoteDeEscrita(readFileSync(p, 'utf8')))
+        .map(relApp)
+        .sort();
+      expect(chamam).toEqual(CHAMADORES_DO_LOTE_DE_ESCRITA);
+      const nomeiam = fontes
+        .filter((p) => nomeiaOLoteDeEscrita(readFileSync(p, 'utf8')))
+        .map(relApp)
+        .sort();
+      expect(nomeiam).toEqual(NOMEIAM_O_LOTE_DE_ESCRITA);
+      // The first entry's roster is untouched by the second: still one caller
+      // per write flow, and the batch entry is none of them.
+      expect(CHAMADORES_DO_MOTOR_DE_ESCRITA).toEqual([
+        'lib/amazon/agendamento/executarAgendamento.ts',
+        'lib/amazon/nfe/processarNfe.ts',
+      ]);
+      // Anti-vacuity: the engine declares the entry and does not call it; the
+      // scan read the functions codebase and the scripts.
+      const motor = semComentarios(lerDoApp(MOTOR_DE_ESCRITA) ?? '');
+      expect(motor).toMatch(/\bfunction\s+executarLoteEscritaAmazon\s*</);
+      expect(chamaOLoteDeEscrita(motor)).toBe(false);
+      expect(fontes.map(relApp)).toEqual(
+        expect.arrayContaining(['functions/src/index.ts', 'scripts/sanitizar.ts']),
+      );
+    },
+  );
+
+  it('★ (3) both entries reach the write client through the ONE private write helper, which holds both builder calls', () => {
+    const motor = lerDoApp(MOTOR_DE_ESCRITA) ?? '';
+    const ajudante = semComentarios(textoDaFuncao(motor, ESCRITA_UNICA_DO_MOTOR) ?? '');
+    // The helper holds the LWA client's builder call and the restricted
+    // factory's, and the forced-refresh-once rule.
+    expect(
+      ajudante.match(new RegExp(`\\b${CONSTRUTOR_LOCAL_DO_MOTOR}\\(`, 'g')) ?? [],
+    ).toHaveLength(2);
+    expect(ajudante).toMatch(/\bexecutarComRenovacaoUnica\(/);
+    // Each entry calls the helper exactly once and never names the builder or
+    // the refresh rule itself.
+    for (const entrada of ['executarEscritaAmazon', 'executarLoteEscritaAmazon']) {
+      const corpo = semComentarios(textoDaFuncao(motor, entrada) ?? '');
+      expect(corpo, entrada).not.toBe('');
+      expect(
+        corpo.match(new RegExp(`\\b${ESCRITA_UNICA_DO_MOTOR}\\(`, 'g')) ?? [],
+        entrada,
+      ).toHaveLength(1);
+      expect(corpo, entrada).not.toMatch(new RegExp(`\\b${CONSTRUTOR_LOCAL_DO_MOTOR}\\b`));
+      expect(corpo, entrada).not.toMatch(/\bexecutarComRenovacaoUnica\b/);
+    }
+    // The file-wide pins are unchanged: three builder places, one observer site.
+    const codigo = semComentarios(motor);
+    expect(codigo.match(new RegExp(`\\b${CONSTRUTOR_LOCAL_DO_MOTOR}\\(`, 'g')) ?? []).toHaveLength(
+      3,
+    );
+    expect(motor.split(SEAM_OK)).toHaveLength(2);
+  });
+
+  it('the batch scans flag what they exist for, and nothing alike (near-misses)', () => {
+    for (const fonte of [
+      'const r = await executarLoteEscritaAmazon({ valvula });',
+      'executarLoteEscritaAmazon<P, X, R>({ valvula });',
+      'return executarLoteEscritaAmazon ({ valvula });',
+    ]) {
+      expect(chamaOLoteDeEscrita(fonte), fonte).toBe(true);
+      // The first entry's scans never see a batch call.
+      expect(chamaOMotorDeEscrita(fonte), fonte).toBe(false);
+      expect(nomeiaOMotorDeEscrita(fonte), fonte).toBe(false);
+    }
+    for (const fonte of [
+      'export async function executarLoteEscritaAmazon<P, X, R>(e: E) {}',
+      'function executarLoteEscritaAmazon(e: E) {}',
+      '// executarLoteEscritaAmazon(e)',
+      "import { executarLoteEscritaAmazon } from '../core/escrita';",
+      'const x = executarLoteEscritaAmazonDepois(e);',
+      'const r = await executarEscritaAmazon({ valvula });',
+    ]) {
+      expect(chamaOLoteDeEscrita(fonte), fonte).toBe(false);
+    }
+    // What the call scan cannot see, the NAME scan flags.
+    for (const fonte of [
+      "import { executarLoteEscritaAmazon as lote } from '../core/escrita';",
+      'const m = executarLoteEscritaAmazon;',
+      'escrita.executarLoteEscritaAmazon.call(null, e);',
+      "export { executarLoteEscritaAmazon as rodar } from '../core/escrita';",
+    ]) {
+      expect(chamaOLoteDeEscrita(fonte), fonte).toBe(false);
+      expect(nomeiaOLoteDeEscrita(fonte), fonte).toBe(true);
+    }
+    for (const fonte of [
+      '// executarLoteEscritaAmazon(e)',
+      '/** see `executarLoteEscritaAmazon` */ const y = 1;',
+      'const x = executarLoteEscritaAmazonDepois(e);',
+      'const r = await executarEscritaAmazon({ valvula });',
+    ]) {
+      expect(nomeiaOLoteDeEscrita(fonte), fonte).toBe(false);
     }
   });
 });
