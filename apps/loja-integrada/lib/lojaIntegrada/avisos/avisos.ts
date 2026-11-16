@@ -4,8 +4,10 @@
  * `lojaIntegradaImportacaoParada`, raised and resolved by the order poller
  * (`pedidos/pollPedidos.ts`) — the channel's tipo list the sweep's orphan pass
  * reads (the order-import tipos of step 5 included; their producer is
- * `pedidos/avisosPedidoLi.ts`; and the product import's three of step 9, whose
- * producer is `importacao/avisosImportacao.ts`), and the µs boundary of this app.
+ * `pedidos/avisosPedidoLi.ts`; the product import's three of step 9, whose
+ * producer is `importacao/avisosImportacao.ts`; and the stock sync's three of
+ * step 12, whose producers ship with its send run and reconcile), and the µs
+ * boundary of this app.
  *
  * ## ⚠️ The ONE module in `apps/loja-integrada` that speaks MICROSECONDS
  *
@@ -249,21 +251,39 @@ export const TIPOS_AVISO_IMPORTACAO_PRODUTOS_LI: ReadonlySet<TipoAviso> = new Se
 ]);
 
 /**
+ * The stock sync's tipos (step 12; producers: the stock send run and the daily
+ * reconcile): one row per conta (`lojaIntegradaEstoqueSemErp`), one per child
+ * produto (`lojaIntegradaEstoqueRecusado`, keyed by the ERP produto id) and one
+ * per motivo (`lojaIntegradaEstoqueVinculo`, keyed by the motivo code). All
+ * three are clocked by their run's own start, which the conta enumeration's
+ * `readTime` can never be compared with — the product import's rule.
+ */
+export const TIPOS_AVISO_ESTOQUE_LI: ReadonlySet<TipoAviso> = new Set<TipoAviso>([
+  TIPO_AVISO.lojaIntegradaEstoqueSemErp,
+  TIPO_AVISO.lojaIntegradaEstoqueRecusado,
+  TIPO_AVISO.lojaIntegradaEstoqueVinculo,
+]);
+
+/**
  * The tipos that hold MANY rows per conta, one per entity — the order-import ones
- * (a pedido, a shipping-method key) and the product import's per-category one —
- * so the orphan pass matches a row to a listed conta by its key PREFIX
- * ({@link prefixoDaContaNoAvisoLi}), never by one chave per conta.
+ * (a pedido, a shipping-method key), the product import's per-category one and
+ * the stock sync's per-produto and per-motivo ones — so the orphan pass matches a
+ * row to a listed conta by its key PREFIX ({@link prefixoDaContaNoAvisoLi}), never
+ * by one chave per conta.
  */
 export const TIPOS_AVISO_POR_ENTIDADE_LI: ReadonlySet<TipoAviso> = new Set<TipoAviso>([
   ...TIPOS_AVISO_PEDIDO_LI,
   TIPO_AVISO.lojaIntegradaCategoriaSemVinculo,
+  TIPO_AVISO.lojaIntegradaEstoqueRecusado,
+  TIPO_AVISO.lojaIntegradaEstoqueVinculo,
 ]);
 
 /**
  * Every tipo of this channel — what the sweep's orphan pass filters on.
  * `lojaIntegradaImportacaoParada` (step 3) is listed beside the two step-2 tipos
- * this module raises, the order-import tipos (step 5) and the product import's
- * (step 9) beside them, so a gone conta's rows of every tipo are closed too.
+ * this module raises, the order-import tipos (step 5), the product import's
+ * (step 9) and the stock sync's (step 12) beside them, so a gone conta's rows of
+ * every tipo are closed too.
  */
 export const TIPOS_AVISO_LI: ReadonlySet<string> = new Set([
   TIPO_AVISO.lojaIntegradaTokenExpirando,
@@ -271,6 +291,7 @@ export const TIPOS_AVISO_LI: ReadonlySet<string> = new Set([
   TIPO_AVISO.lojaIntegradaImportacaoParada,
   ...TIPOS_AVISO_PEDIDO_LI,
   ...TIPOS_AVISO_IMPORTACAO_PRODUTOS_LI,
+  ...TIPOS_AVISO_ESTOQUE_LI,
 ]);
 
 /**
@@ -288,6 +309,15 @@ export function chaveImportacaoComPendenciasLi(integracaoId: string): string {
     tipo: TIPO_AVISO.lojaIntegradaImportacaoComPendencias,
     conta: integracaoId,
   });
+}
+
+/**
+ * The dedup identity of the stock sync's "sem estoque no ERP" aviso (step 12): one
+ * row per conta. The orphan pass needs it, so a LISTED conta's open row is never
+ * mistaken for an orphan.
+ */
+export function chaveEstoqueSemErpLi(integracaoId: string): string {
+  return chaveDeAviso({ tipo: TIPO_AVISO.lojaIntegradaEstoqueSemErp, conta: integracaoId });
 }
 
 /**
@@ -357,9 +387,10 @@ function contaDaChaveComRelogio(
  *    next sweep re-raises it if the conta turns out to exist.
  *  - A clocked-tipo id no producer here could have computed has no write to
  *    race, so it is resolved clockless too.
- *  - An order-import row (step 5) and a product-import row (step 9) are resolved
- *    clockless: their clocks are the order's Loja Integrada stamp and a job's
- *    own stamp, domains `relogioListaUs` can never be compared with. The sweep
+ *  - An order-import row (step 5), a product-import row (step 9) and a stock
+ *    row (step 12) are resolved clockless: their clocks are the order's Loja
+ *    Integrada stamp, a job's own stamp and a run's own start, domains
+ *    `relogioListaUs` can never be compared with. The sweep
  *    therefore hands this only rows last written NO LATER than the
  *    enumeration's read: a row written after it may belong to a conta created
  *    after the list was read (`conta/expiracaoSweep.ts`).
