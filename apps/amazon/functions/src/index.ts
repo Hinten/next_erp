@@ -27,6 +27,7 @@ import {
   camposSeguros,
   registrarEventoAmazon,
 } from '../../lib/amazon/core/log';
+import { FILA_LOTES_AMAZON } from '../../lib/amazon/feeds/agendadorLotes';
 import {
   FILA_LEITURA_AMAZON,
   FLUXO_LEITURA_AMAZON,
@@ -38,6 +39,7 @@ import { FILA_NFE_AMAZON } from '../../lib/amazon/nfe/tarefaNfe';
 import { SEGREDOS_DE_LEITURA_AMAZON, depsDeLeituraAmazon } from './depsLeitura';
 import * as filaAgendamento from './filaAgendamento';
 import * as filaLeitura from './filaLeitura';
+import * as filaLotes from './filaLotes';
 import * as filaNfe from './filaNfe';
 import { getDb } from './lib/admin';
 
@@ -67,7 +69,14 @@ import { getDb } from './lib/admin';
  * queue — one queue per WRITE flow — fed by the NF-e task's acceptance seam, the
  * order import and its own re-enqueues, all through its own composition root
  * (./agendadorAgendamento); it books an order's pickup behind the read switch,
- * the scheduling valve and its canary.
+ * the scheduling valve and its canary. Step 12a (PR 12-c) adds the JOBS queue
+ * (`processAmazonListingsJob`, ./filaLotes), the FOURTH task queue — the reads
+ * queue, one per write flow, and now the jobs queue — which carries every task of the
+ * `JSON_LISTINGS_FEED` core (a feed's send, its poll rungs and wake-ups, the
+ * wait after a lost `createFeed` answer, the recoveries), fed by its own
+ * handlers through its own composition root (./agendadorEstoque); a feed is
+ * submitted only behind the read switch, the fluxo's valve and a canary list of
+ * exactly `*`, and the seam that names a fluxo's provider is empty for now.
  *
  * ⚠️ ONE logger: every line goes through `LOGGER_STDOUT_AMAZON` /
  * `registrarEventoAmazon` (`lib/amazon/core/log.ts`). This file never imports
@@ -117,6 +126,17 @@ if (!(FILA_AGENDAMENTO_AMAZON in filaAgendamento)) {
   );
 }
 
+// The same assertion for the jobs queue (step 12a, PR 12-c): every feed task's
+// producer — the handlers' own enqueues, the receiver's wake-up — targets
+// `FILA_LOTES_AMAZON`.
+if (!(FILA_LOTES_AMAZON in filaLotes)) {
+  throw new Error(
+    '[amazon] function-name drift: functions/src/filaLotes.ts must export a ' +
+      `handler named '${FILA_LOTES_AMAZON}' (the enqueue target). ` +
+      'Rename the export and the FILA_LOTES_AMAZON constant together.',
+  );
+}
+
 /** The ONE reads queue (one dispatch at a time, retry with backoff). */
 export { filaLeituraAmazon } from './filaLeitura';
 
@@ -132,6 +152,13 @@ export { processAmazonNfeUpload } from './filaNfe';
  * read switch, the scheduling valve and its canary.
  */
 export { processAmazonEasyShipSchedule } from './filaAgendamento';
+
+/**
+ * The jobs queue (step 12a, PR 12-c): the `JSON_LISTINGS_FEED` core's four
+ * tasks, one at a time, behind the read switch, each fluxo's valve and its
+ * canary; no fluxo has a provider yet.
+ */
+export { processAmazonListingsJob } from './filaLotes';
 
 /** The 15-minute backstop poll: the reads queue's second producer (./pollPedidos). */
 export { pollAmazonOrders } from './pollPedidos';

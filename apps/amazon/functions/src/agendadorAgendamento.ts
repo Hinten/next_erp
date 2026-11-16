@@ -24,7 +24,7 @@ import { getAdminApp } from './lib/admin';
  * that root is an entry of the NF-e trigger's EXACT D11 closure, pinned file by
  * file (`estrutura.test.ts`), and the trigger runs on EVERY `nfev4` write of the
  * project — one root per queue keeps that closure from growing (step-15 plan §3
- * decision 23). `estrutura.test.ts` also pins the four roots and the queue each
+ * decision 23). `estrutura.test.ts` also pins every root and the queue each
  * one binds.
  *
  * The NF-e queue makes it reachable from `src/index.ts`, so esbuild bundles it

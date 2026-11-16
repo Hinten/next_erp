@@ -134,12 +134,14 @@ describe('the OAuth routes fit inside the backend ceiling', () => {
     expect(contar(ler(CORPO_DA_ETIQUETA), 'executarAgendamentoAmazon(')).toBe(1);
   });
 
-  it('the push receiver (route and body) makes ZERO Amazon calls of any kind', () => {
+  it('the push receiver (route and body, and since step 12a the jobs producer and payload its feed wake-up goes through) makes ZERO Amazon calls of any kind', () => {
     for (const arquivo of [
       'app/api/webhooks/amazon/route.ts',
       'lib/amazon/notificacoes/receptor.ts',
       'lib/amazon/notificacoes/envelope.ts',
       'lib/amazon/notificacoes/corpo.ts',
+      'lib/amazon/feeds/agendadorLotes.ts',
+      'lib/amazon/feeds/tarefaLote.ts',
     ]) {
       const fonte = ler(arquivo);
       expect(contar(fonte, 'trocarCodigoAutorizacao('), arquivo).toBe(0);

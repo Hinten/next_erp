@@ -40,7 +40,8 @@
  *     `aplicacao-estrangeira`, logged with an 8-hex sha256 prefix of the
  *     received id, never the id (§5 risk 1).
  *  8. ROUTING fields by grammar ⇒ `campo-invalido:<wire name>`.
- *  9. `FEED_PROCESSING_FINISHED` ⇒ `feed-sem-consumidor` until step 12a.
+ *  9. `FEED_PROCESSING_FINISHED` ⇒ the feed WAKE-UP (below), which ends there:
+ *     steps 10 and 11 are `ORDER_CHANGE`'s alone.
  * 10. ENQUEUE the ids-only push payload, raced against
  *     {@link PRAZO_ENFILEIRAMENTO_RECEPTOR_MS} (`prazo.ts`) ⇒ 200.
  * 11. An enqueue failure of the four CONTAINED classes (the valve, a named
@@ -49,6 +50,34 @@
  *     {@link PRAZO_PERSISTENCIA_RECEPTOR_MS} ⇒ 200; a `ZodError` from the
  *     persist ⇒ 200 + `falha-nao-persistivel`; the persist's deadline ⇒ 500;
  *     anything else, from either, is RETHROWN (500, which the pipe retries).
+ *
+ * ## The feed wake-up (step 12a, PR 12-c)
+ *
+ * A `FEED_PROCESSING_FINISHED` of OUR application (step 7) whose routing fields
+ * passed (step 8) is a WAKE-UP of the feed result handler, never data: the
+ * handler finds the record and re-reads `getFeed` itself. On the jobs queue, the
+ * receiver's SECOND producer ({@link DepsReceptorAmazon.agendadorLotes}; the
+ * reads producer never sees a feed):
+ *
+ *  - a `feedType` other than `JSON_LISTINGS_FEED` ⇒ `feed-tipo-ignorado` (INFO):
+ *    not a feed this backend submits;
+ *  - a `feedId` outside the task's grammar (digits, `FEED_ID_AMAZON_REGEX`,
+ *    through the task schema) ⇒ `campo-invalido:feedId` (INFO), nothing enqueued:
+ *    no record of ours can hold it;
+ *  - otherwise ONE named enqueue of `{ tipo: 'feed-resultado', contaId: null,
+ *    feedId, rodada: 0, origem: 'notificacao' }`, named by (seller or `-`,
+ *    feed), raced against the same enqueue deadline ⇒ 200 `feed-enfileirado`, or
+ *    `feed-ja-enfileirado` when Cloud Tasks already holds the name (a
+ *    redelivery, rule 7 tier 0);
+ *  - the enqueue failing in one of the four contained ways (the jobs queue's
+ *    valve, a named transient, the deadline, a raw SDK error) ⇒ ONE WARNING
+ *    `feed-nao-enfileirado` and 200, NOTHING persisted: `notificacoesAmazon`
+ *    holds order notifications only, and the feed's own poll chain reads its
+ *    outcome anyway. Anything else is rethrown (500), as for an order.
+ *
+ * `resultFeedDocumentId` is logged as present or absent (`documentoResultado`),
+ * the `feedId` only once it passed the grammar. `feed-sem-consumidor` stays in
+ * the closed drop set and is no longer written.
  *
  * ## The payload is ids only, STRIPPED
  *
@@ -96,6 +125,17 @@ import {
   registrarEventoAmazon,
 } from '../core/log';
 import {
+  type AgendadorLotesAmazon,
+  AmazonLotesTarefasDesligadasError,
+} from '../feeds/agendadorLotes';
+import {
+  ORIGEM_RESULTADO_FEED_AMAZON,
+  TIPO_TAREFA_LOTE_AMAZON,
+  VERSAO_TAREFA_LOTE_AMAZON,
+  nomeNotificacaoFeed,
+  tarefaResultadoFeedAmazonSchema,
+} from '../feeds/tarefaLote';
+import {
   type AgendadorAmazon,
   AmazonTarefasDesligadasError,
   AmazonTarefasTransitoriasError,
@@ -106,8 +146,10 @@ import {
 } from './agendador';
 import { MAX_CORPO_RECEPTOR_BYTES, lerCorpoLimitado } from './corpo';
 import {
+  type CamposFeedAmazon,
   type CasingAmazon,
   type FormaDoRelayAmazon,
+  TIPO_FEED_JSON_LISTINGS,
   TIPO_FEED_PROCESSING_FINISHED,
   desembrulharRelay,
   lerEnvelopeAmazon,
@@ -154,8 +196,13 @@ export interface DepsReceptorAmazon {
   readonly ambiente: AmbienteAmazon;
   /** The composition root's region resolver: throws `MissingRegionError` when unset. */
   readonly regiao: () => string;
-  /** The reads-queue producer (`agendador.ts`), bound by the root. */
+  /** The reads-queue producer (`agendador.ts`), bound by the root: order notifications only. */
   readonly agendador: AgendadorAmazon;
+  /**
+   * The jobs-queue producer (`feeds/agendadorLotes.ts`, step 12a, PR 12-c), bound
+   * by the same root: the `FEED_PROCESSING_FINISHED` wake-up only.
+   */
+  readonly agendadorLotes: AgendadorLotesAmazon;
   /** The Admin Firestore, resolved ONLY to persist a failure. */
   readonly db: () => Firestore;
   readonly logger: LoggerAmazon;
@@ -169,8 +216,10 @@ export interface DepsReceptorAmazon {
 export type StatusReceptorAmazon = 200 | 401 | 500 | 503;
 
 /**
- * - `enfileirada`: on the reads queue;
- * - `descartada`: acknowledged and dropped (never ours, or unusable);
+ * - `enfileirada`: on the reads queue (an order), or on the jobs queue (a feed
+ *   wake-up: `feed-enfileirado` / `feed-ja-enfileirado`);
+ * - `descartada`: acknowledged and dropped (never ours, or unusable — or a feed
+ *   wake-up the jobs queue did not take, `feed-nao-enfileirado`);
  * - `persistida`: the enqueue failed, the `failed` document is durable;
  * - `recusada`: 503 (config) or 401 (key);
  * - `falhou`: 500 — not durable, the relay redelivers.
@@ -188,7 +237,11 @@ export interface RespostaReceptorAmazon {
   readonly detalhe: string;
 }
 
-/** The detail of a drop: why a delivery was acknowledged and not enqueued. */
+/**
+ * The detail of a drop: why a delivery was acknowledged and not enqueued.
+ * `feedSemConsumidor` is no longer written (the feed wake-up replaced it, step
+ * 12a) and stays because earlier lines cite it.
+ */
 export const MOTIVO_DESCARTE_RECEPTOR_AMAZON = {
   corpoGrande: 'corpo-grande',
   jsonInvalido: 'json-invalido',
@@ -198,7 +251,15 @@ export const MOTIVO_DESCARTE_RECEPTOR_AMAZON = {
   tipoDesconhecido: 'tipo-desconhecido',
   aplicacaoEstrangeira: 'aplicacao-estrangeira',
   feedSemConsumidor: 'feed-sem-consumidor',
+  feedTipoIgnorado: 'feed-tipo-ignorado',
+  feedNaoEnfileirado: 'feed-nao-enfileirado',
   falhaNaoPersistivel: 'falha-nao-persistivel',
+} as const;
+
+/** The detail of a feed wake-up that reached the jobs queue (step 12a, PR 12-c). */
+export const DETALHE_FEED_RECEPTOR_AMAZON = {
+  enfileirado: 'feed-enfileirado',
+  jaEnfileirado: 'feed-ja-enfileirado',
 } as const;
 
 /** The 8-hex sha256 prefix a foreign application id is logged as: tells two ids apart, reveals neither. */
@@ -364,15 +425,85 @@ export async function receberNotificacaoAmazon(
     return descartar('WARNING', MOTIVO_DESCARTE_RECEPTOR_AMAZON.aplicacaoEstrangeira);
   };
   const campoInvalido = (campo: string) => descartar('WARNING', `campo-invalido:${campo}`);
+  const aoRejeitarTarde = (operacao: 'enfileiramento' | 'persistencia') => (erro: unknown) => {
+    registrarRejeicaoTardia(deps, linha, operacao, erro);
+  };
 
-  // 9. A feed result is checked like any delivery, then dropped: no consumer
-  // before step 12a (§3 decision 17).
+  /** The feed wake-up (module header): ends the delivery, whatever the queue answers. */
+  const acordarResultadoDoFeed = async (
+    campos: CamposFeedAmazon,
+  ): Promise<RespostaReceptorAmazon> => {
+    linha.extras = { documentoResultado: campos.documentoResultado };
+    if (campos.feedType !== TIPO_FEED_JSON_LISTINGS) {
+      return descartar('INFO', MOTIVO_DESCARTE_RECEPTOR_AMAZON.feedTipoIgnorado);
+    }
+    // The task schema is the feedId's grammar (digits): the gate the dispatched
+    // task would apply, run before the enqueue. Every other field is a constant,
+    // so a refusal of anything else is a bug, rethrown.
+    const leitura = tarefaResultadoFeedAmazonSchema.safeParse({
+      v: VERSAO_TAREFA_LOTE_AMAZON,
+      tipo: TIPO_TAREFA_LOTE_AMAZON.resultado,
+      contaId: null,
+      feedId: campos.feedId,
+      rodada: 0,
+      origem: ORIGEM_RESULTADO_FEED_AMAZON.notificacao,
+    });
+    if (!leitura.success) {
+      if (!leitura.error.issues.every((i) => i.path.length === 1 && i.path[0] === 'feedId')) {
+        throw leitura.error;
+      }
+      return descartar('INFO', 'campo-invalido:feedId');
+    }
+    const tarefa = leitura.data;
+    linha.extras = { ...linha.extras, feedId: tarefa.feedId };
+    const nome = nomeNotificacaoFeed(campos.sellerId, tarefa.feedId);
+    const enfileiramento = await correrComPrazoAmazon(
+      () => deps.agendadorLotes.enfileirarLote(tarefa, { nome }),
+      PRAZO_ENFILEIRAMENTO_RECEPTOR_MS,
+      { agendarPrazo, aoRejeitarTarde: aoRejeitarTarde('enfileiramento') },
+    );
+    if (enfileiramento.tipo === 'concluida') {
+      return responder(
+        'INFO',
+        200,
+        'enfileirada',
+        enfileiramento.valor === 'ja-enfileirada'
+          ? DETALHE_FEED_RECEPTOR_AMAZON.jaEnfileirado
+          : DETALHE_FEED_RECEPTOR_AMAZON.enfileirado,
+      );
+    }
+    let falha: string;
+    if (enfileiramento.tipo === 'prazo') {
+      falha = descreverFalhaDeEnfileiramentoAmazon(AmazonTarefasTransitoriasError.porPrazo());
+    } else {
+      const err = enfileiramento.erro;
+      if (err instanceof AmazonLotesTarefasDesligadasError) {
+        falha = 'AmazonLotesTarefasDesligadasError';
+      } else if (
+        err instanceof AmazonTarefasTransitoriasError ||
+        ehFalhaDoSdkDeTarefasAmazon(err)
+      ) {
+        falha = descreverFalhaDeEnfileiramentoAmazon(err);
+      } else {
+        responder('ERROR', 500, 'falhou', `enfileiramento/${nomeDaClasse(err)}`);
+        throw err;
+      }
+    }
+    // Not persisted: `notificacoesAmazon` holds orders, and the feed's own poll
+    // chain reads the outcome this wake-up would have brought forward.
+    linha.extras = { ...linha.extras, falha: `enfileiramento/${falha}` };
+    return descartar('WARNING', MOTIVO_DESCARTE_RECEPTOR_AMAZON.feedNaoEnfileirado);
+  };
+
+  // 9. A feed result is checked like any delivery, then wakes the result
+  // handler on the jobs queue (module header, "The feed wake-up").
   if (envelope.tipo === TIPO_FEED_PROCESSING_FINISHED) {
     const feed = envelope.leitura;
     if (feed.applicationId !== config.applicationId) return estrangeira(feed.applicationId);
     if (feed.tipo === 'campo-invalido') return campoInvalido(feed.campo);
-    return descartar('INFO', MOTIVO_DESCARTE_RECEPTOR_AMAZON.feedSemConsumidor);
+    return acordarResultadoDoFeed(feed.campos);
   }
+
   const pedido = envelope.leitura;
   if (pedido.applicationId !== config.applicationId) return estrangeira(pedido.applicationId);
   if (pedido.tipo === 'campo-invalido') return campoInvalido(pedido.campo);
@@ -393,9 +524,6 @@ export async function receberNotificacaoAmazon(
   linha.idNotificacao = docIdNotificacaoAmazon(payload);
 
   // 10. Enqueue, against the deadline.
-  const aoRejeitarTarde = (operacao: 'enfileiramento' | 'persistencia') => (erro: unknown) => {
-    registrarRejeicaoTardia(deps, linha, operacao, erro);
-  };
   const enfileiramento = await correrComPrazoAmazon(
     () => deps.agendador.enfileirar(payload),
     PRAZO_ENFILEIRAMENTO_RECEPTOR_MS,
@@ -467,7 +595,8 @@ function avisarRotacaoAberta(config: ConfigReceptorAmazon, deps: DepsReceptorAma
 /**
  * The late-rejection line (`prazo.ts`'s consume-all): the operation that LOST
  * its deadline rejected after the answer. The CLASS only. A named enqueue
- * failure is a WARNING (the delivery already has its record); anything else —
+ * failure — either queue's valve, or a named transient — is a WARNING (the
+ * delivery already has its record, or, for a feed, its poll chain); anything else —
  * a raw SDK error is deploy-shaped, a persist failure is a Firestore one, a
  * `TypeError` a bug — is an ERROR.
  */
@@ -480,7 +609,8 @@ function registrarRejeicaoTardia(
   const nomeada =
     operacao === 'enfileiramento' &&
     (erro instanceof AmazonTarefasTransitoriasError ||
-      erro instanceof AmazonTarefasDesligadasError);
+      erro instanceof AmazonTarefasDesligadasError ||
+      erro instanceof AmazonLotesTarefasDesligadasError);
   registrarEventoAmazon(
     deps.logger,
     'notificacao',
