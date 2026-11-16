@@ -83,6 +83,35 @@ function shadowTargets(page: Page) {
   };
 }
 
+/**
+ * A table wider than its 300px horizontal scroll box on a 390px viewport: the
+ * last header sits scrolled out PAST the viewport's edge. This is what
+ * TableView renders on a phone once a row outgrows its column.
+ */
+async function scrolledTableFixture(page: Page): Promise<void> {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.setContent(`<!doctype html><html data-mantine-color-scheme="light"><style>
+    * { box-sizing: border-box; } body { margin: 16px; background: white; color: black; font: 14px/1.4 Arial; }
+    #column { width: 300px; overflow-x: auto; } table { border-collapse: collapse; }
+    th { padding: 8px; white-space: nowrap; text-align: left; font-weight: 600; }
+    </style><body><h1>Scrolled table</h1><div id="column"><table><thead><tr>
+    <th><span id="first">Nome</span></th><th style="min-width: 420px"><span>Sku</span></th>
+    <th><span id="far">Última modificação</span></th></tr></thead></table></div></body></html>`);
+}
+
+function scrolledTableTargets(page: Page) {
+  return { scheme: 'light' as const, required: [page.locator('#first')] };
+}
+
+function axeDeferred(
+  report: Awaited<ReturnType<typeof auditThemeReadability>>,
+  messageKey: string,
+): boolean {
+  return report.axe.incomplete.some((rule) =>
+    rule.nodes.some((node) => node.any.some((check) => check.data?.messageKey === messageKey)),
+  );
+}
+
 async function chartFixture(page: Page): Promise<void> {
   await page.setContent(`<!doctype html><html data-mantine-color-scheme="light"><style>
     body {margin:24px;background:white;color:black;font:16px Arial}
@@ -594,6 +623,52 @@ test.describe('Theme readability checker rejects rendering defects', () => {
     const report = await auditThemeReadability(page, shadowTargets(page));
     expect(report.issues.some((issue) => issue.code === 'unreachable-glyph')).toBe(true);
     expect(report.resolvedTextTargets).toEqual([]);
+  });
+
+  test('measures text scrolled out of a horizontal scroll box past the viewport', async ({
+    page,
+  }) => {
+    await scrolledTableFixture(page);
+    const report = await auditThemeReadability(page, scrolledTableTargets(page));
+    // The fixture must exercise the deferral it exists for.
+    expect(axeDeferred(report, 'elmPartiallyObscured')).toBe(true);
+    expect(report.resolvedTextTargets).toContainEqual({
+      target: '#far',
+      reason: 'elmPartiallyObscured',
+    });
+    expect(report.issues).toEqual([]);
+  });
+
+  test('rejects a real partial background behind scrolled-out text', async ({ page }) => {
+    await scrolledTableFixture(page);
+    await page.locator('#far').evaluate((el) => {
+      // A patch under the first glyphs only: not an ancestor, so the text's
+      // background is genuinely non-uniform once it is scrolled into view.
+      const cell = el.parentElement!;
+      cell.style.position = 'relative';
+      el.style.position = 'relative';
+      const patch = document.createElement('div');
+      patch.style.cssText = 'position:absolute;left:0;top:0;bottom:0;width:24px;background:#ffd8d8';
+      cell.prepend(patch);
+    });
+    const report = await auditThemeReadability(page, scrolledTableTargets(page));
+    expect(axeDeferred(report, 'elmPartiallyObscured')).toBe(true);
+    expect(report.issues.some((issue) => issue.code === 'unreachable-glyph')).toBe(true);
+    expect(report.resolvedTextTargets).not.toContainEqual(
+      expect.objectContaining({ target: '#far' }),
+    );
+  });
+
+  test('rejects low-contrast text scrolled out of a horizontal scroll box', async ({ page }) => {
+    await scrolledTableFixture(page);
+    await page.locator('#far').evaluate((el) => {
+      el.style.color = '#eeeeee';
+    });
+    const report = await auditThemeReadability(page, scrolledTableTargets(page));
+    expect(report.issues.some((issue) => issue.code === 'glyph-contrast')).toBe(true);
+    expect(report.resolvedTextTargets).not.toContainEqual(
+      expect.objectContaining({ target: '#far' }),
+    );
   });
 
   test('ignores a pseudo-element with zero opacity while measuring actual icon paint', async ({

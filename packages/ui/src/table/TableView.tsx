@@ -8,6 +8,7 @@ import {
   ActionIcon,
   Alert,
   Badge,
+  Box,
   Button,
   Center,
   Checkbox,
@@ -1617,7 +1618,8 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   // same string into the memory.
   //
   // The WINDOW is the scroller, not any element here: this component wraps the
-  // table in plain `Stack`/`Group` with no overflow, and Mantine's `AppShell`
+  // table in plain `Stack`/`Group` with no vertical overflow (the table's own
+  // box scrolls HORIZONTALLY only — it has no height), and Mantine's `AppShell`
   // runs in its default `mode: "fixed"`, where `AppShell.Main` sets a
   // `min-height` and no overflow at all. Reading a container's `scrollTop`
   // would sample a constant zero.
@@ -2148,253 +2150,274 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
             </Stack>
           )}
 
+          {/* ⚠️ The table scrolls INSIDE its column and must never overflow it.
+              A table's minimum width is the sum of its columns' longest
+              UNBREAKABLE tokens — set by the data, not by this code — while the
+              column beside a docked `actionsPanel` is the page minus the rail
+              (932px on a 1280px window beside /produtos' 300px rail). Without
+              this box an outgrown table overflowed the `minWidth: 0` column
+              and its LAST columns painted under the rail, which sits a layer up
+              (`ActionSidePanel`'s `zIndex: 1`): one long SKU and an operator
+              could no longer read "Última modificação" at all, with no
+              scrollbar to reach it. Native overflow on purpose — a ScrollArea's
+              overlay scrollbar would itself sit on top of the last row. It has
+              no height, so it never scrolls vertically: the window stays the
+              vertical scroller (see the scroll-memory effect). Pinned in a real
+              browser by `apps/web/e2e/table-view-wide-table.emulator.e2e.spec.ts`. */}
           {!showSkeleton && rows && (
-            <Table striped highlightOnHover>
-              <Table.Thead>
-                <Table.Tr>
-                  {selectionEnabled && (
-                    <Table.Th style={{ width: 36 }}>
-                      <Checkbox
-                        aria-label="Selecionar todas as linhas"
-                        checked={selected.size > 0 && selected.size === rows.length}
-                        indeterminate={selected.size > 0 && selected.size < rows.length}
-                        onChange={toggleAll}
-                      />
-                    </Table.Th>
-                  )}
-                  {visibleColumns.map((col) => {
-                    if (col.kind === 'virtual') {
-                      const vc = col.column;
-                      const sf = vc.sortField;
-                      const f = vc.filter;
+            <Box style={{ overflowX: 'auto' }}>
+              <Table striped highlightOnHover>
+                <Table.Thead>
+                  <Table.Tr>
+                    {selectionEnabled && (
+                      <Table.Th style={{ width: 36 }}>
+                        <Checkbox
+                          aria-label="Selecionar todas as linhas"
+                          checked={selected.size > 0 && selected.size === rows.length}
+                          indeterminate={selected.size > 0 && selected.size < rows.length}
+                          onChange={toggleAll}
+                        />
+                      </Table.Th>
+                    )}
+                    {visibleColumns.map((col) => {
+                      if (col.kind === 'virtual') {
+                        const vc = col.column;
+                        const sf = vc.sortField;
+                        const f = vc.filter;
+                        return (
+                          <Table.Th
+                            key={vc.key}
+                            style={vc.width !== undefined ? { width: vc.width } : undefined}
+                          >
+                            <Group gap={4} wrap="nowrap" justify="space-between">
+                              <Group
+                                gap={2}
+                                wrap="nowrap"
+                                style={
+                                  sf
+                                    ? {
+                                        cursor: sortable ? 'pointer' : 'default',
+                                        userSelect: 'none',
+                                      }
+                                    : undefined
+                                }
+                                onClick={sf ? () => toggleSort(sf) : undefined}
+                                title={
+                                  sf
+                                    ? sortable
+                                      ? 'Ordenar por esta coluna'
+                                      : FORCED_SORT_TITLE
+                                    : vc.tooltip
+                                }
+                              >
+                                <span title={vc.tooltip}>{vc.label}</span>
+                                {sf && (
+                                  <SortIndicator
+                                    active={displaySort?.field === sf}
+                                    direction={displaySort?.direction}
+                                  />
+                                )}
+                              </Group>
+                              {f &&
+                                (f.renderFilter ? (
+                                  <FilterPopover
+                                    active={filters[f.field] !== undefined}
+                                    label={f.label ?? vc.label}
+                                  >
+                                    {() =>
+                                      f.renderFilter!({
+                                        value: filters[f.field],
+                                        onChange: (next) => setColumnFilter(f.field, next),
+                                      })
+                                    }
+                                  </FilterPopover>
+                                ) : (
+                                  <ColumnFilter
+                                    descriptor={{
+                                      key: f.field,
+                                      kind: f.kind ?? 'string',
+                                      label: f.label ?? vc.label,
+                                      enumValues: f.options,
+                                      dateUnit: f.dateUnit,
+                                    }}
+                                    value={filters[f.field]}
+                                    onChange={(next) => setColumnFilter(f.field, next)}
+                                  />
+                                ))}
+                            </Group>
+                          </Table.Th>
+                        );
+                      }
+                      const d = col.descriptor;
                       return (
-                        <Table.Th
-                          key={vc.key}
-                          style={vc.width !== undefined ? { width: vc.width } : undefined}
-                        >
+                        <Table.Th key={d.key}>
                           <Group gap={4} wrap="nowrap" justify="space-between">
                             <Group
                               gap={2}
                               wrap="nowrap"
-                              style={
-                                sf
-                                  ? { cursor: sortable ? 'pointer' : 'default', userSelect: 'none' }
-                                  : undefined
-                              }
-                              onClick={sf ? () => toggleSort(sf) : undefined}
-                              title={
-                                sf
-                                  ? sortable
-                                    ? 'Ordenar por esta coluna'
-                                    : FORCED_SORT_TITLE
-                                  : vc.tooltip
-                              }
+                              style={{
+                                cursor: sortable ? 'pointer' : 'default',
+                                userSelect: 'none',
+                              }}
+                              onClick={() => toggleSort(d.key)}
+                              title={sortable ? 'Ordenar por esta coluna' : FORCED_SORT_TITLE}
                             >
-                              <span title={vc.tooltip}>{vc.label}</span>
-                              {sf && (
-                                <SortIndicator
-                                  active={displaySort?.field === sf}
-                                  direction={displaySort?.direction}
-                                />
-                              )}
+                              <span>{fieldOverrides[d.key]?.label ?? d.label}</span>
+                              <SortIndicator
+                                active={displaySort?.field === d.key}
+                                direction={displaySort?.direction}
+                              />
                             </Group>
-                            {f &&
-                              (f.renderFilter ? (
-                                <FilterPopover
-                                  active={filters[f.field] !== undefined}
-                                  label={f.label ?? vc.label}
-                                >
-                                  {() =>
-                                    f.renderFilter!({
-                                      value: filters[f.field],
-                                      onChange: (next) => setColumnFilter(f.field, next),
-                                    })
-                                  }
-                                </FilterPopover>
-                              ) : (
-                                <ColumnFilter
-                                  descriptor={{
-                                    key: f.field,
-                                    kind: f.kind ?? 'string',
-                                    label: f.label ?? vc.label,
-                                    enumValues: f.options,
-                                    dateUnit: f.dateUnit,
-                                  }}
-                                  value={filters[f.field]}
-                                  onChange={(next) => setColumnFilter(f.field, next)}
-                                />
-                              ))}
+                            <ColumnFilter
+                              descriptor={d}
+                              value={filters[d.key]}
+                              onChange={(next) => setColumnFilter(d.key, next)}
+                            />
                           </Group>
                         </Table.Th>
                       );
-                    }
-                    const d = col.descriptor;
-                    return (
-                      <Table.Th key={d.key}>
-                        <Group gap={4} wrap="nowrap" justify="space-between">
-                          <Group
-                            gap={2}
-                            wrap="nowrap"
-                            style={{
-                              cursor: sortable ? 'pointer' : 'default',
-                              userSelect: 'none',
-                            }}
-                            onClick={() => toggleSort(d.key)}
-                            title={sortable ? 'Ordenar por esta coluna' : FORCED_SORT_TITLE}
-                          >
-                            <span>{fieldOverrides[d.key]?.label ?? d.label}</span>
-                            <SortIndicator
-                              active={displaySort?.field === d.key}
-                              direction={displaySort?.direction}
-                            />
-                          </Group>
-                          <ColumnFilter
-                            descriptor={d}
-                            value={filters[d.key]}
-                            onChange={(next) => setColumnFilter(d.key, next)}
-                          />
-                        </Group>
-                      </Table.Th>
-                    );
-                  })}
-                </Table.Tr>
-              </Table.Thead>
-              <Table.Tbody>
-                {rows.length === 0 && (
-                  <Table.Tr>
-                    <Table.Td
-                      colSpan={visibleColumns.length + (selectionEnabled ? 1 : 0)}
-                      align="center"
-                    >
-                      <Text c="dimmed">Nenhum resultado.</Text>
-                    </Table.Td>
+                    })}
                   </Table.Tr>
-                )}
-                {rows.map((row) => {
-                  const href = rowHref ? rowHref(row.id, row.data) : undefined;
-                  // `onRowClick` takes precedence over `rowHref` navigation.
-                  const clickable = !!row.id && (!!onRowClick || !!href);
-                  // The row link MIRRORS the row's own navigation, so it exists
-                  // only where the row would navigate: `clickable` already
-                  // carries the empty-id guard (an `<a href="/collection/">`
-                  // would be worse than a dead row — it is keyboard-reachable
-                  // and lands on a 404), and `onRowClick` outranking `rowHref`
-                  // means a link there would go somewhere the row does not.
-                  const linkHref = rowLinkColumn && !onRowClick && clickable ? href : undefined;
-                  // `emptyValue` drives the accessible-name fallback below. Only
-                  // the schema branch can supply it — a virtual column renders
-                  // arbitrary nodes and TableView cannot tell "empty" from
-                  // "deliberately terse", so a virtual link column names itself.
-                  const wrapRowLink = (key: string, content: ReactNode, emptyValue = false) =>
-                    linkHref && key === rowLinkColumn ? (
-                      // `draggable={false}` is required, not cosmetic: anchors
-                      // are draggable by default, so without it a drag across
-                      // this cell starts a LINK drag and the text can no longer
-                      // be selected at all — which would make the selection
-                      // guard in `handleRowLinkClick` unreachable rather than
-                      // merely redundant.
-                      <Link
-                        href={linkHref as Route}
-                        // `prefetch={false}` is a cost decision, not a default.
-                        // next/link's `prefetch` defaults to `null`, which is
-                        // "auto" — it mounts an IntersectionObserver per link
-                        // and fires an RSC request as each enters the viewport.
-                        // A list page renders `resolvedPageSize` rows (50 by
-                        // default) and grows from there, so leaving it on means
-                        // ~one App Hosting request PER ROW, per page-grow, on
-                        // every list screen. And it buys nothing here: apps/web
-                        // is client-first, so a detail route's prefetched
-                        // payload is a near-empty shell whose real data is read
-                        // from Firestore on mount either way.
-                        prefetch={false}
-                        draggable={false}
-                        // The ONLY case that may carry an `aria-label`, and it
-                        // is the inverse of the usual danger. Normally a label
-                        // here would REPLACE the cell's text in the row's
-                        // name-from-contents computation and rename every row;
-                        // when the value is empty there is no text to replace —
-                        // the default renderer emitted `—`, so without this the
-                        // link's entire accessible name is an em dash and every
-                        // such row is indistinguishable from the next in a
-                        // screen reader's links list. Nullable primaries are
-                        // ordinary here: `pedido.numero` and `cliente.nome` are
-                        // both `.nullable().default(null)`, and the app already
-                        // falls back to the id elsewhere (as does the selection
-                        // checkbox's own label just below).
-                        aria-label={emptyValue ? `Abrir ${row.id}` : undefined}
-                        onClick={handleRowLinkClick}
-                        style={ROW_LINK_STYLE}
+                </Table.Thead>
+                <Table.Tbody>
+                  {rows.length === 0 && (
+                    <Table.Tr>
+                      <Table.Td
+                        colSpan={visibleColumns.length + (selectionEnabled ? 1 : 0)}
+                        align="center"
                       >
-                        {content}
-                      </Link>
-                    ) : (
-                      content
-                    );
-                  return (
-                    <Table.Tr
-                      key={row.id}
-                      // Whole row navigates when rowHref is supplied, or invokes
-                      // `onRowClick` when that's set instead. <Table> has
-                      // `highlightOnHover`, so the row highlights and the cursor
-                      // becomes a pointer. Empty `id` (e.g. a pipeline that used
-                      // .select() and lost the ref) would generate /collection/''
-                      // — skip onClick in that case.
-                      //
-                      // If the user has an active text selection, treat the click
-                      // as a select-and-copy gesture and don't act on it.
-                      onClick={
-                        clickable
-                          ? () => {
-                              if (window.getSelection()?.toString()) return;
-                              if (onRowClick) onRowClick(row.id, row.data);
-                              else if (href) router.push(href);
-                            }
-                          : undefined
-                      }
-                      style={clickable ? { cursor: 'pointer' } : undefined}
-                    >
-                      {selectionEnabled && (
-                        <Table.Td onClick={(e) => e.stopPropagation()}>
-                          <Checkbox
-                            aria-label={`Selecionar ${row.id}`}
-                            checked={selected.has(row.id)}
-                            onChange={() => toggleRow(row.id)}
-                          />
-                        </Table.Td>
-                      )}
-                      {visibleColumns.map((col) => {
-                        if (col.kind === 'virtual') {
+                        <Text c="dimmed">Nenhum resultado.</Text>
+                      </Table.Td>
+                    </Table.Tr>
+                  )}
+                  {rows.map((row) => {
+                    const href = rowHref ? rowHref(row.id, row.data) : undefined;
+                    // `onRowClick` takes precedence over `rowHref` navigation.
+                    const clickable = !!row.id && (!!onRowClick || !!href);
+                    // The row link MIRRORS the row's own navigation, so it exists
+                    // only where the row would navigate: `clickable` already
+                    // carries the empty-id guard (an `<a href="/collection/">`
+                    // would be worse than a dead row — it is keyboard-reachable
+                    // and lands on a 404), and `onRowClick` outranking `rowHref`
+                    // means a link there would go somewhere the row does not.
+                    const linkHref = rowLinkColumn && !onRowClick && clickable ? href : undefined;
+                    // `emptyValue` drives the accessible-name fallback below. Only
+                    // the schema branch can supply it — a virtual column renders
+                    // arbitrary nodes and TableView cannot tell "empty" from
+                    // "deliberately terse", so a virtual link column names itself.
+                    const wrapRowLink = (key: string, content: ReactNode, emptyValue = false) =>
+                      linkHref && key === rowLinkColumn ? (
+                        // `draggable={false}` is required, not cosmetic: anchors
+                        // are draggable by default, so without it a drag across
+                        // this cell starts a LINK drag and the text can no longer
+                        // be selected at all — which would make the selection
+                        // guard in `handleRowLinkClick` unreachable rather than
+                        // merely redundant.
+                        <Link
+                          href={linkHref as Route}
+                          // `prefetch={false}` is a cost decision, not a default.
+                          // next/link's `prefetch` defaults to `null`, which is
+                          // "auto" — it mounts an IntersectionObserver per link
+                          // and fires an RSC request as each enters the viewport.
+                          // A list page renders `resolvedPageSize` rows (50 by
+                          // default) and grows from there, so leaving it on means
+                          // ~one App Hosting request PER ROW, per page-grow, on
+                          // every list screen. And it buys nothing here: apps/web
+                          // is client-first, so a detail route's prefetched
+                          // payload is a near-empty shell whose real data is read
+                          // from Firestore on mount either way.
+                          prefetch={false}
+                          draggable={false}
+                          // The ONLY case that may carry an `aria-label`, and it
+                          // is the inverse of the usual danger. Normally a label
+                          // here would REPLACE the cell's text in the row's
+                          // name-from-contents computation and rename every row;
+                          // when the value is empty there is no text to replace —
+                          // the default renderer emitted `—`, so without this the
+                          // link's entire accessible name is an em dash and every
+                          // such row is indistinguishable from the next in a
+                          // screen reader's links list. Nullable primaries are
+                          // ordinary here: `pedido.numero` and `cliente.nome` are
+                          // both `.nullable().default(null)`, and the app already
+                          // falls back to the id elsewhere (as does the selection
+                          // checkbox's own label just below).
+                          aria-label={emptyValue ? `Abrir ${row.id}` : undefined}
+                          onClick={handleRowLinkClick}
+                          style={ROW_LINK_STYLE}
+                        >
+                          {content}
+                        </Link>
+                      ) : (
+                        content
+                      );
+                    return (
+                      <Table.Tr
+                        key={row.id}
+                        // Whole row navigates when rowHref is supplied, or invokes
+                        // `onRowClick` when that's set instead. <Table> has
+                        // `highlightOnHover`, so the row highlights and the cursor
+                        // becomes a pointer. Empty `id` (e.g. a pipeline that used
+                        // .select() and lost the ref) would generate /collection/''
+                        // — skip onClick in that case.
+                        //
+                        // If the user has an active text selection, treat the click
+                        // as a select-and-copy gesture and don't act on it.
+                        onClick={
+                          clickable
+                            ? () => {
+                                if (window.getSelection()?.toString()) return;
+                                if (onRowClick) onRowClick(row.id, row.data);
+                                else if (href) router.push(href);
+                              }
+                            : undefined
+                        }
+                        style={clickable ? { cursor: 'pointer' } : undefined}
+                      >
+                        {selectionEnabled && (
+                          <Table.Td onClick={(e) => e.stopPropagation()}>
+                            <Checkbox
+                              aria-label={`Selecionar ${row.id}`}
+                              checked={selected.has(row.id)}
+                              onChange={() => toggleRow(row.id)}
+                            />
+                          </Table.Td>
+                        )}
+                        {visibleColumns.map((col) => {
+                          if (col.kind === 'virtual') {
+                            return (
+                              <Table.Td key={col.column.key}>
+                                {wrapRowLink(col.column.key, col.column.renderCell(row))}
+                              </Table.Td>
+                            );
+                          }
+                          const d = col.descriptor;
+                          const override = fieldOverrides[d.key];
+                          const value = (row.data as Record<string, unknown>)[d.key];
+                          const content = override?.renderCell
+                            ? override.renderCell(value as never, row.data)
+                            : renderCell(value, d);
+                          // Match what the default renderer treats as empty (it
+                          // emits `—` for null/undefined/''), plus the empty array
+                          // — `targetsChnfe` is `.default([])` and its override
+                          // renders `—` for it, so the placeholder is reached
+                          // through both paths.
+                          const emptyValue =
+                            value === null ||
+                            value === undefined ||
+                            value === '' ||
+                            (Array.isArray(value) && value.length === 0);
                           return (
-                            <Table.Td key={col.column.key}>
-                              {wrapRowLink(col.column.key, col.column.renderCell(row))}
+                            <Table.Td key={d.key}>
+                              {wrapRowLink(d.key, content, emptyValue)}
                             </Table.Td>
                           );
-                        }
-                        const d = col.descriptor;
-                        const override = fieldOverrides[d.key];
-                        const value = (row.data as Record<string, unknown>)[d.key];
-                        const content = override?.renderCell
-                          ? override.renderCell(value as never, row.data)
-                          : renderCell(value, d);
-                        // Match what the default renderer treats as empty (it
-                        // emits `—` for null/undefined/''), plus the empty array
-                        // — `targetsChnfe` is `.default([])` and its override
-                        // renders `—` for it, so the placeholder is reached
-                        // through both paths.
-                        const emptyValue =
-                          value === null ||
-                          value === undefined ||
-                          value === '' ||
-                          (Array.isArray(value) && value.length === 0);
-                        return (
-                          <Table.Td key={d.key}>{wrapRowLink(d.key, content, emptyValue)}</Table.Td>
-                        );
-                      })}
-                    </Table.Tr>
-                  );
-                })}
-              </Table.Tbody>
-            </Table>
+                        })}
+                      </Table.Tr>
+                    );
+                  })}
+                </Table.Tbody>
+              </Table>
+            </Box>
           )}
 
           {/* A full page implies there may be more — offer to grow the window.

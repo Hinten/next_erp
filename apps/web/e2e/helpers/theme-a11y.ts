@@ -30,10 +30,18 @@ export interface ThemeReadabilityReport {
   axe: Awaited<ReturnType<AxeBuilder['analyze']>>;
   /** Monochrome status glyphs/counts that axe deferred and solid paint measured. */
   resolvedGlyphTargets: string[];
-  resolvedTextTargets: Array<{ target: string; reason: 'elmPartiallyObscuring' }>;
+  resolvedTextTargets: Array<{
+    target: string;
+    reason: 'elmPartiallyObscuring' | 'elmPartiallyObscured';
+  }>;
   resolvedSvgTextTargets: Array<{
     target: string;
-    reason: 'imgNode' | 'bgOverlap' | 'shortTextContent' | 'elmPartiallyObscuring';
+    reason:
+      | 'imgNode'
+      | 'bgOverlap'
+      | 'shortTextContent'
+      | 'elmPartiallyObscuring'
+      | 'elmPartiallyObscured';
   }>;
   /** Audit passes run; above 1 only when the page replaced measured elements. */
   passes: number;
@@ -1152,6 +1160,16 @@ async function auditPass(
         const check = node.any[0];
         const checkData: unknown = check?.data;
         const selector = node.target[0];
+        // `elmPartiallyObscured` is what axe reports for text scrolled out of a
+        // horizontal scroll box past the viewport's edge (a TableView wider than
+        // its column). axe stacks a scroll box's content over the box's own
+        // ancestors at the BOX's centre, so the first opaque ancestor — `body` —
+        // does not contain the clipped text's box and the background is
+        // "undetermined". It is resolved by the same measurement as
+        // `elmPartiallyObscuring`: bring the text into view, require a solid
+        // ancestor surface, hit-test every glyph. A real partial background or
+        // occluder still fails that, since anything painted above the surface
+        // that is not an ancestor counts as obscuring.
         if (
           code === 'text-contrast-incomplete' &&
           rule.id === 'color-contrast' &&
@@ -1165,6 +1183,7 @@ async function auditPass(
           (checkData.messageKey === 'nonBmp' ||
             checkData.messageKey === 'shortTextContent' ||
             checkData.messageKey === 'elmPartiallyObscuring' ||
+            checkData.messageKey === 'elmPartiallyObscured' ||
             checkData.messageKey === 'imgNode' ||
             checkData.messageKey === 'bgOverlap') &&
           node.target.length === 1
@@ -1243,10 +1262,13 @@ async function auditPass(
                 target: typeof selector === 'string' ? selector : JSON.stringify(selector),
                 reason: checkData.messageKey,
               });
-            else if (checkData.messageKey === 'elmPartiallyObscuring')
+            else if (
+              checkData.messageKey === 'elmPartiallyObscuring' ||
+              checkData.messageKey === 'elmPartiallyObscured'
+            )
               resolvedTextTargets.push({
                 target: typeof selector === 'string' ? selector : JSON.stringify(selector),
-                reason: 'elmPartiallyObscuring',
+                reason: checkData.messageKey,
               });
             else
               resolvedGlyphTargets.push(
