@@ -4125,53 +4125,58 @@ describe('the step-12 tick guards (12-e2)', () => {
     expect(descoberta).toMatch(/\bprodutoAmazonLinkCollection\s*\.\s*ref\s*\(/);
   });
 
-  it('★ a conta’s depósito has ONE parse: depositoIdDaContaEstoqueAmazon and its storable filter are declared in familiaEstoque.ts alone, and every production READ of a depositoOuterRef is the parse’s sole argument', () => {
-    const PARSE_UNICO = 'lib/amazon/estoque/familiaEstoque.ts';
-    const producao = fontesDeProducaoDoApp().filter(
-      (p) => !relApp(p).startsWith('lib/amazon/testing/'),
-    );
-    for (const declaracao of [
-      /\b(?:function|const|let|var)\s+depositoIdDaContaEstoqueAmazon\b/,
-      /\b(?:function|const|let|var)\s+depositoIdGravavelDaContaEstoqueAmazon\b/,
-    ]) {
-      expect(
-        producao.filter((p) => declaracao.test(codigo(p))).map(relApp),
-        declaracao.source,
-      ).toEqual([PARSE_UNICO]);
-    }
-    // A READ of the field — a member access (`x.depositoOuterRef`,
-    // `x?.depositoOuterRef`, `x['depositoOuterRef']`) or a destructuring —
-    // outside the parse's own module (whose other read is an estoque ROW's
-    // ref) is only ever the parse's sole argument: a second parse (a copy, a
-    // split, a regex, a raw comparison of two refs) would read it bare. A
-    // stored ref read back off a stock document goes through the same parse,
-    // which takes either form. An object-literal KEY and a quoted field name
-    // are not reads: a stock document that stores its own `depositoOuterRef`
-    // (written from the parse's id) names the field so.
-    const leitura =
-      /(?:\?\.|\.)\s*depositoOuterRef\b|\[\s*(['"`])depositoOuterRef\1\s*\]|\b(?:const|let|var)\s*\{[^}]*\bdepositoOuterRef\b[^}]*\}\s*=/g;
-    const lidas = (texto: string) => (texto.match(leitura) ?? []).length;
-    // The scope, pinned on samples: reads count, a key and a quoted name do not.
-    expect(lidas('conta.depositoOuterRef === bloco.depositoOuterRef')).toBe(2);
-    expect(lidas("conta?.depositoOuterRef ?? conta['depositoOuterRef']")).toBe(2);
-    expect(lidas('const { depositoOuterRef } = conta;')).toBe(1);
-    expect(lidas("const doc = { depositoOuterRef: ref }; q.select('depositoOuterRef');")).toBe(0);
-    const chamada =
-      /\bdepositoId(?:Gravavel)?DaContaEstoqueAmazon\(\s*[\w.?]+\.depositoOuterRef\s*\)/g;
-    const leem: string[] = [];
-    for (const p of producao) {
-      if (relApp(p) === PARSE_UNICO) continue;
-      const texto = codigo(p);
-      const pelaChamada = texto.match(chamada) ?? [];
-      expect(lidas(texto), relApp(p)).toBe(pelaChamada.length);
-      if (pelaChamada.length > 0) leem.push(relApp(p));
-    }
-    // Anti-vacuity: the patch task (P2) and the tick (T3) both read it so.
-    expect(leem.sort()).toEqual([
-      'lib/amazon/estoque/processarEstoque.ts',
-      'lib/amazon/estoque/sincronizacaoEstoque.ts',
-    ]);
-  });
+  // An app-wide parse (8.2 s on a CI runner, #2157): CI headroom, not a budget.
+  it(
+    '★ a conta’s depósito has ONE parse: depositoIdDaContaEstoqueAmazon and its storable filter are declared in familiaEstoque.ts alone, and every production READ of a depositoOuterRef is the parse’s sole argument',
+    { timeout: 30_000 },
+    () => {
+      const PARSE_UNICO = 'lib/amazon/estoque/familiaEstoque.ts';
+      const producao = fontesDeProducaoDoApp().filter(
+        (p) => !relApp(p).startsWith('lib/amazon/testing/'),
+      );
+      for (const declaracao of [
+        /\b(?:function|const|let|var)\s+depositoIdDaContaEstoqueAmazon\b/,
+        /\b(?:function|const|let|var)\s+depositoIdGravavelDaContaEstoqueAmazon\b/,
+      ]) {
+        expect(
+          producao.filter((p) => declaracao.test(codigo(p))).map(relApp),
+          declaracao.source,
+        ).toEqual([PARSE_UNICO]);
+      }
+      // A READ of the field — a member access (`x.depositoOuterRef`,
+      // `x?.depositoOuterRef`, `x['depositoOuterRef']`) or a destructuring —
+      // outside the parse's own module (whose other read is an estoque ROW's
+      // ref) is only ever the parse's sole argument: a second parse (a copy, a
+      // split, a regex, a raw comparison of two refs) would read it bare. A
+      // stored ref read back off a stock document goes through the same parse,
+      // which takes either form. An object-literal KEY and a quoted field name
+      // are not reads: a stock document that stores its own `depositoOuterRef`
+      // (written from the parse's id) names the field so.
+      const leitura =
+        /(?:\?\.|\.)\s*depositoOuterRef\b|\[\s*(['"`])depositoOuterRef\1\s*\]|\b(?:const|let|var)\s*\{[^}]*\bdepositoOuterRef\b[^}]*\}\s*=/g;
+      const lidas = (texto: string) => (texto.match(leitura) ?? []).length;
+      // The scope, pinned on samples: reads count, a key and a quoted name do not.
+      expect(lidas('conta.depositoOuterRef === bloco.depositoOuterRef')).toBe(2);
+      expect(lidas("conta?.depositoOuterRef ?? conta['depositoOuterRef']")).toBe(2);
+      expect(lidas('const { depositoOuterRef } = conta;')).toBe(1);
+      expect(lidas("const doc = { depositoOuterRef: ref }; q.select('depositoOuterRef');")).toBe(0);
+      const chamada =
+        /\bdepositoId(?:Gravavel)?DaContaEstoqueAmazon\(\s*[\w.?]+\.depositoOuterRef\s*\)/g;
+      const leem: string[] = [];
+      for (const p of producao) {
+        if (relApp(p) === PARSE_UNICO) continue;
+        const texto = codigo(p);
+        const pelaChamada = texto.match(chamada) ?? [];
+        expect(lidas(texto), relApp(p)).toBe(pelaChamada.length);
+        if (pelaChamada.length > 0) leem.push(relApp(p));
+      }
+      // Anti-vacuity: the patch task (P2) and the tick (T3) both read it so.
+      expect(leem.sort()).toEqual([
+        'lib/amazon/estoque/processarEstoque.ts',
+        'lib/amazon/estoque/sincronizacaoEstoque.ts',
+      ]);
+    },
+  );
 });
 
 describe('the step-2b capture sanitizer guards', () => {
