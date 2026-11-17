@@ -19,6 +19,7 @@ import { MOTIVO_PUBLICACAO_BLOQUEADA } from './errosPublicacao';
 
 import {
   fotoDaOpcaoDeTier,
+  imagensDeOpcaoDivergem,
   mesmoModelo,
   montarTiers,
   ordenarTiers,
@@ -5772,6 +5773,220 @@ describe('fotoDaOpcaoDeTier / imagens de opção', () => {
     );
     expect(r.tiers[0]!.opcoes.map((o) => o.image_id)).toEqual(['img-a']);
     expect(r.tiers[1]!.opcoes.map((o) => o.image_id)).toEqual([null]);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*  (5b) a changed tier-1 image set alone sends update_tier_variation         */
+/* -------------------------------------------------------------------------- */
+
+describe('imagensDeOpcaoDivergem — a capa da variação sozinha justifica o update', () => {
+  const azul = variante('v-azul', 'Azul');
+  const verde = variante('v-verde', 'Verde');
+  const cor = grupo({ grupoId: 'g-cor', permiteFotos: true, variacoes: [azul, verde] });
+  const VERDE_ID = 3000000009;
+
+  const vivos = [
+    modeloVivo({ model_id: MODEL_ID, tier_index: [0], model_sku: 'AZ-P' }),
+    modeloVivo({ model_id: VERDE_ID, tier_index: [1], model_sku: 'VD-P' }),
+  ];
+  const armazenados: readonly ModeloArmazenado[] = [
+    {
+      produtoId: 'p-azul',
+      linkDocId: 'l-azul',
+      modelId: MODEL_ID,
+      modelSku: 'AZ-P',
+      tierIndex: [0],
+    },
+    {
+      produtoId: 'p-verde',
+      linkDocId: 'l-verde',
+      modelId: VERDE_ID,
+      modelSku: 'VD-P',
+      tierIndex: [1],
+    },
+  ];
+  const filhos = [
+    filho({
+      produtoId: 'p-azul',
+      sku: 'AZ-P',
+      linkDocId: 'l-azul',
+      linkModelId: MODEL_ID,
+      variacoesUid: [varianteFakePath('g-cor', 'v-azul')],
+    }),
+    filho({
+      produtoId: 'p-verde',
+      sku: 'VD-P',
+      linkDocId: 'l-verde',
+      linkModelId: VERDE_ID,
+      variacoesUid: [varianteFakePath('g-cor', 'v-verde')],
+    }),
+  ];
+
+  /** The live listing: one CUSTOM tier [Azul, Verde], each option with `imagens[j]`. */
+  function vivaCom(imagens: readonly (string | null)[]): ArvoreVivaDoItem {
+    return {
+      tier_variation: [
+        shopeeTierVariationSchema.parse({
+          name: 'Cor',
+          option_list: ['Azul', 'Verde'].map((option, j) => ({
+            option,
+            image: imagens[j] === null ? null : { image_id: imagens[j], image_url: null },
+          })),
+        }),
+      ],
+      standardise_tier_variation: null,
+      model: vivos,
+    };
+  }
+
+  function mapa(azulId: string, verdeId: string): ReadonlyMap<string, string> {
+    return new Map([
+      [varianteFakePath('g-cor', 'v-azul'), azulId],
+      [varianteFakePath('g-cor', 'v-verde'), verdeId],
+    ]);
+  }
+
+  /** `montarTiers` + `reconciliarModelos` exactly as `aplicarModelos` runs them. */
+  function republicar(
+    viva: ArvoreVivaDoItem,
+    imagensDeOpcao: ReadonlyMap<string, string> | null,
+    comTiers = true,
+  ) {
+    const montagem = montarTiers(args({ grupos: [cor], filhos, viva, imagensDeOpcao }));
+    expect(montagem.problemas).toEqual([]);
+    const plano = reconciliarModelos({
+      montados: montagem.modelos,
+      armazenados,
+      viva,
+      profundidadeNossa: montagem.tiers.length,
+      ...(comTiers ? { tiers: montagem.tiers } : {}),
+    });
+    return { montagem, plano };
+  }
+
+  it('⚠️ PAR: as mesmas imagens no anúncio ⇒ nenhuma (zero chamada de tier)', () => {
+    const { plano } = republicar(vivaCom(['img-a', 'img-v']), mapa('img-a', 'img-v'));
+    expect(plano.acao).toBe('nenhuma');
+  });
+
+  it('uma capa trocada ⇒ update com o model_list vivo INTACTO e nada mais', () => {
+    const { montagem, plano } = republicar(
+      vivaCom(['img-a', 'img-v']),
+      mapa('img-a-nova', 'img-v'),
+    );
+    expect(plano.acao).toBe('update');
+    expect(plano.modelList).toEqual([
+      { model_id: MODEL_ID, tier_index: [0] },
+      { model_id: VERDE_ID, tier_index: [1] },
+    ]);
+    expect(plano.novos).toEqual([]);
+    expect(plano.atualizarSku).toEqual([]);
+    expect(montagem.tiers[0]!.opcoes.map((o) => o.image_id)).toEqual(['img-a-nova', 'img-v']);
+  });
+
+  it('uma opção viva SEM imagem, e a nossa com ⇒ update', () => {
+    const { plano } = republicar(vivaCom(['img-a', null]), mapa('img-a', 'img-v'));
+    expect(plano.acao).toBe('update');
+  });
+
+  it("⚠️ QUASE: o id é comparado EXATO — 'IMG-A' não é 'img-a'", () => {
+    const { plano } = republicar(vivaCom(['IMG-A', 'img-v']), mapa('img-a', 'img-v'));
+    expect(plano.acao).toBe('update');
+  });
+
+  it('⚠️ QUASE: sem conjunto nosso (tudo-ou-nada falhou) ⇒ nenhuma, mesmo divergindo', () => {
+    // Um mapa PARCIAL zera todas as image_id: nunca mandamos um corpo sem imagens
+    // por causa da checagem de imagem.
+    const parcial = new Map([[varianteFakePath('g-cor', 'v-azul'), 'img-a-nova']]);
+    const { montagem, plano } = republicar(vivaCom(['img-a', 'img-v']), parcial);
+    expect(montagem.tiers[0]!.opcoes.map((o) => o.image_id)).toEqual([null, null]);
+    expect(plano.acao).toBe('nenhuma');
+
+    const { plano: semMapa } = republicar(vivaCom(['img-a', 'img-v']), null);
+    expect(semMapa.acao).toBe('nenhuma');
+  });
+
+  it('sem `tiers` o comportamento antigo fica intacto (a imagem não decide)', () => {
+    const { plano } = republicar(vivaCom(['img-a', 'img-v']), mapa('img-x', 'img-y'), false);
+    expect(plano.acao).toBe('nenhuma');
+  });
+
+  it('lê a árvore padronizada primeiro e cai para a personalizada', () => {
+    const { montagem } = republicar(vivaCom(['img-a', 'img-v']), mapa('img-a', 'img-v'));
+    const padronizada: ArvoreVivaDoItem = {
+      ...vivaCom([null, null]),
+      standardise_tier_variation: [
+        shopeeStandardiseTierVariationSchema.parse({
+          variation_id: 0,
+          variation_name: 'Cor',
+          variation_option_list: [
+            { variation_option_id: 0, variation_option_name: 'Azul', image_id: 'img-a' },
+            { variation_option_id: 0, variation_option_name: 'Verde', image_id: 'img-v' },
+          ],
+        }),
+      ],
+    };
+    expect(imagensDeOpcaoDivergem(montagem.tiers, padronizada)).toBe(false);
+    expect(imagensDeOpcaoDivergem(montagem.tiers, vivaCom(['img-a', 'img-v']))).toBe(false);
+    expect(imagensDeOpcaoDivergem(montagem.tiers, vivaCom(['img-a', 'outra']))).toBe(true);
+    expect(imagensDeOpcaoDivergem(montagem.tiers, null)).toBe(false);
+  });
+
+  it('⚠️ QUASE: imagem viva no tier 2 nunca decide — só o tier 1 leva imagem', () => {
+    const tam = grupo({
+      grupoId: 'g-tam',
+      nome: 'Tamanho',
+      ordem: 2,
+      variacoes: [variante('v-p', 'P')],
+    });
+    const viva: ArvoreVivaDoItem = {
+      tier_variation: [
+        shopeeTierVariationSchema.parse({
+          name: 'Cor',
+          option_list: [{ option: 'Azul', image: { image_id: 'img-a', image_url: null } }],
+        }),
+        shopeeTierVariationSchema.parse({
+          name: 'Tamanho',
+          option_list: [{ option: 'P', image: { image_id: 'img-tier-2', image_url: null } }],
+        }),
+      ],
+      standardise_tier_variation: null,
+      model: [modeloVivo({ model_id: MODEL_ID, tier_index: [0, 0], model_sku: 'AZ-P' })],
+    };
+    const montagem = montarTiers(
+      args({
+        grupos: [grupo({ grupoId: 'g-cor', permiteFotos: true, variacoes: [azul] }), tam],
+        viva,
+        imagensDeOpcao: new Map([[varianteFakePath('g-cor', 'v-azul'), 'img-a']]),
+        filhos: [
+          filho({
+            produtoId: 'p-azul',
+            sku: 'AZ-P',
+            linkDocId: 'l-azul',
+            linkModelId: MODEL_ID,
+            variacoesUid: [varianteFakePath('g-cor', 'v-azul'), varianteFakePath('g-tam', 'v-p')],
+          }),
+        ],
+      }),
+    );
+    expect(montagem.problemas).toEqual([]);
+    const plano = reconciliarModelos({
+      montados: montagem.modelos,
+      armazenados: [
+        {
+          produtoId: 'p-azul',
+          linkDocId: 'l-azul',
+          modelId: MODEL_ID,
+          modelSku: 'AZ-P',
+          tierIndex: [0, 0],
+        },
+      ],
+      viva,
+      profundidadeNossa: montagem.tiers.length,
+      tiers: montagem.tiers,
+    });
+    expect(plano.acao).toBe('nenhuma');
   });
 });
 

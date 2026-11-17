@@ -1664,7 +1664,15 @@ a child's model unrefused (P14a open point 6's class). Pinned in
 Whenever the model leg sends `update_tier_variation`, every live option of a tier
 that PAIRS goes under its OWN current name (`nomeDeTierShopee(viva.nome)`), never
 the paired variante's; a republish whose leg plans `acao: 'nenhuma'` sends no tier
-body at all, because `reconciliarModelos` never compares option names. Only a
+body at all, because `reconciliarModelos` never compares option names. It DOES
+compare the tier-1 option IMAGES (`imagensDeOpcaoDivergem`): a complete image set
+of ours that differs from the live one plans `update` on its own, with the live
+`model_list` re-sent unchanged — before that, a republish that only swapped the
+variation covers sent nothing and the new images never reached Shopee. An
+incomplete set (all-or-none failed) never triggers it. ⚠️ Whether a re-read option
+`image_id` is byte-equal to the id `upload_image` minted is unmeasured (the BR
+capture redacts it); if not, each republish of a photo-bearing family sends one
+extra `update_tier_variation` — an extra call, nothing moved. Only a
 nameless live option — possible only beside a non-zero option id, which
 `tiersDoItem` keeps — falls back to its stored row's `shopee_option_name`, then to
 the variante's name. The row's name counts even when its variante has left the
