@@ -185,14 +185,34 @@ const ALLOWED_STRICT = {
   // so there is nothing there for which strictness would be the right direction.
   // ⚠️ Step 11 kept that true: its `Shopee*Request` bodies are plain TypeScript
   // interfaces in `api.ts`, so a Zod one would need an entry here to stay strict.
-  // No `loja-integrada` entry either. Its write client does send request
-  // bodies (the status write-back's `{objeto}` and `{codigo}`, `rotasEscrita.ts`),
-  // and they are strict Zod schemas — but over STRINGS only, with no
-  // `z.number()` to keep strict, so there is nothing here for strictness to
-  // protect. A later write step whose body holds a number brings its first entry.
-  // No `amazon-sp-api` entry either. Its only outbound body, the LWA token
-  // POST, is a form-encoded `URLSearchParams` of strings, not a Zod schema; if
-  // a later write step brings a Zod request body, that step adds its first entry.
+  // Loja Integrada (master-plan step 12): `rotasEscrita.ts` holds the STRICT
+  // schemas of every body its write client may SEND — the status write-back's
+  // `{objeto}` and `{codigo}` (strings only) and the stock write's
+  // `{gerenciado, quantidade, situacao_em_estoque, situacao_sem_estoque}`, whose
+  // `quantidade` is the package's one REQUEST number. Strict is the right
+  // direction there: a quoted `'3'` must be refused, never forwarded, and the
+  // request core serialises the schema's OUTPUT, so the number goes out unquoted.
+  // The two situações are `z.literal`s, so they need no entry. ⚠️ Keyed on the
+  // exact trimmed line: keep the declaration on ONE short line (a Prettier wrap
+  // would leave this entry STALE).
+  'packages/integrations/loja-integrada/src/rotasEscrita.ts': {
+    'const QUANTIDADE_ESTOQUE_ESCRITA = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);':
+      'REQUEST — the stock quantity we SEND on PUT /v1/produto_estoque/{id}',
+  },
+  // No `amazon-sp-api` entry either. It has a GET client and ONE write client
+  // (Delivery, Tokens, Easy Ship, Listings and Feeds), and no outbound body is a
+  // Zod schema: the LWA token POST is a form-encoded `URLSearchParams` of
+  // strings, `submitInvoice`'s body is a `JSON.stringify` of five NAMED string
+  // keys (`entrega.ts`), and the RDT mint's, the Easy Ship bulk's, the listings
+  // stock patch's (a quantity checked with `Number.isSafeInteger`, no schema) and
+  // the two feed submissions' bodies are a `JSON.stringify` of named keys too
+  // (`tokens.ts`, `easyShip.ts`, `listings.ts`, `feeds.ts`), as is the feed
+  // document itself. Every RESPONSE number reads through `wireInt()` (or, for an
+  // order line's `measurement.value`, `wireNumber()`) — the RDT's `expiresIn`, a
+  // listing's `quantity`, a search's `numberOfResults`, a processing report's
+  // `messageId` and five summary counts among them — so the ban above holds
+  // there with no carve-out. If a later write step brings a Zod request
+  // body, that step adds its first entry.
 };
 
 /**
@@ -254,15 +274,15 @@ const KNOWN_TOLERANT_LINES = {
     'shop_id: wireInt(),',
     'auth_time: wireInt(),',
   ],
-  // Loja Integrada. ⚠️ No `ALLOWED_STRICT` entry: the package's request bodies
-  // (its write client's two, `rotasEscrita.ts`) hold strings only, so no Zod
-  // number in it needs to stay strict, and the staleness test therefore has
-  // nothing to say about it. These three lines are what keep a mistyped
-  // `loja-integrada` pathspec from leaving the "no bare z.number()" assertion
-  // running over an empty set. ⚠️ The pathspec reaches EVERY file under `src/`,
-  // not only `types.ts` — the package keeps Zod numbers out of the rest
-  // (`maxPaginas` and the `meta.next` offset are checked with
-  // `Number.isSafeInteger`), so any hit elsewhere is a real offender.
+  // Loja Integrada. Its one `ALLOWED_STRICT` entry (the stock write's
+  // quantity, `rotasEscrita.ts`) already reports STALE if the pathspec stops
+  // reaching that file, but it says nothing about `types.ts`: these three lines
+  // are what keep a pathspec that stopped reaching the RESPONSE schemas from
+  // leaving the "no bare z.number()" assertion running over an empty set. ⚠️ The
+  // pathspec reaches EVERY file under `src/`, not only `types.ts` — the package
+  // keeps Zod numbers out of the rest (`maxPaginas` and the `meta.next` offset
+  // are checked with `Number.isSafeInteger`, the stock page size and the path
+  // ids likewise), so any hit elsewhere is a real offender.
   'packages/integrations/loja-integrada/src/types.ts': [
     'limit: wireInt(),',
     'offset: wireInt(),',
@@ -271,12 +291,14 @@ const KNOWN_TOLERANT_LINES = {
   // Amazon SP-API. ⚠️ Same reason as Shopee and Loja Integrada: no
   // `ALLOWED_STRICT` entry (response shapes only), so this line is what keeps a
   // mistyped `amazon-sp-api` pathspec from leaving the "no bare z.number()"
-  // assertion running over an empty set. It is the package's only Zod number —
-  // the rate-limit header is read with `parseWireDecimal`, never Zod — and the
-  // pathspec reaches EVERY file under `src/`, so any hit elsewhere is a real
-  // offender. ⚠️ The text differs from ML/MP/ME's `expires_in: wireNumber(),`
-  // (LWA's lifetime is whole seconds, so `wireInt`); the per-path KEY is what
-  // makes it this package's anchor either way.
+  // assertion running over an empty set. It is one of the package's Zod numbers
+  // (each a tolerant `wireInt()` or `wireNumber()`, see the `ALLOWED_STRICT`
+  // paragraph above) — the rate-limit header is read with `parseWireDecimal`,
+  // never Zod — and the pathspec reaches EVERY file under `src/`, so any hit
+  // elsewhere is a real offender. ⚠️ The text differs from ML/MP/ME's
+  // `expires_in: wireNumber(),` (LWA's lifetime is whole seconds, so
+  // `wireInt`); the per-path KEY is what makes it this package's anchor either
+  // way.
   'packages/integrations/amazon-sp-api/src/types.ts': ['expires_in: wireInt(),'],
 };
 

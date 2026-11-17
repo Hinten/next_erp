@@ -16,18 +16,51 @@ Master plan: `.master_plans/loja-integrada/loja-integrada-marketplace-integratio
   `pedidos/[pedidoId]/…` (below).
 - Step 7 (the status write-back, in stacked PRs): the write engine and its write context
   (`core/escrita.ts`, `core/contextoEscrita.ts`; "Write engine" below). No flow runs on it
-  yet, and every write valve is off until the window.
+  yet, and every write valve is off until the window. Step 12's engine seam (PR 12-d) adds the
+  two stock kinds and the stock detail's restore branch; the stock flow itself comes later.
 - Step 10 (the catalogue reads): four `GET`s in the conta route family (below), the core
   `lib/lojaIntegrada/catalogo/catalogo.ts` and its caches `catalogo/cache.ts`. The web's
   variation linker reads the grades; categories and brands wait for step 11's product tab.
+- Step 9 (the product import, in stacked PRs). PR 9-v, the anchor: the Firestore trigger
+  `functions/src/onProdutoLojaIntegradaLinkChanged.ts` on
+  `produtos/{produtoId}/produtolojaintegrada/{linkId}` keeps `produtos.integracoesComProduto`
+  (the stock and price sweeps' pre-filter) in step with the link docs, through the app's ONE
+  binding of the shared core, `lib/lojaIntegrada/produtos/integracoesComProdutoLi.ts`: the conta
+  from `contaLojaIntegrada` (`contaDoLinkLi`: `contaIdFromRef`, both stored forms), the counts
+  predicate `vinculoLiConta` (a store product id, not in the trash; hidden and blocked links
+  count), and as the survivor reader an UNFILTERED read of the produto's own links (no index; the
+  filter is the plan's own two readers, in code). The two readers live in `@delfrance/schemas`
+  (`lojaIntegradaLink.ts`) and the survivor read in `@delfrance/data/admin/produtos`
+  (`sobreviventesLi.ts`), because a `tools/migrations` script needs the same three and cannot
+  import an app; the binding re-exports `contaDoLinkLi` and binds the survivor read to the
+  guarded remove. The decision comes from the event payload before `getDb()`,
+  so an edit that moves no membership costs zero reads (the test hands out a handle that throws).
+  Add tier 0 (`arrayUnion`), remove tier 1 inside the core's inventoried site: no transaction
+  call here, no inventory row. ⚠️ The add reads nothing, so one handled after its link's close
+  (Eventarc gives no order; a retried create can land late) leaves a conta listed with no
+  counting link, and nothing here removes it — accepted as the over-inclusive direction (one
+  skipped sweep row); the trigger's docblock says what closing it would cost. One trigger
+  serves parents and children (a child's link sits under the ERP child). `database`
+  `default`, `retry: true`, no secrets, no Loja Integrada call.
+  PR 9-c, the import: the job routes `conta/[id]/importacoes…` (below),
+  `lib/lojaIntegrada/importacao/` — the start core, the job lifecycle, the dispatch's time budget,
+  its named-task producer, the read phases (catalogue, listing and trash list, detail reads, family
+  assembly), the match cascade, the evidence pass, the option learning, one family's plan, link
+  writes and report item, the import's avisos, and ONE dispatch (`despacho.ts`, the phase machine)
+  — and in the functions codebase the job-creation trigger and the reads queue's `importacao`
+  route. PR 9-d, "complete": category create-and-link, the whole-family create and the
+  add-child path, the fill of empty fields, the photos (the codebase's first Storage write,
+  `functions/src/lib/admin.ts`'s `getBucket()`) and the durable tax-review list with its
+  `revisao` phase ("The product import" below).
 
 ## Routes (`/api/marketplace/loja-integrada/conta/[id]…`)
 
 `GET` status (`PERM.integracao.read`); `PUT …/credencial` save, `PUT …/credencial/validade`
-renew the expiry date, `DELETE …/credencial` remove (all `PERM.integracao.write`); and the four
-catalogue `GET`s (step 10, "The catalogue reads" below). Every route exports its verb as `export async function GET|PUT|DELETE` (never a
-re-export: `cors-proxy-covers-routes.test.js` cannot read one), and every verb must
-be listed in the literal `Access-Control-Allow-Methods` in `proxy.ts`. The status and
+renew the expiry date, `DELETE …/credencial` remove (all `PERM.integracao.write`); the four
+catalogue `GET`s (step 10, "The catalogue reads" below); and the product import's routes (step 9,
+"The product import" below). Every route exports its verb as `export async function
+GET|POST|PUT|DELETE` (never a re-export: `cors-proxy-covers-routes.test.js` cannot read one), and
+every verb must be listed in the literal `Access-Control-Allow-Methods` in `proxy.ts`. The status and
 credential routes read the conta uncached and require only `tipo === 3`, so a parked or
 inactive conta can still be fixed. Only the context loader refuses those.
 
@@ -83,6 +116,262 @@ work is `lib/lojaIntegrada/catalogo/catalogo.ts`.
   `[loja-integrada/catalogo]` with ids and counts only (rows the projection could not read,
   once per load). No write of its own (only the park's), no ruleset, index or env change.
 
+### The product import (step 9)
+
+`POST …/importacoes` start (`PERM.integracao.write`), `GET …/importacoes` the conta's newest 10,
+`GET …/importacoes/[jobId]` one job, `POST …/importacoes/[jobId]/cancelar`, `GET
+…/importacoes/[jobId]/itens?depois=` one page of the report, `GET …/importacoes/[jobId]/revisao`
+the job's WHOLE tax-review list in one answer — read whole through the phase's own reader
+(`importacao/listaRevisaoFiscal.ts`), an entry that does not parse answered with its id, never
+dropped (the reads `PERM.integracao.read`). The
+wire contract (the strict start body, the non-strict answers, the job document, the task) is
+`packages/schemas/src/importacaoLojaIntegrada.ts`; every answer is built through it and never
+carries the continuation `seq`, the cursors or the selection's ids.
+
+- **The start makes no Loja Integrada call and touches no queue.** Id, strict body, then
+  `importacao/inicio.ts`: the context loader FIRST (switch off ⇒ 503 `LI_CHAMADAS_DESLIGADAS`, zero
+  Firestore reads, no job), the guard (a `pendente`/`executando` job of the conta ⇒ 409
+  `LI_IMPORTACAO_EM_ANDAMENTO` with its `jobId`), then ONE `create` at an auto id, `pendente`.
+  The first dispatch is the functions codebase's (a trigger on the job's creation).
+- **The other routes call nothing outside the ERP** (`estrutura.test.ts`'s `ROTAS_SEM_CHAMADA_LI`,
+  walked with the label routing route's rules): a missing job and another conta's job are the same
+  404 `LI_IMPORTACAO_NAO_ENCONTRADA`; the report pages its job's own `itens` in document-key order
+  (500 + 1 read, `?depois=` an item id) on the declared `itens (__name__ ASC)` index — without it
+  each page is expected to walk the whole report on Enterprise (#1874, measured on a root
+  collection; `importacao/job.indexes.test.ts`).
+- **Every job write is tier 1** (`importacao/job.ts`, its header's table): checkpoints chained from
+  each write's `writeTime`, only the end-of-dispatch one bumps `seq`; a lost checkpoint is never
+  re-applied (stop when the job no longer runs at that `seq`, else `LiImportacaoConcorrenteError`
+  and the task retries). ⚠️ The Admin SDK retries a commit on its own with the same precondition,
+  so a write that LANDED and lost only its reply comes back as a 9: every job write re-reads and
+  counts it as written when the stored job holds its whole patch (`guardaOPatchLi`, the app's
+  `deepEqual`) — read as a lost race, the end-of-dispatch checkpoint would stop with nothing
+  queued. The fake models it (`respostaPerdidaNaProximaEscrita`). The cancel is one guarded update
+  on the route's read, at most 3 attempts: a finished job is 409 `LI_IMPORTACAO_ENCERRADA`, a
+  cancel that lost every attempt 503 `LI_IMPORTACAO_EM_CONFLITO` (retry; never the start's
+  "attach to it" code).
+- **The dispatch's budget** (`importacao/orcamento.ts`): a unit starts only while its WORST case
+  ends inside 70 s (a call = pacer + read deadline = 22 s; a family with no call = 10 s; a photo =
+  pacer + CDN deadline + upload deadline = 52 s, its `800x800` refetch a unit of its own), plus a
+  30 s tail — 100 s. An order-intake attempt on the shared reads queue waits at most one dispatch
+  PER IMPORT RUNNING AT ONCE (one per conta): its ladder fits half the hot sweep's hour for one,
+  the whole hour up to seven (`functions/src/index.test.ts` pins both). The producer
+  (`importacao/agendadorImportacao.ts`) NAMES every task `idTarefaImportacaoLi(jobId, seq)`, an
+  answered already-exists is success, delays 0 / 2 / 60 s only.
+- The context exposes `cdn`, the package's photo reader, built only in `core/contexto.ts` after
+  every refusal (`estrutura.test.ts` scans the whole app for its factory).
+- **The read phases are one unit at a time, state in, state out** (`importacao/catalogoDoJob.ts`,
+  `listagem.ts`, `detalhes.ts`, `familias.ts`): each exposes the cost of its next unit (one call,
+  or none) and runs it from the job as last checkpointed through the context's client, returning
+  the new cursor for the dispatch's checkpoint. Their only writes are the job's own snapshot pages
+  (`paginas/{tipo}-{offset}`) and details (`detalhes/{liId}`), whole, at deterministic ids (tier 0:
+  a retried unit overwrites its own attempt; the fake models that plain `set`). The listing reads
+  at `limit` 100, then the TRASH list once; nothing relies on list order (rows de-duplicated by id,
+  the distinct count against the first page's `total_count`; a skipped row — no id, or a
+  `removido` its list contradicts — is one WARN line of counts). A variation no listed parent
+  claims and a trashed parent claims is `na-lixeira` with no detail read; the `orfaos` phase then
+  reads EVERY other detail the assembly needs — the unexplained variations (their `pai` places
+  them) and the ids a parent claims that no list carried — before any family is matched, so the
+  SKUs the store repeats or nearly repeats are known whole and processing order never picks a
+  winner. An orphan is
+  never imported as a simple product; a LOOSE row (an orphan, a variation of a trashed parent, an
+  unknown `tipo`) is its own `avulso` report item under every target but `selecionados`.
+- **The match is the import's own cascade** (`importacao/resolucao.ts`), never the order import's
+  SKU stage (that one answers the sellable unit; a link sits on the ROOT): this conta's link
+  (`vinculoDoProdutoLi`, the only shared piece), a root by exact SKU, then any produto by exact SKU
+  with the sole-member hop for a store simple product only, every probe `limit(2)`. Shapes must
+  agree (`formaDaRaizErp`): a store family never meets an ERP sole member, a store simple product
+  never a one-variation family. Variations are matched under the matched parent by their link,
+  their exact SKU, then their option COMBINATION (`sku-diferente` when the SKUs differ). It folds
+  nothing and every query rides a declared index (`resolucao.test.ts` checks each one against
+  `firestore.indexes.json`). Before a link is written, the produto's own links are read whole and
+  judged by `vinculoLiDaContaEId`: one store product per conta per ERP produto. A SKU in conflict
+  in the store (`conflitosDeSkuNaLojaLi`, computed with the assembly, from the whole snapshot,
+  before anything is created: an exact repeat, `sku-repetido-na-loja`, or a near duplicate,
+  `sku-parecido-na-loja`, by the shared
+  `skusParecidosNaLojaLi`) is matched only by an existing link or a variation's combination, and
+  never created.
+- **Option links are learned in two passes**, under both actions: `importacao/evidencias.ts`
+  collects, over every family, the claims of variations matched by EXACT SKU (one claim document
+  per store option, never one per variation); `importacao/gruposLi.ts` then decides them all at
+  once with the shared `decidirAprendizadoLi` (unanimity, fail-closed "holds") and writes each
+  changed grupo ONCE, tier 1 on the memo's stamp, through the never-drop merge — a lost
+  precondition re-reads that grupo and re-decides, and EVERY grupo still to write is written from
+  the re-run decision (never the stale one); a second loss is `conflito-de-escrita`, its claim id
+  carried on the job (`aprendizado.conflitos`) to the families with that option. A refused learning
+  shows on every resolved variation carrying the option, the ones matched by link or exact SKU
+  included (those made the claims). Simular writes
+  no grupo: its learnings ride the job (`aprendizadosSimulados`) as an overlay later resolutions
+  read through the same merge, so its verdicts equal an `aplicar` run's (one stated residual: two
+  store roots placed on ONE ERP produto, `vinculos.ts`). No grupo or variante is ever created.
+- **One family of the `familias` phase** (`importacao/familiaDoJob.ts`): cascade → plan
+  (`plano.ts`, pure: the target, the planned link documents `safeParse`d through the link schema,
+  the "complete" create classification — a hidden or blocked store product is never created, a
+  hidden variation is left out — and every pendência; a refusal is a pendência, never a throw) →
+  links (`vinculos.ts`) → report item (`relatorio.ts`, `itens/{liId}`, whole). A link is created at
+  the store id's doc id (tier 0, `ALREADY_EXISTS` re-read and judged by `vinculoLiDaContaEId`) or
+  its mirror (`ativo`, `bloqueado`, `removido`) refreshed tier 1 on its own read — compared as the
+  link schema's own fields read them, so a stored value they refuse (`null`) is repaired; a field
+  with a value is never touched, a row-only link leaves `destaque`/`usado`/`marca` ABSENT (a
+  detail-backed one carries them, `marca` as the brand URI verbatim), and a variation is linked
+  only beside its parent's confirmed link. A family in CONFLICT is reported under `jaNoErp` and
+  `naoNoErp` too, with no link. "Only link" writes link documents and the job's items, nothing
+  else; a second run over an unchanged store writes no link. A RETRIED unit whose links already
+  landed (the item write or checkpoint failed after them, or a create's reply was lost) still
+  reports and counts them as created: a link of this conta at the store id's doc id, equal to the
+  plan, whose snapshot `createTime` is at or after the job document's own `createTime` (the
+  dispatch's job read; server clock, never `iniciadoEmMs`) reads `criado`/`retomado`, and a root
+  `vinculado` only through it reports `encontrado`. Residuals in `vinculos.ts` (two jobs of one conta
+  at once, another writer's identical link during the run, and a MIRROR REFRESH this job landed,
+  which reads `sem-mudanca` on the retry: `semMudanca +1`, its informational `vinculo-atualizado`
+  lost, `vinculados` unaffected) and `familiaDoJob.ts` (a variation first matched by combination
+  loses its `sku-diferente`, or its actionable `sku-repetido-na-loja` / `sku-parecido-na-loja`, on
+  the retry).
+- **The first dispatch is a TRIGGER's** (`functions/src/onImportacaoLojaIntegradaCriada.ts`,
+  CREATE of `importacoesLojaIntegrada/{jobId}`): ONLY a job created `pendente` enqueues the named
+  task `li-importacao-<jobId>-0` on the READS queue (zero reads; anything else returns with no
+  line); the tasks valve closed stamps the job `falhou/tarefas-desligadas`; a transient Cloud Tasks
+  failure rethrows (`retry: true`, the name makes it idempotent). `database` is the named
+  `default`, no secrets, no Loja Integrada call.
+- **One dispatch** (`importacao/despacho.ts`; the reads queue routes the RAW `tipo: importacao`
+  there, `functions/src/depsImportacao.ts` binds its deps, the handler stamps the start FIRST): the
+  payload (unparseable ⇒ dropped, zero reads), the job, the `seq` decision (`nada`; `continuacao`
+  REPAIRS a hand-off that may never have happened — OUR hand-off on the stored `seq`: the named
+  successor at the conservative 60 s, since it cannot tell a budget end from a 429 pause, and
+  stops; `executar`), the context (switch FIRST ⇒
+  `falhou/chamadas-desligadas`; a conta that cannot be read from ⇒ `conta-indisponivel`), then the
+  phases one unit at a time, each unit's worst case checked against the budget and EVERY unit
+  checkpointed at the same `seq`; when the next unit does not fit, the end-of-dispatch checkpoint
+  (`seq + 1`) and the named continuation 2 s later. Families of a `selecionados` job are the
+  selection only. A 429 PAUSES (end checkpoint with `pausas429 + 1`, the continuation 60 s later,
+  no attempt consumed; past `MAX_PAUSAS_429_LI` ⇒ `limite-de-chamadas`); a 401 parks the conta
+  like every reader — under Simular too, the ONE write a Simular makes outside its job; a detail
+  ANSWERED off its schema (`formato`) is ONE product without a usable detail (logged), never the
+  job, while an empty or non-JSON 200 is the transport's and retries; the valve closed at a
+  hand-off ⇒ `tarefas-desligadas`; anything else rethrows, and on the queue's LAST attempt a
+  failure a retry could have changed — another writer of the same `seq` included, an earlier
+  attempt the queue gave up on — RE-READS the job: still running at that `seq` ⇒ stamped
+  `tentativas-esgotadas`; ONE `seq` ahead and `executando` ⇒ handed off by WHOSE end checkpoint
+  put it there (`guardaOPatchLi` against the end patch the dispatch kept from before its write,
+  `patchDoFimDoDespachoLi`): OURS (it LANDED behind a DEADLINE_EXCEEDED, or a 9 whose re-read
+  failed) ⇒ our own hand-off with OUR delay (2 s budget end, 60 s 429 pause), and if that fails the
+  usual endings on the new `seq` (`tarefas-desligadas`, `tentativas-esgotadas`); another dispatch's
+  ⇒ a COURTESY at the conservative 60 s that never re-targets the `seq`, never stamps and never
+  rethrows (valve closed or transient ⇒ `parado`, on EVERY attempt: a rethrow would hand the job
+  to this task's retry, whose repair takes the stored `seq` as its own and stamps it on the last
+  attempt). A checkpoint that stops on a job one `seq` ahead is always a courtesy, on every
+  attempt. The repair keeps the usual endings on the stored `seq` (`tarefas-desligadas`, and
+  `tentativas-esgotadas` when its last-attempt enqueue fails: the common writer is this task's own
+  dead earlier attempt). Both residuals need two attempts of one task acting on one job (a reply
+  lost, a stalled or crashed instance; never a slow slice — the 100 s budget sits far inside the
+  300 s timeout): the owner never enqueued (died first, or its enqueue failed after the queue
+  stopped listening) AND the courtesy failed ⇒ `executando` with nothing queued until Cancelar (one
+  write, then a new start; a coding bug stays loud) — a trade made knowingly, since a rethrowing
+  courtesy would let the retry's last attempt stamp a job whose owner DID hand off; and a LAST
+  attempt whose own hand-off fails transiently (the repair's, or our landed end's) stamps
+  `tentativas-esgotadas` even when another attempt already enqueued the successor. It reads the snapshot, its details, the grupo memo and the
+  claims at most once per dispatch, lazily. The summary aviso is synced before the phase machine's
+  own terminal stamps (`aplicar` only), on a FRESH read of the job that still runs at its `seq`,
+  the stamp chained from that read (a cancel landing in between the two is the stated residual).
+  Under "complete" one family spans several units (below), and EVERY `aplicar` job, under either
+  action, runs the `revisao` phase after `familias` (`faseDepoisDasFamiliasLi`).
+- **"Complete" (`acao: completar`; `familiaDoJob.ts`, "Complete")**, in units budgeted and
+  checkpointed at one `seq`: the family's details (one call each, the ids read in
+  `familias.filhosLidos`; matched and planned only once the last is read), its PREPARATION (no
+  call), its PHOTOS (one picture per unit, `aplicar` only), its CLOSING (no call). Per produto:
+  fill, then photos, then the link LAST, so this job's own anchor write never lands inside one of
+  its guarded windows; a create's or an add's links ride that batch. Between units the family's
+  progress rides the job's own `progressoDaFamilia`, validated before every write and cleared at
+  its closing (a stored value that does not parse reads as none: the family is prepared again). The
+  TARGET is decided once, on the ERP as it stood when
+  the job STARTED: a matched root at the family's own SKU-keyed id created at or after the job
+  document (this job's landed create, another conta's create it adopted or met landed) was absent
+  then, so the family is also in `naoNoErp` — on the first attempt and on every retry, whether the
+  retry meets it through this job's link or through the SKU; it adds a target, never removes one
+  (`jaNoErp` keeps the cascade's answer). An adoption's or a closing's re-run of the cascade keeps
+  the preparation's verdict. ⚠️ Residuals: a root deleted and created again at that id reads as
+  absent at the start; an attempt that wrote ONLY its item (nothing imported), retried after
+  another writer's root at an auto id (anywhere, under "only link") landed, drops out of
+  `naoNoErp` with that item left uncounted. A unit whose detail list found nothing to read reuses
+  that list's cascade. No writer
+  here names the transaction API (no inventory row). The writers, each with its tier:
+  - **Categories** (`categorias.ts`): the product's leaf by the shared tree helpers; under
+    `criarEVincular` the unlinked chain BELOW the nearest linked ancestor (decided 2026-11-06: one
+    above it stays uncreated), root-most first, each categoria at `li-<conta>-<id>` and its link at
+    `<conta>-<id>` — two tier-0 `create()`s, `ALREADY_EXISTS` re-read and judged before adopting; `nomeCompleto` from the ERP parent's
+    stored breadcrumb, never the store's names joined. Always PLANNED first (the resolution run as
+    Simular runs it: reads, no write) and created only for a produto about to take it — a create's
+    right before its batch, after every refusal — so a create refused before its batch leaves no
+    category behind and reports no category pendência (a batch that then loses leaves the category
+    standing, and the item names it). The item of the family that created a category names it
+    (`categoriasCriadas`; a later family that uses it names none), but for a unit retried over its
+    own landed create or category fill, whose item stops naming it (`familiaDoJob.ts`, "A retried
+    family").
+  - **The whole-family create** (`familiaNova.ts`): ids keyed by the SKU (`li-sku-<sha256>`,
+    `-un` for a sole member), so two contas selling one SKU meet on one id; the planned ids read
+    first; the create probe (`sondarSkusLi`, every SKU the batch writes, the "parecido" forms
+    too) right before the commit; then ONE batch of `create()`s — produtos, `extraData`, links —
+    all or nothing (tier 0 by construction). `ALREADY_EXISTS` re-reads: the root holding the store
+    SKU is ADOPTED (the existing-product path; a cascade that then refuses it reports its own
+    verdict), unless this conta's root link shares its `createTime` (our own batch, its reply lost:
+    `retomada`); anything else at an id is `sku-ja-existe`. A simple product becomes a família de
+    um; a family takes the ERP builder's names, selection and `filhoUnicoId` (`derivarFilhoUnico`
+    over the full set); a hidden product or variation is never created. The DETAILS decide too: a
+    root or kept variation whose detail was never read (a 404: deleted since the listing) refuses
+    the create (`dado-invalido`, `detalhe` — judged after the probe), one its detail shows hidden,
+    blocked or trashed is not created, one whose detail changed the SKU refuses it (`dado-invalido`,
+    `sku`). The checks needing no detail (options, the probe over the rows' SKUs) run BEFORE the
+    details are read, so a family they refuse costs no call. A name over 100 is cut and reported
+    (`nome-cortado`, informational), and two variations the cut makes one name refuse the create
+    (`dado-invalido`, `nome`).
+  - **Add-child** (`filhoNovo.ts`), beside the parent's CONFIRMED link: the missing variations,
+    their links and the parent's `filhoUnicoId` in ONE batch, tier 1 on the PARENT (every ERP
+    writer that changes a child set writes the parent too); a lost precondition re-reads the
+    parent and the child set and re-plans (≤ 3); a post-commit re-derive catches a writer that
+    moved the pointer alone. Each variation needs its own read detail, as the create does. A
+    retried unit meets a variation THIS job added through its own link and counts it as created
+    again.
+  - **Fill-empty** (`completar.ts`): only a field absent, `null` or `''` — never `0`, `false` or a
+    value of another shape — tier 1 `update(patch, { lastUpdateTime })` on the attempt's read,
+    re-planned on a loss (≤ 3), a lost reply recognised by `guardaOPatchLi`; an absent `extraData`
+    created with only the filled keys; a kit root's rollup fields never. ONE unit conversion,
+    `medidasErpDoDetalheLi` (weight in kg, box in cm: the store's own units, decided 2026-11-09,
+    so nothing is scaled). The
+    variations take the category the ROOT's fill left (the one it wrote, else the one its last
+    read found — an operator's landed meanwhile — else none), never the pre-fill guess.
+  - **Photos** (`fotos.ts`), onto a produto with NONE: through `contexto.cdn` only, the ORIGINAL
+    first, `800x800` in a unit of its own when the original is over the cap, the type from the
+    BYTES; stored by the shared uploader (`putArquivoAdmin`: create-first, content-addressed)
+    raced against `PRAZO_UPLOAD_LI_MS`; then ONE tier-1 write on a read taken AFTER the uploads,
+    so an operator's photo landing meanwhile wins. No default bucket ⇒ the job is stamped
+    `fotosIndisponiveis` and no photo is planned. A Storage failure propagates and, ⚠️ no Storage
+    error class being reachable to narrow on, is never stamped `tentativas-esgotadas`: a missing
+    bucket grant, or a transient Storage failure on the queue's last attempt, leaves the job
+    `executando` until Cancelar (`functions/DEPLOY.md`).
+  - **The tax review** (`revisaoFiscal.ts`): a produto created, or one whose empty category was
+    filled or stays empty, joins the job's `revisao/{produtoId}` (tier 0, merged on
+    `ALREADY_EXISTS`) — the entry a create's batch, an add's batch or a category fill calls for
+    written BEFORE that write, so a write that lands and whose unit then fails never loses it. The
+    `revisao` phase carries the open entries of every earlier `aplicar` job back to the newest one
+    that ended `concluido`, skipping Simular jobs (decided 2026-11-06; the declared job index),
+    removes an entry only on EVIDENCE — its own or its category's `imposto`, or a `regraImposto`
+    naming either (the resolver's tier-4 match) — or when its produto is gone (decided 2026-11-06),
+    and syncs `lojaIntegradaRevisaoFiscal` on the open count. A list is read WHOLE once per dispatch
+    and paged in memory, never by a document-key range (on Enterprise one scans the whole list per
+    page without a `__name__` index).
+  - Simular decides all of it and writes none of it: the category plans ride the job's
+    `mapaCategorias` (`simulada`), photos are counted with no download (decided 2026-11-06, so it
+    cannot foresee a `foto-recusada`), and it never enters `revisao`. Store SKUs that would collide
+    with one another are decided from the whole snapshot before anything is created, so both modes
+    refuse them alike.
+- **The import's avisos** (`importacao/avisosImportacao.ts`): Simular raises and resolves nothing;
+  the summary aviso closes only after an `alvo: todos` job that ends `concluido` with no actionable
+  pendência; the per-category one is raised at an `aplicar` job's end from its items' own category
+  refusals and resolved by a later catalogue phase that finds the category linked or gone; the
+  tax-review one is synced on the open count at the `revisao` phase's end. The three tipos join the expiry sweep's orphan pass (`avisos/avisos.ts`): the
+  per-category one is matched by key prefix, the two per-conta keys are a listed conta's, and a row
+  written after the conta list was read is left for the next tick.
+
 ## Routes (`/api/marketplace/loja-integrada/pedidos/[pedidoId]…`, step 15)
 
 `PUT …/rota-etiqueta` (`PERM.frete.write`, the Melhor Envio buy's own permission: whoever can
@@ -102,7 +391,7 @@ or the operator's `escolha` resolves. The work is `lib/lojaIntegrada/pedidos/rot
   `packages/schemas/src/rotaEtiquetaLojaIntegrada.ts` and `CODIGO_ERRO_LI`; every answer is
   built through it, so the target document (which may hold credentials) never rides along.
 - **One tier-1 write per attempt** (root rule 7): `update({ freteInicial: B },
-  { lastUpdateTime })` against the attempt's own pedido read. `B` is the RAW stored block with
+{ lastUpdateTime })` against the attempt's own pedido read. `B` is the RAW stored block with
   only the routing keys replaced (`integracaoFreteOuterRef`, `externalOptionId`, the escolha's
   `integracaoTargetOuterRef`, the retirada hand-off's `estado`), never re-parsed, so unmodelled
   keys and Timestamps survive with the same values (`rotaEtiqueta.firestore.test.ts`); only an
@@ -177,10 +466,10 @@ verdicts, the live/mirror split) is `packages/schemas/src/conferenciaPagamentoLo
   `parseRead`, which logs and returns the raw document on a mismatch.
 - Panel writes carry the version the operator saw (`versaoEsperada`, the credential
   document's `updateTime` in µs). `create` when absent, otherwise `update(patch,
-  { lastUpdateTime })`; a lost race is a 409, never a silent overwrite (root rule 7,
+{ lastUpdateTime })`; a lost race is a 409, never a silent overwrite (root rule 7,
   tier 3). The save never mentions `webhookPedido`.
 - The 401/403 park is a tier-1 precondition write: read, decide, `update(patch,
-  { lastUpdateTime })`, re-read on `FAILED_PRECONDITION` (9) and on `NOT_FOUND` (5),
+{ lastUpdateTime })`, re-read on `FAILED_PRECONDITION` (9) and on `NOT_FOUND` (5),
   at most 3 attempts. It compares a versioned ref derived from the stored
   `personalToken` (`fingerprint.tokenAtualizadoEmMs`), never the stored fingerprint field.
 - ⚠️ **Never write the Firestore transaction API's call name in any file of this app**
@@ -190,8 +479,9 @@ verdicts, the live/mirror split) is `packages/schemas/src/conferenciaPagamentoLo
   them: the stamp replaces the SDK's `exists` check, so a removed document fails it with
   `FAILED_PRECONDITION` (9), not `NOT_FOUND` (5). Its `batch()` (the order import's ONE
   commit of a pedido and its pagamentos) is all or nothing under the same rules, plus 6 for
-  a `create` on an existing doc; the emulator suite `pedidos/importarPedido.firestore.test.ts`
-  pins the server's answers.
+  a `create` on an existing doc, and stamps one commit time on all of it; the emulator suites
+  `pedidos/importarPedido.firestore.test.ts` and `importacao/completar.firestore.test.ts` pin
+  the server's answers.
 
 ## Layout rules
 
@@ -214,8 +504,10 @@ verdicts, the live/mirror split) is `packages/schemas/src/conferenciaPagamentoLo
   credential, a conta gone) is clocked by the snapshot's `readTime`: the reconexão aviso
   is never resolved clockless, or a park committed after the read loses its open row for
   good. Any civil-date computation passes `FUSO_FISCAL` (`no-ambient-timezone`).
-- Tests run the real `escreverAviso`/`resolverAviso` against `lib/lojaIntegrada/testing/fakeDb.ts`.
-  Apps have no dependency edges, so Shopee's fake cannot be imported.
+- Tests run the real `escreverAviso`/`resolverAviso` against `lib/lojaIntegrada/testing/fakeDb.ts`,
+  and the import's photos the real shared uploader against `testing/fakeBucket.ts` (it throws on
+  any call the uploader never makes). Apps have no dependency edges, so Shopee's fakes cannot be
+  imported.
 
 ## Token hygiene
 
@@ -266,8 +558,8 @@ verdicts, the live/mirror split) is `packages/schemas/src/conferenciaPagamentoLo
 - A new field or path stays redacted until a table lists it. Listing one means adding the
   leaf with its predicate AND regenerating the committed leaf inventory, which reads the
   gitignored spec cache only: `MSYS_NO_PATHCONV=1 node
-  .master_plans/loja-integrada/evidence/li-doc.mjs folhas --saida
-  apps/loja-integrada/lib/lojaIntegrada/testing/especificacaoFolhas.json` (no pairs: the
+.master_plans/loja-integrada/evidence/li-doc.mjs folhas --saida
+apps/loja-integrada/lib/lojaIntegrada/testing/especificacaoFolhas.json` (no pairs: the
   file's own operations; pass `<METHOD> <path>…` pairs, all of them, to change the list).
   `redacao.test.ts` demands every inventory leaf be classified exactly once.
 - The excerpt fails closed where the token may echo back: a 401/403 is never excerpted on
@@ -287,20 +579,38 @@ verdicts, the live/mirror split) is `packages/schemas/src/conferenciaPagamentoLo
 - **Catalogue ids are keyed pseudonyms** (`sanitizacao/pseudonimo.ts`): on a `catalogo`
   2xx pair the sanitizer maps every kept `id` and `*_id`, every id segment of a kept
   resource URI, of the request path and of `meta.next`/`previous`, and the `produto=`
-  query value to `1e8 + HMAC-SHA256(key, "li-fixture-id:" + id)[0..6] mod 9e8`, one
-  namespace for every resource, so the relations between rows survive. The key is
+  query value to `1e11 + HMAC-SHA256(key, "li-fixture-id:" + id)[0..6] mod 9e11`, one
+  namespace for every resource, so the relations between rows survive. Twelve digits:
+  no real id has that many (products and images, the longest, have 9), and a pair
+  holding one is refused (`id-real-na-faixa-do-pseudonimo`), so the range check is
+  sound for every resource kind; neither 11 nor 14, the CPF and CNPJ lengths. The key is
   `.chave-fixtures` in the capture folder (created once by `--gerar-chave`, which refuses
   to replace it; never printed, never committed). ⚠️ **The key OUTLIVES the captures**:
   deleting merged raw pairs never deletes it, and a later catalogue capture must use the
   same key, or its ids silently stop matching the committed fixtures. No key → the
-  catalogue pair is refused (its printed request line blanks ids as `<id>`); two ids on
-  one pseudonym → the run is refused (new key). **A new key changes every catalogue id:
-  regenerate every catalogue fixture in one change.** What the mapping cannot reach is
-  refused: a catalogue error body keeping a number other than its status, and a
+  catalogue pair is refused (its printed request line blanks ids as `<id>`, SKUs as
+  `<sku>`); two ids (or SKUs) on one pseudonym → the run is refused (new key). **A new key
+  changes every catalogue id and SKU: regenerate every catalogue fixture in one
+  change.** What the mapping cannot reach is refused: a catalogue error body keeping a
+  number other than its status, and a
   catalogue resource on a path `ehCatalogo` does not admit. Meta counts, other query
   values (`limit`, `offset`) and the configuration/estrutural classes are untouched. The
   dry run's leaf table shows mapped leaves as `pseudonimizado`; `wireCorpus.test.ts` pins
   their relations, distinctness and range.
+- **Catalogue SKUs are keyed pseudonyms too** (same key, same module): a storefront prints
+  a product's SKU on its public page, so a real one is a web search away from the store's
+  name. Every kept `sku` on a `catalogo` pair, and every `sku=` value of its request and
+  of `meta.next`/`previous`, maps one character at a time, each from
+  `HMAC-SHA256(key, "li-fixture-sku:" + upper(the SKU before it))`: same length, digit to
+  digit and letter to letter in its case, every digit and letter changed, and a
+  variation whose SKU is its parent's plus a suffix still starts with its parent's
+  pseudonym (`wireCorpus.test.ts` pins it). A digit that would END a run the redactor's
+  check-digit layer masks (`fimDeTrechoDaCamadaDeDigitosLi`, the layer's own table)
+  becomes an upper-case letter, decided on the prefix alone, so no pseudonym reads as a
+  CPF or CNPJ. Order SKUs (the `estrutural` class) stay as captured (Q3). The catalogue
+  class also FAKES every external identifier, `gtin`, `mpn` and `id_externo`
+  (`CHAVES_FALSAS_CATALOGO_LI`): a GTIN's company prefix, a supplier part number and
+  another channel's listing id each name their owner.
 - ⚠️ **Agents never open a raw capture** (no `cat`, editor or file tool): run the sanitizer
   and read only its output (`--dry-run` prints paths, types and treatments, never values)
   and the sanitized fixtures.
@@ -311,9 +621,12 @@ verdicts, the live/mirror split) is `packages/schemas/src/conferenciaPagamentoLo
 - A fixture is pushed only after Lucas has seen it (the repo is public), and only after
   `sanitizar --entrada … --verificar <files>` passes over the new fixtures, the changed docs
   and the PR-body draft. `wireCorpus.test.ts` re-scans the corpus in CI (no store list
-  there); its floor `MINIMO_DE_FIXTURES` is the committed count (29: the 18 step-3 captures
-  plus the 11 step-10 catalogue captures, `c9-*`), so a fixture that disappears fails it,
-  and so does one added without moving it.
+  there); its floor `MINIMO_DE_FIXTURES` is the committed count (75: the 18 step-3 captures,
+  the 11 step-10 catalogue captures, `c9-*`, the 13 step-9 product captures, `c10-*`, and
+  the 33 step-12 stock captures, `c11-*`), so a fixture that disappears fails it, and so
+  does one added without moving it. The product captures are replayed through the import's
+  own reads by `importacao/capturasProdutos.test.ts`, and the stock captures through the
+  package's stock reads and the stock plan's decisions by `estoque/capturasEstoque.test.ts`.
 - ⚠️ The owner's raw `pedido-enviado` pair duplicates `pedido-boleto` (the same order,
   identical sanitized bytes) and is EXCLUDED from the corpus. It stays in `~/li-capturas`
   until he deletes it, so a sanitizer run without `--so` writes it back: delete that raw
@@ -321,14 +634,20 @@ verdicts, the live/mirror split) is `packages/schemas/src/conferenciaPagamentoLo
   covered without it: `pedido-pix` and `pedido-cartao` (`situacao.codigo`
   `pedido_enviado`, a tracking code under `envios`) and `historico-pedido-enviado`.
 - Kept on review of the first corpus (2026-10-14), not leaks: a 14-digit window INSIDE a
-  longer SKU that passes the CNPJ check (the scan tests whole values; any one window passes
-  by chance about 1% of the time, and the sibling variant's window fails), LI's own
+  longer ORDER SKU that passes the CNPJ check (the scan tests whole values; any one window
+  passes by chance about 1% of the time, and the sibling variant's window fails), LI's own
   numeric ids where the profile keeps them on the configuration class (platform-wide
   constants; catalogue ids are pseudonyms, above), `meta.total_count` (the kept numeros
-  already show the store's scale) and `resposta.bytes` (step 11 sizes snapshots with it). ⚠️ An
+  already show the store's scale), `resposta.bytes` (step 11 sizes snapshots with it), and a
+  stock row's `quantidade`, `quantidade_reservada`, `quantidade_disponivel`, `gerenciado` and
+  both situações (the `ESTOQUE` keep-list; the row's ids are pseudonyms). ⚠️ An
   order detail's top-level `id` is FAKED (`0`) and so is every `itens.*.produto`
   (a placeholder, not even a URI): no capture test may key on either, and the produto
-  reference form has no real capture yet.
+  reference form has no real capture yet. Catalogue SKUs are NOT on this list: the product
+  captures' real variation SKUs hold 11- and 14-digit windows that pass a check, where a
+  family code meets its option suffix, in a pattern no "chance" or "the sibling fails"
+  argument covers, so they are pseudonymized (above) rather than kept on review. A window
+  inside a pseudonym says nothing about a real value.
 - `estrutura.test.ts` proves the sanitizer's import closure reaches no network or process
   module, no package client, no `firebase-admin`/`@delfrance/data`, no credential module,
   no `fetch(`, no run-time builtin (`getBuiltinModule`) and no global by computed name;
@@ -387,8 +706,20 @@ verdicts, the live/mirror split) is `packages/schemas/src/conferenciaPagamentoLo
   both getters refuse a different stored ref with ZERO requests (`LiCredencialTrocadaError`,
   transient). The ref carries the save's stamp, so even the same token saved again is
   refused. A park still throws `LiContaParadaError` first.
+- **Four write kinds, two readers** (`TipoEscritaLi`): the order kinds `objeto-envio` and
+  `situacao-pedido` read the order detail `GET /v1/pedido/{numero}/`; the stock kinds
+  (step 12) `estoque-produto` and `estoque-produto-lote` read one product's stock detail
+  `GET /v1/produto_estoque/{produto id}` (no slash, keyed by the PRODUCT id — a stock row's own
+  id answers 404, `ausente`) and write its four-leaf body (`campo: 'estoque'`, the package's
+  three fixed leaves plus the quantity, checked before the diff). The base and the read-back are
+  unions discriminated by `leitura`. A kind is sent, or diffed, only under its own flow's valve
+  (`FLUXO_DO_TIPO_ESCRITA_LI`). `estoque-produto` is read back by its own GET;
+  `estoque-produto-lote` declares `leituraDeVolta: 'lista'` and has NO read-back call (the stock
+  list's next walk is its read-back). The history read and the confirming read are the order
+  flow's only. Whether the row read names the product asked for is the flow's to check
+  (`produtoIdDoEstoqueLi`), not the engine's.
 - **Every write has its own deciding read** (`lerBaseLi(motor, alvo, leitura)`, with the
-  reader its kind's `LEITURA_PREVIA_LI` row names: two pacer intervals, the order detail, the
+  reader its kind's `LEITURA_PREVIA_LI` row names: two pacer intervals, the detail read, the
   pin, the restore line). A deciding read decides at most ONE write attempt, a write refuses a
   base its kind's reader did not read, and a read-back is another type, never a base. **No
   write follows one that landed or MAY have landed** in the same run: a write closes the run
@@ -398,10 +729,15 @@ verdicts, the live/mirror split) is `packages/schemas/src/conferenciaPagamentoLo
   `escreverLi` throws a `TypeError`.
 - **The restore line** (`evento: 'restauracao'`, INFO): the read's token-scrubbed text
   through `corpoDeRestauracaoLi` (`redacao.ts`: the estrutural keep-list walk, NO 2 KB cut;
-  `null` for a catalogue, configuration or webhook path, a non-2xx, a non-JSON body, over 1 MiB
-  or deeper than 256). Capped at 200 KB on the EXACT line (`linhaSerializadaLi`, UTF-8,
-  newline excluded): over the cap or `null` ⇒ no line and NO write (`sem-restauracao`),
-  never a truncated snapshot.
+  `null` for a configuration or webhook path, a non-2xx, a non-JSON body, over 1 MiB or deeper
+  than 256). Of the catalogue paths ONLY the stock detail `/v1/produto_estoque/{id}`, in its
+  exact no-slash form, has a branch: byte-faithful or `null` — all nine leaves of the stock
+  detail present and carried verbatim (the store's reservation included), an unknown extra key
+  kept with a `<redacted>` value; a leaf missing or one the walk would alter ⇒ `null`. Every
+  other catalogue path (the slash form and the stock list included) is `null`. The line's
+  `politica` is its path's (`estrutural`, or `catalogo` for the stock detail). Capped at 200 KB
+  on the EXACT line (`linhaSerializadaLi`, UTF-8, newline excluded): over the cap or `null` ⇒
+  no line and NO write (`sem-restauracao`), never a truncated snapshot.
 - **The serialiser.** A structured value reaches a line only through `serializarValorLi`
   (`log.ts`): JSON for a JSON value, a marker (`<ciclo>`, `<bigint>`, `<ausente>`, `<fundo>`
   past depth 32, `<nao-serializavel>`) otherwise, no getter ever called, no `catch`. The
@@ -510,7 +846,8 @@ verdicts, the live/mirror split) is `packages/schemas/src/conferenciaPagamentoLo
   index, no re-drive index); doc id = the event digest, task id `rastreio-<evento>`; the
   producer treats an answered `functions/task-already-exists` as success.
 - Tests: `testing/plataformaEscritaLi.ts` is a stateful LI (one order, its history, both
-  write routes); the global `fetch` is stubbed to throw in every suite.
+  order write routes, and the store's stock rows by product id for the engine's stock suite,
+  `core/escritaEstoque.test.ts`); the global `fetch` is stubbed to throw in every suite.
 
 ## Notification pipeline (step 3)
 
@@ -623,7 +960,8 @@ verdicts, the live/mirror split) is `packages/schemas/src/conferenciaPagamentoLo
 
 - `pedidos/importarPedido.ts` fills the step-3 seam: the queue and both sweeps run it, the
   poller passes its importer gate. The context refuses first while the read switch is
-  off, so a run DEFERS before any read and reaches no import path, A4 included (D17).
+  off, so a run DEFERS before any read and reaches no import path, the paid-without-CEP
+  refusal below included (D17).
   Every rule lives in the pure mappers beside it.
 - The freight route and the pedido id are SHARED, never copied: `pedidos/freteMapeamento.ts`
   decides the `mapa` row and the target through `@delfrance/schemas`'s
@@ -636,7 +974,7 @@ verdicts, the live/mirror split) is `packages/schemas/src/conferenciaPagamentoLo
   `lojaIntegradaFreteNaoSuportado` sync run HERE, on every attempt that routed), cliente
   and endereço, then ONE atomic `WriteBatch` (the pedido and every pagamento, each under
   its own precondition; a lost one re-derives all, 3 attempts, then a retry).
-- A4: a PAID order with a shipment, NO CEP at all (no delivery block, or a `cep` absent,
+- Paid without a CEP: a PAID order with a shipment, NO CEP at all (no delivery block, or a `cep` absent,
   `null`, `''`, blank or `-`) and no stored endereço throws `LiPedidoPagoSemEnderecoError`
   before step 7; a pickup is exempt. It retries; the park at the cap logs an ERROR line
   (ids only) and raises the `critico` `lojaIntegradaPedidoPagoSemEndereco`, which an
@@ -653,13 +991,13 @@ verdicts, the live/mirror split) is `packages/schemas/src/conferenciaPagamentoLo
   schema and Zod refusals park. Estado and payment status come from the situação codigo
   through one shared table; a stored stamp is read through `coerceToMicros`.
 - Six aviso tipos (`avisosPedidoLi.ts`): situação desconhecida, contestado, hub, frete não
-  suportado, pago sem endereço and A7's `lojaIntegradaReversaoComEtiqueta` (a reversal on
+  suportado, pago sem endereço and `lojaIntegradaReversaoComEtiqueta` (a reversal on
   a pedido with a bought label). Order avisos and incidentes run after the batch, on
   `importado` and `sem-mudanca`, so a retry after a crash still writes them.
 - A re-import keeps the `externalOptionData` keys Loja Integrada does not own (`agency`).
 - `pedidos/importarPedido.firestore.test.ts` (emulator, CI below) pins the batch.
 
-## CI (steps 3, 5, 7 and 20)
+## CI (steps 3, 5, 7, 9 and 20)
 
 - Two homes, disjoint by filename suffix. `vitest.config.ts` (`pnpm test`, in `CI test`
   of `ci.yml`, unfiltered) EXCLUDES `*.firestore.test.ts` and `*.tasks.test.ts`;
@@ -671,7 +1009,7 @@ verdicts, the live/mirror split) is `packages/schemas/src/conferenciaPagamentoLo
   No `ci.yml` exclusion, so a skipped lane loses only the round trip. Editing the workflow
   → the `ci-lanes` skill.
 - The job: `prepare-deploy.mjs`, then `firebase emulators:exec --config
-  firebase.loja-integrada.tasks.json --only firestore,functions,tasks` (ports 8085/5004/9501;
+firebase.loja-integrada.tasks.json --only firestore,functions,tasks` (ports 8085/5004/9501;
   that file sits ONE DOT from `firebase.loja-integrada.deploy.json`, the only one that
   deploys), then `pnpm test:tasks`. Run it locally the same way (JDK 21) with
   `FUNCTIONS_REGION` = `LOJA_INTEGRADA_TASKS_REGION`, `FIREBASE_PROJECT_ID=demo-erp`,
@@ -697,6 +1035,24 @@ verdicts, the live/mirror split) is `packages/schemas/src/conferenciaPagamentoLo
 - The history trigger fires on EVERY suite's `pedidos/*/historicoFtIni/*` creates (only
   `filaEscrita.tasks.test.ts` writes them): a suite that adds one awaits the row its event
   ends in, and uses pedidos and contas no other suite seeds.
+- Since step 9 the JOB trigger (`onImportacaoLojaIntegradaCriada`) fires on EVERY suite's
+  `importacoesLojaIntegrada/*` creates, and enqueues only a job created `pendente`. So a suite
+  seeds its jobs `executando` (or ended) unless the dispatch is what it awaits:
+  `functions/src/importacao.tasks.test.ts` creates `pendente` jobs and awaits each one's
+  `falhou/chamadas-desligadas` (the dispatched function stops at the switch; no conta is seeded,
+  which makes the motivo discriminating), and proves the trigger ignores an `executando` job with
+  a LATER sentinel; `lib/lojaIntegrada/importacao/importacao.firestore.test.ts` seeds `executando`
+  jobs only (the guard's query, the chained preconditions, a checkpoint losing to a cancel, a stale
+  `seq`). Neither writes `produtolojaintegrada` docs. `lib/lojaIntegrada/importacao/completar.firestore.test.ts`
+  does (its one job seeded `executando`): it proves on the server what the fake models for the
+  complete step — a family batch failing WHOLE on one taken id, and the adoption after another
+  conta's create (one produto per SKU, one link per conta); our own landed batch told by the root
+  and its link sharing ONE `createTime`, and two commits not; the add-child batch losing the
+  parent's precondition to a sibling delete, the pointer re-derived from the live set; a fill and
+  a photo write each losing to an operator. It calls the writers through their test seams
+  (`antesDoCommit`, `antesDaEscrita`, the upload seam), not the dispatch, and the photos run the
+  real shared uploader against this Firestore over `testing/fakeBucket.ts` (the lane has no
+  Storage emulator).
 - A new `*.tasks.test.ts` / `*.firestore.test.ts` joins the same job and check name. Its
   `beforeEach` wipes what it reads (one shared emulator, files run serially), and a drop
   is proved by a LATER sentinel row, never by polling for an absence.
@@ -705,6 +1061,26 @@ verdicts, the live/mirror split) is `packages/schemas/src/conferenciaPagamentoLo
   seeds, and a suite whose writes fire the trigger awaits the trigger's last write before it
   ends. The step-3 suites seed contas with no filial and no `dataCadastro`, which the core
   plans as `incompleto` (reads only). Why one job anyway: `vitest.tasks.config.ts`.
+- The ANCHOR trigger (step 9) fires on EVERY suite's `produtos/*/produtolojaintegrada/*`
+  writes (today `pedidos/importarPedido.firestore.test.ts`, `importacao/completar.firestore.test.ts`
+  and its own suite, `functions/src/onProdutoLojaIntegradaLinkChanged.tasks.test.ts`): a
+  counting link's create writes its conta into the produto's `integracoesComProduto`. So a suite
+  that writes link docs uses produtos no other suite seeds, awaits the anchor's write on EACH
+  produto it linked UNCONDITIONALLY before it asserts on that produto or races a precondition on
+  it (never "only if it fails") — a link the code under test writes (a create's batch, the
+  adoption path) included, not only a seeded one — and ends by deleting its links and awaiting
+  the anchor's last write (the conta leaving the array) before its produtos go —
+  `lib/lojaIntegrada/testing/ancoraLi.ts`. Delete a link only once its anchor add has landed: an
+  add handled after the removal re-lists the conta, and the wait for its leaving never ends. Its own
+  suite proves "never touches" by later positives (the other conta's add and removal are
+  observed writes). It does NOT prove "keeps": a check that keeps writes nothing, and the
+  functions emulator may run two invocations at once, so a later sentinel orders that check only
+  as far as the emulator serializes them. The keep verdict and the survivor read's fold of both
+  stored ref forms are pinned offline (the survivor read's own suite,
+  `packages/data/src/admin/produtos/sobreviventesLi.test.ts`, and the binding's, which pins by
+  identity that the remove is handed the closure that shared read built for its produto and
+  conta: `lib/lojaIntegrada/produtos/integracoesComProdutoLi.test.ts`); the emulator case shows only
+  that the real guarded write runs and that losing the last counting link removes the conta.
 - The lane cannot prove: Cloud Scheduler firing (`onSchedule` is ignored),
   `scheduleDelaySeconds` (firebase-tools#8254), index declarations, rules, that the
   emulator honours `maxConcurrentDispatches` or the instance limits, named-task dedup

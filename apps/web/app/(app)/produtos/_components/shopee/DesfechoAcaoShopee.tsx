@@ -22,9 +22,9 @@ import {
   fraseDaPublicacaoSemRespostaShopee,
   fraseDoAnuncioIncertoShopee,
   fraseDoRascunhoPublicadoShopee,
+  linhasDosProblemasShopee,
   textoDaEtapaShopee,
   textoDoAvisoKit,
-  textoDoProblemaShopee,
   vinculoSubstituidoAlheio,
 } from '@/lib/shopee/anuncioProduto';
 import {
@@ -52,9 +52,18 @@ import type { AcoesShopee, ArmaKitShopee } from './AcoesAnuncioShopee';
  * — what a refusal row's «Corrigir no rascunho: …» button (a `rascunho`
  * surface of `superficieDoCampoShopee`) focuses. The title and the
  * description are the inputs themselves; the category and the brand are
- * their pickers' wrappers (the picker's first enabled control takes the
- * focus). It lives HERE, beside its one reader, so the form imports it from
- * the panel and never the reverse.
+ * their pickers' wrappers, the attributes (#1911 P13) the «Atributos»
+ * section's own root, stamped by `AtributosRascunhoShopee`, and the logistics
+ * (#1911 P16) the «Logística» section's rows' container while one of its rows
+ * has a control that can move (else the section's root), stamped by
+ * `LogisticaRascunhoShopee` — in each, the first enabled control takes the
+ * focus (in the rows, in DTO order: a row's «Ligado» switch, or its
+ * free-shipping checkbox where the switch is locked ON — a compulsory row; an
+ * unavailable OFF row has both disabled (Q-F1 (b)), so the focus goes on to
+ * the next row, and never to the mode picker's «Automática» while a row can
+ * move; on the root, «Automática», the way out of a list where none can). It
+ * lives HERE, beside its one reader, so the form imports it from the panel
+ * and never the reverse.
  */
 export function idDoCampoRascunhoShopee(
   linkDocId: string,
@@ -63,21 +72,39 @@ export function idDoCampoRascunhoShopee(
   return `shopee-rascunho-${linkDocId}-campo-${campo}`;
 }
 
-/** What can take the focus inside a picker's wrapper — its first enabled control. */
-const FOCAVEL = 'input:not([disabled]), textarea:not([disabled]), button:not([disabled])';
+/**
+ * What can take the focus inside a picker's wrapper or a section (the
+ * attributes; the logistics rows, whose switch is an `input`, or — when no
+ * row can move — that section's root, whose «Automática» radio is one): a
+ * FIELD first — its first enabled input or textarea; a button only
+ * when the wrapper has no enabled field (the category picker). Never a hidden
+ * input (Mantine's `Select` / `MultiSelect` carry one beside the visible field,
+ * and `focus()` on it is silently a no-op), and never a control kept out of
+ * the tab order or hidden from assistive tech — Mantine's Pill renders its
+ * remove «×» as a `tabindex="-1"`, `aria-hidden` button BEFORE the
+ * MultiSelect's field.
+ */
+const CAMPO_FOCAVEL =
+  'input:not([disabled]):not([type="hidden"]):not([tabindex="-1"]), textarea:not([disabled])';
+const BOTAO_FOCAVEL = 'button:not([disabled]):not([tabindex="-1"]):not([aria-hidden="true"])';
 
 /**
- * Brings one field of a draft's form into view and focuses it (a picker's
- * first enabled control). Navigation only — nothing is written. A field that
- * is read-only now (the reading is `em-andamento`, the category in `incerta`)
- * is still scrolled to; a form that is not on screen is a no-op.
+ * Brings one field of a draft's form into view and focuses it (a picker's —
+ * or the attributes or logistics section's — first enabled control). Navigation only —
+ * nothing is written. A field that is read-only now (the reading is
+ * `em-andamento`, the category in `incerta`) is still scrolled to; a form
+ * that is not on screen is a no-op.
  */
 function focarCampoRascunhoShopee(linkDocId: string, campo: CampoDoFormularioRascunhoShopee): void {
   const alvo = document.getElementById(idDoCampoRascunhoShopee(linkDocId, campo));
   if (alvo === null) return;
   // jsdom implements no layout, so the scroll is optional there.
   if (typeof alvo.scrollIntoView === 'function') alvo.scrollIntoView({ block: 'center' });
-  const focavel = alvo.matches(FOCAVEL) ? alvo : alvo.querySelector<HTMLElement>(FOCAVEL);
+  const focavel =
+    alvo.matches(CAMPO_FOCAVEL) || alvo.matches(BOTAO_FOCAVEL)
+      ? alvo
+      : (alvo.querySelector<HTMLElement>(CAMPO_FOCAVEL) ??
+        alvo.querySelector<HTMLElement>(BOTAO_FOCAVEL));
   focavel?.focus();
 }
 
@@ -237,6 +264,17 @@ export interface DesfechoDoRascunhoShopee {
   readonly podePublicar: boolean;
   /** `bloco.podeDescartar`: a `descartar-atestando` exit is disabled otherwise. */
   readonly podeDescartar: boolean;
+  /**
+   * The STORED draft holds a channel list the operator chose in its
+   * «Logística» section (#1911 P16, D16-7) —
+   * `logisticaEscolhidaNoRascunhoShopee(link)` over the stored link, never the
+   * form: «Publicar» sends the stored draft, so an unsaved switch to
+   * «Automática» changes nothing here. `true` ⇒ a `logistic_info` refusal row
+   * (other than the two import-remedy motivos) routes to «Corrigir no
+   * rascunho: Logística»; `false` ⇒ the produto's weight, as before. Supplied
+   * by the editor.
+   */
+  readonly logisticaEscolhida: boolean;
   /**
    * A refusal row's Seller-Centre attestation exit was clicked — one of
    * `saidasDoProblemaShopee(p, {ehRascunho: true})`, its button labelled
@@ -847,11 +885,22 @@ function DesfechoRecusado({
         {desfecho.problemas.length === 0 ? (
           <Text size="sm">{semTerminal(desfecho.mensagem, ehRascunho)}</Text>
         ) : (
-          desfecho.problemas.map((p, i) => (
-            <Stack key={i} gap={4} data-testid={`shopee-problema-${linkDocId}-${String(i)}`}>
-              <Text size="sm">
-                {textoDoProblemaShopee(p, linkDocId, produtoId, contextoDoRascunho)}
-              </Text>
+          // One text per row, except a refusal-wide copy shown ONCE per motivo
+          // (#2015's `logistica-nao-confirmada` and #1911 P14b's (CPY-4)
+          // `logistica-sem-valor-gravado`: one row per lost channel); `indice`
+          // is the row's position in `problemas`, so a dropped row moves no testid.
+          linhasDosProblemasShopee(
+            desfecho.problemas,
+            linkDocId,
+            produtoId,
+            contextoDoRascunho,
+          ).map(({ problema: p, indice, texto }) => (
+            <Stack
+              key={indice}
+              gap={4}
+              data-testid={`shopee-problema-${linkDocId}-${String(indice)}`}
+            >
+              <Text size="sm">{texto}</Text>
               <BotaoDoProblema
                 contaId={contaId}
                 linkDocId={linkDocId}
@@ -861,7 +910,12 @@ function DesfechoRecusado({
               />
               <BotaoDaSuperficie
                 linkDocId={linkDocId}
-                superficie={superficieDoCampoShopee(p, { ehRascunho, descricaoPropria })}
+                superficie={superficieDoCampoShopee(p, {
+                  ehRascunho,
+                  descricaoPropria,
+                  // A listing never routes to a draft section, whatever it stores.
+                  logisticaEscolhida: rascunho !== null && rascunho.logisticaEscolhida,
+                })}
                 destinos={destinos}
               />
               {rascunho !== null && acoes.permitidas && (

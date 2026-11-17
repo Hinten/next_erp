@@ -8,13 +8,20 @@ import {
   PROBLEMA_TABELA_SHOPEE,
   TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE,
   TIPO_CELULA_TABELA_SHOPEE,
+  atributoDtoSchema as atributoCompartilhadoSchema,
+  atributoInfoDtoSchema as infoDeAtributoCompartilhadaSchema,
+  atributoValorDtoSchema as valorDeAtributoCompartilhadoSchema,
+  canalDaLojaShopeeDtoSchema as canalDaLojaCompartilhadoSchema,
   categoriaNoDtoSchema as noCompartilhadoSchema,
   categoriaResumoDtoSchema as resumoCompartilhadoSchema,
   detalheTabelaMedidasDtoSchema as detalheCompartilhadoSchema,
   listaTabelasMedidasDtoSchema as listaCompartilhadaSchema,
   marcaDtoSchema as marcaCompartilhadaSchema,
+  motivoIndisponivelCanalShopeeSchema as motivoIndisponivelCompartilhadoSchema,
   projetarTabelaShopee,
+  respostaAtributosShopeeSchema as atributosCompartilhadaSchema,
   respostaAtualizarRascunhoShopeeSchema as atualizarCompartilhadoSchema,
+  respostaCanaisShopeeSchema as canaisCompartilhadaSchema,
   respostaCategoriasShopeeSchema as categoriasCompartilhadaSchema,
   respostaCriarRascunhoShopeeSchema as criarCompartilhadoSchema,
   respostaDescartarRascunhoShopeeSchema as descartarCompartilhadoSchema,
@@ -23,8 +30,12 @@ import {
   respostaLimitesTabelaMedidasShopeeSchema,
   respostaMarcasShopeeSchema as marcasCompartilhadaSchema,
   respostaRecomendacaoCategoriaShopeeSchema as recomendacaoCompartilhadaSchema,
+  respostaVariacoesShopeeSchema as variacoesCompartilhadaSchema,
   tabelaMedidasLinhaDtoSchema as linhaCompartilhadaSchema,
   tabelaShopeeProjetadaSchema,
+  variacaoDtoSchema as variacaoCompartilhadaSchema,
+  variacaoGrupoDtoSchema as grupoDeVariacaoCompartilhadoSchema,
+  variacaoOpcaoDtoSchema as opcaoDeVariacaoCompartilhadaSchema,
   type DetalheTabelaShopeeEntrada,
 } from '@delfrance/schemas';
 
@@ -35,7 +46,11 @@ import {
   SOLUCAO_DEVOLUCAO_SHOPEE,
   acaoReclamacaoShopeeSchema,
   anuncioStatusShopeeListingSchema,
+  atributoDtoSchema,
+  atributoInfoDtoSchema,
+  atributoValorDtoSchema,
   anuncioStatusShopeeSchema,
+  canalDaLojaShopeeDtoSchema,
   canceladoShopeeSchema,
   categoriaNoDtoSchema,
   categoriaResumoDtoSchema,
@@ -47,12 +62,15 @@ import {
   listaTabelasMedidasDtoSchema,
   marcaDtoSchema,
   massImportStatusShopeeSchema,
+  motivoIndisponivelCanalShopeeSchema,
   oauthStartResponseSchema,
   priceSyncHistoricoShopeeSchema,
   priceSyncRelatorioPaginaShopeeSchema,
   priceSyncStatusShopeeSchema,
   problemaShopeeSchema,
+  respostaAtributosShopeeSchema,
   respostaAtualizarRascunhoShopeeSchema,
+  respostaCanaisShopeeSchema,
   respostaCategoriasShopeeSchema,
   respostaCriarRascunhoShopeeSchema,
   respostaDescartarRascunhoShopeeSchema,
@@ -63,6 +81,7 @@ import {
   respostaPublicarShopeeSchema,
   respostaRecomendacaoCategoriaShopeeSchema,
   respostaReverificarShopeeSchema,
+  respostaVariacoesShopeeSchema,
   shopeeContaStatusSchema,
   shopeeEtiquetaPendenteSchema,
   shopeeLojaSchema,
@@ -70,6 +89,9 @@ import {
   shopeeReclamacaoEstadoSchema,
   solucaoDevolucaoShopeeSchema,
   tabelaMedidasLinhaDtoSchema,
+  variacaoDtoSchema,
+  variacaoGrupoDtoSchema,
+  variacaoOpcaoDtoSchema,
 } from './wire';
 
 /**
@@ -2070,8 +2092,24 @@ describe('#1911 — every taxonomy and draft answer here IS the shared schema ob
       respostaRecomendacaoCategoriaShopeeSchema,
       recomendacaoCompartilhadaSchema,
     ],
+    [
+      'respostaAtributosShopeeSchema (P13)',
+      respostaAtributosShopeeSchema,
+      atributosCompartilhadaSchema,
+    ],
+    ['atributoDtoSchema (P13)', atributoDtoSchema, atributoCompartilhadoSchema],
+    ['atributoValorDtoSchema (P13)', atributoValorDtoSchema, valorDeAtributoCompartilhadoSchema],
+    ['atributoInfoDtoSchema (P13)', atributoInfoDtoSchema, infoDeAtributoCompartilhadaSchema],
     ['marcaDtoSchema (P9)', marcaDtoSchema, marcaCompartilhadaSchema],
     ['respostaMarcasShopeeSchema (P9)', respostaMarcasShopeeSchema, marcasCompartilhadaSchema],
+    [
+      'respostaVariacoesShopeeSchema (P14)',
+      respostaVariacoesShopeeSchema,
+      variacoesCompartilhadaSchema,
+    ],
+    ['variacaoDtoSchema (P14)', variacaoDtoSchema, variacaoCompartilhadaSchema],
+    ['variacaoGrupoDtoSchema (P14)', variacaoGrupoDtoSchema, grupoDeVariacaoCompartilhadoSchema],
+    ['variacaoOpcaoDtoSchema (P14)', variacaoOpcaoDtoSchema, opcaoDeVariacaoCompartilhadaSchema],
     [
       'respostaCriarRascunhoShopeeSchema',
       respostaCriarRascunhoShopeeSchema,
@@ -2091,6 +2129,20 @@ describe('#1911 — every taxonomy and draft answer here IS the shared schema ob
       'respostaItemIncertoShopeeSchema (P11)',
       respostaItemIncertoShopeeSchema,
       itemIncertoCompartilhadoSchema,
+    ],
+    // The draft's «Logística» read (#1911 P16): the ONLY killer of a browser
+    // copy of the channels envelope — a copy parses every body the shared one
+    // does, so no parse test can tell them apart.
+    ['respostaCanaisShopeeSchema (P16)', respostaCanaisShopeeSchema, canaisCompartilhadaSchema],
+    [
+      'canalDaLojaShopeeDtoSchema (P16)',
+      canalDaLojaShopeeDtoSchema,
+      canalDaLojaCompartilhadoSchema,
+    ],
+    [
+      'motivoIndisponivelCanalShopeeSchema (P16)',
+      motivoIndisponivelCanalShopeeSchema,
+      motivoIndisponivelCompartilhadoSchema,
     ],
   ] as const)('%s', (_nome, daqui, compartilhado) => {
     expect(daqui).toBe(compartilhado);
@@ -2370,5 +2422,241 @@ describe('#1911 (P9) — a category’s page of brands', () => {
     ['a row with a fractional brandId', { marcas: [{ ...PAGINA.marcas[0], brandId: 1.5 }] }],
   ])('NEAR-MISS: %s is refused', (_n, estrago) => {
     expect(respostaMarcasShopeeSchema.safeParse({ ...PAGINA, ...estrago }).success).toBe(false);
+  });
+});
+
+describe('#1911 (P14) — a árvore de variações de uma categoria', () => {
+  const OPCAO = { variationOptionId: 6933, variationOptionName: 'M' };
+  const GRUPO = {
+    variationGroupId: 844758844060204,
+    variationGroupName: 'Tamanho (BR)',
+    variationOptionList: [OPCAO],
+  };
+  const VARIACAO = { variationId: 101056, variationName: 'Tamanho', variationGroupList: [GRUPO] };
+  const ARVORE = {
+    leaf: true,
+    categoryId: 100244,
+    standardiseVariationList: [VARIACAO],
+    pathUsed: '/api/v2/product/get_variation_tree',
+  };
+
+  it('o controle: o grupo `0` de nome vazio, a opção `0`, o nome nulo e a variação sem grupo são valores', () => {
+    const corpo = {
+      ...ARVORE,
+      standardiseVariationList: [
+        {
+          variationId: 101054,
+          variationName: null,
+          variationGroupList: [
+            {
+              variationGroupId: 0,
+              variationGroupName: '',
+              variationOptionList: [{ variationOptionId: 0, variationOptionName: null }],
+            },
+          ],
+        },
+        { variationId: 103236, variationName: 'Estilo', variationGroupList: [] },
+      ],
+    };
+
+    expect(respostaVariacoesShopeeSchema.parse(corpo)).toStrictEqual(corpo);
+  });
+
+  it('um id de grupo de 15 dígitos chega exato', () => {
+    const lida = respostaVariacoesShopeeSchema.parse(ARVORE);
+
+    expect(lida.standardiseVariationList[0]?.variationGroupList[0]?.variationGroupId).toBe(
+      844758844060204,
+    );
+  });
+
+  const comVariacao = (variacao: unknown) => ({ ...ARVORE, standardiseVariationList: [variacao] });
+  const comGrupo = (grupo: unknown) => comVariacao({ ...VARIACAO, variationGroupList: [grupo] });
+
+  it.each([
+    ['sem `pathUsed`', { ...ARVORE, pathUsed: undefined }],
+    ['sem `leaf`', { ...ARVORE, leaf: undefined }],
+    ['uma variação sem a lista de grupos', comVariacao({ variationId: 1, variationName: 'x' })],
+    ['um id de variação entre aspas', comVariacao({ ...VARIACAO, variationId: '101056' })],
+    ['um id de grupo fracionário', comGrupo({ ...GRUPO, variationGroupId: 1.5 })],
+    [
+      'um id de opção entre aspas',
+      comGrupo({ ...GRUPO, variationOptionList: [{ ...OPCAO, variationOptionId: '6933' }] }),
+    ],
+  ])('NEAR-MISS: %s é recusado', (_n, corpo) => {
+    expect(respostaVariacoesShopeeSchema.safeParse(corpo).success).toBe(false);
+  });
+});
+
+describe('#1911 (P13) — a árvore de atributos de uma categoria folha', () => {
+  const INFO = {
+    inputType: 1,
+    inputValidationType: 0,
+    formatType: 1,
+    dateFormatType: null,
+    attributeUnitList: null,
+    maxValueCount: null,
+    introduction: null,
+    isOem: false,
+    supportSearchValue: false,
+  };
+  const FILHO = {
+    attributeId: 101237,
+    mandatory: true,
+    name: 'Fabricante',
+    attributeInfo: { ...INFO, inputType: 2, inputValidationType: 2, supportSearchValue: true },
+    attributeValueList: [],
+  };
+  const ARVORE = {
+    leaf: true,
+    categoryId: 100087,
+    warning: null,
+    truncated: false,
+    atributos: [
+      {
+        attributeId: 100408,
+        mandatory: true,
+        name: 'Tipo de Conexão',
+        attributeInfo: INFO,
+        attributeValueList: [
+          {
+            valueId: 2498,
+            name: 'Com fio, Sem conexão ou Outros',
+            valueUnit: null,
+            childAttributeList: [],
+          },
+          {
+            valueId: 2530,
+            name: 'Sem fio (Bluetooth, Wifi, Radiofrequência)',
+            valueUnit: null,
+            childAttributeList: [FILHO],
+          },
+        ],
+      },
+    ],
+  };
+
+  it('o controle: o valor `0`, um nome nulo, um atributo sem `attributeInfo`, `truncated: true` e um filho sob um valor são valores', () => {
+    const corpo = {
+      ...ARVORE,
+      truncated: true,
+      atributos: [
+        ...ARVORE.atributos,
+        {
+          attributeId: 100999,
+          mandatory: false,
+          name: null,
+          attributeInfo: null,
+          attributeValueList: [{ valueId: 0, name: null, valueUnit: '', childAttributeList: [] }],
+        },
+      ],
+    };
+
+    expect(respostaAtributosShopeeSchema.parse(corpo)).toStrictEqual(corpo);
+  });
+
+  it('a lista de unidades chega VERBATIM: a ordem e as maiúsculas da Shopee, `ML` e `ml` distintos', () => {
+    const unidades = [
+      'ML',
+      'L',
+      'MG',
+      'G/GR',
+      'KG',
+      'CM',
+      'M',
+      'Dozen',
+      'Piece',
+      'Pack',
+      'Set',
+      'Box',
+    ];
+    const corpo = {
+      ...ARVORE,
+      atributos: [
+        {
+          attributeId: 101029,
+          mandatory: false,
+          name: 'Tamanho Do Pacote',
+          attributeInfo: {
+            ...INFO,
+            inputType: 3,
+            inputValidationType: 3,
+            formatType: 2,
+            attributeUnitList: unidades,
+          },
+          attributeValueList: [],
+        },
+        {
+          attributeId: 100248,
+          mandatory: false,
+          name: 'Volume',
+          attributeInfo: {
+            ...INFO,
+            inputType: 2,
+            inputValidationType: 3,
+            formatType: 2,
+            attributeUnitList: ['ml', 'L'],
+          },
+          attributeValueList: [],
+        },
+      ],
+    };
+
+    const lida = respostaAtributosShopeeSchema.parse(corpo);
+
+    expect(lida.atributos[0]?.attributeInfo?.attributeUnitList).toStrictEqual(unidades);
+    expect(lida.atributos[1]?.attributeInfo?.attributeUnitList).toStrictEqual(['ml', 'L']);
+    expect(lida.atributos[1]?.attributeInfo?.attributeUnitList).not.toContain('ML');
+  });
+
+  const comFilho = (filho: unknown) => ({
+    ...ARVORE,
+    atributos: [
+      {
+        ...ARVORE.atributos[0],
+        attributeValueList: [
+          { valueId: 2530, name: 'Sem fio', valueUnit: null, childAttributeList: [filho] },
+        ],
+      },
+    ],
+  });
+
+  it.each([
+    ['sem `truncated`', { ...ARVORE, truncated: undefined }],
+    ['sem `leaf`', { ...ARVORE, leaf: undefined }],
+    ['um `categoryId` entre aspas', { ...ARVORE, categoryId: '100087' }],
+    [
+      'um FILHO com o id entre aspas (a recursão é lida)',
+      comFilho({ ...FILHO, attributeId: '101237' }),
+    ],
+    ['um FILHO sem `mandatory`', comFilho({ ...FILHO, mandatory: undefined })],
+    [
+      'um valor sem a lista de filhos',
+      {
+        ...ARVORE,
+        atributos: [
+          {
+            ...ARVORE.atributos[0],
+            attributeValueList: [{ valueId: 2498, name: 'x', valueUnit: null }],
+          },
+        ],
+      },
+    ],
+    [
+      'um id de valor fracionário',
+      {
+        ...ARVORE,
+        atributos: [
+          {
+            ...ARVORE.atributos[0],
+            attributeValueList: [
+              { valueId: 2.5, name: 'x', valueUnit: null, childAttributeList: [] },
+            ],
+          },
+        ],
+      },
+    ],
+  ])('NEAR-MISS: %s é recusado', (_n, corpo) => {
+    expect(respostaAtributosShopeeSchema.safeParse(corpo).success).toBe(false);
   });
 });

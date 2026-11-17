@@ -59,7 +59,8 @@ example — it needed every step below.
    `canFetchLabel`, and `etiquetaRowState` tests `canPrint` first, so a pedido
    carrying a `printLabelId` would route "Imprimir" to Melhor Envio.
 4. **A new client is a REQUIRED `EtiquetaProviderDeps` member** (Shopee:
-   `shopeeClient`; Loja Integrada: `lojaIntegradaClient`), never an optional
+   `shopeeClient`; Loja Integrada: `lojaIntegradaClient`; Amazon:
+   `amazonClient`), never an optional
    one — an optional member compiles at a site that forgot it and answers
    "cliente indisponível" there. Thread it through the three entry points
    (`postSave.ts`, `reprintCheckout.ts`, the `/pedidos` row action
@@ -75,8 +76,9 @@ example — it needed every step below.
    outlives the row's HoverCard.
 6. **The row action's client-presence branch**: `EtiquetaRowAction.tsx` decides
    per tipo whether a fetch button is live (`mercadoLivre` → `mlClient`,
-   `shopee` → `shopeeClient`, anything else → disabled). A new fetch provider
-   adds its branch, or its buttons stay disabled.
+   `shopee` → `shopeeClient`, `amz` → `amazonClient`, anything else →
+   disabled). A new fetch provider adds its branch, or its buttons stay
+   disabled.
 7. **Write a unit test** `providers/<tipo>.test.ts` with injected fakes (see
    the existing per-provider tests). Do not hit Firestore or the network.
 
@@ -265,16 +267,67 @@ None is retried automatically — the re-click is the retry, and it is safe
 - **Deploy `apps/shopee` BEFORE `apps/web`**: the reverse posts to a route that
   does not exist yet.
 
+`amz` is **implemented** — `providers/amazon.ts` (step 15). ONE call per click
+to the `apps/amazon` route `POST /api/marketplace/amazon/etiqueta`, with
+exactly `{ pedidoId }`, through `deps.amazonClient`. The route decides
+everything from the stored pedido and the LIVE Amazon order: for a scheduled
+pickup it answers that schedule's label; for an order not scheduled yet whose
+NF-e Amazon has accepted, the same call schedules the pickup first (that needs
+`frete.write`; `frete.read` prints a scheduled one).
+
+- **ZPL only.** The route answers the label's ZPL as `text/plain`, an
+  attachment named `amazon-<orderId>.zpl`, and the client refuses any other
+  200 (another type, an empty or blank body, markup served as text). Nothing
+  ever asks Amazon for a PDF: `formato: 'pdf'` still prints the ZPL on the
+  thermal printer, with a yellow notice. The print agent gets the CONSTANT
+  `text/plain` (never the answer's header: a `; charset=…` a proxy appended
+  would match nothing in the agent's `==`) at `'etq'`, and the bytes as the
+  `Blob` the route sent, never decoded to text.
+- **The NF-e comes first.** Amazon schedules only after it accepts the pedido's
+  NF-e, and the checkout emits the NF-e right before the label, so the
+  checkout's FIRST print normally answers 409 `AGUARDANDO_NFE`. Its
+  `nfe-em-processamento` copy asks the operator to wait and reprint from
+  `/pedidos`; `nfe-recusada-pela-amazon` and `nfe-nao-enviada` point to the
+  pedido's NF-e aviso instead. No polling, and no NF-e logic on the web.
+- **The copy** (`lib/amazon/erros.ts`) is an exhaustive `Record` over
+  `CODIGO_ERRO_ETIQUETA_AMAZON` and another over `MOTIVO_ETIQUETA_AMAZON`. A
+  409's `motivo` is a plain string in the envelope (`erroEtiquetaAmazonSchema`),
+  narrowed here: a slug this build does not know yet gets a neutral sentence.
+  Amazon's own rejection code is never shown (the backend logs it). Where the
+  ERP cannot print — the valve off, a refused first schedule the ERP will keep
+  refusing, an unusable label — the sentence names Seller Central as the way
+  out.
+- **A wait, never "tente de novo".** The label call can be the call that
+  SCHEDULES, and a call cut on our side may still be running at Amazon: an
+  immediate second click would send a second first-time schedule beside it.
+  So a timeout, a 503 `AMAZON_INDISPONIVEL`, a codeless 5xx and a network
+  failure all ask to wait about a minute and reprint from the order list, and
+  the call's deadline (`PRAZO_ETIQUETA_AMAZON_MS.longo`, 360 s) outlasts the
+  backend's 300-s ceiling plus the #1094 margin (pinned by
+  `packages/config-eslint/rules/http-client-timeout-ceiling.test.js`), so the
+  station never gives up while the route may still be scheduling. The route's
+  own worst case is 240 s; in the common case it answers in seconds.
+- **No stored label.** The print writes no pedido, freight or label: every
+  print and reprint asks Amazon, and the order import mirrors the schedule
+  onto the freight block later.
+- **`reimpressao: 'mesmo-documento'`**: a print over a scheduled pickup books
+  nothing new and answers that schedule's label, so there is no posted-risk
+  confirm (a scheduled pickup reads `aguardandoPostagem`).
+- `frete.externalId` and `intFrete` are never read: a migrated pedido may carry
+  an incomplete freight reference, and the route resolves the conta and the
+  order from the pedido itself.
+- **Deploy `apps/amazon` BEFORE `apps/web`**: the reverse posts to a route that
+  does not exist yet.
+
 The remaining marketplace carriers route to `unsupportedMarketplace` (a toast +
 an `'unsupported'` outcome). When their fetch flows land, each should
 reproduce the corresponding legacy call from `emitirOuImprimirFrete.dart`
 (`tipoEtiqueta` is the PDF-vs-ZPL2 selection; `zpl2` below is
 `tipoEtiqueta == FORMATO_ETIQUETA.zpl2`):
 
-| Tipo (`IntegracaoFrete`) | Legacy call                                                    | Notes                                    |
-| ------------------------ | -------------------------------------------------------------- | ---------------------------------------- |
-| `amz` (Amazon)           | `gerarEtiquetaDBAAmazon(contaUid: pedido.integracao_id, zpl2)` | Amazon DBA label.                        |
-| `magalu`                 | `gerarEtiquetaMagalu(contaUid: pedido.integracao_id, zpl2)`    | Account is the pedido's `integracao_id`. |
+| Tipo (`IntegracaoFrete`) | Legacy call                                                 | Notes                                    |
+| ------------------------ | ----------------------------------------------------------- | ---------------------------------------- |
+| `magalu`                 | `gerarEtiquetaMagalu(contaUid: pedido.integracao_id, zpl2)` | Account is the pedido's `integracao_id`. |
 
 ### Loja Integrada: how the route is resolved
 
@@ -309,7 +362,7 @@ runs `runEtiquetaGates`, so by the time `emitirOuImprimir` is called:
    `frete.estado !== 'checkFinalizado' && isFreteJaPostado(frete.estado)`, the
    operator has confirmed the duplicate-label risk (`ui.confirmRisk`); declining
    short-circuits to `skipped`. ⚠️ SKIPPED for a provider declaring
-   `reimpressao: 'mesmo-documento'` (Shopee): its whole rationale is a
+   `reimpressao: 'mesmo-documento'` (Shopee, Amazon): its whole rationale is a
    duplicate PAID label, which that provider cannot produce.
 3. **Integração resolved** — the caller resolves the freight integration
    through `resolverIntFrete` and passes it as `input.intFrete`

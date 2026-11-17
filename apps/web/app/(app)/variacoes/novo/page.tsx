@@ -13,7 +13,7 @@ import {
   GRUPO_PERSISTENT_SECTIONS,
   GRUPO_SECTIONS,
   VINCULADOR_LI_VISIVEL,
-  copiarGrupoSemVinculosLi,
+  copiarGrupoSemVinculos,
   deriveVariacoesIds,
   grupoFields,
 } from '../_components/grupoFields';
@@ -52,7 +52,7 @@ export default function NovoGrupoVariacaoPage() {
           fields={grupoFields}
           excludedFields={GRUPO_EXCLUDED_FIELDS}
           deriveOnSave={deriveVariacoesIds}
-          transformCopiedValues={copiarGrupoSemVinculosLi}
+          transformCopiedValues={copiarGrupoSemVinculos}
           validate={VINCULADOR_LI_VISIVEL ? estadoLi.validar : undefined}
           saveLabel="Criar"
           showSaveAndContinue={false}

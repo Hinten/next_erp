@@ -5,6 +5,7 @@ import {
 } from '@delfrance/schemas';
 
 import { runEtiquetaGates } from './gates';
+import { amazonProvider } from './providers/amazon';
 import { genericLabelProvider } from './providers/genericLabel';
 import { createLojaIntegradaRouterProvider } from './providers/lojaIntegrada';
 import { melhorEnviosProvider } from './providers/melhorEnvios';
@@ -24,7 +25,8 @@ import type { CheckoutEtiquetaProvider, EtiquetaOutcome, EtiquetaProviderInput }
  * NEW client threaded as a REQUIRED `deps` member through the three entry
  * points and the checkout screens, a NEW operator question as a REQUIRED `ui`
  * member served on `/pedidos` by `EtiquetaAcaoHost`, the row action's
- * client-presence branch, and the drift guard in `registry.test.ts`. The full
+ * client-presence branch, and the drift guard in `registry.test.ts`. Amazon
+ * (step 15) is the same shape minus the operator question. The full
  * list is in `README.md` ("Adding a provider"). A ROUTER (Loja Integrada,
  * master plan step 15) is the other shape: it prints nothing itself, so it is
  * built over this registry's own resolution — see the README's "Router
@@ -47,6 +49,7 @@ export const PROVIDERS: Readonly<Partial<Record<IntegracaoFrete, CheckoutEtiquet
     melhorEnviosProvider,
     mercadoLivreProvider,
     shopeeProvider,
+    amazonProvider,
     lojaIntegradaRouterProvider,
     unsupportedMarketplaceProvider,
     genericLabelProvider,
@@ -102,7 +105,8 @@ export function resolveEtiquetaProvider(
  * and asks no one anything — because the gates depend on it: a provider whose
  * reprint is the SAME document (`reimpressao: 'mesmo-documento'`, Shopee) gets
  * no posted-risk confirm, whose whole rationale is a duplicate PAID label
- * (#1523 R-f). Every other provider keeps it exactly as before; an absent
+ * (#1523 R-f; Amazon's Easy Ship label too, step 15). Every other provider
+ * keeps it exactly as before; an absent
  * `reimpressao` means `'pode-duplicar'`.
  */
 export async function emitirOuImprimirEtiqueta(

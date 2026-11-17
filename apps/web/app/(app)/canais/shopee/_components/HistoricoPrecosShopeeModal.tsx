@@ -18,12 +18,12 @@ import { ENVIO_PRECO_SHOPEE_STATUS, type EnvioPrecoShopeeStatus } from '@delfran
 import { RetryAlert } from '@/components/feedback/RetryAlert';
 import { BaixarRelatorioButton } from '@/components/contaJobs/BaixarRelatorioButton';
 import { PriceSyncEntryList } from '@/components/contaJobs/PriceSyncEntryList';
+import { formatarInstanteJob } from '@/lib/marketplace/contaJobs/cadencia';
 import type { ContaRef } from '@/lib/marketplace/contaJobs/types';
 import { queryRetry } from '@/lib/query/queryRetry';
 import { useShopeeClient } from '@/lib/shopee/client';
 import { descreverFalhaShopee, shopeeQueryRetry } from '@/lib/shopee/erros';
 import type { PriceSyncHistoricoShopee } from '@/lib/shopee/wire';
-import { formatarInstanteJob } from './cadenciaJobsShopee';
 import { useBaixarRelatorioPrecoShopee } from './useBaixarRelatorioPrecoShopee';
 
 /** Runs fetched per open — inside the route's 1..50. */

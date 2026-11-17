@@ -83,9 +83,14 @@ export interface LimitesDeItemLidos {
   readonly limites: LimitesDeItemDto;
   readonly gtinLimit: GtinLimitDto | null;
   /**
-   * DERIVED from the `-1` sentinel on `days_to_ship_limit` — see
-   * {@link suportaPreVenda}. Computed from the RAW band, beside the payload it
-   * comes from, so the route never has to rebuild a wire shape to ask.
+   * DERIVED from `days_to_ship_limit` — see {@link suportaPreVenda}. Computed
+   * from the RAW band, beside the payload it comes from, so the route never has
+   * to rebuild a wire shape to ask. ⚠️ Not Shopee's own
+   * `dts_limit.support_pre_order`, which the BR ITEM page DOES send (2026-11-04:
+   * `true` for 100244, `false` for 101787, absent shop-wide). The two agree on
+   * both category reads — the `pino 4` describe of
+   * `../fixtures/capturasBr.test.ts`, which reds if this derivation ever stops
+   * matching those captured answers.
    */
   readonly supportsPreOrder: boolean;
 }
@@ -140,6 +145,19 @@ export function faixa(banda: ShopeeFaixa | null | undefined): FaixaDto | null {
  * second way of saying it is off; a `max` at or below it is undocumented and is
  * deliberately not read as "no pre-sale" here — step 11, the consumer, settles
  * it against a live category if Shopee ever answers that shape.
+ *
+ * ⚠️ **What BR actually answered (2026-11-04): no `-1` anywhere.** The category
+ * that accepts pre-sale (100244, `get_item_limit.br-c-camiseta.json`) sent a
+ * band with both ends positive; the one that does not (101787,
+ * `…br-anuncio-atributos.json`) sent NO `days_to_ship_limit` at all (its
+ * `dts_limit` holds `non_pre_order_days_to_ship` and `support_pre_order` only),
+ * so it is the absent-band default above, not the sentinel, that answers
+ * `false` there; the shop-wide read (`…br-loja.json`) has no band either. Those
+ * same ITEM-page reads DO carry Shopee's own `dts_limit.support_pre_order`
+ * (`true` / `false`, absent shop-wide), which this function does not read and
+ * agrees with on both category reads. The agreement and the no-`-1` are pinned
+ * by the `pino 4` describe of `../fixtures/capturasBr.test.ts`; the absent band
+ * is read off the bodies.
  */
 export function suportaPreVenda(
   dts: { readonly days_to_ship_limit?: ShopeeFaixa | null } | null | undefined,
@@ -259,11 +277,14 @@ export function projetarLimitesDeKit(limite: ShopeeKitItemLimit): LimitesDeKitDt
  * `null` (a documented read, not a degraded one).
  *
  * ⚠️ **`gtin_limit` is merged from BOTH positions, inner first.** Shopee's page
- * renders the field as a SIBLING of `response` and ships no response sample, so
- * which position the live API fills is unsettled; the package declares both and
- * leaves the decision here, where it can be observed. The inner one wins because
- * it is the position every other band uses — if both ever arrive, the one inside
- * `response` is the one that came with the bands it belongs to.
+ * renders the field as a SIBLING of `response` and ships no response sample; BR
+ * production (2026-11-04) answered INSIDE `response` on both category reads and
+ * sent no sibling on any of the three (`get_item_limit.br-*.json`, pinned by the
+ * `pino 4` describe of `../fixtures/capturasBr.test.ts`). The package declares
+ * both and leaves the decision here, where it can be observed. The inner one
+ * wins because it is the position every other band uses — and the one BR
+ * answered; the sibling is kept only as a fallback for a region that answers the
+ * way the page renders.
  *
  * ⚠️ Both absent stays `null`, never `{}`. An empty object would read as "Shopee
  * answered about the GTIN rule and said nothing", which is a different claim from

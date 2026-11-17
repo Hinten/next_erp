@@ -70,6 +70,7 @@ export { grupoDeVariacoesCollection } from './grupoDeVariacoesCollection';
 export { produtoExtraDataCollection } from './produtoExtraDataCollection';
 export { notificacaoMercadoLivreCollection } from './notificacaoMercadoLivreCollection';
 export { importacaoMercadoLivreCollection } from './importacaoMercadoLivreCollection';
+export { migracaoUptinMercadoLivreCollection } from './migracaoUptinMercadoLivreCollection';
 export { importacaoShopeeCollection } from './importacaoShopeeCollection';
 export {
   detalheImportacaoLiCollection,
@@ -105,8 +106,22 @@ export { notificacaoShopeeCollection } from './notificacaoShopeeCollection';
 export { notificacaoLojaIntegradaCollection } from './notificacaoLojaIntegradaCollection';
 export { notificacaoEscritaLojaIntegradaCollection } from './notificacaoEscritaLojaIntegradaCollection';
 export { pollPedidosLojaIntegradaCollection } from './pollPedidosLojaIntegradaCollection';
+export {
+  fatiaKitsComponenteEstoqueLiCollection,
+  kitsComponenteEstoqueLiCollection,
+  paisSnapshotEstoqueLiCollection,
+  reconcileEstoqueLojaIntegradaCollection,
+  sincEstoqueLojaIntegradaCollection,
+  snapshotEstoqueLiCollection,
+} from './sincEstoqueLojaIntegradaCollection';
 export { notificacaoAmazonCollection } from './notificacaoAmazonCollection';
 export { pollPedidosAmazonCollection } from './pollPedidosAmazonCollection';
+export { feedAmazonCollection } from './feedAmazonCollection';
+export { vezFeedAmazonCollection } from './vezFeedAmazonCollection';
+export { sincronizacaoEstoqueAmazonCollection } from './sincronizacaoEstoqueAmazonCollection';
+export { reconciliacaoEstoqueAmazonCollection } from './reconciliacaoEstoqueAmazonCollection';
+export { pedidoReconciliacaoEstoqueAmazonCollection } from './pedidoReconciliacaoEstoqueAmazonCollection';
+export { divergenciaEstoqueAmazonCollection } from './divergenciaEstoqueAmazonCollection';
 export { clienteCollection } from './clienteCollection';
 export { clienteIdentidadeCollection } from './clienteIdentidadeCollection';
 export { conversaCollection } from './conversaCollection';

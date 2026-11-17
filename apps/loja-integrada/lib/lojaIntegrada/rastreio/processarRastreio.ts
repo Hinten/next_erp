@@ -138,6 +138,7 @@ import {
 import {
   type BaseEscritaLi,
   type BaseLidaLi,
+  type BaseLidaPedidoLi,
   CAMPO_DO_TIPO_ESCRITA_LI,
   type DestinoEscritaLi,
   type FalhaContidaLi,
@@ -689,14 +690,14 @@ async function depoisDaDecisao(
 /*                   Step 8: a decision that is not `on` defers               */
 /* -------------------------------------------------------------------------- */
 
-/** The guard read is about THIS order, or `null` (`pedido-ausente`). */
-function baseDoPedido(e: ExecucaoLi, base: BaseEscritaLi): BaseLidaLi | null {
-  if (base.kind !== 'lida') return null;
+/** The guard read is about THIS order, or `null` (`pedido-ausente`): a deciding read of the order detail. */
+function baseDoPedido(e: ExecucaoLi, base: BaseEscritaLi): BaseLidaPedidoLi | null {
+  if (base.kind !== 'lida' || base.leitura !== 'pedido') return null;
   return numeroConfereLi(base.pedido.numero, e.evento.numero) ? base : null;
 }
 
 /** The plan over a deciding read. */
-function planejar(e: ExecucaoLi, base: BaseLidaLi): SequenciaRastreioLi {
+function planejar(e: ExecucaoLi, base: BaseLidaPedidoLi): SequenciaRastreioLi {
   return decidirSequenciaRastreioLi({
     estado: e.evento.estado,
     codigo: base.pedido.situacao.codigo,
@@ -1060,7 +1061,7 @@ async function parcialConferido(
 /** The tracking code ALONE (module header). */
 async function escreverObjeto(
   e: ExecucaoLi,
-  base: BaseLidaLi,
+  base: BaseLidaPedidoLi,
   seq: SequenciaRastreioLi & { readonly kind: 'objeto' },
 ): Promise<ResultadoRastreioLi> {
   const destino: DestinoEscritaLi = { tipo: 'objeto-envio', alvo: e.alvo, envioId: seq.envioId };
@@ -1192,7 +1193,7 @@ async function situacaoAposRecusa(
 /** One situação write, its read-back and the history check. */
 async function escreverSituacao(
   e: ExecucaoLi,
-  base: BaseLidaLi,
+  base: BaseLidaPedidoLi,
   codigo: CodigoSituacaoEscritaLi,
   flags: { readonly objetoSemEfeito: boolean; readonly objetoNaoEnviado: boolean },
 ): Promise<ResultadoRastreioLi> {

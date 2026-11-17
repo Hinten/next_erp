@@ -153,6 +153,7 @@ function makeInput(over: {
       mercadoLivreClient: null,
       shopeeClient: over.client,
       lojaIntegradaClient: null,
+      amazonClient: null,
       printJob: over.printJob ?? vi.fn(async () => 'printed' as const),
       sleep: over.sleep ?? vi.fn(async () => undefined),
     },

@@ -5,6 +5,7 @@ import type { Firestore } from 'firebase/firestore';
 import type { NFeHttpClient } from '@delfrance/integrations-nfe/http-provider';
 import type { FreightHttpClient } from '@delfrance/integrations-freight-br/http-client';
 import type { Pedido } from '@delfrance/schemas';
+import type { AmazonClient } from '@/lib/amazon/client';
 import type { LojaIntegradaClient } from '@/lib/loja-integrada/client';
 import type { MercadoLivreClient } from '@/lib/mercado-livre/client';
 import type { ShopeeClient } from '@/lib/shopee/client';
@@ -37,6 +38,7 @@ export interface CheckoutSidebarProps {
   mercadoLivreClient: MercadoLivreClient | null;
   shopeeClient: ShopeeClient | null;
   lojaIntegradaClient: LojaIntegradaClient | null;
+  amazonClient: AmazonClient | null;
   formatoDanfe: CheckoutDanfeFormat;
   onFormatoDanfe: (v: CheckoutDanfeFormat) => void;
   formatoEtiqueta: 'pdf' | 'zpl2';
@@ -62,6 +64,7 @@ export function CheckoutSidebar({
   mercadoLivreClient,
   shopeeClient,
   lojaIntegradaClient,
+  amazonClient,
   formatoDanfe,
   onFormatoDanfe,
   formatoEtiqueta,
@@ -99,6 +102,7 @@ export function CheckoutSidebar({
         mercadoLivreClient={mercadoLivreClient}
         shopeeClient={shopeeClient}
         lojaIntegradaClient={lojaIntegradaClient}
+        amazonClient={amazonClient}
         formatoDanfe={formatoDanfe}
         formatoEtiqueta={formatoEtiqueta}
       />

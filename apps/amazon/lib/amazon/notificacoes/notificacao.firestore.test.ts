@@ -56,6 +56,7 @@ import {
   credencialDoc,
   loggerEspiao,
 } from '../testing/fixtures';
+import { filaAgendamentoDeTeste } from '../testing/produtorAgendamento';
 import {
   type DepsLeituraAmazon,
   FLUXO_LEITURA_AMAZON,
@@ -134,6 +135,8 @@ function deps(ambiente: AmbienteAmazon, agora: number) {
       buscarCep: () => Promise.reject(new Error('teste: nenhuma consulta de CEP é permitida')),
     },
     increment: (by: number) => FieldValue.increment(by),
+    // No case here reaches a real importer: the scheduling entry is a recorder.
+    agendamento: filaAgendamentoDeTeste().produtor,
   };
   return { deps: d, linhas: espiao.linhas };
 }

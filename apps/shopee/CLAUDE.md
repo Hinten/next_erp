@@ -43,8 +43,8 @@ a page of the 3-day queue irreversibly.
 - `app/api/marketplace/shopee/conta/route.ts` — `PERM.integracao.read`. Reports
   the **two clocks** separately (see below).
 - `app/api/marketplace/shopee/taxonomia/{categorias,atributos,marcas,limites,limites/kit,variacoes,recomendacao-categoria}/route.ts`
-  — the seven read-only taxonomy routes, all `PERM.integracao.read`, all
-  `integracaoId`-scoped. See **Taxonomy reads** below.
+  — the seven taxonomy reads, `PERM.integracao.read`, `integracaoId`-scoped.
+  See **Taxonomy reads** below.
 - `lib/shopee/taxonomia/` — the layer behind those routes: `cache.ts` (seven
   `createReadCache`s + `taxonomiaCtx`), `categorias.ts` (the tree index and the
   three-valued leaf gate), `params.ts` (hand-rolled query readers → pt-BR 400s),
@@ -209,7 +209,7 @@ a page of the 3-day queue irreversibly.
   create's outcome is unknown, 400 for a bad body, 404
   `SHOPEE_ANUNCIO_NAO_ENCONTRADO`, 409 for a draft; it is the composition root
   for the clock, the wait and the partner client, because `anuncios/` builds none.
-- `app/api/marketplace/shopee/rascunho/**` — #1911's draft routes (**Publish**).
+- `app/api/marketplace/shopee/{rascunho/**,canais}` — #1911's draft + channel routes (**Publish**).
 - `app/api/marketplace/shopee/enviar-estoque/route.ts` — step 12's manual stock
   push (`PERM.integracao.write`): **200 even when every listing failed** (a
   per-listing refusal is DATA), 409 `SHOPEE_CONTA_PAUSADA` before any provider
@@ -449,11 +449,11 @@ a page of the 3-day queue irreversibly.
   `avisos/autorizacao.ts`, which stays the one module on the AVISOS path that
   knows the unit (the three pedido seams above are the others).
 - `lib/shopee/testing/fakeDb.ts` — the shared in-memory Firestore double
-  **120** suites in this app name (118 drive it), and since step 8 it has a
+  **123** suites in this app name (121 drive it), and since step 8 it has a
   suite of its OWN. ⚠️ Re-derive the number, never increment it:
   `git grep -l "testing/fakeDb" -- "apps/shopee/**/*.test.ts" | wc -l` (after
   step 8: 20, 9: 34, 12: 57, 13: 73, 14: 81, 15: 84, 15b: 87, 17: 93, 18: 95,
-  19: 108, 20: 111, 21: 114, #1911: 120 — the two `*.tasks.test.ts` suites it
+  19: 108, 20: 111, 21: 114, #1911: 123 — the two `*.tasks.test.ts` suites it
   counts name the double in a docblock only).
   Step 9 extended the double ADDITIVELY: an
   `__arrayUnion` sentinel applied on write, **dotted-path** expansion on
@@ -1358,27 +1358,27 @@ route answers lookups over that index — roots, or one node with `pathFromRoot`
 and `children`.
 
 **Four contradictions in Shopee's own docs, each instrumented rather than
-guessed** (the `hosts.ts` technique — settled by one live sandbox call, flipped
-by one literal or one env var):
+guessed** (the `hosts.ts` technique, flipped by one literal or one env var; BR
+production reads settled 1, 3, 4):
 
-1. **The `get_variations` path.** The page's `path`/`url`/`test_url` say
-   `/api/v2/product/get_variation_tree`; all four of its samples call
-   `/api/v2/product/get_variations`. The package defaults to the samples and
-   `SHOPEE_VARIATIONS_PATH` overrides it. The path is INSIDE the HMAC base
-   string, so the wrong one fails as `error_sign`, which reads like a bad partner
-   key — hence the `variacoes` route echoes `pathUsed`.
+1. **The `get_variations` path — SETTLED on BR (2026-11-04).** The page's
+   `path`/`url`/`test_url` say `/api/v2/product/get_variation_tree`, its samples
+   `…/get_variations`; BR production answers the first and HTTP 404
+   `error_not_found` on the second (NOT `error_sign`). The package defaults to
+   `get_variation_tree`; `SHOPEE_VARIATIONS_PATH` stays an override, and the
+   `variacoes` route echoes `pathUsed`.
 2. **`category_id_list` vs `category_ids`.** The parameter table says the first,
    the page's own cURL says the second. The app sends ONE category per call,
    which serialises identically under both, and logs `error_param` raw with the
    parameter name it sent.
-3. **`gtin_limit`'s position.** The item page renders it as a SIBLING of
-   `response` and ships no response sample. Both positions are declared;
+3. **`gtin_limit`'s position.** The page renders a SIBLING of `response`; BR
+   sends it INSIDE (`capturasBr.test.ts` pin 4). Both stay declared;
    `lerLimitesDeItem` merges them (inner wins, both absent stays `null` and never
    `{}`).
-4. **The language casing.** `get_category` spells it `pt-br`,
-   `get_attribute_tree` spells it `pt-BR`. ONE constant
-   (`SHOPEE_TAXONOMY_LANGUAGE = 'pt-br'`) goes to all three ops, so a wrong guess
-   is one literal to flip and `error_invalid_language` is the signal.
+4. **The language casing.** BR answers `get_attribute_tree` identically for
+   `pt-br`, `pt-BR` or none, in English: pt-BR is only `multi_lang`'s, which
+   `projetarAtributos` serves. `get_category` honours the ONE constant
+   (`SHOPEE_TAXONOMY_LANGUAGE = 'pt-br'`).
 
 **Values that are data, not absences:** `brand_id: 0` is Shopee's "No Brand"
 (a choice the operator makes), `variation_option_id: 0` is the observed CUSTOM
@@ -1446,7 +1446,7 @@ The first WRITER of a listing. Reasoning: `anuncios/README.md`.
   `livre` at once. ENSURE and the first-create walk stop before the request
   deadline: 409 `PUBLICACAO_EXPIRADA`, nothing sent (the CLI has the lock's
   time). Follow-ups #2064 (narrow the walk), #2061 (ENSURE's fallback).
-  Registers 307–313: `anuncios/README.md`.
+  Registers 307–320: `anuncios/README.md`.
 
 ## Stock sync (`lib/shopee/estoque/`, step 12)
 

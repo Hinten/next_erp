@@ -130,6 +130,8 @@ const LINK: LinkListagemLido = {
   kitNativo: false,
   /** A listing, never a draft: the brand question (#1911, D10) does not arise. */
   marcaNaoEscolhida: false,
+  /** Not read by the montagem (#2015): the plan hands it to the channel builder. */
+  logisticaConfiavel: false,
 };
 
 function link(over: Partial<LinkListagemLido> = {}): LinkListagemLido {
@@ -478,11 +480,14 @@ describe('montarAnuncio — o vocabulário de recusa', () => {
       'criacao-incerta-sem-sku',
     ]);
     const outros = Object.values(MOTIVO_PUBLICACAO_BLOQUEADA).filter((m) => !cobertos.has(m));
-    // The four step-11 members other step-11 files produce (the docblock test below names
-    // them) — the kit arm reuses two of them, so they are NOT subtracted as "kit" here.
+    // The four step-11 members other step-11 files produce, plus #2015's second
+    // logistics refusal and #1911 P14b's (CPY-4) third (the docblock test below names them all) —
+    // the kit arm reuses some of them, so they are NOT subtracted as "kit" here.
     const doPasso11Fora = [
       'combinacao-duplicada',
+      'logistica-nao-confirmada',
       'logistica-sem-canal',
+      'logistica-sem-valor-gravado',
       'opcoes-demais',
       'variacao-sem-vinculo',
     ];
@@ -494,7 +499,7 @@ describe('montarAnuncio — o vocabulário de recusa', () => {
     ).toEqual([]);
   });
 
-  it('o docblock nomeia os doze membros que este módulo NÃO produz, com o arquivo produtor', () => {
+  it('o docblock nomeia os catorze membros que este módulo NÃO produz, com o arquivo produtor', () => {
     const fonte = readFileSync(fileURLToPath(new URL('./montagemAnuncio.ts', import.meta.url)), {
       encoding: 'utf8',
     });
@@ -503,6 +508,8 @@ describe('montarAnuncio — o vocabulário de recusa', () => {
       'combinacao-duplicada',
       'opcoes-demais',
       'logistica-sem-canal',
+      'logistica-nao-confirmada',
+      'logistica-sem-valor-gravado',
       'criacao-incerta-ambigua',
       'busca-de-anuncio-incompleta',
       'criacao-incerta-sem-sku',
@@ -518,7 +525,7 @@ describe('montarAnuncio — o vocabulário de recusa', () => {
     expect(fonte).toContain('anuncios/logisticaPublicacao.ts');
     expect(fonte).toContain('anuncios/problemasPublicacao.ts');
     expect(fonte).toContain('anuncios/criacaoIncerta.ts');
-    expect(fonte).toContain('(nineteen of thirty-one)');
+    expect(fonte).toContain('(nineteen of thirty-three)');
   });
 
   it('problemas é a UNIÃO de todas as recusas, nunca a primeira', () => {
@@ -543,6 +550,23 @@ describe('montarAnuncio — o vocabulário de recusa', () => {
       args({ logistica: { ...LOGISTICA, logistic_info: [], problemas: [vindo] } }),
     );
     expect(montado.problemas).toContainEqual(vindo);
+  });
+
+  it('#2015: logistica-nao-confirmada também é RELAIADA, verbatim — e logisticaConfiavel não muda a montagem', () => {
+    const vindo: ProblemaPublicacao = {
+      campo: 'logistic_info',
+      motivo: MOTIVO_PUBLICACAO_BLOQUEADA.logisticaNaoConfirmada,
+      mensagem: 'o canal obrigatório 90007 precisa de um tamanho',
+    };
+    const montado = montarAnuncio(
+      args({ logistica: { ...LOGISTICA, problemas: [vindo] }, link: link() }),
+    );
+    expect(montado.problemas.filter((p) => p.campo === 'logistic_info')).toEqual([vindo]);
+    // ⛔ QUASE-PAR: the flag is the CHANNEL BUILDER's input, already decided by
+    // the time the montagem runs — flipping it here changes nothing.
+    const confiavel = montarAnuncio(args({ link: link({ logisticaConfiavel: true }) }));
+    const naoConfiavel = montarAnuncio(args({ link: link({ logisticaConfiavel: false }) }));
+    expect(confiavel).toEqual(naoConfiavel);
   });
 
   it('nenhuma mensagem de problema passa de 500 caracteres', () => {
@@ -936,6 +960,7 @@ const LINK_SEM_O_CAMPO: LinkListagemLido = {
   logistic_info: null,
   estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
   marcaNaoEscolhida: false,
+  logisticaConfiavel: false,
 };
 
 describe('kitNativoDoAnuncio', () => {

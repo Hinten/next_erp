@@ -19,27 +19,47 @@ export function chaveDeTeste(hex: string = CHAVE_DE_TESTE_HEX): ChaveDeFixturesL
   return chave;
 }
 
-const colisoes = new Map<string, readonly [number, number]>();
+/**
+ * Two different ids that share one pseudonym under the TEST key: the first
+ * collision among 1, 2, 3, … Pseudonyms span 900 000 000 000 values, so by the
+ * birthday bound it lies past a million ids, a search of seconds that every suite
+ * would repeat; it was found once by that search and is written here. It stays
+ * honest without the search: every caller asserts the pair's effect (equal
+ * pseudonyms, or the `colisao-de-pseudonimo` refusal), so a change to the formula
+ * or the range fails there.
+ */
+const COLISAO_DA_CHAVE_DE_TESTE = [336_261, 1_043_013] as const;
+
+export function colisaoDePseudonimo(): readonly [number, number] {
+  return COLISAO_DA_CHAVE_DE_TESTE;
+}
 
 /**
- * Two different ids that share one pseudonym under `hex`: the first collision
- * among 1, 2, 3, … Pseudonyms span 900 000 000 values, so by the birthday bound
- * one turns up after some tens of thousands of ids. Memoized per key.
+ * An 11-digit SKU whose pseudonym under `hex` had its last digit ESCAPED to a
+ * letter (it would have ended a run with valid CPF check digits): the first among
+ * 10000000000, 10000000001, … About one in a hundred is.
  */
-export function colisaoDePseudonimo(hex: string = CHAVE_DE_TESTE_HEX): readonly [number, number] {
-  const memo = colisoes.get(hex);
-  if (memo !== undefined) return memo;
+export function skuEscapado(hex: string = CHAVE_DE_TESTE_HEX): string {
   const chave = chaveDeTeste(hex);
-  const vistos = new Map<number, number>();
-  for (let id = 1; id <= 1_000_000; id++) {
-    const falso = chave.pseudonimo(String(id));
-    const anterior = vistos.get(falso);
-    if (anterior !== undefined) {
-      const par = [anterior, id] as const;
-      colisoes.set(hex, par);
-      return par;
-    }
-    vistos.set(falso, id);
+  for (let i = 0; i < 100_000; i++) {
+    const sku = String(10_000_000_000 + i);
+    if (/[A-Z]/.test(chave.sku(sku))) return sku;
   }
-  throw new RangeError('no collision among the first million ids');
+  throw new RangeError('no escaped SKU among the first hundred thousand');
+}
+
+/**
+ * Two different SKUs that share one pseudonym under `hex` — the only way two
+ * can: an escaped SKU ({@link skuEscapado}) and the SKU with a LETTER in that
+ * last position whose own pseudonym is the same escape letter.
+ */
+export function colisaoDeSku(hex: string = CHAVE_DE_TESTE_HEX): readonly [string, string] {
+  const chave = chaveDeTeste(hex);
+  const escapado = skuEscapado(hex);
+  const falso = chave.sku(escapado);
+  for (let c = 65; c <= 90; c++) {
+    const letra = `${escapado.slice(0, -1)}${String.fromCharCode(c)}`;
+    if (chave.sku(letra) === falso) return [escapado, letra];
+  }
+  throw new RangeError('no letter lands on the escape');
 }

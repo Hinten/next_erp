@@ -1,0 +1,1763 @@
+{
+  "error": "",
+  "message": "",
+  "warning": "",
+  "response": {
+    "list": [
+      {
+        "category_id": 100869,
+        "attribute_tree": [
+          {
+            "attribute_id": 101353,
+            "mandatory": true,
+            "name": "Item Code",
+            "attribute_info": {
+              "input_type": 3,
+              "input_validation_type": 2,
+              "format_type": 1,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Código de registro ou notificação da ANVISA"
+              }
+            ]
+          },
+          {
+            "attribute_id": 101029,
+            "mandatory": false,
+            "name": "indication",
+            "attribute_info": {
+              "input_type": 3,
+              "input_validation_type": 3,
+              "format_type": 2,
+              "attribute_unit_list": [
+                "ML",
+                "L",
+                "MG",
+                "G/GR",
+                "KG",
+                "CM",
+                "M",
+                "Dozen",
+                "Piece",
+                "Pack",
+                "Set",
+                "Box"
+              ],
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Tamanho Do Pacote"
+              }
+            ]
+          },
+          {
+            "attribute_id": 100047,
+            "mandatory": false,
+            "name": "Ingredient Preference",
+            "attribute_value_list": [
+              {
+                "value_id": 667,
+                "name": "AHA/Glycolic Acid",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "AHA/Ácido Glicólico"
+                  }
+                ]
+              },
+              {
+                "value_id": 677,
+                "name": "Anti-oxidants",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Antioxidantes"
+                  }
+                ]
+              },
+              {
+                "value_id": 685,
+                "name": "BHA",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "BHA"
+                  }
+                ]
+              },
+              {
+                "value_id": 695,
+                "name": "Ceramides",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Ceramidas"
+                  }
+                ]
+              },
+              {
+                "value_id": 707,
+                "name": "Fragrance Free",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Sem Fragrância"
+                  }
+                ]
+              },
+              {
+                "value_id": 722,
+                "name": "Hyaluronic Acid",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Ácido Hialurônico"
+                  }
+                ]
+              },
+              {
+                "value_id": 740,
+                "name": "Mineral",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Mineral"
+                  }
+                ]
+              },
+              {
+                "value_id": 755,
+                "name": "Naturally Derived",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Derivados Naturais"
+                  }
+                ]
+              },
+              {
+                "value_id": 766,
+                "name": "Oil-free",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Livre de Óleo"
+                  }
+                ]
+              },
+              {
+                "value_id": 781,
+                "name": "Organic",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Orgânico"
+                  }
+                ]
+              },
+              {
+                "value_id": 794,
+                "name": "Paraben-free",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Sem Parabeno"
+                  }
+                ]
+              },
+              {
+                "value_id": 805,
+                "name": "Peptides",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Peptídeos"
+                  }
+                ]
+              },
+              {
+                "value_id": 813,
+                "name": "Retinoids",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Retinóico"
+                  }
+                ]
+              },
+              {
+                "value_id": 818,
+                "name": "Salicylic acid",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Ácido Salicílico"
+                  }
+                ]
+              },
+              {
+                "value_id": 824,
+                "name": "Silicone Free",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Sem Silicone"
+                  }
+                ]
+              },
+              {
+                "value_id": 833,
+                "name": "Sulfate-free",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Sem Sulfato"
+                  }
+                ]
+              },
+              {
+                "value_id": 848,
+                "name": "Vitamin C",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Vitamina C"
+                  }
+                ]
+              },
+              {
+                "value_id": 874,
+                "name": "Vitamin E",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Vitamina E"
+                  }
+                ]
+              },
+              {
+                "value_id": 12109,
+                "name": "Alcohol Free",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Alcohol Free"
+                  }
+                ]
+              },
+              {
+                "value_id": 12110,
+                "name": "Amino Acid",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Amino Acid"
+                  }
+                ]
+              }
+            ],
+            "attribute_info": {
+              "input_type": 5,
+              "input_validation_type": 2,
+              "format_type": 1,
+              "max_value_count": 5,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Preferência de Componentes"
+              }
+            ]
+          },
+          {
+            "attribute_id": 100974,
+            "mandatory": false,
+            "name": "Ingredient",
+            "attribute_info": {
+              "input_type": 3,
+              "input_validation_type": 2,
+              "format_type": 1,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Princípios Ativos"
+              }
+            ]
+          },
+          {
+            "attribute_id": 100999,
+            "mandatory": false,
+            "name": "Quantity",
+            "attribute_info": {
+              "input_type": 3,
+              "input_validation_type": 2,
+              "format_type": 1,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Quantidade da embalagem"
+              }
+            ]
+          },
+          {
+            "attribute_id": 100095,
+            "mandatory": false,
+            "name": "Weight",
+            "attribute_value_list": [
+              {
+                "value_id": 515,
+                "name": "10g",
+                "value_unit": "g",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "10g"
+                  }
+                ]
+              },
+              {
+                "value_id": 523,
+                "name": "20g",
+                "value_unit": "g",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "20g"
+                  }
+                ]
+              },
+              {
+                "value_id": 545,
+                "name": "30g",
+                "value_unit": "g",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "30g"
+                  }
+                ]
+              },
+              {
+                "value_id": 551,
+                "name": "100g",
+                "value_unit": "g",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "100g"
+                  }
+                ]
+              },
+              {
+                "value_id": 556,
+                "name": "50g",
+                "value_unit": "g",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "50g"
+                  }
+                ]
+              },
+              {
+                "value_id": 562,
+                "name": "150g",
+                "value_unit": "g",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "150g"
+                  }
+                ]
+              },
+              {
+                "value_id": 578,
+                "name": "200g",
+                "value_unit": "g",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "200g"
+                  }
+                ]
+              },
+              {
+                "value_id": 586,
+                "name": "250g",
+                "value_unit": "g",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "250g"
+                  }
+                ]
+              },
+              {
+                "value_id": 599,
+                "name": "300g",
+                "value_unit": "g",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "300g"
+                  }
+                ]
+              },
+              {
+                "value_id": 613,
+                "name": "500g",
+                "value_unit": "g",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "500g"
+                  }
+                ]
+              },
+              {
+                "value_id": 622,
+                "name": "750g",
+                "value_unit": "g",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "750g"
+                  }
+                ]
+              },
+              {
+                "value_id": 631,
+                "name": "1kg",
+                "value_unit": "kg",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "1kg"
+                  }
+                ]
+              },
+              {
+                "value_id": 640,
+                "name": "1.5kg",
+                "value_unit": "kg",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "1.5kg"
+                  }
+                ]
+              },
+              {
+                "value_id": 646,
+                "name": "2kg",
+                "value_unit": "kg",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "2kg"
+                  }
+                ]
+              },
+              {
+                "value_id": 653,
+                "name": "3kg",
+                "value_unit": "kg",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "3kg"
+                  }
+                ]
+              },
+              {
+                "value_id": 663,
+                "name": "5kg",
+                "value_unit": "kg",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "5kg"
+                  }
+                ]
+              }
+            ],
+            "attribute_info": {
+              "input_type": 2,
+              "input_validation_type": 3,
+              "format_type": 2,
+              "attribute_unit_list": ["g", "kg"],
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Peso do Produto"
+              }
+            ]
+          },
+          {
+            "attribute_id": 100016,
+            "mandatory": false,
+            "name": "pack type",
+            "attribute_value_list": [
+              {
+                "value_id": 374,
+                "name": "Bundle",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Pacote"
+                  }
+                ]
+              },
+              {
+                "value_id": 381,
+                "name": "Value Size",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Valor por Tamanho"
+                  }
+                ]
+              }
+            ],
+            "attribute_info": {
+              "input_type": 1,
+              "input_validation_type": 0,
+              "format_type": 1,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Dimensões do Produto"
+              }
+            ]
+          },
+          {
+            "attribute_id": 100019,
+            "mandatory": false,
+            "name": "Product Size",
+            "attribute_value_list": [
+              {
+                "value_id": 714,
+                "name": "Large Size",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Grande"
+                  }
+                ]
+              },
+              {
+                "value_id": 727,
+                "name": "Travel Size",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Tamanho de viagem"
+                  }
+                ]
+              }
+            ],
+            "attribute_info": {
+              "input_type": 2,
+              "input_validation_type": 2,
+              "format_type": 1,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Tamanho do produto"
+              }
+            ]
+          },
+          {
+            "attribute_id": 100017,
+            "mandatory": false,
+            "name": "Packaging Type",
+            "attribute_value_list": [
+              {
+                "value_id": 388,
+                "name": "Capsule",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Cápsula"
+                  }
+                ]
+              },
+              {
+                "value_id": 397,
+                "name": "Palette",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Paleta"
+                  }
+                ]
+              },
+              {
+                "value_id": 405,
+                "name": "Refill",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Refil"
+                  }
+                ]
+              },
+              {
+                "value_id": 414,
+                "name": "Sachet",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Sachê"
+                  }
+                ]
+              }
+            ],
+            "attribute_info": {
+              "input_type": 2,
+              "input_validation_type": 2,
+              "format_type": 1,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Tipo de Embalagem"
+              }
+            ]
+          },
+          {
+            "attribute_id": 100248,
+            "mandatory": false,
+            "name": "Volume",
+            "attribute_value_list": [
+              {
+                "value_id": 499,
+                "name": "1L",
+                "value_unit": "L",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "1L"
+                  }
+                ]
+              },
+              {
+                "value_id": 511,
+                "name": "10ml",
+                "value_unit": "ml",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "10ml"
+                  }
+                ]
+              },
+              {
+                "value_id": 520,
+                "name": "20ml",
+                "value_unit": "ml",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "20ml"
+                  }
+                ]
+              },
+              {
+                "value_id": 524,
+                "name": "30ml",
+                "value_unit": "ml",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "30ml"
+                  }
+                ]
+              },
+              {
+                "value_id": 530,
+                "name": "50ml",
+                "value_unit": "ml",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "50ml"
+                  }
+                ]
+              },
+              {
+                "value_id": 533,
+                "name": "100ml",
+                "value_unit": "ml",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "100ml"
+                  }
+                ]
+              },
+              {
+                "value_id": 541,
+                "name": "150ml",
+                "value_unit": "ml",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "150ml"
+                  }
+                ]
+              },
+              {
+                "value_id": 544,
+                "name": "200ml",
+                "value_unit": "ml",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "200ml"
+                  }
+                ]
+              },
+              {
+                "value_id": 587,
+                "name": "250ml",
+                "value_unit": "ml",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "250ml"
+                  }
+                ]
+              },
+              {
+                "value_id": 598,
+                "name": "300ml",
+                "value_unit": "ml",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "300ml"
+                  }
+                ]
+              },
+              {
+                "value_id": 620,
+                "name": "400ml",
+                "value_unit": "ml",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "400ml"
+                  }
+                ]
+              },
+              {
+                "value_id": 627,
+                "name": "500ml",
+                "value_unit": "ml",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "500ml"
+                  }
+                ]
+              },
+              {
+                "value_id": 635,
+                "name": "750ml",
+                "value_unit": "ml",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "750ml"
+                  }
+                ]
+              }
+            ],
+            "attribute_info": {
+              "input_type": 2,
+              "input_validation_type": 3,
+              "format_type": 2,
+              "attribute_unit_list": ["ml", "L"],
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Volume"
+              }
+            ]
+          },
+          {
+            "attribute_id": 100116,
+            "mandatory": false,
+            "name": "Hair Care Benefits",
+            "attribute_value_list": [
+              {
+                "value_id": 654,
+                "name": "Anti Thinning/Hair Loss",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Anti Emagrecimento / Queda de Cabelo"
+                  }
+                ]
+              },
+              {
+                "value_id": 665,
+                "name": "Anti-Dandruff",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Anti Caspa"
+                  }
+                ]
+              },
+              {
+                "value_id": 676,
+                "name": "Anti-Frizz",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Anti-Frizz"
+                  }
+                ]
+              },
+              {
+                "value_id": 684,
+                "name": "Colour Protection",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Proteção da Cor"
+                  }
+                ]
+              },
+              {
+                "value_id": 693,
+                "name": "Curl Enhancement",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Ativador de Cachos"
+                  }
+                ]
+              },
+              {
+                "value_id": 704,
+                "name": "Damaged Hair/Split Ends",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Danificado/Pontas Duplas"
+                  }
+                ]
+              },
+              {
+                "value_id": 721,
+                "name": "Hydrating",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Hidratante"
+                  }
+                ]
+              },
+              {
+                "value_id": 737,
+                "name": "Oil Control",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Controle de Oleosidade"
+                  }
+                ]
+              },
+              {
+                "value_id": 752,
+                "name": "Others",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Outros"
+                  }
+                ]
+              },
+              {
+                "value_id": 767,
+                "name": "Volumizing",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Volumizador"
+                  }
+                ]
+              },
+              {
+                "value_id": 12125,
+                "name": "Long Lasting Shine",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Long Lasting Shine"
+                  }
+                ]
+              },
+              {
+                "value_id": 12126,
+                "name": "Straightening",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Straightening"
+                  }
+                ]
+              }
+            ],
+            "attribute_info": {
+              "input_type": 5,
+              "input_validation_type": 2,
+              "format_type": 1,
+              "max_value_count": 5,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Benefícios do Cuidado com o Cabelo"
+              }
+            ]
+          },
+          {
+            "attribute_id": 100037,
+            "mandatory": false,
+            "name": "Region of Origin",
+            "attribute_value_list": [
+              {
+                "value_id": 1,
+                "name": "Japan",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Japão"
+                  }
+                ]
+              },
+              {
+                "value_id": 26,
+                "name": "Australia",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Austrália"
+                  }
+                ]
+              },
+              {
+                "value_id": 35,
+                "name": "Mainland China",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "China"
+                  }
+                ]
+              },
+              {
+                "value_id": 48,
+                "name": "Korea",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Coreia"
+                  }
+                ]
+              },
+              {
+                "value_id": 60,
+                "name": "Europe",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Europa"
+                  }
+                ]
+              },
+              {
+                "value_id": 68,
+                "name": "Indonesia",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Indonésia"
+                  }
+                ]
+              },
+              {
+                "value_id": 74,
+                "name": "Malaysia",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Malásia"
+                  }
+                ]
+              },
+              {
+                "value_id": 93,
+                "name": "Others",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Outros"
+                  }
+                ]
+              },
+              {
+                "value_id": 104,
+                "name": "Philippines",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Filipinas"
+                  }
+                ]
+              },
+              {
+                "value_id": 108,
+                "name": "Singapore",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Singapura"
+                  }
+                ]
+              },
+              {
+                "value_id": 110,
+                "name": "America",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "América"
+                  }
+                ]
+              },
+              {
+                "value_id": 112,
+                "name": "Taiwan",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Taiwan"
+                  }
+                ]
+              },
+              {
+                "value_id": 129,
+                "name": "Thailand",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Tailândia"
+                  }
+                ]
+              },
+              {
+                "value_id": 136,
+                "name": "Vietnam",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Vietnã"
+                  }
+                ]
+              },
+              {
+                "value_id": 142,
+                "name": "England",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Inglaterra"
+                  }
+                ]
+              },
+              {
+                "value_id": 146,
+                "name": "France",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "França"
+                  }
+                ]
+              },
+              {
+                "value_id": 6737,
+                "name": "Brasil",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Brasil"
+                  }
+                ]
+              },
+              {
+                "value_id": 6738,
+                "name": "Colombia",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Colombia"
+                  }
+                ]
+              },
+              {
+                "value_id": 6739,
+                "name": "Chile",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Chile"
+                  }
+                ]
+              },
+              {
+                "value_id": 6740,
+                "name": "Argentina",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Argentina"
+                  }
+                ]
+              },
+              {
+                "value_id": 6741,
+                "name": "Mexico",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "México"
+                  }
+                ]
+              }
+            ],
+            "attribute_info": {
+              "input_type": 2,
+              "input_validation_type": 2,
+              "format_type": 1,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "País de Origem"
+              }
+            ]
+          },
+          {
+            "attribute_id": 100036,
+            "mandatory": false,
+            "name": "Formulation",
+            "attribute_value_list": [
+              {
+                "value_id": 625,
+                "name": "Mousse",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Mousse"
+                  }
+                ]
+              },
+              {
+                "value_id": 633,
+                "name": "Oil",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Óleo"
+                  }
+                ]
+              },
+              {
+                "value_id": 642,
+                "name": "Patch",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Adesivo"
+                  }
+                ]
+              },
+              {
+                "value_id": 647,
+                "name": "Scrub",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Esfoliar"
+                  }
+                ]
+              },
+              {
+                "value_id": 655,
+                "name": "Wipes",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Lenços"
+                  }
+                ]
+              },
+              {
+                "value_id": 678,
+                "name": "Cream",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Creme"
+                  }
+                ]
+              },
+              {
+                "value_id": 696,
+                "name": "Gel",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Gel"
+                  }
+                ]
+              },
+              {
+                "value_id": 708,
+                "name": "Liquid",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Líquido"
+                  }
+                ]
+              },
+              {
+                "value_id": 738,
+                "name": "Others",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Outros"
+                  }
+                ]
+              },
+              {
+                "value_id": 765,
+                "name": "Powder",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Pó"
+                  }
+                ]
+              },
+              {
+                "value_id": 790,
+                "name": "Solid",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Sólido"
+                  }
+                ]
+              },
+              {
+                "value_id": 801,
+                "name": "Spray",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Spray"
+                  }
+                ]
+              },
+              {
+                "value_id": 808,
+                "name": "Stick",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Bastão"
+                  }
+                ]
+              }
+            ],
+            "attribute_info": {
+              "input_type": 2,
+              "input_validation_type": 2,
+              "format_type": 1,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Formulação"
+              }
+            ]
+          },
+          {
+            "attribute_id": 100025,
+            "mandatory": false,
+            "name": "Scent",
+            "attribute_info": {
+              "input_type": 5,
+              "input_validation_type": 2,
+              "format_type": 1,
+              "max_value_count": 5,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Aroma"
+              }
+            ]
+          },
+          {
+            "attribute_id": 100133,
+            "mandatory": false,
+            "name": "Specialty Type",
+            "attribute_value_list": [
+              {
+                "value_id": 1258,
+                "name": "Anti-Bacterial",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Antibacteriano"
+                  }
+                ]
+              },
+              {
+                "value_id": 1263,
+                "name": "Antiseptic",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Antisséptico"
+                  }
+                ]
+              },
+              {
+                "value_id": 1267,
+                "name": "Fragrance-Free",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Sem aroma"
+                  }
+                ]
+              },
+              {
+                "value_id": 1272,
+                "name": "No Tears",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Sem lágrimas"
+                  }
+                ]
+              },
+              {
+                "value_id": 1276,
+                "name": "No-Rinse",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Sem enxágue"
+                  }
+                ]
+              },
+              {
+                "value_id": 1281,
+                "name": "Non-Chemical",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Sem química"
+                  }
+                ]
+              },
+              {
+                "value_id": 1288,
+                "name": "Paraben-Free",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Sem parabenos"
+                  }
+                ]
+              },
+              {
+                "value_id": 1295,
+                "name": "Safe to Swallow",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Seguro para engolir"
+                  }
+                ]
+              },
+              {
+                "value_id": 1301,
+                "name": "Soap-Free",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Sem sabão"
+                  }
+                ]
+              },
+              {
+                "value_id": 1317,
+                "name": "Hypoallergenic",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Hipoalergênico"
+                  }
+                ]
+              },
+              {
+                "value_id": 12101,
+                "name": "Alcohol Free",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Alcohol Free"
+                  }
+                ]
+              }
+            ],
+            "attribute_info": {
+              "input_type": 5,
+              "input_validation_type": 2,
+              "format_type": 1,
+              "max_value_count": 5,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Dieta especializada"
+              }
+            ]
+          },
+          {
+            "attribute_id": 100413,
+            "mandatory": false,
+            "name": "Condition",
+            "attribute_info": {
+              "input_type": 2,
+              "input_validation_type": 2,
+              "format_type": 1,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Condição"
+              }
+            ]
+          },
+          {
+            "attribute_id": 100707,
+            "mandatory": false,
+            "name": "Edition Type",
+            "attribute_value_list": [
+              {
+                "value_id": 3523,
+                "name": "Regular Edition",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Edição Regular"
+                  }
+                ]
+              },
+              {
+                "value_id": 12100,
+                "name": "Limited Edition",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Limited Edition"
+                  }
+                ]
+              }
+            ],
+            "attribute_info": {
+              "input_type": 2,
+              "input_validation_type": 2,
+              "format_type": 1,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Tipo de Edição"
+              }
+            ]
+          },
+          {
+            "attribute_id": 101219,
+            "mandatory": false,
+            "name": "Custom Product",
+            "attribute_value_list": [
+              {
+                "value_id": 7221,
+                "name": "Yes",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Sim"
+                  }
+                ]
+              },
+              {
+                "value_id": 7222,
+                "name": "No",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Não"
+                  }
+                ]
+              }
+            ],
+            "attribute_info": {
+              "input_type": 1,
+              "input_validation_type": 0,
+              "format_type": 1,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Produto personalizado"
+              }
+            ]
+          },
+          {
+            "attribute_id": 101317,
+            "mandatory": false,
+            "name": "Hair Type",
+            "attribute_value_list": [
+              {
+                "value_id": 11933,
+                "name": "Curly",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Curly"
+                  }
+                ]
+              },
+              {
+                "value_id": 12427,
+                "name": "Dry",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Dry"
+                  }
+                ]
+              },
+              {
+                "value_id": 12428,
+                "name": "Normal",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Normal"
+                  }
+                ]
+              },
+              {
+                "value_id": 12429,
+                "name": "Oily",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Oily"
+                  }
+                ]
+              },
+              {
+                "value_id": 12430,
+                "name": "Dyed",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Dyed"
+                  }
+                ]
+              },
+              {
+                "value_id": 12431,
+                "name": "Any",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Any"
+                  }
+                ]
+              }
+            ],
+            "attribute_info": {
+              "input_type": 2,
+              "input_validation_type": 0,
+              "format_type": 1,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Hair Type"
+              }
+            ]
+          },
+          {
+            "attribute_id": 101352,
+            "mandatory": false,
+            "name": "Item Batch code",
+            "attribute_info": {
+              "input_type": 3,
+              "input_validation_type": 2,
+              "format_type": 1,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Nr. do Lote do Produto"
+              }
+            ]
+          },
+          {
+            "attribute_id": 101354,
+            "mandatory": false,
+            "name": "Exemption Reason",
+            "attribute_info": {
+              "input_type": 3,
+              "input_validation_type": 2,
+              "format_type": 1,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Motivo de Isenção Anvisa"
+              }
+            ]
+          },
+          {
+            "attribute_id": 101439,
+            "mandatory": false,
+            "name": "Item Qty. same batch",
+            "attribute_info": {
+              "input_type": 3,
+              "input_validation_type": 2,
+              "format_type": 1,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Qtd. de Produto no Lote"
+              }
+            ]
+          },
+          {
+            "attribute_id": 101440,
+            "mandatory": false,
+            "name": "Expire Date",
+            "attribute_info": {
+              "input_type": 3,
+              "input_validation_type": 2,
+              "format_type": 1,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Data de validade Anvisa"
+              }
+            ]
+          },
+          {
+            "attribute_id": 101639,
+            "mandatory": false,
+            "name": "Model",
+            "attribute_info": {
+              "input_type": 5,
+              "input_validation_type": 2,
+              "format_type": 1,
+              "max_value_count": 5,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Modelo"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "debug_message": ""
+}

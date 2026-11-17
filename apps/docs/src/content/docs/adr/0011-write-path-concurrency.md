@@ -113,10 +113,10 @@ detect. Tier 3 exists because a human's unsaved work is not ours to discard.
   Re-derive every input the predicate depends on from a `tx.get` result inside
   the callback. The pre-transaction read stays only as a cheap early-out.
 - **The stamps are not interchangeable.** `ultimaModificacao` is **microseconds**
-  on pedido / pagamento / produto but **milliseconds** on the Mercado Livre link
-  documents; `historicoEstadoPedido.data` is µs while `historicoFtIni.data` is
-  ms. A comparison across units is a guard that silently never fires (µs values
-  always dwarf ms ones). Any watermark comparison must name its unit.
+  on pedido / pagamento but **milliseconds** on produto and on the Mercado Livre
+  link documents; `historicoEstadoPedido.data` is µs while `historicoFtIni.data`
+  is ms. A comparison across units is a guard that silently never fires (µs
+  values always dwarf ms ones). Any watermark comparison must name its unit.
 
 ### Drop versus surface
 

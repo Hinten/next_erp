@@ -72,9 +72,9 @@ type LinkLike = Partial<Record<OperatorOwnedKey, unknown>> & {
  * argument hold: an untouched field is not written at all, so it cannot lose a
  * race it never entered.
  *
- * ⚠️ `ultimaModificacao` on the ML link docs is **milliseconds**, unlike the
- * microsecond stamps on pedido/pagamento/produto. Mixing the units gives a
- * comparison that never fires (root `CLAUDE.md` rule 7).
+ * ⚠️ `ultimaModificacao` on the ML link docs is **milliseconds** (as on
+ * produto), unlike the microsecond stamps on pedido/pagamento. Mixing the units
+ * gives a comparison that never fires (root `CLAUDE.md` rule 7).
  */
 export function buildListingPatch(
   values: Partial<Record<OperatorOwnedKey, unknown>>,

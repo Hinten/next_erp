@@ -871,6 +871,30 @@ describe('TableView', () => {
     expect(screen.getAllByRole('button', { name: 'Excluir' })).toHaveLength(1);
   });
 
+  it('scrolls a wide table inside its own column, never under the actions panel', () => {
+    // jsdom has no layout, so this pins only the STRUCTURE that makes the
+    // behaviour possible; the behaviour itself — a real table outgrowing the
+    // room beside the rail at the smoke viewport — is pinned in a browser by
+    // `apps/web/e2e/table-view-wide-table.emulator.e2e.spec.ts`.
+    wrap(
+      <TableView
+        schema={testSchema}
+        collection={fakeCollection()}
+        db={{} as never}
+        selectable
+        actionsPanel={{ width: 300 }}
+        actions={[{ id: 'del', label: 'Excluir', run: vi.fn() }]}
+      />,
+    );
+    const scroller = screen.getByRole('table').parentElement!;
+    const panel = screen.getByRole('complementary', { name: 'Ações' });
+    // The table's own box clips and scrolls what does not fit…
+    expect(getComputedStyle(scroller).overflowX).toBe('auto');
+    // …and it is the table's alone: the rail beside it never scrolls away with it.
+    expect(scroller.contains(panel)).toBe(false);
+    expect(within(scroller).getByText('Alice')).toBeTruthy();
+  });
+
   it('persists the panel collapse state per collection in localStorage', () => {
     wrap(
       <TableView

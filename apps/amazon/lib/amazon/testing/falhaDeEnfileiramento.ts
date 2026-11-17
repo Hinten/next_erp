@@ -12,13 +12,14 @@
  * produce while the real one — a STRING code — goes unhandled (#1759).
  *
  * {@link rejeicaoDoTransporte} is what a fake producer's `enfileirar` returns:
- * the transport's rejection run through the SAME classifier the real producer
- * runs (`../notificacoes/agendador.ts`), so a suite drives the real naming.
+ * the transport's rejection run through the SAME classifier every real
+ * producer runs (`../core/filaTarefas.ts`, step 14 PR 14-c — moved there out of
+ * `../notificacoes/agendador.ts`), so a suite drives the real naming.
  */
 import { FirebaseAppError } from 'firebase-admin/app';
 import { FirebaseFunctionsError } from 'firebase-admin/functions';
 
-import { enfileirarNomeandoFalhaTransitoriaAmazon } from '../notificacoes/agendador';
+import { enfileirarNomeandoFalhaTransitoriaAmazon } from '../core/filaTarefas';
 
 /**
  * A body the SDK quotes VERBATIM in its message for a non-JSON answer — so any
@@ -58,6 +59,29 @@ export function falhaDeConflitoDoTasks(): FirebaseFunctionsError {
       status: 409,
       headers: {},
       data: { error: { code: 409, status: 'ABORTED', message: CORPO_DA_RESPOSTA_DO_TASKS } },
+    },
+  });
+}
+
+/**
+ * `TaskQueue.enqueue`'s 409 for a NAMED task (step 14, PR 14-c: the NF-e
+ * trigger's enqueue carries an id): the same SDK branch as
+ * {@link falhaDeConflitoDoTasks} — EVERY 409 is `task-already-exists`, its
+ * message naming the id — with the body Cloud Tasks answers for a create whose
+ * id it already holds, `ALREADY_EXISTS`. `status` lets a suite build the
+ * NEAR-MISS: the same 409 answered `ABORTED`, which is NOT "already there".
+ */
+export function falhaDeTarefaJaExistente(
+  id: string,
+  status: 'ALREADY_EXISTS' | 'ABORTED' = 'ALREADY_EXISTS',
+): FirebaseFunctionsError {
+  return new FirebaseFunctionsError({
+    code: 'task-already-exists',
+    message: `A task with ID ${id} already exists`,
+    httpResponse: {
+      status: 409,
+      headers: {},
+      data: { error: { code: 409, status, message: CORPO_DA_RESPOSTA_DO_TASKS } },
     },
   });
 }

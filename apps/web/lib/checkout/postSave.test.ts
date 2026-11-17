@@ -64,6 +64,7 @@ describe('runCheckoutPostSave', () => {
       mercadoLivreClient: mlClient,
       shopeeClient: null,
       lojaIntegradaClient: null,
+      amazonClient: null,
       pedido: pedidoWith({ integracaoFreteOuterRef: 'documents/int_frete/if-1', modalidade: '0' }),
       pedidoId: 'p1',
       formatoDanfe: 'simplificadoPdf',
@@ -101,6 +102,7 @@ describe('runCheckoutPostSave', () => {
       mercadoLivreClient: null,
       shopeeClient: null,
       lojaIntegradaClient: null,
+      amazonClient: null,
       pedido: pedidoWith({ integracaoFreteOuterRef: null, modalidade: '0' }),
       pedidoId: 'p1',
       formatoDanfe: 'retrato',
@@ -121,6 +123,7 @@ describe('runCheckoutPostSave', () => {
       mercadoLivreClient: null,
       shopeeClient: null,
       lojaIntegradaClient: null,
+      amazonClient: null,
       pedido: pedidoWith(null),
       pedidoId: 'p1',
       formatoDanfe: 'retrato',
@@ -150,6 +153,7 @@ describe('runCheckoutPostSave', () => {
       mercadoLivreClient: null,
       shopeeClient,
       lojaIntegradaClient,
+      amazonClient: null,
       pedido: pedidoWith({
         integracaoFreteOuterRef: null,
         externalOptionIntegracao: 'shopee',
@@ -173,6 +177,37 @@ describe('runCheckoutPostSave', () => {
     expect(input.ui.confirmarCiente).toBe(ui.confirmarCiente);
   });
 
+  it('an Amazon pedido dispatches on the block, and the Amazon client threads through untouched (step 15)', async () => {
+    ensureNfeMock.mockResolvedValue({ ok: false, pending: true });
+    derefMock.mockReturnValue(null);
+    emitirEtiquetaMock.mockResolvedValue({ status: 'printed' });
+    const amazonClient = { __amazon: true } as never;
+
+    const r = await runCheckoutPostSave({
+      db,
+      nfeClient,
+      freightClient: null,
+      mercadoLivreClient: null,
+      shopeeClient: null,
+      lojaIntegradaClient: null,
+      amazonClient,
+      pedido: pedidoWith({
+        integracaoFreteOuterRef: null,
+        externalOptionIntegracao: 'amz',
+        modalidade: '0',
+      }),
+      pedidoId: 'p1',
+      formatoDanfe: 'retrato',
+      formatoEtiqueta: 'zpl2',
+      ui,
+    });
+
+    expect(r.etiqueta).toEqual({ status: 'printed' });
+    const input = emitirEtiquetaMock.mock.calls[0]![0];
+    expect(input.intFrete).toEqual({ fonte: 'bloco', id: null, tipo: 'amz', data: null });
+    expect(input.deps.amazonClient).toBe(amazonClient);
+  });
+
   it('a NON-marketplace block with no ref stays no-integration (the rule never widens it)', async () => {
     ensureNfeMock.mockResolvedValue({ ok: false, pending: true });
     derefMock.mockReturnValue(null);
@@ -183,6 +218,7 @@ describe('runCheckoutPostSave', () => {
       mercadoLivreClient: null,
       shopeeClient: null,
       lojaIntegradaClient: null,
+      amazonClient: null,
       pedido: pedidoWith({
         integracaoFreteOuterRef: null,
         externalOptionIntegracao: 'melhorEnvios',
@@ -228,6 +264,7 @@ describe('runCheckoutPostSave — the Loja Integrada paid re-check (step 15)', (
     mercadoLivreClient: null,
     shopeeClient: null,
     lojaIntegradaClient: null,
+    amazonClient: null,
     formatoDanfe: 'retrato',
     formatoEtiqueta: 'pdf',
     ui,

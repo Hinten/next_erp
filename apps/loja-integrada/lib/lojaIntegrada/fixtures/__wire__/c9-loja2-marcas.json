@@ -28,14 +28,14 @@
       },
       "objects": [
         {
-          "id": 990943688,
+          "id": 165690943688,
           "ativo": true,
           "id_externo": null,
           "apelido": "REDACTED",
           "descricao": null,
           "nome": "REDACTED",
           "destaque": false,
-          "resource_uri": "/api/v1/marca/990943688",
+          "resource_uri": "/api/v1/marca/165690943688",
           "imagem": "REDACTED"
         }
       ]

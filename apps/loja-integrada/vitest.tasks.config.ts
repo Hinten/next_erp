@@ -49,6 +49,35 @@ import { defineConfig } from 'vitest/config';
 //   - remembers that the writes queue's varredura re-runs EVERY `failed` and
 //     `deferred` row of that collection, not only its own.
 //
+// ⚠️ Since step 9 a THIRD one loads, the anchor `onProdutoLojaIntegradaLinkChanged`,
+// on every write of `produtos/*/produtolojaintegrada/*`: a counting link's create
+// writes its conta into the produto's `integracoesComProduto`, and losing the
+// last one removes it. Today `lib/lojaIntegrada/pedidos/importarPedido.firestore.test.ts`,
+// `lib/lojaIntegrada/importacao/completar.firestore.test.ts` and the anchor's own suite
+// write link docs. A suite that does:
+//   - uses produtos no other suite seeds;
+//   - awaits the anchor's write on each seeded produto UNCONDITIONALLY before it
+//     asserts on that produto or races a precondition on it;
+//   - ends by deleting its links and awaiting the anchor's last write before its
+//     produtos go (`lib/lojaIntegrada/testing/ancoraLi.ts`).
+//
+// ⚠️ And a FOURTH, `onImportacaoLojaIntegradaCriada`, on every CREATE of
+// `importacoesLojaIntegrada/*` — it enqueues a dispatch onto the READS queue for
+// a job created `pendente` (the dispatch then stops at the read switch and stamps
+// the job `falhou/chamadas-desligadas`). So a suite seeds its jobs `executando`
+// (or ended), which the trigger ignores with zero reads, unless that dispatch is
+// what it awaits — as `functions/src/importacao.tasks.test.ts` does, with job ids
+// no other suite uses, awaiting each one's stamp before it ends.
+// ONE import suite also writes link documents, so the anchor fires on it:
+// `lib/lojaIntegrada/importacao/completar.firestore.test.ts` (the complete step's
+// creates write their links in their own batch; the adoption path and the add-child
+// test link existing produtos). It keeps the THIRD trigger's rules: produtos whose
+// ids derive from SKUs no other suite uses; after every step that links a produto,
+// the anchor's write awaited on THAT produto before anything asserts on it or races
+// a precondition on it; and every case ending with its links deleted and the conta
+// leaving each array awaited before its produtos go. Its one job is seeded
+// `executando`, so the job trigger ignores it.
+//
 // Each file's `beforeEach` deletes what it reads, because the files
 // share one emulator and run one at a time (`fileParallelism: false`).
 export default defineConfig({

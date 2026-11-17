@@ -146,14 +146,30 @@ the client change after.
 This codebase hosts **two** `onTaskDispatched` functions, both enqueued via
 `firebase-admin`'s `taskQueue()`:
 
-| Function                 | Source                           | Enqueued by                                                        |
-| ------------------------ | -------------------------------- | ------------------------------------------------------------------ |
-| `processarBalanco`       | `src/estoques/aplicarBalanco.ts` | apps/web's balanço flow (the `finalizarBalanco` callable) + itself |
-| `recalcularDimensoesKit` | `src/produtos/kitRollup.ts`      | the `onProdutoChanged` Firestore trigger + itself (#1152)          |
+| Function (= queue)       | Cloud Run service        | Source                           | Enqueued by                                                        |
+| ------------------------ | ------------------------ | -------------------------------- | ------------------------------------------------------------------ |
+| `processarBalanco`       | `processarbalanco`       | `src/estoques/aplicarBalanco.ts` | apps/web's balanço flow (the `finalizarBalanco` callable) + itself |
+| `recalcularDimensoesKit` | `recalculardimensoeskit` | `src/produtos/kitRollup.ts`      | the `onProdutoChanged` Firestore trigger + itself (#1152)          |
 
 Each needs **three** grants, and this file documented none of them until the
 first Mercado Livre live run hit the third. Run the block below **once per
-function** — substitute the function name in step 3.
+function** — substitute the function's Cloud Run SERVICE name in step 3.
+
+⚠️ **A queue name and its Cloud Run service name differ in CASE.** Cloud Tasks
+keeps the function's name (`processarBalanco`). The gen2 function's Cloud Run
+service is that name LOWERCASED (`processarbalanco`): Google's
+[Cloud Run functions deploy guide](https://docs.cloud.google.com/functions/docs/deploy)
+documents that the service name turns uppercase letters into lowercase (and `_`
+into `-`). A `gcloud tasks queues …` command takes the queue name, and a
+`gcloud run services …` command takes the service name; a camelCase name there
+names no service. firebase-tools does not derive a gen2 function's service
+name: it reads it from the Cloud Functions API (`serviceConfig.service`). This
+file has never recorded the names a deploy produced, so confirm them on the next
+deploy before running step 3 or the verification below:
+
+```bash
+gcloud run services list --region=<region> --project=<project-id>
+```
 
 ⚠️ `recalcularDimensoesKit` is enqueued by a **Firestore trigger**, so its
 `$CALLER_SA` is the functions runtime SA, not an App Hosting backend. Its queue
@@ -180,8 +196,9 @@ gcloud iam service-accounts add-iam-policy-binding "$FN_RUNTIME_SA" --project="$
 # success, so nothing anywhere records the failure except the function's own log.
 #
 # ⚠ SINCE #1133 THE DEPLOY DOES THIS FOR YOU when TASKS_INVOKER_SA is set (see
-# below). Run it by hand only for a deploy without that variable.
-gcloud run services add-iam-policy-binding processarBalanco --region=<region> \
+# below). Run it by hand only for a deploy without that variable. It takes the
+# SERVICE name, the function name lowercased (above).
+gcloud run services add-iam-policy-binding processarbalanco --region=<region> \
   --project="$PROJECT" \
   --member="serviceAccount:$CALLER_SA" --role="roles/run.invoker"
 ```
@@ -247,9 +264,11 @@ firebase-tools skips `setInvokerUpdate` when the option is absent — but a serv
 **create**, i.e. a new or renamed task function, leaves no binding at all. That
 silent case is what this variable exists for.
 
-Verify it took, with nobody having run gcloud — **once per function**:
-`gcloud run services get-iam-policy processarBalanco --region=<region>` and
-`gcloud run services get-iam-policy recalcularDimensoesKit --region=<region>`.
+Verify it took, with nobody having run gcloud — **once per function**, by its
+service name (the IAM section above):
+`gcloud run services get-iam-policy processarbalanco --region=<region> --project=<project-id>`
+and
+`gcloud run services get-iam-policy recalculardimensoeskit --region=<region> --project=<project-id>`.
 
 ## Known gotchas
 

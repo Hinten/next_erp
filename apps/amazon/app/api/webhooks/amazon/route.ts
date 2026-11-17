@@ -13,13 +13,16 @@
  * THIN: every decision — the 503/401/200/500 table, the bounded body, the
  * envelope, the deadlines, the failure persist — lives in
  * `lib/amazon/notificacoes/receptor.ts`. This file binds the real dependencies
- * and answers the status with an EMPTY body, `Cache-Control: no-store` and
+ * — the reads-queue producer for an order and, since step 12a (PR 12-c), the
+ * jobs-queue producer for a feed wake-up, both from the one App Hosting queue
+ * root — and answers the status with an EMPTY body, `Cache-Control: no-store` and
  * `Referrer-Policy: no-referrer` (`respostaVazia`). What the receptor rethrows
  * reaches the platform as a 500, which the relay retries.
  */
 import { getAdminFirestore } from '@/lib/firebase/admin';
 import {
   agendadorDaFilaLeituraAmazon,
+  agendadorDaFilaLotesAmazon,
   regiaoDaFilaLeituraAmazon,
 } from '@/lib/firebase/filaLeitura';
 import { respostaVazia } from '@/lib/amazon/core/respond';
@@ -40,6 +43,7 @@ export async function POST(req: Request): Promise<Response> {
     ambiente: process.env,
     regiao: regiaoDaFilaLeituraAmazon,
     agendador: agendadorDaFilaLeituraAmazon(),
+    agendadorLotes: agendadorDaFilaLotesAmazon(),
     db: getAdminFirestore,
     logger: LOGGER_STDOUT_AMAZON,
     agora: () => Date.now(),

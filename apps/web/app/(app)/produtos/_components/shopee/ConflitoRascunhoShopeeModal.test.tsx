@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { CAMPO_RASCUNHO_SHOPEE, type CamposRascunhoShopee } from '@delfrance/schemas';
 
 import { MantineTestProvider } from '@/lib/testing/mantine';
@@ -28,7 +28,22 @@ const BASE: CamposRascunhoShopee = {
   category_id: 100087,
   marca: { brand_id: 77, original_brand_name: 'Nike' },
   attributes: null,
+  logistic_info: null,
 };
+
+/* #1911 P16 — fixture channel ids (no real channel). */
+const A = 90003;
+const B = 90005;
+const ligado = (logistic_id: number, is_free: boolean | null = false) => ({
+  logistic_id,
+  enabled: true,
+  is_free,
+});
+const desligado = (logistic_id: number, is_free: boolean | null = false) => ({
+  logistic_id,
+  enabled: false,
+  is_free,
+});
 
 const EDICAO: EdicaoRascunhoShopee = {
   linkDocId: LINK,
@@ -40,6 +55,7 @@ const EDICAO: EdicaoRascunhoShopee = {
     item_name: 'Camiseta azul',
     marca: { brand_id: 0, original_brand_name: null },
   },
+  digitacoesAtributos: {},
   salvo: null,
 };
 
@@ -141,8 +157,100 @@ describe('ConflitoRascunhoShopeeModal — the rows', () => {
     expect(screen.getByText(FRASE_CONFLITO_CRIACAO_RASCUNHO_SHOPEE)).toBeTruthy();
     expect(cabecalhos()).toEqual(['Campo', 'Salvo agora', 'Sua alteração']);
     expect(celulas('category_id')).toEqual(['Categoria', 'Categoria #100090', 'Categoria #100087']);
-    // The form does not edit attributes: «Sua alteração» is the held value.
+    // «Sua alteração» is the FORM's list (#1911 P13) — none on this retry.
     expect(celulas('attributes')).toEqual(['Atributos', '2 atributo(s)', '(nenhum)']);
+  });
+
+  it('#1911 P13: «Sua alteração» de `attributes` conta a lista EDITADA — nunca a guardada ⟷ QUASE-PAR: «Quando você abriu» conta a guardada', () => {
+    const base: CamposRascunhoShopee = {
+      ...BASE,
+      attributes: [{ attribute_id: 100408, attribute_value_list: [{ value_id: 2498 }] }],
+    };
+    show({
+      conflito: {
+        linkDocId: LINK,
+        operacao: 'atualizar',
+        conflitos: [{ campo: CAMPO_RASCUNHO_SHOPEE.attributes, atual: [] }],
+      },
+      edicao: {
+        ...EDICAO,
+        base,
+        atual: {
+          ...formularioDoRascunhoShopee(base),
+          attributes: [
+            { attribute_id: 100408, attribute_value_list: [{ value_id: 2530 }] },
+            {
+              attribute_id: 101237,
+              attribute_value_list: [{ value_id: 0, original_value_name: 'Fabricante Exemplo' }],
+            },
+            {
+              attribute_id: 101029,
+              attribute_value_list: [{ value_id: 0, original_value_name: '1.5', value_unit: 'KG' }],
+            },
+          ],
+        },
+      },
+    });
+    expect(celulas('attributes')).toEqual([
+      'Atributos',
+      '1 atributo(s)',
+      '(nenhum)',
+      '3 atributo(s)',
+    ]);
+  });
+
+  // Was: 'QUASE-PAR: `logistic_info` não é campo do formulário — «Sua alteração» é o valor guardado'
+  // (before #1911 P16 the form did not edit it).
+  it('#1911 P16 — PAR: `logistic_info` é campo do formulário — «Sua alteração» é a lista do FORMULÁRIO ⟷ QUASE-PAR: «Quando você abriu» é a guardada', () => {
+    const base: CamposRascunhoShopee = { ...BASE, logistic_info: [ligado(A), desligado(B)] };
+    show({
+      conflito: {
+        linkDocId: LINK,
+        operacao: 'atualizar',
+        conflitos: [{ campo: CAMPO_RASCUNHO_SHOPEE.logisticInfo, atual: null }],
+      },
+      edicao: {
+        ...EDICAO,
+        base,
+        atual: { ...formularioDoRascunhoShopee(base), logistic_info: [ligado(A), ligado(B, true)] },
+      },
+    });
+    expect(celulas('logistic_info')).toEqual([
+      'Logística',
+      'Canal 90003: ligado; Canal 90005: desligado',
+      '(automática)',
+      'Canal 90003: ligado; Canal 90005: ligado, frete grátis',
+    ]);
+  });
+
+  it('#1911 P16 — PAR (D16-9): num 409 de CRIAÇÃO a linha «Logística» mostra em «Sua alteração» o valor de «Salvo agora» — o reenvio não a nomeia ⟷ QUASE-PAR: num de EDIÇÃO, a lista do formulário', () => {
+    const outraAba = [ligado(A, true)];
+    const conflitos = [
+      { campo: CAMPO_RASCUNHO_SHOPEE.itemName, atual: 'Camiseta verde' },
+      { campo: CAMPO_RASCUNHO_SHOPEE.logisticInfo, atual: outraAba },
+    ];
+    // A new draft's form holds «Automática» — no choice the operator made.
+    show({
+      conflito: { linkDocId: LINK, operacao: 'criar', conflitos },
+      edicao: { ...EDICAO, novo: true },
+    });
+    expect(celulas('logistic_info')).toEqual([
+      'Logística',
+      'Canal 90003: ligado, frete grátis',
+      'Canal 90003: ligado, frete grátis',
+    ]);
+    // The title row still reads the operator's form.
+    expect(celulas('item_name')).toEqual(['Título', 'Camiseta verde', 'Camiseta azul']);
+    cleanup();
+
+    // QUASE-PAR: the same rows on an EDIT read the form's «Automática».
+    show({ conflito: { linkDocId: LINK, operacao: 'atualizar', conflitos } });
+    expect(celulas('logistic_info')).toEqual([
+      'Logística',
+      '(automática)',
+      'Canal 90003: ligado, frete grátis',
+      '(automática)',
+    ]);
   });
 });
 
@@ -227,6 +335,39 @@ describe('textoDoValorDoRascunhoShopee — display only, total over `unknown`', 
     expect(textoDoValorDoRascunhoShopee(CAMPO_RASCUNHO_SHOPEE.logisticInfo, null)).toBe(
       '(automática)',
     );
+    // #1911 P16 (Q-B): one line per channel, by id.
+    expect(
+      textoDoValorDoRascunhoShopee(CAMPO_RASCUNHO_SHOPEE.logisticInfo, [
+        ligado(A, true),
+        desligado(B),
+      ]),
+    ).toBe('Canal 90003: ligado, frete grátis; Canal 90005: desligado');
+    // A stamped empty list is a list with no channel — never «(automática)».
+    expect(textoDoValorDoRascunhoShopee(CAMPO_RASCUNHO_SHOPEE.logisticInfo, [])).toBe('(vazio)');
+    // A stored `is_free: null` reads unticked.
+    expect(
+      textoDoValorDoRascunhoShopee(CAMPO_RASCUNHO_SHOPEE.logisticInfo, [ligado(A, null)]),
+    ).toBe('Canal 90003: ligado');
+  });
+
+  it('#1911 P16 (Q-B) — QUASE-PAR: duas listas com a MESMA contagem de ligados — o frete grátis trocado, um par ligado/desligado invertido — dão textos DIFERENTES ⟷ PAR: a mesma lista com as chaves (ou as entradas) em outra ordem dá o MESMO texto', () => {
+    const texto = (lista: unknown) =>
+      textoDoValorDoRascunhoShopee(CAMPO_RASCUNHO_SHOPEE.logisticInfo, lista);
+    const guardada = texto([ligado(A), ligado(B)]);
+    // QUASE-PAR: two ON each time — a count would read «2 de 2» for both.
+    expect(texto([ligado(A), ligado(B, true)])).not.toBe(guardada);
+    // QUASE-PAR: one ON each time — A on/B off vs A off/B on.
+    expect(texto([ligado(A), desligado(B)])).not.toBe(texto([desligado(A), ligado(B)]));
+    expect(texto([ligado(A), desligado(B)])).toBe('Canal 90003: ligado; Canal 90005: desligado');
+    expect(texto([desligado(A), ligado(B)])).toBe('Canal 90003: desligado; Canal 90005: ligado');
+    // PAR: the keys in another order, and the entries in another order, read the same.
+    expect(
+      texto([
+        { is_free: false, enabled: true, logistic_id: A },
+        { enabled: true, is_free: false, logistic_id: B },
+      ]),
+    ).toBe(guardada);
+    expect(texto([ligado(B), ligado(A)])).toBe(guardada);
   });
 
   it('a shape this build does not know reads "(valor não reconhecido)" — never a crash', () => {
@@ -245,6 +386,21 @@ describe('textoDoValorDoRascunhoShopee — display only, total over `unknown`', 
     expect(textoDoValorDoRascunhoShopee(CAMPO_RASCUNHO_SHOPEE.attributes, { a: 1 })).toBe(
       '(valor não reconhecido)',
     );
+    // #1911 P16: a non-list, and a list with ONE entry this build cannot read.
+    for (const valor of [
+      'automatica',
+      { logistic_id: A, enabled: true, is_free: false },
+      [ligado(A), { logistic_id: '90005', enabled: true, is_free: false }],
+      [{ logistic_id: A, enabled: 'sim', is_free: false }],
+      [{ logistic_id: A, enabled: true, is_free: 'nao' }],
+      [{ logistic_id: A, enabled: true }],
+      [null],
+    ]) {
+      expect(
+        textoDoValorDoRascunhoShopee(CAMPO_RASCUNHO_SHOPEE.logisticInfo, valor),
+        JSON.stringify(valor),
+      ).toBe('(valor não reconhecido)');
+    }
   });
 });
 

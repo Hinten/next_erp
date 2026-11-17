@@ -33,8 +33,12 @@ vi.mock('firebase-admin/functions', async (importOriginal) => ({
 const APP = vi.hoisted(() => ({ __app: 'admin' }));
 vi.mock('./lib/admin', () => ({ getAdminApp: () => APP }));
 
-const { criarAgendadorLiDoAmbiente, regiaoDaFilaLi, tarefasLiDesligadas } =
-  await import('./agendador');
+const {
+  criarAgendadorImportacaoLiDoAmbiente,
+  criarAgendadorLiDoAmbiente,
+  regiaoDaFilaLi,
+  tarefasLiDesligadas,
+} = await import('./agendador');
 const { LiTarefasDesligadasError, LiTarefasTransitoriasError } =
   await import('../../lib/lojaIntegrada/notificacoes/agendador');
 const { CORPO_DA_RESPOSTA_DO_TASKS, falhaDeConfiguracaoDoFunctions, falhaDoFunctions } =
@@ -217,5 +221,66 @@ describe('the real transport failures, through the root', () => {
     h.enqueue.mockImplementationOnce(() => Promise.reject(sdk));
 
     await expect(criarAgendadorLiDoAmbiente().enfileirar(PAYLOAD)).rejects.toBe(sdk);
+  });
+});
+
+describe('the product import’s producer (master plan step 9)', () => {
+  const IMPORTACAO = { tipo: 'importacao' as const, contaId: 'conta-li-1', jobId: 'job1', seq: 4 };
+
+  it('enqueues onto the SAME reads queue, region-qualified, on the admin app', async () => {
+    ambiente({ tasksRegion: 'southamerica-east1', functionsRegion: 'southamerica-east1' });
+
+    await criarAgendadorImportacaoLiDoAmbiente().enfileirar(IMPORTACAO, { atrasoS: 2 });
+
+    expect(h.getFunctions).toHaveBeenCalledExactlyOnceWith(APP);
+    expect(h.taskQueue).toHaveBeenCalledExactlyOnceWith(
+      'locations/southamerica-east1/functions/filaLeituraLojaIntegrada',
+    );
+  });
+
+  it('sends the payload WITH its derived task name and the delay — never a uri', async () => {
+    ambiente({ functionsRegion: 'southamerica-east1' });
+
+    await criarAgendadorImportacaoLiDoAmbiente().enfileirar(IMPORTACAO, { atrasoS: 60 });
+    await criarAgendadorImportacaoLiDoAmbiente().enfileirar(
+      { ...IMPORTACAO, seq: 0 },
+      { atrasoS: 0 },
+    );
+
+    expect(h.enqueue.mock.calls).toEqual([
+      [IMPORTACAO, { id: 'li-importacao-job1-4', scheduleDelaySeconds: 60 }],
+      [{ ...IMPORTACAO, seq: 0 }, { id: 'li-importacao-job1-0' }],
+    ]);
+  });
+
+  it('the SAME valve closes it, before the SDK is touched', async () => {
+    ambiente({ functionsRegion: 'southamerica-east1', desligado: '1' });
+
+    await expect(
+      criarAgendadorImportacaoLiDoAmbiente().enfileirar(IMPORTACAO, { atrasoS: 2 }),
+    ).rejects.toBeInstanceOf(LiTarefasDesligadasError);
+    expect(h.getFunctions).not.toHaveBeenCalled();
+  });
+
+  it('REFUSES with no region, through the reads root’s ONE region reader', async () => {
+    ambiente({});
+
+    await expect(
+      criarAgendadorImportacaoLiDoAmbiente().enfileirar(IMPORTACAO, { atrasoS: 2 }),
+    ).rejects.toBeInstanceOf(MissingRegionError);
+    expect(h.taskQueue).not.toHaveBeenCalled();
+  });
+
+  it('an answered task-already-exists is success; a 503 is named transient', async () => {
+    ambiente({ functionsRegion: 'southamerica-east1' });
+    h.enqueue.mockImplementationOnce(() =>
+      Promise.reject(falhaDoFunctions('task-already-exists', 409)),
+    );
+    await criarAgendadorImportacaoLiDoAmbiente().enfileirar(IMPORTACAO, { atrasoS: 2 });
+
+    h.enqueue.mockImplementationOnce(() => Promise.reject(falhaDoFunctions('unknown-error')));
+    await expect(
+      criarAgendadorImportacaoLiDoAmbiente().enfileirar(IMPORTACAO, { atrasoS: 2 }),
+    ).rejects.toBeInstanceOf(LiTarefasTransitoriasError);
   });
 });

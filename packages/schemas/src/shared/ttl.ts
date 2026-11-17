@@ -66,6 +66,9 @@ export const RETENCAO_ENVIO_PRECO_SHOPEE_DIAS = 180;
 /** Processed `whatsappVinculos/*\/mensagens` — redundant copies already replayed into the chat. */
 export const RETENCAO_VINCULO_WHATSAPP_DIAS = 30;
 
+/** Amazon feed submission records (`feedsAmazon`). The in-flight lease is never stamped. */
+export const RETENCAO_FEED_AMAZON_DIAS = 180;
+
 /** A Firestore `Timestamp` of either SDK (admin or web), recognised by shape. */
 export interface TimestampLike {
   seconds: number;
@@ -190,5 +193,11 @@ export const TTL_POLICIES: readonly TtlPolicy[] = [
     motivo:
       'apps/whatsapp vinculo replay: a message 30 days after it is processed. Unprocessed ' +
       'messages and whatsappConversaAliases/*/mensagens are never stamped.',
+  },
+  {
+    collectionGroup: 'feedsAmazon',
+    motivo:
+      'apps/amazon feeds: each submission record, 180 days after it is created. The ' +
+      'in-flight lease (feedsAmazonEmCurso) is never stamped.',
   },
 ];

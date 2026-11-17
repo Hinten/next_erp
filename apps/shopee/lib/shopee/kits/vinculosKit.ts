@@ -16,10 +16,15 @@
  *    `parseMerge` validates only the keys present, so the import's status keys
  *    survive. It writes the LITERAL `kitNativo: true` — `add_kit_item`'s own 200
  *    is the proof — so a crash before the read-back still leaves steps 12/13
- *    treating the listing as a kit (R-1).
+ *    treating the listing as a kit (R-1). And it stamps `logisticaGravadaEm`
+ *    in the SAME patch as the `logistic_info` it writes (#2015): the list is the
+ *    body Shopee just accepted, so a later kit republish may re-send it — the
+ *    one stamping writer of a kit link before an import, because a republish
+ *    sends a list but writes none back.
  * 2. {@link escreverLeituraDoKit} — "#2", what the read-back REPORTED:
  *    `item_status`, `estadoAnuncio` (the `statusAnuncio.ts` fold), `deboost`,
  *    `item_name` and `kitNativo: ehKitDe(base)`, which overwrites the literal.
+ *    It writes no `logistic_info`, so it writes no stamp either.
  *    Also the recriar's old-link write (PR 6) and the `removido` of a linked kit
  *    the scan did not list and that read deleted (S2C-02). Never out of
  *    `removido`: a guarded `update(…, { lastUpdateTime })` (R1-RT7-05).
@@ -94,6 +99,11 @@ export type DepsDeVinculoKit = Pick<PublicarAnuncioDeps, 'db' | 'integracaoId' |
  * #1 field set (`publicarAnuncio.ts`) minus the item-only keys (category,
  * condition, attributes, brand, tax), plus the literal `kitNativo: true`.
  *
+ * `logisticaGravadaEm` (#2015, MILLISECONDS) rides beside `logistic_info`, the
+ * way write-back #1 stamps it: same patch, same condition — here the list is
+ * REQUIRED on the body, so both are always written. It is read only through
+ * `logisticaGravadaPeloErpShopee` (`@delfrance/schemas`).
+ *
  * `publicadoEm` and `dataCadastro` are written unconditionally: the document is
  * new by construction (its id derives from an `item_id` Shopee just minted). The
  * one exception is R-u's import race, where the two values are seconds apart.
@@ -124,6 +134,9 @@ export async function escreverVinculoDoKit(
     item_name: s.item_name,
     description: s.description,
     logistic_info: s.logistic_info,
+    // #2015: THIS app wrote the list above — the provenance stamp, in the same
+    // patch, so a kit republish trusts it.
+    logisticaGravadaEm: deps.nowMs,
     ultimaPublicacao: { em: deps.nowMs, etapa: ETAPA_PUBLICACAO.addKitItem, itemId: a.itemId },
     ultimaModificacao: deps.nowMs,
     publicadoEm: deps.nowMs,

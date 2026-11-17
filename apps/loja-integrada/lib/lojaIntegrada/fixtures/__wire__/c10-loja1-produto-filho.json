@@ -1,0 +1,73 @@
+{
+  "versao": 1,
+  "perfil": "fixture",
+  "credencial": "personal-token",
+  "capturadoEm": "2026-11-03",
+  "requisicao": {
+    "metodo": "GET",
+    "caminho": "/v1/produto/632422855652/",
+    "query": [
+      [
+        "descricao_completa",
+        "1"
+      ]
+    ]
+  },
+  "resposta": {
+    "status": 200,
+    "politica": "catalogo",
+    "forma": "json",
+    "bytes": 1329,
+    "corpo": {
+      "id": 632422855652,
+      "altura": 5,
+      "apelido": "REDACTED",
+      "ativo": true,
+      "bloqueado": false,
+      "categorias": [],
+      "data_criacao": "2026-10-21T15:41:15.758593",
+      "data_modificacao": "2026-10-21T15:41:16.218948",
+      "descricao_completa": null,
+      "destaque": false,
+      "gtin": null,
+      "id_externo": null,
+      "imagem_principal": null,
+      "imagens": [],
+      "largura": 10,
+      "marca": "/api/v1/marca/338064840611",
+      "mpn": null,
+      "ncm": null,
+      "nome": "REDACTED",
+      "peso": "0.200",
+      "profundidade": 10,
+      "removido": false,
+      "resource_uri": "/api/v1/produto/632422855652",
+      "seo": "REDACTED",
+      "sku": "794656684373325",
+      "tipo": "atributo_opcao",
+      "url": "https://redacted.invalid/",
+      "url_video_youtube": null,
+      "usado": false,
+      "variacoes": [
+        "/api/v1/grade/757505007075/variacao/262017016635",
+        "/api/v1/grade/783881691653/variacao/672781023639"
+      ],
+      "produto_id_anymarket": null,
+      "produto_id_sku_anymarket": null,
+      "tags": [],
+      "preco_cheio": 274.42,
+      "preco_custo": 0,
+      "preco_promocional": null,
+      "preco_sob_consulta": false,
+      "estoque_gerenciado": true,
+      "estoque_situacao_em_estoque": 0,
+      "estoque_situacao_sem_estoque": -1,
+      "estoque_quantidade": 0,
+      "production_type": null,
+      "icms_origin_code": null,
+      "seo_title": null,
+      "seo_description": null,
+      "pai": "/api/v1/produto/998717986715"
+    }
+  }
+}

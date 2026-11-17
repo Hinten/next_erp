@@ -6,6 +6,8 @@ import {
   ehRascunhoShopee,
   estadoPublicacaoRascunhoShopee,
   vinculoShopeeEhDaConta,
+  type ArvoreAtributosShopee,
+  type AtributoDto,
   type CampoRascunhoShopee,
   type MarcaRascunhoShopee as ParMarcaRascunhoShopee,
 } from '@delfrance/schemas';
@@ -15,7 +17,6 @@ import {
   FRASE_ATESTACAO_QUE_VARRE_SHOPEE,
   FRASE_ATESTACAO_SEM_BUSCA_SHOPEE,
   FRASE_CATEGORIA_TRAVADA_SHOPEE,
-  FRASE_LOGISTICA_RASCUNHO_SHOPEE,
   FRASE_MARCA_NAO_ESCOLHIDA_SHOPEE,
   FRASE_PENDENCIA_CATEGORIA_AUSENTE_SHOPEE,
   FRASE_PENDENCIA_SEM_DESCRICAO_SHOPEE,
@@ -25,6 +26,7 @@ import {
   FRASE_PUBLICAR_COM_ALTERACOES_SHOPEE,
   FRASE_PUBLICAR_PRODUTO_NAO_SALVO_SHOPEE,
   FRASE_PUBLICAR_RASCUNHO_NOVO_SHOPEE,
+  FRASE_PUBLICAR_SEM_ATRIBUTOS_SHOPEE,
   FRASE_PUBLICAR_SEM_FAIXAS_SHOPEE,
   FRASE_RASCUNHO_INCERTO_SHOPEE,
   FRASE_RASCUNHO_NOVO_SHOPEE,
@@ -36,12 +38,15 @@ import {
   ROTULO_PUBLICAR_SEGUNDO_DE_PROPOSITO_SHOPEE,
   TITULO_PUBLICAR_RASCUNHO_SHOPEE,
   TITULO_SEGUNDO_ANUNCIO_NA_PUBLICACAO_SHOPEE,
+  fraseDosAtributosObrigatoriosShopee,
   fraseDosRascunhosIrmaosIncertosShopee,
   textoDaConfirmacaoDePublicacaoShopee,
   textoDoSegundoAnuncioNaPublicacaoShopee,
   tituloDoSegundoAnuncioNaPublicacaoShopee,
 } from '@/lib/shopee/anuncioProduto';
+import { MOTIVO_DA_LOGISTICA_INVALIDA_SHOPEE } from '@/lib/shopee/logisticaRascunho';
 import {
+  comAtributoRascunhoShopee,
   comCampoRascunhoShopee,
   edicaoDoRascunhoGuardadoShopee,
   estadoDoBlocoRascunhoShopee,
@@ -53,23 +58,37 @@ import {
   type PublicacaoDoRascunhoShopee,
 } from '@/lib/shopee/rascunho';
 
+import type { AtributosRascunhoShopeeProps } from './AtributosRascunhoShopee';
 import type { CategoriaRascunhoShopeeProps } from './CategoriaRascunhoShopee';
 import { idDoCampoRascunhoShopee } from './DesfechoAcaoShopee';
+import type { LogisticaRascunhoShopeeProps } from './LogisticaRascunhoShopee';
 import type { MarcaRascunhoShopeeProps } from './MarcaRascunhoShopee';
-import type { ConfirmacaoDePublicacaoShopee, RascunhoShopeeProps } from './RascunhoShopee';
+import type {
+  AtributosDoRascunhoShopee,
+  ConfirmacaoDePublicacaoShopee,
+  RascunhoShopeeProps,
+} from './RascunhoShopee';
 
 /**
  * The draft form, over the REAL block decision (`estadoDoBlocoRascunhoShopee`
  * from REAL stored-draft fixtures) and — unless a test hands its own — the
  * REAL Publicar decision (`publicacaoDoRascunhoShopee`, whose `pendencias`
- * the form shows). Doubled: the two pickers (their own suites), captured so
- * the props this form hands them — and what it does with their picks — are
- * pinned here.
+ * the form shows). Doubled: the two pickers, (#1911 P13) the «Atributos»
+ * section and (#1911 P16) the «Logística» section (their own suites — the
+ * real Logística section reads the shop's channels, so it needs a query
+ * client this suite has no reason to own), captured so the props this form
+ * hands them — and what it does with their picks — are pinned here.
  */
 
 const h = vi.hoisted(() => ({
   categoria: null as CategoriaRascunhoShopeeProps | null,
   marca: null as MarcaRascunhoShopeeProps | null,
+  atributos: null as AtributosRascunhoShopeeProps | null,
+  /** How many times the «Atributos» double was MOUNTED (its key changed). */
+  montagensDosAtributos: 0,
+  logistica: null as LogisticaRascunhoShopeeProps | null,
+  /** How many times the «Logística» double was MOUNTED (its key changed). */
+  montagensDaLogistica: 0,
 }));
 
 vi.mock('./CategoriaRascunhoShopee', () => ({
@@ -78,6 +97,36 @@ vi.mock('./CategoriaRascunhoShopee', () => ({
     return <div data-testid="stub-categoria" />;
   },
 }));
+// The double stamps nothing: the REAL section stamps the field id on its own root.
+vi.mock('./AtributosRascunhoShopee', async () => {
+  const { useState } = await import('react');
+  return {
+    AtributosRascunhoShopee: (props: AtributosRascunhoShopeeProps) => {
+      // Counted once per MOUNT: a remount (a new key) counts again.
+      useState(() => {
+        h.montagensDosAtributos += 1;
+        return null;
+      });
+      h.atributos = props;
+      return <div data-testid="stub-atributos" />;
+    },
+  };
+});
+// Same: the double stamps nothing — the REAL section stamps the logistics' field id itself.
+vi.mock('./LogisticaRascunhoShopee', async () => {
+  const { useState } = await import('react');
+  return {
+    LogisticaRascunhoShopee: (props: LogisticaRascunhoShopeeProps) => {
+      // Counted once per MOUNT: a remount (a new key) counts again.
+      useState(() => {
+        h.montagensDaLogistica += 1;
+        return null;
+      });
+      h.logistica = props;
+      return <div data-testid="stub-logistica" />;
+    },
+  };
+});
 vi.mock('./MarcaRascunhoShopee', async (importOriginal) => ({
   // The REAL display rule (`rotuloDaMarcaRascunhoShopee`): a conta-less block reads it.
   ...(await importOriginal<typeof import('./MarcaRascunhoShopee')>()),
@@ -96,6 +145,9 @@ const {
 } = await import('./RascunhoShopee');
 
 const CONTA = 'int-1';
+const PRODUTO = 'prod-1';
+/** The stored produto's `ultimaModificacao` (MILLISECONDS) the tab hands over — a fixture. */
+const REVISAO_DO_PRODUTO = 1_700_000_000_000;
 const LINK = 'rasc00000000000000001';
 const RAIZ = `shopee-rascunho-${LINK}`;
 /** MILLISECONDS — the instant every reading below is taken at (a fixture, never the clock). */
@@ -128,6 +180,54 @@ function rascunho(extra: Record<string, unknown> = {}): Record<string, unknown> 
 const travaCarimbada = (desde: number, expiraEm: number) => ({
   publicacaoEmCurso: { desde, expiraEm, token: 'tok-1', sku: 'SKU-1' },
 });
+
+/** A LOADED, complete tree with no attribute — the gate's default here (#1911 P13). */
+const ARVORE_VAZIA: ArvoreAtributosShopee = { atributos: [], truncated: false };
+
+/** The section's input with no category to read (the default; the tab builds the real one). */
+const ATRIBUTOS_SEM_CATEGORIA: AtributosDoRascunhoShopee = {
+  leitura: { tipo: 'sem-categoria' },
+  linhas: [],
+  semLugar: [],
+  removidosAoSalvar: [],
+  ensaiarAdicao: () => null,
+};
+
+/** 100408 «Tipo de Conexão» (public BR taxonomy), MANDATORY, a single list — no child here. */
+const TIPO_DE_CONEXAO: AtributoDto = {
+  attributeId: 100408,
+  mandatory: true,
+  name: 'Tipo de Conexão',
+  attributeInfo: {
+    inputType: 1,
+    inputValidationType: 0,
+    formatType: 1,
+    dateFormatType: null,
+    attributeUnitList: null,
+    maxValueCount: null,
+    introduction: null,
+    isOem: false,
+    supportSearchValue: false,
+  },
+  attributeValueList: [
+    {
+      valueId: 2498,
+      name: 'Com fio, Sem conexão ou Outros',
+      valueUnit: null,
+      childAttributeList: [],
+    },
+    {
+      valueId: 2530,
+      name: 'Sem fio (Bluetooth, Wifi, Radiofrequência)',
+      valueUnit: null,
+      childAttributeList: [],
+    },
+  ],
+};
+const ARVORE_COM_OBRIGATORIO: ArvoreAtributosShopee = {
+  atributos: [TIPO_DE_CONEXAO],
+  truncated: false,
+};
 
 function bloco(over: Partial<EntradaDoBlocoRascunhoShopee> = {}) {
   return estadoDoBlocoRascunhoShopee({
@@ -164,6 +264,8 @@ function decisao(
     produtoSujo: false,
     textosDoProduto: p.textosDoProduto,
     limites: p.limites,
+    // #1911 P13: the category's tree LOADED and empty unless a test says otherwise.
+    arvore: ARVORE_VAZIA,
     rascunhosIrmaosIncertos: [],
     ...gate,
   });
@@ -172,6 +274,7 @@ function decisao(
 function callbacks() {
   return {
     onCampo: vi.fn(),
+    onAtributo: vi.fn(),
     onSalvar: vi.fn(),
     onDesfazer: vi.fn(),
     onDescartar: vi.fn(),
@@ -200,6 +303,8 @@ function elemento(
       contaId={CONTA}
       contaNome="Loja Principal"
       linkDocId={LINK}
+      produtoId={PRODUTO}
+      revisaoDoProduto={REVISAO_DO_PRODUTO}
       marcaGuardada={null}
       divergencias={[]}
       somenteDescartar={false}
@@ -209,8 +314,11 @@ function elemento(
       falhaDaLeitura={null}
       confirmacaoDePublicacao={null}
       onCampo={cb.onCampo}
+      atributos={ATRIBUTOS_SEM_CATEGORIA}
+      onAtributo={cb.onAtributo}
       onSalvar={cb.onSalvar}
       onDesfazer={cb.onDesfazer}
+      revisaoDoDesfazer={0}
       onDescartar={cb.onDescartar}
       onPublicar={cb.onPublicar}
       onConfirmarPublicacao={cb.onConfirmarPublicacao}
@@ -263,10 +371,14 @@ const nomesDosBotoes = () =>
 beforeEach(() => {
   h.categoria = null;
   h.marca = null;
+  h.atributos = null;
+  h.logistica = null;
 });
 
 describe('RascunhoShopee — the form of a stored draft', () => {
-  it('renders the four fields from `bloco.valores`, the logistics line, and its three buttons', () => {
+  // Was: 'renders the four fields from `bloco.valores`, the logistics line, and its three buttons'
+  // (#1911 P16: the read-only line became the «Logística» section).
+  it('renders the four fields from `bloco.valores`, the «Logística» section, and its three buttons', () => {
     const link = rascunho({ description: 'Algodão', category_id: 100087, brand_id: 0 });
     show({ bloco: bloco({ link }) });
     expect(raiz()).toBeTruthy();
@@ -275,7 +387,9 @@ describe('RascunhoShopee — the form of a stored draft', () => {
     expect(h.categoria?.categoryId).toBe(100087);
     expect(h.categoria?.titulo).toBe('Camiseta');
     expect(h.marca?.marca).toEqual({ brand_id: 0, original_brand_name: null });
-    expect(screen.getByText(FRASE_LOGISTICA_RASCUNHO_SHOPEE)).toBeTruthy();
+    expect(within(raiz()).getByTestId('stub-logistica')).toBeTruthy();
+    // An Automática draft: the section gets the form's `null`.
+    expect(h.logistica?.valor).toBeNull();
     expect(nomesDosBotoes()).toEqual([
       'Salvar rascunho',
       'Desfazer alterações',
@@ -1125,6 +1239,300 @@ describe('RascunhoShopee — field ids (what a refusal row’s «Corrigir no ras
     expect(
       document.getElementById(idDoCampoRascunhoShopee('outro', CAMPO_RASCUNHO_SHOPEE.itemName)),
     ).toBeNull();
+  });
+});
+
+describe('RascunhoShopee — a seção «Atributos» (#1911 P13)', () => {
+  /** DOM order: `a` comes before `b`. */
+  const antes = (a: Element, b: Element) =>
+    (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+
+  // Was: 'fica depois da Marca e antes da linha da logística' (#1911 P16: the line became a section).
+  it('fica depois da Marca e antes da seção de logística', () => {
+    show();
+    const categoria = screen.getByTestId('stub-categoria');
+    const marca = screen.getByTestId('stub-marca');
+    const atributos = screen.getByTestId('stub-atributos');
+    const logistica = screen.getByTestId('stub-logistica');
+    expect(antes(categoria, marca)).toBe(true);
+    expect(antes(marca, atributos)).toBe(true);
+    expect(antes(atributos, logistica)).toBe(true);
+  });
+
+  it('recebe da aba a leitura e as linhas VERBATIM, e do bloco a publicação ATUAL e `camposEditaveis`; o `onAtributo` é o da aba', () => {
+    const atributos: AtributosDoRascunhoShopee = {
+      leitura: { tipo: 'lida', truncated: false, warning: null },
+      linhas: [],
+      semLugar: [],
+      removidosAoSalvar: [],
+      ensaiarAdicao: () => null,
+    };
+    const link = rascunho({ criacaoIncertaDesde: AGORA - 600_000, category_id: 100087 });
+    const b = bloco({ link });
+    const cb = show({ bloco: b, atributos });
+    expect(h.atributos?.linkDocId).toBe(LINK);
+    expect(h.atributos?.leitura).toBe(atributos.leitura);
+    expect(h.atributos?.linhas).toBe(atributos.linhas);
+    expect(h.atributos?.semLugar).toBe(atributos.semLugar);
+    expect(h.atributos?.removidosAoSalvar).toBe(atributos.removidosAoSalvar);
+    expect(h.atributos?.ensaiarAdicao).toBe(atributos.ensaiarAdicao);
+    // The block's CURRENT reading — the «não suportado» tail names its exit.
+    expect(b.publicacao.tipo).toBe('incerta');
+    expect(h.atributos?.publicacao).toBe(b.publicacao);
+    expect(h.atributos?.editavel).toBe(true);
+    h.atributos?.onAtributo(100408, { tipo: 'lista', valueIds: [2530] });
+    expect(cb.onAtributo).toHaveBeenCalledWith(100408, { tipo: 'lista', valueIds: [2530] });
+    // Never through the generic field path.
+    expect(cb.onCampo).not.toHaveBeenCalled();
+  });
+
+  it('NEAR-MISS: um bloco que não aceita edição (leitor sem permissão; publicação em andamento) entrega a seção SOMENTE LEITURA', () => {
+    show({ bloco: bloco({ podeEditar: false }), podeEditar: false });
+    expect(h.atributos?.editavel).toBe(false);
+    show({ bloco: bloco({ link: rascunho(travaCarimbada(AGORA - 10_000, AGORA + 60_000)) }) });
+    expect(h.atributos?.publicacao.tipo).toBe('em-andamento');
+    expect(h.atributos?.editavel).toBe(false);
+  });
+
+  it('NEAR-MISS: um kit virtual não tem a seção (nem os outros campos)', () => {
+    show({ bloco: bloco({ kitVirtual: true }) });
+    expect(screen.queryByTestId('stub-atributos')).toBeNull();
+    expect(h.atributos).toBeNull();
+  });
+
+  it('o FORMULÁRIO não carimba o id do campo `attributes` — a seção o carimba na própria raiz (um id, um elemento)', () => {
+    show();
+    expect(
+      document.getElementById(idDoCampoRascunhoShopee(LINK, CAMPO_RASCUNHO_SHOPEE.attributes)),
+    ).toBeNull();
+    // NEAR-MISS: the pickers' wrappers ARE the form's.
+    expect(
+      document.getElementById(idDoCampoRascunhoShopee(LINK, CAMPO_RASCUNHO_SHOPEE.marca)),
+    ).not.toBeNull();
+  });
+
+  it('`bloco.atributosPreenchidos` chega ao seletor de categoria: GUARDADOS ⇒ aviso', () => {
+    const link = rascunho({
+      category_id: 100087,
+      attributes: [{ attribute_id: 100408, attribute_value_list: [{ value_id: 2498 }] }],
+    });
+    show({ bloco: bloco({ link }) });
+    expect(h.categoria?.atributosPreenchidos).toBe(true);
+  });
+
+  it('`bloco.atributosPreenchidos` chega ao seletor: SÓ NO FORMULÁRIO (um rascunho NOVO, nada guardado) ⇒ aviso ⟷ QUASE-PAR: nem guardados nem no formulário ⇒ nenhum', () => {
+    const nova = novaEdicaoRascunhoShopee({ linkDocId: LINK, contaId: CONTA, nomeProduto: 'X' });
+    const preenchida = comAtributoRascunhoShopee(nova, ARVORE_COM_OBRIGATORIO, 100408, {
+      tipo: 'lista',
+      valueIds: [2498],
+    });
+    // Positive first: the edit reached the form.
+    expect(preenchida.atual.attributes).toStrictEqual([
+      { attribute_id: 100408, attribute_value_list: [{ value_id: 2498 }] },
+    ]);
+    const r = show({ bloco: bloco({ link: null, edicao: preenchida }) });
+    expect(h.categoria?.atributosPreenchidos).toBe(true);
+    r.rerender({ bloco: bloco({ link: null, edicao: nova }) });
+    expect(h.categoria?.atributosPreenchidos).toBe(false);
+  });
+
+  it('`bloco.voltarCategoriaApagaAtributos` e `bloco.atributosGravadosForaDaCategoria` chegam ao seletor de categoria (incerta, a categoria trocada com um atributo preenchido para ela) ⟷ QUASE-PAR: sem troca, os dois falsos', () => {
+    const link = rascunho({
+      category_id: 100087,
+      criacaoIncertaDesde: AGORA - 600_000,
+      attributes: [{ attribute_id: 100408, attribute_value_list: [{ value_id: 2498 }] }],
+    });
+    const trocada = comCampoRascunhoShopee(entrada(link), CAMPO_RASCUNHO_SHOPEE.categoryId, 100090);
+    const preenchida = comAtributoRascunhoShopee(trocada, ARVORE_COM_OBRIGATORIO, 100408, {
+      tipo: 'lista',
+      valueIds: [2530],
+    });
+    expect(preenchida.atual.attributes).not.toBeNull();
+    const r = show({ bloco: bloco({ link, edicao: preenchida }) });
+    expect(h.categoria?.voltarApagaAtributos).toBe(true);
+    expect(h.categoria?.atributosGravadosForaDaCategoria).toBe(true);
+    r.rerender({ bloco: bloco({ link }) });
+    expect(h.categoria?.voltarApagaAtributos).toBe(false);
+    expect(h.categoria?.atributosGravadosForaDaCategoria).toBe(false);
+  });
+
+  it('«Desfazer alterações» REMONTA a seção de atributos (`revisaoDoDesfazer` é a chave) ⟷ QUASE-PAR: uma edição comum não a remonta', () => {
+    h.montagensDosAtributos = 0;
+    const link = rascunho({ category_id: 100087 });
+    const r = show({ bloco: bloco({ link }) });
+    expect(h.montagensDosAtributos).toBe(1);
+    const editada = comCampoRascunhoShopee(entrada(link), CAMPO_RASCUNHO_SHOPEE.itemName, 'Nova');
+    r.rerender({ bloco: bloco({ link, edicao: editada }), revisaoDoDesfazer: 0 });
+    expect(h.montagensDosAtributos).toBe(1);
+    r.rerender({ bloco: bloco({ link }), revisaoDoDesfazer: 1 });
+    expect(h.montagensDosAtributos).toBe(2);
+  });
+});
+
+describe('RascunhoShopee — a seção «Logística» (#1911 P16)', () => {
+  /* Channel ids as the designs number them (fixtures, no real channel). */
+  const A = 90003;
+  const B = 90005;
+  /** The provenance stamp the draft edit writes beside a list (P15): the projection reads a list only with it. */
+  const CARIMBO = 1_700_000_000_000;
+  const ligado = (logistic_id: number) => ({ logistic_id, enabled: true, is_free: false });
+  const desligado = (logistic_id: number) => ({ logistic_id, enabled: false, is_free: false });
+  /** A stored draft whose channels the ERP chose (stamped) — B stored BEFORE A. */
+  const escolhido = (extra: Record<string, unknown> = {}) =>
+    rascunho({ logistic_info: [ligado(B), ligado(A)], logisticaGravadaEm: CARIMBO, ...extra });
+
+  it("⭐ recebe VERBATIM: `valor` = `bloco.valores.logistic_info`, `guardada` = `bloco.logisticaGravada`, `novo`, `logisticaDoSistemaAnterior`, `logisticaInvalida`, `editavel` = `bloco.logisticaEditavel`, `produtoId`, `revisaoDoProduto`, `contaId`, `linkDocId`; `onMudar` cai em `onCampo('logistic_info', …)`", () => {
+    const link = escolhido();
+    // The form turned every channel off — the plan refuses that value (zero ON).
+    const edicao = comCampoRascunhoShopee(entrada(link), CAMPO_RASCUNHO_SHOPEE.logisticInfo, [
+      desligado(A),
+      desligado(B),
+    ]);
+    const b = bloco({ link, edicao });
+    // Positive first: the form's value, the held list and the verdict all DIFFER,
+    // so a crossed wire cannot pass.
+    expect(b.valores.logistic_info).toStrictEqual([desligado(A), desligado(B)]);
+    expect(b.logisticaGravada).toStrictEqual([ligado(A), ligado(B)]);
+    expect(b.logisticaInvalida).toBe(MOTIVO_DA_LOGISTICA_INVALIDA_SHOPEE.semCanalLigado);
+    expect(b.logisticaEditavel).toBe(true);
+
+    const cb = show({ bloco: b, produtoId: 'prod-9', revisaoDoProduto: 1_700_000_000_123 });
+    const p = h.logistica;
+    expect(p?.valor).toBe(b.valores.logistic_info);
+    expect(p?.guardada).toBe(b.logisticaGravada);
+    expect(p?.novo).toBe(false);
+    expect(p?.logisticaDoSistemaAnterior).toBe(false);
+    expect(p?.logisticaInvalida).toBe(b.logisticaInvalida);
+    expect(p?.editavel).toBe(true);
+    expect(p?.produtoId).toBe('prod-9');
+    expect(p?.revisaoDoProduto).toBe(1_700_000_000_123);
+    expect(p?.contaId).toBe(CONTA);
+    expect(p?.linkDocId).toBe(LINK);
+
+    // The generic field path: the list by REFERENCE, `null` for «Automática».
+    const lista = [ligado(A), desligado(B)];
+    p?.onMudar(lista);
+    expect(cb.onCampo).toHaveBeenLastCalledWith(CAMPO_RASCUNHO_SHOPEE.logisticInfo, lista);
+    expect(cb.onCampo.mock.calls.at(-1)?.[1]).toBe(lista);
+    p?.onMudar(null);
+    expect(cb.onCampo).toHaveBeenLastCalledWith(CAMPO_RASCUNHO_SHOPEE.logisticInfo, null);
+    expect(cb.onAtributo).not.toHaveBeenCalled();
+
+    // A tab with no conta that can answer hands the section none (it then reads nothing).
+    cb.rerender({ bloco: b, contaId: null });
+    expect(h.logistica?.contaId).toBeNull();
+  });
+
+  it('QUASE-PAR: um rascunho NOVO aceita digitação (`camposEditaveis`) mas não canais — `editavel` é `bloco.logisticaEditavel`, nunca `camposEditaveis` ⟷ um guardado com lista legada (sem carimbo): `logisticaDoSistemaAnterior`, `guardada` e `valor` null ⟷ uma publicação em andamento: nada editável', () => {
+    const nova = novaEdicaoRascunhoShopee({ linkDocId: LINK, contaId: CONTA, nomeProduto: 'X' });
+    const b = bloco({ link: null, edicao: nova });
+    // Positive first: the title IS editable on it.
+    expect(b.camposEditaveis).toBe(true);
+    expect(b.logisticaEditavel).toBe(false);
+    const r = show({ bloco: b });
+    expect(titulo().disabled).toBe(false);
+    expect(h.logistica?.novo).toBe(true);
+    expect(h.logistica?.editavel).toBe(false);
+
+    r.rerender({ bloco: bloco({ link: rascunho({ logistic_info: [ligado(A)] }) }) });
+    expect(h.logistica?.novo).toBe(false);
+    expect(h.logistica?.editavel).toBe(true);
+    expect(h.logistica?.logisticaDoSistemaAnterior).toBe(true);
+    expect(h.logistica?.guardada).toBeNull();
+    expect(h.logistica?.valor).toBeNull();
+
+    r.rerender({
+      bloco: bloco({ link: escolhido(travaCarimbada(AGORA - 10_000, AGORA + 60_000)) }),
+    });
+    expect(h.logistica?.editavel).toBe(false);
+    // Still the stored list: disabled, never removed (the section's own rule).
+    expect(h.logistica?.valor).toStrictEqual([ligado(A), ligado(B)]);
+  });
+
+  it('«Desfazer alterações» REMONTA a seção (`revisaoDoDesfazer` é a chave) ⟷ QUASE-PAR: outra renderização (uma edição comum) não a remonta', () => {
+    h.montagensDaLogistica = 0;
+    const link = escolhido();
+    const r = show({ bloco: bloco({ link }) });
+    expect(h.montagensDaLogistica).toBe(1);
+    const editada = comCampoRascunhoShopee(entrada(link), CAMPO_RASCUNHO_SHOPEE.logisticInfo, [
+      ligado(A),
+      desligado(B),
+    ]);
+    r.rerender({ bloco: bloco({ link, edicao: editada }), revisaoDoDesfazer: 0 });
+    expect(h.montagensDaLogistica).toBe(1);
+    r.rerender({ bloco: bloco({ link }), revisaoDoDesfazer: 1 });
+    expect(h.montagensDaLogistica).toBe(2);
+  });
+
+  it('um kit virtual não tem a seção ⟷ QUASE-PAR: um produto comum a tem', () => {
+    const r = show({ bloco: bloco({ kitVirtual: true }) });
+    expect(screen.queryByTestId('stub-logistica')).toBeNull();
+    expect(h.logistica).toBeNull();
+    r.rerender({ bloco: bloco({ kitVirtual: false }) });
+    expect(screen.getByTestId('stub-logistica')).toBeTruthy();
+  });
+
+  it('o FORMULÁRIO não carimba o id do campo `logistic_info` — a seção o carimba ela mesma (um id, um elemento)', () => {
+    show({ bloco: bloco({ link: escolhido() }) });
+    expect(
+      document.getElementById(idDoCampoRascunhoShopee(LINK, CAMPO_RASCUNHO_SHOPEE.logisticInfo)),
+    ).toBeNull();
+    // NEAR-MISS: the pickers' wrappers ARE the form's.
+    expect(
+      document.getElementById(idDoCampoRascunhoShopee(LINK, CAMPO_RASCUNHO_SHOPEE.categoryId)),
+    ).not.toBeNull();
+  });
+});
+
+describe('RascunhoShopee — «Publicar» e a árvore de atributos, pelo gate REAL (#1911 P13)', () => {
+  const TEXTOS = { nomeProduto: 'Camiseta', descricaoProduto: 'Algodão' };
+  const LIMITES = { itemNameLengthLimit: { min: 1, max: 120 }, itemDescriptionLengthLimit: null };
+  const pronto = (extra: Record<string, unknown> = {}) =>
+    rascunho({ category_id: 100087, brand_id: 0, ...extra });
+
+  it('a árvore AINDA NÃO LIDA ⇒ desabilitado, com a frase da árvore — nunca a das faixas ⟷ QUASE-PAR: lida ⇒ habilitado', () => {
+    const base = {
+      bloco: bloco({ link: pronto() }),
+      podeEditar: true,
+      textosDoProduto: TEXTOS,
+      limites: LIMITES,
+    };
+    const r = show({ ...base, decisaoDePublicar: decisao(base, { arvore: null }) });
+    expect(botao(ROTULO_PUBLICAR_RASCUNHO_SHOPEE).disabled).toBe(true);
+    expect(screen.getByTestId(`${RAIZ}-publicar-aviso`).textContent).toBe(
+      FRASE_PUBLICAR_SEM_ATRIBUTOS_SHOPEE,
+    );
+    expect(FRASE_PUBLICAR_SEM_ATRIBUTOS_SHOPEE).not.toBe(FRASE_PUBLICAR_SEM_FAIXAS_SHOPEE);
+    r.rerender({ ...base, decisaoDePublicar: decisao(base) });
+    expect(botao(ROTULO_PUBLICAR_RASCUNHO_SHOPEE).disabled).toBe(false);
+  });
+
+  it('um atributo OBRIGATÓRIO vazio é a pendência que o gate lê — o formulário mostra a MESMA lista ⟷ QUASE-PAR: preenchido (guardado) ⇒ habilitado, sem pendência', () => {
+    const vazio = {
+      bloco: bloco({ link: pronto() }),
+      podeEditar: true,
+      textosDoProduto: TEXTOS,
+      limites: LIMITES,
+    };
+    const r = show({
+      ...vazio,
+      decisaoDePublicar: decisao(vazio, { arvore: ARVORE_COM_OBRIGATORIO }),
+    });
+    expect(botao(ROTULO_PUBLICAR_RASCUNHO_SHOPEE).disabled).toBe(true);
+    expect(screen.getByTestId(`${RAIZ}-pendencias`).textContent).toContain(
+      fraseDosAtributosObrigatoriosShopee(['Tipo de Conexão']),
+    );
+    const cheio = {
+      ...vazio,
+      bloco: bloco({
+        link: pronto({
+          attributes: [{ attribute_id: 100408, attribute_value_list: [{ value_id: 2530 }] }],
+        }),
+      }),
+    };
+    r.rerender({ ...cheio, decisaoDePublicar: decisao(cheio, { arvore: ARVORE_COM_OBRIGATORIO }) });
+    expect(botao(ROTULO_PUBLICAR_RASCUNHO_SHOPEE).disabled).toBe(false);
+    expect(screen.queryByTestId(`${RAIZ}-pendencias`)).toBeNull();
   });
 });
 

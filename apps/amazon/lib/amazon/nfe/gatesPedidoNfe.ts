@@ -64,15 +64,23 @@ const parar = (motivo: MotivoPortaoPedidoNfeAmazon): PortaoPedidoNfeAmazon => ({
   motivo,
 });
 
-/** Whether some line carries a request its OWN execution has not closed. */
-function solicitacaoAberta(order: PedidoWireAmazon): boolean {
+/**
+ * Whether some line carries a request its OWN execution has not closed (gate 3).
+ * EXPORTED for the Easy Ship scheduling decision (step 15), which refuses on the
+ * same open request: one predicate, never a second copy of it.
+ */
+export function solicitacaoCancelamentoAbertaAmazon(order: PedidoWireAmazon): boolean {
   return linhasRecebidasAmazon(order).some(
     (l) => l.solicitacaoCancelamento && !l.execucaoCancelamento,
   );
 }
 
-/** Whether the order is merchant-fulfilled AND in the Delivery-by-Amazon program. */
-function ehDba(order: PedidoWireAmazon): boolean {
+/**
+ * Whether the order is merchant-fulfilled AND in the Delivery-by-Amazon program
+ * (gate 4). EXPORTED for the Easy Ship scheduling decision (step 15), which
+ * schedules only such an order: one predicate, never a second copy of it.
+ */
+export function ehPedidoDbaAmazon(order: PedidoWireAmazon): boolean {
   if (order.fulfillment?.fulfilledBy !== FULFILLED_BY_AMAZON.merchant) return false;
   const programas = order.programs;
   return Array.isArray(programas) && programas.includes(PROGRAMA_DBA_AMAZON);
@@ -83,8 +91,10 @@ export function gatesDoPedidoAmazonParaNfe(order: PedidoWireAmazon): PortaoPedid
   const fase = faseVendaAmazon(order.fulfillment?.fulfillmentStatus);
   if (fase === 'cancelado') return parar(MOTIVO_NFE_AMAZON.pedidoCancelado);
   if (fase === 'pre') return parar(MOTIVO_NFE_AMAZON.pedidoPendente);
-  if (solicitacaoAberta(order)) return parar(MOTIVO_NFE_AMAZON.cancelamentoSolicitado);
-  if (!ehDba(order)) return parar(MOTIVO_NFE_AMAZON.naoDba);
+  if (solicitacaoCancelamentoAbertaAmazon(order)) {
+    return parar(MOTIVO_NFE_AMAZON.cancelamentoSolicitado);
+  }
+  if (!ehPedidoDbaAmazon(order)) return parar(MOTIVO_NFE_AMAZON.naoDba);
   if (order.tax?.taxInvoicing?.invoiceStatus === INVOICE_STATUS_AMAZON.notRequired) {
     return parar(MOTIVO_NFE_AMAZON.nfNaoRequerida);
   }

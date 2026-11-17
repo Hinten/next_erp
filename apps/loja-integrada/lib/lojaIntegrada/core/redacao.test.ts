@@ -30,6 +30,7 @@ import {
   classificarCaminho,
   corpoDeRestauracaoLi,
   cortarUtf8,
+  fimDeTrechoDaCamadaDeDigitosLi,
   mascararTexto,
   passaPredicadoLi,
   profundidadeJson,
@@ -386,11 +387,14 @@ describe('spec coverage — against the committed leaf inventory', () => {
         'caminho',
         'custo',
         'grande',
+        'gtin',
         'icone',
         'id_anymarket',
+        'id_externo',
         'imagem',
         'imagem_variacao',
         'media',
+        'mpn',
         'nome',
         'nome_visivel',
         'pequena',
@@ -2447,6 +2451,80 @@ describe('near-miss pairs the mutation run found missing', () => {
     ).toEqual({ ncm: FALSO_LI.texto, sku: FALSO_LI.texto, estoque_quantidade: FALSO_LI.texto });
   });
 
+  it('catalogue (fixture): a GTIN, a part number and an external id are faked at any depth; null and empty stay', () => {
+    const produto = {
+      gtin: '7891234567895',
+      mpn: 'ABC-123',
+      id_externo: 88_568_855,
+      sku: 'abc-1',
+      ncm: '61091000',
+    };
+    expect(fixtureJson('/v1/produto/1', 200, produto)).toEqual({
+      gtin: FALSO_LI.texto,
+      mpn: FALSO_LI.texto,
+      id_externo: 0,
+      sku: 'abc-1',
+      ncm: '61091000',
+    });
+    expect(fixtureJson('/v1/produto/', 200, { objects: [produto] })).toEqual({
+      objects: [
+        { gtin: FALSO_LI.texto, mpn: FALSO_LI.texto, id_externo: 0, sku: 'abc-1', ncm: '61091000' },
+      ],
+    });
+    for (const caminho of ['/v1/categoria/', '/v1/marca/']) {
+      expect(
+        fixtureJson(caminho, 200, { objects: [{ id: 7, id_externo: 'EXT-9' }] }),
+        caminho,
+      ).toEqual({ objects: [{ id: 7, id_externo: FALSO_LI.texto }] });
+    }
+    expect(
+      fixtureJson('/v1/grades/6062/', 200, {
+        id: 6062,
+        id_externo: 'EXT-1',
+        variacoes: [{ id: 31, id_externo: 'EXT-2' }],
+      }),
+    ).toEqual({
+      id: 6062,
+      id_externo: FALSO_LI.texto,
+      variacoes: [{ id: 31, id_externo: FALSO_LI.texto }],
+    });
+    // NEAR-MISS: what carries nothing stays as captured, so a corpus whose values are all
+    // empty is unchanged by the rule.
+    expect(
+      fixtureJson('/v1/produto/1', 200, { gtin: '', mpn: null, id_externo: null, sku: 'abc-1' }),
+    ).toEqual({ gtin: '', mpn: null, id_externo: null, sku: 'abc-1' });
+    // NEAR-MISS: the log keeps a catalogue body whole (behind the regex layer), as before.
+    expect(logJson('/v1/produto/1', 200, produto)).toEqual(produto);
+  });
+
+  it('fimDeTrechoDaCamadaDeDigitosLi: where the digit layer strikes first, and only there', () => {
+    // EQUAL: each kind the layer masks, at its own end.
+    expect(fimDeTrechoDaCamadaDeDigitosLi(CPF)).toBe(11);
+    expect(fimDeTrechoDaCamadaDeDigitosLi(`ab-${CPF}-x`)).toBe(14);
+    expect(fimDeTrechoDaCamadaDeDigitosLi(CNPJ)).toBe(14);
+    expect(fimDeTrechoDaCamadaDeDigitosLi(`/${CNPJ_LETRA}`)).toBe(15);
+    expect(fimDeTrechoDaCamadaDeDigitosLi(`${CNPJ}-${CPF}`)).toBe(14);
+    expect(fimDeTrechoDaCamadaDeDigitosLi(`${CPF}-${CNPJ}`)).toBe(11);
+    // NEAR-MISS: bad check digits, a longer digit run, a shape-only hit, nothing at all.
+    for (const t of [
+      CPF_INVALIDO,
+      CNPJ_LETRA_INVALIDO,
+      `${CPF}0`,
+      `0${CNPJ}`,
+      `${CPF.slice(0, 3)}.${CPF.slice(3, 6)}.${CPF.slice(6, 9)}-${CPF.slice(9)}`,
+      'abc-1',
+      '',
+    ]) {
+      expect(fimDeTrechoDaCamadaDeDigitosLi(t), t).toBeNull();
+    }
+    // It answers exactly when the layer itself masks a bare run.
+    for (const t of [CPF, CNPJ, CNPJ_LETRA, CPF_INVALIDO, `${CPF}0`, 'abc-1']) {
+      const soDigitos = mascararTexto(t, { digitos: true }).mascarados;
+      const semDigitos = mascararTexto(t, { digitos: false }).mascarados;
+      expect(fimDeTrechoDaCamadaDeDigitosLi(t) !== null, t).toBe(soDigitos > semDigitos);
+    }
+  });
+
   it('every configuration label is faked in a fixture (situacao, envio, pagamento; list and detail) and kept in the log', () => {
     for (const caminho of ['/v1/situacao/', '/v1/envio/', '/v1/pagamento/']) {
       const corpo = { objects: [{ codigo: 'x_1', nome: 'Rotulo Exemplo' }] };
@@ -2759,7 +2837,7 @@ describe('corpoDeRestauracaoLi — the estrutural walk, whole; null wherever it 
   });
 
   it.each([
-    ['a catalogue path (no byte-faithful branch until its first consumer)', '/v1/produto/1', 200],
+    ['a catalogue path other than the stock detail', '/v1/produto/1', 200],
     ['a configuration path', '/v1/situacao', 200],
     ['a webhook path', '/webhooks/v1/pedido', 200],
     ['a non-2xx answer', '/v1/pedido/165/', 404],
@@ -2789,5 +2867,137 @@ describe('corpoDeRestauracaoLi — the estrutural walk, whole; null wherever it 
         corpoDeRestauracaoLi({ caminho: '/v1/pedido/165/', status: 200, texto }),
       ).not.toThrow();
     }
+  });
+});
+
+describe('corpoDeRestauracaoLi — the stock detail (step 12): byte-faithful, or null', () => {
+  const CAMINHO_ESTOQUE = '/v1/produto_estoque/7001';
+  /** A row no default could produce: negative, unmanaged, other situações, row id ≠ product id. */
+  const DETALHE = {
+    gerenciado: false,
+    id: 97001,
+    produto: '/api/v1/produto/7001',
+    quantidade: -4,
+    quantidade_disponivel: -6,
+    quantidade_reservada: 2,
+    resource_uri: '/api/v1/produto_estoque/7001',
+    situacao_em_estoque: 3,
+    situacao_sem_estoque: 0,
+  };
+  const restaurar = (corpo: unknown, caminho = CAMINHO_ESTOQUE, status = 200) =>
+    corpoDeRestauracaoLi({ caminho, status, texto: JSON.stringify(corpo) });
+  const folha = (corpo: unknown, chave: string) =>
+    (corpo as Record<string, unknown> | null)?.[chave];
+
+  it('EQUAL pair: the public document’s stock example comes back byte for byte, key order included', () => {
+    const ex = exemplo('GET /v1/produto_estoque/{produto_id}');
+    const texto = JSON.stringify(ex.corpo);
+    expect(JSON.stringify(corpoDeRestauracaoLi({ caminho: ex.caminho, status: 200, texto }))).toBe(
+      texto,
+    );
+  });
+
+  it('EQUAL pair: a negative, unmanaged row comes back byte for byte — the quantity and the reservation verbatim', () => {
+    const corpo = restaurar(DETALHE);
+    expect(JSON.stringify(corpo)).toBe(JSON.stringify(DETALHE));
+    expect(folha(corpo, 'quantidade')).toBe(-4);
+    expect(folha(corpo, 'quantidade_reservada')).toBe(2);
+    expect(folha(corpo, 'quantidade_disponivel')).toBe(-6);
+    expect(folha(corpo, 'id')).toBe(97001);
+  });
+
+  it('⚠️ NEAR-MISS: the values are the row’s own — a reservation of 2 is not read as 0, nor 0 as 2', () => {
+    expect(folha(restaurar(DETALHE), 'quantidade_reservada')).not.toBe(0);
+    expect(folha(restaurar({ ...DETALHE, quantidade_reservada: 0 }), 'quantidade_reservada')).toBe(
+      0,
+    );
+    expect(folha(restaurar({ ...DETALHE, quantidade: 5 }), 'quantidade')).toBe(5);
+  });
+
+  it('EQUAL pair: a value the walk keeps unchanged rides as sent — a quoted quantity stays text, `null` stays `null`', () => {
+    const quoted = restaurar({ ...DETALHE, quantidade: '5' });
+    expect(folha(quoted, 'quantidade')).toBe('5');
+    const nulo = restaurar({ ...DETALHE, quantidade_disponivel: null });
+    expect(nulo).not.toBeNull();
+    expect(folha(nulo, 'quantidade_disponivel')).toBeNull();
+    // Whitespace in the text is not part of the value: the parsed body, serialised.
+    const texto = JSON.stringify(DETALHE, null, 2);
+    expect(
+      JSON.stringify(corpoDeRestauracaoLi({ caminho: CAMINHO_ESTOQUE, status: 200, texto })),
+    ).toBe(JSON.stringify(DETALHE));
+  });
+
+  it.each([
+    ['a situação as text (`"-1"`)', { situacao_sem_estoque: '-1' }],
+    ['a quantity as an object', { quantidade: { valor: 3 } }],
+    ['a quantity as an array', { quantidade: [3] }],
+    ['a product URI with a host', { produto: 'https://api.awsli.com.br/api/v1/produto/7001' }],
+    ['`gerenciado` as text', { gerenciado: 'true' }],
+  ])(
+    '⚠️ NEAR-MISS: a keep-list leaf the walk would ALTER — %s ⇒ null, never a `<redacted>` leaf',
+    (_c, over) => {
+      expect(restaurar({ ...DETALHE, ...over })).toBeNull();
+    },
+  );
+
+  it.each(['quantidade_reservada', 'id', 'quantidade', 'situacao_sem_estoque'])(
+    '⚠️ NEAR-MISS: a keep-list leaf MISSING (`%s`) ⇒ null',
+    (ausente) => {
+      const corpo: Record<string, unknown> = { ...DETALHE };
+      delete corpo[ausente];
+      expect(restaurar(corpo)).toBeNull();
+    },
+  );
+
+  it('an UNKNOWN extra leaf keeps its KEY with a `<redacted>` value (nested ones too); the nine stay verbatim', () => {
+    const corpo = restaurar({
+      ...DETALHE,
+      prazo_novo: 4,
+      contato: { email: 'contato@exemplo.invalid', nome: 'Contato de Teste' },
+    });
+    expect(corpo).not.toBeNull();
+    expect(folha(corpo, 'prazo_novo')).toBe(REDIGIDO);
+    expect(folha(corpo, 'contato')).toEqual({ email: REDIGIDO, nome: REDIGIDO });
+    expect(JSON.stringify(corpo)).not.toContain('exemplo.invalid');
+    for (const [chave, valor] of Object.entries(DETALHE)) expect(folha(corpo, chave)).toBe(valor);
+  });
+
+  it.each([
+    ['a product detail', '/v1/produto/7001'],
+    ['the stock LIST', '/v1/produto_estoque'],
+    [
+      'the slash form (the store answers it alike; the engine never asks it)',
+      '/v1/produto_estoque/7001/',
+    ],
+    ['a leading zero', '/v1/produto_estoque/07001'],
+    ['`;`-joined ids', '/v1/produto_estoque/1;2'],
+    ['a `/set/` subset', '/v1/produto_estoque/set/1'],
+    ['a query', '/v1/produto_estoque/7001?x=1'],
+    ['a price detail', '/v1/produto_preco/7001'],
+    ['a category', '/v1/categoria/1'],
+    ['a brand', '/v1/marca/1'],
+    ['a grade', '/v1/grades/1'],
+    ['an image', '/v1/produto_imagem/1'],
+  ])('⚠️ NEAR-MISS: %s (`%s`) with a valid stock body ⇒ null', (_c, caminho) => {
+    expect(restaurar(DETALHE, caminho)).toBeNull();
+  });
+
+  it.each([404, 401, 500, 302])('⚠️ NEAR-MISS: a %s on the detail path ⇒ null', (status) => {
+    expect(restaurar(DETALHE, CAMINHO_ESTOQUE, status)).toBeNull();
+  });
+
+  it('⚠️ NEAR-MISS: a root that is not an object, or a LIST page on the detail path ⇒ null', () => {
+    for (const texto of ['[]', 'null', '1', '"x"', 'true', '', '<html>x</html>']) {
+      expect(
+        corpoDeRestauracaoLi({ caminho: CAMINHO_ESTOQUE, status: 200, texto }),
+        texto,
+      ).toBeNull();
+    }
+    const pagina = {
+      meta: { limit: 20, offset: 0, next: null, previous: null, total_count: 1 },
+      objects: [DETALHE],
+    };
+    expect(restaurar(pagina)).toBeNull();
+    expect(restaurar([DETALHE])).toBeNull();
   });
 });

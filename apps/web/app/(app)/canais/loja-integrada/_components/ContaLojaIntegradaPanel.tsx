@@ -69,10 +69,7 @@ import {
 
 import { RetryAlert } from '@/components/feedback/RetryAlert';
 import { usePermission } from '@/lib/auth';
-import {
-  type MotivoBackendLiIndisponivel,
-  useBackendLojaIntegrada,
-} from '@/lib/loja-integrada/client';
+import { useBackendLojaIntegrada } from '@/lib/loja-integrada/client';
 import {
   type BloqueioDoTokenLi,
   MENSAGEM_REMOVIDO,
@@ -91,6 +88,7 @@ import {
   codigoDaFalhaLi,
   descreverFalhaCredencialLi,
   descreverFalhaStatusLi,
+  mensagemBackendIndisponivel,
 } from '@/lib/loja-integrada/erros';
 import {
   corValidadeLi,
@@ -115,20 +113,6 @@ const DICA_TOKEN =
 
 const DICA_VALIDADE =
   'A data em que o token vence, como aparece no painel da Loja Integrada (o token dura três meses).';
-
-function mensagemBackendIndisponivel(motivo: MotivoBackendLiIndisponivel): string {
-  if (motivo === 'inseguro') {
-    return (
-      'Esta página é servida por https, mas o endereço do backend da Loja Integrada deste build ' +
-      'é http: o token não é enviado por uma conexão sem criptografia. Configure ' +
-      'NEXT_PUBLIC_LOJA_INTEGRADA_URL com o endereço https do backend.'
-    );
-  }
-  return (
-    'O endereço do backend da Loja Integrada deste build (NEXT_PUBLIC_LOJA_INTEGRADA_URL) não é ' +
-    'um endereço http(s) válido.'
-  );
-}
 
 /** The header badge: the most urgent state wins its colour. */
 function BadgeDaCredencial({ status }: { status: StatusContaLojaIntegrada }) {

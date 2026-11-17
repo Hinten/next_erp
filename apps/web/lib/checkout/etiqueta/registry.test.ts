@@ -24,6 +24,7 @@ import {
   lojaIntegradaRouterProvider,
   resolveEtiquetaProvider,
 } from './registry';
+import { MENSAGEM_SEM_CLIENTE_AMAZON, amazonProvider } from './providers/amazon';
 import { genericLabelProvider } from './providers/genericLabel';
 import { melhorEnviosProvider } from './providers/melhorEnvios';
 import { mercadoLivreProvider } from './providers/mercadoLivre';
@@ -63,6 +64,11 @@ describe('resolveEtiquetaProvider', () => {
     expect(
       resolveEtiquetaProvider(INTEGRACAO_FRETE.shopee, freightCapsFor(INTEGRACAO_FRETE.shopee)),
     ).toBe(shopeeProvider);
+    // Amazon graduated too (step 15): the `amz` tipo, its own provider.
+    expect(
+      resolveEtiquetaProvider(INTEGRACAO_FRETE.amazon, freightCapsFor(INTEGRACAO_FRETE.amazon)),
+    ).toBe(amazonProvider);
+    expect(PROVIDERS[INTEGRACAO_FRETE.amazon]).toBe(amazonProvider);
     // Loja Integrada is ROUTED (master plan step 15): its own router provider,
     // never the placeholder and never the generic label.
     expect(
@@ -253,6 +259,13 @@ describe('the registry agrees with FREIGHT_TIPO_CAPS (drift guard, W3)', () => {
     ]);
   });
 
+  it('reds the Amazon flip without its provider (step 15): `amz` fetches, nothing registered', () => {
+    const { amz: _amazon, ...semAmazon } = PROVIDERS;
+    expect(divergencias(FREIGHT_TIPO_CAPS, semAmazon)).toEqual([
+      'amz: canFetchLabel=true, provedor real=false',
+    ]);
+  });
+
   it('rule 4, half 1 — a router labelMode WITHOUT the router provider', () => {
     const { lojaIntegrada: _router, ...semRoteador } = PROVIDERS;
     expect(divergencias(FREIGHT_TIPO_CAPS, semRoteador)).toEqual([
@@ -327,6 +340,7 @@ function makeInput(over: {
       mercadoLivreClient: null,
       shopeeClient: null,
       lojaIntegradaClient: null,
+      amazonClient: null,
       printJob: vi.fn(),
     },
     ui: {
@@ -385,8 +399,14 @@ describe('the posted-risk confirm follows the provider’s `reimpressao` (#1523 
     message: 'Cliente da Shopee indisponível. Faça login novamente e tente de novo.',
   };
 
-  it('declares Shopee `mesmo-documento` and leaves every other provider on the default', () => {
+  // The Amazon provider with no client answers its own error — proof it was
+  // DISPATCHED, without a network fake (the sentence's text is pinned in the
+  // provider's own test).
+  const SEM_CLIENTE_AMAZON = { status: 'error', message: MENSAGEM_SEM_CLIENTE_AMAZON };
+
+  it('declares Shopee and Amazon `mesmo-documento` and leaves every other provider on the default', () => {
     expect(shopeeProvider.reimpressao).toBe('mesmo-documento');
+    expect(amazonProvider.reimpressao).toBe('mesmo-documento');
     for (const p of [mercadoLivreProvider, melhorEnviosProvider, genericLabelProvider]) {
       expect(p.reimpressao ?? 'pode-duplicar').toBe('pode-duplicar');
     }
@@ -401,6 +421,13 @@ describe('the posted-risk confirm follows the provider’s `reimpressao` (#1523 
       const confirmRisk = vi.fn(async () => false);
       const input = makeInput({ estado, confirmRisk, tipo: INTEGRACAO_FRETE.shopee });
       expect(await emitirOuImprimirEtiqueta(input)).toEqual(SEM_CLIENTE_SHOPEE);
+      expect(confirmRisk).not.toHaveBeenCalled();
+    });
+
+    it(`its Amazon twin — Amazon on \`${estado}\` dispatches with ZERO confirms (step 15)`, async () => {
+      const confirmRisk = vi.fn(async () => false);
+      const input = makeInput({ estado, confirmRisk, tipo: INTEGRACAO_FRETE.amazon });
+      expect(await emitirOuImprimirEtiqueta(input)).toEqual(SEM_CLIENTE_AMAZON);
       expect(confirmRisk).not.toHaveBeenCalled();
     });
   }

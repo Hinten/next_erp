@@ -224,6 +224,12 @@ export const CODIGO_ERRO_LI = {
   importacaoNaoEncontrada: 'LI_IMPORTACAO_NAO_ENCONTRADA',
   /** 409 — the product import already ended (cancelling it again changes nothing). */
   importacaoEncerrada: 'LI_IMPORTACAO_ENCERRADA',
+  /**
+   * 503 — a cancel lost its write to the running import on every attempt (the job kept recording
+   * its progress between the read and the write). Nothing was written and the job still runs; a
+   * retry re-decides from a fresh read. Only the import's cancel route answers it.
+   */
+  importacaoEmConflito: 'LI_IMPORTACAO_EM_CONFLITO',
 } as const;
 export type CodigoErroLi = (typeof CODIGO_ERRO_LI)[keyof typeof CODIGO_ERRO_LI];
 

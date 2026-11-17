@@ -10,14 +10,17 @@
  * list. ANY finding refuses the pair, and the run (`executar.ts`) then writes
  * nothing at all.
  *
- * A `catalogo` pair also has its kept Loja Integrada ids replaced by their keyed
- * pseudonyms (`pseudonimo.ts`): a 2xx body's kept `id`/`*_id` leaves, resource
- * URIs and `meta.next`/`meta.previous` ids, and the request's path ids and
- * `produto=` value. The key is passed in as data; without one, a catalogue pair
- * is refused (`sem-chave-de-fixtures`, its printed request line blanked to
- * `<id>`), and so is a pair where two different ids land on one pseudonym
- * (`colisao-de-pseudonimo`). Catalogue data the mapping cannot reach is refused
- * too: an error body that keeps a number (`numero-em-erro-do-catalogo`), and a
+ * A `catalogo` pair also has its kept Loja Integrada ids and SKUs replaced by
+ * their keyed pseudonyms (`pseudonimo.ts`): a 2xx body's kept `id`/`*_id` leaves,
+ * resource URIs, `sku` leaves and `meta.next`/`meta.previous` ids and `sku=`
+ * values, and the request's path ids, `produto=` and `sku=` values. The key is
+ * passed in as data; without one, a catalogue pair is refused
+ * (`sem-chave-de-fixtures`, its printed request line blanked to `<id>` and
+ * `<sku>`), and so is a pair where two different ids or SKUs land on one
+ * pseudonym (`colisao-de-pseudonimo`) or a real id it maps already has a
+ * pseudonym's 12 digits (`id-real-na-faixa-do-pseudonimo`). Catalogue data the
+ * mapping cannot reach is refused too: an error body that keeps a number
+ * (`numero-em-erro-do-catalogo`), and a
  * catalogue resource on a path the class does not admit, which would fall to
  * `estrutural` and keep its ids (`catalogo-fora-da-classe`).
  *
@@ -112,6 +115,8 @@ export type ResultadoDaCapturaLi =
        * pairs. Empty outside the catalogue class. In memory only: never printed.
        */
       readonly pseudonimos: ReadonlyMap<number, string>;
+      /** SKU pseudonym → the real SKU behind it, as {@link pseudonimos}. Never printed. */
+      readonly skus: ReadonlyMap<string, string>;
     }
   | {
       readonly ok: false;
@@ -191,9 +196,9 @@ const ondeDoSidecar = (p: ProblemaDoSidecar): AchadoDaCapturaLi => ({
  * fixtures keep (SKUs, numeros, dates, quantities, prices), so the pair is
  * refused and surfaced instead; an exemption is a reviewed change for one exact
  * path. Values the profile fakes by design (`soLog`: tracking codes, external
- * ids, cost) are not reported, and neither are the catalogue ids the profile
- * KEPT and the pseudonym mapping then replaced (`doPerfil` is the profile's
- * output before that mapping): those are `pseudonimizado`, not faked.
+ * ids, cost) are not reported, and neither are the catalogue ids and SKUs the
+ * profile KEPT and the pseudonym mapping then replaced (`doPerfil` is the
+ * profile's output before that mapping): those are `pseudonimizado`, not faked.
  */
 function mantidosQueForamFalsificados(
   bruto: unknown,
@@ -262,8 +267,9 @@ export function capturaParaFixture(
     req.query === '' ? req.caminho : `${req.caminho}?${req.query}`,
     'fixture',
   );
-  // A catalogue request line never shows a real id: pseudonyms under the key, and
-  // `<id>` blanks without one (the pair is then refused, but the dry run prints it).
+  // A catalogue request line never shows a real id or SKU: pseudonyms under the key,
+  // and `<id>`/`<sku>` blanks without one (the pair is then refused, but the dry run
+  // prints it).
   const troca = politica !== 'catalogo' ? null : (pseudonimos ?? OCULTAR_IDS_LI);
   const pedido =
     troca === null
@@ -377,6 +383,9 @@ export function capturaParaFixture(
     ...(pseudonimos !== null && pseudonimos.colisoes > 0
       ? [{ onde: 'pseudonimos', tipo: 'colisao-de-pseudonimo' }]
       : []),
+    ...(pseudonimos !== null && pseudonimos.idsReaisNaFaixa > 0
+      ? [{ onde: 'pseudonimos', tipo: 'id-real-na-faixa-do-pseudonimo' }]
+      : []),
   ];
   const vistos = new Set<string>();
   const achados = todos.filter((a) => {
@@ -392,5 +401,6 @@ export function capturaParaFixture(
     texto: serializarFixtureLi(envelope),
     resumo,
     pseudonimos: pseudonimos?.ids ?? new Map<number, string>(),
+    skus: pseudonimos?.skus ?? new Map<string, string>(),
   };
 }

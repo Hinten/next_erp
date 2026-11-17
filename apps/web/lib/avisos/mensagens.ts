@@ -2,6 +2,7 @@ import {
   ESTADO_RASTREIO_LI,
   MOTIVO_CATEGORIA_SEM_VINCULO_LI,
   MOTIVO_CONTA_AMAZON,
+  MOTIVO_ESTOQUE_VINCULO_LI,
   MOTIVO_FRETE_NAO_SUPORTADO_LI,
   MOTIVO_RASTREIO_DIVERGENTE_LI,
   MOTIVO_IMPORTACAO_PARADA_AMAZON,
@@ -14,6 +15,7 @@ import {
   TIPO_AVISO,
   motivoCategoriaSemVinculoLiSchema,
   motivoContaAmazonSchema,
+  motivoEstoqueVinculoLiSchema,
   motivoFreteNaoSuportadoLiSchema,
   motivoImportacaoParadaAmazonSchema,
   motivoImportacaoParadaLiSchema,
@@ -30,6 +32,7 @@ import {
   type MotivoRastreioDivergenteLi,
   type MotivoCategoriaSemVinculoLi,
   type MotivoContaAmazon,
+  type MotivoEstoqueVinculoLi,
   type MotivoFreteNaoSuportadoLi,
   type MotivoImportacaoParadaAmazon,
   type MotivoImportacaoParadaLi,
@@ -186,6 +189,41 @@ function fraseMotivoCategoriaSemVinculo(valor: Aviso['params'][string] | undefin
   return codigo.success
     ? FRASE_MOTIVO_CATEGORIA_SEM_VINCULO_LI[codigo.data]
     : 'confira o relatório da importação de produtos';
+}
+
+/**
+ * pt-BR of why linked products get no stock send, and what fixes it — TOTAL over the code
+ * (`params.motivo`, a {@link MOTIVO_ESTOQUE_VINCULO_LI}). The producer (the stock sync's daily
+ * reconcile) stores the CODE, never the sentence.
+ */
+const FRASE_MOTIVO_ESTOQUE_VINCULO_LI: Record<MotivoEstoqueVinculoLi, string> = {
+  [MOTIVO_ESTOQUE_VINCULO_LI.ambiguo]:
+    'um produto do ERP está vinculado a dois produtos da loja; deixe um só vínculo nele',
+  [MOTIVO_ESTOQUE_VINCULO_LI.duplicado]:
+    'um produto da loja está vinculado a dois produtos do ERP; desfaça o vínculo errado',
+  [MOTIVO_ESTOQUE_VINCULO_LI.semLinhaNaLoja]:
+    'a Loja Integrada não tem estoque para um produto vinculado (ele pode ter sido apagado ' +
+    'na loja); confira o produto no painel ou desfaça o vínculo',
+  [MOTIVO_ESTOQUE_VINCULO_LI.ausente]:
+    'o vínculo aponta para um produto do ERP que não existe mais; vincule o produto da loja ' +
+    'de novo ou desfaça o vínculo',
+  [MOTIVO_ESTOQUE_VINCULO_LI.estoqueAmbiguo]:
+    'o produto tem dois registros de estoque no depósito da conta e nenhum é o principal; ' +
+    'deixe um só registro nesse depósito',
+};
+
+/** The motivo's sentence, or a neutral one — the {@link fraseMotivoImportacaoParada} contract. */
+function fraseMotivoEstoqueVinculo(valor: Aviso['params'][string] | undefined): string {
+  const codigo = motivoEstoqueVinculoLiSchema.safeParse(valor);
+  return codigo.success
+    ? FRASE_MOTIVO_ESTOQUE_VINCULO_LI[codigo.data]
+    : 'confira os vínculos e o estoque desses produtos';
+}
+
+/** " Os primeiros: p1, p2." — only when the producer stored a sample; nothing otherwise. */
+function fraseAmostra(params: Aviso['params']): string {
+  const amostra = p(params, 'amostra', '');
+  return amostra === '' ? '' : ` Os primeiros: ${amostra}.`;
 }
 
 /**
@@ -673,6 +711,22 @@ const FRASE_MOTIVO_PEDIDO_AMAZON: Record<MotivoPedidoAmazon, string> = {
     'a coleta de um pacote foi cancelada — a coleta, não o pedido. Reagende a coleta no Seller ' +
     'Central; o aviso se encerra quando nenhum pacote estiver com a coleta cancelada, ou se o ' +
     'pedido for cancelado',
+  // Os dois motivos do agendamento da coleta (Easy Ship), gravados só pela
+  // tarefa de agendamento. Quem os encerra é a importação seguinte do pedido
+  // que mostrar a coleta agendada (ou o fim do agendamento), não o conserto em
+  // si — por isso a frase diz "na próxima atualização do pedido".
+  [MOTIVO_PEDIDO_AMAZON.dimensoesAusentes]:
+    'a Amazon recusou o agendamento da coleta porque o anúncio está sem dimensões ou peso — ' +
+    'corrija no Seller Central e reimprima a etiqueta; o aviso se encerra quando a Amazon ' +
+    'registrar o agendamento ou a coleta (na próxima atualização do pedido), ou se o pedido for ' +
+    'cancelado',
+  // Sem um remédio único: o código da recusa pode ter mais de uma causa (peso e
+  // dimensões, ou o prazo do pedido), e os params guardam só o motivo.
+  [MOTIVO_PEDIDO_AMAZON.agendamentoRecusado]:
+    'a Amazon recusou o agendamento da coleta — confira no Seller Central o peso e as dimensões ' +
+    'do anúncio e o prazo do pedido, e agende a coleta por lá; o aviso se encerra quando a ' +
+    'Amazon registrar o agendamento ou a coleta (na próxima atualização do pedido), ou se o ' +
+    'pedido for cancelado',
 };
 
 /** A frase do motivo, ou um texto neutro — o mesmo contrato de {@link fraseMotivoImportacaoParada}. */
@@ -698,6 +752,36 @@ const FRASE_MOTIVO_CONTA_AMAZON: Record<MotivoContaAmazon, string> = {
     'intermediador cadastrado na conta, que é o que vai na NF-e. Corrija o CNPJ do intermediador ' +
     'no cadastro da conta; o aviso se encerra quando um pedido importado depois da correção ' +
     'trouxer um CNPJ que confere',
+  // Os cinco motivos do estoque (passo 12). Uma linha por conta, sejam quantos
+  // forem os anúncios envolvidos: a frase não cita SKU nem quantidade.
+  [MOTIVO_CONTA_AMAZON.estoqueSemDeposito]:
+    'ela não tem depósito definido, então o ERP não calcula nem envia o estoque dos anúncios ' +
+    'dela para a Amazon. Defina o depósito no cadastro da conta; o aviso se encerra na próxima ' +
+    'sincronização de estoque, poucos minutos depois',
+  [MOTIVO_CONTA_AMAZON.estoqueDepositoSemLinhas]:
+    'a conferência diária de estoque não enviou nada à Amazon porque o depósito da conta não tem ' +
+    'estoque lançado para boa parte dos anúncios (ou foi trocado durante a conferência), e ' +
+    'enviar assim zeraria esses anúncios. Confira no cadastro da conta se o depósito é o certo e, ' +
+    'nos produtos, se o estoque está lançado nele; o aviso se encerra na próxima conferência ' +
+    'diária que terminar sem esse problema',
+  [MOTIVO_CONTA_AMAZON.estoqueVinculosRecusados]:
+    'há anúncios cujo estoque não é enviado porque o vínculo deles com um produto do ERP não pôde ' +
+    'ser confirmado (o mesmo SKU em mais de um produto, um SKU sem produto, um anúncio filho com ' +
+    'o SKU ou o ASIN do anúncio pai, um produto com variações, ou um vínculo com o anúncio pai ' +
+    'que não dá para conferir); esses anúncios continuam vendendo com a última quantidade ' +
+    'enviada. Confira os vínculos de anúncio da Amazon nos produtos do ERP; o aviso se encerra na ' +
+    'próxima conferência diária de estoque que terminar sem nenhum vínculo recusado',
+  [MOTIVO_CONTA_AMAZON.estoqueRecusadoPelaAmazon]:
+    'a Amazon recusou a atualização de estoque de ao menos um anúncio da conta, que continua com ' +
+    'a quantidade anterior. Confira os problemas do anúncio na Seller Central; o aviso se encerra ' +
+    'na próxima conferência diária de estoque que não encontrar nenhum anúncio recusado com o ' +
+    'estoque ainda diferente do ERP',
+  [MOTIVO_CONTA_AMAZON.feedEstoqueFalhou]:
+    'um envio de estoque em lote (feed) para a Amazon falhou ou não teve o resultado confirmado, ' +
+    'então parte das quantidades pode não ter chegado à Amazon. Confira os envios de arquivo ' +
+    '(feeds) da conta na Seller Central; o aviso se encerra quando a Amazon concluir um envio de ' +
+    'estoque em lote, ou na conferência diária de estoque que terminar sem diferença enquanto ' +
+    'os envios em lote não estiverem falhando seguidamente',
 };
 
 /** A frase do motivo, ou um texto neutro — o mesmo contrato de {@link fraseMotivoImportacaoParada}. */
@@ -1001,24 +1085,27 @@ export const MENSAGENS_POR_TIPO: Record<TipoAviso, MensagemAviso> = {
     corpo: corpoRastreioDivergenteLi,
   },
   // The three avisos of the product import (step 9), all `atencao`, all on the conta page,
-  // where the import's report lists every product behind them. No `runbook`: the fixes are in
-  // the app (the category and variation screens, a product's tax settings) or in the store's
-  // panel, and each sentence says which.
+  // where the import's report lists every product behind them (its import card and result
+  // view). No `runbook`: the fixes are in the app (the variation screen, a product's tax
+  // settings, an import run with other options) or in the store's panel, and each sentence says
+  // which. No screen links a category by hand, so no sentence asks for one.
   [TIPO_AVISO.lojaIntegradaCategoriaSemVinculo]: {
     titulo: 'Categoria da Loja Integrada sem vínculo',
     corpo: (params) =>
       `A categoria ${p(params, 'caminho')} da loja ${p(params, 'loja')} ficou sem categoria no ` +
       `ERP na importação de produtos: ${fraseMotivoCategoriaSemVinculo(params.motivo)}. ` +
       `${p(params, 'produtos')} produto(s) foram importados sem categoria e precisam de revisão ` +
-      'fiscal. Vincule a categoria (ou corrija-a no painel da Loja Integrada) e importe de novo; ' +
-      'o aviso se encerra quando a importação encontrar a categoria vinculada.',
+      'fiscal. Importe de novo com "Completar" e, em categorias, "Criar e vincular as que ' +
+      'faltam" (ou corrija a categoria no painel da Loja Integrada); o aviso se encerra quando ' +
+      'uma importação encontrar a categoria vinculada.',
   },
   [TIPO_AVISO.lojaIntegradaRevisaoFiscal]: {
     titulo: 'Produtos da Loja Integrada para revisão fiscal',
     corpo: (params) =>
       `A importação de produtos da loja ${p(params, 'loja')} criou ou mudou produtos e ` +
       `categorias de um jeito que muda o cálculo de impostos da NF-e: ${p(params, 'abertos')} ` +
-      'produto(s) aguardam revisão fiscal. A lista está no relatório da última importação; um ' +
+      'produto(s) aguardam revisão fiscal. A lista está no resultado da última importação que a ' +
+      'conferiu, na tela da conta ("Ver resultado", em "Revisão fiscal"); um ' +
       'produto sai dela quando ele, a categoria dele ou uma regra de imposto que o cite tiver a ' +
       'configuração fiscal. O aviso se encerra quando a lista ficar vazia.',
   },
@@ -1031,6 +1118,42 @@ export const MENSAGENS_POR_TIPO: Record<TipoAviso, MensagemAviso> = {
       'relatório da importação na tela da conta, corrija no ERP ou no painel da Loja Integrada e ' +
       'rode a importação de novo com "Todos"; o aviso se encerra quando uma importação completa ' +
       'terminar sem pendências.',
+  },
+  // The three avisos of the stock sync (step 12), all `atencao`. Meanwhile the store keeps its
+  // own number, so each sentence says what the store shows. No `runbook`: the fixes are in the
+  // ERP (a stock record, a link) or in the store's panel, and each sentence says which.
+  [TIPO_AVISO.lojaIntegradaEstoqueSemErp]: {
+    titulo: 'Produtos da Loja Integrada sem estoque no ERP',
+    corpo: (params) =>
+      `${p(params, 'produtos')} produto(s) vinculado(s) à loja ${p(params, 'loja')} nunca ` +
+      'tiveram estoque no ERP, em nenhum depósito, por isso o ERP não envia o estoque deles e a ' +
+      `Loja Integrada mantém o número que já tinha.${fraseAmostra(params)} Cadastre o estoque ` +
+      'deles no depósito da conta; o aviso se encerra quando a conferência diária de estoque ' +
+      'não encontrar mais nenhum.',
+  },
+  [TIPO_AVISO.lojaIntegradaEstoqueRecusado]: {
+    titulo: 'Estoque recusado pela Loja Integrada',
+    corpo: (params) => {
+      // `p()` decide o que é "ausente" (sem a chave OU ''), então a cláusula e o
+      // marcador nunca discordam: sem status, a cláusula inteira some.
+      const status = p(params, 'status', '');
+      return (
+        `A Loja Integrada recusou o estoque do produto ${p(params, 'produto')} ` +
+        `(produto ${p(params, 'idLi')} na loja ${p(params, 'loja')})` +
+        `${status === '' ? '' : ` com HTTP ${status}`}, e o número dele na loja não foi ` +
+        'atualizado. Confira o produto no painel da Loja Integrada; o aviso se encerra quando ' +
+        'um envio desse produto der certo, e a conferência diária tenta de novo enquanto a loja ' +
+        'estiver diferente do ERP.'
+      );
+    },
+  },
+  [TIPO_AVISO.lojaIntegradaEstoqueVinculo]: {
+    titulo: 'Estoque da Loja Integrada parado por um vínculo',
+    corpo: (params) =>
+      `Na loja ${p(params, 'loja')}, ${p(params, 'produtos')} produto(s) estão sem envio de ` +
+      `estoque: ${fraseMotivoEstoqueVinculo(params.motivo)}. Enquanto isso a Loja Integrada ` +
+      `mantém o número que já tinha.${fraseAmostra(params)} O aviso se encerra quando a ` +
+      'conferência diária de estoque não encontrar mais nenhum caso.',
   },
   // Sem `runbook` nos dois avisos por CONTA da Amazon: o conserto está no app —
   // uma nova autorização pelo painel de conexão da conta (o link do aviso).
@@ -1102,9 +1225,11 @@ export const MENSAGENS_POR_TIPO: Record<TipoAviso, MensagemAviso> = {
       'registro da varredura de pedidos (o período inicial de busca é AMAZON_POLL_LOOKBACK_H, no ' +
       'ambiente das funções).',
   },
-  // Os dois avisos da importação de pedidos da Amazon (passos 5 e 7). Sem
-  // `runbook`: o que fazer muda com o motivo, então cada frase de motivo o diz —
-  // no Seller Central ou no próprio ERP (o link abre o pedido ou a conta).
+  // Os dois avisos da Amazon: o por pedido (importação de pedidos, passos 5 e 7)
+  // e o por conta (a importação e, desde o passo 12, a sincronização de
+  // estoque). Sem `runbook`: o que fazer muda com o motivo, então cada frase de
+  // motivo o diz — na Seller Central ou no próprio ERP (o link abre o pedido ou
+  // a conta).
   [TIPO_AVISO.amazonPedidoPrecisaAtencao]: {
     titulo: 'Pedido da Amazon precisa de atenção',
     corpo: (params) =>

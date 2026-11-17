@@ -19,7 +19,11 @@
  *    takes the zero-cost fast path — and the trigger becomes a no-op that logs
  *    nothing. That is exactly why the promoted `planLinkChange` takes the
  *    reader as a REQUIRED parameter with no default, and why
- *    {@link contaDoLinkShopee} carries a near-miss test of its own.
+ *    {@link contaDoLinkShopee} carries near-miss tests of its own. It lives in
+ *    `@delfrance/schemas` (`shopeeLinkLeitura.ts`, beside the predicate of
+ *    point 2) because a `tools/migrations` script needs it and cannot import an
+ *    app; it is re-exported here, so no importer changed, and this binding's
+ *    suite pins that it IS that copy.
  * 2. The predicate: `anuncioShopeeVivo` (`./statusAnuncio`), which is also the
  *    re-verify/pause gate. Total and NON-THROWING over an unvalidated document
  *    — it is handed `event.data.after.data()`, i.e. whatever is on disk,
@@ -57,13 +61,16 @@ import { FieldValue, type Firestore } from 'firebase-admin/firestore';
 import { produtoShopeeLinkCollection } from '@delfrance/data/admin/collections';
 import {
   adicionarConta as adicionarContaCore,
-  contaIdFromRef,
   planLinkChange,
   removerContaSeOrfa as removerContaSeOrfaCore,
   type SentinelasDeArray,
 } from '@delfrance/data/admin/produtos';
+import { contaDoLinkShopee } from '@delfrance/schemas';
 
 import { anuncioShopeeVivo } from './statusAnuncio';
+
+/** The anchor's conta reader — the ONE copy, in `@delfrance/schemas` (the header's point 1). */
+export { contaDoLinkShopee };
 
 /**
  * The array sentinels the promoted writers cannot import for themselves. See
@@ -81,22 +88,6 @@ const SENTINELAS: SentinelasDeArray = {
 /* --------------------------------------------------------------------------
  * Pure helpers
  * ------------------------------------------------------------------------ */
-
-/**
- * The integração doc id a `prodshopee` link belongs to, or `null`.
- *
- * ⚠️ **`contaProdutoShopeeOuterRef`** — the header's point 1. Reading
- * `contaOuterRef` here (Mercado Livre's field, and the shape a copy-paste
- * brings) resolves `null` for every Shopee link and turns the trigger into a
- * silent no-op.
- *
- * Non-throwing, and it tolerates both stored ref forms
- * (`documents/integracao/<id>` and the bare `integracao/<id>`) because
- * `contaIdFromRef` does.
- */
-export function contaDoLinkShopee(link: Record<string, unknown>): string | null {
-  return contaIdFromRef(link.contaProdutoShopeeOuterRef);
-}
 
 /**
  * What a `prodshopee` write means for the array, decided from the event payload

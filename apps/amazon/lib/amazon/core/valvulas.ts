@@ -72,12 +72,13 @@
  *
  * ## The environment is a parameter
  *
- * Like everywhere under `lib/amazon`. {@link lerValvula} is pure and is THE first
- * statement of a write flow: it reads its two names ONCE, so every target of one
- * run gets the same decision. {@link registrarValvulaAmazon} writes the
- * run-start line, the second statement. No write flow calls them yet: the write
- * engine (`core/escrita.ts`, step 14, PR 14-b; first wired caller 14-c) is the
- * first.
+ * Like everywhere under `lib/amazon`. {@link lerValvula} is pure and comes before
+ * any Firestore read of a write flow (after its payload or body is parsed and, on
+ * a route, after the read switch): it reads its two names ONCE, so every target of
+ * one run gets the same decision. {@link registrarValvulaAmazon} writes the
+ * run-start line right after it. The callers: the NF-e task (step 14, PR 14-c),
+ * the Easy Ship scheduling task (step 15, PR 15-c) and the label route (PR 15-d),
+ * each handing the snapshot to the write engine (`core/escrita.ts`).
  */
 import type { AmbienteAmazon } from '../env';
 import { idDeContaValido } from './idConta';

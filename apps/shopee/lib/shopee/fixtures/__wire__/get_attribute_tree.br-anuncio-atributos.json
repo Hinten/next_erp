@@ -1,0 +1,860 @@
+{
+  "error": "",
+  "message": "",
+  "warning": "",
+  "response": {
+    "list": [
+      {
+        "category_id": 101787,
+        "attribute_tree": [
+          {
+            "attribute_id": 100022,
+            "mandatory": false,
+            "name": "Gender",
+            "attribute_value_list": [
+              {
+                "value_id": 674,
+                "name": "Unisex",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Unissex"
+                  }
+                ]
+              },
+              {
+                "value_id": 681,
+                "name": "Boy",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Menino"
+                  }
+                ]
+              },
+              {
+                "value_id": 745,
+                "name": "Girl",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Menina"
+                  }
+                ]
+              }
+            ],
+            "attribute_info": {
+              "input_type": 1,
+              "input_validation_type": 0,
+              "format_type": 1,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Gênero"
+              }
+            ]
+          },
+          {
+            "attribute_id": 100037,
+            "mandatory": false,
+            "name": "Region of Origin",
+            "attribute_value_list": [
+              {
+                "value_id": 1,
+                "name": "Japan",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Japão"
+                  }
+                ]
+              },
+              {
+                "value_id": 35,
+                "name": "Mainland China",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "China"
+                  }
+                ]
+              },
+              {
+                "value_id": 48,
+                "name": "Korea",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Coreia"
+                  }
+                ]
+              },
+              {
+                "value_id": 68,
+                "name": "Indonesia",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Indonésia"
+                  }
+                ]
+              },
+              {
+                "value_id": 93,
+                "name": "Others",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Outros"
+                  }
+                ]
+              },
+              {
+                "value_id": 110,
+                "name": "America",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "América"
+                  }
+                ]
+              },
+              {
+                "value_id": 112,
+                "name": "Taiwan",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Taiwan"
+                  }
+                ]
+              },
+              {
+                "value_id": 129,
+                "name": "Thailand",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Tailândia"
+                  }
+                ]
+              },
+              {
+                "value_id": 136,
+                "name": "Vietnam",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Vietnã"
+                  }
+                ]
+              },
+              {
+                "value_id": 154,
+                "name": "India",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Índia"
+                  }
+                ]
+              },
+              {
+                "value_id": 171,
+                "name": "Bangladesh",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Bangladesh"
+                  }
+                ]
+              },
+              {
+                "value_id": 6737,
+                "name": "Brasil",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Brasil"
+                  }
+                ]
+              },
+              {
+                "value_id": 6738,
+                "name": "Colombia",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Colombia"
+                  }
+                ]
+              },
+              {
+                "value_id": 6739,
+                "name": "Chile",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Chile"
+                  }
+                ]
+              },
+              {
+                "value_id": 6740,
+                "name": "Argentina",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Argentina"
+                  }
+                ]
+              },
+              {
+                "value_id": 6741,
+                "name": "Mexico",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "México"
+                  }
+                ]
+              }
+            ],
+            "attribute_info": {
+              "input_type": 2,
+              "input_validation_type": 2,
+              "format_type": 1,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "País de Origem"
+              }
+            ]
+          },
+          {
+            "attribute_id": 100134,
+            "mandatory": false,
+            "name": "Material",
+            "attribute_value_list": [
+              {
+                "value_id": 1149,
+                "name": "Cotton",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Algodão"
+                  }
+                ]
+              },
+              {
+                "value_id": 1257,
+                "name": "Others",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Outros"
+                  }
+                ]
+              },
+              {
+                "value_id": 1271,
+                "name": "Silk",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Seda"
+                  }
+                ]
+              },
+              {
+                "value_id": 1280,
+                "name": "Synthetic",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Sintético"
+                  }
+                ]
+              },
+              {
+                "value_id": 1285,
+                "name": "Textile",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Têxtil"
+                  }
+                ]
+              }
+            ],
+            "attribute_info": {
+              "input_type": 5,
+              "input_validation_type": 2,
+              "format_type": 1,
+              "max_value_count": 5,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Material"
+              }
+            ]
+          },
+          {
+            "attribute_id": 100135,
+            "mandatory": false,
+            "name": "Recommended Age",
+            "attribute_value_list": [
+              {
+                "value_id": 1238,
+                "name": "10 - 11 years",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "10 - 11 anos"
+                  }
+                ]
+              },
+              {
+                "value_id": 1240,
+                "name": "11 - 12 years",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "11 - 12 anos"
+                  }
+                ]
+              },
+              {
+                "value_id": 1242,
+                "name": "12 - 13 years",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "12 - 13 anos"
+                  }
+                ]
+              },
+              {
+                "value_id": 1246,
+                "name": "3 - 4 years",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "3 - 4 anos"
+                  }
+                ]
+              },
+              {
+                "value_id": 1249,
+                "name": "4 - 5 years",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "4 - 5 anos"
+                  }
+                ]
+              },
+              {
+                "value_id": 1254,
+                "name": "5 - 6 years",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "5 - 6 anos"
+                  }
+                ]
+              },
+              {
+                "value_id": 1259,
+                "name": "6 - 7 years",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "6 - 7 anos"
+                  }
+                ]
+              },
+              {
+                "value_id": 1262,
+                "name": "7 - 8 years",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "7 - 8 anos"
+                  }
+                ]
+              },
+              {
+                "value_id": 1269,
+                "name": "8 - 9 years",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "8 - 9 anos"
+                  }
+                ]
+              },
+              {
+                "value_id": 1274,
+                "name": "9 - 10 years",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "9 - 10 anos"
+                  }
+                ]
+              }
+            ],
+            "attribute_info": {
+              "input_type": 1,
+              "input_validation_type": 0,
+              "format_type": 1,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Idade recomendada"
+              }
+            ]
+          },
+          {
+            "attribute_id": 100152,
+            "mandatory": false,
+            "name": "Dress/Skirt Style",
+            "attribute_value_list": [
+              {
+                "value_id": 1367,
+                "name": "A-Line",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Saia formato A"
+                  }
+                ]
+              },
+              {
+                "value_id": 1377,
+                "name": "Bodycon",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Tubinho"
+                  }
+                ]
+              },
+              {
+                "value_id": 1382,
+                "name": "Fishtail",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Cauda de Peixe"
+                  }
+                ]
+              },
+              {
+                "value_id": 1399,
+                "name": "Others",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Outros"
+                  }
+                ]
+              },
+              {
+                "value_id": 1408,
+                "name": "Pencil",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Lápis"
+                  }
+                ]
+              },
+              {
+                "value_id": 1418,
+                "name": "Pleated",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Plissada"
+                  }
+                ]
+              },
+              {
+                "value_id": 1430,
+                "name": "Wrap",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Envelope/Wrap"
+                  }
+                ]
+              }
+            ],
+            "attribute_info": {
+              "input_type": 2,
+              "input_validation_type": 2,
+              "format_type": 1,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Estilos de Vestido / Saia"
+              }
+            ]
+          },
+          {
+            "attribute_id": 100162,
+            "mandatory": false,
+            "name": "Pattern",
+            "attribute_value_list": [
+              {
+                "value_id": 1428,
+                "name": "Batik",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Batik"
+                  }
+                ]
+              },
+              {
+                "value_id": 1439,
+                "name": "Checkered / Plaid",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Xadrez / Quadriculada"
+                  }
+                ]
+              },
+              {
+                "value_id": 1447,
+                "name": "Floral",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Floral"
+                  }
+                ]
+              },
+              {
+                "value_id": 1453,
+                "name": "Others",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Outros"
+                  }
+                ]
+              },
+              {
+                "value_id": 1463,
+                "name": "Plain",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Lisa"
+                  }
+                ]
+              },
+              {
+                "value_id": 1474,
+                "name": "Polka Dotted",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Bolinhas"
+                  }
+                ]
+              },
+              {
+                "value_id": 1495,
+                "name": "Striped",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Listrada"
+                  }
+                ]
+              },
+              {
+                "value_id": 1561,
+                "name": "Graphic",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Desenho"
+                  }
+                ]
+              },
+              {
+                "value_id": 1609,
+                "name": "Animal Prints",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Animal Print"
+                  }
+                ]
+              }
+            ],
+            "attribute_info": {
+              "input_type": 5,
+              "input_validation_type": 2,
+              "format_type": 1,
+              "max_value_count": 5,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Estampa"
+              }
+            ]
+          },
+          {
+            "attribute_id": 100413,
+            "mandatory": false,
+            "name": "Condition",
+            "attribute_info": {
+              "input_type": 2,
+              "input_validation_type": 2,
+              "format_type": 1,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Condição"
+              }
+            ]
+          },
+          {
+            "attribute_id": 100999,
+            "mandatory": false,
+            "name": "Quantity",
+            "attribute_info": {
+              "input_type": 3,
+              "input_validation_type": 2,
+              "format_type": 1,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Quantidade da embalagem"
+              }
+            ]
+          },
+          {
+            "attribute_id": 101029,
+            "mandatory": false,
+            "name": "indication",
+            "attribute_info": {
+              "input_type": 3,
+              "input_validation_type": 3,
+              "format_type": 2,
+              "attribute_unit_list": [
+                "ML",
+                "L",
+                "MG",
+                "G/GR",
+                "KG",
+                "CM",
+                "M",
+                "Dozen",
+                "Piece",
+                "Pack",
+                "Set",
+                "Box"
+              ],
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Tamanho Do Pacote"
+              }
+            ]
+          },
+          {
+            "attribute_id": 101219,
+            "mandatory": false,
+            "name": "Custom Product",
+            "attribute_value_list": [
+              {
+                "value_id": 7221,
+                "name": "Yes",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Sim"
+                  }
+                ]
+              },
+              {
+                "value_id": 7222,
+                "name": "No",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Não"
+                  }
+                ]
+              }
+            ],
+            "attribute_info": {
+              "input_type": 1,
+              "input_validation_type": 0,
+              "format_type": 1,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Produto personalizado"
+              }
+            ]
+          },
+          {
+            "attribute_id": 101639,
+            "mandatory": false,
+            "name": "Model",
+            "attribute_info": {
+              "input_type": 5,
+              "input_validation_type": 2,
+              "format_type": 1,
+              "max_value_count": 5,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Modelo"
+              }
+            ]
+          },
+          {
+            "attribute_id": 106664,
+            "mandatory": false,
+            "name": "Contains Bluetooth, Wireless and/or RF Technology",
+            "attribute_value_list": [
+              {
+                "value_id": 20996,
+                "name": "Yes",
+                "child_attribute_list": [
+                  {
+                    "attribute_id": 101040,
+                    "mandatory": true,
+                    "name": "Model Name",
+                    "attribute_info": {
+                      "input_type": 3,
+                      "input_validation_type": 2,
+                      "format_type": 1,
+                      "is_oem": false,
+                      "support_search_value": false
+                    },
+                    "multi_lang": [
+                      {
+                        "language": "pt-BR",
+                        "value": "Nome do Modelo"
+                      }
+                    ]
+                  },
+                  {
+                    "attribute_id": 101237,
+                    "mandatory": true,
+                    "name": "Manufacturer",
+                    "attribute_info": {
+                      "input_type": 2,
+                      "input_validation_type": 2,
+                      "format_type": 1,
+                      "is_oem": false,
+                      "support_search_value": true
+                    },
+                    "multi_lang": [
+                      {
+                        "language": "pt-BR",
+                        "value": "Fabricante"
+                      }
+                    ]
+                  },
+                  {
+                    "attribute_id": 101197,
+                    "mandatory": true,
+                    "name": "Registration ID",
+                    "attribute_info": {
+                      "input_type": 3,
+                      "input_validation_type": 2,
+                      "format_type": 1,
+                      "is_oem": false,
+                      "support_search_value": false
+                    },
+                    "multi_lang": [
+                      {
+                        "language": "pt-BR",
+                        "value": "Nr. de Homologação"
+                      }
+                    ]
+                  }
+                ],
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Sim"
+                  }
+                ]
+              },
+              {
+                "value_id": 20997,
+                "name": "No",
+                "multi_lang": [
+                  {
+                    "language": "pt-BR",
+                    "value": "Não"
+                  }
+                ]
+              }
+            ],
+            "attribute_info": {
+              "input_type": 1,
+              "input_validation_type": 0,
+              "format_type": 1,
+              "is_oem": false,
+              "support_search_value": false
+            },
+            "multi_lang": [
+              {
+                "language": "pt-BR",
+                "value": "Contém bluetooh, Wi-fi e/ou Tecnologia de Radio Frequência?"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "debug_message": ""
+}

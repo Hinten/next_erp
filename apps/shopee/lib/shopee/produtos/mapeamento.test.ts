@@ -8,7 +8,12 @@ import {
   type ShopeePriceInfo,
   type ShopeeTaxInfo,
 } from '@delfrance/integrations-shopee';
-import { importacaoShopeeOptionsSchema, type ImportacaoShopeeOptions } from '@delfrance/schemas';
+import {
+  importacaoShopeeOptionsSchema,
+  logisticaGravadaPeloErpShopee,
+  produtoShopeeLinkSchema,
+  type ImportacaoShopeeOptions,
+} from '@delfrance/schemas';
 
 import type { ItemLido } from './itemLido';
 import {
@@ -540,6 +545,36 @@ describe('mapearProdutoPai — o documento', () => {
     expect(String(mapa.patchProduto.nome)).toHaveLength(100);
   });
 
+  it('⛔ #2015: reimportar um anúncio COMUM vinculado a um produto KIT nunca escreve `ehKit` — o kit continua kit (o remédio do conversor)', () => {
+    // `logistica-nao-confirmada` on `--converter-em-kit` tells the operator to
+    // import the PREDECESSOR — an ordinary listing linked to the kit produto K.
+    // With «Atualizar anúncios já cadastrados» that runs THIS update path on K,
+    // with the strongest options on, so `ehKit` (and `nome` / `ehUsado`) must
+    // stay create-only or the remedy would un-kit K.
+    const k = { id: 'k-1', raw: { ehKit: true, nome: 'Kit do operador', ehUsado: false } };
+    for (const options of [
+      opcoes(),
+      opcoes({ atualizarProdutoPai: true, sobrescreverDadosProduto: true }),
+    ]) {
+      const mapa = mapearProdutoPai(
+        argsPai({
+          entrada: item({ item_name: 'Camiseta', condition: 'USED' }),
+          existente: k,
+          options,
+        }),
+      );
+      expect(mapa.criar).toBe(false);
+      expect(mapa.patchProduto).not.toHaveProperty('ehKit');
+      expect(mapa.patchProduto).not.toHaveProperty('nome');
+      expect(mapa.patchProduto).not.toHaveProperty('ehUsado');
+    }
+    // PAIR: the CREATE path is where the flag is written — always `false`
+    // here, `kitShopee.ts` folds `true` in after.
+    const criado = mapearProdutoPai(argsPai({ entrada: item({ item_name: 'Camiseta' }) }));
+    expect(criado.criar).toBe(true);
+    expect(criado.patchProduto.ehKit).toBe(false);
+  });
+
   it('⛔ NEAR-MISS: uma reimportação NÃO republica um produto que o operador ocultou', () => {
     const mapa = mapearProdutoPai(argsPai({ existente: { id: 'p-1', raw: { publicado: false } } }));
     expect(mapa.patchProduto).not.toHaveProperty('publicado');
@@ -965,6 +1000,64 @@ describe('dadosLinkListagem', () => {
           ).kitNativo,
         ).toBe(true);
       }
+    });
+  });
+
+  describe('`logisticaGravadaEm` — a lista que a Shopee ACABOU de responder é carimbada (#2015)', () => {
+    /** A lista que o legado gravou: nenhum carimbo, ou o `null` que ninguém escolheu. */
+    const LISTA_LEGADA = [{ logistic_id: 99, is_free: true, shipping_fee: 12.9, size_id: 3 }];
+    const LIDA = item({ logistic_info: [{ logistic_id: 1, is_free: false, size_id: 7 }] });
+
+    it('PAR: um vínculo NOVO sai com a lista lida E o carimbo `nowMs` — e o predicado único confia nele', () => {
+      const doc = dadosLinkListagem(LIDA, null, INTEGRACAO, AGORA);
+      expect(doc.logistic_info).toEqual(LIDA.base.logistic_info);
+      expect(doc).toHaveProperty('logisticaGravadaEm', AGORA);
+      expect(logisticaGravadaPeloErpShopee(doc)).toBe(true);
+    });
+
+    it('⛔ NEAR-MISS (depois do spread): um armazenado com a lista LEGADA e `logisticaGravadaEm: null` sai carimbado com `nowMs` e a lista da Shopee', () => {
+      const armazenado = {
+        logistic_info: LISTA_LEGADA,
+        logisticaGravadaEm: null,
+        dataCadastro: 111,
+      };
+      // A linha de base: o armazenado, sozinho, é DESCONFIADO.
+      expect(logisticaGravadaPeloErpShopee(armazenado)).toBe(false);
+
+      const doc = dadosLinkListagem(LIDA, armazenado, INTEGRACAO, AGORA);
+
+      expect(doc.logisticaGravadaEm).toBe(AGORA);
+      expect(doc.logistic_info).toEqual(LIDA.base.logistic_info);
+      expect(doc.logistic_info).not.toEqual(LISTA_LEGADA);
+      expect(logisticaGravadaPeloErpShopee(doc)).toBe(true);
+      // A chave de primeira vez ao lado continua de primeira vez — o carimbo NÃO é.
+      expect(doc.dataCadastro).toBe(111);
+    });
+
+    it('⛔ NEAR-MISS: a chave AUSENTE (toda linha migrada) e um carimbo ANTERIOR também convergem para `nowMs`', () => {
+      // Ausente: o spread não traz nada. Anterior: o spread traz 111, e o carimbo
+      // de agora tem de vencer — uma escrita da lista é uma escrita do carimbo.
+      for (const armazenado of [{ logistic_info: LISTA_LEGADA }, { logisticaGravadaEm: 111 }]) {
+        expect(dadosLinkListagem(LIDA, armazenado, INTEGRACAO, AGORA).logisticaGravadaEm).toBe(
+          AGORA,
+        );
+      }
+    });
+
+    it('a leitura com `logistic_info` null TAMBÉM é carimbada — a lista e o carimbo andam juntos, sem condição', () => {
+      const semLista = item();
+      expect(semLista.base.logistic_info).toBeNull();
+      for (const armazenado of [null, { logistic_info: LISTA_LEGADA, logisticaGravadaEm: null }]) {
+        const doc = dadosLinkListagem(semLista, armazenado, INTEGRACAO, AGORA);
+        expect(doc).toHaveProperty('logistic_info', null);
+        expect(doc).toHaveProperty('logisticaGravadaEm', AGORA);
+      }
+    });
+
+    it('o carimbo sobrevive ao parse do schema do vínculo como o INTEIRO em ms que foi escrito', () => {
+      const doc = dadosLinkListagem(LIDA, null, INTEGRACAO, AGORA);
+      expect(produtoShopeeLinkSchema.partial().parse(doc).logisticaGravadaEm).toBe(AGORA);
+      expect(Number.isSafeInteger(doc.logisticaGravadaEm)).toBe(true);
     });
   });
 });

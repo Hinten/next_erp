@@ -59,6 +59,28 @@ describe('useContaJobFan', () => {
     expect(result.current.busy).toBe(false);
   });
 
+  it('resolves with THIS run’s outcomes only, one per conta, in input order', async () => {
+    const { result } = renderHook(() => useContaJobFan(describeError));
+    await act(async () => {
+      await result.current.run([A], () => Promise.resolve({ jobId: 'job-antigo' }));
+    });
+
+    let desfechos: unknown = null;
+    await act(async () => {
+      desfechos = await result.current.run([B, A], (id) =>
+        id === 'a'
+          ? Promise.reject(new ErroDeCanal('Já em andamento.'))
+          : Promise.resolve({ jobId: 'job-b' }),
+      );
+    });
+
+    // NEAR MISS — conta A's earlier `started` entry is NOT this run's outcome.
+    expect(desfechos).toEqual([
+      { kind: 'started', conta: B, jobId: 'job-b' },
+      { kind: 'error', conta: A, color: 'yellow', message: 'Já em andamento.' },
+    ]);
+  });
+
   it('keeps a recognised failure out of the rethrow and in the ledger', async () => {
     const { result } = renderHook(() => useContaJobFan(describeError));
 
@@ -123,7 +145,7 @@ describe('useContaJobFan', () => {
         }),
     );
 
-    let pending: Promise<void> | null = null;
+    let pending: Promise<unknown> | null = null;
     act(() => {
       pending = result.current.run([A], start);
     });

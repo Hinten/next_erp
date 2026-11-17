@@ -16,15 +16,15 @@ import {
 
 /**
  * The floor that keeps the assertions below non-vacuous: the number of committed
- * fixtures — 19: the 9 model-sandbox seeds (6 from step 2b, 3 Delivery ones from
- * step 14), the 8 C1 captures and the 2 C1b ones.
+ * fixtures — 22: the 12 model-sandbox seeds (6 from step 2b, 3 Delivery ones from
+ * step 14, 3 Listings ones from step 12a), the 8 C1 captures and the 2 C1b ones.
  *
  * ⚠️ It equals the count on purpose, so a fixture that disappears fails here
  * instead of silently shrinking what the scan below covers. A change that adds
  * fixtures raises it, and one that deliberately removes a fixture lowers it, in
  * the same commit.
  */
-const MINIMO_DE_FIXTURES = 19;
+const MINIMO_DE_FIXTURES = 22;
 
 describe('__wire__ corpus', () => {
   const arquivos = listarArquivosDoCorpusAmazon();

@@ -2,16 +2,23 @@ import { describe, expect, it } from 'vitest';
 import {
   CHAVE_RETORNO_OAUTH_AMAZON,
   CODIGO_ERRO_AMAZON,
+  CODIGO_ERRO_ETIQUETA_AMAZON,
+  CODIGO_ERRO_NFE_AMAZON,
   LIMIAR_AVISO_AMAZON_DIAS,
   MAX_SELLING_PARTNER_ID,
+  MOTIVO_ETIQUETA_AMAZON,
   MOTIVO_RETORNO_OAUTH_AMAZON,
   VALIDADE_AUTORIZACAO_AMAZON_DIAS,
   contaAmazonRoteavel,
   diasAteDataCivilAmazon,
   diasParaReautorizarAmazon,
   erroContaAmazonSchema,
+  erroEnvioNfeAmazonSchema,
+  erroEtiquetaAmazonSchema,
+  motivoEtiquetaAmazonSchema,
   motivoRetornoOAuthAmazonSchema,
   reautorizarAteAmazon,
+  respostaEnvioNfeAmazonSchema,
   respostaInicioOAuthAmazonSchema,
   sellingPartnerIdValido,
   statusContaAmazonSchema,
@@ -222,6 +229,248 @@ describe('CODIGO_ERRO_AMAZON', () => {
   });
 });
 
+describe('CODIGO_ERRO_NFE_AMAZON (the NF-e re-drive route, step 14)', () => {
+  it('is exactly the five codes, each unique and AMAZON_-prefixed', () => {
+    expect(CODIGO_ERRO_NFE_AMAZON).toEqual({
+      CORPO_INVALIDO: 'AMAZON_CORPO_INVALIDO',
+      PEDIDO_NAO_ENCONTRADO: 'AMAZON_PEDIDO_NAO_ENCONTRADO',
+      NFE_NAO_ENCONTRADA: 'AMAZON_NFE_NAO_ENCONTRADA',
+      NFE_NAO_ELEGIVEL: 'AMAZON_NFE_NAO_ELEGIVEL',
+      TAREFAS_DESLIGADAS: 'AMAZON_TAREFAS_DESLIGADAS',
+    });
+    const codigos = Object.values(CODIGO_ERRO_NFE_AMAZON);
+    expect(new Set(codigos).size).toBe(codigos.length);
+    for (const c of codigos) expect(c).toMatch(/^AMAZON_[A-Z_]+$/);
+  });
+
+  it('★ is a SEPARATE set: no value is shared with CODIGO_ERRO_AMAZON, which keeps its four (apps/web’s exhaustive copy)', () => {
+    const daConta = new Set<string>(Object.values(CODIGO_ERRO_AMAZON));
+    expect(Object.values(CODIGO_ERRO_NFE_AMAZON).filter((c) => daConta.has(c))).toEqual([]);
+    // The conta routes' set did not move: four keys, the same values (the
+    // literal pin above, restated as a count so a widening reds here too).
+    expect(Object.keys(CODIGO_ERRO_AMAZON)).toHaveLength(4);
+    // The route's switch refusal REUSES the conta routes' code.
+    expect(Object.values(CODIGO_ERRO_NFE_AMAZON)).not.toContain(
+      CODIGO_ERRO_AMAZON.CHAMADAS_DESLIGADAS,
+    );
+  });
+});
+
+describe('erroEnvioNfeAmazonSchema', () => {
+  it('parses the 409 with its motivo, the 400 with field paths, and the switch refusal (a conta-route code)', () => {
+    expect(
+      erroEnvioNfeAmazonSchema.parse({
+        error: 'x',
+        code: CODIGO_ERRO_NFE_AMAZON.NFE_NAO_ELEGIVEL,
+        motivo: 'tpamb-homologacao',
+      }),
+    ).toEqual({ error: 'x', code: 'AMAZON_NFE_NAO_ELEGIVEL', motivo: 'tpamb-homologacao' });
+    expect(
+      erroEnvioNfeAmazonSchema.parse({
+        error: 'x',
+        code: CODIGO_ERRO_NFE_AMAZON.CORPO_INVALIDO,
+        issues: ['pedidoId'],
+      }).issues,
+    ).toEqual(['pedidoId']);
+    expect(
+      erroEnvioNfeAmazonSchema.safeParse({
+        error: 'x',
+        code: CODIGO_ERRO_AMAZON.CHAMADAS_DESLIGADAS,
+      }).success,
+    ).toBe(true);
+  });
+
+  it('keeps `code` and `motivo` plain strings, and `code` REQUIRED (the conta envelope’s rule)', () => {
+    expect(
+      erroEnvioNfeAmazonSchema.safeParse({ error: 'x', code: 'AMAZON_DO_FUTURO', motivo: 'novo' })
+        .success,
+    ).toBe(true);
+    expect(erroEnvioNfeAmazonSchema.safeParse({ error: 'x', motivo: 'nao-amazon' }).success).toBe(
+      false,
+    );
+  });
+
+  it('NEAR-MISS: the conta envelope STRIPS the motivo — a 409 read through it loses the reason', () => {
+    const corpo = {
+      error: 'x',
+      code: CODIGO_ERRO_NFE_AMAZON.NFE_NAO_ELEGIVEL,
+      motivo: 'nao-amazon',
+    };
+    expect(erroContaAmazonSchema.parse(corpo)).not.toHaveProperty('motivo');
+    expect(erroEnvioNfeAmazonSchema.parse(corpo).motivo).toBe('nao-amazon');
+  });
+});
+
+describe('CODIGO_ERRO_ETIQUETA_AMAZON (the label route, step 15)', () => {
+  it('★ is exactly the ten codes, each unique and AMAZON_ETIQUETA_-prefixed', () => {
+    expect(CODIGO_ERRO_ETIQUETA_AMAZON).toEqual({
+      CORPO_INVALIDO: 'AMAZON_ETIQUETA_CORPO_INVALIDO',
+      PEDIDO_NAO_ENCONTRADO: 'AMAZON_ETIQUETA_PEDIDO_NAO_ENCONTRADO',
+      SEM_PERMISSAO: 'AMAZON_ETIQUETA_SEM_PERMISSAO',
+      NAO_ELEGIVEL: 'AMAZON_ETIQUETA_NAO_ELEGIVEL',
+      AGUARDANDO_NFE: 'AMAZON_ETIQUETA_AGUARDANDO_NFE',
+      RECUSADA: 'AMAZON_ETIQUETA_RECUSADA',
+      INDISPONIVEL: 'AMAZON_ETIQUETA_INDISPONIVEL',
+      AMAZON_INDISPONIVEL: 'AMAZON_ETIQUETA_AMAZON_INDISPONIVEL',
+      CONTA_INDISPONIVEL: 'AMAZON_ETIQUETA_CONTA_INDISPONIVEL',
+      DESLIGADA: 'AMAZON_ETIQUETA_DESLIGADA',
+    });
+    const codigos = Object.values(CODIGO_ERRO_ETIQUETA_AMAZON);
+    expect(new Set(codigos).size).toBe(codigos.length);
+    for (const c of codigos) expect(c).toMatch(/^AMAZON_ETIQUETA_[A-Z_]+$/);
+  });
+
+  it('★ every value is unique across ALL THREE sets, and the other two keep their literal values (apps/web pins them)', () => {
+    const todos = [
+      ...Object.values(CODIGO_ERRO_AMAZON),
+      ...Object.values(CODIGO_ERRO_NFE_AMAZON),
+      ...Object.values(CODIGO_ERRO_ETIQUETA_AMAZON),
+    ];
+    expect(todos).toHaveLength(4 + 5 + 10);
+    expect(new Set(todos).size).toBe(todos.length);
+    // The route's switch refusal REUSES the conta routes' code: it is not a label code.
+    expect(Object.values(CODIGO_ERRO_ETIQUETA_AMAZON)).not.toContain(
+      CODIGO_ERRO_AMAZON.CHAMADAS_DESLIGADAS,
+    );
+    expect(Object.values(CODIGO_ERRO_AMAZON).sort()).toEqual([
+      'AMAZON_CHAMADAS_DESLIGADAS',
+      'AMAZON_CONFIG_AUSENTE',
+      'AMAZON_CONTA_NAO_ENCONTRADA',
+      'AMAZON_ID_INVALIDO',
+    ]);
+    expect(Object.values(CODIGO_ERRO_NFE_AMAZON).sort()).toEqual([
+      'AMAZON_CORPO_INVALIDO',
+      'AMAZON_NFE_NAO_ELEGIVEL',
+      'AMAZON_NFE_NAO_ENCONTRADA',
+      'AMAZON_PEDIDO_NAO_ENCONTRADO',
+      'AMAZON_TAREFAS_DESLIGADAS',
+    ]);
+  });
+});
+
+describe('erroEtiquetaAmazonSchema', () => {
+  it('★ parses a motivo the closed slug set does not hold: a slug a newer backend adds still parses (NEAR-MISS: a numeric motivo fails)', () => {
+    const doFuturo = 'motivo-de-um-backend-mais-novo';
+    expect(motivoEtiquetaAmazonSchema.safeParse(doFuturo).success).toBe(false);
+    expect(
+      erroEtiquetaAmazonSchema.parse({
+        error: 'x',
+        code: CODIGO_ERRO_ETIQUETA_AMAZON.NAO_ELEGIVEL,
+        motivo: doFuturo,
+      }).motivo,
+    ).toBe(doFuturo);
+    expect(
+      erroEtiquetaAmazonSchema.safeParse({
+        error: 'x',
+        code: CODIGO_ERRO_ETIQUETA_AMAZON.NAO_ELEGIVEL,
+        motivo: 42,
+      }).success,
+    ).toBe(false);
+  });
+
+  it('parses a known slug, an absent or null motivo, the 400 with field paths, and the switch refusal (a conta-route code)', () => {
+    expect(
+      erroEtiquetaAmazonSchema.parse({
+        error: 'x',
+        code: CODIGO_ERRO_ETIQUETA_AMAZON.RECUSADA,
+        motivo: MOTIVO_ETIQUETA_AMAZON.dimensoesAusentes,
+      }).motivo,
+    ).toBe('dimensoes-ausentes');
+    expect(
+      erroEtiquetaAmazonSchema.parse({ error: 'x', code: 'c', motivo: null }).motivo,
+    ).toBeNull();
+    expect(erroEtiquetaAmazonSchema.parse({ error: 'x', code: 'c' })).not.toHaveProperty('motivo');
+    expect(
+      erroEtiquetaAmazonSchema.parse({
+        error: 'x',
+        code: CODIGO_ERRO_ETIQUETA_AMAZON.CORPO_INVALIDO,
+        issues: ['pedidoId'],
+      }).issues,
+    ).toEqual(['pedidoId']);
+    expect(
+      erroEtiquetaAmazonSchema.safeParse({
+        error: 'x',
+        code: CODIGO_ERRO_AMAZON.CHAMADAS_DESLIGADAS,
+      }).success,
+    ).toBe(true);
+  });
+
+  it('keeps `code` REQUIRED (the conta envelope’s rule)', () => {
+    expect(erroEtiquetaAmazonSchema.safeParse({ error: 'x', motivo: 'nao-amazon' }).success).toBe(
+      false,
+    );
+  });
+});
+
+describe('MOTIVO_ETIQUETA_AMAZON (the Easy Ship label refusals, step 15)', () => {
+  it('★ is exactly the 22 slugs, its constant member for member', () => {
+    expect([...motivoEtiquetaAmazonSchema.options].sort()).toEqual(
+      [
+        'nao-amazon',
+        'outra-integradora',
+        'pedido-bloqueado',
+        'mercadoria-fora',
+        'pedido-cancelado',
+        'pedido-pendente',
+        'cancelamento-solicitado',
+        'nao-dba',
+        'ja-enviado',
+        'status-pedido-inesperado',
+        'pacote-desconhecido',
+        'coleta-cancelada',
+        'marketplace-estrangeiro',
+        'nf-nao-requerida',
+        'nfe-ambigua',
+        'nfe-substituta',
+        'nfe-cancelada',
+        'dimensoes-ausentes',
+        'agendamento-recusado',
+        'nfe-em-processamento',
+        'nfe-recusada-pela-amazon',
+        'nfe-nao-enviada',
+      ].sort(),
+    );
+    expect(motivoEtiquetaAmazonSchema.options).toHaveLength(22);
+    expect(Object.values(MOTIVO_ETIQUETA_AMAZON).sort()).toEqual(
+      [...motivoEtiquetaAmazonSchema.options].sort(),
+    );
+  });
+
+  it('every slug is a lower-case kebab token (a URL- and log-safe code, never a sentence)', () => {
+    for (const slug of motivoEtiquetaAmazonSchema.options) {
+      expect(slug).toMatch(/^[a-z]+(-[a-z]+)*$/);
+    }
+  });
+
+  it('NEAR-MISSES stay refused: another casing, a spacing, a code, the NF-e task’s own reading of an unknown status', () => {
+    for (const quase of [
+      'NAO-DBA',
+      'nao_dba',
+      ' nao-dba',
+      'AMAZON_ETIQUETA_NAO_ELEGIVEL',
+      'status-pedido-desconhecido',
+      'leitura-defasada',
+      '',
+    ]) {
+      expect(motivoEtiquetaAmazonSchema.safeParse(quase).success, quase).toBe(false);
+    }
+  });
+});
+
+describe('respostaEnvioNfeAmazonSchema', () => {
+  it('parses the 202, strips an unknown key, refuses `enfileirado: false` and a missing id', () => {
+    const ok = { enfileirado: true, pedidoId: 'a'.repeat(64), nfeId: 's1' };
+    expect(respostaEnvioNfeAmazonSchema.parse(ok)).toEqual(ok);
+    expect(respostaEnvioNfeAmazonSchema.parse({ ...ok, extra: 1 })).toEqual(ok);
+    expect(respostaEnvioNfeAmazonSchema.safeParse({ ...ok, enfileirado: false }).success).toBe(
+      false,
+    );
+    expect(
+      respostaEnvioNfeAmazonSchema.safeParse({ enfileirado: true, pedidoId: 'p' }).success,
+    ).toBe(false);
+  });
+});
+
 describe('erroContaAmazonSchema', () => {
   it('parses a conta-route envelope, with and without the optional detail', () => {
     expect(
@@ -404,6 +653,13 @@ describe('barrel', () => {
     expect(barrel.motivoRetornoOAuthAmazonSchema).toBe(motivoRetornoOAuthAmazonSchema);
     expect(barrel.MOTIVO_RETORNO_OAUTH_AMAZON).toBe(MOTIVO_RETORNO_OAUTH_AMAZON);
     expect(barrel.CODIGO_ERRO_AMAZON).toBe(CODIGO_ERRO_AMAZON);
+    expect(barrel.CODIGO_ERRO_NFE_AMAZON).toBe(CODIGO_ERRO_NFE_AMAZON);
+    expect(barrel.erroEnvioNfeAmazonSchema).toBe(erroEnvioNfeAmazonSchema);
+    expect(barrel.motivoEtiquetaAmazonSchema).toBe(motivoEtiquetaAmazonSchema);
+    expect(barrel.MOTIVO_ETIQUETA_AMAZON).toBe(MOTIVO_ETIQUETA_AMAZON);
+    expect(barrel.CODIGO_ERRO_ETIQUETA_AMAZON).toBe(CODIGO_ERRO_ETIQUETA_AMAZON);
+    expect(barrel.erroEtiquetaAmazonSchema).toBe(erroEtiquetaAmazonSchema);
+    expect(barrel.respostaEnvioNfeAmazonSchema).toBe(respostaEnvioNfeAmazonSchema);
     expect(barrel.reautorizarAteAmazon).toBe(reautorizarAteAmazon);
     expect(barrel.diasParaReautorizarAmazon).toBe(diasParaReautorizarAmazon);
     expect(barrel.diasAteDataCivilAmazon).toBe(diasAteDataCivilAmazon);

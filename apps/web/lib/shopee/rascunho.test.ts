@@ -5,15 +5,22 @@ import {
   CODIGO_RASCUNHO_SHOPEE,
   MAX_ITEM_NAME_RASCUNHO_SHOPEE,
   PADRAO_ID_RASCUNHO_SHOPEE,
+  campoRascunhoShopeeSchema,
   camposDoRascunhoShopee,
   corpoAtualizarRascunhoShopeeSchema,
   corpoCriarRascunhoShopeeSchema,
   corpoDescartarRascunhoShopeeSchema,
   estadoPublicacaoRascunhoShopee,
   pendenciasDoRascunhoShopee,
+  respostaCanaisShopeeSchema,
   TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE,
+  type ArvoreAtributosShopee,
+  type AtributoDto,
+  type AtributoInfoDto,
+  type AtributoValorDto,
   type EstadoPublicacaoRascunhoShopee,
   type MarcaDaContaShopee,
+  type RespostaCanaisShopee,
 } from '@delfrance/schemas';
 
 import {
@@ -46,6 +53,7 @@ import {
   FRASE_PUBLICAR_COM_ALTERACOES_SHOPEE,
   FRASE_PUBLICAR_PRODUTO_NAO_SALVO_SHOPEE,
   FRASE_PUBLICAR_RASCUNHO_NOVO_SHOPEE,
+  FRASE_PUBLICAR_SEM_ATRIBUTOS_SHOPEE,
   FRASE_PUBLICAR_SEM_FAIXAS_SHOPEE,
   FRASE_RASCUNHO_INEXISTENTE_NA_PUBLICACAO_SHOPEE,
   MOTIVO_ANUNCIO_SHOPEE,
@@ -72,13 +80,20 @@ import {
 } from './client';
 import { CODIGO_FALHA_SHOPEE } from './erros';
 import {
+  MOTIVO_DA_LOGISTICA_INVALIDA_SHOPEE,
+  comCanalShopee,
+  escolhaInicialShopee,
+} from './logisticaRascunho';
+import {
   CAMPOS_DO_FORMULARIO_RASCUNHO_SHOPEE,
   MARCA_SEM_MARCA_RASCUNHO_SHOPEE,
   MARGEM_DA_RELEITURA_DO_ESTADO_SHOPEE_MS,
   algumRascunhoShopeeSujo,
   categoriaAceitaNoBlocoShopee,
+  comAtributoRascunhoShopee,
   comCampoRascunhoShopee,
   conciliarEdicaoRascunhoShopee,
+  conflitosAntesDeSalvarShopee,
   conflitosAtualizadosDoRascunhoShopee,
   corpoAtualizarRascunhoShopee,
   corpoCriarRascunhoShopee,
@@ -162,6 +177,29 @@ function edicaoDe(link: Record<string, unknown>, linkDocId = 'R1'): EdicaoRascun
   return edicaoDoRascunhoGuardadoShopee({ linkDocId, contaId: CONTA, link });
 }
 
+/* #1911 P16 — channel fixtures (ids as the designs number them; no real channel). */
+const CANAL_A = 90003;
+const CANAL_B = 90005;
+/** The provenance stamp the draft edit writes beside a list (P15): the projection reads a list only with it. */
+const CARIMBO_LOGISTICA = 1_700_000_000_000;
+const canalLigado = (logistic_id: number, is_free: boolean | null = false) => ({
+  logistic_id,
+  enabled: true,
+  is_free,
+});
+const canalDesligado = (logistic_id: number, is_free: boolean | null = false) => ({
+  logistic_id,
+  enabled: false,
+  is_free,
+});
+/** A stored draft whose channel list the ERP chose (stamped) — `lista` as STORED (any order). */
+function comCanaisEscolhidos(
+  lista: readonly unknown[],
+  extra: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return guardado({ logistic_info: lista, logisticaGravadaEm: CARIMBO_LOGISTICA, ...extra });
+}
+
 function linha(brandId: number, nome: string | null): MarcaDaContaShopee {
   return {
     brandId,
@@ -199,12 +237,16 @@ describe('a NEW draft — "Novo anúncio", nothing sent until Salvar', () => {
       nomeProduto: 'Camiseta ',
     });
     expect(e.novo).toBe(true);
+    // #1911 P16: the sixth form field starts «Automática» — and the create below never names it.
     expect(e.atual).toEqual({
       item_name: 'Camiseta ',
       description: null,
       category_id: null,
       marca: null,
+      attributes: null,
+      logistic_info: null,
     });
+    expect(e.digitacoesAtributos).toEqual({});
     const corpo = corpoCriarRascunhoShopee(e, LIVRE, { produtoId: PRODUTO });
     expect(corpo).toEqual({
       integracaoId: CONTA,
@@ -369,7 +411,9 @@ describe('dirty and the patch — the WRITE question (rev. 2a #3)', () => {
       100088,
     );
     const corpo = atualizacaoAceita(e);
-    expect(corpo.patch).toEqual({ category_id: 100088 });
+    // P13: the pick empties the form's list (the old category's), so the patch
+    // clears them by name — the route clears them anyway on a category change.
+    expect(corpo.patch).toEqual({ category_id: 100088, attributes: null });
     expect(Object.keys(corpo.base)).toEqual([
       CAMPO_RASCUNHO_SHOPEE.categoryId,
       CAMPO_RASCUNHO_SHOPEE.attributes,
@@ -401,13 +445,18 @@ describe('dirty and the patch — the WRITE question (rev. 2a #3)', () => {
     }
   });
 
-  it('only the four P10 fields ever enter a patch, in canonical order', () => {
+  // Was: 'only the five form fields ever enter a patch (the P10 four + attributes, P13), in canonical order'.
+  it('only the SIX form fields ever enter a patch (the P10 four + attributes, P13, + logistic_info, P16), in canonical order — logistic_info LAST', () => {
     expect(CAMPOS_DO_FORMULARIO_RASCUNHO_SHOPEE).toEqual([
       'item_name',
       'description',
       'category_id',
       'marca',
+      'attributes',
+      'logistic_info',
     ]);
+    // The schemas' own canonical order — the one `camposDaBaseDoRascunhoShopee` answers in.
+    expect(CAMPOS_DO_FORMULARIO_RASCUNHO_SHOPEE).toEqual(campoRascunhoShopeeSchema.options);
     let e = edicaoDe(guardado());
     e = comCampoRascunhoShopee(e, CAMPO_RASCUNHO_SHOPEE.marca, {
       brand_id: 88,
@@ -415,6 +464,13 @@ describe('dirty and the patch — the WRITE question (rev. 2a #3)', () => {
     });
     e = comCampoRascunhoShopee(e, CAMPO_RASCUNHO_SHOPEE.itemName, 'Novo');
     expect(planoDoRascunhoShopee(e, LIVRE).alterados).toEqual(['item_name', 'marca']);
+    // A channel choice joins the patch LAST — set through the generic setter.
+    e = comCampoRascunhoShopee(e, CAMPO_RASCUNHO_SHOPEE.logisticInfo, [canalLigado(CANAL_A)]);
+    expect(planoDoRascunhoShopee(e, LIVRE).alterados).toEqual([
+      'item_name',
+      'marca',
+      'logistic_info',
+    ]);
   });
 
   it('algumRascunhoShopeeSujo: any dirty entry, a new one included', () => {
@@ -504,16 +560,20 @@ describe('§H Q1 — a nameless shortlist row re-picked over the stored brand ke
   });
 });
 
-describe('discard — base = the HELD projection, all five keys', () => {
-  it('sends every projected field verbatim, attributes included (null) — never logistic_info', () => {
+// Was: 'discard — base = the HELD projection, all five keys' (#1911 P16: six).
+describe('discard — base = the HELD projection, all six keys', () => {
+  // Was: 'sends every projected field verbatim, attributes included (null) — never logistic_info'.
+  it('sends ALL SIX projected fields verbatim — a stamped channel list SORTED, a legacy (unstamped) one null ⟷ ⛔ an unsaved logistics change never goes in the base', () => {
+    const descartar = (link: Record<string, unknown>, edicao: EdicaoRascunhoShopee | null = null) =>
+      corpoDescartarRascunhoShopee({
+        contaId: CONTA,
+        linkDocId: 'R1',
+        produtoId: PRODUTO,
+        projecao: projecaoGuardadaDoRascunhoShopee(edicao, link),
+      });
     const link = guardado({ item_name: '' });
-    const corpo = corpoDescartarRascunhoShopee({
-      contaId: CONTA,
-      linkDocId: 'R1',
-      produtoId: PRODUTO,
-      projecao: projecaoGuardadaDoRascunhoShopee(null, link),
-    });
-    expect(corpo).toEqual({
+    const corpo = descartar(link);
+    expect(corpo).toStrictEqual({
       integracaoId: CONTA,
       produtoId: PRODUTO,
       linkDocId: 'R1',
@@ -523,10 +583,30 @@ describe('discard — base = the HELD projection, all five keys', () => {
         category_id: 100087,
         marca: { brand_id: 77, original_brand_name: 'Acme' },
         attributes: null,
+        logistic_info: null,
       },
     });
-    expect(corpo.base).not.toHaveProperty('logistic_info');
+    expect(Object.keys(corpo.base)).toEqual(campoRascunhoShopeeSchema.options);
     expect(corpoDescartarRascunhoShopeeSchema.safeParse(corpo).success).toBe(true);
+
+    // A stamped list stored in ANOTHER order travels as the projection reads it: sorted.
+    const escolhido = comCanaisEscolhidos([canalDesligado(CANAL_B), canalLigado(CANAL_A, true)]);
+    const ordenada = [canalLigado(CANAL_A, true), canalDesligado(CANAL_B)];
+    expect(descartar(escolhido).base.logistic_info).toStrictEqual(ordenada);
+    expect(corpoDescartarRascunhoShopeeSchema.safeParse(descartar(escolhido)).success).toBe(true);
+    // The previous system's list (no stamp) is «Automática» on every screen: `null`.
+    const legado = guardado({ logistic_info: [canalLigado(CANAL_A)] });
+    expect(descartar(legado).base.logistic_info).toBeNull();
+
+    // ⛔ QUASE: an unsaved logistics change (and an unsaved title) never reaches the base.
+    const sujo = comCampoRascunhoShopee(
+      comCampoRascunhoShopee(edicaoDe(escolhido), CAMPO_RASCUNHO_SHOPEE.logisticInfo, null),
+      CAMPO_RASCUNHO_SHOPEE.itemName,
+      'Outro',
+    );
+    expect(edicaoRascunhoShopeeSuja(sujo)).toBe(true);
+    expect(descartar(escolhido, sujo).base).toStrictEqual(descartar(escolhido).base);
+    expect(descartar(escolhido, sujo).base.logistic_info).toStrictEqual(ordenada);
   });
 
   it('⛔ a draft STORING attributes sends them as its base — the projection’s reading, never null (a null would 409 every discard)', () => {
@@ -1024,6 +1104,8 @@ describe('R1-rule7#0 — an EDIT’s conflict rebase moves only what the operato
         description: 'Y',
         category_id: 100088,
         marca: { brand_id: 77, original_brand_name: 'Acme' },
+        attributes: ATRIBUTOS,
+        logistic_info: null,
       });
     }
   });
@@ -1960,11 +2042,11 @@ describe('estadoDoBlocoRascunhoShopee — THE decision of a draft block', () => 
     const com = guardado({
       attributes: [{ attribute_id: 10, attribute_value_list: [{ value_id: 5 }] }],
     });
-    expect(estadoDoBlocoRascunhoShopee(entrada({ link: com })).atributosGravados).toBe(true);
-    expect(estadoDoBlocoRascunhoShopee(entrada()).atributosGravados).toBe(false);
+    expect(estadoDoBlocoRascunhoShopee(entrada({ link: com })).atributosPreenchidos).toBe(true);
+    expect(estadoDoBlocoRascunhoShopee(entrada()).atributosPreenchidos).toBe(false);
     expect(
       estadoDoBlocoRascunhoShopee(entrada({ link: guardado({ attributes: [] }) }))
-        .atributosGravados,
+        .atributosPreenchidos,
     ).toBe(false);
   });
 });
@@ -2002,6 +2084,9 @@ describe('publicacaoDoRascunhoShopee — THE decision of a draft’s Publicar (r
       produtoSujo: false,
       textosDoProduto: TEXTOS,
       limites: LIMITES,
+      // P13: the category's attribute tree, LOADED and with nothing mandatory —
+      // the P11 pins below are about everything else.
+      arvore: { atributos: [], truncated: false },
       rascunhosIrmaosIncertos: [],
       ...over,
     });
@@ -3040,8 +3125,16 @@ describe('saidasDoProblemaShopee — the Seller-Centre exits, keyed on the slug 
 
 describe('superficieDoCampoShopee — campo → the surface that fixes it (D17, DC §2.9)', () => {
   const M = MOTIVO_ANUNCIO_SHOPEE;
-  const RASCUNHO = { ehRascunho: true, descricaoPropria: false } as const;
-  const ANUNCIO = { ehRascunho: false, descricaoPropria: false } as const;
+  const RASCUNHO = {
+    ehRascunho: true,
+    descricaoPropria: false,
+    logisticaEscolhida: false,
+  } as const;
+  const ANUNCIO = {
+    ehRascunho: false,
+    descricaoPropria: false,
+    logisticaEscolhida: false,
+  } as const;
   const linha = (
     campo: string | null,
     motivo = 'qualquer',
@@ -3070,14 +3163,22 @@ describe('superficieDoCampoShopee — campo → the surface that fixes it (D17, 
 
   it('description: the draft’s own text ⇒ the draft; none ⇒ the produto’s Descrição — on a listing likewise', () => {
     expect(
-      superficieDoCampoShopee(linha('description'), { ehRascunho: true, descricaoPropria: true }),
+      superficieDoCampoShopee(linha('description'), {
+        ehRascunho: true,
+        descricaoPropria: true,
+        logisticaEscolhida: false,
+      }),
     ).toMatchObject({ tipo: 'rascunho', campo: 'description' });
     expect(superficieDoCampoShopee(linha('description'), RASCUNHO)).toEqual({
       tipo: 'produto',
       campo: 'extraData',
     });
     expect(
-      superficieDoCampoShopee(linha('description'), { ehRascunho: false, descricaoPropria: true }),
+      superficieDoCampoShopee(linha('description'), {
+        ehRascunho: false,
+        descricaoPropria: true,
+        logisticaEscolhida: false,
+      }),
     ).toEqual({ tipo: 'seller-centre' });
     expect(superficieDoCampoShopee(linha('description'), ANUNCIO)).toEqual({
       tipo: 'produto',
@@ -3189,6 +3290,64 @@ describe('superficieDoCampoShopee — campo → the surface that fixes it (D17, 
     }
   });
 
+  it('#2015: `logistica-nao-confirmada` on logistic_info gets NO surface ⟷ NEAR-MISS `logistica-sem-canal` (Shopee’s own logistics refusal included) keeps the weight', () => {
+    const PESO = { tipo: 'produto', campo: 'pesoBrutoKg' };
+    for (const contexto of [RASCUNHO, ANUNCIO]) {
+      // The fix is importing the listing: no produto field, so no button.
+      for (const campo of ['logistic_info', 'logistic_info[0].size_id']) {
+        expect(
+          superficieDoCampoShopee(linha(campo, M.logisticaNaoConfirmada), contexto),
+          campo,
+        ).toBeNull();
+      }
+      // A lost channel the parcel does not fit, and Shopee's
+      // `error_invalid_logistic_info` — both carry `logistica-sem-canal`.
+      expect(
+        superficieDoCampoShopee(linha('logistic_info', 'logistica-sem-canal'), contexto),
+      ).toEqual(PESO);
+      // An EXACT match, never a prefix.
+      expect(
+        superficieDoCampoShopee(linha('logistic_info', `${M.logisticaNaoConfirmada}-v2`), contexto),
+      ).toEqual(PESO);
+      // Scoped to the ROOT: the same motivo on the weight's own root still opens the weight.
+      expect(superficieDoCampoShopee(linha('weight', M.logisticaNaoConfirmada), contexto)).toEqual(
+        PESO,
+      );
+    }
+  });
+
+  it('#2099 CPY-4: `logistica-sem-valor-gravado` em logistic_info também fica SEM superfície — o canal já cabe, o peso não resolve ⟷ QUASE-PAR: `logistica-sem-canal`, o slug com sufixo e o mesmo motivo em `weight` continuam no peso', () => {
+    const PESO = { tipo: 'produto', campo: 'pesoBrutoKg' };
+    for (const contexto of [RASCUNHO, ANUNCIO]) {
+      // PAR: the import (or Seller Centre, then the import) is the fix — no button.
+      for (const campo of ['logistic_info', 'logistic_info[0].size_id']) {
+        expect(
+          superficieDoCampoShopee(linha(campo, M.logisticaSemValorGravado), contexto),
+          campo,
+        ).toBeNull();
+      }
+      // N1 keeps its own behaviour beside it: no button either.
+      expect(
+        superficieDoCampoShopee(linha('logistic_info', M.logisticaNaoConfirmada), contexto),
+      ).toBeNull();
+      // QUASE-PAR: the channel-level refusal the parcel may not fit keeps the weight …
+      expect(
+        superficieDoCampoShopee(linha('logistic_info', 'logistica-sem-canal'), contexto),
+      ).toEqual(PESO);
+      // … an EXACT match, never a prefix …
+      expect(
+        superficieDoCampoShopee(
+          linha('logistic_info', `${M.logisticaSemValorGravado}-v2`),
+          contexto,
+        ),
+      ).toEqual(PESO);
+      // … and scoped to the ROOT: the same motivo on `weight` still opens the weight.
+      expect(
+        superficieDoCampoShopee(linha('weight', M.logisticaSemValorGravado), contexto),
+      ).toEqual(PESO);
+    }
+  });
+
   it('the ROOT is cut at the first `[` or `.` and matched EXACTLY — never a prefix', () => {
     expect(superficieDoCampoShopee(linha('item_name.0'), RASCUNHO)).toMatchObject({
       campo: 'item_name',
@@ -3201,10 +3360,8 @@ describe('superficieDoCampoShopee — campo → the surface that fixes it (D17, 
     }
   });
 
-  it('UNMAPPED ⇒ null (the sentence, no button): attributes on a draft before P13, the kit’s tier, the link keys, unknowns', () => {
+  it('UNMAPPED ⇒ null (the sentence, no button): the kit’s tier, the link keys, unknowns', () => {
     for (const campo of [
-      'attribute_list',
-      'attribute_list[COLOR]',
       // §H: the native kit's tier-name band (`opcoes-demais`) — no surface owns it.
       'tier_variation_list',
       'filhos.prod-2',
@@ -3242,5 +3399,1596 @@ describe('superficieDoCampoShopee — campo → the surface that fixes it (D17, 
     expect(rotuloDaSuperficieShopee({ tipo: 'seller-centre' }, null)).toBe(
       'Corrigir no Seller Centre',
     );
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                  #1911 P13 — the attributes on a draft                      */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The fifth form field. Every tree is hand-written in the shape of the public
+ * `get_attribute_tree.br-*` captures as `apps/shopee` projects them (a web test
+ * cannot import that app's fixtures): public BR taxonomy where a BR id is named,
+ * invented (`9xxxxx`) everywhere else; every typed value is invented. The edits
+ * go through the REAL attribute editor model (`./atributosRascunho.ts`) and the
+ * real schemas walk / decoder / validator — nothing here is faked.
+ */
+describe('#1911 P13 — os atributos no rascunho: o quinto campo, a troca de categoria, o portão e a rota', () => {
+  const info = (p: Partial<AtributoInfoDto>): AtributoInfoDto => ({
+    inputType: null,
+    inputValidationType: 0,
+    formatType: 1,
+    dateFormatType: null,
+    attributeUnitList: null,
+    maxValueCount: null,
+    introduction: null,
+    isOem: false,
+    supportSearchValue: false,
+    ...p,
+  });
+  const valor = (valueId: number, name: string, filhos: AtributoDto[] = []): AtributoValorDto => ({
+    valueId,
+    name,
+    valueUnit: null,
+    childAttributeList: filhos,
+  });
+  const atributo = (
+    attributeId: number,
+    name: string,
+    i: Partial<AtributoInfoDto>,
+    valores: AtributoValorDto[] = [],
+    mandatory = false,
+  ): AtributoDto => ({
+    attributeId,
+    mandatory,
+    name,
+    attributeInfo: info(i),
+    attributeValueList: valores,
+  });
+
+  // br-b-capa: 100408's three mandatory children, shown only under 2530.
+  const FABRICANTE = atributo(
+    101237,
+    'Fabricante',
+    { inputType: 2, inputValidationType: 2, supportSearchValue: true },
+    [],
+    true,
+  );
+  const HOMOLOGACAO = atributo(
+    101197,
+    'Nr. de Homologação',
+    { inputType: 3, inputValidationType: 2 },
+    [],
+    true,
+  );
+  const NOME_DO_MODELO = atributo(
+    101040,
+    'Nome do Modelo',
+    { inputType: 3, inputValidationType: 2 },
+    [],
+    true,
+  );
+  const COM_FIO = 2498;
+  const SEM_FIO = 2530;
+  const ROTULO_SEM_FIO = 'Sem fio (Bluetooth, Wifi, Radiofrequência)';
+  const TIPO_DE_CONEXAO = atributo(
+    100408,
+    'Tipo de Conexão',
+    { inputType: 1 },
+    [
+      valor(COM_FIO, 'Com fio, Sem conexão ou Outros'),
+      valor(SEM_FIO, ROTULO_SEM_FIO, [FABRICANTE, HOMOLOGACAO, NOME_DO_MODELO]),
+    ],
+    true,
+  );
+  const TAMANHO_DO_PACOTE = atributo(101029, 'Tamanho Do Pacote', {
+    inputType: 3,
+    inputValidationType: 3,
+    formatType: 2,
+    attributeUnitList: [
+      'ML',
+      'L',
+      'MG',
+      'G/GR',
+      'KG',
+      'CM',
+      'M',
+      'Dozen',
+      'Piece',
+      'Pack',
+      'Set',
+      'Box',
+    ],
+  });
+  const MATERIAL = atributo(
+    100134,
+    'Material',
+    { inputType: 5, inputValidationType: 2, maxValueCount: 5 },
+    [valor(1207, 'Plástico'), valor(1218, 'Vidro')],
+  );
+  const CONDICAO = atributo(100413, 'Condição', { inputType: 2, inputValidationType: 2 });
+  // br-d-cafe: list values that carry a unit.
+  const PESO = atributo(
+    100095,
+    'Peso do Produto',
+    { inputType: 2, inputValidationType: 3, formatType: 2, attributeUnitList: ['g', 'kg'] },
+    [
+      { ...valor(640, '1.5kg'), valueUnit: 'kg' },
+      { ...valor(646, '2kg'), valueUnit: 'kg' },
+    ],
+  );
+  const ARVORE: ArvoreAtributosShopee = {
+    atributos: [TIPO_DE_CONEXAO, TAMANHO_DO_PACOTE, MATERIAL, CONDICAO, PESO],
+    truncated: false,
+  };
+  /** `leaf: false` as the tab reads it: a complete, EMPTY tree. */
+  const SEM_ATRIBUTOS: ArvoreAtributosShopee = { atributos: [], truncated: false };
+
+  const CATEGORIA = CAMPO_RASCUNHO_SHOPEE.categoryId;
+  const ATRIBUTOS = CAMPO_RASCUNHO_SHOPEE.attributes;
+  const COM_FIO_GUARDADO = { attribute_id: 100408, attribute_value_list: [{ value_id: COM_FIO }] };
+  const SEM_FIO_GUARDADO = { attribute_id: 100408, attribute_value_list: [{ value_id: SEM_FIO }] };
+  const DECIMAL_GUARDADO = {
+    attribute_id: 101029,
+    attribute_value_list: [{ value_id: 0, original_value_name: '1.5', value_unit: 'KG' }],
+  };
+  /** One custom value of `attribute_id`, as the request shape stores it. */
+  const personalizado = (attribute_id: number, nome: string) => ({
+    attribute_id,
+    attribute_value_list: [{ value_id: 0, original_value_name: nome }],
+  });
+  const texto = (t: string, unidade: string | null = null) =>
+    ({ tipo: 'texto', texto: t, unidade }) as const;
+  const lista = (...valueIds: number[]) => ({ tipo: 'lista', valueIds }) as const;
+  const projecao = (link: Record<string, unknown>) => camposDoRascunhoShopee(link).attributes;
+
+  describe('o quinto campo do formulário — o plano e o patch', () => {
+    it('⛔ uma lista legada INTOCADA (um `attribute_id: -3` que a escrita recusa) nunca entra no patch nem invalida ⟷ QUASE-PAR: EDITADA numa árvore completa, o id ruim cai pela caminhada', () => {
+      const legado = guardado({ attributes: [personalizado(-3, 'x'), COM_FIO_GUARDADO] });
+      expect(projecao(legado)?.map((a) => a.attribute_id)).toEqual([-3, 100408]);
+      expect(edicaoRascunhoShopeeSuja(edicaoDe(legado))).toBe(false);
+      const titulo = comCampoRascunhoShopee(
+        edicaoDe(legado),
+        CAMPO_RASCUNHO_SHOPEE.itemName,
+        'Novo',
+      );
+      expect(planoDoRascunhoShopee(titulo, LIVRE).invalidos).toEqual([]);
+      expect(atualizacaoAceita(titulo).patch).toEqual({ item_name: 'Novo' });
+
+      const editada = comAtributoRascunhoShopee(
+        edicaoDe(legado),
+        ARVORE,
+        100413,
+        texto('Seminovo'),
+      );
+      expect(atualizacaoAceita(editada).patch).toEqual({
+        attributes: [COM_FIO_GUARDADO, personalizado(100413, 'Seminovo')],
+      });
+    });
+
+    it('⛔ numa árvore TRUNCADA o id que nenhuma escrita aceita (`-3`) CAI na primeira edição — nenhum corte o explica ⟷ QUASE-PAR: um id POSITIVO que a árvore truncada não mostra é CARREGADO (pode estar abaixo do corte)', () => {
+      const TRUNCADA = { ...ARVORE, truncated: true };
+      const legado = guardado({ attributes: [personalizado(-3, 'x')] });
+      const e = comAtributoRascunhoShopee(edicaoDe(legado), TRUNCADA, 100413, texto('Seminovo'));
+      expect(e.atual.attributes?.map((a) => a.attribute_id)).toEqual([100413]);
+      expect(planoDoRascunhoShopee(e, LIVRE)).toMatchObject({ invalidos: [], impedimento: null });
+      expect(atualizacaoAceita(e).patch).toEqual({
+        attributes: [personalizado(100413, 'Seminovo')],
+      });
+
+      const abaixo = guardado({ attributes: [personalizado(900003, 'x')] });
+      const carregado = comAtributoRascunhoShopee(
+        edicaoDe(abaixo),
+        TRUNCADA,
+        100413,
+        texto('Seminovo'),
+      );
+      expect(atualizacaoAceita(carregado).patch).toEqual({
+        attributes: [personalizado(900003, 'x'), personalizado(100413, 'Seminovo')],
+      });
+    });
+
+    it('⭐ PAR: `1,5` digitado sobre um `1.5` guardado lê LIMPO ⟷ QUASE-PAR: `1,50` é uma EDIÇÃO — `1.50`, nunca dobrado num número (#1372)', () => {
+      const link = guardado({ attributes: [COM_FIO_GUARDADO, DECIMAL_GUARDADO] });
+      const igual = comAtributoRascunhoShopee(edicaoDe(link), ARVORE, 101029, texto('1,5', 'KG'));
+      expect(edicaoRascunhoShopeeSuja(igual)).toBe(false);
+      expect(planoDoRascunhoShopee(igual, LIVRE).impedimento).toBe('nada-a-salvar');
+
+      const outro = comAtributoRascunhoShopee(edicaoDe(link), ARVORE, 101029, texto('1,50', 'KG'));
+      const corpo = atualizacaoAceita(outro);
+      expect(corpo.patch).toEqual({
+        attributes: [
+          COM_FIO_GUARDADO,
+          {
+            attribute_id: 101029,
+            attribute_value_list: [{ value_id: 0, original_value_name: '1.50', value_unit: 'KG' }],
+          },
+        ],
+      });
+      expect(corpo.base).toEqual({ category_id: 100087, attributes: projecao(link) });
+    });
+
+    it('PAR: `Seminovo ` digitado (CRU, com o espaço) sobre um `Seminovo` guardado lê limpo — a escrita apara ⟷ QUASE-PAR: `seminovo` (outra caixa) é edição', () => {
+      const link = guardado({ attributes: [personalizado(100413, 'Seminovo')] });
+      const cru = comAtributoRascunhoShopee(edicaoDe(link), ARVORE, 100413, texto('Seminovo '));
+      // The form keeps the raw text (the space being typed); only the write trims.
+      expect(cru.atual.attributes).toEqual([personalizado(100413, 'Seminovo ')]);
+      expect(edicaoRascunhoShopeeSuja(cru)).toBe(false);
+
+      const caixa = comAtributoRascunhoShopee(edicaoDe(link), ARVORE, 100413, texto('seminovo'));
+      expect(atualizacaoAceita(caixa).patch).toEqual({
+        attributes: [personalizado(100413, 'seminovo')],
+      });
+    });
+
+    it('re-escolher um valor IMPORTADO `{640, kg}`: a base que a edição lê é a GUARDADA, então o objeto guardado volta e lê limpo ⟷ QUASE-PAR: o 646 é sujo', () => {
+      const importado = {
+        attribute_id: 100095,
+        attribute_value_list: [{ value_id: 640, value_unit: 'kg' }],
+      };
+      const link = guardado({ attributes: [COM_FIO_GUARDADO, importado] });
+      const outro = comAtributoRascunhoShopee(edicaoDe(link), ARVORE, 100095, lista(646));
+      expect(atualizacaoAceita(outro).patch).toEqual({
+        attributes: [
+          COM_FIO_GUARDADO,
+          { attribute_id: 100095, attribute_value_list: [{ value_id: 646 }] },
+        ],
+      });
+      const devolta = comAtributoRascunhoShopee(outro, ARVORE, 100095, lista(640));
+      expect(devolta.atual.attributes?.[1]).toEqual(importado);
+      expect(edicaoRascunhoShopeeSuja(devolta)).toBe(false);
+    });
+
+    it('re-escolher: trocar o valor e voltar ao guardado lê limpo ⟷ QUASE-PAR: o outro valor é sujo', () => {
+      const link = guardado({ attributes: [COM_FIO_GUARDADO, DECIMAL_GUARDADO] });
+      const trocado = comAtributoRascunhoShopee(edicaoDe(link), ARVORE, 100408, lista(SEM_FIO));
+      expect(edicaoRascunhoShopeeSuja(trocado)).toBe(true);
+      const devolta = comAtributoRascunhoShopee(trocado, ARVORE, 100408, lista(COM_FIO));
+      expect(devolta.atual.attributes).toEqual(projecao(link));
+      expect(edicaoRascunhoShopeeSuja(devolta)).toBe(false);
+    });
+
+    it('um órfão guardado (fora da categoria) não suja ao abrir nem vai num patch de título ⟷ QUASE-PAR: a primeira edição de atributo o remove', () => {
+      const link = guardado({ attributes: [personalizado(900001, 'x'), COM_FIO_GUARDADO] });
+      expect(edicaoRascunhoShopeeSuja(edicaoDe(link))).toBe(false);
+      const titulo = comCampoRascunhoShopee(edicaoDe(link), CAMPO_RASCUNHO_SHOPEE.itemName, 'Novo');
+      expect(atualizacaoAceita(titulo).patch).toEqual({ item_name: 'Novo' });
+      const editada = comAtributoRascunhoShopee(edicaoDe(link), ARVORE, 100413, texto('Seminovo'));
+      expect(atualizacaoAceita(editada).patch.attributes?.map((a) => a.attribute_id)).toEqual([
+        100408, 100413,
+      ]);
+    });
+
+    it('⛔ uma digitação que BLOQUEIA ⇒ `invalidos: [attributes]`, `campo-invalido`, sujo — mesmo sobre uma lista que não mudou ⟷ QUASE-PAR: a que só lembra a unidade (texto em branco) não bloqueia nada', () => {
+      for (const [t, unidade] of [
+        ['1.5', 'KG'],
+        ['1,5', null],
+        ['1,', 'KG'],
+      ] as const) {
+        const e = comAtributoRascunhoShopee(
+          edicaoDe(guardado()),
+          ARVORE,
+          101029,
+          texto(t, unidade),
+        );
+        expect(e.atual.attributes, t).toBeNull();
+        expect(planoDoRascunhoShopee(e, LIVRE), t).toMatchObject({
+          alterados: [],
+          invalidos: [ATRIBUTOS],
+          sujo: true,
+          impedimento: 'campo-invalido',
+        });
+        expect(edicaoRascunhoShopeeSuja(e), t).toBe(true);
+        expect(corpoAtualizarRascunhoShopee(e, LIVRE, { produtoId: PRODUTO }), t).toBeNull();
+        // Beside a sendable title, the typing still blocks the whole save — and
+        // so it does after another attribute's edit (the entry's typings are
+        // the editor's input, never reset by an edit elsewhere).
+        const comTitulo = comCampoRascunhoShopee(e, CAMPO_RASCUNHO_SHOPEE.itemName, 'Novo');
+        expect(planoDoRascunhoShopee(comTitulo, LIVRE).impedimento, t).toBe('campo-invalido');
+        const outroAtributo = comAtributoRascunhoShopee(e, ARVORE, 100413, texto('Seminovo'));
+        expect(outroAtributo.atual.attributes, t).not.toBeNull();
+        expect(planoDoRascunhoShopee(outroAtributo, LIVRE).impedimento, t).toBe('campo-invalido');
+      }
+      const so = comAtributoRascunhoShopee(edicaoDe(guardado()), ARVORE, 101029, texto('', 'KG'));
+      expect(so.digitacoesAtributos).toEqual({
+        '101029': { texto: '', unidade: 'KG', motivo: null },
+      });
+      expect(planoDoRascunhoShopee(so, LIVRE)).toMatchObject({
+        invalidos: [],
+        sujo: false,
+        impedimento: 'nada-a-salvar',
+      });
+    });
+
+    it('comAtributoRascunhoShopee: uma edição RECUSADA ou que não muda nada devolve a PRÓPRIA entrada ⟷ uma que muda encerra a ponte do salvo', () => {
+      const e = edicaoDe(guardado({ attributes: [COM_FIO_GUARDADO] }));
+      // A child the chosen value hides, and an id the tree does not hold.
+      expect(comAtributoRascunhoShopee(e, ARVORE, 101237, texto('Acme'))).toBe(e);
+      expect(comAtributoRascunhoShopee(e, ARVORE, 900002, texto('Acme'))).toBe(e);
+      // The composer's refusal (a blank value): nothing changes.
+      expect(
+        comAtributoRascunhoShopee(e, ARVORE, 100134, {
+          tipo: 'adicionar-personalizado',
+          texto: '  ',
+          unidade: null,
+        }),
+      ).toBe(e);
+      const salvo = marcarRascunhoShopeeSalvo(
+        comCampoRascunhoShopee(e, CAMPO_RASCUNHO_SHOPEE.itemName, 'Novo'),
+        [],
+      );
+      const depois = comAtributoRascunhoShopee(salvo, ARVORE, 100413, texto('Seminovo'));
+      expect(depois.salvo).toBeNull();
+      expect(depois.atual.attributes?.map((a) => a.attribute_id)).toEqual([100408, 100413]);
+    });
+
+    it('depois do 2xx o formulário mostra a lista SALVA (normalizada: o nome aparado)', () => {
+      const e = comAtributoRascunhoShopee(edicaoDe(guardado()), ARVORE, 100413, texto('Seminovo '));
+      expect(marcarRascunhoShopeeSalvo(e, []).atual.attributes).toEqual([
+        personalizado(100413, 'Seminovo'),
+      ]);
+    });
+
+    it('(P13 Q1) PAR: o patch só de atributos manda `{category_id, attributes}` na base — a categoria em que a lista foi escolhida, conferida e nunca escrita ⟷ QUASE-PAR: o patch de título não ganha a categoria; o que troca a categoria a nomeia uma vez só, no patch e na base (K1-12)', () => {
+      const link = guardado({ attributes: [COM_FIO_GUARDADO] });
+      const daLista = comAtributoRascunhoShopee(edicaoDe(link), ARVORE, 100413, texto('Seminovo'));
+      const corpo = atualizacaoAceita(daLista);
+      expect(corpo.patch).toEqual({
+        attributes: [COM_FIO_GUARDADO, personalizado(100413, 'Seminovo')],
+      });
+      expect(Object.keys(corpo.base)).toEqual([CATEGORIA, ATRIBUTOS]);
+      expect(corpo.base).toEqual({ category_id: 100087, attributes: projecao(link) });
+
+      const titulo = comCampoRascunhoShopee(edicaoDe(link), CAMPO_RASCUNHO_SHOPEE.itemName, 'B');
+      expect(atualizacaoAceita(titulo).base).toEqual({ item_name: 'Camiseta' });
+
+      let troca = comCampoRascunhoShopee(edicaoDe(link), CATEGORIA, 100099);
+      troca = comAtributoRascunhoShopee(troca, ARVORE, 100413, texto('Seminovo'));
+      const corpoTroca = atualizacaoAceita(troca);
+      expect(corpoTroca.patch).toEqual({
+        category_id: 100099,
+        attributes: [personalizado(100413, 'Seminovo')],
+      });
+      expect(Object.keys(corpoTroca.base)).toEqual([CATEGORIA, ATRIBUTOS]);
+      expect(corpoTroca.base).toEqual({ category_id: 100087, attributes: projecao(link) });
+    });
+  });
+
+  describe('a troca de categoria leva os atributos (§3.6.5)', () => {
+    it('⛔ trocar a categoria esvazia os atributos do formulário E as digitações: o patch os limpa por nome, a base nomeia os dois ⟷ QUASE-PAR: VOLTAR à categoria guardada devolve a lista guardada e lê limpo', () => {
+      const link = guardado({ attributes: [COM_FIO_GUARDADO] });
+      let e = comAtributoRascunhoShopee(edicaoDe(link), ARVORE, 101029, texto('1.5', 'KG'));
+      expect(e.digitacoesAtributos).not.toEqual({});
+      e = comCampoRascunhoShopee(e, CATEGORIA, 100088);
+      expect(e.atual.attributes).toBeNull();
+      expect(e.digitacoesAtributos).toEqual({});
+      const corpo = atualizacaoAceita(e);
+      expect(corpo.patch).toEqual({ category_id: 100088, attributes: null });
+      expect(corpo.base).toEqual({ category_id: 100087, attributes: projecao(link) });
+
+      const outra = comCampoRascunhoShopee(e, CATEGORIA, 100099);
+      expect(outra.atual.attributes).toBeNull();
+      const devolta = comCampoRascunhoShopee(outra, CATEGORIA, 100087);
+      expect(devolta.atual.attributes).toBe(devolta.base.attributes);
+      expect(edicaoRascunhoShopeeSuja(devolta)).toBe(false);
+    });
+
+    it('⛔ PAR: trocar a categoria e PREENCHER DE NOVO a mesma lista guardada ⇒ o patch NOMEIA os atributos — senão a troca de categoria da rota (K1-12) gravaria `null` sobre ela ⟷ QUASE-PAR: uma lista esvaziada sobre um guardado `null` fica fora (só `category_id`)', () => {
+      const link = guardado({ attributes: [COM_FIO_GUARDADO] });
+      let e = comCampoRascunhoShopee(edicaoDe(link), CATEGORIA, 100088);
+      // The new category's tree also holds 100408 (ARVORE stands for it).
+      e = comAtributoRascunhoShopee(e, ARVORE, 100408, lista(COM_FIO));
+      expect(e.atual.attributes).toEqual(e.base.attributes);
+      const corpo = atualizacaoAceita(e);
+      expect(corpo.patch).toEqual({ category_id: 100088, attributes: [COM_FIO_GUARDADO] });
+      expect(corpo.base).toEqual({ category_id: 100087, attributes: projecao(link) });
+
+      const semNada = comCampoRascunhoShopee(edicaoDe(guardado()), CATEGORIA, 100088);
+      expect(semNada.atual.attributes).toBeNull();
+      expect(atualizacaoAceita(semNada).patch).toEqual({ category_id: 100088 });
+      // NEAR-MISS: without a category change an equal list stays out of the patch.
+      const semTroca = comAtributoRascunhoShopee(edicaoDe(link), ARVORE, 100408, lista(COM_FIO));
+      expect(planoDoRascunhoShopee(semTroca, LIVRE).impedimento).toBe('nada-a-salvar');
+    });
+
+    it('conciliar: a lista PREENCHIDA DE NOVO depois da troca de categoria fica enquanto o guardado não a tem (outra aba gravou só a troca, `attributes: null`) ⟷ QUASE-PAR: o guardado já com a mesma lista a larga em silêncio', () => {
+      const link = guardado({ attributes: [COM_FIO_GUARDADO] });
+      let e = comCampoRascunhoShopee(edicaoDe(link), CATEGORIA, 100088);
+      e = comAtributoRascunhoShopee(e, ARVORE, 100408, lista(COM_FIO));
+      const agora = (attributes: unknown) => ({
+        link: guardado({ category_id: 100088, attributes }),
+        snapshot: [],
+        servidorConfirmado: true,
+      });
+      expect(conciliarEdicaoRascunhoShopee(e, agora(null))).toEqual({ acao: 'manter' });
+      expect(conciliarEdicaoRascunhoShopee(e, agora([COM_FIO_GUARDADO]))).toEqual({
+        acao: 'largar',
+        aviso: null,
+      });
+    });
+
+    it('QUASE-PAR: re-escolher a MESMA categoria do formulário não muda nada — os atributos editados e a digitação ficam', () => {
+      let e = comAtributoRascunhoShopee(edicaoDe(guardado()), ARVORE, 100413, texto('Seminovo'));
+      e = comAtributoRascunhoShopee(e, ARVORE, 101029, texto('1,', 'KG'));
+      const mesma = comCampoRascunhoShopee(e, CATEGORIA, 100087);
+      expect(mesma.atual.attributes).toBe(e.atual.attributes);
+      expect(mesma.digitacoesAtributos).toBe(e.digitacoesAtributos);
+    });
+
+    it('um rascunho NOVO: a categoria escolhida esvazia o que foi preenchido para a anterior', () => {
+      let novo = novaEdicaoRascunhoShopee({ linkDocId: ID_NOVO, contaId: CONTA, nomeProduto: 'X' });
+      novo = comCampoRascunhoShopee(novo, CATEGORIA, 100087);
+      novo = comAtributoRascunhoShopee(novo, ARVORE, 100413, texto('Seminovo'));
+      expect(novo.atual.attributes).not.toBeNull();
+      expect(comCampoRascunhoShopee(novo, CATEGORIA, 100088).atual.attributes).toBeNull();
+    });
+  });
+
+  describe('o create de um rascunho NOVO', () => {
+    it('com atributos: `conteudo.attributes` = a lista NORMALIZADA (o nome aparado, na ordem da caminhada) ⟷ QUASE-PAR: sem atributos, `null`; e uma digitação que bloqueia não deixa sair o create', () => {
+      let novo = novaEdicaoRascunhoShopee({
+        linkDocId: ID_NOVO,
+        contaId: CONTA,
+        nomeProduto: 'Camiseta',
+      });
+      novo = comCampoRascunhoShopee(novo, CATEGORIA, 100087);
+      expect(
+        corpoCriarRascunhoShopee(novo, LIVRE, { produtoId: PRODUTO })?.conteudo.attributes,
+      ).toBeNull();
+
+      novo = comAtributoRascunhoShopee(novo, ARVORE, 100413, texto('Seminovo '));
+      novo = comAtributoRascunhoShopee(novo, ARVORE, 100408, lista(COM_FIO));
+      const corpo = corpoCriarRascunhoShopee(novo, LIVRE, { produtoId: PRODUTO });
+      expect(corpo?.conteudo.attributes).toEqual([
+        COM_FIO_GUARDADO,
+        personalizado(100413, 'Seminovo'),
+      ]);
+      expect(corpoCriarRascunhoShopeeSchema.safeParse(corpo).success).toBe(true);
+
+      const bloqueado = comAtributoRascunhoShopee(novo, ARVORE, 101029, texto('1.5', 'KG'));
+      expect(planoDoRascunhoShopee(bloqueado, LIVRE).impedimento).toBe('campo-invalido');
+      expect(corpoCriarRascunhoShopee(bloqueado, LIVRE, { produtoId: PRODUTO })).toBeNull();
+    });
+  });
+
+  describe('o rebase do 409 (§3.6.8)', () => {
+    const carregado = () => guardado({ attributes: [COM_FIO_GUARDADO] });
+
+    it('atributos INTOCADOS seguem o guardado (base e formulário): um título reenviado nunca reverte a lista de outra aba', () => {
+      const e = comCampoRascunhoShopee(edicaoDe(carregado()), CAMPO_RASCUNHO_SHOPEE.itemName, 'B');
+      const outraAba = guardado({ item_name: 'C', attributes: [SEM_FIO_GUARDADO] });
+      const r = rebasearEdicaoRascunhoShopee(e, outraAba, [], [CAMPO_RASCUNHO_SHOPEE.itemName]);
+      expect(r.atual.attributes).toEqual(projecao(outraAba));
+      expect(atualizacaoAceita(r)).toMatchObject({
+        base: { item_name: 'C' },
+        patch: { item_name: 'B' },
+      });
+      expect(atualizacaoAceita(r).patch).not.toHaveProperty('attributes');
+    });
+
+    it('⛔ atributos EDITADOS e LISTADOS ⇒ a base vem do guardado, a lista digitada fica ⟷ QUASE-PAR: editados e NÃO listados ⇒ a base CARREGADA (o reenvio é 409 de novo, nunca sobrescreve sem mostrar)', () => {
+      const e = comAtributoRascunhoShopee(edicaoDe(carregado()), ARVORE, 100413, texto('Seminovo'));
+      const minha = e.atual.attributes;
+      const outraAba = guardado({ attributes: [SEM_FIO_GUARDADO] });
+
+      const listado = rebasearEdicaoRascunhoShopee(e, outraAba, [], [ATRIBUTOS]);
+      expect(listado.atual.attributes).toBe(minha);
+      const corpo = atualizacaoAceita(listado);
+      expect(corpo.base).toEqual({ category_id: 100087, attributes: projecao(outraAba) });
+      expect(corpo.patch).toEqual({ attributes: minha });
+
+      const naoListado = rebasearEdicaoRascunhoShopee(e, outraAba, [], []);
+      expect(naoListado.atual.attributes).toBe(minha);
+      expect(atualizacaoAceita(naoListado).base).toEqual({
+        category_id: 100087,
+        attributes: projecao(carregado()),
+      });
+    });
+
+    it('⛔ uma digitação que bloqueia SOBREVIVE ao «Salvar mesmo assim» (nunca lida como intocada) ⟷ QUASE-PAR: «Usar o que está salvo» nos atributos a descarta com a lista', () => {
+      const e = comAtributoRascunhoShopee(
+        edicaoDe(carregado()),
+        ARVORE,
+        101029,
+        texto('1.5', 'KG'),
+      );
+      const outraAba = guardado({ attributes: [SEM_FIO_GUARDADO] });
+
+      const mesmoAssim = rebasearEdicaoRascunhoShopee(e, outraAba, [], [ATRIBUTOS]);
+      expect(mesmoAssim.digitacoesAtributos).toBe(e.digitacoesAtributos);
+      expect(mesmoAssim.atual.attributes).toBe(e.atual.attributes);
+      expect(mesmoAssim.base.attributes).toEqual(projecao(outraAba));
+      expect(planoDoRascunhoShopee(mesmoAssim, LIVRE).impedimento).toBe('campo-invalido');
+
+      const usado = rebasearEdicaoRascunhoShopee(e, outraAba, [ATRIBUTOS], [ATRIBUTOS]);
+      expect(usado.digitacoesAtributos).toEqual({});
+      expect(usado.atual.attributes).toEqual(projecao(outraAba));
+      expect(edicaoRascunhoShopeeSuja(usado)).toBe(false);
+    });
+
+    it('a categoria tomada do guardado («Usar o que está salvo») leva os atributos guardados junto — o formulário fica limpo ⟷ QUASE-PAR: a troca que SOBREVIVE ao rebase nunca toma a lista da outra aba', () => {
+      let e = comCampoRascunhoShopee(edicaoDe(carregado()), CATEGORIA, 100099);
+      e = comAtributoRascunhoShopee(e, ARVORE, 100413, texto('Seminovo'));
+      const outraAba = guardado({ category_id: 100088, attributes: [SEM_FIO_GUARDADO] });
+
+      const usado = rebasearEdicaoRascunhoShopee(e, outraAba, [CATEGORIA], [CATEGORIA]);
+      expect(usado.atual.category_id).toBe(100088);
+      expect(usado.atual.attributes).toEqual(projecao(outraAba));
+      expect(usado.base.attributes).toEqual(projecao(outraAba));
+      expect(edicaoRascunhoShopeeSuja(usado)).toBe(false);
+
+      const mesmoAssim = rebasearEdicaoRascunhoShopee(e, outraAba, [], [CATEGORIA]);
+      expect(mesmoAssim.atual.category_id).toBe(100099);
+      expect(mesmoAssim.atual.attributes).toBe(e.atual.attributes);
+      expect(atualizacaoAceita(mesmoAssim).base).toEqual({
+        category_id: 100088,
+        attributes: projecao(carregado()),
+      });
+
+      // Nothing filled for the new category over a held list of NONE: the
+      // emptied list is still the category change's, never "untouched".
+      const vazio = comCampoRascunhoShopee(edicaoDe(guardado()), CATEGORIA, 100099);
+      const semMostrar = rebasearEdicaoRascunhoShopee(vazio, outraAba, [], [CATEGORIA]);
+      expect(semMostrar.atual.attributes).toBeNull();
+      expect(semMostrar.base.attributes).toBeNull();
+    });
+
+    it('conflitosAtualizados — o retry de um CREATE que MANDOU uma lista: 409 sem atributos e guardado = o que foi ENVIADO ⇒ null ⟷ QUASE-PAR: guardado ≠ enviado ⇒ a linha', () => {
+      let novo = novaEdicaoRascunhoShopee({
+        linkDocId: ID_NOVO,
+        contaId: CONTA,
+        nomeProduto: 'Camiseta',
+      });
+      novo = comCampoRascunhoShopee(novo, CATEGORIA, 100087);
+      novo = comAtributoRascunhoShopee(novo, ARVORE, 100413, texto('Seminovo '));
+      const enviado = corpoCriarRascunhoShopee(novo, LIVRE, { produtoId: PRODUTO })?.conteudo
+        .attributes;
+      expect(enviado).toEqual([personalizado(100413, 'Seminovo')]);
+      const linhas = [{ campo: CATEGORIA, atual: null }];
+      const semCategoria = { category_id: null, brand_id: null, original_brand_name: null };
+      expect(
+        conflitosAtualizadosDoRascunhoShopee(
+          novo,
+          guardado({ ...semCategoria, attributes: enviado }),
+          linhas,
+        ),
+      ).toBeNull();
+      // The re-send after that `null`: the category is a change over the stored
+      // draft, so its patch NAMES the list (K1-12 would clear the one just sent).
+      const reenvio = rebasearEdicaoRascunhoShopee(
+        novo,
+        guardado({ ...semCategoria, attributes: enviado }),
+        [],
+        [CATEGORIA],
+      );
+      expect(atualizacaoAceita(reenvio).patch).toEqual({
+        category_id: 100087,
+        attributes: [personalizado(100413, 'Seminovo')],
+      });
+      const outra = [personalizado(100413, 'Usado')];
+      expect(
+        conflitosAtualizadosDoRascunhoShopee(
+          novo,
+          guardado({ ...semCategoria, attributes: outra }),
+          linhas,
+        ),
+      ).toEqual([
+        { campo: CATEGORIA, atual: null },
+        { campo: ATRIBUTOS, atual: outra },
+      ]);
+    });
+
+    it('(P13 Q1) conflitosAtualizados — o retry de um CREATE que só difere na LISTA: o 409 lista `attributes` ⇒ null; a categoria da base é só conferida, nunca sobrescrita, e não vira linha «Categoria» ⟷ QUASE-PAR: a categoria guardada mudou depois do 409 ⇒ a linha «Categoria» (o reenvio a trocaria)', () => {
+      let novo = novaEdicaoRascunhoShopee({
+        linkDocId: ID_NOVO,
+        contaId: CONTA,
+        nomeProduto: 'Camiseta',
+      });
+      novo = comCampoRascunhoShopee(novo, CATEGORIA, 100087);
+      novo = comAtributoRascunhoShopee(novo, ARVORE, 100413, texto('Seminovo'));
+      const outra = [personalizado(100413, 'Usado')];
+      const semMarca = { brand_id: null, original_brand_name: null };
+      const linhas = [{ campo: ATRIBUTOS, atual: outra }];
+
+      const mesmaCategoria = guardado({ ...semMarca, attributes: outra });
+      // The fixture still yields an attributes-only re-send (title, category
+      // and brand are the stored ones), whose base names the category.
+      const reenvio = atualizacaoAceita(
+        rebasearEdicaoRascunhoShopee(novo, mesmaCategoria, [], [ATRIBUTOS]),
+      );
+      expect(reenvio.patch).toEqual({ attributes: [personalizado(100413, 'Seminovo')] });
+      expect(reenvio.base).toEqual({
+        category_id: 100087,
+        attributes: projecao(mesmaCategoria),
+      });
+      expect(conflitosAtualizadosDoRascunhoShopee(novo, mesmaCategoria, linhas)).toBeNull();
+
+      const outraCategoria = guardado({ ...semMarca, category_id: 100088, attributes: outra });
+      expect(conflitosAtualizadosDoRascunhoShopee(novo, outraCategoria, linhas)).toEqual([
+        { campo: CATEGORIA, atual: 100088 },
+        { campo: ATRIBUTOS, atual: projecao(outraCategoria) },
+      ]);
+    });
+
+    it('o retry de um CREATE: «Usar o que está salvo» na categoria leva os atributos guardados e as digitações vão junto ⟷ QUASE-PAR: «Salvar mesmo assim» mantém a lista digitada', () => {
+      let novo = novaEdicaoRascunhoShopee({
+        linkDocId: ID_NOVO,
+        contaId: CONTA,
+        nomeProduto: 'Camiseta',
+      });
+      novo = comCampoRascunhoShopee(novo, CATEGORIA, 100087);
+      novo = comAtributoRascunhoShopee(novo, ARVORE, 100413, texto('Seminovo'));
+      novo = comAtributoRascunhoShopee(novo, ARVORE, 101029, texto('1,', 'KG'));
+      const link = guardado({
+        category_id: null,
+        brand_id: null,
+        original_brand_name: null,
+        attributes: [personalizado(100413, 'Usado')],
+      });
+      const usado = rebasearEdicaoRascunhoShopee(novo, link, [CATEGORIA], [CATEGORIA, ATRIBUTOS]);
+      expect(usado.atual.category_id).toBeNull();
+      expect(usado.atual.attributes).toEqual(projecao(link));
+      expect(usado.digitacoesAtributos).toEqual({});
+      const mesmoAssim = rebasearEdicaoRascunhoShopee(novo, link, [], [CATEGORIA, ATRIBUTOS]);
+      expect(mesmoAssim.atual.attributes).toBe(novo.atual.attributes);
+      expect(mesmoAssim.digitacoesAtributos).toBe(novo.digitacoesAtributos);
+    });
+
+    it('uma entrada suja com digitação que bloqueia nunca é largada em silêncio, mesmo com a lista já guardada ⟷ QUASE-PAR: sem a digitação, a lista já guardada a larga', () => {
+      const e = comAtributoRascunhoShopee(edicaoDe(guardado()), ARVORE, 100413, texto('Seminovo'));
+      const agora = {
+        link: guardado({ attributes: [personalizado(100413, 'Seminovo')] }),
+        snapshot: [],
+        servidorConfirmado: true,
+      };
+      expect(conciliarEdicaoRascunhoShopee(e, agora)).toEqual({ acao: 'largar', aviso: null });
+      const comDigitacao = comAtributoRascunhoShopee(e, ARVORE, 101029, texto('1.5', 'KG'));
+      expect(conciliarEdicaoRascunhoShopee(comDigitacao, agora)).toEqual({ acao: 'manter' });
+    });
+
+    describe('a lista editada pertence à categoria CARREGADA — outra aba que troca a categoria nunca recebe esta lista em silêncio', () => {
+      /** My list: loaded on 100087 holding Com fio, plus a condition typed. */
+      const minha = () =>
+        comAtributoRascunhoShopee(edicaoDe(carregado()), ARVORE, 100413, texto('Seminovo'));
+
+      it('⛔ PAR: outra aba trocou a categoria (a lista igual) ⇒ a checagem nomeia `category_id` e a aba recusa o envio (a rota também recusa: a base nomeia a categoria; a aba recusa antes, sem pedido) ⟷ QUASE-PAR: só a lista mudou ⇒ `[attributes]`, a rota recusa sozinha', () => {
+        const e = minha();
+        expect(atualizacaoAceita(e).base).toEqual({
+          category_id: 100087,
+          attributes: projecao(carregado()),
+        });
+        const outraAba = guardado({ category_id: 100088, attributes: [COM_FIO_GUARDADO] });
+        expect(divergenciasDoServidorShopee(e, outraAba)).toEqual([CATEGORIA]);
+        expect(conflitosAntesDeSalvarShopee(e, outraAba)).toEqual([
+          { campo: CATEGORIA, atual: 100088 },
+        ]);
+
+        const soALista = guardado({ attributes: [SEM_FIO_GUARDADO] });
+        expect(divergenciasDoServidorShopee(e, soALista)).toEqual([ATRIBUTOS]);
+        expect(conflitosAntesDeSalvarShopee(e, soALista)).toBeNull();
+        // A patch that changes the category names it in its base: the route refuses.
+        const trocou = comCampoRascunhoShopee(e, CATEGORIA, 100099);
+        expect(divergenciasDoServidorShopee(trocou, outraAba)).toContain(CATEGORIA);
+        expect(conflitosAntesDeSalvarShopee(trocou, outraAba)).toBeNull();
+        // Nothing of the list edited: the category is not compared.
+        const titulo = comCampoRascunhoShopee(
+          edicaoDe(carregado()),
+          CAMPO_RASCUNHO_SHOPEE.itemName,
+          'B',
+        );
+        expect(divergenciasDoServidorShopee(titulo, outraAba)).toEqual([]);
+      });
+
+      it('⛔ o 409 da lista: «Salvar mesmo assim» nunca toma a categoria da outra aba como intocada — renova as linhas com «Categoria» e só reenvia o par coerente que o operador viu ⟷ QUASE-PAR: só a lista mudou ⇒ o reenvio é o patch da lista, igual', () => {
+        const e = minha();
+        const L1 = e.atual.attributes;
+        const outraAba = guardado({ category_id: 100088, attributes: null });
+        const linhas409 = [{ campo: ATRIBUTOS, atual: null }];
+        const renovadas = conflitosAtualizadosDoRascunhoShopee(e, outraAba, linhas409);
+        expect(renovadas).toEqual(
+          expect.arrayContaining([
+            { campo: CATEGORIA, atual: 100088 },
+            { campo: ATRIBUTOS, atual: null },
+          ]),
+        );
+        // The rebase alone keeps the LOADED category — never the other tab's, unseen.
+        const soLista = rebasearEdicaoRascunhoShopee(e, outraAba, [], [ATRIBUTOS]);
+        expect(soLista.atual.category_id).toBe(100087);
+        expect(soLista.base.category_id).toBe(100087);
+
+        const ambas = [CATEGORIA, ATRIBUTOS];
+        const linhas = ambas.map((campo) => ({
+          campo,
+          atual: camposDoRascunhoShopee(outraAba)[campo],
+        }));
+        expect(conflitosAtualizadosDoRascunhoShopee(e, outraAba, linhas)).toBeNull();
+        const corpo = atualizacaoAceita(rebasearEdicaoRascunhoShopee(e, outraAba, [], ambas));
+        expect(corpo.patch).toEqual({ category_id: 100087, attributes: L1 });
+        expect(corpo.base).toEqual({ category_id: 100088, attributes: null });
+        // «Usar o que está salvo» on the category: its stored list comes along, clean.
+        const usado = rebasearEdicaoRascunhoShopee(e, outraAba, [CATEGORIA], [CATEGORIA]);
+        expect(usado.atual).toMatchObject({ category_id: 100088, attributes: null });
+        expect(edicaoRascunhoShopeeSuja(usado)).toBe(false);
+
+        const soALista = guardado({ attributes: [SEM_FIO_GUARDADO] });
+        const linhaDaLista = [{ campo: ATRIBUTOS, atual: [SEM_FIO_GUARDADO] }];
+        expect(conflitosAtualizadosDoRascunhoShopee(e, soALista, linhaDaLista)).toBeNull();
+        const igual = atualizacaoAceita(rebasearEdicaoRascunhoShopee(e, soALista, [], [ATRIBUTOS]));
+        expect(igual.patch).toEqual({ attributes: L1 });
+        expect(igual.base).toEqual({ category_id: 100087, attributes: projecao(soALista) });
+      });
+
+      it('(P13 Q1) o 409 da ROTA que lista só «Categoria» (a outra aba a trocou depois do último snapshot desta): «Salvar mesmo assim» reenvia a categoria que o operador viu com a lista ⇒ null ⟷ QUASE-PAR: a categoria mudou de NOVO depois do 409 ⇒ a linha renovada', () => {
+        const e = minha();
+        const L1 = e.atual.attributes;
+        const outraAba = guardado({ category_id: 100088, attributes: [COM_FIO_GUARDADO] });
+        const linhas409 = [{ campo: CATEGORIA, atual: 100088 }];
+        expect(conflitosAtualizadosDoRascunhoShopee(e, outraAba, linhas409)).toBeNull();
+        const corpo = atualizacaoAceita(rebasearEdicaoRascunhoShopee(e, outraAba, [], [CATEGORIA]));
+        expect(corpo.patch).toEqual({ category_id: 100087, attributes: L1 });
+        expect(corpo.base).toEqual({ category_id: 100088, attributes: projecao(carregado()) });
+
+        const deNovo = guardado({ category_id: 100099, attributes: [COM_FIO_GUARDADO] });
+        expect(conflitosAtualizadosDoRascunhoShopee(e, deNovo, linhas409)).toEqual([
+          { campo: CATEGORIA, atual: 100099 },
+        ]);
+      });
+    });
+
+    describe('conciliar: a TELA que o snapshot não repinta (um espaço sendo digitado, a unidade escolhida antes do número)', () => {
+      const comCondicao = () => guardado({ attributes: [personalizado(100413, 'Seminovo')] });
+      const agora = (link: Record<string, unknown>) => ({
+        link,
+        snapshot: [],
+        servidorConfirmado: true,
+      });
+
+      it('⭐ PAR: `Seminovo ` digitado sobre o guardado `Seminovo` é LIMPO para a escrita mas fica na tela — a entrada é MANTIDA ⟷ QUASE-PAR: `Seminovo` redigitado igual é largado; e o snapshot que se moveu (título ou lista) a larga', () => {
+        const link = comCondicao();
+        const espaco = comAtributoRascunhoShopee(
+          edicaoDe(link),
+          ARVORE,
+          100413,
+          texto('Seminovo '),
+        );
+        expect(edicaoRascunhoShopeeSuja(espaco)).toBe(false);
+        expect(conciliarEdicaoRascunhoShopee(espaco, agora(link))).toEqual({ acao: 'manter' });
+
+        const igual = comAtributoRascunhoShopee(edicaoDe(link), ARVORE, 100413, texto('Seminovo'));
+        expect(conciliarEdicaoRascunhoShopee(igual, agora(link))).toEqual({
+          acao: 'largar',
+          aviso: null,
+        });
+        const outroTitulo = guardado({
+          item_name: 'Outro',
+          attributes: [personalizado(100413, 'Seminovo')],
+        });
+        expect(conciliarEdicaoRascunhoShopee(espaco, agora(outroTitulo))).toEqual({
+          acao: 'largar',
+          aviso: null,
+        });
+        const outraLista = guardado({ attributes: [personalizado(100413, 'Usado')] });
+        expect(conciliarEdicaoRascunhoShopee(espaco, agora(outraLista))).toEqual({
+          acao: 'largar',
+          aviso: null,
+        });
+      });
+
+      it('⭐ PAR: só a unidade escolhida (texto em branco) num rascunho guardado fica ⟷ QUASE-PAR: sem digitação nenhuma é largada; com o snapshot movido, largada', () => {
+        const link = guardado();
+        const unidade = comAtributoRascunhoShopee(edicaoDe(link), ARVORE, 101029, texto('', 'KG'));
+        expect(edicaoRascunhoShopeeSuja(unidade)).toBe(false);
+        expect(conciliarEdicaoRascunhoShopee(unidade, agora(link))).toEqual({ acao: 'manter' });
+        expect(conciliarEdicaoRascunhoShopee(edicaoDe(link), agora(link))).toEqual({
+          acao: 'largar',
+          aviso: null,
+        });
+        expect(conciliarEdicaoRascunhoShopee(unidade, agora(guardado({ item_name: 'B' })))).toEqual(
+          { acao: 'largar', aviso: null },
+        );
+      });
+    });
+  });
+
+  describe('o bloco e o portão do «Publicar» (§3.7)', () => {
+    const LIMITES = {
+      itemNameLengthLimit: { min: 1, max: 120 },
+      itemDescriptionLengthLimit: { min: 1, max: 3000 },
+    };
+    const TEXTOS = { nomeProduto: 'Camiseta', descricaoProduto: 'Algodão' };
+    const blocoDe = (
+      link: Record<string, unknown> | null,
+      edicao: EdicaoRascunhoShopee | null = null,
+    ) =>
+      estadoDoBlocoRascunhoShopee({
+        link,
+        edicao,
+        nowMs: NOW,
+        kitVirtual: false,
+        servidorConfirmado: true,
+        podeEditar: true,
+        ocupado: false,
+      });
+    const entradaDe = (
+      bloco: ReturnType<typeof blocoDe>,
+      over: Partial<EntradaDaPublicacaoDoRascunhoShopee> = {},
+    ): EntradaDaPublicacaoDoRascunhoShopee => ({
+      bloco,
+      podeEditar: true,
+      ocupado: false,
+      servidorConfirmado: true,
+      produtoSujo: false,
+      textosDoProduto: TEXTOS,
+      limites: LIMITES,
+      arvore: ARVORE,
+      rascunhosIrmaosIncertos: [],
+      ...over,
+    });
+    const decidir = (
+      link: Record<string, unknown>,
+      over: Partial<EntradaDaPublicacaoDoRascunhoShopee> = {},
+    ) => publicacaoDoRascunhoShopee(entradaDe(blocoDe(link), over));
+    const pronto = () => guardado({ attributes: [COM_FIO_GUARDADO] });
+
+    it('⭐ categoria válida e a árvore NÃO lida (carregando ou falhou) ⇒ `atributos-desconhecidos`, com o aviso ⟷ QUASE-PAR: lida ⇒ Publicar age; `leaf: false` é uma árvore VAZIA conhecida', () => {
+      expect(decidir(pronto(), { arvore: null })).toStrictEqual({
+        podePublicar: false,
+        impedimento: 'atributos-desconhecidos',
+        pendencias: [],
+        aviso: FRASE_PUBLICAR_SEM_ATRIBUTOS_SHOPEE,
+      });
+      expect(decidir(pronto()).podePublicar).toBe(true);
+      expect(decidir(pronto(), { arvore: SEM_ATRIBUTOS }).podePublicar).toBe(true);
+    });
+
+    it('a ordem: `categoria-ausente`, `categoria-inexistente` e `faixas-desconhecidas` falam ANTES de `atributos-desconhecidos`', () => {
+      const semCategoria = decidir(guardado({ category_id: null }), {
+        arvore: null,
+        limites: null,
+      });
+      expect(semCategoria.impedimento).toBe('pendencias');
+      expect(semCategoria.pendencias.map((p) => p.tipo)).toEqual(['categoria-ausente']);
+      expect(decidir(guardado({ category_id: 0 }), { arvore: null }).impedimento).toBe(
+        'categoria-inexistente',
+      );
+      expect(decidir(pronto(), { arvore: null, limites: null }).impedimento).toBe(
+        'faixas-desconhecidas',
+      );
+    });
+
+    it('⛔ uma OBRIGATÓRIA sem valor é a pendência `atributo-obrigatorio` (a árvore é lida) ⟷ QUASE-PAR: sem a árvore ela é invisível — por isso `atributos-desconhecidos`; preenchida ⇒ Publicar age', () => {
+      const vazio = decidir(guardado());
+      expect(vazio.impedimento).toBe('pendencias');
+      expect(vazio.pendencias).toEqual([
+        { tipo: 'atributo-obrigatorio', nomes: ['Tipo de Conexão'] },
+      ]);
+      expect(decidir(guardado(), { arvore: null })).toMatchObject({
+        impedimento: 'atributos-desconhecidos',
+        pendencias: [],
+      });
+
+      // 2530 shows three mandatory children: each is named with its parent.
+      const semFio = decidir(guardado({ attributes: [SEM_FIO_GUARDADO] }));
+      expect(semFio.pendencias).toEqual([
+        {
+          tipo: 'atributo-obrigatorio',
+          nomes: [
+            `Fabricante (em Tipo de Conexão: ${ROTULO_SEM_FIO})`,
+            `Nr. de Homologação (em Tipo de Conexão: ${ROTULO_SEM_FIO})`,
+            `Nome do Modelo (em Tipo de Conexão: ${ROTULO_SEM_FIO})`,
+          ],
+        },
+      ]);
+      const completo = guardado({
+        attributes: [
+          SEM_FIO_GUARDADO,
+          personalizado(101237, 'Fabricante Exemplo'),
+          personalizado(101197, '00000-00-00000'),
+          personalizado(101040, 'Modelo Exemplo'),
+        ],
+      });
+      expect(decidir(completo).podePublicar).toBe(true);
+      expect(decidir(pronto()).podePublicar).toBe(true);
+    });
+
+    it('D-8: um atributo que o ERP não edita (uma data) OPCIONAL não bloqueia ⟷ OBRIGATÓRIO bloqueia pela `atributo-obrigatorio` (nenhum tipo novo de pendência)', () => {
+      const data = (mandatory: boolean): ArvoreAtributosShopee => ({
+        atributos: [
+          atributo(
+            900101,
+            'Sintético data',
+            { inputType: 3, inputValidationType: 4 },
+            [],
+            mandatory,
+          ),
+        ],
+        truncated: false,
+      });
+      expect(decidir(guardado(), { arvore: data(false) }).podePublicar).toBe(true);
+      expect(decidir(guardado(), { arvore: data(true) })).toMatchObject({
+        podePublicar: false,
+        impedimento: 'pendencias',
+        pendencias: [{ tipo: 'atributo-obrigatorio', nomes: ['Sintético data'] }],
+      });
+      // The SAME mandatory date with a stored value is carried (D-7): no
+      // pendência — what the row's «não suportado» tail must agree with.
+      const comValor = guardado({ attributes: [personalizado(900101, '15/03/2027')] });
+      expect(decidir(comValor, { arvore: data(true) })).toMatchObject({
+        podePublicar: true,
+        pendencias: [],
+      });
+      expect(decidir(guardado({ attributes: [] }), { arvore: data(true) }).impedimento).toBe(
+        'pendencias',
+      );
+    });
+
+    it('as pendências seguem os atributos EDITADOS do bloco (a árvore da categoria EDITADA), mas o portão continua pedindo o rascunho salvo', () => {
+      const e = comAtributoRascunhoShopee(edicaoDe(guardado()), ARVORE, 100408, lista(COM_FIO));
+      const bloco = blocoDe(guardado(), e);
+      expect(bloco.campos.attributes).toEqual([COM_FIO_GUARDADO]);
+      const r = publicacaoDoRascunhoShopee(entradaDe(bloco));
+      expect(r.pendencias).toEqual([]);
+      expect(r.impedimento).toBe('alteracoes-nao-salvas');
+      expect(decidir(guardado()).pendencias.map((p) => p.tipo)).toEqual(['atributo-obrigatorio']);
+    });
+
+    it('`atributosPreenchidos`: o guardado OU o formulário — um rascunho NOVO com atributos também avisa ⟷ QUASE-PAR: nenhum dos dois (`null` ou `[]`) não avisa', () => {
+      let novo = novaEdicaoRascunhoShopee({ linkDocId: ID_NOVO, contaId: CONTA, nomeProduto: 'X' });
+      expect(blocoDe(null, novo).atributosPreenchidos).toBe(false);
+      novo = comCampoRascunhoShopee(novo, CATEGORIA, 100087);
+      novo = comAtributoRascunhoShopee(novo, ARVORE, 100413, texto('Seminovo'));
+      expect(blocoDe(null, novo).atributosPreenchidos).toBe(true);
+
+      const semNada = guardado();
+      const preenchido = comAtributoRascunhoShopee(
+        edicaoDe(semNada),
+        ARVORE,
+        100413,
+        texto('Seminovo'),
+      );
+      expect(blocoDe(semNada, preenchido).atributosPreenchidos).toBe(true);
+      expect(blocoDe(semNada).atributosPreenchidos).toBe(false);
+      expect(blocoDe(guardado({ attributes: [] })).atributosPreenchidos).toBe(false);
+
+      // The form emptied by a category change: the HELD list still goes on save.
+      const comLista = pronto();
+      const trocada = comCampoRascunhoShopee(edicaoDe(comLista), CATEGORIA, 100088);
+      expect(trocada.atual.attributes).toBeNull();
+      expect(blocoDe(comLista, trocada).atributosPreenchidos).toBe(true);
+    });
+
+    it('`atributosPreenchidos` OU uma digitação que BLOQUEIA (a troca de categoria a apaga) ⟷ QUASE-PAR: só a unidade lembrada (texto em branco) não é trabalho — não avisa', () => {
+      let novo = novaEdicaoRascunhoShopee({ linkDocId: ID_NOVO, contaId: CONTA, nomeProduto: 'X' });
+      novo = comCampoRascunhoShopee(novo, CATEGORIA, 100087);
+      const digitado = comAtributoRascunhoShopee(novo, ARVORE, 101029, texto('1,5'));
+      expect(digitado.atual.attributes).toBeNull();
+      expect(blocoDe(null, digitado).atributosPreenchidos).toBe(true);
+      const semNada = guardado();
+      const ponto = comAtributoRascunhoShopee(
+        edicaoDe(semNada),
+        ARVORE,
+        101029,
+        texto('1.5', 'KG'),
+      );
+      expect(blocoDe(semNada, ponto).atributosPreenchidos).toBe(true);
+
+      const soUnidade = comAtributoRascunhoShopee(novo, ARVORE, 101029, texto('', 'KG'));
+      expect(soUnidade.digitacoesAtributos).not.toEqual({});
+      expect(blocoDe(null, soUnidade).atributosPreenchidos).toBe(false);
+      expect(blocoDe(null, novo).atributosPreenchidos).toBe(false);
+    });
+
+    it('`atributosGravadosForaDaCategoria`: o guardado tem atributos e o formulário mostra OUTRA categoria ⟷ QUASE-PAR: na categoria guardada, num rascunho NOVO, ou com o guardado `[]`/`null` — falso', () => {
+      const comLista = pronto();
+      const trocada = comCampoRascunhoShopee(edicaoDe(comLista), CATEGORIA, 100088);
+      expect(blocoDe(comLista, trocada).atributosGravadosForaDaCategoria).toBe(true);
+      expect(blocoDe(comLista, edicaoDe(comLista)).atributosGravadosForaDaCategoria).toBe(false);
+      expect(blocoDe(comLista).atributosGravadosForaDaCategoria).toBe(false);
+
+      let novo = novaEdicaoRascunhoShopee({ linkDocId: ID_NOVO, contaId: CONTA, nomeProduto: 'X' });
+      novo = comCampoRascunhoShopee(novo, CATEGORIA, 100087);
+      novo = comAtributoRascunhoShopee(novo, ARVORE, 100413, texto('Seminovo'));
+      novo = comCampoRascunhoShopee(novo, CATEGORIA, 100088);
+      expect(blocoDe(null, novo).atributosGravadosForaDaCategoria).toBe(false);
+
+      for (const attributes of [[], null]) {
+        const link = guardado({ attributes });
+        const outra = comCampoRascunhoShopee(edicaoDe(link), CATEGORIA, 100088);
+        expect(blocoDe(link, outra).atributosGravadosForaDaCategoria).toBe(false);
+      }
+    });
+
+    it('`voltarCategoriaApagaAtributos` (incerta): o que foi preenchido ou digitado para a categoria TROCADA ⟷ QUASE-PAR: nada feito para ela (a lista guardada VOLTA) — falso, ainda que `atributosPreenchidos`; fora do incerta, falso', () => {
+      const incerto = guardado({
+        criacaoIncertaDesde: NOW - 600_000,
+        attributes: [COM_FIO_GUARDADO],
+      });
+      const trocada = comCampoRascunhoShopee(edicaoDe(incerto), CATEGORIA, 100088);
+      const sem = blocoDe(incerto, trocada);
+      expect(sem).toMatchObject({ podeVoltarCategoria: true, atributosPreenchidos: true });
+      expect(sem.voltarCategoriaApagaAtributos).toBe(false);
+
+      const preenchida = comAtributoRascunhoShopee(trocada, ARVORE, 100413, texto('Seminovo'));
+      expect(blocoDe(incerto, preenchida).voltarCategoriaApagaAtributos).toBe(true);
+      const digitada = comAtributoRascunhoShopee(trocada, ARVORE, 101029, texto('1.5', 'KG'));
+      expect(digitada.atual.attributes).toBeNull();
+      expect(blocoDe(incerto, digitada).voltarCategoriaApagaAtributos).toBe(true);
+
+      const livre = guardado({ attributes: [COM_FIO_GUARDADO] });
+      const naoIncerta = comAtributoRascunhoShopee(
+        comCampoRascunhoShopee(edicaoDe(livre), CATEGORIA, 100088),
+        ARVORE,
+        100413,
+        texto('Seminovo'),
+      );
+      expect(blocoDe(livre, naoIncerta).voltarCategoriaApagaAtributos).toBe(false);
+    });
+  });
+
+  describe('a rota de uma linha recusada (§3.8)', () => {
+    const RASCUNHO = {
+      ehRascunho: true,
+      descricaoPropria: false,
+      logisticaEscolhida: false,
+    } as const;
+    const ANUNCIO = {
+      ehRascunho: false,
+      descricaoPropria: false,
+      logisticaEscolhida: false,
+    } as const;
+    const problema = (campo: string, motivo = 'atributo-obrigatorio') => ({
+      campo,
+      motivo,
+      acao: null,
+    });
+
+    it('⭐ `attribute_list` e `attribute_list[COLOR]` num RASCUNHO ⇒ a seção Atributos («Corrigir no rascunho: Atributos») ⟷ QUASE-PAR: `attribute_lists` e `attribute` ⇒ nenhuma; num anúncio ⇒ Seller Centre', () => {
+      for (const campo of ['attribute_list', 'attribute_list[COLOR]', 'attribute_list[100408]']) {
+        for (const motivo of ['atributo-obrigatorio', 'error_invalid_attribute_value']) {
+          const s = superficieDoCampoShopee(problema(campo, motivo), RASCUNHO);
+          expect(s, campo).toStrictEqual({ tipo: 'rascunho', campo: ATRIBUTOS, aviso: null });
+          if (s !== null) {
+            expect(rotuloDaSuperficieShopee(s, null)).toBe('Corrigir no rascunho: Atributos');
+          }
+          expect(superficieDoCampoShopee(problema(campo, motivo), ANUNCIO), campo).toStrictEqual({
+            tipo: 'seller-centre',
+          });
+        }
+      }
+      for (const campo of ['attribute_lists', 'attribute', 'attributes', 'attribute_list_x']) {
+        expect(superficieDoCampoShopee(problema(campo), RASCUNHO), campo).toBeNull();
+      }
+    });
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                  #1911 P16 — the logistics on a draft                       */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The sixth form field. Every channel answer is hand-written in the shape of
+ * `apps/shopee`'s channels route and parsed by the SHARED
+ * `respostaCanaisShopeeSchema`; every interaction goes through the REAL
+ * logistics editor model (`./logisticaRascunho.ts`), so the value the plan
+ * reads is the one the section writes. Fixture ids only (90003…), invented
+ * names.
+ */
+describe('#1911 P16 — a logística no rascunho: o sexto campo do formulário', () => {
+  const LOGISTICA = CAMPO_RASCUNHO_SHOPEE.logisticInfo;
+  /** The shop: A and B selectable, «Automática» would send both with no free shipping — B listed FIRST. */
+  const LOJA: RespostaCanaisShopee = respostaCanaisShopeeSchema.parse({
+    medidasCompletas: true,
+    canais: [CANAL_B, CANAL_A].map((logisticsChannelId) => ({
+      logisticsChannelId,
+      nome: `Entrega ${logisticsChannelId === CANAL_A ? 'A' : 'B'}`,
+      selecionavel: true,
+      obrigatorio: false,
+      bloqueiaFreteGratisDoVendedor: false,
+      indisponivel: null,
+      automatica: { isFree: false },
+    })),
+  });
+  /** Stored: A on, B off (the editor's shape — an explicit off), stamped. */
+  const A_LIGADO_B_DESLIGADO = [canalLigado(CANAL_A), canalDesligado(CANAL_B)];
+  const escolhido = (extra: Record<string, unknown> = {}) =>
+    comCanaisEscolhidos(A_LIGADO_B_DESLIGADO, extra);
+  const comLogistica = (
+    e: EdicaoRascunhoShopee,
+    valor: EdicaoRascunhoShopee['atual']['logistic_info'],
+  ) => comCampoRascunhoShopee(e, LOGISTICA, valor);
+  /** One switch or checkbox, as the section applies it. */
+  const mexer = (
+    e: EdicaoRascunhoShopee,
+    logisticId: number,
+    mudanca: { readonly ligado?: boolean; readonly freteGratis?: boolean },
+  ) => comLogistica(e, comCanalShopee(e.atual.logistic_info ?? [], LOJA, logisticId, mudanca));
+  const blocoDe = (
+    link: Record<string, unknown> | null,
+    edicao: EdicaoRascunhoShopee | null = null,
+    over: Partial<EntradaDoBlocoRascunhoShopee> = {},
+  ) =>
+    estadoDoBlocoRascunhoShopee({
+      link,
+      edicao,
+      nowMs: NOW,
+      kitVirtual: false,
+      servidorConfirmado: true,
+      podeEditar: true,
+      ocupado: false,
+      ...over,
+    });
+  const publicar = (link: Record<string, unknown>, edicao: EdicaoRascunhoShopee | null) =>
+    publicacaoDoRascunhoShopee({
+      bloco: blocoDe(link, edicao),
+      podeEditar: true,
+      ocupado: false,
+      servidorConfirmado: true,
+      produtoSujo: false,
+      textosDoProduto: { nomeProduto: 'Camiseta', descricaoProduto: 'Algodão' },
+      limites: {
+        itemNameLengthLimit: { min: 1, max: 120 },
+        itemDescriptionLengthLimit: { min: 1, max: 3000 },
+      },
+      arvore: { atributos: [], truncated: false },
+      rascunhosIrmaosIncertos: [],
+    });
+  const novoRascunho = (nomeProduto = 'X') =>
+    novaEdicaoRascunhoShopee({ linkDocId: ID_NOVO, contaId: CONTA, nomeProduto });
+
+  describe('o plano, o patch e a base', () => {
+    it('⭐ ligar um canal num rascunho carimbado ⇒ sujo; o patch leva a lista ordenada; a base é SÓ `{logistic_info: a projeção guardada}` ⟷ ⛔ uma edição de atributos ganha `category_id` na base, uma de logística não ganha nada', () => {
+      const link = escolhido();
+      const e = mexer(edicaoDe(link), CANAL_B, { ligado: true });
+      expect(e.atual.logistic_info).toStrictEqual([canalLigado(CANAL_A), canalLigado(CANAL_B)]);
+      expect(edicaoRascunhoShopeeSuja(e)).toBe(true);
+      expect(atualizacaoAceita(e)).toStrictEqual({
+        integracaoId: CONTA,
+        produtoId: PRODUTO,
+        linkDocId: 'R1',
+        base: { logistic_info: A_LIGADO_B_DESLIGADO },
+        patch: { logistic_info: [canalLigado(CANAL_A), canalLigado(CANAL_B)] },
+      });
+
+      // ⛔ QUASE: an attributes edit pulls the category into its base (P13 Q1) …
+      const carregada = edicaoDe(link);
+      const atributos: EdicaoRascunhoShopee = {
+        ...carregada,
+        atual: {
+          ...carregada.atual,
+          attributes: [{ attribute_id: 10, attribute_value_list: [{ value_id: 5 }] }],
+        },
+      };
+      expect(Object.keys(atualizacaoAceita(atributos).base)).toEqual([
+        CAMPO_RASCUNHO_SHOPEE.categoryId,
+        CAMPO_RASCUNHO_SHOPEE.attributes,
+      ]);
+      // … a logistics edit pulls in nothing.
+      expect(Object.keys(atualizacaoAceita(e).base)).toEqual([LOGISTICA]);
+    });
+
+    it('⭐ dobra de ORDEM: `[B,A]` sobre `[A,B]` guardado ⇒ limpo, sem patch, sem aviso de saída, «Publicar» livre ⟷ ⛔ `[A,B]` com o `is_free` de B trocado ⇒ sujo e «Publicar» segura (`alteracoes-nao-salvas`); `[A,A′]` ⇒ `invalidos`, nunca dobrado', () => {
+      const link = escolhido();
+      expect(publicar(link, null).podePublicar).toBe(true);
+
+      // PAR: the same channels in another ORDER — the whitelist sorts, so the write is no change.
+      const invertida = comLogistica(edicaoDe(link), [
+        canalDesligado(CANAL_B),
+        canalLigado(CANAL_A),
+      ]);
+      const plano = planoDoRascunhoShopee(invertida, LIVRE);
+      expect(plano).toMatchObject({ patch: {}, alterados: [], invalidos: [], sujo: false });
+      expect(plano.impedimento).toBe('nada-a-salvar');
+      expect(algumRascunhoShopeeSujo([invertida])).toBe(false);
+      expect(publicar(link, invertida).podePublicar).toBe(true);
+
+      // ⛔ QUASE: B's free shipping flipped is an edit.
+      const freteGratis = comLogistica(edicaoDe(link), [
+        canalLigado(CANAL_A),
+        canalDesligado(CANAL_B, true),
+      ]);
+      expect(algumRascunhoShopeeSujo([freteGratis])).toBe(true);
+      expect(atualizacaoAceita(freteGratis).patch).toStrictEqual({
+        logistic_info: [canalLigado(CANAL_A), canalDesligado(CANAL_B, true)],
+      });
+      expect(publicar(link, freteGratis)).toMatchObject({
+        podePublicar: false,
+        impedimento: 'alteracoes-nao-salvas',
+      });
+
+      // ⛔ QUASE: A twice (A′ = A with free shipping) is never folded into one channel.
+      const repetida = comLogistica(edicaoDe(link), [
+        canalLigado(CANAL_A),
+        canalLigado(CANAL_A, true),
+      ]);
+      const planoRepetido = planoDoRascunhoShopee(repetida, LIVRE);
+      expect(planoRepetido.invalidos).toEqual([LOGISTICA]);
+      expect(planoRepetido.impedimento).toBe('campo-invalido');
+      expect(blocoDe(link, repetida).logisticaInvalida).toBe(
+        MOTIVO_DA_LOGISTICA_INVALIDA_SHOPEE.canalRepetido,
+      );
+    });
+
+    it("⛔ zero ligado ⇒ `invalidos: ['logistic_info']`, `campo-invalido`, `corpoAtualizar…` null, `bloco.logisticaInvalida` 'sem-canal-ligado' ⟷ ⭐ um ligado ⇒ enviável, `logisticaInvalida` null", () => {
+      const link = escolhido();
+      const nenhum = mexer(edicaoDe(link), CANAL_A, { ligado: false });
+      expect(nenhum.atual.logistic_info).toStrictEqual([
+        canalDesligado(CANAL_A),
+        canalDesligado(CANAL_B),
+      ]);
+      const plano = planoDoRascunhoShopee(nenhum, LIVRE);
+      expect(plano.invalidos).toEqual([LOGISTICA]);
+      expect(plano.sujo).toBe(true);
+      expect(plano.impedimento).toBe('campo-invalido');
+      expect(corpoAtualizarRascunhoShopee(nenhum, LIVRE, { produtoId: PRODUTO })).toBeNull();
+      const bloco = blocoDe(link, nenhum);
+      expect(bloco.logisticaInvalida).toBe(MOTIVO_DA_LOGISTICA_INVALIDA_SHOPEE.semCanalLigado);
+      expect(bloco.podeSalvar).toBe(false);
+      // `[]` (a shop with no selectable channel, D16-18) reads the same.
+      expect(blocoDe(link, comLogistica(edicaoDe(link), [])).logisticaInvalida).toBe(
+        MOTIVO_DA_LOGISTICA_INVALIDA_SHOPEE.semCanalLigado,
+      );
+
+      // PAR: one channel ON is sendable.
+      const um = mexer(nenhum, CANAL_B, { ligado: true });
+      expect(planoDoRascunhoShopee(um, LIVRE).impedimento).toBeNull();
+      expect(atualizacaoAceita(um).patch).toStrictEqual({
+        logistic_info: [canalDesligado(CANAL_A), canalLigado(CANAL_B)],
+      });
+      expect(blocoDe(link, um).logisticaInvalida).toBeNull();
+    });
+
+    it('um valor guardado intocado sem nenhum ligado NÃO é inválido (o plano não o valida) ⟷ o mesmo valor editado é', () => {
+      const todosDesligados = [canalDesligado(CANAL_A), canalDesligado(CANAL_B)];
+      const guardadoSemLigado = comCanaisEscolhidos(todosDesligados);
+      expect(camposDoRascunhoShopee(guardadoSemLigado).logistic_info).toStrictEqual(
+        todosDesligados,
+      );
+      // Untouched: never validated — not on open, not beside a title edit.
+      const titulo = comCampoRascunhoShopee(
+        edicaoDe(guardadoSemLigado),
+        CAMPO_RASCUNHO_SHOPEE.itemName,
+        'Novo',
+      );
+      for (const e of [edicaoDe(guardadoSemLigado), titulo]) {
+        expect(planoDoRascunhoShopee(e, LIVRE).invalidos).toEqual([]);
+        expect(blocoDe(guardadoSemLigado, e).logisticaInvalida).toBeNull();
+      }
+      expect(blocoDe(guardadoSemLigado).logisticaInvalida).toBeNull();
+      expect(atualizacaoAceita(titulo).patch).toStrictEqual({ item_name: 'Novo' });
+
+      // NEAR-MISS: the SAME all-off value as the operator's edit (A switched off) is invalid.
+      const editado = mexer(edicaoDe(escolhido()), CANAL_A, { ligado: false });
+      expect(editado.atual.logistic_info).toStrictEqual(todosDesligados);
+      expect(planoDoRascunhoShopee(editado, LIVRE).invalidos).toEqual([LOGISTICA]);
+      expect(blocoDe(escolhido(), editado).logisticaInvalida).toBe(
+        MOTIVO_DA_LOGISTICA_INVALIDA_SHOPEE.semCanalLigado,
+      );
+    });
+
+    it('lista legada sem carimbo: guardada null; escolher ⇒ `base.logistic_info: null`, nunca a lista crua', () => {
+      const crua = [{ logistic_id: CANAL_A, enabled: true, is_free: false, logistic_name: 'X' }];
+      const legado = guardado({ logistic_info: crua });
+      const bloco = blocoDe(legado);
+      expect(bloco.logisticaGravada).toBeNull();
+      expect(bloco.valores.logistic_info).toBeNull();
+      expect(bloco.logisticaDoSistemaAnterior).toBe(true);
+
+      const e = comLogistica(edicaoDe(legado), escolhaInicialShopee(LOJA));
+      const corpo = atualizacaoAceita(e);
+      expect(corpo.base).toStrictEqual({ logistic_info: null });
+      expect(corpo.patch).toStrictEqual({
+        logistic_info: [canalLigado(CANAL_A), canalLigado(CANAL_B)],
+      });
+    });
+
+    it('carimbado ⇒ «Automática» ⇒ patch `{logistic_info: null}`, base a lista ⟷ sobre um null guardado ⇒ limpo', () => {
+      const automatica = comLogistica(edicaoDe(escolhido()), null);
+      expect(atualizacaoAceita(automatica)).toMatchObject({
+        base: { logistic_info: A_LIGADO_B_DESLIGADO },
+        patch: { logistic_info: null },
+      });
+      // NEAR-MISS: «Automática» over a stored «Automática» changes nothing.
+      const semLista = comLogistica(edicaoDe(guardado()), null);
+      expect(planoDoRascunhoShopee(semLista, LIVRE)).toMatchObject({ patch: {}, sujo: false });
+      expect(corpoAtualizarRascunhoShopee(semLista, LIVRE, { produtoId: PRODUTO })).toBeNull();
+    });
+
+    it('D16-5: uma entrada `novo` com lista ⇒ `campo-invalido` ⟷ `novo` com null cria', () => {
+      const novo = novoRascunho();
+      const comLista = comLogistica(novo, [canalLigado(CANAL_A)]);
+      const plano = planoDoRascunhoShopee(comLista, LIVRE);
+      expect(plano.invalidos).toEqual([LOGISTICA]);
+      expect(plano.impedimento).toBe('campo-invalido');
+      expect(corpoCriarRascunhoShopee(comLista, LIVRE, { produtoId: PRODUTO })).toBeNull();
+      // NEAR-MISS: the new draft's own «Automática» creates.
+      expect(planoDoRascunhoShopee(novo, LIVRE).impedimento).toBeNull();
+      expect(corpoCriarRascunhoShopee(novo, LIVRE, { produtoId: PRODUTO })).not.toBeNull();
+    });
+  });
+
+  describe('os três corpos', () => {
+    it('⭐ `corpoCriarRascunhoShopee` nunca nomeia `logistic_info` (nem com o formulário segurando uma lista construída à mão) ⟷ editar e descartar nomeiam', () => {
+      const novo = novoRascunho();
+      // The plan of a new draft holds all six — the create takes five.
+      expect(planoDoRascunhoShopee(novo, LIVRE).patch).toHaveProperty(LOGISTICA, null);
+      const criar = corpoCriarRascunhoShopee(novo, LIVRE, { produtoId: PRODUTO });
+      expect(Object.keys(criar?.conteudo ?? {})).toEqual([
+        'item_name',
+        'description',
+        'category_id',
+        'marca',
+        'attributes',
+      ]);
+      // The create's OWN schema is strict and omits the key: a sixth one would be a 400.
+      expect(corpoCriarRascunhoShopeeSchema.safeParse(criar).success).toBe(true);
+      expect(
+        corpoCriarRascunhoShopeeSchema.safeParse({
+          ...criar,
+          conteudo: { ...criar?.conteudo, logistic_info: null },
+        }).success,
+      ).toBe(false);
+      // A list built by hand on the form never reaches a create (D16-5: no body at all).
+      const aMao: EdicaoRascunhoShopee = {
+        ...novo,
+        atual: { ...novo.atual, logistic_info: [canalLigado(CANAL_A)] },
+      };
+      expect(corpoCriarRascunhoShopee(aMao, LIVRE, { produtoId: PRODUTO })).toBeNull();
+
+      // ⟷ the edit and the discard name it.
+      const link = escolhido();
+      const editar = atualizacaoAceita(mexer(edicaoDe(link), CANAL_B, { freteGratis: true }));
+      expect(editar.base).toHaveProperty(LOGISTICA);
+      expect(editar.patch).toHaveProperty(LOGISTICA);
+      const descartar = corpoDescartarRascunhoShopee({
+        contaId: CONTA,
+        linkDocId: 'R1',
+        produtoId: PRODUTO,
+        projecao: projecaoGuardadaDoRascunhoShopee(null, link),
+      });
+      expect(descartar.base.logistic_info).toStrictEqual(A_LIGADO_B_DESLIGADO);
+    });
+  });
+
+  describe('o rebase do 409', () => {
+    it('⛔ «Salvar mesmo assim» num 409 só do título nunca reverte a logística de outra aba ⟷ a alteração de logística do operador mantém o valor e a base carregada', () => {
+      const listados = [CAMPO_RASCUNHO_SHOPEE.itemName];
+      // Loaded «Automática»; another tab saved a title AND chose channels.
+      const outraAba = escolhido({ item_name: 'C' });
+      const titulo = comCampoRascunhoShopee(
+        edicaoDe(guardado()),
+        CAMPO_RASCUNHO_SHOPEE.itemName,
+        'B',
+      );
+      const rebaseada = rebasearEdicaoRascunhoShopee(titulo, outraAba, [], listados);
+      expect(atualizacaoAceita(rebaseada)).toStrictEqual({
+        integracaoId: CONTA,
+        produtoId: PRODUTO,
+        linkDocId: 'R1',
+        base: { item_name: 'C' },
+        patch: { item_name: 'B' },
+      });
+      // The untouched logistics follow the stored draft — the block shows the other tab's list.
+      expect(rebaseada.atual.logistic_info).toStrictEqual(A_LIGADO_B_DESLIGADO);
+      expect(rebaseada.base.logistic_info).toStrictEqual(A_LIGADO_B_DESLIGADO);
+
+      // NEAR-MISS: the operator's OWN logistics change keeps its value and, unlisted, the
+      // base it LOADED — the re-send is a 409 again on it, never an overwrite unseen.
+      const minha = comLogistica(titulo, [canalLigado(CANAL_A, true)]);
+      const rebaseadaMinha = rebasearEdicaoRascunhoShopee(minha, outraAba, [], listados);
+      expect(rebaseadaMinha.atual.logistic_info).toStrictEqual([canalLigado(CANAL_A, true)]);
+      expect(atualizacaoAceita(rebaseadaMinha)).toStrictEqual({
+        integracaoId: CONTA,
+        produtoId: PRODUTO,
+        linkDocId: 'R1',
+        base: { item_name: 'C', logistic_info: null },
+        patch: { item_name: 'B', logistic_info: [canalLigado(CANAL_A, true)] },
+      });
+    });
+
+    it('⭐ D16-9: a criação re-tentada sobre uma lista que outra aba escolheu TOMA a lista guardada (base e formulário) — o reenvio não nomeia `logistic_info` ⟷ ⛔ o `item_name` da mesma criação mantém o valor do operador', () => {
+      const novo = novoRascunho('Camiseta');
+      // The create landed (its answer lost); another tab then renamed it and chose channels.
+      const outraAba = comCanaisEscolhidos(A_LIGADO_B_DESLIGADO, {
+        item_name: 'Outro',
+        category_id: null,
+        brand_id: null,
+        original_brand_name: null,
+      });
+      for (const usar of [[], [CAMPO_RASCUNHO_SHOPEE.itemName]]) {
+        const e = rebasearEdicaoRascunhoShopee(novo, outraAba, usar);
+        expect(e.novo).toBe(false);
+        expect(e.base.logistic_info).toStrictEqual(A_LIGADO_B_DESLIGADO);
+        expect(e.atual.logistic_info).toStrictEqual(A_LIGADO_B_DESLIGADO);
+      }
+      const reenvio = atualizacaoAceita(rebasearEdicaoRascunhoShopee(novo, outraAba));
+      // ⛔ QUASE: the title the operator typed is still what the re-send writes.
+      expect(reenvio).toStrictEqual({
+        integracaoId: CONTA,
+        produtoId: PRODUTO,
+        linkDocId: ID_NOVO,
+        base: { item_name: 'Outro' },
+        patch: { item_name: 'Camiseta' },
+      });
+      expect(reenvio.patch).not.toHaveProperty(LOGISTICA);
+      expect(reenvio.base).not.toHaveProperty(LOGISTICA);
+    });
+
+    it('`conflitosAtualizados…`: essa criação re-tentada não põe «Logística» em `sobrescritos` ⟷ uma edição cuja lista guardada mudou depois do 409 ⇒ linhas renovadas', () => {
+      const novo = novoRascunho('Camiseta');
+      const semResto = {
+        item_name: 'Outro',
+        category_id: null,
+        brand_id: null,
+        original_brand_name: null,
+      };
+      const linhas = [
+        { campo: CAMPO_RASCUNHO_SHOPEE.itemName, atual: 'Outro' },
+        { campo: LOGISTICA, atual: A_LIGADO_B_DESLIGADO },
+      ];
+      // The 409's list still stored ⇒ re-send — and STILL a re-send once a third tab moved the
+      // channels after the 409: the re-send never names them, so it overwrites nothing there.
+      for (const lista of [A_LIGADO_B_DESLIGADO, [canalLigado(CANAL_B, true)]]) {
+        expect(
+          conflitosAtualizadosDoRascunhoShopee(novo, comCanaisEscolhidos(lista, semResto), linhas),
+        ).toBeNull();
+      }
+
+      // NEAR-MISS: an EDIT that changes the channels, whose stored list moved after the 409,
+      // gets the refreshed row and sends nothing.
+      const edicao = comLogistica(edicaoDe(guardado()), [canalLigado(CANAL_A, true)]);
+      const linha409 = [{ campo: LOGISTICA, atual: A_LIGADO_B_DESLIGADO }];
+      expect(conflitosAtualizadosDoRascunhoShopee(edicao, escolhido(), linha409)).toBeNull();
+      const depois = comCanaisEscolhidos([canalLigado(CANAL_B), canalLigado(CANAL_A)]);
+      expect(conflitosAtualizadosDoRascunhoShopee(edicao, depois, linha409)).toStrictEqual([
+        { campo: LOGISTICA, atual: [canalLigado(CANAL_A), canalLigado(CANAL_B)] },
+      ]);
+    });
+
+    it('conciliar: uma entrada suja de logística cuja lista outra aba salvou igual ⇒ largada em silêncio ⟷ diferente ⇒ mantida', () => {
+      const e = mexer(edicaoDe(escolhido()), CANAL_B, { ligado: true });
+      const agora = (link: Record<string, unknown>) => ({
+        link,
+        snapshot: [],
+        servidorConfirmado: true,
+      });
+      // Stored in ANOTHER order by the other tab: the projection sorts it back.
+      const igual = comCanaisEscolhidos([canalLigado(CANAL_B), canalLigado(CANAL_A)]);
+      expect(conciliarEdicaoRascunhoShopee(e, agora(igual))).toEqual({
+        acao: 'largar',
+        aviso: null,
+      });
+      // NEAR-MISS: one free-shipping flag apart is not "already stored".
+      const diferente = comCanaisEscolhidos([canalLigado(CANAL_B, true), canalLigado(CANAL_A)]);
+      expect(conciliarEdicaoRascunhoShopee(e, agora(diferente))).toEqual({ acao: 'manter' });
+    });
+  });
+
+  describe('o bloco', () => {
+    it('`logisticaEditavel`: false em `novo` e enquanto ocupado ⟷ true num guardado editável', () => {
+      const link = escolhido();
+      expect(blocoDe(link).logisticaEditavel).toBe(true);
+      const blocoNovo = blocoDe(null, novoRascunho());
+      // The new draft's OTHER fields take typing — only the channels wait for the first save (D-13).
+      expect(blocoNovo.camposEditaveis).toBe(true);
+      expect(blocoNovo.logisticaEditavel).toBe(false);
+      expect(blocoDe(link, null, { ocupado: true }).logisticaEditavel).toBe(false);
+      expect(blocoDe(link, null, { podeEditar: false }).logisticaEditavel).toBe(false);
+      expect(blocoDe(link, null, { servidorConfirmado: false }).logisticaEditavel).toBe(false);
+    });
+
+    it('`logisticaDoSistemaAnterior`: não vazia sem carimbo (entradas ilegíveis incluídas) ⇒ true ⟷ carimbada, `[]` sem carimbo, rascunho local ⇒ false', () => {
+      for (const logistic_info of [[canalLigado(CANAL_A)], [{ logistic_id: 'x' }]]) {
+        expect(blocoDe(guardado({ logistic_info })).logisticaDoSistemaAnterior).toBe(true);
+      }
+      expect(blocoDe(escolhido()).logisticaDoSistemaAnterior).toBe(false);
+      expect(blocoDe(guardado({ logistic_info: [] })).logisticaDoSistemaAnterior).toBe(false);
+      expect(blocoDe(guardado()).logisticaDoSistemaAnterior).toBe(false);
+      expect(blocoDe(null, novoRascunho()).logisticaDoSistemaAnterior).toBe(false);
+    });
+
+    it('`logisticaGravada` = a projeção GUARDADA (a base da entrada) ⟷ `valores.logistic_info` = o formulário', () => {
+      const link = escolhido();
+      const e = mexer(edicaoDe(link), CANAL_B, { ligado: true });
+      const bloco = blocoDe(link, e);
+      expect(bloco.logisticaGravada).toStrictEqual(A_LIGADO_B_DESLIGADO);
+      expect(bloco.valores.logistic_info).toStrictEqual([
+        canalLigado(CANAL_A),
+        canalLigado(CANAL_B),
+      ]);
+      // A dirty entry keeps the list it LOADED, even once the snapshot moved.
+      const outraAba = comCanaisEscolhidos([canalLigado(CANAL_B)]);
+      expect(blocoDe(outraAba, e).logisticaGravada).toStrictEqual(A_LIGADO_B_DESLIGADO);
+      // «Automática» on the form, the held list still there to put back (D16-2).
+      const automatica = comLogistica(edicaoDe(link), null);
+      expect(blocoDe(link, automatica).logisticaGravada).toStrictEqual(A_LIGADO_B_DESLIGADO);
+      expect(blocoDe(link, automatica).valores.logistic_info).toBeNull();
+    });
+
+    it('`algumRascunhoShopeeSujo` true após um toggle ⟷ false após voltar ao valor guardado (forma A) e após «Desfazer»', () => {
+      const link = escolhido();
+      const ligado = mexer(edicaoDe(link), CANAL_B, { ligado: true });
+      expect(algumRascunhoShopeeSujo([ligado])).toBe(true);
+      expect(blocoDe(link, ligado)).toMatchObject({ sujo: true, podeDesfazer: true });
+      // Back to the stored value — the explicit off (shape A) — reads clean.
+      const deVolta = mexer(ligado, CANAL_B, { ligado: false });
+      expect(deVolta.atual.logistic_info).toStrictEqual(A_LIGADO_B_DESLIGADO);
+      expect(algumRascunhoShopeeSujo([deVolta])).toBe(false);
+      // «Desfazer alterações» drops the entry: the block renders the snapshot, clean.
+      expect(algumRascunhoShopeeSujo([])).toBe(false);
+      expect(blocoDe(link).sujo).toBe(false);
+    });
+  });
+
+  describe('a rota de uma linha recusada', () => {
+    const M = MOTIVO_ANUNCIO_SHOPEE;
+    const ESCOLHIDA = {
+      ehRascunho: true,
+      descricaoPropria: false,
+      logisticaEscolhida: true,
+    } as const;
+    const AUTOMATICA = {
+      ehRascunho: true,
+      descricaoPropria: false,
+      logisticaEscolhida: false,
+    } as const;
+    const ANUNCIO_COM_FLAG = {
+      ehRascunho: false,
+      descricaoPropria: false,
+      logisticaEscolhida: true,
+    } as const;
+    const PESO = { tipo: 'produto', campo: 'pesoBrutoKg' };
+    const problema = (campo: string, motivo = 'logistica-sem-canal') => ({
+      campo,
+      motivo,
+      acao: null,
+    });
+
+    it("rascunho com canais escolhidos ⇒ `{tipo:'rascunho', campo:'logistic_info'}` ⟷ rascunho Automática ⇒ `pesoBrutoKg` ⟷ anúncio (flag true) ⇒ `pesoBrutoKg`", () => {
+      for (const campo of ['logistic_info', 'logistic_info[0].logistic_id']) {
+        const s = superficieDoCampoShopee(problema(campo), ESCOLHIDA);
+        expect(s, campo).toStrictEqual({ tipo: 'rascunho', campo: LOGISTICA, aviso: null });
+        if (s !== null) {
+          expect(rotuloDaSuperficieShopee(s, null)).toBe('Corrigir no rascunho: Logística');
+        }
+        expect(superficieDoCampoShopee(problema(campo), AUTOMATICA), campo).toStrictEqual(PESO);
+        expect(superficieDoCampoShopee(problema(campo), ANUNCIO_COM_FLAG), campo).toStrictEqual(
+          PESO,
+        );
+      }
+    });
+
+    it('`logistica-nao-confirmada` E `logistica-sem-valor-gravado` ⇒ null MESMO com a flag', () => {
+      for (const motivo of [M.logisticaNaoConfirmada, M.logisticaSemValorGravado]) {
+        for (const contexto of [ESCOLHIDA, AUTOMATICA, ANUNCIO_COM_FLAG]) {
+          expect(
+            superficieDoCampoShopee(problema('logistic_info', motivo), contexto),
+            motivo,
+          ).toBeNull();
+        }
+      }
+    });
+
+    it('`weight` e o sufixo `-v2` mantêm o roteamento', () => {
+      // The flag routes the `logistic_info` ROOT only: the weight's own root stays the weight.
+      for (const motivo of ['logistica-sem-canal', M.logisticaNaoConfirmada]) {
+        expect(
+          superficieDoCampoShopee(problema('weight', motivo), ESCOLHIDA),
+          motivo,
+        ).toStrictEqual(PESO);
+      }
+      // A renamed remedy slug is not the remedy (exact match): it routes like any refusal.
+      for (const motivo of [`${M.logisticaNaoConfirmada}-v2`, `${M.logisticaSemValorGravado}-v2`]) {
+        expect(superficieDoCampoShopee(problema('logistic_info', motivo), ESCOLHIDA)).toStrictEqual(
+          { tipo: 'rascunho', campo: LOGISTICA, aviso: null },
+        );
+        expect(
+          superficieDoCampoShopee(problema('logistic_info', motivo), AUTOMATICA),
+        ).toStrictEqual(PESO);
+      }
+      // Never a prefix: `logistic_infos` routes nowhere.
+      expect(superficieDoCampoShopee(problema('logistic_infos'), ESCOLHIDA)).toBeNull();
+    });
   });
 });

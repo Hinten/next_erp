@@ -1,0 +1,32 @@
+{
+  "versao": 1,
+  "perfil": "fixture",
+  "credencial": "modelo-sandbox",
+  "papeis": [
+    "nao-se-aplica"
+  ],
+  "capturadoEm": "2026-11-11",
+  "limiteTaxa": null,
+  "requisicao": {
+    "tipo": "http",
+    "metodo": "PATCH",
+    "caminho": "/listings/2021-08-01/items/<sellerId>/SKU-Z0e2345fa",
+    "query": [],
+    "corpo": null
+  },
+  "resposta": {
+    "status": 200,
+    "politica": "estrutural",
+    "forma": "json",
+    "bytes": 108,
+    "corpo": {
+      "sku": "SKU-Z0e2345fa",
+      "status": "ACCEPTED",
+      "submissionId": "00000000-0000-0000-0000-b09ba714d3a8",
+      "issues": []
+    }
+  },
+  "anexos": {
+    "zip": null
+  }
+}

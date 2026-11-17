@@ -7,8 +7,8 @@
       {
         "item_id": 2500139870,
         "category_id": 107290,
-        "item_name": "Sonda kit virtual teste",
-        "description": "Kit de teste do sandbox criado pela sonda de kits virtuais. Nao comprar.",
+        "item_name": "REDACTED",
+        "description": "REDACTED",
         "item_sku": "SONDA-KIT",
         "create_time": 1791244800,
         "update_time": 1791244800,
@@ -100,7 +100,7 @@
         ],
         "image": {
           "image_id_list": ["br-11134207-7r98o-lzri4neb5vcv18"],
-          "image_url_list": ["https://example.invalid/file/redacted"],
+          "image_url_list": ["https://redacted.invalid/imagem"],
           "image_ratio": "1:1"
         },
         "weight": "1",
@@ -147,7 +147,7 @@
         "size_chart_id": 0,
         "promotion_image": {
           "image_id_list": ["br-11134207-7r98o-lzri4neb5vcv18"],
-          "image_url_list": ["https://example.invalid/file/redacted"]
+          "image_url_list": ["https://redacted.invalid/imagem"]
         },
         "deboost": "FALSE",
         "compatibility_info": {},

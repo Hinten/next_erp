@@ -9,13 +9,13 @@
  * sanitizar --entrada <pasta> --gerar-chave
  * ```
  *
- * **The pseudonym key.** A catalogue pair has its kept ids replaced by keyed
- * pseudonyms (`pseudonimo.ts`); the key is `.chave-fixtures` in the capture
+ * **The pseudonym key.** A catalogue pair has its kept ids and SKUs replaced by
+ * keyed pseudonyms (`pseudonimo.ts`); the key is `.chave-fixtures` in the capture
  * folder, read here and handed to each pair as data. `--gerar-chave` creates it
  * (through the injected `criarChave`) and refuses when it exists: a new key
- * changes every catalogue id. The key is never printed, never put in a finding
- * and never written anywhere else. Two different ids on one pseudonym, across
- * the run's pairs, refuse the run (`colisao-de-pseudonimo`).
+ * changes every catalogue id and SKU. The key is never printed, never put in a
+ * finding and never written anywhere else. Two different ids (or SKUs) on one
+ * pseudonym, across the run's pairs, refuse the run (`colisao-de-pseudonimo`).
  *
  * **All or nothing.** Any finding in any pair (or an unpaired capture, or a name
  * outside the grammar, or an existing fixture with different bytes and no
@@ -255,8 +255,10 @@ const DICAS: Readonly<Record<string, string>> = {
   'nome-fora-da-gramatica':
     'capture names are lowercase letters, digits and -, at most 40, ending .json or .txt',
   'sem-chave-de-fixtures': `a catalogue pair needs the pseudonym key ${ARQUIVO_CHAVE_FIXTURES} (a regular file in the capture folder): restore it if committed catalogue fixtures were made with it, else create it once with --gerar-chave; keep it as long as any catalogue fixture exists (it outlives the captures), and re-run`,
-  'colisao-de-pseudonimo': `two different ids got one pseudonym: move ${ARQUIVO_CHAVE_FIXTURES} out, create a new key with --gerar-chave, and re-run every catalogue pair (a new key changes every catalogue id)`,
-  'chave-existente': `${ARQUIVO_CHAVE_FIXTURES} already exists and is never replaced: a new key changes every catalogue id, so every catalogue pair would have to be re-run`,
+  'colisao-de-pseudonimo': `two different ids or SKUs got one pseudonym: move ${ARQUIVO_CHAVE_FIXTURES} out, create a new key with --gerar-chave, and re-run every catalogue pair (a new key changes every catalogue id and SKU)`,
+  'id-real-na-faixa-do-pseudonimo':
+    'a real catalogue id already has the pseudonyms’ own length, so the corpus test could not tell it from a pseudonym if it ever leaked: move the pseudonym range in sanitizacao/pseudonimo.ts to a length no real id has, in a reviewed change, and regenerate every catalogue fixture under the same key',
+  'chave-existente': `${ARQUIVO_CHAVE_FIXTURES} already exists and is never replaced: a new key changes every catalogue id and SKU, so every catalogue pair would have to be re-run`,
   'numero-em-erro-do-catalogo':
     'a catalogue error body keeps a number, which may echo a resource id, and a pseudonym cannot replace it there: capture an error whose body holds no number other than its status, or leave the pair out',
   'catalogo-fora-da-classe':
@@ -388,14 +390,21 @@ export function executarSanitizacao(
   }
 
   // Pseudonym collisions ACROSS pairs (each pair checks its own): one pseudonym,
-  // two different real ids. Reported on the later pair; the ids are never printed.
+  // two different real ids or SKUs. Reported on the later pair; the values are
+  // never printed.
   const pseudonimosDoLote = new Map<number, string>();
+  const skusDoLote = new Map<string, string>();
   for (const [nome, resultado] of resultados) {
     if (!resultado.ok) continue;
     let colidiu = false;
     for (const [falso, real] of resultado.pseudonimos) {
       const anterior = pseudonimosDoLote.get(falso);
       if (anterior === undefined) pseudonimosDoLote.set(falso, real);
+      else if (anterior !== real) colidiu = true;
+    }
+    for (const [falso, real] of resultado.skus) {
+      const anterior = skusDoLote.get(falso);
+      if (anterior === undefined) skusDoLote.set(falso, real);
       else if (anterior !== real) colidiu = true;
     }
     if (colidiu) {
@@ -494,7 +503,7 @@ function lerChave(
   const chave = texto.ok ? ChaveDeFixturesLi.deTexto(texto.texto) : null;
   if (chave === null) {
     throw new ErroDeUsoSanitizacao(
-      `${ARQUIVO_CHAVE_FIXTURES} is not a key (64 hexadecimal digits, UTF-8): restore it from where the captures are kept; a new key changes every catalogue id`,
+      `${ARQUIVO_CHAVE_FIXTURES} is not a key (64 hexadecimal digits, UTF-8): restore it from where the captures are kept; a new key changes every catalogue id and SKU`,
     );
   }
   return chave;
@@ -521,7 +530,7 @@ function gerarChave(
   return {
     saida: fim([
       `sanitizar --gerar-chave: created ${ARQUIVO_CHAVE_FIXTURES} in the capture folder (32 random bytes; never printed).`,
-      '  Never commit it, and keep it for as long as any catalogue fixture exists: it outlives the captures (deleting merged pairs never deletes it). A new key changes every catalogue id, so every catalogue fixture would have to be re-captured and re-run in one change.',
+      '  Never commit it, and keep it for as long as any catalogue fixture exists: it outlives the captures (deleting merged pairs never deletes it). A new key changes every catalogue id and SKU, so every catalogue fixture would have to be re-captured and re-run in one change.',
     ]),
     escritas: [],
     codigo: 0,

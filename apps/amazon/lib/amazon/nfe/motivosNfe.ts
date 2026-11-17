@@ -32,9 +32,9 @@
  * A slug is stored in `aviso.motivo`, so a rename orphans every row already
  * written. Not a Zod enum: nothing parses a motivo from an untrusted source.
  *
- * ⚠️ LIGHT on purpose: the NF-e trigger (14-c) imports this module, and its
- * import closure is pinned (`estrutura.test.ts`) to hold no SP-API value
- * import — it imports nothing.
+ * ⚠️ LIGHT on purpose: the NF-e trigger imports this module, and the trigger's
+ * import closure is pinned file by file (`estrutura.test.ts`'s NF-e D11 guard)
+ * to hold no SP-API value import — it imports nothing.
  */
 
 /* ------------------------------ the vocabulary ------------------------------ */

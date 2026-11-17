@@ -5,8 +5,13 @@
 import { describe, expect, it } from 'vitest';
 import { escreverAviso } from '@delfrance/data/admin/avisos';
 import {
+  ALVO_IMPORTACAO_LI,
   CANAL_AVISO,
+  MODO_IMPORTACAO_LI,
+  MOTIVO_CATEGORIA_SEM_VINCULO_LI,
+  MOTIVO_ESTOQUE_VINCULO_LI,
   MOTIVO_IMPORTACAO_PARADA_LI,
+  STATUS_IMPORTACAO_LI,
   ROTAS_AVISO,
   SEVERIDADE_AVISO,
   TIPO_AVISO,
@@ -16,6 +21,7 @@ import {
   agoraUsDe,
   avisarExpiracaoToken,
   avisarReconexaoPendente,
+  chaveEstoqueSemErpLi,
   chaveExpiracao,
   chaveImportacaoParada,
   chaveReconexao,
@@ -33,6 +39,11 @@ import {
   seedConta,
   seedCredencial,
 } from '../testing/fixtures';
+import {
+  avisarCategoriaSemVinculoLi,
+  sincronizarAvisoDePendenciasLi,
+  sincronizarAvisoDeRevisaoFiscalLi,
+} from '../importacao/avisosImportacao';
 import {
   MAX_PAGINAS_AVISOS_ABERTOS,
   PAGINA_AVISOS_ABERTOS,
@@ -68,6 +79,66 @@ function avisarImportacaoParada(db: FakeDb, integracaoId: string, relogioUs: num
     },
     { increment, agoraUs: agoraUsDe({ nowMs: AGORA_MS - DIA_MS }) },
   );
+}
+
+/**
+ * The stock sync's three rows of one conta (step 12), as its run will raise them under `on`:
+ * written through the REAL `escreverAviso`, clocked by the run's start (`relogioUs`).
+ */
+async function avisosDeEstoque(
+  db: FakeDb,
+  integracaoId: string,
+  relogioUs: number,
+  nowMs: number,
+): Promise<string[]> {
+  const base = {
+    conta: integracaoId,
+    severidade: SEVERIDADE_AVISO.atencao,
+    canal: CANAL_AVISO.lojaIntegrada,
+    urlInterna: { rota: ROTAS_AVISO.canalLojaIntegrada.build(integracaoId), campo: null },
+    relogioEvento: relogioUs,
+  };
+  const opts = { increment, agoraUs: agoraUsDe({ nowMs }) };
+  const linhas = [
+    await escreverAviso(
+      asDb(db),
+      {
+        ...base,
+        tipo: TIPO_AVISO.lojaIntegradaEstoqueSemErp,
+        params: { loja: integracaoId, produtos: 2, amostra: 'p1, p2' },
+      },
+      opts,
+    ),
+    await escreverAviso(
+      asDb(db),
+      {
+        ...base,
+        tipo: TIPO_AVISO.lojaIntegradaEstoqueRecusado,
+        entidade: 'p1',
+        // A refusal links to the produto, not to the conta (the tipo's contract in `aviso.ts`).
+        urlInterna: { rota: ROTAS_AVISO.produto.build('p1'), campo: null },
+        params: { loja: integracaoId, produto: 'p1', idLi: '123456789', status: 422 },
+      },
+      opts,
+    ),
+    await escreverAviso(
+      asDb(db),
+      {
+        ...base,
+        tipo: TIPO_AVISO.lojaIntegradaEstoqueVinculo,
+        entidade: MOTIVO_ESTOQUE_VINCULO_LI.duplicado,
+        params: {
+          loja: integracaoId,
+          motivo: MOTIVO_ESTOQUE_VINCULO_LI.duplicado,
+          produtos: 2,
+          amostra: 'p3, p4',
+        },
+        motivo: MOTIVO_ESTOQUE_VINCULO_LI.duplicado,
+      },
+      opts,
+    ),
+  ];
+  return linhas.map((l) => l.chave);
 }
 
 describe('pass (a): the expiry threshold', () => {
@@ -425,6 +496,124 @@ describe('pass (b): open rows of contas that no longer exist', () => {
     for (const chave of orfaos) {
       expect(aviso(db, chave), chave).toMatchObject({ resolucaoMotivo: 'conta-removida' });
     }
+  });
+
+  it('⚠️ the product import’s tipos (step 9): a LISTED conta’s three rows stay open, a gone conta’s are resolved', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'viva');
+    seedCredencial(db, 'viva', { tokenExpiraEmMs: expiraEm(60) });
+    const deps = { increment, nowMs: AGORA_MS - DIA_MS };
+    /** The three rows of one conta, raised by an `aplicar` job that ended before the tick. */
+    async function avisosDaImportacao(conta: string): Promise<string[]> {
+      const job = {
+        jobId: `job-${conta}`,
+        integracaoId: conta,
+        lojaNome: conta,
+        modo: MODO_IMPORTACAO_LI.aplicar,
+        fimMs: AGORA_MS - DIA_MS,
+      };
+      await sincronizarAvisoDePendenciasLi(
+        asDb(db),
+        { ...job, alvo: ALVO_IMPORTACAO_LI.todos, status: STATUS_IMPORTACAO_LI.concluido },
+        { total: 1, porCodigo: { 'sem-sku': 1 } },
+        deps,
+      );
+      await sincronizarAvisoDeRevisaoFiscalLi(asDb(db), { ...job, abertos: 2 }, deps);
+      await avisarCategoriaSemVinculoLi(
+        asDb(db),
+        job,
+        {
+          categoriaLiId: 7,
+          caminho: [7],
+          produtos: 1,
+          motivo: MOTIVO_CATEGORIA_SEM_VINCULO_LI.semVinculo,
+        },
+        deps,
+      );
+      return db
+        .idsEm('avisos')
+        .filter((id) => id.includes(`:${conta}`) && !id.includes(`:${conta}2`));
+    }
+    const vivos = await avisosDaImportacao('viva');
+    const orfaos = await avisosDaImportacao('apagada');
+    expect(vivos).toHaveLength(3);
+    expect(orfaos).toHaveLength(3);
+
+    const r = await sweep(db);
+    expect(r.orfaos.resolvidos).toBe(3);
+    for (const chave of vivos) expect(aviso(db, chave)?.resolvidoEm, chave).toBeNull();
+    for (const chave of orfaos) {
+      expect(aviso(db, chave), chave).toMatchObject({ resolucaoMotivo: 'conta-removida' });
+    }
+  });
+
+  it('⚠️ the stock sync’s tipos (step 12): a LISTED conta’s three rows stay open, a gone conta’s are resolved', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'viva');
+    seedCredencial(db, 'viva', { tokenExpiraEmMs: expiraEm(60) });
+    const antes = AGORA_MS - DIA_MS;
+    const vivos = await avisosDeEstoque(db, 'viva', agoraUsDe({ nowMs: antes }), antes);
+    // A conta id that EXTENDS the live one is another conta: its prefix differs.
+    const orfaos = [
+      ...(await avisosDeEstoque(db, 'apagada', agoraUsDe({ nowMs: antes }), antes)),
+      ...(await avisosDeEstoque(db, 'viva2', agoraUsDe({ nowMs: antes }), antes)),
+    ];
+    expect(vivos).toContain(chaveEstoqueSemErpLi('viva'));
+    expect(new Set([...vivos, ...orfaos]).size).toBe(9);
+
+    const r = await sweep(db);
+    expect(r.orfaos.resolvidos).toBe(orfaos.length);
+    for (const chave of vivos) expect(aviso(db, chave)?.resolvidoEm, chave).toBeNull();
+    for (const chave of orfaos) {
+      expect(aviso(db, chave), chave).toMatchObject({ resolucaoMotivo: 'conta-removida' });
+    }
+  });
+
+  it('⚠️ a stock row raised AFTER the list was read (a brand-new conta) stays open', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'viva');
+    seedCredencial(db, 'viva', { tokenExpiraEmMs: expiraEm(20) });
+    // Pass (a)'s raise on `viva` is the write the new conta's reconcile lands right before.
+    let novas: string[] = [];
+    db.antesDaProximaEscrita(caminhoAviso(chaveExpiracao('viva')), async () => {
+      seedConta(db, 'nova', { nome: 'Loja Nova' });
+      novas = await avisosDeEstoque(db, 'nova', agoraUsDe({ nowMs: AGORA_MS }), AGORA_MS);
+    });
+
+    const r = await sweep(db);
+    expect(r.contas).toBe(1);
+    expect(r.orfaos.resolvidos).toBe(0);
+    expect(novas).toHaveLength(3);
+    for (const chave of novas) expect(aviso(db, chave)?.resolvidoEm, chave).toBeNull();
+  });
+
+  it('⚠️ a product-import row raised AFTER the list was read (a brand-new conta) stays open', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'viva');
+    seedCredencial(db, 'viva', { tokenExpiraEmMs: expiraEm(20) });
+    // Pass (a)'s raise on `viva` is the write the new conta's import job lands right before.
+    db.antesDaProximaEscrita(caminhoAviso(chaveExpiracao('viva')), async () => {
+      seedConta(db, 'nova', { nome: 'Loja Nova' });
+      await sincronizarAvisoDeRevisaoFiscalLi(
+        asDb(db),
+        {
+          jobId: 'job-nova',
+          integracaoId: 'nova',
+          lojaNome: 'Loja Nova',
+          modo: MODO_IMPORTACAO_LI.aplicar,
+          fimMs: AGORA_MS,
+          abertos: 1,
+        },
+        { increment, nowMs: AGORA_MS },
+      );
+    });
+
+    const r = await sweep(db);
+    expect(r.contas).toBe(1);
+    expect(r.orfaos.resolvidos).toBe(0);
+    const abertas = db.idsEm('avisos').filter((id) => id.includes(':nova'));
+    expect(abertas).toHaveLength(1);
+    expect(aviso(db, abertas[0] ?? '')?.resolvidoEm).toBeNull();
   });
 
   it('⚠️ an import-stopped row raised AFTER the list was read (a brand-new conta) stays open', async () => {

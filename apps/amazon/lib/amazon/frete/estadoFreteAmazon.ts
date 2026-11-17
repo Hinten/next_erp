@@ -9,7 +9,12 @@
  * the one estado its acceptance clears the stamp to
  * ({@link estadoFreteAposAceiteNfeAmazon}), and the verdict's gate 5 opened to
  * `cancelado` (step-14 plan §3 decision 12). Only step 14's own Delivery-API
- * acceptance clears its `error`; the order-level `ACCEPTED` never does.
+ * acceptance clears its `error`; the order-level `ACCEPTED` never does. Step
+ * 15's are here too (PR 15-b): the "already scheduled" and "to schedule"
+ * targets ({@link ESTADO_FRETE_AGENDADO_AMAZON},
+ * {@link ESTADO_FRETE_A_AGENDAR_AMAZON}), read off this module's fold by the
+ * Easy Ship scheduling decision; step 15 itself writes no `freteInicial` field
+ * (step-15 plan §3 decision 6).
  *
  * PURE: no Firestore, no wire call, no clock (the order clock is a parameter),
  * no environment, no logger. Every instant here is already µs; nothing is
@@ -424,7 +429,7 @@ export const ESCADA_FRETE_AMAZON = [
   ESTADO_FRETE.aguardandoNFe, //                     2  PENDING_SCHEDULE, invoice not accepted
   ESTADO_FRETE.aguardandoValidacaoTransporadora, //  3
   ESTADO_FRETE.aguardandoAgendamento, //             4  PENDING_SCHEDULE, invoice accepted
-  ESTADO_FRETE.despachoAutorizado, //                5  step 15
+  ESTADO_FRETE.despachoAutorizado, //                5  never written by this channel: step 15 writes no freight (step-15 plan §3 decision 6); the legacy corpus carries it
   ESTADO_FRETE.emSeparacao, //                       6
   ESTADO_FRETE.empacotado, //                        7
   ESTADO_FRETE.aguardandoPostagem, //                8  PENDING_PICK_UP / PENDING_DROP_OFF
@@ -435,6 +440,23 @@ export const ESCADA_FRETE_AMAZON = [
   ESTADO_FRETE.tentandoRealizarEntrega, //          13  OUT_FOR_DELIVERY
   ESTADO_FRETE.entregue, //                         14  DELIVERED, terminal
 ] as const satisfies readonly EstadoFrete[];
+
+/**
+ * Step 15's "already scheduled" target (PR 15-b): `PENDING_PICK_UP` /
+ * `PENDING_DROP_OFF` fold to it (rung 8). The Easy Ship scheduling decides
+ * "scheduled" from the LIVE order through this module's fold, never from the
+ * stored `freteInicial.estado` (step-15 plan §3 decision 4), and writes no
+ * freight at all: the importer mirrors the schedule.
+ */
+export const ESTADO_FRETE_AGENDADO_AMAZON = ESTADO_FRETE.aguardandoPostagem;
+
+/**
+ * Step 15's "to schedule" target (PR 15-b): `PENDING_SCHEDULE` (or a to-ship
+ * order without packages) once the order-level invoice status is `ACCEPTED` —
+ * or `NOT_REQUIRED`, which the fold flags (`notaNaoExigida`) and the
+ * scheduling refuses (rung 4).
+ */
+export const ESTADO_FRETE_A_AGENDAR_AMAZON = ESTADO_FRETE.aguardandoAgendamento;
 
 /**
  * Failures, beside the chain. A stored `cancelado` on an order Amazon has NOT
@@ -1233,7 +1255,8 @@ export interface GrupoFreteAmazon {
  * of a block this attempt creates: the estado through
  * {@link estadoFreteAmazonAplicavel}; the diary when it differs row by row;
  * `codRastreio` REPLACED by a non-null fold (the marketplace is the authority
- * on its own block) and kept by an empty one. `externalId` is step 15's. Only
+ * on its own block) and kept by an empty one. `externalId` is never written by
+ * this channel (step-15 plan §3 decision 6). Only
  * the estado is refused to an AFN read (the verdict's gate 3): the diary and
  * `codRastreio` are written whatever the logistics, so an AFN block's diary
  * holds Amazon's own packages — which is why the CANCELLED predicate never

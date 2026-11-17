@@ -81,12 +81,24 @@
  * notification ids, and a sink for tests), never an observer of its own: the raw
  * event carries the query and the full response text, and only `log.ts`
  * redacts it (`estrutura.test.ts` enforces the seam).
+ *
+ * ## The CDN reader lives here too, behind the same switch
+ *
+ * `cdn` is the package's photo reader (`criarLeitorCdnLi`), built HERE and
+ * nowhere else (`estrutura.test.ts`), after every refusal above — so no photo can
+ * be downloaded while the read switch is off, for a conta that is gone, inactive
+ * or parked, or before the window (D17). It carries no credential at all (the
+ * Personal Token belongs to the API host alone), takes the context's `fetch`
+ * seam and correlation-id generator, and keeps the package's deadline and byte
+ * cap. Building it calls nothing; only a flow that imports photos uses it.
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import {
   type CredencialLi,
+  type LeitorCdnLi,
   type LiLeituraClient,
   criarClienteLeituraLi,
+  criarLeitorCdnLi,
 } from '@delfrance/integrations-loja-integrada';
 import { INTEGRACAO_TIPO, type Integracao } from '@delfrance/schemas';
 
@@ -118,6 +130,8 @@ export interface ContextoLojaIntegrada {
   readonly integracaoId: string;
   readonly conta: Integracao;
   readonly cliente: LiLeituraClient;
+  /** The photo reader (module header): no credential, built only here, behind the switch. */
+  readonly cdn: LeitorCdnLi;
   /**
    * The VERSION of the credential this context was loaded with (module header):
    * the save's stamp as digits, never the ref or the fingerprint; `null` when the
@@ -220,6 +234,8 @@ export async function loadLojaIntegradaContext(
     fetch: deps.fetch,
     gerarCorrelationId: deps.gerarCorrelationId,
   });
+  // After every refusal, like the client: no credential, the package's deadline and cap.
+  const cdn = criarLeitorCdnLi({ fetch: deps.fetch, gerarCorrelationId: deps.gerarCorrelationId });
 
-  return { integracaoId, conta, cliente, versaoCredencial };
+  return { integracaoId, conta, cliente, cdn, versaoCredencial };
 }

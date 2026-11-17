@@ -123,6 +123,7 @@ function makeInput(over: {
               ? {}
               : { rotearEtiqueta: over.rotearEtiqueta as never },
           ),
+      amazonClient: null,
       printJob: vi.fn(),
     },
     ui: {

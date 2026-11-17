@@ -117,6 +117,9 @@ export const TIPO_AVISO_LABELS = {
   lojaIntegradaCategoriaSemVinculo: 'Categoria da Loja Integrada sem vínculo',
   lojaIntegradaRevisaoFiscal: 'Produtos da Loja Integrada para revisão fiscal',
   lojaIntegradaImportacaoComPendencias: 'Importação de produtos da Loja Integrada com pendências',
+  lojaIntegradaEstoqueSemErp: 'Produtos da Loja Integrada sem estoque no ERP',
+  lojaIntegradaEstoqueRecusado: 'Estoque recusado pela Loja Integrada',
+  lojaIntegradaEstoqueVinculo: 'Estoque da Loja Integrada parado por um vínculo',
   amazonReconexaoPendente: 'Autorização da Amazon recusada',
   amazonReautorizacaoExpirando: 'Autorização da Amazon expirando',
   amazonSegredoLwaExpirando: 'Segredo do aplicativo da Amazon expirando',
@@ -1031,9 +1034,10 @@ export const TIPO_AVISO_LABELS = {
  *
  * ---
  *
- * **`amazonPedidoPrecisaAtencao`** (Amazon steps 5 and 7, #1931 and #1933 —
- * producer in `apps/amazon/lib/amazon/avisos/avisos.ts`, called by the order
- * import) — one Amazon order needs a person, for one of the
+ * **`amazonPedidoPrecisaAtencao`** (Amazon steps 5, 7 and 15, #1931, #1933 and
+ * #1939 — producer in `apps/amazon/lib/amazon/avisos/avisos.ts`, called by the
+ * order import and, from step 15's PR 15-c, for the two scheduling motivos, by
+ * the Easy Ship scheduling task) — one Amazon order needs a person, for one of the
  * {@link MOTIVO_PEDIDO_AMAZON} reasons. Only a reason a later import can see END
  * is a member: a permanent fact of an order (fulfilled by Amazon, a zero value,
  * a cancellation after shipment, a split or divergent payment, a possible
@@ -1116,6 +1120,34 @@ export const TIPO_AVISO_LABELS = {
  *       pickup, not the order. Resolver: no package `LABEL_CANCELLED` left, or
  *       the order `CANCELLED`. Residue: an order Amazon never updates again
  *       keeps its row until retention.
+ *     - `dimensoes-ausentes` — **critico**. Amazon refused to schedule the
+ *       Easy Ship pickup because the listing lacks dimensions or weight: the
+ *       operator fixes the listing in Seller Central and prints the label
+ *       again. RAISED only by the Easy Ship scheduling task (step 15, from PR
+ *       15-c), never by an import. Resolver: any import whose read shows
+ *       scheduling has ENDED — a package scheduled or later
+ *       (`PENDING_PICK_UP` / `PENDING_DROP_OFF` and up), the goods out, the
+ *       pickup cancelled after it existed, or the order `SHIPPED` or
+ *       `CANCELLED` (an import of an order still to schedule neither resolves
+ *       it nor reads its key); and, from PR 15-c, the scheduling task when it
+ *       schedules (or reads the order already scheduled), and the import that
+ *       moves the pedido into a cancelled sale, which SEEDS a resolved row, so
+ *       a task raise racing the cancellation is dropped.
+ *       Residue: a raise landing after a newer import's read found no row
+ *       opens a stale row (an import resolves only rows that exist), closed by
+ *       the order's next import; and a schedule made by a PRINT or in Seller
+ *       Central, which writes no aviso and is seen only at the order's next
+ *       import — within the poll's 15 minutes if scheduling moves the order's
+ *       clock, else at the pickup — so the row stays open after the remedy
+ *       worked until then.
+ *     - `agendamento-recusado` — **critico**. Amazon refused to schedule the
+ *       Easy Ship pickup for any other reason (its code is logged, never
+ *       shown: the `params` stay `pedido` + `motivo`), a slot refusal that
+ *       persisted through every retry included: the operator checks the
+ *       listing's weight and dimensions and the order's deadline, and
+ *       schedules the pickup in Seller Central. RAISED only by the Easy Ship
+ *       scheduling task (from PR 15-c), never by an import. Resolver: the same as
+ *       `dimensoes-ausentes`'s. Residue: the same as `dimensoes-ausentes`'s.
  *  - **The conta-wide residue**: a DELETED conta's per-pedido rows have no
  *    resolver at all. The expiry sweep's orphan pass closes per-CONTA tipos
  *    only, and this tipo is deliberately NOT among them: the pass resolves every
@@ -1125,24 +1157,28 @@ export const TIPO_AVISO_LABELS = {
  * ---
  *
  * **`amazonContaPrecisaAtencao`** (Amazon step 5, #1931 — producer in
- * `apps/amazon/lib/amazon/avisos/avisos.ts`, called by the order import) — an
- * Amazon conta's own setup needs a person, as seen while importing its orders.
- * One of the {@link MOTIVO_CONTA_AMAZON} reasons.
+ * `apps/amazon/lib/amazon/avisos/avisos.ts`, called by the order import and,
+ * from step 12, by the stock sync) — an Amazon conta's own setup needs a
+ * person, as seen while importing its orders or syncing its stock. One of the
+ * {@link MOTIVO_CONTA_AMAZON} reasons.
  *
  *  - **A tipo of its own, apart from `amazonPedidoPrecisaAtencao`**: this one IS
  *    in the expiry sweep's orphan pass, and its keys name no order, so the pass
- *    computes both of them for every listed conta (`conta/expiracaoSweep.ts`).
+ *    computes every one of them (one per motivo) for every listed conta
+ *    (`conta/expiracaoSweep.ts`).
  *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId, janela: motivo })` — no
  *    `entidade`; ONE row per (conta, motivo).
- *  - **Severity `atencao`** for both motivos, canal `amazon`, in-app only: the
+ *  - **Severity `atencao`** for every motivo, canal `amazon`, in-app only: the
  *    orders keep importing.
  *  - **`params` are exactly `motivo`** — a {@link MOTIVO_CONTA_AMAZON} CODE; the
  *    `motivo` field carries the same code. The route names the conta, so the
  *    wording prints no value.
- *  - **`relogioEvento`** = the µs read time of the import's UNCACHED conta read
- *    — the server timeline the orphan pass's conta enumeration shares — never an
- *    order's clock: one row gathers observations from many orders, whose clocks
- *    do not compare. ⚠️ Never compare it with another tipo's.
+ *  - **`relogioEvento`** = the µs read time of the raiser's own Firestore read:
+ *    for the two import motivos, the import's UNCACHED conta read; for the five
+ *    stock motivos, the read each bullet below names — a server read time, the
+ *    timeline the orphan pass's conta enumeration shares — never an order's
+ *    clock: one row gathers observations from many orders and SKUs, whose
+ *    clocks do not compare. ⚠️ Never compare it with another tipo's.
  *  - **Route**: the conta page (`ROTAS_AVISO.canalAmazon`).
  *  - **Machine resolvers** — per motivo, clocked as above — with each motivo's
  *    severity and residue:
@@ -1156,11 +1192,69 @@ export const TIPO_AVISO_LABELS = {
  *       Resolver: the next import whose verdict clears it. Residue: Amazon drops
  *       that document once an order ships, so a conta whose later orders carry
  *       none keeps its row until one does.
- *  - **Both motivos, once the conta is gone**: the expiry sweep's orphan pass
+ *     - `estoque-sem-deposito` — **atencao**. The conta names no depósito, so no
+ *       quantity can be computed and none of its listings' stock is sent.
+ *       RAISED only by the 5-minute stock tick, on the conta's transition to
+ *       "no depósito" (the flag on its stock sync document), clocked by the
+ *       tick's read of that document; the stock tasks only log it, so a batch
+ *       of tasks never writes one row per task. Resolver: the first tick that
+ *       finds a depósito again (the reverse transition), clocked the same way.
+ *       Residue: the tick walks ACTIVE contas only, so a conta deactivated while
+ *       flagged keeps its row until it is active again with a depósito, or is
+ *       deleted.
+ *     - `estoque-deposito-sem-linhas` — **atencao**. The daily stock reconcile
+ *       sent NOTHING because the depósito holds no estoque row for a
+ *       catalogue-scale share of the conta's listings (a wrong or emptied
+ *       depósito would publish zero for all of them), or because the conta's
+ *       depósito changed between the reconcile's walk and its send. RAISED by
+ *       the reconcile's decision, clocked by the run's FIRST read, and by the
+ *       reconcile's feed send when the depósito changed, clocked by that send's
+ *       read of the stock feed lease. Resolver: the next COMPLETED reconcile
+ *       under the bound, clocked by its first read. Residue: a truncated run
+ *       resolves nothing, so the row waits for a completed one (once a day).
+ *     - `estoque-vinculos-recusados` — **atencao**. A reconcile refused at least
+ *       one listing link a person must fix — a SKU two live produtos claim, a
+ *       SKU with no live produto, a child link carrying its parent's SKU or
+ *       ASIN, a unit with variations, or a parent pointer that cannot be
+ *       checked — and those listings keep selling at their last quantity.
+ *       RAISED by the reconcile's close when its run counted one, clocked by the
+ *       run's first read. Resolver: a COMPLETED run that counted none, clocked
+ *       the same way. Residue: which SKUs were refused is in the run's log line
+ *       only, never on the row; a truncated run resolves nothing.
+ *     - `estoque-recusado-pela-amazon` — **atencao**. Amazon rejected a stock
+ *       update of at least one listing, which keeps its previous quantity.
+ *       RAISED by the stock patch task on an `INVALID` answer (clocked by its
+ *       write-back's read of the link docs), by a stock feed's result when its
+ *       report rejects a SKU (clocked by the outcome clock the feed record
+ *       stores), and by a completed reconcile that counted a rejected listing
+ *       still out of sync (clocked by the run's first read). Resolver: a
+ *       COMPLETED reconcile that counted no such listing. Residue: a stored
+ *       rejection on a listing already in sync is stale and never counted, so it
+ *       cannot hold the row open; the rejected SKUs are on each link doc's stock
+ *       outcome and in the log, never on the row; a truncated run resolves
+ *       nothing.
+ *     - `feed-estoque-falhou` — **atencao**. A stock feed failed or could not be
+ *       confirmed: Amazon ended it `FATAL` or `CANCELLED`, it was abandoned or
+ *       overdue, the answer to its submission was lost, Amazon refused the
+ *       submission or its document, its build ran out of time, or the automatic
+ *       reconcile a failure requests was refused by its once-a-day guard. NEVER
+ *       raised for a report's per-SKU errors (those are
+ *       `estoque-recusado-pela-amazon`, so one listing Amazon keeps rejecting
+ *       cannot hold this row open). RAISED by the feed's send, result, deadline
+ *       and recovery paths, each clocked by its own Firestore read (a feed's
+ *       outcome by the clock its record stores, the same on every retry). A slow
+ *       feed raises nothing. Resolver: a stock feed Amazon ends `DONE`, or a
+ *       COMPLETED reconcile with no drift while the conta's stock feed lease
+ *       shows fewer than three consecutive failures and no unconfirmed
+ *       submission. Residue: while the feeds keep failing (three in a row) or a
+ *       submission stays unconfirmed, per-SKU patches keep Amazon in sync, so a
+ *       clean reconcile proves nothing about the feed path and leaves the row
+ *       open until a feed ends `DONE`.
+ *  - **Every motivo, once the conta is gone**: the expiry sweep's orphan pass
  *    (`conta-removida`), CLOCKED by the conta enumeration's read time, so a conta
  *    created after that read keeps its row. A DEACTIVATED conta is still listed,
- *    so its rows stay open until it imports again or is deleted (a documented
- *    residue).
+ *    so its rows stay open until a raiser resolves them or the conta is deleted
+ *    (a documented residue).
  *
  * ---
  *
@@ -1214,10 +1308,12 @@ export const TIPO_AVISO_LABELS = {
  *    and `job` (the newest job's id: its `revisao` subcollection is the list the
  *    web shows).
  *  - **The list is durable**: each `aplicar` job copies the still-open entries
- *    of the conta's previous one, adds its own, and re-checks them all. Nothing
- *    closes an entry but EVIDENCE — the produto has its own tax setting, its
- *    category has one, or a tax rule names the produto or its category (the
- *    resolver's own rule match).
+ *    of every earlier `aplicar` job back to the newest one that ended
+ *    `concluido`, skipping Simular jobs (decided 2026-11-06), adds its own, and
+ *    re-checks them all. Nothing closes an entry but EVIDENCE — the produto has
+ *    its own tax setting, its category has one, a tax rule names the produto or
+ *    its category (the resolver's own rule match), or the produto no longer
+ *    exists (decided 2026-11-06).
  *  - **Machine resolvers**: the end of a later `aplicar` job whose re-check
  *    leaves the list empty; and the orphan pass once the conta is gone.
  *
@@ -1235,6 +1331,78 @@ export const TIPO_AVISO_LABELS = {
  *    `concluido` with ZERO actionable pendências; and the orphan pass once the
  *    conta is gone. A `selecionados`, `naoNoErp` or `jaNoErp` job never
  *    resolves it: its scope does not contain the raising job's.
+ *
+ * ---
+ *
+ * **The three stock-sync tipos** (Loja Integrada step 12, #1823 — producers:
+ * the stock send run and the daily reconcile of `apps/loja-integrada`). Shared
+ * by all three:
+ *
+ *  - **Severity `atencao`**, canal `lojaIntegrada`, in-app only: the store
+ *    keeps selling on its own number, and `critico` escalates out of the app.
+ *  - **`params.loja`** is the conta name.
+ *  - **Raised and resolved only by a run whose write decision was `on`** —
+ *    never under dry-run, outside the canary list or with the valve off (the
+ *    dry-run logs the same counts instead).
+ *  - **`relogioEvento`** = the producing run's start, in µs (its ms stamp,
+ *    converted once by the app's aviso module): the reconcile run's for the
+ *    two reconcile tipos, the send run's dispatch for the refusal. A later run
+ *    starts later, so an older one can neither reopen nor close a newer one's
+ *    row. ⚠️ Never compare it with another tipo's.
+ *  - **`amostra`** (where present) is TEXT: up to the first
+ *    {@link MAX_AMOSTRA_AVISO_ESTOQUE_LI} ERP produto ids of the cases, in id
+ *    order, joined by `, ` — where the operator starts; the NUMBER beside it
+ *    is the full count.
+ *  - All three join the expiry sweep's orphan pass: a deleted conta's rows are
+ *    closed (`conta-removida`).
+ *
+ * **`lojaIntegradaEstoqueSemErp`** — linked children of the conta that never
+ *    had an ERP stock record at ANY depósito are HELD: never pushed, not as 0
+ *    and not as nothing, so the store keeps its own number ("sem estoque no
+ *    ERP"). A produto with a record at another depósito is not held: the
+ *    conta depósito's real 0 is pushed.
+ *
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId })` — one row per conta.
+ *  - **`params`**: `loja`, `produtos` (a NUMBER: the held children) and
+ *    `amostra`.
+ *  - **Route**: the conta page (`ROTAS_AVISO.canalLojaIntegrada`).
+ *  - **Machine resolvers**: the end of a later reconcile run that holds none;
+ *    and the orphan pass once the conta is gone. A repeat replaces `params`.
+ *
+ * **`lojaIntegradaEstoqueRecusado`** — Loja Integrada refused a child's stock
+ *    write with a 4xx other than 429 on the task's LAST attempt (401/403 park
+ *    the conta instead, through `lojaIntegradaReconexaoPendente`): the store's
+ *    number for that product was not updated.
+ *
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId, entidade: produtoId })`
+ *    — one row per child produto.
+ *  - **`params`**: `loja`, `produto` (the ERP produto id), `idLi` (the store
+ *    product id, as text) and `status` (the HTTP status, a NUMBER).
+ *  - **Route**: the produto (`ROTAS_AVISO.produto`).
+ *  - **Machine resolvers**: a later run for the same (conta, produto) under
+ *    `on` that ends written or already reflected — the daily reconcile
+ *    re-enqueues a child whose store row still differs, so a fixed cause
+ *    closes the row within a day; and the orphan pass once the conta is gone.
+ *    Residue, accepted: a produto unlinked after the refusal is never run
+ *    again, so its row stands until retention.
+ *
+ * **`lojaIntegradaEstoqueVinculo`** — linked children whose stock is NOT sent
+ *    because of how they are linked or stocked, one row per reason — a
+ *    {@link MOTIVO_ESTOQUE_VINCULO_LI} CODE: two store products linked on one
+ *    ERP produto (`ambiguo`), one store product linked from two ERP produtos
+ *    (`duplicado`), a link whose store product has no row in the store's stock
+ *    list (`sem-linha-na-loja`), a link whose ERP produto no longer exists
+ *    (`ausente`), two stock records at the conta's depósito neither of which is
+ *    the canonical one (`estoque-ambiguo`).
+ *
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId, entidade: motivo })`
+ *    — one row per (conta, motivo).
+ *  - **`params`**: `loja`, `motivo` (the code; `motivo` the field too),
+ *    `produtos` (a NUMBER: the cases) and `amostra`.
+ *  - **Route**: the conta page (`ROTAS_AVISO.canalLojaIntegrada`).
+ *  - **Machine resolvers**: the end of a later reconcile run that counts zero
+ *    cases of that motivo for the conta (each run raises or resolves every
+ *    motivo once); and the orphan pass once the conta is gone.
  */
 export const tipoAvisoSchema = z
   .enum([
@@ -1267,6 +1435,9 @@ export const tipoAvisoSchema = z
     'lojaIntegradaCategoriaSemVinculo',
     'lojaIntegradaRevisaoFiscal',
     'lojaIntegradaImportacaoComPendencias',
+    'lojaIntegradaEstoqueSemErp',
+    'lojaIntegradaEstoqueRecusado',
+    'lojaIntegradaEstoqueVinculo',
     'amazonReconexaoPendente',
     'amazonReautorizacaoExpirando',
     'amazonSegredoLwaExpirando',
@@ -1309,6 +1480,9 @@ export const TIPO_AVISO = {
   lojaIntegradaCategoriaSemVinculo: 'lojaIntegradaCategoriaSemVinculo',
   lojaIntegradaRevisaoFiscal: 'lojaIntegradaRevisaoFiscal',
   lojaIntegradaImportacaoComPendencias: 'lojaIntegradaImportacaoComPendencias',
+  lojaIntegradaEstoqueSemErp: 'lojaIntegradaEstoqueSemErp',
+  lojaIntegradaEstoqueRecusado: 'lojaIntegradaEstoqueRecusado',
+  lojaIntegradaEstoqueVinculo: 'lojaIntegradaEstoqueVinculo',
   amazonReconexaoPendente: 'amazonReconexaoPendente',
   amazonReautorizacaoExpirando: 'amazonReautorizacaoExpirando',
   amazonSegredoLwaExpirando: 'amazonSegredoLwaExpirando',
@@ -1476,11 +1650,13 @@ export const MOTIVO_IMPORTACAO_PARADA_AMAZON = {
  * Why one Amazon order needs a person — the `amazonPedidoPrecisaAtencao`
  * aviso's `params.motivo` AND its key's `janela`, a CODE the wording in
  * `apps/web/lib/avisos/mensagens.ts` renders (the {@link PENDENCIA_RECLAMACAO}
- * shape: a wording fix is retroactive). Eight members, each with its severity,
+ * shape: a wording fix is retroactive). Ten members, each with its severity,
  * its machine resolver and its residue in the tipo's docblock entry above:
  *
  *  - **critico**: `divergencia-itens`, `logistica-desconhecida`,
- *    `aceitar-cancelamento`, `cancelado-so-no-erp`;
+ *    `aceitar-cancelamento`, `cancelado-so-no-erp`, and the two Easy Ship
+ *    scheduling refusals `dimensoes-ausentes` and `agendamento-recusado`
+ *    (step 15: raised by the scheduling task from PR 15-c, never by an import);
  *  - **atencao**: `status-desconhecido`, `cancelamento-solicitado`,
  *    `pacote-status-desconhecido`, `coleta-cancelada`.
  *
@@ -1501,6 +1677,8 @@ export const motivoPedidoAmazonSchema = z.enum([
   'cancelamento-solicitado',
   'pacote-status-desconhecido',
   'coleta-cancelada',
+  'dimensoes-ausentes',
+  'agendamento-recusado',
 ]);
 export type MotivoPedidoAmazon = z.infer<typeof motivoPedidoAmazonSchema>;
 
@@ -1514,27 +1692,52 @@ export const MOTIVO_PEDIDO_AMAZON = {
   cancelamentoSolicitado: 'cancelamento-solicitado',
   pacoteStatusDesconhecido: 'pacote-status-desconhecido',
   coletaCancelada: 'coleta-cancelada',
+  dimensoesAusentes: 'dimensoes-ausentes',
+  agendamentoRecusado: 'agendamento-recusado',
 } as const satisfies Record<string, MotivoPedidoAmazon>;
 
 /**
  * Why an Amazon conta's own setup needs a person — the
  * `amazonContaPrecisaAtencao` aviso's `params.motivo` AND its key's `janela`, a
- * CODE the wording in `apps/web/lib/avisos/mensagens.ts` renders. Two members,
- * both **atencao**, each with its machine resolver and its residue in the tipo's
- * docblock entry above: `conta-sem-operacao` (the conta names no operação) and
- * `intermediador-divergente` (the marketplace document on an order does not
- * match the conta's).
+ * CODE the wording in `apps/web/lib/avisos/mensagens.ts` renders. Seven members,
+ * all **atencao**, each with its raiser, its machine resolver and its residue in
+ * the tipo's docblock entry above:
+ *
+ *  - raised by the order import (step 5): `conta-sem-operacao` (the conta names
+ *    no operação) and `intermediador-divergente` (the marketplace document on
+ *    an order does not match the conta's);
+ *  - raised by the stock sync (step 12), one row per conta however many SKUs
+ *    are involved (the per-SKU detail lives in the log and on each link doc):
+ *    `estoque-sem-deposito` (the conta names no depósito),
+ *    `estoque-deposito-sem-linhas` (the reconcile held back a send that would
+ *    have zeroed a catalogue-scale share of the listings),
+ *    `estoque-vinculos-recusados` (listing links a person must fix),
+ *    `estoque-recusado-pela-amazon` (Amazon rejected a listing's stock update)
+ *    and `feed-estoque-falhou` (a stock feed failed or could not be confirmed).
  *
  * Stored as an aviso PARAM, with the same fallback contract as
  * {@link MOTIVO_PEDIDO_AMAZON}.
  */
-export const motivoContaAmazonSchema = z.enum(['conta-sem-operacao', 'intermediador-divergente']);
+export const motivoContaAmazonSchema = z.enum([
+  'conta-sem-operacao',
+  'intermediador-divergente',
+  'estoque-sem-deposito',
+  'estoque-deposito-sem-linhas',
+  'estoque-vinculos-recusados',
+  'estoque-recusado-pela-amazon',
+  'feed-estoque-falhou',
+]);
 export type MotivoContaAmazon = z.infer<typeof motivoContaAmazonSchema>;
 
 /** Named members of {@link motivoContaAmazonSchema} — see `delfrance/prefer-schema-enum`. */
 export const MOTIVO_CONTA_AMAZON = {
   contaSemOperacao: 'conta-sem-operacao',
   intermediadorDivergente: 'intermediador-divergente',
+  estoqueSemDeposito: 'estoque-sem-deposito',
+  estoqueDepositoSemLinhas: 'estoque-deposito-sem-linhas',
+  estoqueVinculosRecusados: 'estoque-vinculos-recusados',
+  estoqueRecusadoPelaAmazon: 'estoque-recusado-pela-amazon',
+  feedEstoqueFalhou: 'feed-estoque-falhou',
 } as const satisfies Record<string, MotivoContaAmazon>;
 
 /**
@@ -1735,6 +1938,49 @@ export const MOTIVO_CATEGORIA_SEM_VINCULO_LI = {
   ciclo: 'ciclo',
   profundidade: 'profundidade',
 } as const satisfies Record<string, MotivoCategoriaSemVinculoLi>;
+
+/**
+ * Why linked children of a Loja Integrada conta get no stock send — the
+ * `lojaIntegradaEstoqueVinculo` aviso's `params.motivo` AND its key's entity, a
+ * CODE the wording in `apps/web/lib/avisos/mensagens.ts` renders (a wording fix
+ * is retroactive):
+ *
+ *  - `ambiguo`: one ERP produto carries two counting child links of the conta;
+ *  - `duplicado`: one store product id is linked from two ERP produtos;
+ *  - `sem-linha-na-loja`: the store's stock list, read whole, has no row for a
+ *    linked child (a send's read answered "not found" is the same fact, seen
+ *    one product at a time);
+ *  - `ausente`: a link whose ERP produto document no longer exists;
+ *  - `estoque-ambiguo`: two stock records at the conta's depósito, neither the
+ *    canonical one.
+ *
+ * Stored as an aviso PARAM, with the same fallback contract as
+ * {@link MOTIVO_PEDIDO_CONTESTADO_LI}.
+ */
+export const motivoEstoqueVinculoLiSchema = z.enum([
+  'ambiguo',
+  'duplicado',
+  'sem-linha-na-loja',
+  'ausente',
+  'estoque-ambiguo',
+]);
+export type MotivoEstoqueVinculoLi = z.infer<typeof motivoEstoqueVinculoLiSchema>;
+
+/** Named members of {@link motivoEstoqueVinculoLiSchema} — see `delfrance/prefer-schema-enum`. */
+export const MOTIVO_ESTOQUE_VINCULO_LI = {
+  ambiguo: 'ambiguo',
+  duplicado: 'duplicado',
+  semLinhaNaLoja: 'sem-linha-na-loja',
+  ausente: 'ausente',
+  estoqueAmbiguo: 'estoque-ambiguo',
+} as const satisfies Record<string, MotivoEstoqueVinculoLi>;
+
+/**
+ * The most ERP produto ids a stock-sync aviso's `params.amostra` lists (the
+ * `lojaIntegradaEstoqueSemErp` and `lojaIntegradaEstoqueVinculo` rows); the
+ * NUMBER beside it is the full count.
+ */
+export const MAX_AMOSTRA_AVISO_ESTOQUE_LI = 200;
 
 /**
  * Why an `anuncioForaDaSincronizacao` anúncio is out of reach — the aviso's

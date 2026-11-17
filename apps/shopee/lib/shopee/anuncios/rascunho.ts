@@ -27,7 +27,9 @@
  *  - **edit** ({@link atualizarRascunhoShopee}) — tier **3 + 1**: the baseline
  *    compare (the operator's `base` against THE projection of what is stored,
  *    over the fields `camposDaBaseDoRascunhoShopee` names: the PATCH's, plus
- *    the stored `attributes` a category change clears — K1-12) tells the human
+ *    the stored `attributes` a category change clears — K1-12 — or the stored
+ *    `category_id` an attributes-only list was chosen in — its mirror, P13 Q1,
+ *    compared and never written) tells the human
  *    about a concurrent edit (409 `CONFLITO`, nothing written); the patch's
  *    fields that THE write comparison finds already stored are left out (all
  *    of them ⇒ 200 `gravados: []`, nothing written); the write is
@@ -37,8 +39,17 @@
  *    `EM_ANDAMENTO`/`JA_PUBLICADO`). `attributes` (P6, D9) is written in the
  *    REQUEST shape the body's write schema normalised to, and compared through
  *    the projection's ONE decoder — never a stored shape read raw here.
+ *    `logistic_info` (P15) is written as the whitelist's sorted list WITH
+ *    `logisticaGravadaEm` = `nowMs` in the SAME literal and the SAME `update`,
+ *    a `null` («Automática») included — the fifth writer of #2015's inventory;
+ *    the baseline compares it through the projection, so an unstamped legacy
+ *    list reads `null`, and an edit that does not name it writes neither key.
  *  - **discard** ({@link descartarRascunhoShopee}) — tier **3 + 1**: the same
- *    baseline over EVERY projected field (K1-13), then `delete({lastUpdateTime})`
+ *    baseline over the six form fields (K1-13) — the body reads an ABSENT
+ *    `logistic_info` as `null` («Automática», what every screen before the
+ *    logistics editor showed; #1911 P16, D-LOG-10), so a stale tab's five-key
+ *    discard over channels chosen meanwhile is a 409 `CONFLITO`, never a
+ *    silent delete — then `delete({lastUpdateTime})`
  *    with the same re-derive. The FIRST deleter of `prodshopee` — the one named
  *    exception to the import's "resolve, then write, never delete"
  *    (`produtos/links.ts`). A draft has no `variashopee` rows (they are minted
@@ -66,7 +77,8 @@
  *
  * Clock-free and Next-free like the rest of `anuncios/`: the instant is the
  * route's clock, handed down as `nowMs` (MILLISECONDS — `dataCadastro`,
- * `ultimaModificacao` and the lock reading). Zero Shopee calls.
+ * `ultimaModificacao`, a logistics write's `logisticaGravadaEm` and the lock
+ * reading). Zero Shopee calls.
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import {
@@ -125,9 +137,10 @@ export interface DepsDoRascunhoShopee {
   readonly db: Firestore;
   /**
    * MILLISECONDS — the route's clock, read ONCE per request: the created
-   * draft's `dataCadastro`, every write's `ultimaModificacao` and the instant
-   * the lock is read at. One instant per request, so a re-derive after a lost
-   * precondition judges the lock at the same moment the first attempt did.
+   * draft's `dataCadastro`, every write's `ultimaModificacao`, a logistics
+   * write's `logisticaGravadaEm` and the instant the lock is read at. One
+   * instant per request, so a re-derive after a lost precondition judges the
+   * lock at the same moment the first attempt did.
    */
   readonly nowMs: number;
   /**
@@ -418,7 +431,9 @@ function chavesDaMarca(marca: MarcaRascunhoShopee | null): {
  * conta ref, `item_id: null`, the whitelisted content (absent ⇒ `null`: no
  * description = the produto's own, D2; `attributes` in the REQUEST shape the
  * body normalised to, D9), BOTH brand keys, `dataCadastro` and
- * `ultimaModificacao` = `nowMs`. Never a lock.
+ * `ultimaModificacao` = `nowMs`. Never a lock, and never logistics: the body
+ * cannot name `logistic_info` (they are chosen on a SAVED draft, D-13), so the
+ * link schema's default `null` is written with no stamp.
  *
  * @returns `criado: true` (the route's 201) or `criado: false` (200 — the same
  *   draft already there, holding exactly what this create would write).
@@ -532,8 +547,10 @@ export async function criarRascunhoShopee(
   // — through the SAME projection that reads the stored one, so an absent key
   // is its written `null`, `item_name` its fallback, the brand the pair and
   // `attributes` the decoder's request shape. Every field the projection
-  // produces is compared (never the reserved `logistic_info`, which it does
-  // not produce and which the compare calls distinct even `null` vs `null`).
+  // produces is compared — `logistic_info` too since P15: this create writes
+  // the link schema's `null` with no stamp, which projects `null`, so a retry
+  // over a list another tab chose since (stamped) is a 409, while an unstamped
+  // legacy list, which also projects `null`, is still the same draft.
   const pretendido = camposDoRascunhoShopee(dados as Record<string, unknown>);
   const comparados = camposPresentesDoRascunhoShopee(pretendido);
   for (let tentativa = 1; tentativa <= TENTATIVAS_DO_RASCUNHO; tentativa += 1) {
@@ -585,15 +602,29 @@ export async function criarRascunhoShopee(
 
 /**
  * The stored keys one edited field writes: its own key — or, for `marca`, BOTH
- * brand keys (D10). `attributes` is written as the patch carries it: the
- * REQUEST shape the body's write schema already normalised to (D9), so the
- * next identical save reads back EQUAL and writes nothing. The clearing of the
- * attributes a category change leaves behind is the caller's
- * ({@link limpaAtributosNaTrocaDeCategoria}), never this function's.
+ * brand keys (D10) — or, for `logistic_info`, the list AND its stamp (#2015's
+ * rule: the same patch, the same condition). `attributes` is written as the
+ * patch carries it: the REQUEST shape the body's write schema already
+ * normalised to (D9), so the next identical save reads back EQUAL and writes
+ * nothing. The clearing of the attributes a category change leaves behind is
+ * the caller's ({@link limpaAtributosNaTrocaDeCategoria}), never this
+ * function's.
+ *
+ * `logistic_info` (#1911 P15) is written as the whitelist parsed it — sorted by
+ * `logistic_id`, each channel `{logistic_id, enabled, is_free}`, or `null`
+ * («Automática», which the operator CHOSE, so it is stamped too) — with
+ * `logisticaGravadaEm: nowMs` in the SAME object literal. This arm runs only
+ * when the caller writes `logistic_info`, so the stamp rides the list's own
+ * condition by construction: an edit that leaves the list alone (a title-only
+ * save, or a list equal to the stored projection) writes neither key. ⚠️ ONE
+ * literal with PLAIN keys: `logisticaProveniencia.test.ts` reads the writers
+ * from the syntax tree, and a stamp spread in by the caller, a shorthand, a
+ * later assignment or a computed key reds it.
  */
 function escritaDoCampo(
   campo: CampoRascunhoShopee,
   patch: Partial<CamposRascunhoShopee>,
+  nowMs: number,
 ): Record<string, unknown> {
   switch (campo) {
     case CAMPO_RASCUNHO_SHOPEE.itemName:
@@ -607,10 +638,7 @@ function escritaDoCampo(
     case CAMPO_RASCUNHO_SHOPEE.attributes:
       return { attributes: patch.attributes ?? null };
     case CAMPO_RASCUNHO_SHOPEE.logisticInfo:
-      // RESERVED until P15: no body accepts it yet
-      // (`conteudoRascunhoShopeeSchema` is strict), so reaching this is a
-      // defect, never a write.
-      throw new Error(`[shopee/anuncios] o campo ${campo} do rascunho ainda não é editável`);
+      return { logistic_info: patch.logistic_info ?? null, logisticaGravadaEm: nowMs };
   }
 }
 
@@ -653,11 +681,17 @@ function limpaAtributosNaTrocaDeCategoria(
  *     may still change any other field);
  *  3. the BASELINE — over `camposDaBaseDoRascunhoShopee(patch)`: the patch's
  *     fields, plus `attributes` when the patch changes `category_id` without
- *     them (K1-12; the body's refine made `base` name exactly that list), the
- *     operator's `base` against the stored projection — any field differs ⇒
- *     409 `CONFLITO` with every differing field and what is stored now. So an
- *     attribute save another operator landed meanwhile stops a category change
- *     that would wipe it, before anything is written;
+ *     them (K1-12), or plus `category_id` when the patch writes `attributes`
+ *     without it (the mirror, P13 Q1; the body's refine made `base` name
+ *     exactly that list), the operator's `base` against the stored projection —
+ *     any field differs ⇒ 409 `CONFLITO` with every differing field and what
+ *     is stored now. So an attribute save another operator landed meanwhile
+ *     stops a category change that would wipe it, and a category another
+ *     operator moved meanwhile stops an attribute list chosen in the old one,
+ *     before anything is written. The extra field is compared, never written
+ *     (step 4 iterates the PATCH's fields), and the `incerta` lock of step 2
+ *     keys on the patch, so a list compared beside the stored category is no
+ *     category write;
  *  4. the patch equals what is stored (THE WRITE comparison,
  *     `mesmoValorGravadoDoRascunhoShopee`, field by field) ⇒ 200
  *     `gravados: []`, NOTHING written — a legacy-shaped stored list included:
@@ -666,7 +700,8 @@ function limpaAtributosNaTrocaDeCategoria(
  *     brand is compared as the PAIR here, never by id alone: re-picking the
  *     stored brand with its name over a legacy draft that stores the id only
  *     WRITES the name (the baseline of step 3 stays id-only);
- *  5. else `update` of the fields that differ (+ `ultimaModificacao`) with
+ *  5. else `update` of the fields that differ (+ `ultimaModificacao`, and
+ *     `logisticaGravadaEm` beside a `logistic_info` write — P15) with
  *     `{lastUpdateTime}` of the snapshot that decided — plus `attributes: null`
  *     when the category changes and the patch does not name `attributes`
  *     ({@link limpaAtributosNaTrocaDeCategoria}), reported as written. A lost
@@ -688,9 +723,12 @@ export async function atualizarRascunhoShopee(
   const patch: Partial<CamposRascunhoShopee> = corpo.patch;
   const alterados = camposPresentesDoRascunhoShopee(corpo.patch);
   // K1-12: the fields the baseline compares — the patch's, plus the
-  // `attributes` a category change clears. The body's refine made `base` name
-  // exactly these; iterating `alterados` instead would let a category change
-  // wipe an attribute save it never compared.
+  // `attributes` a category change clears, or the `category_id` an
+  // attributes-only list was chosen in (P13 Q1). The body's refine made `base`
+  // name exactly these; iterating `alterados` instead would let a category
+  // change wipe an attribute save it never compared, and an attribute list
+  // land on a category another operator moved it out of. Only `alterados` is
+  // ever written.
   const vistos = camposDaBaseDoRascunhoShopee(corpo.patch);
   const ref = produtoShopeeLinkCollection.docRef(deps.db, { produtoId }, linkDocId);
 
@@ -736,7 +774,7 @@ export async function atualizarRascunhoShopee(
 
     const escrita: Record<string, unknown> = {};
     const gravados = new Set<CampoRascunhoShopee>(aGravar);
-    for (const campo of aGravar) Object.assign(escrita, escritaDoCampo(campo, patch));
+    for (const campo of aGravar) Object.assign(escrita, escritaDoCampo(campo, patch, deps.nowMs));
     if (limpaAtributosNaTrocaDeCategoria(alterados, gravados, raw)) {
       // The stored attributes belong to the OLD category — and the baseline
       // above proved they are the ones the operator saw.
@@ -777,9 +815,13 @@ export async function atualizarRascunhoShopee(
  *  1. absent / other conta ⇒ 404 `INEXISTENTE`; not a draft ⇒ 409
  *     `JA_PUBLICADO`;
  *  2. `em-andamento` (its grace included) ⇒ 409 `EM_ANDAMENTO` `{aguardarMs}`;
- *  3. the BASELINE over EVERY projected field (K1-13; `attributes` too since
- *     P6) — the stored draft is not what the operator saw ⇒ 409 `CONFLITO`: an
- *     edit made meanwhile is never discarded unseen;
+ *  3. the BASELINE over the fields the `base` names (K1-13) — all six: the
+ *     five form fields (`attributes` too since P6) and `logistic_info`, which
+ *     the body reads as `null` when absent (#1911 P16; D-LOG-10: a tab from
+ *     before the logistics editor sends five keys, and it SAW «Automática»),
+ *     so {@link camposPresentesDoRascunhoShopee} names it — the stored draft
+ *     is not what the operator saw ⇒ 409 `CONFLITO`: an edit made meanwhile,
+ *     a channel choice included, is never discarded unseen;
  *  4. `incerta` without `confirmarCriacaoIncerta === true` ⇒ 409
  *     `CRIACAO_INCERTA` (K1-6) — the draft is the only record that a create
  *     may have reached Shopee; a `livre` draft needs no attestation;

@@ -7,7 +7,7 @@
  * (`lib/whatsapp/client.ts`): `null` while logged out, so the panel can disable
  * its buttons, and `() => user.getIdToken()` so a refreshed ID token propagates.
  *
- * Eight calls, one per route (`apps/loja-integrada/app/api/marketplace/loja-integrada/…`):
+ * Fourteen calls, one per route (`apps/loja-integrada/app/api/marketplace/loja-integrada/…`):
  *
  * | call | route | answer |
  * | --- | --- | --- |
@@ -17,14 +17,20 @@
  * | `removerCredencial(id)` | `DELETE …/conta/[id]/credencial` | `respostaRemocaoCredencialLiSchema` |
  * | `grades(id, opcoes)` | `GET …/conta/[id]/grades` | `respostaGradesLiSchema` |
  * | `grade(id, gradeId, opcoes)` | `GET …/conta/[id]/grades/[gradeId]` | `respostaGradeLiSchema` |
+ * | `iniciarImportacao(id, opcoes)` | `POST …/conta/[id]/importacoes` | `respostaInicioImportacaoLiSchema` |
+ * | `importacoes(id, opcoes)` | `GET …/conta/[id]/importacoes` | `respostaImportacoesLiSchema` |
+ * | `importacao(id, jobId, opcoes)` | `GET …/conta/[id]/importacoes/[jobId]` | `respostaImportacaoLiSchema` |
+ * | `cancelarImportacao(id, jobId)` | `POST …/conta/[id]/importacoes/[jobId]/cancelar` | `respostaImportacaoLiSchema` |
+ * | `itensImportacao(id, jobId, depois, opcoes)` | `GET …/conta/[id]/importacoes/[jobId]/itens` | `respostaItensImportacaoLiSchema` |
+ * | `revisaoImportacao(id, jobId, depois, opcoes)` | `GET …/conta/[id]/importacoes/[jobId]/revisao` | `respostaRevisaoFiscalLiSchema` |
  * | `rotearEtiqueta(pedidoId, corpo)` | `PUT …/pedidos/[pedidoId]/rota-etiqueta` | `respostaRotaEtiquetaLiSchema` |
  * | `conferirPagamento(pedidoId, opcoes)` | `GET …/pedidos/[pedidoId]/pagamento` | `respostaConferenciaPagamentoLiSchema` |
  *
  * Every answer — the 2xx bodies AND the error envelope — is read against the ONE
  * shared contract in `@delfrance/schemas` (`contaLojaIntegrada.ts`,
- * `catalogoLojaIntegrada.ts`, `rotaEtiquetaLojaIntegrada.ts`,
- * `conferenciaPagamentoLojaIntegrada.ts`), the same modules the routes build
- * their answers with. Nothing here is cast.
+ * `catalogoLojaIntegrada.ts`, `importacaoLojaIntegrada.ts`,
+ * `rotaEtiquetaLojaIntegrada.ts`, `conferenciaPagamentoLojaIntegrada.ts`), the
+ * same modules the routes build their answers with. Nothing here is cast.
  *
  * ## The two catalogue reads (master plan step 10)
  *
@@ -35,6 +41,30 @@
  * fresh read (`?atualizar=1`). A backend older than these routes answers 404
  * without the envelope — an HTTP error with no `code`, which the linker reads as
  * "not offered yet".
+ *
+ * ## The product import (master plan step 9)
+ *
+ * Six calls over one job document per run: start one, list the conta's newest,
+ * read one (the progress card polls it), cancel one, and page through its
+ * report and its tax-review list. NONE of these routes calls Loja Integrada —
+ * the start only creates the job, and the backend's queue does the reading — so
+ * every call shares one short deadline, {@link PRAZO_IMPORTACAO_LI_MS}, and the
+ * reads also honour the caller's signal (a cancelled query).
+ *
+ * - The start body is rebuilt by name and parsed through the shared strict
+ *   schema before it is sent ({@link corpoInicioImportacaoLi}): under "só
+ *   vincular" the category and photo options are sent at their defaults, which
+ *   is the only value the backend accepts there.
+ * - A conta that already runs an import answers 409
+ *   `LI_IMPORTACAO_EM_ANDAMENTO` naming the running job: the error keeps that id
+ *   ({@link LojaIntegradaClientHttpError.jobId}), so the screen attaches to the
+ *   job instead of reporting a failure.
+ * - A backend older than these routes answers the reads with a 404 WITHOUT the
+ *   envelope: an HTTP error with no `code`, which the screen reads as "this
+ *   backend does not offer the import yet" — never as "job not found", which
+ *   always carries `LI_IMPORTACAO_NAO_ENCONTRADA`. Such a backend's CORS
+ *   preflight does not allow `POST` either, so its start fails as a network
+ *   error in the browser; the list read is where the screen finds out.
  *
  * ## The two pedidos routes (master plan step 15)
  *
@@ -50,9 +80,20 @@
  *   timeout is "não verificável", the gates' own answer for a backend that
  *   cannot say. The caller's `sinal` is honoured too.
  *
- * A deadline that fires is a {@link LojaIntegradaClientTempoEsgotadoError} — a
- * SUBCLASS of the network error, so a catch written for the network still
- * catches it. An abort the CALLER asked for comes back as the abort itself.
+ * A deadline that fires (the catalogue reads', the import calls' or these two)
+ * is a {@link LojaIntegradaClientTempoEsgotadoError} — a SUBCLASS of the network
+ * error, so a catch written for the network still catches it. An abort the
+ * CALLER asked for comes back as the abort itself. The deadlines:
+ *
+ * | constant | calls | why that long |
+ * | --- | --- | --- |
+ * | {@link PRAZO_CATALOGO_LI_MS} | `grades` | every page the route may read, paced |
+ * | {@link PRAZO_GRADE_LI_MS} | `grade` | one paced read |
+ * | {@link PRAZO_IMPORTACAO_LI_MS} | the six import calls | no Loja Integrada call: a cold start |
+ * | {@link PRAZO_ROTA_ETIQUETA_LI_MS} | `rotearEtiqueta` | no Loja Integrada call: a cold start |
+ * | {@link PRAZO_CONFERENCIA_PAGAMENTO_LI_MS} | `conferirPagamento` | one paced read |
+ *
+ * The conta routes have none.
  *
  * ## The Personal Token
  *
@@ -79,22 +120,36 @@
 import { useMemo } from 'react';
 import type { z } from 'zod';
 import {
+  ACAO_IMPORTACAO_LI,
   type CorpoRenovarValidadeLi,
   type CorpoRotaEtiquetaLi,
   type CorpoSalvarCredencialLi,
+  OPCOES_IMPORTACAO_LI_PADRAO,
+  type OpcoesImportacaoLi,
   type RespostaConferenciaPagamentoLi,
   type RespostaCredencialLojaIntegrada,
   type RespostaGradeLi,
   type RespostaGradesLi,
+  type RespostaImportacaoLi,
+  type RespostaImportacoesLi,
+  type RespostaInicioImportacaoLi,
+  type RespostaItensImportacaoLi,
   type RespostaRemocaoCredencialLi,
+  type RespostaRevisaoFiscalLi,
   type RespostaRotaEtiquetaLi,
   type StatusContaLojaIntegrada,
   erroContaLojaIntegradaSchema,
+  opcoesImportacaoLiSchema,
   respostaConferenciaPagamentoLiSchema,
   respostaCredencialLojaIntegradaSchema,
   respostaGradeLiSchema,
   respostaGradesLiSchema,
+  respostaImportacaoLiSchema,
+  respostaImportacoesLiSchema,
+  respostaInicioImportacaoLiSchema,
+  respostaItensImportacaoLiSchema,
   respostaRemocaoCredencialLiSchema,
+  respostaRevisaoFiscalLiSchema,
   respostaRotaEtiquetaLiSchema,
   statusContaLojaIntegradaSchema,
 } from '@delfrance/schemas';
@@ -143,6 +198,16 @@ export const PRAZO_CATALOGO_LI_MS = 260_000;
  */
 export const PRAZO_GRADE_LI_MS = 60_000;
 
+/**
+ * How long each product-import call may take, in ms. None of the six routes
+ * calls Loja Integrada (the start creates the job document; the backend's queue
+ * does the reading), so this only has to cover a cold start of the
+ * scale-to-zero backend, the CORS preflight and a few Firestore reads. A start
+ * that times out is safe to repeat: if the first one did create the job, the
+ * second answers 409 with its id, and the screen attaches to it.
+ */
+export const PRAZO_IMPORTACAO_LI_MS = 30_000;
+
 /** Optional detail an error envelope may carry beyond `error` and `code`. */
 export interface DetalhesErroLojaIntegrada {
   /** Field PATHS the backend blamed (`issues`), never values. */
@@ -151,6 +216,8 @@ export interface DetalhesErroLojaIntegrada {
   readonly statusLi?: number | null;
   /** The validation call's correlation id, for support. */
   readonly correlationId?: string | null;
+  /** The RUNNING product import a busy start named (`LI_IMPORTACAO_EM_ANDAMENTO` only). */
+  readonly jobId?: string | null;
 }
 
 /** Non-2xx response from the `apps/loja-integrada` backend. */
@@ -160,6 +227,13 @@ export class LojaIntegradaClientHttpError extends Error {
   /** The HTTP status Loja Integrada answered a validation with (`status` on the envelope). */
   readonly statusLi: number | null;
   readonly correlationId: string | null;
+  /**
+   * The envelope's `jobId`, as the shared envelope schema read it: a string or
+   * `null`, nothing else. Only `LI_IMPORTACAO_EM_ANDAMENTO` carries one; read it
+   * through `jobIdDaImportacaoEmAndamentoLi` (`importacao.ts`), which also checks
+   * the code and the id's grammar.
+   */
+  readonly jobId: string | null;
 
   constructor(
     message: string,
@@ -178,6 +252,7 @@ export class LojaIntegradaClientHttpError extends Error {
     this.campos = detalhes.campos ?? [];
     this.statusLi = detalhes.statusLi ?? null;
     this.correlationId = detalhes.correlationId ?? null;
+    this.jobId = detalhes.jobId ?? null;
   }
 }
 
@@ -218,8 +293,8 @@ export class LojaIntegradaClientNetworkError extends Error {
 }
 
 /**
- * A pedidos route did not answer within its deadline
- * ({@link PRAZO_ROTA_ETIQUETA_LI_MS}, {@link PRAZO_CONFERENCIA_PAGAMENTO_LI_MS}).
+ * A bounded route did not answer within its deadline (the table in the header:
+ * the catalogue reads, the import calls and the two pedidos routes).
  *
  * ⚠️ A SUBCLASS of {@link LojaIntegradaClientNetworkError}: as far as a caller
  * that only knows "the network failed" is concerned, it did. Narrow it FIRST
@@ -253,6 +328,50 @@ export interface OpcoesCatalogoLi {
   readonly sinal?: AbortSignal;
 }
 
+/** Options of the four import READS (the list, one job, its report, its tax-review list). */
+export interface OpcoesLeituraImportacaoLi {
+  /** Aborts the call (a cancelled query); the abort comes back as itself. */
+  readonly sinal?: AbortSignal;
+}
+
+/**
+ * The start options as a caller builds them: `modo`, `alvo` and `acao` always,
+ * the rest optional (the shared schema's INPUT, so its defaults apply).
+ */
+export type EntradaOpcoesImportacaoLi = z.input<typeof opcoesImportacaoLiSchema>;
+
+/**
+ * The start body exactly as sent: rebuilt BY NAME (the route's body is strict,
+ * so a caller object carrying one more key must not reach it) and parsed through
+ * the shared {@link opcoesImportacaoLiSchema}, so every default is explicit and
+ * a contradictory body never leaves the browser.
+ *
+ * Under `acao: soVincular` the category and photo options are sent at their
+ * DEFAULTS whatever the caller held: they mean something under `completar`
+ * only, the start dialog disables them there, and the backend refuses any other
+ * value as contradictory. A dialog that switched from "Completar" back to "Só
+ * vincular" still holds its last picks; they are not the operator's intent for
+ * this run.
+ *
+ * ⚠️ Throws `ZodError` for a body the schema refuses even so — a selection
+ * outside `alvo: selecionados`, `selecionados` with no id or past
+ * `MAX_SELECIONADOS_LI`, a malformed `simulacaoId`. That is a bug in the caller,
+ * which must never offer such a body, so it is not one of this client's error
+ * classes: it reaches the caller's catch as itself (root `CLAUDE.md` rule 6).
+ */
+export function corpoInicioImportacaoLi(opcoes: EntradaOpcoesImportacaoLi): OpcoesImportacaoLi {
+  const soVincular = opcoes.acao === ACAO_IMPORTACAO_LI.soVincular;
+  return opcoesImportacaoLiSchema.parse({
+    modo: opcoes.modo,
+    alvo: opcoes.alvo,
+    acao: opcoes.acao,
+    categorias: soVincular ? OPCOES_IMPORTACAO_LI_PADRAO.categorias : opcoes.categorias,
+    fotos: soVincular ? OPCOES_IMPORTACAO_LI_PADRAO.fotos : opcoes.fotos,
+    selecionados: opcoes.selecionados,
+    simulacaoId: opcoes.simulacaoId,
+  });
+}
+
 export interface LojaIntegradaClient {
   /** The conta's credential status (`PERM.integracao.read`). Never the token. */
   conta(integracaoId: string): Promise<StatusContaLojaIntegrada>;
@@ -282,6 +401,65 @@ export interface LojaIntegradaClient {
   ): Promise<RespostaCredencialLojaIntegrada>;
   /** Remove the stored token — idempotent and unconditional (`PERM.integracao.write`). */
   removerCredencial(integracaoId: string): Promise<RespostaRemocaoCredencialLi>;
+  /**
+   * Start a product import for the conta (`PERM.integracao.write`): 202 with the
+   * new job's id. The body is {@link corpoInicioImportacaoLi}'s. A conta already
+   * running one rejects with `LI_IMPORTACAO_EM_ANDAMENTO` and that job's
+   * `jobId`; the read switch off (every environment until the migration)
+   * rejects with `LI_CHAMADAS_DESLIGADAS`, and no job exists. Bounded by
+   * {@link PRAZO_IMPORTACAO_LI_MS}.
+   */
+  iniciarImportacao(
+    integracaoId: string,
+    opcoes: EntradaOpcoesImportacaoLi,
+  ): Promise<RespostaInicioImportacaoLi>;
+  /**
+   * The conta's newest imports, newest first (`PERM.integracao.read`). Works
+   * with the read switch off. Bounded by {@link PRAZO_IMPORTACAO_LI_MS}.
+   */
+  importacoes(
+    integracaoId: string,
+    opcoes?: OpcoesLeituraImportacaoLi,
+  ): Promise<RespostaImportacoesLi>;
+  /**
+   * One import's status, what the progress card polls (`PERM.integracao.read`).
+   * Bounded by {@link PRAZO_IMPORTACAO_LI_MS}.
+   */
+  importacao(
+    integracaoId: string,
+    jobId: string,
+    opcoes?: OpcoesLeituraImportacaoLi,
+  ): Promise<RespostaImportacaoLi>;
+  /**
+   * Stop an import (`PERM.integracao.write`); answers the job as written. An
+   * ended job rejects with `LI_IMPORTACAO_ENCERRADA`; a job that kept writing its
+   * progress over every attempt rejects with `LI_IMPORTACAO_EM_CONFLITO` (still
+   * running: try again). Bounded by {@link PRAZO_IMPORTACAO_LI_MS}.
+   */
+  cancelarImportacao(integracaoId: string, jobId: string): Promise<RespostaImportacaoLi>;
+  /**
+   * One page of an import's report after `depois` (`PERM.integracao.read`);
+   * `null`, `undefined` or `''` = the first page. The answer's `proximo` is the
+   * next page's `depois`, `null` on the last. Bounded by
+   * {@link PRAZO_IMPORTACAO_LI_MS}.
+   */
+  itensImportacao(
+    integracaoId: string,
+    jobId: string,
+    depois?: string | null,
+    opcoes?: OpcoesLeituraImportacaoLi,
+  ): Promise<RespostaItensImportacaoLi>;
+  /**
+   * An import's tax-review list (`PERM.integracao.read`), paged like the report
+   * — though today's backend answers the whole list at once (`proximo: null`).
+   * Bounded by {@link PRAZO_IMPORTACAO_LI_MS}.
+   */
+  revisaoImportacao(
+    integracaoId: string,
+    jobId: string,
+    depois?: string | null,
+    opcoes?: OpcoesLeituraImportacaoLi,
+  ): Promise<RespostaRevisaoFiscalLi>;
   /**
    * Route a pedido still on its conta's Loja Integrada freight doc to its label
    * target (`PERM.frete.write`): `escolha` is the operator's pick, `null` lets the
@@ -414,6 +592,7 @@ function erroHttp(path: string, status: number, texto: string, levouToken: boole
       campos: env.issues ?? [],
       statusLi: env.status ?? null,
       correlationId: env.correlationId ?? null,
+      jobId: env.jobId ?? null,
     });
   }
   // Not our envelope: the request never reached a conta route that answers one.
@@ -479,7 +658,7 @@ export function createLojaIntegradaClient(config: {
    * error would send the operator to check a connection that is fine.
    */
   async function call<S extends z.ZodType>(
-    method: 'GET' | 'PUT' | 'DELETE',
+    method: 'GET' | 'POST' | 'PUT' | 'DELETE',
     path: string,
     schema: S,
     corpo?: Readonly<Record<string, unknown>>,
@@ -526,10 +705,18 @@ export function createLojaIntegradaClient(config: {
   /** The fresh-read flag, spelled exactly as the route reads it. */
   const consultaDoCatalogo = (opcoes: OpcoesCatalogoLi | undefined) =>
     opcoes?.atualizar === true ? '?atualizar=1' : '';
-  const limitesDoCatalogo = (prazoMs: number, opcoes: OpcoesCatalogoLi | undefined) => ({
+  /** A read's deadline plus the caller's signal, when it gave one. */
+  const limitesComSinal = (prazoMs: number, opcoes: OpcoesLeituraImportacaoLi | undefined) => ({
     prazoMs,
     ...(opcoes?.sinal === undefined ? {} : { sinal: opcoes.sinal }),
   });
+  const caminhoDaImportacao = (integracaoId: string, jobId: string) =>
+    `${caminhoDaConta(integracaoId)}/importacoes/${encodeURIComponent(jobId)}`;
+  /** A page cursor, spelled as the routes read it: absent for the first page. */
+  const consultaDaPagina = (depois: string | null | undefined) =>
+    depois === undefined || depois === null || depois === ''
+      ? ''
+      : `?depois=${encodeURIComponent(depois)}`;
 
   return {
     conta: (integracaoId) =>
@@ -540,7 +727,7 @@ export function createLojaIntegradaClient(config: {
         `${caminhoDaConta(integracaoId)}/grades${consultaDoCatalogo(opcoes)}`,
         respostaGradesLiSchema,
         undefined,
-        limitesDoCatalogo(PRAZO_CATALOGO_LI_MS, opcoes),
+        limitesComSinal(PRAZO_CATALOGO_LI_MS, opcoes),
       ),
     grade: (integracaoId, gradeId, opcoes) =>
       call(
@@ -549,7 +736,7 @@ export function createLojaIntegradaClient(config: {
           consultaDoCatalogo(opcoes),
         respostaGradeLiSchema,
         undefined,
-        limitesDoCatalogo(PRAZO_GRADE_LI_MS, opcoes),
+        limitesComSinal(PRAZO_GRADE_LI_MS, opcoes),
       ),
     // Both bodies are rebuilt BY NAME: the routes' schemas are strict (an
     // unknown key is a 400), so a caller object carrying one more field must
@@ -573,6 +760,59 @@ export function createLojaIntegradaClient(config: {
         'DELETE',
         `${caminhoDaConta(integracaoId)}/credencial`,
         respostaRemocaoCredencialLiSchema,
+      ),
+    // The body is parsed BEFORE the token is asked for, so a contradictory body
+    // throws with no request at all.
+    iniciarImportacao: async (integracaoId, opcoes) => {
+      const corpo = corpoInicioImportacaoLi(opcoes);
+      return call(
+        'POST',
+        `${caminhoDaConta(integracaoId)}/importacoes`,
+        respostaInicioImportacaoLiSchema,
+        corpo,
+        { prazoMs: PRAZO_IMPORTACAO_LI_MS },
+      );
+    },
+    importacoes: (integracaoId, opcoes) =>
+      call(
+        'GET',
+        `${caminhoDaConta(integracaoId)}/importacoes`,
+        respostaImportacoesLiSchema,
+        undefined,
+        limitesComSinal(PRAZO_IMPORTACAO_LI_MS, opcoes),
+      ),
+    importacao: (integracaoId, jobId, opcoes) =>
+      call(
+        'GET',
+        caminhoDaImportacao(integracaoId, jobId),
+        respostaImportacaoLiSchema,
+        undefined,
+        limitesComSinal(PRAZO_IMPORTACAO_LI_MS, opcoes),
+      ),
+    // No body: the route reads none.
+    cancelarImportacao: (integracaoId, jobId) =>
+      call(
+        'POST',
+        `${caminhoDaImportacao(integracaoId, jobId)}/cancelar`,
+        respostaImportacaoLiSchema,
+        undefined,
+        { prazoMs: PRAZO_IMPORTACAO_LI_MS },
+      ),
+    itensImportacao: (integracaoId, jobId, depois, opcoes) =>
+      call(
+        'GET',
+        `${caminhoDaImportacao(integracaoId, jobId)}/itens${consultaDaPagina(depois)}`,
+        respostaItensImportacaoLiSchema,
+        undefined,
+        limitesComSinal(PRAZO_IMPORTACAO_LI_MS, opcoes),
+      ),
+    revisaoImportacao: (integracaoId, jobId, depois, opcoes) =>
+      call(
+        'GET',
+        `${caminhoDaImportacao(integracaoId, jobId)}/revisao${consultaDaPagina(depois)}`,
+        respostaRevisaoFiscalLiSchema,
+        undefined,
+        limitesComSinal(PRAZO_IMPORTACAO_LI_MS, opcoes),
       ),
     // Rebuilt BY NAME for the same reason as the credential bodies: the
     // route's body schema is strict.

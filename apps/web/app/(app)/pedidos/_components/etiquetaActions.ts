@@ -6,8 +6,9 @@
  * which was a unified BUY-or-reprint action dispatched by carrier `tipo`.
  *
  * Supports Melhor Envio (buy/reprint), the generic label (motoboy/outros), the
- * marketplace fetch-label — Mercado Livre and Shopee (#1523), each via its
- * own marketplace client — and the Loja Integrada routing action.
+ * marketplace fetch-label — Mercado Livre, Shopee (#1523) and Amazon (step
+ * 15), each via its own marketplace client — and the Loja Integrada routing
+ * action.
  * `etiquetaRowState` is the pure dispatch decision; `resolveEtiquetaCartInput`
  * lazily resolves the cart primitives from a pedido **doc** (not the form) for
  * the buy.
@@ -80,20 +81,20 @@ export interface EtiquetaRowStateResult {
  * hard-coded carrier check — a bought, printable label → reprint; a generic-label
  * tipo (motoboy/outros) → the on-demand generic PDF, available whenever frete is
  * configured (no buy step, so NOT gated on `printLabelId`); a fetch-label tipo
- * (Mercado Livre, Shopee) → fetch + print via the marketplace client; a selected
- * quote on a buyable tipo → buy; a quotable tipo with neither → quote-first;
- * a router tipo (`labelMode: 'roteado'`) → rotear; anything else →
- * unsupported. The other marketplaces set no `can*` flag, so they still
- * resolve to `'unsupported'` (their fetch flows are not ported yet).
+ * (Mercado Livre, Shopee, Amazon) → fetch + print via the marketplace client; a
+ * selected quote on a buyable tipo → buy; a quotable tipo with neither →
+ * quote-first; a router tipo (`labelMode: 'roteado'`) → rotear; anything else →
+ * unsupported. The other marketplace (Magalu) sets no `can*` flag, so it still
+ * resolves to `'unsupported'` (its fetch flow is not ported yet).
  *
  * ⚠️ A router sets no `can*` either, so its branch comes after every
  * capability check and before the `'unsupported'` fallback: it never shadows a
  * capability, and a pedido routed to Melhor Envio answers by the TARGET's caps
  * (`tipo` is then the target's, read from the doc its ref names).
  *
- * ⚠️ Shopee is NOT printable: `canPrint` is tested BEFORE `canFetchLabel` here,
- * so a `canPrint` on its row would route a `printLabelId` to Melhor Envio's
- * reprint (#1523, R-p).
+ * ⚠️ Shopee and Amazon are NOT printable: `canPrint` is tested BEFORE
+ * `canFetchLabel` here, so a `canPrint` on their rows would route a
+ * `printLabelId` to Melhor Envio's reprint (#1523, R-p).
  */
 export function etiquetaRowState(input: EtiquetaRowStateInput): EtiquetaRowStateResult {
   const { tipo, printLabelId, externalOptionId, estado } = input;

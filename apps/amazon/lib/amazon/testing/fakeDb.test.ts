@@ -7,12 +7,15 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   avisoCollection,
+  estoqueCollection,
   intFreteCollection,
   integracaoCollection,
+  nfev4Collection,
   notificacaoAmazonCollection,
   pagamentoCollection,
   pedidoCollection,
   produtoAmazonLinkCollection,
+  produtoCollection,
 } from '@delfrance/data/admin/collections';
 
 import { FakeDb, asDb, increment } from './fakeDb';
@@ -27,6 +30,7 @@ const ref = (id: string) => integracaoCollection.docRef(asDb(db), {}, id);
 const contas = () => integracaoCollection.ref(asDb(db), {});
 const pedidoRef = (id: string) => pedidoCollection.docRef(asDb(db), {}, id);
 const pagamentoRef = (id: string) => pagamentoCollection.docRef(asDb(db), { pedidoId: id }, id);
+const produtoRef = (id: string) => produtoCollection.docRef(asDb(db), {}, id);
 const CAMINHO = 'integracao/a';
 
 function codigoDe(p: Promise<unknown>): Promise<number | undefined> {
@@ -267,10 +271,222 @@ describe('step 5: getAll — ONE consistent read', () => {
     expect(db.leituras).toEqual(['pedidos/p', 'pedidos/p/pagamentos/p']);
   });
 
-  it('refuses a read option (a field mask) and a ref it did not build', () => {
-    expect(() => db.getAll(pedidoRef('p'), { fieldMask: ['x'] })).toThrow(/opções/);
+  it('refuses any read option but a field mask, and a ref it did not build', () => {
+    // (step 12, PR 12-e1) the field mask is modelled now; every OTHER option is the near-miss.
+    expect(() => db.getAll(pedidoRef('p'), { readTime: 1 })).toThrow(/opções/);
+    expect(() => db.getAll(pedidoRef('p'), { fieldMask: ['x'], transaction: {} })).toThrow(
+      /opções/,
+    );
+    expect(() => db.getAll(pedidoRef('p'), { fieldMask: 'x' })).toThrow(/opções/);
+    expect(() => db.getAll(pedidoRef('p'), {})).toThrow(/opções/);
+    expect(() => db.getAll({ fieldMask: ['x'] }, pedidoRef('p'))).toThrow(/última posição/);
     expect(() => db.getAll({ path: 'pedidos/p' })).toThrow(/deste fake/);
     expect(() => db.getAll()).toThrow(/sem referências/);
+    expect(() => db.getAll({ fieldMask: ['x'] })).toThrow(/sem referências/);
+    expect(db.leituras).toEqual([]);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*            step 12 (PR 12-e1): field masks, projections, the counter        */
+/* -------------------------------------------------------------------------- */
+
+describe('step 12 (12-e1): getAll with a field mask', () => {
+  const link = (produtoId: string, id: string) =>
+    produtoAmazonLinkCollection.docRef(asDb(db), { produtoId }, id);
+
+  it('★ answers ONLY the masked fields a document holds; NEAR-MISS: an unmasked field reads undefined', async () => {
+    db.seed('produtos/p/prodAmazon/l', {
+      sku: 'SKU-1',
+      asin: 'B0TESTE',
+      productDataJson: { pesado: true },
+      envioEstoqueAmazon: null,
+    });
+    const [snap] = await db.getAll(link('p', 'l'), {
+      fieldMask: ['sku', 'envioEstoqueAmazon', 'ausente'],
+    });
+    // A masked field the document lacks stays absent; a stored null comes back null.
+    expect(snap?.data()).toEqual({ sku: 'SKU-1', envioEstoqueAmazon: null });
+    expect(Object.keys(snap?.data() ?? {}).sort()).toEqual(['envioEstoqueAmazon', 'sku']);
+    expect(snap?.data()?.asin).toBeUndefined();
+    expect(snap?.data()?.productDataJson).toBeUndefined();
+    // Unmasked, the same read answers every field.
+    const [inteiro] = await db.getAll(link('p', 'l'));
+    expect(inteiro?.data()?.asin).toBe('B0TESTE');
+  });
+
+  it('★ a masked snapshot keeps exists, updateTime and the shared readTime (it still feeds a precondition)', async () => {
+    const carimbo = db.seed('produtos/p/prodAmazon/l', { sku: 'S', asin: 'A' });
+    const [a, b] = await db.getAll(link('p', 'l'), link('p', 'ausente'), { fieldMask: ['sku'] });
+    expect(a?.exists).toBe(true);
+    expect(a?.updateTime?.isEqual(carimbo)).toBe(true);
+    expect(b?.exists).toBe(false);
+    expect(b?.data()).toBeUndefined();
+    expect(a?.readTime.isEqual(b?.readTime)).toBe(true);
+    await link('p', 'l').update({ asin: 'B' }, { lastUpdateTime: a?.updateTime as never });
+    expect(db.ler('produtos/p/prodAmazon/l')).toEqual({ sku: 'S', asin: 'B' });
+  });
+
+  it('an EMPTY mask answers the keys alone', async () => {
+    db.seed('produtos/p', { nome: 'P' });
+    const [snap] = await db.getAll(produtoRef('p'), { fieldMask: [] });
+    expect(snap?.exists).toBe(true);
+    expect(snap?.data()).toEqual({});
+  });
+
+  it('refuses a field path it does not model: dotted, empty, not a string', () => {
+    expect(() => db.getAll(produtoRef('p'), { fieldMask: ['a.b'] })).toThrow(/primeiro nível/);
+    expect(() => db.getAll(produtoRef('p'), { fieldMask: [''] })).toThrow(/primeiro nível/);
+    expect(() => db.getAll(produtoRef('p'), { fieldMask: [{ segmentos: ['a'] }] })).toThrow(
+      /primeiro nível/,
+    );
+  });
+
+  it('★ logs every document read with its mask and its getAll call; get() and an unmasked read log null', async () => {
+    db.seed('produtos/p', { nome: 'P', paiId: null });
+    await db.getAll(produtoRef('p'), produtoRef('q'), { fieldMask: ['paiId'] });
+    await produtoRef('p').get();
+    await db.getAll(produtoRef('p'));
+    expect(db.leiturasDetalhadas).toEqual([
+      { caminho: 'produtos/p', via: 'getAll', chamada: 1, mascara: ['paiId'] },
+      { caminho: 'produtos/q', via: 'getAll', chamada: 1, mascara: ['paiId'] },
+      { caminho: 'produtos/p', via: 'get', mascara: null },
+      { caminho: 'produtos/p', via: 'getAll', chamada: 2, mascara: null },
+    ]);
+    expect(db.leituras).toEqual(['produtos/p', 'produtos/q', 'produtos/p', 'produtos/p']);
+  });
+});
+
+describe('step 12 (12-e1): a query’s classic select()', () => {
+  const grupo = () => produtoAmazonLinkCollection.groupQuery(asDb(db));
+  const FORMA = 'documents/integracao/c1';
+
+  it('★ projects every document to the selected fields, and the log names the projection', async () => {
+    db.seed('produtos/p1/prodAmazon/l1', {
+      contaAmazonOuterRef: FORMA,
+      sku: 'SKU-1',
+      asin: 'A1',
+      productDataJson: { pesado: true },
+    });
+    const snap = await grupo()
+      .where('contaAmazonOuterRef', 'in', [FORMA])
+      .where('sku', '==', 'SKU-1')
+      .limit(10)
+      .select('sku', 'asin')
+      .get();
+    expect(snap.docs.map((d) => d.data())).toEqual([{ sku: 'SKU-1', asin: 'A1' }]);
+    expect(snap.docs[0]?.ref.parent.parent?.id).toBe('p1');
+    expect(db.consultas.at(-1)).toEqual({
+      colecao: 'prodAmazon',
+      grupo: true,
+      filtros: [
+        ['contaAmazonOuterRef in', [FORMA]],
+        ['sku', 'SKU-1'],
+      ],
+      ordens: [],
+      limite: 10,
+      apos: null,
+      selecao: ['sku', 'asin'],
+    });
+  });
+
+  it('NEAR-MISS: without select() the documents come back whole and the log carries no projection', async () => {
+    db.seed('produtos/p1/prodAmazon/l1', { contaAmazonOuterRef: FORMA, sku: 'S', asin: 'A' });
+    const snap = await grupo()
+      .where('contaAmazonOuterRef', 'in', [FORMA])
+      .where('sku', '==', 'S')
+      .get();
+    expect(snap.docs[0]?.data()).toEqual({ contaAmazonOuterRef: FORMA, sku: 'S', asin: 'A' });
+    expect(db.consultas.at(-1)).not.toHaveProperty('selecao');
+  });
+
+  it('select() with no field answers the keys alone; a later select replaces an earlier one', async () => {
+    db.seed('produtos/p1/prodAmazon/l1', { contaAmazonOuterRef: FORMA, sku: 'S', asin: 'A' });
+    const base = grupo().where('contaAmazonOuterRef', 'in', [FORMA]).where('sku', '==', 'S');
+    const chaves = await base.select().get();
+    expect(chaves.docs.map((d) => [d.id, d.data()])).toEqual([['l1', {}]]);
+    expect(db.consultas.at(-1)?.selecao).toEqual([]);
+    const trocado = await base.select('sku').select('asin').get();
+    expect(trocado.docs[0]?.data()).toEqual({ asin: 'A' });
+  });
+
+  it('refuses a field path it does not model', () => {
+    expect(() => grupo().select('a.b')).toThrow(/primeiro nível/);
+    expect(() => grupo().select('')).toThrow(/primeiro nível/);
+  });
+});
+
+describe('step 12 (12-e1): the unit-children seek — shape 8', () => {
+  const produtos = () => produtoCollection.ref(asDb(db), {});
+
+  it('runs `paiId ==` · orderBy(nome) · limit, keys only; a child LACKING nome is dropped, as on the server', async () => {
+    db.seed('produtos/b', { paiId: 'u', nome: 'Beta' });
+    db.seed('produtos/a', { paiId: 'u', nome: 'Alfa' });
+    db.seed('produtos/c', { paiId: 'u', nome: 'Gama' });
+    db.seed('produtos/semNome', { paiId: 'u' });
+    db.seed('produtos/outro', { paiId: 'v', nome: 'Alfa' });
+    const snap = await produtos().where('paiId', '==', 'u').orderBy('nome').limit(2).select().get();
+    expect(snap.docs.map((d) => d.id)).toEqual(['a', 'b']);
+    expect(snap.docs.map((d) => d.data())).toEqual([{}, {}]);
+    const todos = await produtos().where('paiId', '==', 'u').orderBy('nome').get();
+    expect(todos.docs.map((d) => d.id)).toEqual(['a', 'b', 'c']);
+  });
+
+  it.each<[string, () => { get: () => Promise<unknown> }]>([
+    ['the equality alone, unordered', () => produtos().where('paiId', '==', 'u')],
+    ['ordered by another field', () => produtos().where('paiId', '==', 'u').orderBy('sku')],
+    ['ordered descending', () => produtos().where('paiId', '==', 'u').orderBy('nome', 'desc')],
+    [
+      'the collection group',
+      () => produtoCollection.groupQuery(asDb(db)).where('paiId', '==', 'u'),
+    ],
+  ])('NEAR-MISS: REFUSES %s', async (_c, montar) => {
+    await expect(montar().get()).rejects.toThrow(/fora dos índices/);
+  });
+});
+
+describe('step 12 (12-e1): exigirMascaraEm — a collection whose reads must be masked', () => {
+  const link = (produtoId: string, id: string) =>
+    produtoAmazonLinkCollection.docRef(asDb(db), { produtoId }, id);
+  const grupo = () =>
+    produtoAmazonLinkCollection
+      .groupQuery(asDb(db))
+      .where('contaAmazonOuterRef', 'in', ['x'])
+      .where('sku', '==', 'S');
+
+  it('★ NEAR-MISS: an UNMASKED getAll of a link doc, its get() and an unprojected query throw', async () => {
+    db.seed('produtos/p/prodAmazon/l', { sku: 'S' });
+    db.exigirMascaraEm('prodAmazon');
+    expect(() => db.getAll(link('p', 'l'))).toThrow(/sem máscara/);
+    expect(() => link('p', 'l').get()).toThrow(/sem máscara/);
+    await expect(grupo().get()).rejects.toThrow(/sem select/);
+    // A mixed getAll is refused whole: nothing was read.
+    expect(() => db.getAll(produtoRef('p'), link('p', 'l'))).toThrow(/sem máscara/);
+    expect(db.leituras).toEqual([]);
+  });
+
+  it('the masked reads pass, and another collection is untouched', async () => {
+    db.seed('produtos/p/prodAmazon/l', { sku: 'S', asin: 'A' });
+    db.seed('produtos/p', { nome: 'P' });
+    db.exigirMascaraEm('prodAmazon');
+    const [snap] = await db.getAll(link('p', 'l'), { fieldMask: ['sku'] });
+    expect(snap?.data()).toEqual({ sku: 'S' });
+    await expect(grupo().select('sku').get()).resolves.toMatchObject({ size: 0 });
+    await expect(produtoRef('p').get()).resolves.toMatchObject({ exists: true });
+    expect(() => db.exigirMascaraEm('produtos/p/prodAmazon')).toThrow(/sem barra/);
+  });
+});
+
+describe('step 12 (12-e1): the operation counter', () => {
+  it('★ counts documents read, getAll calls, queries and writes', async () => {
+    db.seed('produtos/p', { nome: 'P', paiId: null });
+    expect(db.contagem).toEqual({ leituras: 0, chamadasGetAll: 0, consultas: 0, escritas: 0 });
+    await db.getAll(produtoRef('p'), produtoRef('q'), { fieldMask: ['nome'] });
+    await produtoRef('p').get();
+    await produtoCollection.ref(asDb(db), {}).where('paiId', '==', 'p').orderBy('nome').get();
+    await produtoRef('p').update({ nome: 'Q' });
+    expect(db.contagem).toEqual({ leituras: 3, chamadasGetAll: 1, consultas: 1, escritas: 1 });
+    expect(db.operacoes).toBe(5);
   });
 });
 
@@ -461,5 +677,84 @@ describe('step 5: the prodAmazon collection group and the int_frete lookup', () 
       .where('ativo', '==', true)
       .get();
     expect(snap.docs.map((d) => d.id)).toEqual(['amz-c1']);
+  });
+});
+
+describe('step 14 (14-c): ONE pedido’s nfev4 listing, whole, and a single precondition update', () => {
+  const nfev4 = (pedidoId: string) => nfev4Collection.ref(asDb(db), { pedidoId });
+
+  it('lists the pedido’s nfev4 documents — its own, never another pedido’s or a deeper one', async () => {
+    db.seed('pedidos/p1/nfev4/s1', { estado: 'a' });
+    db.seed('pedidos/p1/nfev4/s2', { estado: 'c' });
+    db.seed('pedidos/p2/nfev4/s1', { estado: 'a' });
+    db.seed('pedidos/p1/nfev4/s1/eventos/e1', { x: 1 });
+    const snap = await nfev4('p1').get();
+    expect(snap.docs.map((d) => [d.id, d.data()])).toEqual([
+      ['s1', { estado: 'a' }],
+      ['s2', { estado: 'c' }],
+    ]);
+    expect(db.consultas.at(-1)).toEqual({
+      colecao: 'pedidos/p1/nfev4',
+      filtros: [],
+      ordens: [],
+      limite: null,
+      apos: null,
+    });
+  });
+
+  it.each<[string, () => { get: () => Promise<unknown> }]>([
+    ['a filter', () => nfev4('p1').where('estado', '==', 'a')],
+    ['an order', () => nfev4('p1').orderBy('estado')],
+    ['a limit', () => nfev4('p1').limit(1)],
+    ['the collection group', () => nfev4Collection.groupQuery(asDb(db))],
+    ['another subcollection', () => pagamentoCollection.ref(asDb(db), { pedidoId: 'p1' })],
+  ])('NEAR-MISS: REFUSES %s', async (_c, montar) => {
+    await expect(montar().get()).rejects.toThrow(/fora dos índices/);
+  });
+
+  it('a single update under lastUpdateTime lands on a fresh stamp and is refused 9 on a stale one', async () => {
+    const stamp = db.seed('pedidos/p1', { a: 1 });
+    await pedidoRef('p1').update({ a: 2 }, { lastUpdateTime: stamp as never });
+    expect(db.ler('pedidos/p1')).toEqual({ a: 2 });
+    expect(
+      await codigoDe(pedidoRef('p1').update({ a: 3 }, { lastUpdateTime: stamp as never })),
+    ).toBe(9);
+  });
+});
+
+describe('step 12 (12-e1): ONE produto’s estoques partition, listed whole — shape 9', () => {
+  const estoques = (produtoId: string) => estoqueCollection.ref(asDb(db), { produtoId });
+
+  it('lists the produto’s own estoque rows, projected by select — never another produto’s or a deeper one', async () => {
+    db.seed('produtos/p1/estoques/a', {
+      depositoOuterRef: 'depositos/d1',
+      quantidade: 3,
+      extra: 1,
+    });
+    db.seed('produtos/p1/estoques/b', { depositoOuterRef: 'depositos/d2', quantidade: 4 });
+    db.seed('produtos/p2/estoques/a', { depositoOuterRef: 'depositos/d1', quantidade: 9 });
+    db.seed('produtos/p1/estoques/a/historico/h1', { x: 1 });
+    const snap = await estoques('p1').select('depositoOuterRef', 'quantidade').get();
+    expect(snap.docs.map((d) => [d.ref.path, d.data()])).toEqual([
+      ['produtos/p1/estoques/a', { depositoOuterRef: 'depositos/d1', quantidade: 3 }],
+      ['produtos/p1/estoques/b', { depositoOuterRef: 'depositos/d2', quantidade: 4 }],
+    ]);
+    expect(db.consultas.at(-1)).toEqual({
+      colecao: 'produtos/p1/estoques',
+      filtros: [],
+      ordens: [],
+      limite: null,
+      apos: null,
+      selecao: ['depositoOuterRef', 'quantidade'],
+    });
+  });
+
+  it.each<[string, () => { get: () => Promise<unknown> }]>([
+    ['a filter', () => estoques('p1').where('depositoOuterRef', '==', 'depositos/d1')],
+    ['an order', () => estoques('p1').orderBy('quantidade')],
+    ['a limit', () => estoques('p1').limit(1)],
+    ['the collection group', () => estoqueCollection.groupQuery(asDb(db))],
+  ])('NEAR-MISS: REFUSES %s', async (_c, montar) => {
+    await expect(montar().get()).rejects.toThrow(/fora dos índices/);
   });
 });

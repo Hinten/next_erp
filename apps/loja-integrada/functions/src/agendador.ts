@@ -1,6 +1,12 @@
 import { requireRegion } from '@delfrance/core/region';
 import { getFunctions } from 'firebase-admin/functions';
 
+import type { TarefaImportacaoLi } from '@delfrance/schemas';
+
+import {
+  type AgendadorImportacaoLi,
+  criarAgendadorImportacaoLi,
+} from '../../lib/lojaIntegrada/importacao/agendadorImportacao';
 import { type AgendadorLi, criarAgendadorLi } from '../../lib/lojaIntegrada/notificacoes/agendador';
 import {
   FILA_LEITURA_LI,
@@ -9,12 +15,16 @@ import {
 import { getAdminApp } from './lib/admin';
 
 /**
- * The COMPOSITION ROOT of the reads-queue producer for this functions codebase:
- * the order poller (step 3) enqueues through it. What a rejection means, the
- * transient naming and the "payload alone" rule are the pure module's
- * (`lib/lojaIntegrada/notificacoes/agendador.ts`); this file only reads the
- * environment and binds the Admin SDK's task queue. Step 4 adds an App Hosting
- * root of its own beside the inbound webhook.
+ * The COMPOSITION ROOT of the reads-queue producers for this functions codebase:
+ * the order poller (step 3) enqueues through {@link criarAgendadorLiDoAmbiente},
+ * and the product import (step 9) — its job-creation trigger and each dispatch's
+ * named continuation — through {@link criarAgendadorImportacaoLiDoAmbiente}.
+ * What a rejection means, the transient naming, the "payload alone" rule and the
+ * import's task names are the pure modules'
+ * (`lib/lojaIntegrada/notificacoes/agendador.ts`,
+ * `lib/lojaIntegrada/importacao/agendadorImportacao.ts`); this file only reads
+ * the environment and binds the Admin SDK's task queue. Step 4 adds an App
+ * Hosting root of its own beside the inbound webhook.
  */
 
 /**
@@ -58,6 +68,23 @@ export function criarAgendadorLiDoAmbiente(): AgendadorLi {
   return criarAgendadorLi({
     fila: () =>
       getFunctions(getAdminApp()).taskQueue<PayloadNotificacaoLi>(
+        `locations/${regiaoDaFilaLi()}/functions/${FILA_LEITURA_LI}`,
+      ),
+    desligado: tarefasLiDesligadas(),
+  });
+}
+
+/**
+ * The product import's producer (master plan step 9), on the SAME reads queue,
+ * through the SAME region and valve readers as the order poller's — one queue,
+ * one region, one sweep-only valve. The valve is read ONCE, here, when a caller
+ * builds it (the trigger and a dispatch build it only when a hand-off is due);
+ * the queue is resolved per enqueue, and never while the valve is closed.
+ */
+export function criarAgendadorImportacaoLiDoAmbiente(): AgendadorImportacaoLi {
+  return criarAgendadorImportacaoLi({
+    fila: () =>
+      getFunctions(getAdminApp()).taskQueue<TarefaImportacaoLi>(
         `locations/${regiaoDaFilaLi()}/functions/${FILA_LEITURA_LI}`,
       ),
     desligado: tarefasLiDesligadas(),

@@ -8,7 +8,9 @@
  * draft's editable fields and THE two comparisons of their values (the
  * conflict one and the write one, apart on the brand's name only; the
  * listing `attributes` among them since P6, read and written through
- * `../../atributosShopee`'s one decoder) — the UNCERTAIN first create (D5):
+ * `../../atributosShopee`'s one decoder, and the `logistic_info` channel
+ * choice since P15, read through `./shopeeLinkLeitura`'s one stored-list
+ * reader and only when the ERP stamped it) — the UNCERTAIN first create (D5):
  * the attempt window a lost create is looked for in, and the publish's 202 —
  * and (P10) the PENDÊNCIAS the draft editor lists: what would still stop a
  * publish, asked with the listing assembly's own predicates.
@@ -95,7 +97,12 @@ import {
   publicacaoEmCursoShopeeSchema,
   type PublicacaoEmCursoShopee,
 } from './shopeeLink';
-import { anuncioShopeeVivo, ehRascunhoShopee } from './shopeeLinkLeitura';
+import {
+  anuncioShopeeVivo,
+  ehRascunhoShopee,
+  lerLogisticaArmazenadaShopee,
+  logisticaGravadaPeloErpShopee,
+} from './shopeeLinkLeitura';
 import { vinculoShopeeEhDaConta } from './vinculosShopee';
 
 /* -------------------------------------------------------------------------- */
@@ -677,10 +684,11 @@ export const MOTIVO_RASCUNHO_INVALIDO_SHOPEE = {
  * - `attributes` (since P6) is the listing's attribute list in the REQUEST
  *   shape — read through `../../atributosShopee`'s ONE decoder, written through
  *   its write schema (D9).
- * - `logistic_info` is RESERVED — in the vocabulary from the start, so it never
- *   changes shape under a reader, but no body accepts it,
- *   {@link camposDoRascunhoShopee} does not produce it and it compares DISTINCT
- *   until its decoder joins this module (P15).
+ * - `logistic_info` (P15) is the listing's CHANNEL choice, `null` = «Automática»
+ *   (the publisher's own pass over the shop's channels decides). It is written
+ *   ONLY by an EDIT, never by a create (D-13: logistics are chosen on a SAVED
+ *   draft), and always beside its provenance stamp `logisticaGravadaEm`; it is
+ *   projected only when stamped ({@link camposDoRascunhoShopee}).
  *
  * The enum's option order is the CANONICAL order: every list of fields this
  * module answers ({@link camposPresentesDoRascunhoShopee}) follows it.
@@ -714,6 +722,19 @@ export interface MarcaRascunhoShopee {
 }
 
 /**
+ * One channel of a draft's logistics choice (#1911 P15), in the shape the
+ * projection reads and the write whitelist stores: `logistic_id` is the Shopee
+ * channel id; `enabled: false` is the operator switching that channel OFF for
+ * this listing; `is_free` is the channel's free-shipping flag — `null` only
+ * when the stored value is not a boolean (the write always stores one).
+ */
+export interface CanalLogisticaRascunhoShopee {
+  readonly logistic_id: number;
+  readonly enabled: boolean;
+  readonly is_free: boolean | null;
+}
+
+/**
  * The editable fields of a stored draft, as {@link camposDoRascunhoShopee}
  * reads them. `null` = nothing stored (or nothing READABLE stored).
  */
@@ -729,8 +750,12 @@ export interface CamposRascunhoShopee {
    * nothing stored (or not a list); `[]` = a stored list with nothing usable.
    */
   readonly attributes: readonly AtributoShopeeRequisicao[] | null;
-  /** RESERVED — not produced yet (P15). */
-  readonly logistic_info?: readonly unknown[] | null;
+  /**
+   * The channel choice (P15), sorted by `logistic_id`. `null` = «Automática»:
+   * nothing stored, nothing readable, or a list the ERP never stamped.
+   * REQUIRED since P16: every builder decides; produced always since P15.
+   */
+  readonly logistic_info: readonly CanalLogisticaRascunhoShopee[] | null;
 }
 
 /** A stored string, VERBATIM; anything else (absent included) is `null`. */
@@ -747,6 +772,45 @@ function textoGuardado(bruto: unknown): string | null {
 function atributosGuardados(bruto: unknown): readonly AtributoShopeeRequisicao[] | null {
   if (!Array.isArray(bruto)) return null;
   return atributosParaRequisicaoShopee(lerAtributosArmazenadosShopee(bruto).atributos);
+}
+
+/**
+ * Channels in `logistic_id` order — a STABLE sort (ES2019), so two entries with
+ * one id keep the order they came in. A copy: the input is never reordered.
+ * The ONE ordering of a draft's channel list: the projection, the write
+ * whitelist and the web Logística editor's value (#1911 P16) all sort through
+ * it, so what a write stores and what the projection reads back can never be
+ * ordered two ways.
+ */
+export function ordenadosPorCanalLogisticaShopee<T extends { readonly logistic_id: number }>(
+  canais: readonly T[],
+): T[] {
+  return [...canais].sort((a, b) => a.logistic_id - b.logistic_id);
+}
+
+/**
+ * The stored `logistic_info` as the projection reads it (P15): `null` unless
+ * the ERP wrote the list (THE provenance predicate,
+ * `logisticaGravadaPeloErpShopee`, #2015); otherwise the list through THE
+ * stored-list reader (`lerLogisticaArmazenadaShopee`, the publisher's own),
+ * each entry reduced to {@link CanalLogisticaRascunhoShopee} and sorted. A
+ * stamped value that is not a list reads `null`; a stamped `[]` reads `[]`.
+ */
+function logisticaGuardada(
+  link: Record<string, unknown>,
+): readonly CanalLogisticaRascunhoShopee[] | null {
+  if (!logisticaGravadaPeloErpShopee(link)) return null;
+  const lidas = lerLogisticaArmazenadaShopee(link.logistic_info);
+  if (lidas === null) return null;
+  return ordenadosPorCanalLogisticaShopee(
+    lidas.map(
+      (entrada): CanalLogisticaRascunhoShopee => ({
+        logistic_id: entrada.logisticId,
+        enabled: entrada.ligado,
+        is_free: entrada.isFree,
+      }),
+    ),
+  );
 }
 
 /**
@@ -770,14 +834,31 @@ function atributosGuardados(bruto: unknown): readonly AtributoShopeeRequisicao[]
  *   `null` keeps the draft EDITABLE: the operator sees an empty field, writes a
  *   value, and the compare still catches every concurrent edit, since every
  *   value the draft route writes is readable.
- * - ⚠️ **`attributes` is the ONE field read through a decoder** (P6, D9): a
+ * - ⚠️ **`attributes` is read through a decoder** (P6, D9): a
  *   stored list goes through `lerAtributosArmazenadosShopee` into the REQUEST
  *   shape — the import's READ shape and the legacy no-`value_id` value read as
  *   the request values the publisher sends, in stored order; anything that is
  *   not a list is `null`. That is still "what is stored" in the only form a
  *   writer writes: the draft route writes exactly this shape, so a value it
  *   wrote projects back unchanged, and the order is kept (a reorder is an edit).
- * - `logistic_info` is not projected yet (RESERVED, P15).
+ * - ⚠️ **`logistic_info` is read through a reader and a predicate** (P15,
+ *   D-LOG-6), the publisher's own view of the list. Its folds, each
+ *   deliberate:
+ *   - PROVENANCE — projected only when the ERP wrote it
+ *     (`logisticaGravadaPeloErpShopee`, #2015). An unstamped list (every
+ *     migrated row) reads `null`, «Automática»: the publisher distrusts it too,
+ *     so the editor shows what a publish does.
+ *   - ORDER — sorted by `logistic_id`, stably: the same channels stored in
+ *     another order are the same choice (Shopee keys channels by id).
+ *   - UNREADABLE entries dropped, each entry reduced to `{logistic_id, enabled,
+ *     is_free}` — all through `lerLogisticaArmazenadaShopee`, so `'90003'` reads
+ *     `90003`, `enabled` is off ONLY when it is the boolean `false`, and a
+ *     non-boolean `is_free` reads `null`.
+ *   - Duplicates are KEPT: dropping one would be a decision, and the write never
+ *     stores one (its whitelist refuses a repeated id).
+ *
+ *   A stamped value that is not a list reads `null`; a stamped `[]` reads `[]`.
+ *   A value the draft edit wrote (sorted, stamped) projects back unchanged.
  *
  * Pure, total over any record; reads whatever the document is — whether it is
  * still a DRAFT is the caller's question ({@link ehRascunhoShopee}).
@@ -793,7 +874,32 @@ export function camposDoRascunhoShopee(link: Record<string, unknown>): CamposRas
         ? null
         : { brand_id: brandId, original_brand_name: textoGuardado(link.original_brand_name) },
     attributes: atributosGuardados(link.attributes),
+    logistic_info: logisticaGuardada(link),
   };
+}
+
+/**
+ * Does this document hold channels the ERP never chose (#1911 P15, D-LOG-6) —
+ * a NON-EMPTY stored `logistic_info` without the provenance stamp
+ * ({@link logisticaGravadaPeloErpShopee})? That is the previous system's list:
+ * {@link camposDoRascunhoShopee} reads it as `null` («Automática») and the
+ * publisher distrusts it (#2015), so the draft editor surfaces it as a banner
+ * (P16) through THIS helper — never as a choice.
+ *
+ * - **true:** an unstamped non-empty array — entries the reader would drop
+ *   included (they are still channels the old system stored) — and a stamp the
+ *   predicate does not accept (a numeric string, a fraction): that is no stamp.
+ * - **false:** a list the predicate trusts; an empty array, `null`, absent or
+ *   any non-array, stamped or not.
+ *
+ * Pure, total over any record.
+ */
+export function logisticaDoSistemaAnteriorShopee(link: Record<string, unknown>): boolean {
+  return (
+    Array.isArray(link.logistic_info) &&
+    link.logistic_info.length > 0 &&
+    !logisticaGravadaPeloErpShopee(link)
+  );
 }
 
 /** Does `valor` look like a brand pair (an object carrying `brand_id`)? */
@@ -827,10 +933,19 @@ function ehParDeMarca(valor: unknown): valor is { readonly brand_id: unknown } {
  *   purpose: the projection keeps stored order, so a reorder is an edit the
  *   operator made. `valuesEqual` is the repo's one structural compare — never a
  *   private copy here.
- * - **RESERVED** `logistic_info`: always DISTINCT, even `null` vs `null`, until
- *   its structural compare joins with its decoder (P15). A compare that answers
- *   "different" when unsure raises a conflict the human sees; one that answers
- *   "same" drops an edit silently.
+ * - **`logistic_info`** (P15) — STRUCTURAL, through the same `valuesEqual`,
+ *   over the projection's sorted `{logistic_id, enabled, is_free}` list. EQUAL:
+ *   `undefined` ≡ `null`; the same entries with their KEYS in another order;
+ *   and, THROUGH the projection (never here), the same channels STORED in
+ *   another order, a stored `'90003'` ≡ `90003`, and an unstamped list ≡
+ *   `null`. DISTINCT: `enabled` `true` vs `false`; `is_free` `true` vs `false`
+ *   vs `null`; one channel more; `[]` vs `null` (a stamped empty list is not
+ *   «Automática»); and two lists in another ORDER presented here directly —
+ *   only the projection sorts, so a `base` sent in another order is a
+ *   conflict, never "the same".
+ *
+ * A compare that answers "different" when unsure raises a conflict the human
+ * sees; one that answers "same" drops an edit silently.
  *
  * Scalars compare with `===`. Pure, total.
  */
@@ -848,7 +963,7 @@ export function mesmoValorDoRascunhoShopee<C extends CampoRascunhoShopee>(
     case CAMPO_RASCUNHO_SHOPEE.attributes:
       return valuesEqual(x, y);
     case CAMPO_RASCUNHO_SHOPEE.logisticInfo:
-      return false;
+      return valuesEqual(x, y);
     case CAMPO_RASCUNHO_SHOPEE.itemName:
     case CAMPO_RASCUNHO_SHOPEE.description:
     case CAMPO_RASCUNHO_SHOPEE.categoryId:
@@ -931,19 +1046,29 @@ export function camposPresentesDoRascunhoShopee(
  *   `attributes`**: a category change clears the stored attributes (they
  *   belong to the old category), so that write must first prove the operator
  *   SAW the attributes it wipes — an attribute save another operator landed
- *   meanwhile is then a 409, never a silent wipe.
+ *   meanwhile is then a 409, never a silent wipe;
+ * - **plus `category_id` whenever the patch names `attributes` without
+ *   `category_id`** (the mirror, #1911 P13 Q1): a list is built against ONE
+ *   category's attribute tree, so an attributes-only write must first prove
+ *   the category the operator chose it in is still the stored one — a category
+ *   another operator moved meanwhile is then a 409, never this list written
+ *   onto the other category. The category is only COMPARED there, never
+ *   written: the patch does not name it.
+ *
+ * The two extras never meet: a patch naming both fields needs neither, and a
+ * patch naming only one gets the other.
  */
 export function camposDaBaseDoRascunhoShopee(
   patch: Partial<Record<CampoRascunhoShopee, unknown>>,
 ): CampoRascunhoShopee[] {
   const alterados = camposPresentesDoRascunhoShopee(patch);
-  const limpaAtributos =
-    alterados.includes(CAMPO_RASCUNHO_SHOPEE.categoryId) &&
-    !alterados.includes(CAMPO_RASCUNHO_SHOPEE.attributes);
-  if (!limpaAtributos) return alterados;
-  return campoRascunhoShopeeSchema.options.filter(
-    (campo) => campo === CAMPO_RASCUNHO_SHOPEE.attributes || alterados.includes(campo),
-  );
+  const nomeia = (campo: CampoRascunhoShopee): boolean => alterados.includes(campo);
+  const { attributes, categoryId } = CAMPO_RASCUNHO_SHOPEE;
+  let extra: CampoRascunhoShopee | null = null;
+  if (nomeia(categoryId) && !nomeia(attributes)) extra = attributes;
+  if (nomeia(attributes) && !nomeia(categoryId)) extra = categoryId;
+  if (extra === null) return alterados;
+  return campoRascunhoShopeeSchema.options.filter((campo) => campo === extra || nomeia(campo));
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1035,7 +1160,8 @@ export interface ArgsPendenciasRascunhoShopee {
    * The category's attribute tree (`ArvoreAtributosShopee`). Absent or `null`
    * ⇒ no `atributo-obrigatorio` — the assembly's own reading of a category with
    * no tree read (it reads one only for a LEAF category). The draft editor
-   * supplies it once it reads the tree (P13).
+   * supplies the EDITED category's tree (P13), and its publish gate waits for
+   * that read rather than taking `null` for "nothing mandatory".
    */
   readonly arvore?: ArvoreAtributosShopee | null;
 }
@@ -1154,6 +1280,13 @@ export const MAX_ITEM_NAME_RASCUNHO_SHOPEE = 2_000;
 export const MAX_DESCRIPTION_RASCUNHO_SHOPEE = 10_000;
 
 /**
+ * The most channels a draft's `logistic_info` write accepts (P15) — an abuse
+ * bound on the route's body, not a Shopee band: which channels exist is the
+ * shop's `get_channel_list`, and the publisher re-validates every one.
+ */
+export const MAX_CANAIS_LOGISTICA_RASCUNHO_SHOPEE = 50;
+
+/**
  * The id a draft CREATE may name: exactly Firestore's auto-id shape, 20
  * characters of `[A-Za-z0-9]` — the client generates it. A native-kit link's
  * derived id is 64 lowercase-hex characters, so the two can never collide.
@@ -1200,10 +1333,55 @@ export const MSG_ITEM_NAME_EM_BRANCO_RASCUNHO_SHOPEE =
   'item_name deve ser um texto não vazio — o título de um rascunho nunca fica em branco.';
 
 /**
+ * The write's 400 when a `logistic_info` list switches NO channel on — `[]`
+ * included (P15). «Automática» is `null`, never an empty or all-off list.
+ */
+export const MSG_LOGISTICA_SEM_CANAL_LIGADO_RASCUNHO_SHOPEE =
+  'logistic_info deve ligar ao menos um canal (enabled: true); para a escolha automática, envie null.';
+
+/** The write's 400 when a `logistic_info` list names one `logistic_id` twice (P15). */
+export const MSG_LOGISTICA_CANAL_REPETIDO_RASCUNHO_SHOPEE =
+  'logistic_info não pode repetir um logistic_id.';
+
+/**
+ * `logistic_info` as a write accepts it (P15), NORMALISED: a list of at most
+ * {@link MAX_CANAIS_LOGISTICA_RASCUNHO_SHOPEE} channels, each EXACTLY
+ * `{logistic_id: positive safe integer, enabled: boolean, is_free: boolean}`
+ * (strict — no `size_id`, no fee, no name, no string id: the draft chooses
+ * channels, and the stored entry is what the publisher re-sends); every
+ * `logistic_id` once ({@link MSG_LOGISTICA_CANAL_REPETIDO_RASCUNHO_SHOPEE}); at
+ * least one channel ON ({@link MSG_LOGISTICA_SEM_CANAL_LIGADO_RASCUNHO_SHOPEE});
+ * stored SORTED by `logistic_id`, the projection's own order.
+ *
+ * ⚠️ No `.min(1)`: Zod keeps running checks after a too-small issue, so `[]`
+ * would carry two messages; the ≥ 1-ON rule alone refuses it, with one.
+ */
+const logisticaConteudoSchema = z
+  .array(
+    z.strictObject({
+      logistic_id: z.number().int().positive(),
+      enabled: z.boolean(),
+      is_free: z.boolean(),
+    }),
+  )
+  .max(MAX_CANAIS_LOGISTICA_RASCUNHO_SHOPEE)
+  .superRefine((canais, ctx) => {
+    const ids = new Set(canais.map((canal) => canal.logistic_id));
+    if (ids.size !== canais.length) {
+      ctx.addIssue({ code: 'custom', message: MSG_LOGISTICA_CANAL_REPETIDO_RASCUNHO_SHOPEE });
+    }
+    if (!canais.some((canal) => canal.enabled)) {
+      ctx.addIssue({ code: 'custom', message: MSG_LOGISTICA_SEM_CANAL_LIGADO_RASCUNHO_SHOPEE });
+    }
+  })
+  .transform((canais) => ordenadosPorCanalLogisticaShopee(canais));
+
+/**
  * **The draft WRITE whitelist** (#1911, D1/D2) — every field a draft create
  * (`conteudo`) or edit (`patch`) may set, NORMALISED to what is stored. Every
- * key optional; an unknown key — `item_id`, a lifecycle field, a reserved field
- * — is a 400, never silently dropped (`.strict`).
+ * key optional; an unknown key — `item_id`, a lifecycle field, the server stamp
+ * `logisticaGravadaEm` — is a 400, never silently dropped (`.strict`). A create
+ * takes this whitelist WITHOUT `logistic_info` ({@link corpoCriarRascunhoShopeeSchema}).
  *
  * | key | accepts | stored as |
  * |---|---|---|
@@ -1212,12 +1390,18 @@ export const MSG_ITEM_NAME_EM_BRANCO_RASCUNHO_SHOPEE =
  * | `category_id` | a positive safe integer, or `null` | verbatim (the leaf check is the publisher's) |
  * | `marca` | `{brand_id: int ≥ 0, original_brand_name: string or null}`, or `null` | BOTH stored keys always: `null` ⇒ both `null`; `0` ⇒ name `null`; blank name ⇒ `null` |
  * | `attributes` (P6) | a list in the REQUEST shape (`atributosShopeeRequisicaoSchema`, strict — the import's READ shape is a 400), or `null` | the request shape, exactly as the decoder reads it back: a custom name trimmed, a blank unit omitted |
+ * | `logistic_info` (P15, EDIT only) | ≤ {@link MAX_CANAIS_LOGISTICA_RASCUNHO_SHOPEE} strict `{logistic_id, enabled, is_free}` channels, ids unique, ≥ 1 ON — or `null` («Automática») | sorted by `logistic_id`, beside the edit's `logisticaGravadaEm` |
  *
  * "Blank" is {@link textoUtilizavelShopee}'s — the one test of usable text.
  * Every value this accepts reads back through {@link camposDoRascunhoShopee}
  * EQUAL under the WRITE question ({@link mesmoValorGravadoDoRascunhoShopee} —
  * the brand's name included) — a write is never re-written by the next
- * identical save.
+ * identical save. For `logistic_info` that holds once the list is written WITH
+ * its stamp, which the draft edit always writes beside it: an unstamped list
+ * projects `null`.
+ *
+ * ⚠️ No OBJECT-level refine here: `corpoCriarRascunhoShopeeSchema`'s `.omit`
+ * would throw at module load (Zod 4), crashing every importer of this package.
  */
 export const conteudoRascunhoShopeeSchema = z.strictObject({
   // `.nullable()` only so `null` reaches the refine and is REFUSED with a
@@ -1239,6 +1423,7 @@ export const conteudoRascunhoShopeeSchema = z.strictObject({
   category_id: z.number().int().positive().nullable().optional(),
   marca: marcaConteudoSchema.nullable().optional(),
   attributes: atributosShopeeRequisicaoSchema.nullable().optional(),
+  logistic_info: logisticaConteudoSchema.nullable().optional(),
 });
 export type ConteudoRascunhoShopee = z.output<typeof conteudoRascunhoShopeeSchema>;
 
@@ -1298,6 +1483,12 @@ const atributosDaBaseSchema = z.array(
  * would turn a legacy `''` into a conflict on every save, and a bound would
  * make a legacy draft uneditable. Strict, like the bodies.
  *
+ * `logistic_info` (P15) likewise: the projection's `{logistic_id, enabled,
+ * is_free}` list VERBATIM — no minimum (a stamped `[]` projects `[]`), no
+ * unique or ≥ 1-ON rule (the projection keeps a stored duplicate and an all-off
+ * list), `is_free` nullable (a stored non-boolean projects `null`), and NO sort:
+ * a base in another order than the stored projection is a conflict.
+ *
  * Every value {@link camposDoRascunhoShopee} can produce parses here unchanged.
  */
 export const baseRascunhoShopeeSchema = z.strictObject({
@@ -1312,6 +1503,16 @@ export const baseRascunhoShopeeSchema = z.strictObject({
     .nullable()
     .optional(),
   attributes: atributosDaBaseSchema.nullable().optional(),
+  logistic_info: z
+    .array(
+      z.strictObject({
+        logistic_id: z.number().int(),
+        enabled: z.boolean(),
+        is_free: z.boolean().nullable(),
+      }),
+    )
+    .nullable()
+    .optional(),
 });
 export type BaseRascunhoShopee = z.output<typeof baseRascunhoShopeeSchema>;
 
@@ -1322,12 +1523,16 @@ export type BaseRascunhoShopee = z.output<typeof baseRascunhoShopeeSchema>;
  * is the operator's confirmation that the conta's live listing or other draft
  * of this produto is not a reason to stop (D15); absent or `null` is `false` —
  * only a literal `true` confirms.
+ *
+ * `conteudo` is the write whitelist WITHOUT `logistic_info` (P15, D-13):
+ * logistics are chosen on a SAVED draft, so a create naming them — a list or
+ * `null` — is a 400 (strict), and the create never writes the provenance stamp.
  */
 export const corpoCriarRascunhoShopeeSchema = z.strictObject({
   integracaoId: idDeDocumentoSchema,
   produtoId: idDeDocumentoSchema,
   linkDocId: idRascunhoShopeeSchema,
-  conteudo: conteudoRascunhoShopeeSchema.nullable().optional(),
+  conteudo: conteudoRascunhoShopeeSchema.omit({ logistic_info: true }).nullable().optional(),
   confirmarSegundoAnuncio: z.boolean().nullable().optional(),
 });
 export type CorpoCriarRascunhoShopee = z.output<typeof corpoCriarRascunhoShopeeSchema>;
@@ -1348,6 +1553,16 @@ export const MSG_BASE_SEM_ATRIBUTOS_NA_TROCA_DE_CATEGORIA_RASCUNHO_SHOPEE =
   'base deve trazer também attributes ao trocar category_id sem attributes no patch: a troca ' +
   'de categoria apaga os atributos guardados, e só os que o operador viu podem ser apagados.';
 
+/**
+ * The update body's 400 when `patch` writes `attributes` without
+ * `category_id` and `base` omits the `category_id` the list was built for
+ * (#1911 P13 Q1, the mirror of K1-12).
+ */
+export const MSG_BASE_SEM_CATEGORIA_NOS_ATRIBUTOS_RASCUNHO_SHOPEE =
+  'base deve trazer também category_id ao gravar attributes sem category_id no patch: os ' +
+  'atributos valem só para a categoria em que foram escolhidos, e só podem ser gravados sobre ' +
+  'a categoria que o operador viu.';
+
 /** Two canonical field lists name the same fields. */
 function mesmosCampos(
   a: readonly CampoRascunhoShopee[],
@@ -1366,8 +1581,13 @@ function mesmosCampos(
  * `patch`'s fields ({@link MSG_BASE_DIFERENTE_DO_PATCH_RASCUNHO_SHOPEE}) — plus
  * `attributes` when the patch changes `category_id` without them, because that
  * write clears them (K1-12, P6;
- * {@link MSG_BASE_SEM_ATRIBUTOS_NA_TROCA_DE_CATEGORIA_RASCUNHO_SHOPEE}) — so a
- * field is never written (or cleared) unchecked nor checked unwritten.
+ * {@link MSG_BASE_SEM_ATRIBUTOS_NA_TROCA_DE_CATEGORIA_RASCUNHO_SHOPEE}), and
+ * plus `category_id` when the patch writes `attributes` without it, because
+ * that list was chosen in one category (P13 Q1;
+ * {@link MSG_BASE_SEM_CATEGORIA_NOS_ATRIBUTOS_RASCUNHO_SHOPEE}) — so a field is
+ * never written (or cleared) unchecked nor checked unwritten, except the one
+ * extra field, which is checked and never written. A base that lacks ONLY that
+ * extra gets the extra's own sentence; any other mismatch gets the generic one.
  */
 export const corpoAtualizarRascunhoShopeeSchema = z
   .strictObject({
@@ -1386,25 +1606,36 @@ export const corpoAtualizarRascunhoShopeeSchema = z
     const exigidos = camposDaBaseDoRascunhoShopee(corpo.patch);
     const vistos = camposPresentesDoRascunhoShopee(corpo.base);
     if (mesmosCampos(vistos, exigidos)) return;
-    // The one field the patch does not name but the base must: say so.
-    const faltamSoOsAtributos =
-      !mesmosCampos(exigidos, alterados) && mesmosCampos(vistos, alterados);
-    ctx.addIssue({
-      code: 'custom',
-      path: ['base'],
-      message: faltamSoOsAtributos
-        ? MSG_BASE_SEM_ATRIBUTOS_NA_TROCA_DE_CATEGORIA_RASCUNHO_SHOPEE
-        : MSG_BASE_DIFERENTE_DO_PATCH_RASCUNHO_SHOPEE,
-    });
+    // The one field the patch does not name but the base must: when the base
+    // lacks only that one, say which.
+    const extra = exigidos.find((campo) => !alterados.includes(campo));
+    const soFaltaOExtra = extra !== undefined && mesmosCampos(vistos, alterados);
+    let message: string = MSG_BASE_DIFERENTE_DO_PATCH_RASCUNHO_SHOPEE;
+    if (soFaltaOExtra) {
+      message =
+        extra === CAMPO_RASCUNHO_SHOPEE.attributes
+          ? MSG_BASE_SEM_ATRIBUTOS_NA_TROCA_DE_CATEGORIA_RASCUNHO_SHOPEE
+          : MSG_BASE_SEM_CATEGORIA_NOS_ATRIBUTOS_RASCUNHO_SHOPEE;
+    }
+    ctx.addIssue({ code: 'custom', path: ['base'], message });
   });
 export type CorpoAtualizarRascunhoShopee = z.output<typeof corpoAtualizarRascunhoShopeeSchema>;
 
 /**
  * `POST /api/marketplace/shopee/rascunho/descartar` — delete a draft. `base`
- * carries EVERY projected field (K1-13) — `attributes` too, since P6 projects
- * them: the route refuses the discard when the stored draft is not what the
- * operator saw, so an edit made meanwhile — in another tab, by another operator
- * — is never discarded unseen.
+ * carries the six form fields (K1-13) — `attributes` too, since P6 projects
+ * them — and the route refuses the discard when the stored draft is not what
+ * the operator saw, so an edit made meanwhile — in another tab, by another
+ * operator — is never discarded unseen. The five P10/P13 fields are REQUIRED;
+ * `logistic_info` may be absent and is then read as `null` (#1911 P16,
+ * D-LOG-10): absent ⇒ `null`: what every screen before the logistics editor
+ * showed («escolhida automaticamente»), so a stale tab discarding a draft
+ * whose channels were chosen meanwhile is a 409, never a silent delete — and
+ * the same tab discarding an Automática draft still discards. A value that is
+ * present (`null` or a list) stays VERBATIM, through the base's own list
+ * schema (no sort, `is_free` nullable); the base stays strict. Only the
+ * REQUEST tolerates the absence — `z.input` keeps the key optional,
+ * `z.output` always holds it — so the route compares all six fields.
  * `confirmarCriacaoIncerta: true` is the operator's attestation, after a check
  * in Seller Centre, that the uncertain last create left NOTHING this draft must
  * become (K1-6): it did not reach Shopee, or the listing it made is ALREADY
@@ -1417,7 +1648,18 @@ export const corpoDescartarRascunhoShopeeSchema = z.strictObject({
   integracaoId: idDeDocumentoSchema,
   produtoId: idDeDocumentoSchema,
   linkDocId: idDeDocumentoSchema,
-  base: baseRascunhoShopeeSchema.required(),
+  base: baseRascunhoShopeeSchema
+    .required({
+      item_name: true,
+      description: true,
+      category_id: true,
+      marca: true,
+      attributes: true,
+    })
+    .extend({
+      // #1911 P16 (D-LOG-10): absent ⇒ «Automática», what the stale tab showed.
+      logistic_info: baseRascunhoShopeeSchema.shape.logistic_info.unwrap().default(null),
+    }),
   confirmarCriacaoIncerta: z.boolean().nullable().optional(),
 });
 export type CorpoDescartarRascunhoShopee = z.output<typeof corpoDescartarRascunhoShopeeSchema>;

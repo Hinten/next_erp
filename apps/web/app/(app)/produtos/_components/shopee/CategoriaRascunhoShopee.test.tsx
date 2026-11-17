@@ -54,8 +54,12 @@ const {
 } = await import('./CategoriaRascunhoShopee');
 const { ShopeeClientHttpError } = await import('@/lib/shopee/client');
 const { MENSAGEM_CATEGORIA_DESCONHECIDA } = await import('@/lib/shopee/erros');
-const { FRASE_TROCA_DE_CATEGORIA_APAGA_ATRIBUTOS_SHOPEE, ROTULO_VOLTAR_CATEGORIA_GRAVADA_SHOPEE } =
-  await import('@/lib/shopee/anuncioProduto');
+const {
+  FRASE_TROCA_DE_CATEGORIA_APAGA_ATRIBUTOS_SHOPEE,
+  FRASE_VOLTAR_A_CATEGORIA_GRAVADA_TRAZ_ATRIBUTOS_SHOPEE,
+  FRASE_VOLTAR_CATEGORIA_APAGA_ATRIBUTOS_SHOPEE,
+  ROTULO_VOLTAR_CATEGORIA_GRAVADA_SHOPEE,
+} = await import('@/lib/shopee/anuncioProduto');
 
 const CONTA = 'int-1';
 const LINK = 'rasc00000000000000001';
@@ -134,9 +138,14 @@ function show(
     categoryId?: number | null;
     titulo?: string | null;
     editavel?: boolean;
-    atributosGravados?: boolean;
+    /** `bloco.atributosPreenchidos` — held OR in the form (the block decides; `RascunhoShopee.test.tsx` pins the wiring). */
+    atributosPreenchidos?: boolean;
     /** `bloco.podeVoltarCategoria` — the put-back button is offered. */
     voltar?: boolean;
+    /** `bloco.voltarCategoriaApagaAtributos` — the put-back asks first. */
+    voltarApagaAtributos?: boolean;
+    /** `bloco.atributosGravadosForaDaCategoria` — the saved attributes come back with the saved category. */
+    atributosGravadosForaDaCategoria?: boolean;
   } = {},
 ) {
   const qc = new QueryClient({ defaultOptions: QUERY_DEFAULT_OPTIONS });
@@ -151,7 +160,9 @@ function show(
           categoryId={p.categoryId === undefined ? null : p.categoryId}
           titulo={p.titulo === undefined ? 'Camiseta básica' : p.titulo}
           editavel={p.editavel ?? true}
-          atributosGravados={p.atributosGravados ?? false}
+          atributosPreenchidos={p.atributosPreenchidos ?? false}
+          atributosGravadosForaDaCategoria={p.atributosGravadosForaDaCategoria ?? false}
+          voltarApagaAtributos={p.voltarApagaAtributos ?? false}
           onEscolher={onEscolher}
           onVoltar={p.voltar === true ? onVoltar : null}
         />
@@ -244,6 +255,41 @@ describe('CategoriaRascunhoShopee — «Voltar à categoria gravada» (R1-rule7#
     expect(onVoltar).toHaveBeenCalledTimes(1);
     expect(onEscolher).not.toHaveBeenCalled();
     expect(screen.queryByTestId(`${RAIZ}-modal`)).toBeNull();
+  });
+
+  it('⛔ a volta que APAGARIA os atributos preenchidos para a categoria trocada pede confirmação: o clique não volta; «Cancelar» nunca volta; confirmar volta UMA vez ⟷ QUASE-PAR: sem nada a perder, volta na hora (acima)', () => {
+    const { onVoltar } = show({
+      categoryId: 100090,
+      editavel: false,
+      voltar: true,
+      voltarApagaAtributos: true,
+    });
+    fireEvent.click(
+      within(screen.getByTestId(RAIZ)).getByRole('button', {
+        name: ROTULO_VOLTAR_CATEGORIA_GRAVADA_SHOPEE,
+      }),
+    );
+    expect(onVoltar).not.toHaveBeenCalled();
+    const confirmacao = screen.getByTestId(`${RAIZ}-voltar-confirmacao`);
+    expect(
+      within(confirmacao).getByText(FRASE_VOLTAR_CATEGORIA_APAGA_ATRIBUTOS_SHOPEE),
+    ).toBeTruthy();
+    fireEvent.click(within(confirmacao).getByRole('button', { name: 'Cancelar' }));
+    expect(onVoltar).not.toHaveBeenCalled();
+    expect(screen.queryByTestId(`${RAIZ}-voltar-confirmacao`)).toBeNull();
+
+    fireEvent.click(
+      within(screen.getByTestId(RAIZ)).getByRole('button', {
+        name: ROTULO_VOLTAR_CATEGORIA_GRAVADA_SHOPEE,
+      }),
+    );
+    fireEvent.click(
+      within(screen.getByTestId(`${RAIZ}-voltar-confirmacao`)).getByRole('button', {
+        name: ROTULO_VOLTAR_CATEGORIA_GRAVADA_SHOPEE,
+      }),
+    );
+    expect(onVoltar).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId(`${RAIZ}-voltar-confirmacao`)).toBeNull();
   });
 
   it('NEAR-MISS: not offered (`onVoltar: null`) ⇒ no such button, editable or not', () => {
@@ -375,8 +421,8 @@ describe('CategoriaRascunhoShopee — the browser and the attributes warning', (
     await within(browser).findByTestId('shopee-categoria-linha-100090');
   });
 
-  it('a draft storing attributes is warned BEFORE a pick that a category change clears them', async () => {
-    show({ atributosGravados: true });
+  it('um rascunho com atributos PREENCHIDOS (guardados, ou só no formulário — `bloco.atributosPreenchidos`) é avisado ANTES da escolha de que trocar a categoria os apaga', async () => {
+    show({ atributosPreenchidos: true });
     abrir();
     expect(
       within(await screen.findByTestId(`${RAIZ}-modal`)).getByText(
@@ -385,8 +431,23 @@ describe('CategoriaRascunhoShopee — the browser and the attributes warning', (
     ).toBeTruthy();
   });
 
-  it('NEAR-MISS: none stored ⇒ no warning', async () => {
-    show({ atributosGravados: false });
+  it('os atributos GRAVADOS são da categoria gravada: com outra categoria na tela o aviso diz que voltar a ela os traz de volta ⟷ QUASE-PAR: na categoria gravada, só o aviso de troca', async () => {
+    const { rerenderCom } = show({
+      atributosPreenchidos: true,
+      atributosGravadosForaDaCategoria: true,
+    });
+    abrir();
+    const modal = await screen.findByTestId(`${RAIZ}-modal`);
+    expect(modal.textContent).toContain(FRASE_TROCA_DE_CATEGORIA_APAGA_ATRIBUTOS_SHOPEE);
+    expect(modal.textContent).toContain(FRASE_VOLTAR_A_CATEGORIA_GRAVADA_TRAZ_ATRIBUTOS_SHOPEE);
+    rerenderCom({ atributosPreenchidos: true, atributosGravadosForaDaCategoria: false });
+    expect(screen.getByTestId(`${RAIZ}-modal`).textContent).not.toContain(
+      FRASE_VOLTAR_A_CATEGORIA_GRAVADA_TRAZ_ATRIBUTOS_SHOPEE,
+    );
+  });
+
+  it('QUASE-PAR: nenhum preenchido — nem guardado nem no formulário ⇒ sem aviso', async () => {
+    show({ atributosPreenchidos: false });
     abrir();
     await screen.findByTestId(`${RAIZ}-modal`);
     expect(screen.queryByText(FRASE_TROCA_DE_CATEGORIA_APAGA_ATRIBUTOS_SHOPEE)).toBeNull();

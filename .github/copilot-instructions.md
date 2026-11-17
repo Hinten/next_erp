@@ -60,7 +60,7 @@ not re-derive values captured in the closure, so anything read before an `await`
 re-applied verbatim over the winner. Flag: a `merge()`/`update()`/transaction that can
 silently lose without the author saying what happens to the loser; a predicate re-checked
 against a read taken *outside* the transaction; and cross-unit timestamp comparisons —
-`ultimaModificacao` is µs on pedido/pagamento/produto but **ms** on the ML links, and
+`ultimaModificacao` is µs on pedido/pagamento but **ms** on produto and the ML links, and
 `historicoFtIni.data` is ms while `historicoEstadoPedido.data` is µs. See ADR 0011.
 
 **Version pins.** `firebase-admin` (`14.5.0`) and `firebase-functions` (`7.4.0`) are pinned

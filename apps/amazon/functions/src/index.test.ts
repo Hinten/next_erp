@@ -5,13 +5,24 @@ import { FieldValue } from 'firebase-admin/firestore';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
-import { integracaoCollection } from '@delfrance/data/admin/collections';
+import { integracaoCollection, nfev4Collection } from '@delfrance/data/admin/collections';
 import { TASK_MAX_ATTEMPTS } from '@delfrance/data/admin/notifications';
-import { ORIGEM_NOTIFICACAO_AMAZON, TIPO_TAREFA_AMAZON } from '@delfrance/schemas';
+import { PRAZO_AMAZON_MS } from '@delfrance/integrations-amazon-sp-api';
+import { ORIGEM_NOTIFICACAO_AMAZON, TIPO_TAREFA_AMAZON, nfeMeta } from '@delfrance/schemas';
 
+import {
+  FILA_AGENDAMENTO_AMAZON,
+  TENTATIVAS_AGENDAMENTO_AMAZON,
+} from '../../lib/amazon/agendamento/tarefaAgendamento';
 import type { ExpiracaoSweepAmazonResult } from '../../lib/amazon/conta/expiracaoSweep';
 import { __setRelogioDoCacheParaTestes } from '../../lib/amazon/core/contaCache';
 import { LOGGER_STDOUT_AMAZON } from '../../lib/amazon/core/log';
+import { ORCAMENTO_ANTES_DO_PATCH_MS } from '../../lib/amazon/estoque/processarEstoque';
+import { FILA_ESTOQUE_AMAZON } from '../../lib/amazon/estoque/produtorEstoque';
+import { FILA_LOTES_AMAZON } from '../../lib/amazon/feeds/agendadorLotes';
+import { DESTINO_LOTE_AMAZON } from '../../lib/amazon/feeds/destinosLote';
+import { ORCAMENTO_MONTAGEM_LOTE_MS } from '../../lib/amazon/feeds/enviarFeed';
+import { FILA_NFE_AMAZON, TENTATIVAS_NFE_AMAZON } from '../../lib/amazon/nfe/tarefaNfe';
 import type {
   ImportadorPedidoAmazon,
   PayloadNotificacaoAmazon,
@@ -121,7 +132,12 @@ const modulo = await import('./index');
 const {
   filaLeituraAmazon,
   onIntegracaoAmazonChanged,
+  onNfeAprovadaAmazon,
   pollAmazonOrders,
+  processAmazonEasyShipSchedule,
+  processAmazonListingsJob,
+  processAmazonNfeUpload,
+  processAmazonStockPatch,
   reprocessAmazonNotifications,
   sweepAmazonExpirations,
 } = modulo;
@@ -146,12 +162,27 @@ const AGENDAMENTOS = {
 } as const;
 
 /**
- * Every TASK-QUEUE trigger: exactly ONE. The channel has one reads queue that
- * dispatches on `tipo` (Firebase binds one function per queue), and no writes
- * queue before the write engine — a second `onTaskDispatched` here is a defect,
- * not a feature, until a step says otherwise.
+ * Every TASK-QUEUE trigger: exactly FIVE — the reads queue, one queue per
+ * per-target WRITE flow (the NF-e upload, the Easy Ship scheduling, the stock
+ * PATCH) and the jobs queue. The channel has one reads queue that dispatches on
+ * `tipo` (Firebase binds one function per queue), and ONE queue per per-target
+ * WRITE flow, because Amazon's rates are per operation and one shared queue at
+ * concurrency 1 would let one flow starve another (step-14 plan §3 decision 9;
+ * step-15 plan §3 decision 1): `processAmazonNfeUpload` (step 14, PR 14-c),
+ * `processAmazonEasyShipSchedule` (step 15, PR 15-c) and
+ * `processAmazonStockPatch` (step 12, PR 12-e1). The jobs queue
+ * (`processAmazonListingsJob`, step 12a, PR 12-c) dispatches the
+ * `JSON_LISTINGS_FEED` core's four tasks on their `tipo`. A sixth
+ * `onTaskDispatched` here is a defect, not a feature, until a step says
+ * otherwise.
  */
-const FILAS = { filaLeituraAmazon } as const;
+const FILAS = {
+  filaLeituraAmazon,
+  processAmazonNfeUpload,
+  processAmazonEasyShipSchedule,
+  processAmazonListingsJob,
+  processAmazonStockPatch,
+} as const;
 
 /**
  * Every FIRESTORE-TRIGGER export — the third sibling of {@link AGENDAMENTOS}
@@ -165,9 +196,10 @@ const FILAS = { filaLeituraAmazon } as const;
  * `(default)` sentinel, or with no `database` at all, deploys fine and never
  * fires, with nothing anywhere to say so. Master plan step 20 added the first
  * (`onIntegracaoAmazonChanged`); the `every GATILHO…` tests below walk the MAP,
- * never a named trigger, so a second one lands covered.
+ * never a named trigger, so the second — step 14's NF-e trigger
+ * (`onNfeAprovadaAmazon`, PR 14-c) — landed covered.
  */
-const GATILHOS = { onIntegracaoAmazonChanged } as const;
+const GATILHOS = { onIntegracaoAmazonChanged, onNfeAprovadaAmazon } as const;
 
 /**
  * The document path each trigger must listen on — derived from the HANDLE,
@@ -180,6 +212,13 @@ const CAMINHOS_DOS_GATILHOS = {
     colecao: integracaoCollection.resolvePath({}),
     ancora: 'integracao',
     folha: '{integracaoId}',
+  },
+  // The trigger itself keeps `${nfeMeta.collectionPath}/{nfeId}`; the row is
+  // derived from the HANDLE every reader of the document goes through.
+  onNfeAprovadaAmazon: {
+    colecao: nfev4Collection.resolvePath({ pedidoId: '{pedidoId}' }),
+    ancora: 'pedidos/{pedidoId}/nfev4',
+    folha: '{nfeId}',
   },
 } as const satisfies Record<
   keyof typeof GATILHOS,
@@ -412,6 +451,16 @@ describe('reprocessAmazonNotifications — what the run binds', () => {
     const deps = vi.mocked(notificacao.reprocessarNotificacoesAmazon).mock.calls[0]?.[2];
     expect(deps?.importador).toBe(destinos.DESTINO_TIPO_AMAZON.pedido);
     expect(deps?.importador).toBe(importarPedidoAmazon);
+  });
+
+  it('★ binds the importer’s Easy Ship scheduling producer (step 15, E2): the functions SCHEDULING root itself — never the NF-e root, never a stand-in', async () => {
+    const { criarAgendadorAgendamentoAmazonDoAmbiente } = await import('./agendadorAgendamento');
+    const { criarAgendadorNfeAmazonDoAmbiente } = await import('./agendadorNfe');
+    await rodarAgendamento(reprocessAmazonNotifications);
+
+    const deps = vi.mocked(notificacao.reprocessarNotificacoesAmazon).mock.calls[0]?.[2];
+    expect(deps?.agendamento).toBe(criarAgendadorAgendamentoAmazonDoAmbiente);
+    expect(deps?.agendamento).not.toBe(criarAgendadorNfeAmazonDoAmbiente);
   });
 
   it('binds the importer’s CEP lookup: ONE process-wide client, the same object on every run', async () => {
@@ -850,6 +899,288 @@ describe('filaLeituraAmazon — the declared options', () => {
   });
 });
 
+describe('processAmazonNfeUpload — the declared options (step 14, PR 14-c)', () => {
+  const fila = filaDe(processAmazonNfeUpload);
+
+  it('★ dispatches ONE task at a time, at most one per second — maxConcurrentDispatches 1 IS the ordering guard', () => {
+    // The ordering guard of the step-14 plan's rule-7 table: one order's own
+    // dispatches (a stamp from an older Amazon read vs a clear from a newer one,
+    // two raises of one aviso row) carry no event clock, so they must never
+    // interleave. Raising it requires an event-clock watermark on the stamp, the
+    // clear and the avisos first — the source carries that comment on the pin.
+    expect(fila.rateLimits).toEqual({ maxConcurrentDispatches: 1, maxDispatchesPerSecond: 1 });
+    const fonte = readFileSync(fileURLToPath(new URL('./filaNfe.ts', import.meta.url)), 'utf8');
+    expect(fonte.replace(/\s+/g, ' ')).toContain(
+      'raising it // requires an event-clock watermark on the stamp, the clear and the avisos. rateLimits: { maxConcurrentDispatches: 1, maxDispatchesPerSecond: 1 }',
+    );
+  });
+
+  it('gives up exactly when the handler’s last-attempt rule answers: maxAttempts IS TENTATIVAS_NFE_AMAZON', () => {
+    expect(fila.retryConfig.maxAttempts).toBe(TENTATIVAS_NFE_AMAZON);
+    // ÂNCORA: the last-attempt rule of the handler is written for four.
+    expect(TENTATIVAS_NFE_AMAZON).toBe(4);
+  });
+
+  it('backs off 10 s → 300 s with up to three doublings', () => {
+    expect(fila.retryConfig).toMatchObject({
+      maxAttempts: TENTATIVAS_NFE_AMAZON,
+      minBackoffSeconds: 10,
+      maxBackoffSeconds: 300,
+      maxDoublings: 3,
+    });
+  });
+
+  it('★ has timeoutSeconds 300 — above the 220-s worst case of ONE dispatch, read off PRAZO_AMAZON_MS', () => {
+    // An LWA refresh, getOrder twice (the forced-refresh retry), the status read
+    // twice, the submit twice, and three forced refreshes — each bounded by the
+    // package's own deadline for its class.
+    const piorCasoMs =
+      PRAZO_AMAZON_MS.lwa +
+      2 * PRAZO_AMAZON_MS.leitura +
+      2 * PRAZO_AMAZON_MS.leitura +
+      2 * PRAZO_AMAZON_MS.escrita +
+      3 * PRAZO_AMAZON_MS.lwa;
+    const timeoutS = endpointOf(processAmazonNfeUpload).timeoutSeconds as number;
+    expect(piorCasoMs).toBeLessThan(timeoutS * 1000);
+    // ÂNCORA: the numbers this arithmetic was written for.
+    expect([piorCasoMs, timeoutS]).toEqual([220_000, 300]);
+  });
+
+  it('declares the invoker — both runtime SAs enqueue onto it (#1133)', () => {
+    expect(fila.invoker).toEqual([
+      'apphosting@p.iam.gserviceaccount.com',
+      '1-compute@developer.gserviceaccount.com',
+    ]);
+  });
+
+  it('binds EXACTLY the LWA client secret', () => {
+    expect(segredosDe(processAmazonNfeUpload)).toEqual([SEGREDO_LWA]);
+  });
+});
+
+describe('processAmazonEasyShipSchedule — the declared options (step 15, PR 15-c)', () => {
+  const fila = filaDe(processAmazonEasyShipSchedule);
+  const fonte = readFileSync(
+    fileURLToPath(new URL('./filaAgendamento.ts', import.meta.url)),
+    'utf8',
+  ).replace(/\s+/g, ' ');
+
+  it('★ (mutation 14) dispatches ONE task at a time, at most one per second — concurrency 1 orders the avisos and serialises one order’s schedules', () => {
+    // Easy Ship's bulk allows 1 rps (burst 5). Concurrency 1 is also the ordering
+    // guard among the task's own raises and resolves of one order's row, and it
+    // makes the second of two tasks for one order read `ja-agendado` instead of
+    // racing the first to Amazon — the source carries that reason on the pin.
+    expect(fila.rateLimits).toEqual({ maxConcurrentDispatches: 1, maxDispatchesPerSecond: 1 });
+    expect(fonte).toContain(
+      "Orders this queue's avisos and serialises the automatic schedules of // one order. rateLimits: { maxConcurrentDispatches: 1, maxDispatchesPerSecond: 1 }",
+    );
+  });
+
+  it('gives up exactly when the handler’s last-attempt rule answers: maxAttempts IS TENTATIVAS_AGENDAMENTO_AMAZON', () => {
+    expect(fila.retryConfig.maxAttempts).toBe(TENTATIVAS_AGENDAMENTO_AMAZON);
+    // ÂNCORA: the last-attempt rule of the handler is written for four.
+    expect(TENTATIVAS_AGENDAMENTO_AMAZON).toBe(4);
+  });
+
+  it('★ (mutation 24) backs off 60 s → 300 s with up to three doublings — NEVER the other queues’ 10 s: a cut bulk may still be running at Amazon', () => {
+    expect(fila.retryConfig).toMatchObject({
+      maxAttempts: TENTATIVAS_AGENDAMENTO_AMAZON,
+      minBackoffSeconds: 60,
+      maxBackoffSeconds: 300,
+      maxDoublings: 3,
+    });
+    expect(fonte).toContain(
+      'never retry sooner than // the label route asks the operator to wait. minBackoffSeconds: 60,',
+    );
+    // ÂNCORA: the reads and NF-e queues keep 10 s; only this one waits a minute.
+    expect(filaDe(filaLeituraAmazon).retryConfig.minBackoffSeconds).toBe(10);
+    expect(filaDe(processAmazonNfeUpload).retryConfig.minBackoffSeconds).toBe(10);
+  });
+
+  it('★ has timeoutSeconds 300 — above the 220-s worst case of ONE dispatch, read off PRAZO_AMAZON_MS', () => {
+    // A stale-token LWA refresh at the first request; getOrder, its forced
+    // refresh and getOrder again; the token mint and the bulk; a forced refresh
+    // after a 401/403 on either; the mint and the bulk again — each bounded by
+    // the package's own deadline for its class (both POSTs are `escrita`).
+    const piorCasoMs =
+      PRAZO_AMAZON_MS.lwa +
+      2 * PRAZO_AMAZON_MS.leitura +
+      PRAZO_AMAZON_MS.lwa +
+      2 * PRAZO_AMAZON_MS.escrita +
+      PRAZO_AMAZON_MS.lwa +
+      2 * PRAZO_AMAZON_MS.escrita;
+    const timeoutS = endpointOf(processAmazonEasyShipSchedule).timeoutSeconds as number;
+    expect(piorCasoMs).toBeLessThan(timeoutS * 1000);
+    // ÂNCORA: the numbers this arithmetic was written for.
+    expect([piorCasoMs, timeoutS]).toEqual([220_000, 300]);
+  });
+
+  it('declares the invoker — the SAME two-SA list as the NF-e queue (the deploy applies the one list to every task function, #1133)', () => {
+    expect(fila.invoker).toEqual([
+      'apphosting@p.iam.gserviceaccount.com',
+      '1-compute@developer.gserviceaccount.com',
+    ]);
+    expect(fila.invoker).toEqual(filaDe(processAmazonNfeUpload).invoker);
+  });
+
+  it('★ (mutation 16) binds EXACTLY the LWA client secret — a forced refresh after a 401/403 needs it', () => {
+    expect(segredosDe(processAmazonEasyShipSchedule)).toEqual([SEGREDO_LWA]);
+  });
+});
+
+describe('processAmazonListingsJob — the declared options (step 12a, PR 12-c)', () => {
+  const fila = filaDe(processAmazonListingsJob);
+  const fonte = readFileSync(
+    fileURLToPath(new URL('./filaLotes.ts', import.meta.url)),
+    'utf8',
+  ).replace(/\s+/g, ' ');
+
+  it('★ dispatches ONE task at a time, at most one per second — two dispatches never interleave on one lease or one record', () => {
+    expect(fila.rateLimits).toEqual({ maxConcurrentDispatches: 1, maxDispatchesPerSecond: 1 });
+    expect(fonte).toContain(
+      'two dispatches never interleave on one lease or // one record. rateLimits: { maxConcurrentDispatches: 1, maxDispatchesPerSecond: 1 }',
+    );
+  });
+
+  it('retries five times, backing off 30 s → 300 s with up to three doublings', () => {
+    expect(fila.retryConfig).toMatchObject({
+      maxAttempts: 5,
+      minBackoffSeconds: 30,
+      maxBackoffSeconds: 300,
+      maxDoublings: 3,
+    });
+  });
+
+  it('★ has timeoutSeconds 540 — above the 460-s worst case of ONE send, read off PRAZO_AMAZON_MS and the build budget', () => {
+    // The shared build budget of `membros` and `montar`, then the submission
+    // twice under the forced-refresh rule: the LWA exchange, `createFeedDocument`
+    // (a POST: `escrita`), the upload and `createFeed` (`escrita`) — each bounded
+    // by the package's own deadline for its class.
+    const submissaoMs =
+      PRAZO_AMAZON_MS.lwa +
+      PRAZO_AMAZON_MS.escrita +
+      PRAZO_AMAZON_MS.upload +
+      PRAZO_AMAZON_MS.escrita;
+    const piorCasoMs = ORCAMENTO_MONTAGEM_LOTE_MS + 2 * submissaoMs;
+    const timeoutS = endpointOf(processAmazonListingsJob).timeoutSeconds as number;
+    expect(piorCasoMs).toBeLessThan(timeoutS * 1000);
+    // ÂNCORA: the numbers this arithmetic was written for.
+    expect([ORCAMENTO_MONTAGEM_LOTE_MS, submissaoMs]).toEqual([240_000, 110_000]);
+    expect([piorCasoMs, timeoutS]).toEqual([460_000, 540]);
+  });
+
+  it('★ and a result dispatch fits it too: getFeed and getFeedDocument each refreshed once, the download, three LWA exchanges', () => {
+    const piorCasoMs =
+      3 * PRAZO_AMAZON_MS.lwa +
+      2 * PRAZO_AMAZON_MS.leitura +
+      2 * PRAZO_AMAZON_MS.leitura +
+      PRAZO_AMAZON_MS.documento;
+    const timeoutS = endpointOf(processAmazonListingsJob).timeoutSeconds as number;
+    expect(piorCasoMs).toBeLessThan(timeoutS * 1000);
+    expect(piorCasoMs).toBe(160_000);
+  });
+
+  it('★ the memory pin: 1 GiB, the FIRST in this codebase — every other function keeps the default', () => {
+    expect(endpointOf(processAmazonListingsJob).availableMemoryMb).toBe(1024);
+    expect(fonte).toContain("memory: '1GiB',");
+    for (const [nome, fn] of Object.entries({ ...AGENDAMENTOS, ...FILAS, ...GATILHOS })) {
+      if (nome === 'processAmazonListingsJob') continue;
+      // The SDK records an unset option as its reset marker, never a number.
+      expect(typeof endpointOf(fn).availableMemoryMb, nome).not.toBe('number');
+    }
+  });
+
+  it('declares the invoker — the SAME two-SA list as every other queue (#1133)', () => {
+    expect(fila.invoker).toEqual([
+      'apphosting@p.iam.gserviceaccount.com',
+      '1-compute@developer.gserviceaccount.com',
+    ]);
+  });
+
+  it('binds EXACTLY the LWA client secret — a forced refresh after a 401/403 needs it', () => {
+    expect(segredosDe(processAmazonListingsJob)).toEqual([SEGREDO_LWA]);
+  });
+
+  it('★ binds the seam table itself, ONCE, and it is EMPTY in this PR — no fluxo reaches Amazon through it', () => {
+    expect(DESTINO_LOTE_AMAZON).toEqual({ estoque: null, preco: null });
+    expect(fonte).toContain(
+      'vincularDestinosLoteAmazon( RAIZ_DOS_LOTES_AMAZON, DESTINO_LOTE_AMAZON, );',
+    );
+    expect(fonte).toContain('provedores: PROVEDORES_DOS_LOTES_AMAZON,');
+  });
+});
+
+describe('processAmazonStockPatch — the declared options (step 12, PR 12-e1)', () => {
+  const fila = filaDe(processAmazonStockPatch);
+  const fonte = readFileSync(
+    fileURLToPath(new URL('./filaEstoque.ts', import.meta.url)),
+    'utf8',
+  ).replace(/\s+/g, ' ');
+
+  it('★ dispatches ONE task at a time, at most two per second — maxConcurrentDispatches 1 IS the ordering guard between one conta’s patches', () => {
+    // An absolute PATCH carries no clock Amazon compares: two dispatches of one
+    // SKU must never interleave their read and their PATCH. Raising the
+    // concurrency needs a guard that orders the patches first — the source
+    // carries that reason on the pin.
+    expect(fila.rateLimits).toEqual({ maxConcurrentDispatches: 1, maxDispatchesPerSecond: 2 });
+    expect(fila.rateLimits.maxConcurrentDispatches).toBe(1);
+    expect(fonte).toContain(
+      "⚠️ The ordering guard between one conta's patches: an absolute PATCH // carries no clock Amazon compares. rateLimits: { maxConcurrentDispatches: 1, maxDispatchesPerSecond: 2 }",
+    );
+  });
+
+  it('retries five times, backing off 10 s → 300 s with up to three doublings', () => {
+    expect(fila.retryConfig).toMatchObject({
+      maxAttempts: 5,
+      minBackoffSeconds: 10,
+      maxBackoffSeconds: 300,
+      maxDoublings: 3,
+    });
+  });
+
+  it('★ has timeoutSeconds 300 — above the 160-s Amazon worst case of ONE dispatch, read off PRAZO_AMAZON_MS', () => {
+    // The context's LWA refresh; getListingsItem, its forced refresh and the
+    // read again; the PATCH (`escrita`), its forced refresh and the PATCH again
+    // — each bounded by the package's own deadline for its class. The Firestore
+    // round trips before the PATCH are bounded by the task's own budget (below).
+    const piorCasoMs =
+      PRAZO_AMAZON_MS.lwa +
+      PRAZO_AMAZON_MS.leitura +
+      PRAZO_AMAZON_MS.lwa +
+      PRAZO_AMAZON_MS.leitura +
+      PRAZO_AMAZON_MS.escrita +
+      PRAZO_AMAZON_MS.lwa +
+      PRAZO_AMAZON_MS.escrita;
+    const timeoutS = endpointOf(processAmazonStockPatch).timeoutSeconds as number;
+    expect(piorCasoMs).toBeLessThan(timeoutS * 1000);
+    // ÂNCORA: the numbers this arithmetic was written for.
+    expect([piorCasoMs, timeoutS]).toEqual([160_000, 300]);
+  });
+
+  it('★ the task’s own budget before its PATCH leaves the PATCH, its forced refresh and a second PATCH inside the timeout', () => {
+    // A dispatch past the budget sends nothing and throws for the retry. The
+    // body checks it with the write's credential in hand, before EVERY PATCH
+    // (the forced refresh's second one included), so a PATCH that goes out
+    // always goes out inside its own dispatch; the tail is room for the answers.
+    const caudaMs = PRAZO_AMAZON_MS.escrita + PRAZO_AMAZON_MS.lwa + PRAZO_AMAZON_MS.escrita;
+    const timeoutMs = (endpointOf(processAmazonStockPatch).timeoutSeconds as number) * 1000;
+    expect(ORCAMENTO_ANTES_DO_PATCH_MS).toBeLessThan(timeoutMs - caudaMs);
+    // ÂNCORA: 200 s against 300 s − 80 s.
+    expect([ORCAMENTO_ANTES_DO_PATCH_MS, caudaMs, timeoutMs]).toEqual([200_000, 80_000, 300_000]);
+  });
+
+  it('declares the invoker — the SAME two-SA list as every other queue (#1133)', () => {
+    expect(fila.invoker).toHaveLength(2);
+    for (const outra of [processAmazonNfeUpload, processAmazonListingsJob]) {
+      expect(fila.invoker).toEqual(filaDe(outra).invoker);
+    }
+  });
+
+  it('binds EXACTLY the LWA client secret — a forced refresh after a 401/403 needs it', () => {
+    expect(segredosDe(processAmazonStockPatch)).toEqual([SEGREDO_LWA]);
+  });
+});
+
 /* -------------------------------------------------------------------------- */
 /*               The step-5 recent-cancel window vs the deployed options      */
 /* -------------------------------------------------------------------------- */
@@ -910,9 +1241,11 @@ describe('the Firestore triggers (GATILHOS)', () => {
 
   it('every GATILHO declares retry: true', () => {
     // At-least-once redelivery for transient Firestore failures; without it the
-    // event is dropped on the first one. Safe because the reconcile is
-    // state-driven: a redelivery replays the ORIGINAL before/after, and the
-    // reconcile reads neither — it re-reads the conta itself.
+    // event is dropped on the first one. Safe for both: the conta reconcile is
+    // state-driven (a redelivery replays the ORIGINAL before/after, and the
+    // reconcile reads neither — it re-reads the conta itself), and the NF-e
+    // trigger's one enqueue is NAMED after the CloudEvent, so a redelivery of
+    // the same event enqueues nothing new.
     for (const [nome, fn] of Object.entries(GATILHOS)) {
       expect(gatilhoDeEvento(fn).retry, nome).toBe(true);
     }
@@ -955,6 +1288,22 @@ describe('the Firestore triggers (GATILHOS)', () => {
   });
 });
 
+describe('onNfeAprovadaAmazon (step 14, PR 14-c)', () => {
+  it('listens on the schema meta’s path — and the meta and the handle agree', () => {
+    // Two sources that must agree, and both are pinned: the trigger reads
+    // `nfeMeta.collectionPath`, and every reader of the document goes through
+    // `nfev4Collection`. A trigger on one path and readers on another would
+    // enqueue tasks that never find their NF-e.
+    const doHandle = nfev4Collection.resolvePath({ pedidoId: '{pedidoId}' });
+    expect(gatilhoDeEvento(onNfeAprovadaAmazon).eventFilterPathPatterns?.document).toBe(
+      `${nfeMeta.collectionPath}/{nfeId}`,
+    );
+    expect(nfeMeta.collectionPath).toBe(doHandle);
+    // ÂNCORA: neither side is `undefined`, and the leaf is the real one.
+    expect(doHandle).toBe('pedidos/{pedidoId}/nfev4');
+  });
+});
+
 /* -------------------------------------------------------------------------- */
 /*                         Across every exported trigger                      */
 /* -------------------------------------------------------------------------- */
@@ -971,16 +1320,26 @@ describe('every trigger of the codebase', () => {
     ]);
   });
 
-  it('the task exports are EXACTLY {filaLeituraAmazon}', () => {
-    expect(exportadosCom('taskQueueTrigger')).toEqual(['filaLeituraAmazon']);
+  it('the task exports are EXACTLY {filaLeituraAmazon, processAmazonEasyShipSchedule, processAmazonListingsJob, processAmazonNfeUpload, processAmazonStockPatch}', () => {
+    expect(exportadosCom('taskQueueTrigger')).toEqual(Object.keys(FILAS).sort());
+    expect(exportadosCom('taskQueueTrigger')).toEqual([
+      'filaLeituraAmazon',
+      'processAmazonEasyShipSchedule',
+      'processAmazonListingsJob',
+      'processAmazonNfeUpload',
+      'processAmazonStockPatch',
+    ]);
   });
 
-  it('every event-trigger export is in GATILHOS — exactly {onIntegracaoAmazonChanged}', () => {
+  it('every event-trigger export is in GATILHOS — exactly {onIntegracaoAmazonChanged, onNfeAprovadaAmazon}', () => {
     // The third exhaustiveness twin: the two above filter on `scheduleTrigger`
     // and `taskQueueTrigger`, so an `onDocument*` export would otherwise have its
     // `database`, region, secrets and `retry` read by nothing.
     expect(exportadosCom('eventTrigger')).toEqual(Object.keys(GATILHOS).sort());
-    expect(exportadosCom('eventTrigger')).toEqual(['onIntegracaoAmazonChanged']);
+    expect(exportadosCom('eventTrigger')).toEqual([
+      'onIntegracaoAmazonChanged',
+      'onNfeAprovadaAmazon',
+    ]);
   });
 
   it('there is no HTTPS or callable trigger', () => {
@@ -1012,11 +1371,19 @@ describe('every trigger of the codebase', () => {
     expect(Object.keys(modulo).sort()).toEqual(Object.keys(TODOS).sort());
   });
 
-  it('the queue export key is exactly FILA_LEITURA_AMAZON — the enqueue target', () => {
-    // `index.ts` asserts the pair at module load (a half-rename fails Firebase's
-    // codebase analysis); this pins it offline, where the failure names itself.
+  it('the queue export keys are exactly FILA_LEITURA_AMAZON, FILA_NFE_AMAZON, FILA_AGENDAMENTO_AMAZON, FILA_LOTES_AMAZON and FILA_ESTOQUE_AMAZON — the enqueue targets', () => {
+    // `index.ts` asserts each pair at module load (a half-rename fails Firebase's
+    // codebase analysis); this pins them offline, where the failure names itself.
     expect(notificacao.FILA_LEITURA_AMAZON in modulo).toBe(true);
     expect(notificacao.FILA_LEITURA_AMAZON).toBe('filaLeituraAmazon');
+    expect(FILA_NFE_AMAZON in modulo).toBe(true);
+    expect(FILA_NFE_AMAZON).toBe('processAmazonNfeUpload');
+    expect(FILA_AGENDAMENTO_AMAZON in modulo).toBe(true);
+    expect(FILA_AGENDAMENTO_AMAZON).toBe('processAmazonEasyShipSchedule');
+    expect(FILA_LOTES_AMAZON in modulo).toBe(true);
+    expect(FILA_LOTES_AMAZON).toBe('processAmazonListingsJob');
+    expect(FILA_ESTOQUE_AMAZON in modulo).toBe(true);
+    expect(FILA_ESTOQUE_AMAZON).toBe('processAmazonStockPatch');
   });
 
   // Re-importing the whole index after `vi.resetModules()` takes ~0.2 s here but
@@ -1041,19 +1408,89 @@ describe('every trigger of the codebase', () => {
     },
   );
 
-  it('binds the LWA secret on the queue, the reprocess and the poll, and NOTHING else anywhere', () => {
-    // The expiry sweep and the conta trigger make no Amazon call (D11): a
-    // declared secret missing from Secret Manager would fail the whole deploy
-    // for a function that never reads it.
+  it(
+    'and the NF-e queue’s module-load assertion fires on its half-rename too',
+    { timeout: 30_000 },
+    async () => {
+      vi.resetModules();
+      vi.doMock('./filaNfe', () => ({ filaNfeRenomeada: {} }));
+      try {
+        await expect(import('./index')).rejects.toThrow(
+          "function-name drift: functions/src/filaNfe.ts must export a handler named 'processAmazonNfeUpload'",
+        );
+      } finally {
+        vi.doUnmock('./filaNfe');
+        vi.resetModules();
+      }
+    },
+  );
+
+  it(
+    'and the scheduling queue’s module-load assertion fires on its half-rename too',
+    { timeout: 30_000 },
+    async () => {
+      vi.resetModules();
+      vi.doMock('./filaAgendamento', () => ({ filaAgendamentoRenomeada: {} }));
+      try {
+        await expect(import('./index')).rejects.toThrow(
+          "function-name drift: functions/src/filaAgendamento.ts must export a handler named 'processAmazonEasyShipSchedule'",
+        );
+      } finally {
+        vi.doUnmock('./filaAgendamento');
+        vi.resetModules();
+      }
+    },
+  );
+
+  it(
+    'and the jobs queue’s module-load assertion fires on its half-rename too',
+    { timeout: 30_000 },
+    async () => {
+      vi.resetModules();
+      vi.doMock('./filaLotes', () => ({ filaLotesRenomeada: {} }));
+      try {
+        await expect(import('./index')).rejects.toThrow(
+          "function-name drift: functions/src/filaLotes.ts must export a handler named 'processAmazonListingsJob'",
+        );
+      } finally {
+        vi.doUnmock('./filaLotes');
+        vi.resetModules();
+      }
+    },
+  );
+
+  it(
+    'and the stock queue’s module-load assertion fires on its half-rename too',
+    { timeout: 30_000 },
+    async () => {
+      vi.resetModules();
+      vi.doMock('./filaEstoque', () => ({ filaEstoqueRenomeada: {} }));
+      try {
+        await expect(import('./index')).rejects.toThrow(
+          "function-name drift: functions/src/filaEstoque.ts must export a handler named 'processAmazonStockPatch'",
+        );
+      } finally {
+        vi.doUnmock('./filaEstoque');
+        vi.resetModules();
+      }
+    },
+  );
+
+  it('binds the LWA secret on the five queues, the reprocess and the poll, and NOTHING else anywhere', () => {
+    // The expiry sweep and the two Firestore triggers make no Amazon call
+    // (D11): a declared secret missing from Secret Manager would fail the whole
+    // deploy for a function that never reads it.
+    const SEM_SEGREDO = [
+      'sweepAmazonExpirations',
+      'onIntegracaoAmazonChanged',
+      'onNfeAprovadaAmazon',
+    ];
     for (const [nome, fn] of Object.entries(TODOS)) {
-      const esperado =
-        nome === 'sweepAmazonExpirations' || nome === 'onIntegracaoAmazonChanged'
-          ? []
-          : [SEGREDO_LWA];
+      const esperado = SEM_SEGREDO.includes(nome) ? [] : [SEGREDO_LWA];
       expect(segredosDe(fn), nome).toEqual(esperado);
     }
     // ÂNCORA: the walk covers all three families.
-    expect(Object.keys(TODOS)).toHaveLength(5);
+    expect(Object.keys(TODOS)).toHaveLength(10);
   });
 
   it('runs in the inlined region (the bare options import, #1108) and caps instances at 10', () => {

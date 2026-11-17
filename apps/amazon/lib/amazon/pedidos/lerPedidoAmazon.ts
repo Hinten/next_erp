@@ -7,7 +7,7 @@
  *
  * ## The checks, before any Firestore read
  *
- *  1. **Identity.** `order.orderId` byte-equal to the payload's
+ *  1. **Identity.** `order.orderId` byte-equal to the asked
  *     `amazonOrderId`, inside the 3-7-7 grammar — else
  *     `PedidoAmazonIlegivelError` (`pedido-divergente`): the deterministic
  *     pedido id would key another order's document.
@@ -16,17 +16,25 @@
  *     guessed instant.
  *  3. **Line identity.** A duplicate `orderItemId` refuses the order
  *     (`linha-duplicada`; `linhasRecebidasAmazon`, the mappers' own reader).
- *  4. **A poll payload newer than the read** (plan §3 decision 3): the fetched
- *     µs strictly below the payload's `lastUpdatedUs` is a lagging read. On a
- *     QUEUE attempt (`registro.tentativa` non-null) it throws the retryable
+ *  4. **A floor newer than the read** (plan §3 decision 3): the fetched µs
+ *     strictly below `pisoUs` is a lagging read. On a QUEUE attempt
+ *     (`registro.tentativa` non-null) it throws the retryable
  *     `AmazonLeituraDefasadaError` — the queue retries after 10 s and 20 s, and
  *     its last attempt persists `failed`. In a SWEEP re-drive (`tentativa`
  *     `null`, at least 30 min later) the read is imported as it is and the
  *     caller writes a WARNING count line: the poll's `vistos` already holds the
  *     newer stamp and will never re-enqueue the order, so a refusal that never
  *     ends would strand it for good, while the stored pedido's watermark still
- *     protects it from a regression. A push payload carries no order clock: it
- *     is never compared (the payload is never a data source, D5).
+ *     protects it from a regression. `pisoUs === null` is never compared.
+ *
+ * The second parameter is exactly what this read uses (step 14, PR 14-c):
+ * `{ amazonOrderId, pisoUs }`. The order import maps a POLL payload's
+ * `lastUpdatedUs` to `pisoUs` and a PUSH payload to `null` (a push carries no
+ * order clock and is never a data source, D5); the NF-e task passes the stored
+ * pedido's watermark (`nfe/pedidoNfe.ts`'s `pisoDoPedidoAmazon`), so a live
+ * read older than what the importer already accepted is refused, never trusted.
+ * The NF-e task IMPORTS this function and never names `getOrder` itself: this
+ * module stays the app's one caller (step-14 plan §3 decision 8).
  *  5. **The BR marketplace.** A present `salesChannel.marketplaceId` other than
  *     BR's, or a present `channelName` other than `AMAZON` ⇒
  *     `marketplace-estrangeiro` (dropped by the disposition). Absent or blank
@@ -40,11 +48,11 @@ import {
   buscarPedido,
   type PedidoWireAmazon,
 } from '@delfrance/integrations-amazon-sp-api';
-import { ORIGEM_NOTIFICACAO_AMAZON, PEDIDO_AMAZON_REGEX } from '@delfrance/schemas';
+import { PEDIDO_AMAZON_REGEX } from '@delfrance/schemas';
 
 import type { ContextoAmazon } from '../core/contexto';
 import { executarComRenovacaoUnica } from '../core/renovacaoUnica';
-import type { PayloadNotificacaoAmazon, RegistroLeituraAmazon } from '../notificacoes/notificacao';
+import type { RegistroLeituraAmazon } from '../notificacoes/notificacao';
 import {
   AmazonLeituraDefasadaError,
   MOTIVO_PEDIDO_AMAZON_ILEGIVEL,
@@ -63,10 +71,19 @@ export type LeituraPedidoAmazon =
       readonly order: PedidoWireAmazon;
       /** `lastUpdatedTime`, µs, read straight from Amazon's text. */
       readonly watermarkUs: number;
-      /** A sweep re-drive imported a read older than its poll payload (check 4). */
+      /** A sweep re-drive imported a read older than its floor (check 4). */
       readonly defasadaAceita: boolean;
     }
   | { readonly tipo: 'marketplace-estrangeiro' };
+
+/**
+ * What the read needs to know about the order (module header): its id, and the
+ * floor a fetched watermark must reach, in µs (`null`: no floor).
+ */
+export interface AlvoDaLeituraAmazon {
+  readonly amazonOrderId: string;
+  readonly pisoUs: number | null;
+}
 
 /** What the read needs of a context: its conta id, its client and the access getter. */
 export type ContextoDeLeituraAmazon = Pick<
@@ -98,18 +115,18 @@ function estrangeiro(order: PedidoWireAmazon): boolean {
  */
 export async function lerPedidoAmazon(
   contexto: ContextoDeLeituraAmazon,
-  payload: PayloadNotificacaoAmazon,
+  alvo: AlvoDaLeituraAmazon,
   registro: Pick<RegistroLeituraAmazon, 'tentativa'>,
 ): Promise<LeituraPedidoAmazon> {
   const resposta = await executarComRenovacaoUnica(contexto, () =>
-    buscarPedido(contexto.cliente, payload.amazonOrderId),
+    buscarPedido(contexto.cliente, alvo.amazonOrderId),
   );
   const { order } = resposta.dados;
 
   // 1. Identity: byte-equal, inside the grammar.
-  if (order.orderId !== payload.amazonOrderId || !PEDIDO_AMAZON_REGEX.test(order.orderId)) {
+  if (order.orderId !== alvo.amazonOrderId || !PEDIDO_AMAZON_REGEX.test(order.orderId)) {
     throw new PedidoAmazonIlegivelError(
-      payload.amazonOrderId,
+      alvo.amazonOrderId,
       MOTIVO_PEDIDO_AMAZON_ILEGIVEL.pedidoDivergente,
     );
   }
@@ -124,9 +141,9 @@ export async function lerPedidoAmazon(
   // 3. Line identity (throws on a duplicate `orderItemId`).
   linhasRecebidasAmazon(order);
 
-  // 4. A lagging read of a poll task: refused on a queue attempt only.
+  // 4. A read older than its floor: refused on a queue attempt only.
   let defasadaAceita = false;
-  if (payload.origem === ORIGEM_NOTIFICACAO_AMAZON.poll && instante.us < payload.lastUpdatedUs) {
+  if (alvo.pisoUs !== null && instante.us < alvo.pisoUs) {
     if (registro.tentativa !== null) {
       throw new AmazonLeituraDefasadaError(contexto.integracaoId, order.orderId);
     }

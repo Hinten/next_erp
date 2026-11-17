@@ -56,6 +56,7 @@ import { getAdminFirestore } from '@/lib/firebase/admin';
 import { agoraUsDe, chaveContaPrecisaAtencao } from '../avisos/avisos';
 import { loadAmazonContext } from '../core/contexto';
 import type { AmbienteAmazon } from '../env';
+import { chaveAvisoNfeAmazon } from '../nfe/avisoNfe';
 import type { DepsImportadorAmazon } from '../notificacoes/notificacao';
 import { gerarCpf } from '../testing/documentos';
 import {
@@ -69,6 +70,7 @@ import {
   respostaJson,
 } from '../testing/fixtures';
 import { payloadPush, registroTeste } from '../testing/importadorAmazon';
+import { filaAgendamentoDeTeste } from '../testing/produtorAgendamento';
 import {
   ATUALIZADO_US,
   depois,
@@ -114,6 +116,14 @@ async function limpar(): Promise<void> {
   for (const motivo of Object.values(MOTIVO_CONTA_AMAZON)) {
     await db()
       .doc(`avisos/${chaveContaPrecisaAtencao(CONTA, motivo)}`)
+      .delete();
+  }
+  // Step 14 (PR 14-c): the import's two NF-e TRANSITIONS (into a cancelled sale,
+  // freight into the stock-removal set) leave a resolved `nfeUploadRejeitado`
+  // tombstone on the pedido's key.
+  for (const orderId of [ORDER, '123-4567890-1234567']) {
+    await db()
+      .doc(`avisos/${chaveAvisoNfeAmazon(CONTA, makePedidoIdAmazon(CONTA, orderId))}`)
       .delete();
   }
   const avisosDoPedido = await db()
@@ -162,6 +172,8 @@ async function importar(order: Record<string, unknown>, agoraMs = Date.now()) {
     increment: (by) => FieldValue.increment(by),
     logger: log.logger,
     viaCep: { buscarCep: () => Promise.resolve(null) },
+    // Step 15 (PR 15-c): the scheduling entry's producer, a recorder (no real task).
+    agendamento: filaAgendamentoDeTeste().produtor,
     registro: registroTeste(0),
   };
   const payload = { ...payloadPush(String(order.orderId)), sellerId: SPID_A };

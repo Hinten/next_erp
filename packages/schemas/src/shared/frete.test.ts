@@ -291,14 +291,18 @@ describe('FREIGHT_TIPO_CAPS', () => {
     );
   });
 
-  it('Mercado Livre and Shopee are the fetch-label tipos (marketplace-client print)', () => {
-    // Full key set: `canFetchLabel` is true ONLY for mercadoLivre and shopee
-    // (#1523) — every other tipo (ME's emit flow included) fetches nothing via
-    // a marketplace client. Enum order, so no sort.
+  it('Mercado Livre, Amazon and Shopee are the fetch-label tipos (marketplace-client print)', () => {
+    // Full key set: `canFetchLabel` is true ONLY for mercadoLivre, amz (step
+    // 15) and shopee (#1523) — every other tipo (ME's emit flow and Magalu
+    // included) fetches nothing via a marketplace client. Enum order, so no sort.
     const fetchable = integracoesFreteSchema.options.filter(
       (t) => FREIGHT_TIPO_CAPS[t].canFetchLabel,
     );
-    expect(fetchable).toEqual([INTEGRACAO_FRETE.mercadoLivre, INTEGRACAO_FRETE.shopee]);
+    expect(fetchable).toEqual([
+      INTEGRACAO_FRETE.mercadoLivre,
+      INTEGRACAO_FRETE.amazon,
+      INTEGRACAO_FRETE.shopee,
+    ]);
     // The unknown-tipo fallback stays all-false too.
     expect(freightCapsFor(null).canFetchLabel).toBe(false);
     expect(freightCapsFor('bogus-legacy-tipo').canFetchLabel).toBe(false);
@@ -325,6 +329,27 @@ describe('FREIGHT_TIPO_CAPS', () => {
     // The tolerant reader serves the same row — PedidoCells / etiquetaRowState
     // read Shopee's caps through it, never by indexing the table.
     expect(freightCapsFor(INTEGRACAO_FRETE.shopee)).toBe(FREIGHT_TIPO_CAPS.shopee);
+  });
+
+  it('the Amazon row flipped canFetchLabel and NOTHING else (step 15)', () => {
+    // The whole row, as for Shopee: `canPrint` would route a `printLabelId` to
+    // Melhor Envio (`etiquetaRowState` tests it BEFORE `canFetchLabel`),
+    // `channel` would name a freight segment the label route is not, and
+    // `canTrack` has no reader. Its on-disk tipo is `amz`, never `amazon`.
+    expect(FREIGHT_TIPO_CAPS.amz).toEqual({
+      marketplaceOwned: true,
+      canQuote: false,
+      canBuy: false,
+      canPrint: false,
+      canFetchLabel: true,
+      canTrack: false,
+      labelMode: 'fetch',
+      channel: null,
+    });
+    expect(freightCapsFor(INTEGRACAO_FRETE.amazon)).toBe(FREIGHT_TIPO_CAPS.amz);
+    // NEAR-MISS: the enum NAME is not a tipo — the tolerant reader answers the
+    // all-false fallback for it, never Amazon's row.
+    expect(freightCapsFor('amazon').canFetchLabel).toBe(false);
   });
 
   it('the marketplace tipos are the read-only-tab ones', () => {

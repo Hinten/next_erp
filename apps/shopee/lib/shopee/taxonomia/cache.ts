@@ -74,8 +74,9 @@ export interface ShopeeTaxonomiaCtx {
   /**
    * The API path `get_variations` is actually signed with — the default, or the
    * `SHOPEE_VARIATIONS_PATH` override. Echoed by the `variacoes` route as
-   * `pathUsed`, because this is one of Shopee's four open contradictions and the
-   * answer to "which path did we sign?" has to be observable in production.
+   * `pathUsed`: the page's contradiction is settled on BR (the default,
+   * `get_variation_tree`), and the echo keeps an override observable — "which
+   * path did we sign?" stays answerable in production.
    */
   readonly variationsPath: string;
 }

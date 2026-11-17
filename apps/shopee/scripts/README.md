@@ -1063,7 +1063,7 @@ that way if you extend it.
 | `### attribute_list (N)`                                                                                                      | per attribute the id, how many values and whether it is mandatory (a ROOT's flag: a filled mandatory CHILD prints `false`) — then `obrigatórios SEM valor` as NAMES, the `atributo-obrigatorio` refusal spelled out, a missing child as `filho (em pai: valor)`.         |
 | `### tax_info`                                                                                                                | `bloco … ENVIADO inteiro` or `omitido (<motivo>)`, the `chaves` line always, then one `chave valor` line per field. ⚠️ **The VALUES are printed here** — unlike `importar:anuncio`, which prints keys only. A CFOP or a CSOSN is a catalogue code, not a seller's datum. |
 | `### size_chart_info`                                                                                                         | what goes out: `size_chart_id N` (the template id IS printed), `size_chart — a PRIMEIRA foto da tabela` (never its `image_id`), `NADA — … RECUSADA` or `— omitido (<motivo>; foto: …)`; then `fonte`, the `tabMedi` counts and `size_chart_limit` as ADVICE. See below.  |
-| `### logistic_info (N a enviar)`                                                                                              | one row per channel sent (`fee_type`, `enabled`, `is_free`) and then `pulados` with each channel's reason. A channel can appear in both lists — one says "on anyway", the other "not sent by us".                                                                        |
+| `### logistic_info (N a enviar)`                                                                                              | one row per channel sent (`fee_type`, `enabled`, `is_free`) and then `pulados` with each channel's reason. A channel can appear in both lists — one says "on anyway", the other "not sent by us". With an unstamped link this is the FULL pass (§12.5).                  |
 | `### tiers (N)`                                                                                                               | per grupo the `variation_id` and the group, then each option with `foto=sim\|não` and `(ocupada por modelo sem filho)` where a live model holds a position nothing of ours binds.                                                                                        |
 | `### modelos (acao=…, profundidade mudou=…)`                                                                                  | `init` / `update` / `nenhuma`, the new models' `tier_index`, sku, price and stock, the re-listed ones, the skus to update, the `modelos sem filho` that are KEPT, and any `vínculos desaparecidos`.                                                                      |
 | `### fotos e sequência`                                                                                                       | five counts plus one line per failure (`arquivoId — motivo`, **never** the message or the URL), and which re-list door is planned.                                                                                                                                       |
@@ -1087,15 +1087,79 @@ WITHHELD under `support_image_size_chart=false`.
 **`### tiers` (#1911, D12)** prints `variation_id=0` for a CUSTOM tier, and
 since #1911 a grupo with NO binding entry for this conta and leaf gets one: the
 tier is named after the grupo, and every option is `0` named after its variante.
-It used to be a `variacao-sem-vinculo` problema. Two refusals remain under
-`### problemas`. A binding entry that exists but cannot be read is refused
-("existe mas não pôde ser lido"); fix it in Variações. ⚠️ The dry run plans
-against no live tree, so it can never show the second one: on an UPDATE,
-`--live` refuses a custom tier whose name matches no live tier byte for byte
-("Importe o anúncio ou ajuste o nome do grupo"). That refusal arrives after
-`update_item`, in the model leg, so the item fields are already sent. A grupo
-renamed in the ERP, or a migrated listing whose tier was named by the legacy
-app, hits it; re-importing the listing or restoring the name clears it.
+It used to be a `variacao-sem-vinculo` problema. Four grupo-level refusals remain
+under `### problemas` (and two per-variante ones: the Q1 bullet below, and the one
+after the list). A binding entry that
+exists but cannot be read is refused ("existe mas não pôde ser lido"); fix it in
+Variações. ⚠️ The
+dry run plans against no live tree, so it can never show the other three (S1, S2,
+S3) nor the Q1 one, and all four arrive after `update_item`, in the model leg, so
+the item fields are already sent:
+
+- On an UPDATE, `--live` refuses a custom grupo (no entry, or a stored `0`) that
+  pairs with no live tier, with one of two sentences (#1911 P14b). **S1**, when
+  a tier left over is CUSTOM and no STANDARD one left over is named like the grupo
+  (or nothing is readable): its name matches no live
+  tier through the name fold (the ends trimmed; case and inner spaces kept) —
+  "…Ajuste o nome do grupo em Variações, ou o do tier no Seller Centre, para que
+  os dois fiquem iguais." A grupo renamed in the ERP, or a migrated listing whose
+  tier was named by the legacy app, hits it. Only a rename clears it; a re-import
+  never does. **S2**, when every tier left over is STANDARD, or the grupo is
+  already named like a STANDARD tier left over: "Para esta conta e a
+  categoria {categoria}, o grupo "{G}" não tem vínculo com a variação padronizada
+  {ids}, que o anúncio usa — … Vincule o grupo a essa variação nessa categoria em
+  Variações (aba Shopee), ou importe o anúncio." Bind it in the binding editor on
+  `/variacoes/[id]`, tab Shopee; a re-import helps only when its cascade lands on
+  this grupo and the variantes are named like the live options.
+- Since #2043 it also refuses a stored STANDARD entry whose `variation_id` no live
+  tier carries (**S3**): "…Corrija o vínculo em Variações (aba Shopee): troque-o
+  pela variação que o anúncio usa ou remova-o." A re-import cannot clear it,
+  because the merge never overwrites a non-zero stored id and, beside another
+  variation, appends nothing to the entry. When the listing uses a standard
+  variation with options, swap the entry in the binding editor: remove it and add
+  one for the same conta and category with that variation, in one save. Otherwise
+  remove it, and the next run answers S1 or S2 by the live tier; when the tier is
+  custom, also rename the grupo (or the tier in Seller Centre) so the names match
+  (see `../lib/shopee/anuncios/README.md`).
+- Since #1911 P14b (**Q1**, Lucas 2026-11-11) it also refuses, per variante, an
+  APPEND under a stored STANDARD entry that paired BY NAME with a live CUSTOM
+  tier: a used variante that holds a row of the entry but that no live option
+  claims (tied to it by the import's rung 3, renamed in the ERP, or left behind by
+  a Seller Centre rename of the custom option) would become a new option and its
+  child's model would move onto it — "A variante "{v}" do grupo "{g}" não casa
+  pelo nome com nenhuma opção do tier personalizado "{tier}" do anúncio, e o
+  vínculo do grupo usa a variação padronizada {id} — … Renomeie a variante em
+  Variações para o nome da opção do anúncio, ou mova as variações deste anúncio
+  para outro grupo." When every tier is authored, the child's own "não tem
+  posição" line follows it. ⚠️ Both exits have unstated preconditions: the rename
+  works only when no other variante already claims that option (an id-`0` row
+  binding it to another variante, or an earlier variante of the same name — then
+  the refusal repeats naming the option itself), and the move only into a grupo
+  named like the tier (else S1) where each used variante is claimed by its live
+  option (else, under a custom entry, the model moves unrefused). Since Q-B
+  (Lucas 2026-11-11) this refusal YIELDS when the option duplicate check would
+  refuse the very option the variante would append — an earlier option of
+  another variante, itself unrefused, already took its key (the same non-zero
+  id, or at id `0` the same name sent — one id-`0` row binding both, say): that
+  check then refuses it `combinacao-duplicada`, and since the yield asks that
+  check, a yielded option is never appended unrefused. Its child is placed in
+  that grupo, so it gets no "não tem posição" line THERE but meets the remaining
+  model checks like any placed child (another grupo's position, price, stock).
+  Otherwise this refusal speaks for each: a non-zero row two unclaimed variantes
+  share, or a key only an option the check refuses on its variante key would
+  have taken (one variante claiming two live options). A
+  child bound to no live model (a brand-new variante, or an unlinked child whose
+  live model's SKU differs) is refused the same way, although no model of it
+  would move — open for Lucas (see `../lib/shopee/anuncios/README.md`).
+
+One more `variacao-sem-vinculo` the dry run CAN show, because the plan decides it
+without a live tree: a grupo whose STANDARD entry binds no option to a variante a
+child uses — "A variante "{v}" do grupo "{g}" não está vinculada a nenhuma opção
+da variação padronizada {id}. Corrija o vínculo em Variações (aba Shopee):
+vincule a variante a uma opção dessa variação, troque o vínculo por outra
+variação ou remova-o." Since #1911 P14b (#2108 point 8) the import no longer
+fills that entry with rows of another variation, so a grupo bound to one variation
+meets this first on a listing of another.
 
 ### 12.4 The live run
 
@@ -1189,6 +1253,28 @@ kit that slipped past the dispatcher, which is a defect of the ERP.
 - **`logistica-sem-canal`** on a shop whose only enabled channel needs a
   `size_id` the produto has none of (`SIZE_SELECTION`). A shop with no usable
   channel cannot publish, and that is Shopee's rule, not ours.
+- **A link with no `logisticaGravadaEm` ignores its stored list** (#2015). That
+  is every migrated link, and every staging link written before #2015. The
+  `### logistic_info` block then prints the FULL pass: every fitting channel,
+  with `is_free` from the produto flag. Its `pulados` read exactly like "no size
+  stored", and nothing in the output says the stored list was ignored. To keep
+  the listing's Seller Centre logistics, run
+  `pnpm --filter @delfrance/shopee-app importar:anuncio --integracao <conta> --item <item_id> --live`
+  first (§11), then dry-run again.
+- **`logistica-nao-confirmada`** (#2015): a compulsory `SIZE_SELECTION` /
+  `CUSTOM_PRICE` channel's size or fee sits only in such an unstamped list. Run
+  that same import for the `item_id` named in the sentence, then publish again.
+  A draft, a `removido` link or kit-criar gets `logistica-sem-canal` instead.
+- **`logistica-sem-valor-gravado`** (#2099, CPY-4): the same compulsory channel,
+  with NO usable size or fee for it in that unstamped list (absent, unreadable,
+  only another channel's, or no list at all). The sentence names the channel as `«nome» (id)` (the id
+  alone when the shop gives it no name) and the `item_id`. If the value is set in
+  Seller Centre, run that same import and publish again; if not, set it there
+  first. The import runs at the schema defaults, so it also re-prices that
+  listing's produto (or its children) from Shopee (`sobrescreverPreco: true`) and
+  appends the listing's photos the produto's current `fotos` lack (a photo removed
+  from the produto comes back). A draft, a `removido` link or kit-criar gets
+  `logistica-sem-canal` instead, as above.
 - **The ≥ 5 s wait looks like a hang** between `add_item` and the tier leg on a
   create with children. It is `esperar(5000)`, and it is deliberate: Shopee
   needs the item to settle before `init_tier_variation`.

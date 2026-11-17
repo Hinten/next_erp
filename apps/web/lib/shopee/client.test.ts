@@ -6,6 +6,9 @@ import {
   CODIGO_RASCUNHO_SHOPEE,
   MSG_ITEM_NAME_EM_BRANCO_RASCUNHO_SHOPEE,
   projetarTabelaShopee,
+  respostaAtributosShopeeSchema,
+  respostaCanaisShopeeSchema,
+  respostaVariacoesShopeeSchema,
 } from '@delfrance/schemas';
 
 import { shopeeClientFalso } from '@/lib/testing/shopeeClientFalso';
@@ -16,7 +19,9 @@ import {
   ShopeeClientRespostaInvalidaError,
   createShopeeClient,
   shopeeHttpFallbackMessage,
+  type CamposDaCriacaoRascunhoShopee,
   type CamposDoCorpoRascunhoShopee,
+  type PatchDoCorpoRascunhoShopee,
   type ShopeeClient,
 } from './client';
 import {
@@ -2463,14 +2468,20 @@ describe('step 21 — shopeeClientFalso, the ONE test client literal (C14)', () 
 // `rascunho-legado-1` (edits and discards take any id).
 const RASCUNHO_ID = 'AbCdEfGhIjKlMnOpQrSt';
 
-/** Every draft field, as a new draft's create names them (`attributes: null`). */
-const CAMPOS: CamposDoCorpoRascunhoShopee = {
+/**
+ * The five fields a create names (`attributes: null`) — never `logistic_info`:
+ * channels are chosen on a SAVED draft (D-13, #1911 P16).
+ */
+const CAMPOS_DA_CRIACAO: CamposDaCriacaoRascunhoShopee = {
   item_name: 'Camiseta básica',
   description: null,
   category_id: 100087,
   marca: { brand_id: 3001, original_brand_name: 'Marca Exemplo' },
   attributes: null,
 };
+
+/** EVERY draft field, the six a discard's `base` names — `logistic_info: null` is «Automática» (P16). */
+const CAMPOS: CamposDoCorpoRascunhoShopee = { ...CAMPOS_DA_CRIACAO, logistic_info: null };
 
 /** Two attributes in the REQUEST shape — a custom value, a listed one, a value with a unit. */
 const MATERIAL = {
@@ -2528,14 +2539,18 @@ const RECOMENDACAO_200 = {
 };
 
 describe('#1911 — each draft and taxonomy method: its route, its verb, its body BY NAME', () => {
+  // The create's `conteudo` is FIVE keys and the discard's `base` SIX (#1911
+  // P16): the same builder for both would put `logistic_info` on a create (a
+  // 400) or drop it from a discard (a draft whose channels were chosen
+  // meanwhile, compared without them).
   it.each([
     [
       'criarRascunho',
       (c: ReturnType<typeof client>) =>
-        c.criarRascunho({ ...ALVO_RASCUNHO, linkDocId: RASCUNHO_ID, conteudo: CAMPOS }),
+        c.criarRascunho({ ...ALVO_RASCUNHO, linkDocId: RASCUNHO_ID, conteudo: CAMPOS_DA_CRIACAO }),
       { linkDocId: RASCUNHO_ID, criado: true },
       `${BASE}/rascunho`,
-      { ...ALVO_RASCUNHO, linkDocId: RASCUNHO_ID, conteudo: CAMPOS },
+      { ...ALVO_RASCUNHO, linkDocId: RASCUNHO_ID, conteudo: CAMPOS_DA_CRIACAO },
     ],
     [
       'atualizarRascunho',
@@ -2623,6 +2638,8 @@ describe('#1911 — the draft bodies are rebuilt BY NAME, down to each attribute
   it('⭐ a caller’s `conteudo` carrying `item_id` / `logistic_info` never puts them on the wire', async () => {
     // Not a fresh literal: TypeScript lets the extra keys through, exactly as a
     // component spreading a stored link into the call would.
+    // A full six-field projection, spread: the stored list rides along exactly
+    // as a component spreading the held projection into a create would send it.
     const doLink = { ...CAMPOS, item_id: 1000001, logistic_info: [], estadoAnuncio: 'ativo' };
     const { c, pedidos } = gravador(JSON.stringify({ linkDocId: RASCUNHO_ID, criado: true }));
 
@@ -2642,17 +2659,39 @@ describe('#1911 — the draft bodies are rebuilt BY NAME, down to each attribute
     await comLixo.c.criarRascunho({
       ...ALVO_RASCUNHO,
       linkDocId: RASCUNHO_ID,
-      conteudo: { ...CAMPOS, item_id: 1000001 } as CamposDoCorpoRascunhoShopee,
+      conteudo: { ...CAMPOS_DA_CRIACAO, item_id: 1000001 } as CamposDaCriacaoRascunhoShopee,
     });
-    await limpo.c.criarRascunho({ ...ALVO_RASCUNHO, linkDocId: RASCUNHO_ID, conteudo: CAMPOS });
+    await limpo.c.criarRascunho({
+      ...ALVO_RASCUNHO,
+      linkDocId: RASCUNHO_ID,
+      conteudo: CAMPOS_DA_CRIACAO,
+    });
 
     expect(comLixo.pedidos[0]?.init?.body).toBe(limpo.pedidos[0]?.init?.body);
   });
 
-  it('⭐ an edit’s `base` AND `patch` drop a stray `item_id` / `logistic_info` too — both are rebuilt', async () => {
+  // Before #1911 P16 this test was «⭐ an edit’s `base` AND `patch` drop a stray
+  // `item_id` / `logistic_info` too — both are rebuilt»: no edit body accepted
+  // `logistic_info` yet, so the builder dropped it. Since the logistics editor it
+  // is a FIELD of both, rebuilt by name down to each channel.
+  it('⭐ an edit’s `base` AND `patch` carry `logistic_info` BY NAME — each channel only `{logistic_id, enabled, is_free}` (a stray `logistic_name` / `size_id` drops) ⟷ NEAR-MISS: `item_id` stays out', async () => {
     const { c, pedidos } = gravador(
       JSON.stringify({ linkDocId: 'rascunho-legado-1', gravados: [] }),
     );
+    // Not fresh literals: TypeScript lets each channel's extra keys through, as
+    // a component spreading a read-back entry into the list would.
+    // The projection's shape: a stored non-boolean `is_free` is `null` — sent as
+    // `null`, never coerced to `false`.
+    const vistoA = { logistic_id: 90003, enabled: true, is_free: null, logistic_name: 'Entrega A' };
+    const vistoB = { logistic_id: 90005, enabled: false, is_free: true, size_id: 7 };
+    const novoA = { logistic_id: 90003, enabled: true, is_free: false, logistic_name: 'Entrega A' };
+    const novoB = {
+      logistic_id: 90005,
+      enabled: true,
+      is_free: true,
+      size_id: 7,
+      estimated_shipping_fee: 9,
+    };
 
     await c.atualizarRascunho({
       ...ALVO_RASCUNHO,
@@ -2660,19 +2699,111 @@ describe('#1911 — the draft bodies are rebuilt BY NAME, down to each attribute
       base: {
         item_name: 'Camiseta',
         item_id: null,
-        logistic_info: [],
+        logistic_info: [vistoA, vistoB],
       } as Partial<CamposDoCorpoRascunhoShopee>,
       patch: {
         item_name: 'Camiseta básica',
         item_id: 1000001,
-      } as Partial<CamposDoCorpoRascunhoShopee>,
+        logistic_info: [novoA, novoB],
+      } as PatchDoCorpoRascunhoShopee,
     });
 
     expect(corpoEnviado(pedidos[0]?.init)).toStrictEqual({
       ...ALVO_RASCUNHO,
       linkDocId: 'rascunho-legado-1',
-      base: { item_name: 'Camiseta' },
-      patch: { item_name: 'Camiseta básica' },
+      base: {
+        item_name: 'Camiseta',
+        logistic_info: [
+          { logistic_id: 90003, enabled: true, is_free: null },
+          { logistic_id: 90005, enabled: false, is_free: true },
+        ],
+      },
+      patch: {
+        item_name: 'Camiseta básica',
+        logistic_info: [
+          { logistic_id: 90003, enabled: true, is_free: false },
+          { logistic_id: 90005, enabled: true, is_free: true },
+        ],
+      },
+    });
+  });
+
+  it('⭐ a discard’s `base` names `logistic_info` too — a chosen list by name, «Automática» as `null` ⟷ NEAR-MISS: never dropped, never `[]`', async () => {
+    const escolhida = gravador(
+      JSON.stringify({ linkDocId: 'rascunho-legado-1', descartado: true, criacaoIncerta: false }),
+    );
+    const automatica = gravador(
+      JSON.stringify({ linkDocId: 'rascunho-legado-1', descartado: true, criacaoIncerta: false }),
+    );
+
+    const comNome = { logistic_id: 90003, enabled: true, is_free: false, logistic_name: 'A' };
+    await escolhida.c.descartarRascunho({
+      ...ALVO_RASCUNHO,
+      linkDocId: 'rascunho-legado-1',
+      base: { ...CAMPOS, logistic_info: [comNome] },
+    });
+    await automatica.c.descartarRascunho({
+      ...ALVO_RASCUNHO,
+      linkDocId: 'rascunho-legado-1',
+      base: CAMPOS,
+    });
+
+    const baseDe = (g: ReturnType<typeof gravador>) =>
+      (corpoEnviado(g.pedidos[0]?.init) as { base: Record<string, unknown> }).base;
+    expect(baseDe(escolhida).logistic_info).toStrictEqual([
+      { logistic_id: 90003, enabled: true, is_free: false },
+    ]);
+    expect(baseDe(automatica)).toHaveProperty('logistic_info', null);
+    expect(Object.keys(baseDe(automatica)).sort()).toEqual(
+      ['attributes', 'category_id', 'description', 'item_name', 'logistic_info', 'marca'].sort(),
+    );
+  });
+
+  // P16: a base is compared IN ORDER against the stored projection, so a client
+  // that sorted it would turn a legacy unsorted read into a conflict — and a
+  // client that sorted the patch would hide the plan's own order from the test
+  // that pins it. Both orders travel as given.
+  it('⭐ VERBATIM: a base `[90005, 90003]` travels in that order — the client never sorts ⟷ `[90003, 90005]` likewise', async () => {
+    /** The ids each list of an edit and a discard carried on the wire, for one input order. */
+    async function idsNoFio(ids: readonly number[]) {
+      const canais = ids.map((id) => ({ logistic_id: id, enabled: true, is_free: false }));
+      const edicao = gravador(JSON.stringify({ linkDocId: 'rascunho-legado-1', gravados: [] }));
+      const descarte = gravador(
+        JSON.stringify({ linkDocId: 'rascunho-legado-1', descartado: true, criacaoIncerta: false }),
+      );
+
+      await edicao.c.atualizarRascunho({
+        ...ALVO_RASCUNHO,
+        linkDocId: 'rascunho-legado-1',
+        base: { logistic_info: canais },
+        patch: { logistic_info: canais },
+      });
+      await descarte.c.descartarRascunho({
+        ...ALVO_RASCUNHO,
+        linkDocId: 'rascunho-legado-1',
+        base: { ...CAMPOS, logistic_info: canais },
+      });
+
+      type ComLista = { logistic_info: { logistic_id: number }[] };
+      const corpo = corpoEnviado(edicao.pedidos[0]?.init) as { base: ComLista; patch: ComLista };
+      const descartado = corpoEnviado(descarte.pedidos[0]?.init) as { base: ComLista };
+      return {
+        base: corpo.base.logistic_info.map((canal) => canal.logistic_id),
+        patch: corpo.patch.logistic_info.map((canal) => canal.logistic_id),
+        descarte: descartado.base.logistic_info.map((canal) => canal.logistic_id),
+      };
+    }
+
+    // The edit's base, the edit's patch and the discard's base alike.
+    expect(await idsNoFio([90005, 90003])).toEqual({
+      base: [90005, 90003],
+      patch: [90005, 90003],
+      descarte: [90005, 90003],
+    });
+    expect(await idsNoFio([90003, 90005])).toEqual({
+      base: [90003, 90005],
+      patch: [90003, 90005],
+      descarte: [90003, 90005],
     });
   });
 
@@ -2736,13 +2867,14 @@ describe('#1911 — the draft bodies are rebuilt BY NAME, down to each attribute
     expect(corpo.patch).toStrictEqual({ category_id: null });
   });
 
-  // The row above pins `null` for `category_id` alone, so the other four keys of
+  // The row above pins `null` for `category_id` alone, so the other five keys of
   // the same builder could read `null` as "not named" and nothing would say so.
   // Each `null` here is a real edit: a legacy draft stored with no title, the
   // description handed back to the produto's own, the brand cleared, the
-  // attributes cleared. Dropped, the patch names nothing (a 400) or the base no
-  // longer names the patch's field (a 400) — the operator's edit never lands.
-  it.each<[string, Partial<CamposDoCorpoRascunhoShopee>, Partial<CamposDoCorpoRascunhoShopee>]>([
+  // attributes cleared, the channels handed back to «Automática» (P16). Dropped,
+  // the patch names nothing (a 400) or the base no longer names the patch's
+  // field (a 400) — the operator's edit never lands.
+  it.each<[string, Partial<CamposDoCorpoRascunhoShopee>, PatchDoCorpoRascunhoShopee]>([
     ['item_name (a `base` with no stored title)', { item_name: null }, { item_name: 'Camiseta' }],
     [
       'description (the produto’s own again)',
@@ -2755,7 +2887,16 @@ describe('#1911 — the draft bodies are rebuilt BY NAME, down to each attribute
       { category_id: null },
     ],
     ['marca (cleared)', { marca: CAMPOS.marca }, { marca: null }],
-    ['attributes (cleared)', { attributes: ATRIBUTOS }, { attributes: null }],
+    [
+      'attributes (cleared; `base` carrying the category the list was built for)',
+      { category_id: 100087, attributes: ATRIBUTOS },
+      { attributes: null },
+    ],
+    [
+      'logistic_info («Automática» again; `base` the stored list)',
+      { logistic_info: [{ logistic_id: 90003, enabled: true, is_free: false }] },
+      { logistic_info: null },
+    ],
   ])(
     '⭐ NEAR-MISS: an edit’s `null` %s is SENT — `null` is a value for every field, never "not named"',
     async (_campo, base, patch) => {
@@ -2795,7 +2936,7 @@ describe('#1911 — the draft bodies are rebuilt BY NAME, down to each attribute
         c.criarRascunho({
           ...ALVO_RASCUNHO,
           linkDocId: RASCUNHO_ID,
-          conteudo: CAMPOS,
+          conteudo: CAMPOS_DA_CRIACAO,
           confirmarSegundoAnuncio: flag,
         }),
       'confirmarSegundoAnuncio',
@@ -2837,7 +2978,7 @@ describe('#1911 — the draft answers an operator must read correctly', () => {
       const { c } = gravador(JSON.stringify({ linkDocId: RASCUNHO_ID, criado }), status);
 
       await expect(
-        c.criarRascunho({ ...ALVO_RASCUNHO, linkDocId: RASCUNHO_ID, conteudo: CAMPOS }),
+        c.criarRascunho({ ...ALVO_RASCUNHO, linkDocId: RASCUNHO_ID, conteudo: CAMPOS_DA_CRIACAO }),
       ).resolves.toEqual({ linkDocId: RASCUNHO_ID, criado });
     },
   );
@@ -2846,7 +2987,7 @@ describe('#1911 — the draft answers an operator must read correctly', () => {
     const { c } = gravador(JSON.stringify({ linkDocId: RASCUNHO_ID }), 201);
 
     const err = await c
-      .criarRascunho({ ...ALVO_RASCUNHO, linkDocId: RASCUNHO_ID, conteudo: CAMPOS })
+      .criarRascunho({ ...ALVO_RASCUNHO, linkDocId: RASCUNHO_ID, conteudo: CAMPOS_DA_CRIACAO })
       .catch((e: unknown) => e);
 
     expect(err).toBeInstanceOf(ShopeeClientRespostaInvalidaError);
@@ -2913,7 +3054,7 @@ describe('#1911 — the draft answers an operator must read correctly', () => {
       .criarRascunho({
         ...ALVO_RASCUNHO,
         linkDocId: RASCUNHO_ID,
-        conteudo: { ...CAMPOS, item_name: '   ' },
+        conteudo: { ...CAMPOS_DA_CRIACAO, item_name: '   ' },
       })
       .catch((e: unknown) => e)) as ShopeeClientHttpError;
 
@@ -3110,6 +3251,569 @@ describe('#1911 — `marcas`: one page of a category’s brands', () => {
     const err = await c.marcas({ integracaoId: 'int-1', categoryId: 999 }).catch((e: unknown) => e);
 
     expect(err).toBeInstanceOf(ShopeeClientHttpError);
+    expect((err as ShopeeClientHttpError).status).toBe(404);
+    expect((err as ShopeeClientHttpError).code).toBe('SHOPEE_CATEGORIA_DESCONHECIDA');
+    expect((err as ShopeeClientHttpError).message).toBe(
+      'Categoria 999 não existe na árvore desta conta.',
+    );
+  });
+});
+
+/**
+ * The tree as `GET …/taxonomia/variacoes` projects it: hand-written in the shape
+ * of the public `get_variation_tree.br-*` captures, because a web test cannot
+ * import `apps/shopee`'s fixtures. What the tree MEANS is `./variacoes.test.ts`.
+ */
+const VARIACOES_200 = {
+  leaf: true,
+  categoryId: 100244,
+  standardiseVariationList: [
+    {
+      variationId: 101056,
+      variationName: 'Tamanho',
+      variationGroupList: [
+        {
+          variationGroupId: 841350766059029,
+          variationGroupName: 'Tamanho (INT)',
+          variationOptionList: [{ variationOptionId: 6270, variationOptionName: 'M' }],
+        },
+        {
+          variationGroupId: 844758844060204,
+          variationGroupName: 'Tamanho (BR)',
+          variationOptionList: [{ variationOptionId: 6933, variationOptionName: 'M' }],
+        },
+      ],
+    },
+    {
+      variationId: 900001,
+      variationName: ' Estampa',
+      variationGroupList: [
+        {
+          variationGroupId: 0,
+          variationGroupName: '',
+          variationOptionList: [{ variationOptionId: 900101, variationOptionName: ' Azul ' }],
+        },
+      ],
+    },
+    { variationId: 103236, variationName: 'Estilo', variationGroupList: [] },
+  ],
+  pathUsed: '/api/v2/product/get_variation_tree',
+};
+
+/** The route's 502 when Shopee answers its 404: `respond.ts`'s body, by name. */
+const VARIACOES_502_NAO_ENCONTRADO = {
+  error: 'Shopee: error_not_found',
+  code: 'SHOPEE_HTTP_ERROR',
+  upstreamStatus: 404,
+  shopeeCode: 'error_not_found',
+  kind: 'other',
+};
+
+describe('#1911 (P14) — `variacoes`: a árvore de variações de uma categoria folha', () => {
+  it('⭐ um GET com as DUAS chaves codificadas, sem corpo e sem signal', async () => {
+    const { c, pedidos } = gravador(JSON.stringify(VARIACOES_200));
+
+    await c.variacoes({ integracaoId: 'int/1 2&x', categoryId: 100244 });
+
+    expect(pedidos).toHaveLength(1);
+    expect(pedidos[0]?.url).toBe(
+      `${BASE}/taxonomia/variacoes?integracaoId=int%2F1%202%26x&categoryId=100244`,
+    );
+    expect(pedidos[0]?.init?.method).toBe('GET');
+    expect(pedidos[0]?.init).not.toHaveProperty('body');
+    expect(pedidos[0]?.init !== undefined && 'signal' in pedidos[0].init).toBe(false);
+  });
+
+  it('⭐ um 200 é lido pelo schema compartilhado, e os nomes e ids chegam intactos', async () => {
+    const { c } = gravador(JSON.stringify(VARIACOES_200));
+
+    const lida = await c.variacoes({ integracaoId: 'int-1', categoryId: 100244 });
+
+    expect(lida).toEqual(respostaVariacoesShopeeSchema.parse(VARIACOES_200));
+    expect(lida).toEqual(VARIACOES_200);
+    const [tamanho, estampa] = lida.standardiseVariationList;
+    expect(tamanho?.variationGroupList[1]?.variationGroupId).toBe(844758844060204);
+    expect(estampa?.variationName).toBe(' Estampa');
+    expect(estampa?.variationGroupList[0]?.variationOptionList[0]?.variationOptionName).toBe(
+      ' Azul ',
+    );
+  });
+
+  it('uma chave desconhecida é descartada: uma rota mais nova não custa um navegador mais velho', async () => {
+    const { c } = gravador(JSON.stringify({ ...VARIACOES_200, campoDoFuturo: 1 }));
+
+    const lida = await c.variacoes({ integracaoId: 'int-1', categoryId: 100244 });
+
+    expect('campoDoFuturo' in lida).toBe(false);
+  });
+
+  it('uma categoria que não é folha responde o mesmo formato, vazio, e é lida', async () => {
+    const vazia = { ...VARIACOES_200, leaf: false, standardiseVariationList: [] };
+    const { c } = gravador(JSON.stringify(vazia));
+
+    await expect(c.variacoes({ integracaoId: 'int-1', categoryId: 100017 })).resolves.toEqual(
+      vazia,
+    );
+  });
+
+  it('⭐ um corpo sem `pathUsed` é RespostaInvalida, nunca uma árvore', async () => {
+    const { pathUsed: _semPath, ...semPath } = VARIACOES_200;
+    const { c } = gravador(JSON.stringify(semPath));
+
+    const err = await c
+      .variacoes({ integracaoId: 'int-1', categoryId: 100244 })
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ShopeeClientRespostaInvalidaError);
+    expect((err as ShopeeClientRespostaInvalidaError).campos).toEqual(['pathUsed']);
+  });
+
+  it.each([
+    [
+      'um id de variação entre aspas',
+      { variationId: '101056', variationName: 'Tamanho', variationGroupList: [] },
+      'standardiseVariationList[].variationId',
+    ],
+    [
+      'uma variação sem a lista de grupos',
+      { variationId: 101056, variationName: 'Tamanho' },
+      'standardiseVariationList[].variationGroupList',
+    ],
+  ])('NEAR-MISS: %s é RespostaInvalida', async (_n, variacao, campo) => {
+    const { c } = gravador(
+      JSON.stringify({ ...VARIACOES_200, standardiseVariationList: [variacao] }),
+    );
+
+    const err = await c
+      .variacoes({ integracaoId: 'int-1', categoryId: 100244 })
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ShopeeClientRespostaInvalidaError);
+    expect((err as ShopeeClientRespostaInvalidaError).campos).toContain(campo);
+  });
+
+  it('⭐ o 502 `error_not_found` chega como ShopeeClientHttpError, com esse `shopeeCode`', async () => {
+    const { c } = gravador(JSON.stringify(VARIACOES_502_NAO_ENCONTRADO), 502);
+
+    const err = await c
+      .variacoes({ integracaoId: 'int-1', categoryId: 100244 })
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ShopeeClientHttpError);
+    expect(err).not.toBeInstanceOf(ShopeeClientRespostaInvalidaError);
+    const http = err as ShopeeClientHttpError;
+    expect(http.status).toBe(502);
+    expect(http.code).toBe('SHOPEE_HTTP_ERROR');
+    expect(http.shopeeCode).toBe('error_not_found');
+    expect(http.kind).toBe('other');
+    expect(http.message).toBe('Shopee: error_not_found');
+  });
+
+  it('NEAR-MISS: a categoria desconhecida é um 404 com o código dela, sem `shopeeCode`', async () => {
+    const { c } = gravador(
+      JSON.stringify({
+        error: 'Categoria 999 não existe na árvore desta conta.',
+        code: 'SHOPEE_CATEGORIA_DESCONHECIDA',
+      }),
+      404,
+    );
+
+    const err = await c
+      .variacoes({ integracaoId: 'int-1', categoryId: 999 })
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ShopeeClientHttpError);
+    expect((err as ShopeeClientHttpError).status).toBe(404);
+    expect((err as ShopeeClientHttpError).code).toBe('SHOPEE_CATEGORIA_DESCONHECIDA');
+    expect((err as ShopeeClientHttpError).shopeeCode).toBeNull();
+  });
+});
+
+/* ---------------------------------------------------------------------------
+ * #1911 (P16) — `canais`: the shop's logistics channels for one produto, for a
+ * draft's «Logística» section
+ * ------------------------------------------------------------------------- */
+
+/**
+ * A `GET …/canais` 200 as the route answers it (#1911 P15): rows in
+ * `get_channel_list` order — 90005 BEFORE 90003, never sorted — with invented
+ * names, one row with no name and one channel the shop does not offer. What
+ * the rows MEAN is `./logisticaRascunho.test.ts`; the quoted-id, `0` and
+ * unknown-motivo cases are the shared schema's own (`logisticaShopeeDto.test.ts`).
+ */
+const CANAIS_200 = {
+  medidasCompletas: true,
+  canais: [
+    {
+      logisticsChannelId: 90005,
+      nome: 'Entrega B',
+      selecionavel: true,
+      obrigatorio: false,
+      bloqueiaFreteGratisDoVendedor: false,
+      indisponivel: null,
+      automatica: { isFree: false },
+    },
+    {
+      logisticsChannelId: 90003,
+      nome: null,
+      selecionavel: true,
+      obrigatorio: false,
+      bloqueiaFreteGratisDoVendedor: true,
+      indisponivel: 'nao-cabe',
+      automatica: null,
+    },
+    {
+      logisticsChannelId: 90007,
+      nome: 'Canal fora da loja',
+      selecionavel: false,
+      obrigatorio: false,
+      bloqueiaFreteGratisDoVendedor: false,
+      indisponivel: null,
+      automatica: null,
+    },
+  ],
+};
+
+describe('#1911 (P16) — `canais`: os canais de envio da loja para um produto', () => {
+  it('faz UM GET em /canais com integracaoId e produtoId codificados (`int/1 2&x`, `prod/1`), sem corpo e sem signal', async () => {
+    const { c, pedidos } = gravador(JSON.stringify(CANAIS_200));
+
+    // A caller object carrying a `signal` (a query context spread into the
+    // input) is not forwarded either: nothing cancels this read.
+    const comSinal = {
+      integracaoId: 'int/1 2&x',
+      produtoId: 'prod/1',
+      signal: new AbortController().signal,
+    };
+    await c.canais(comSinal);
+
+    expect(pedidos).toHaveLength(1);
+    expect(pedidos[0]?.url).toBe(`${BASE}/canais?integracaoId=int%2F1%202%26x&produtoId=prod%2F1`);
+    expect(pedidos[0]?.init?.method).toBe('GET');
+    expect(pedidos[0]?.init).not.toHaveProperty('body');
+    expect(pedidos[0]?.init?.headers).toEqual({
+      Authorization: 'Bearer token',
+      Accept: 'application/json',
+    });
+    expect(pedidos[0]?.init !== undefined && 'signal' in pedidos[0].init).toBe(false);
+  });
+
+  it('⭐ um 200 é lido pelo schema COMPARTILHADO — `nome: null` continua null, uma chave desconhecida (no topo e na linha) é descartada ⟷ NEAR-MISS: sem `medidasCompletas` ⇒ ShopeeClientRespostaInvalidaError, nunca lido como false', async () => {
+    const [entregaB, semNome, foraDaLoja] = CANAIS_200.canais;
+    const { c } = gravador(
+      JSON.stringify({
+        ...CANAIS_200,
+        campoDoFuturo: 1,
+        canais: [{ ...entregaB, campoDoFuturo: 2 }, semNome, foraDaLoja],
+      }),
+    );
+
+    const lida = await c.canais({ integracaoId: 'int-1', produtoId: 'prod-1' });
+
+    expect(lida).toEqual(respostaCanaisShopeeSchema.parse(CANAIS_200));
+    expect(lida).toStrictEqual(CANAIS_200);
+    expect('campoDoFuturo' in lida).toBe(false);
+    expect(lida.canais[0] !== undefined && 'campoDoFuturo' in lida.canais[0]).toBe(false);
+    // The shop's order, verbatim — the client never sorts the rows.
+    expect(lida.canais.map((canal) => canal.logisticsChannelId)).toEqual([90005, 90003, 90007]);
+    expect(lida.canais[1]?.nome).toBeNull();
+
+    // NEAR-MISS: the same body without `medidasCompletas`.
+    const { medidasCompletas: _semMedidas, ...semMedidas } = CANAIS_200;
+    const quebrado = gravador(JSON.stringify(semMedidas));
+
+    const err = await quebrado.c
+      .canais({ integracaoId: 'int-1', produtoId: 'prod-1' })
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ShopeeClientRespostaInvalidaError);
+    expect((err as ShopeeClientRespostaInvalidaError).campos).toEqual(['medidasCompletas']);
+  });
+
+  it("um 404 sem código (`{error:'Produto prod-1 não encontrado.'}`) ⇒ ShopeeClientHttpError 404, `code: null`, a frase da rota", async () => {
+    const { c, pedidos } = gravador(
+      JSON.stringify({ error: 'Produto prod-1 não encontrado.' }),
+      404,
+    );
+
+    const err = await c
+      .canais({ integracaoId: 'int-1', produtoId: 'prod-1' })
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ShopeeClientHttpError);
+    expect(err).not.toBeInstanceOf(ShopeeClientRespostaInvalidaError);
+    const http = err as ShopeeClientHttpError;
+    expect(http.status).toBe(404);
+    expect(http.code).toBeNull();
+    expect(http.message).toBe('Produto prod-1 não encontrado.');
+    // Never retried here: the query's `shopeeQueryRetry` decides.
+    expect(pedidos).toHaveLength(1);
+  });
+});
+
+/* ---------------------------------------------------------------------------
+ * #1911 (P13) — `atributos`: a leaf category's attribute tree, for a draft's
+ * «Atributos» section and its publish gate
+ * ------------------------------------------------------------------------- */
+
+/** One attribute's editor metadata as `GET …/taxonomia/atributos` projects it (every key present). */
+const INFO_ATRIBUTO = {
+  inputType: 1,
+  inputValidationType: 0,
+  formatType: 1,
+  dateFormatType: null,
+  attributeUnitList: null,
+  maxValueCount: null,
+  introduction: null,
+  isOem: false,
+  supportSearchValue: false,
+};
+
+/**
+ * The tree as the route projects it: hand-written in the shape of the public
+ * `get_attribute_tree.br-*` captures (Shopee's own taxonomy ids and names),
+ * because a web test cannot import `apps/shopee`'s fixtures. A mandatory
+ * attribute whose second value unlocks a mandatory child, and a typed decimal
+ * with its own unit list.
+ */
+const ATRIBUTOS_200 = {
+  leaf: true,
+  categoryId: 100087,
+  warning: null,
+  truncated: false,
+  atributos: [
+    {
+      attributeId: 100408,
+      mandatory: true,
+      name: 'Tipo de Conexão',
+      attributeInfo: INFO_ATRIBUTO,
+      attributeValueList: [
+        {
+          valueId: 2498,
+          name: 'Com fio, Sem conexão ou Outros',
+          valueUnit: null,
+          childAttributeList: [],
+        },
+        {
+          valueId: 2530,
+          name: 'Sem fio (Bluetooth, Wifi, Radiofrequência)',
+          valueUnit: null,
+          childAttributeList: [
+            {
+              attributeId: 101237,
+              mandatory: true,
+              name: 'Fabricante',
+              attributeInfo: {
+                ...INFO_ATRIBUTO,
+                inputType: 2,
+                inputValidationType: 2,
+                supportSearchValue: true,
+              },
+              attributeValueList: [],
+            },
+          ],
+        },
+      ],
+    },
+    {
+      attributeId: 101029,
+      mandatory: false,
+      name: 'Tamanho Do Pacote',
+      attributeInfo: {
+        ...INFO_ATRIBUTO,
+        inputType: 3,
+        inputValidationType: 3,
+        formatType: 2,
+        attributeUnitList: [
+          'ML',
+          'L',
+          'MG',
+          'G/GR',
+          'KG',
+          'CM',
+          'M',
+          'Dozen',
+          'Piece',
+          'Pack',
+          'Set',
+          'Box',
+        ],
+      },
+      attributeValueList: [],
+    },
+  ],
+};
+
+describe('#1911 (P13) — `atributos`: a árvore de atributos de uma categoria folha', () => {
+  it('⭐ um GET com as DUAS chaves codificadas, sem corpo, sem Content-Type e sem signal', async () => {
+    const { c, pedidos } = gravador(JSON.stringify(ATRIBUTOS_200));
+
+    await c.atributos({ integracaoId: 'int/1 2&x', categoryId: 100087 });
+
+    expect(pedidos).toHaveLength(1);
+    expect(pedidos[0]?.url).toBe(
+      `${BASE}/taxonomia/atributos?integracaoId=int%2F1%202%26x&categoryId=100087`,
+    );
+    expect(pedidos[0]?.init?.method).toBe('GET');
+    expect(pedidos[0]?.init).not.toHaveProperty('body');
+    expect(pedidos[0]?.init?.headers).toEqual({
+      Authorization: 'Bearer token',
+      Accept: 'application/json',
+    });
+    expect(pedidos[0]?.init !== undefined && 'signal' in pedidos[0].init).toBe(false);
+  });
+
+  it('NEAR-MISS: é a rota dos ATRIBUTOS — nem a dos limites, nem a das variações, com a mesma consulta', async () => {
+    const { c, pedidos } = gravador(JSON.stringify(ATRIBUTOS_200));
+
+    await c.atributos({ integracaoId: 'int-1', categoryId: 100087 });
+
+    expect(pedidos[0]?.url).toBe(
+      `${BASE}/taxonomia/atributos?integracaoId=int-1&categoryId=100087`,
+    );
+    expect(pedidos[0]?.url).not.toContain('/taxonomia/limites');
+    expect(pedidos[0]?.url).not.toContain('/taxonomia/variacoes');
+  });
+
+  it('⭐ um 200 é lido pelo schema compartilhado: o filho sob o valor, os ids e as unidades chegam intactos', async () => {
+    const { c } = gravador(JSON.stringify(ATRIBUTOS_200));
+
+    const lida = await c.atributos({ integracaoId: 'int-1', categoryId: 100087 });
+
+    expect(lida).toEqual(respostaAtributosShopeeSchema.parse(ATRIBUTOS_200));
+    expect(lida).toEqual(ATRIBUTOS_200);
+    const [conexao, pacote] = lida.atributos;
+    expect(conexao?.attributeValueList[1]?.childAttributeList[0]?.attributeId).toBe(101237);
+    // NEAR-MISS: the OTHER value unlocks nothing — the tree, not the client, says where a child hangs.
+    expect(conexao?.attributeValueList[0]?.childAttributeList).toEqual([]);
+    // Shopee's unit list verbatim: its order and its case (`ML`, never folded to `ml`).
+    expect(pacote?.attributeInfo?.attributeUnitList?.slice(0, 3)).toEqual(['ML', 'L', 'MG']);
+    expect(pacote?.attributeInfo?.attributeUnitList).not.toContain('ml');
+  });
+
+  it('`truncated: true` e o valor `0` são valores: a árvore incompleta é lida, não recusada', async () => {
+    const corpo = {
+      ...ATRIBUTOS_200,
+      truncated: true,
+      atributos: [
+        {
+          attributeId: 100999,
+          mandatory: false,
+          name: null,
+          attributeInfo: null,
+          attributeValueList: [{ valueId: 0, name: null, valueUnit: '', childAttributeList: [] }],
+        },
+      ],
+    };
+    const { c } = gravador(JSON.stringify(corpo));
+
+    await expect(c.atributos({ integracaoId: 'int-1', categoryId: 100087 })).resolves.toEqual(
+      corpo,
+    );
+  });
+
+  it('uma chave desconhecida é descartada, também dentro da árvore: uma rota mais nova não custa um navegador mais velho', async () => {
+    const corpo = {
+      ...ATRIBUTOS_200,
+      campoDoFuturo: 1,
+      atributos: [{ ...ATRIBUTOS_200.atributos[1], campoDoFuturo: 2 }],
+    };
+    const { c } = gravador(JSON.stringify(corpo));
+
+    const lida = await c.atributos({ integracaoId: 'int-1', categoryId: 100087 });
+
+    expect('campoDoFuturo' in lida).toBe(false);
+    expect(lida.atributos[0] !== undefined && 'campoDoFuturo' in lida.atributos[0]).toBe(false);
+  });
+
+  it('uma categoria que não é folha responde o mesmo formato, vazio, e é lida', async () => {
+    const vazia = { ...ATRIBUTOS_200, leaf: false, atributos: [] };
+    const { c } = gravador(JSON.stringify(vazia));
+
+    await expect(c.atributos({ integracaoId: 'int-1', categoryId: 100017 })).resolves.toEqual(
+      vazia,
+    );
+  });
+
+  it('⭐ um corpo sem `truncated` é RespostaInvalida, nunca uma árvore completa', async () => {
+    const { truncated: _semTruncated, ...semTruncated } = ATRIBUTOS_200;
+    const { c } = gravador(JSON.stringify(semTruncated));
+
+    const err = await c
+      .atributos({ integracaoId: 'int-1', categoryId: 100087 })
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ShopeeClientRespostaInvalidaError);
+    expect((err as ShopeeClientRespostaInvalidaError).campos).toEqual(['truncated']);
+  });
+
+  it.each([
+    [
+      'um id de atributo entre aspas',
+      [{ ...ATRIBUTOS_200.atributos[1], attributeId: '101029' }],
+      'atributos[].attributeId',
+    ],
+    [
+      'um FILHO com o id entre aspas (a recursão é lida)',
+      [
+        {
+          ...ATRIBUTOS_200.atributos[0],
+          attributeValueList: [
+            {
+              valueId: 2530,
+              name: 'Sem fio',
+              valueUnit: null,
+              childAttributeList: [
+                {
+                  attributeId: '101237',
+                  mandatory: true,
+                  name: 'Fabricante',
+                  attributeInfo: null,
+                  attributeValueList: [],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      'atributos[].attributeValueList[].childAttributeList[].attributeId',
+    ],
+    [
+      'uma lista de unidades que não é de textos',
+      [
+        {
+          ...ATRIBUTOS_200.atributos[1],
+          attributeInfo: { ...INFO_ATRIBUTO, formatType: 2, attributeUnitList: [1] },
+        },
+      ],
+      'atributos[].attributeInfo.attributeUnitList[]',
+    ],
+  ])('NEAR-MISS: %s é RespostaInvalida', async (_n, atributos, campo) => {
+    const { c } = gravador(JSON.stringify({ ...ATRIBUTOS_200, atributos }));
+
+    const err = await c
+      .atributos({ integracaoId: 'int-1', categoryId: 100087 })
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ShopeeClientRespostaInvalidaError);
+    expect((err as ShopeeClientRespostaInvalidaError).campos).toContain(campo);
+  });
+
+  it('a categoria desconhecida é o 404 com o código dela — a frase do backend', async () => {
+    const { c } = gravador(
+      JSON.stringify({
+        error: 'Categoria 999 não existe na árvore desta conta.',
+        code: 'SHOPEE_CATEGORIA_DESCONHECIDA',
+      }),
+      404,
+    );
+
+    const err = await c
+      .atributos({ integracaoId: 'int-1', categoryId: 999 })
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ShopeeClientHttpError);
+    expect(err).not.toBeInstanceOf(ShopeeClientRespostaInvalidaError);
     expect((err as ShopeeClientHttpError).status).toBe(404);
     expect((err as ShopeeClientHttpError).code).toBe('SHOPEE_CATEGORIA_DESCONHECIDA');
     expect((err as ShopeeClientHttpError).message).toBe(

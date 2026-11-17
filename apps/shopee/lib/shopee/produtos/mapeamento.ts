@@ -1148,6 +1148,17 @@ export function mapearFilho(args: ArgsMapearFilho): MapaProdutoShopee {
  * re-shaped into the `add_item` request shape: the legacy's re-shape silently
  * LOST every response value the request shape could not express.
  *
+ * ⚠️ **`logisticaGravadaEm: nowMs` rides beside `logistic_info` (#2015)** — the
+ * stamp that lets a publish re-send the stored list
+ * (`logisticaGravadaPeloErpShopee`), because this list is the one Shopee just
+ * answered. It is written in the SAME literal as the list, UNCONDITIONALLY
+ * (a read `null` list is written and stamped too: it holds nothing to re-send,
+ * so the planners' full pass runs anyway) and **after** the spread, so a
+ * stored `null` stamp can never ride forward over the list just written.
+ * Every caller inherits it: the item, kit and
+ * mass imports, and the draft adoption — which keeps it in its `dados`, never
+ * in the first-time-only keys or the keys the adoption clears.
+ *
  * ⚠️ `contaProdutoShopeeOuterRef` is stamped UNCONDITIONALLY and **after** the
  * spread, so the key is always present and always CANONICAL — never a stored
  * value riding forward. ⚠️ It does NOT heal a row whose ref drifted, and cannot:
@@ -1224,6 +1235,11 @@ export function dadosLinkListagem(
     pre_order: base.pre_order,
     item_status: itemStatusDeLink(entrada),
     logistic_info: base.logistic_info,
+    // ⚠️ The list's provenance stamp (#2015), in the SAME literal as the list
+    // and AFTER the spread — a stored `null` stamp never rides forward over
+    // the list Shopee just answered. UNCONDITIONAL, like the list itself (a
+    // read `null` list is stamped too). See the docblock.
+    logisticaGravadaEm: nowMs,
     wholesale: base.wholesales,
     // ⚠️ The brand is a PAIR, both halves from this ONE read (#1911, C9) — never
     // the id alone. See the docblock.

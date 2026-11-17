@@ -8,7 +8,6 @@ import {
 import {
   SHOPEE_GET_KIT_ITEM_LIMIT_PATH,
   SHOPEE_GET_VARIATIONS_PATH,
-  SHOPEE_GET_VARIATION_TREE_PATH_ALT,
   SHOPEE_SURFACE,
   ShopeeApiError,
   ShopeeConfigError,
@@ -552,14 +551,17 @@ describe('taxonomiaCtx', () => {
     };
   }
 
-  it('ecoa o caminho padrão de get_variations quando não há sobrescrita', () => {
-    expect(taxonomiaCtx(contextoDuplo(null)).variationsPath).toBe(SHOPEE_GET_VARIATIONS_PATH);
+  it('ecoa o caminho padrão de get_variations (get_variation_tree) quando não há sobrescrita', () => {
+    // O LITERAL, nunca a constante comparada com ela mesma.
+    expect(taxonomiaCtx(contextoDuplo(null)).variationsPath).toBe(
+      '/api/v2/product/get_variation_tree',
+    );
   });
 
   it('ecoa a sobrescrita — é ela que vai dentro da base string do HMAC', () => {
-    expect(taxonomiaCtx(contextoDuplo(SHOPEE_GET_VARIATION_TREE_PATH_ALT)).variationsPath).toBe(
-      SHOPEE_GET_VARIATION_TREE_PATH_ALT,
-    );
+    // A grafia dos EXEMPLOS da página: a única sobrescrita que ainda faz sentido.
+    const caminhoDosExemplos = '/api/v2/product/get_variations';
+    expect(taxonomiaCtx(contextoDuplo(caminhoDosExemplos)).variationsPath).toBe(caminhoDosExemplos);
   });
 
   it('recusa uma sobrescrita que não é um caminho', () => {

@@ -7,11 +7,12 @@
  * ⚠️ **`pathUsed` is on the body on purpose.** `get_variations` is the operation
  * whose own page contradicts itself — its `path`, `url` and `test_url` say
  * `/api/v2/product/get_variation_tree`, while all four of its samples call
- * `/api/v2/product/get_variations`. The path is INSIDE the HMAC base string, so
- * the wrong one comes back as `error_sign`, which reads exactly like a bad
- * partner key and points nowhere near here. Echoing the path this call actually
- * signed is what turns one sandbox call into an answer, and flipping it is an
- * env var (`SHOPEE_VARIATIONS_PATH`), not a redeploy.
+ * `/api/v2/product/get_variations`. SETTLED on BR production (2026-11-04): the
+ * default is `get_variation_tree`; the samples' spelling answers HTTP 404
+ * `error_not_found`, which this route surfaces as 502 `SHOPEE_HTTP_ERROR`.
+ * `SHOPEE_VARIATIONS_PATH` stays an escape hatch (the SG sandbox was never
+ * captured), flipped by an env var rather than a code change, and echoing the path
+ * this call actually signed is what makes an override observable.
  *
  * ⚠️ Leaf-gated: a mid-tree id answers an empty list with zero `get_variations`
  * calls. The gate itself still reads the category tree — one `get_category` on

@@ -324,8 +324,14 @@ export const respostaLimitesDoItemShopeeSchema = z.object({
   /** The merged GTIN rule; `null` — never `{}` — when Shopee sent none in either position. */
   gtinLimit: gtinLimitDtoSchema.nullable(),
   /**
-   * DERIVED by the route from the `-1` sentinel on `daysToShipLimit` — NOT
-   * Shopee's `support_pre_order`, which only the KIT page declares.
+   * DERIVED by the route from `daysToShipLimit` (guide 209 §4's `-1` sentinel;
+   * no band at all also answers `false`) — NOT Shopee's `support_pre_order`,
+   * which the KIT page's table declares and the ITEM page's does not. ⚠️ The BR
+   * ITEM page sends it anyway (2026-11-04): `true` for 100244, `false` for
+   * 101787, absent on the shop-wide read; this derivation agrees on both
+   * category reads, and no `-1` was observed — pinned by the `pino 4` describe
+   * of `apps/shopee/lib/shopee/fixtures/capturasBr.test.ts`. Shopee's own value
+   * is not projected here.
    */
   supportsPreOrder: z.boolean(),
 });

@@ -37,10 +37,24 @@
  *  - (step 14, PR 14-b) the package's write-client constructor is named by ONE
  *    production file, the write engine `core/escrita.ts`, across the WHOLE app
  *    (all of `lib/`, `app/`, `functions/`, `scripts/` and `proxy.ts`); `nfe/`
- *    reads no process environment; `nfe/tarefaNfe.ts`, `nfe/motivosNfe.ts` and
- *    `nfe/pedidoNfe.ts` stay LIGHT (no SP-API value import, nothing of
- *    `pedidos/` but `orderIds.ts`, type edges walked); and `node:crypto` (the
- *    NF-e digest's) stays out of the logger's import closure;
+ *    reads no process environment; and `node:crypto` (the NF-e digest's) stays
+ *    out of the logger's import closure;
+ *  - (step 14, PR 14-c) D11 by construction on the NF-e trigger, which runs on
+ *    EVERY `nfev4` write of the project: its closure with its composition root
+ *    (type edges walked) is pinned file by file and checked against its OWN
+ *    forbidden list — no context, conta read, credential, park, valve, env
+ *    reader, write engine, intake, other root, NF-e task module or `pedidos/`
+ *    module but the digest, and the SP-API package as TYPES only. It supersedes
+ *    14-b's LIGHT check of `nfe/tarefaNfe.ts`, `nfe/motivosNfe.ts` and
+ *    `nfe/pedidoNfe.ts`, which sit in that closure. The task-SDK helpers live in
+ *    `core/filaTarefas.ts`, the one production importer of the Cloud Tasks SDK
+ *    under `lib/amazon`, and every `getFunctions(` root of the app (FIVE since
+ *    step 12a, PR 12-c) is pinned to the queue(s) it binds; and each of
+ *    the two Delivery calls
+ *    (`getInvoiceStatus`, `submitInvoice`) has exactly ONE caller module,
+ *    `nfe/entregaAmazon.ts`, across `lib/`, `app/`, `functions/src` and
+ *    `scripts/` (tests exempt by construction: they name the helpers to drive
+ *    a recording client or an injected fetch);
  *  - (step 2b) no `.message` inside a logger call (any `.info|warn|error(`, or
  *    any non-call line writer), no `console.` anywhere, no `catch` in the
  *    logger or the redactor (they are total by construction), and only the
@@ -73,7 +87,67 @@
  *    conta write of every channel: its transitive import closure (type edges
  *    walked too, so it fails closed) is pinned file by file, reaches no context,
  *    conta read, credential, park, valve, env reader, intake or queue module, and
- *    imports the SP-API package as TYPES only (read off the TypeScript AST).
+ *    imports the SP-API package as TYPES only (read off the TypeScript AST);
+ *  - (step 15, PR 15-b) `agendamento/` is Next-free, reads no process
+ *    environment and never imports the `@/` alias; the write engine has exactly
+ *    TWO callers, one per write flow (`nfe/processarNfe.ts`,
+ *    `agendamento/executarAgendamento.ts`; three since step 12, PR 12-e1:
+ *    `estoque/processarEstoque.ts`); the Restricted Data Token mint and
+ *    the Easy Ship bulk are named in production code by ONE module,
+ *    `agendamento/easyShipAmazon.ts`, across `lib/`, `app/`, `functions/src` and
+ *    `scripts/` (the redactor, the logger's local literal and the sanitizer's
+ *    bulk-path rows aside); and the observer seam stays at FOUR sites, the
+ *    engine's one inside its one client builder;
+ *  - (step 15, PR 15-c) the scheduling queue has its OWN composition root
+ *    (`functions/src/agendadorAgendamento.ts`, the fourth `getFunctions(`
+ *    caller); no production file under `agendamento/` makes a Firestore WRITE
+ *    call (the task's avisos go through `avisos/avisos.ts`); and neither the NF-e
+ *    trigger's D11 closure nor the App Hosting union walk (every entry but the
+ *    label route, below) reaches `agendamento/` or that root;
+ *  - (step 15, PR 15-d) the label route `POST /api/marketplace/amazon/etiqueta`
+ *    is the ONE App Hosting entry allowed to reach the write engine. It gets its
+ *    OWN walk and its OWN forbidden list ({@link PROIBIDOS_NA_ROTA_ETIQUETA}): no
+ *    importer, no seam, no NF-e submit module, no scheduling task or producer,
+ *    no queue producer of this backend, and exactly one file of it names the
+ *    write client. The union walk still
+ *    refuses the engine and the scheduling modules. The route's own files write
+ *    no Firestore document, name no aviso writer and enqueue nothing; and the two
+ *    document helpers are named, comments included, by ONE production file,
+ *    `agendamento/etiquetaAmazon.ts`;
+ *  - (step 12a, PR 12-b) `feeds/` is Next-free, reads no process environment
+ *    and never imports the `@/` alias; the write engine's SECOND entry, the
+ *    batch entry `executarLoteEscritaAmazon`, has its OWN caller roster, kept
+ *    apart from the first entry's; both entries reach the write client through
+ *    the engine's one private write helper, so the write-client builder keeps
+ *    its three places and the observer seam its four sites;
+ *  - (step 12a, PR 12-c) the batch entry's roster is the send handler alone
+ *    (`feeds/enviarFeed.ts`); the jobs queue has its OWN composition root
+ *    (`functions/src/agendadorEstoque.ts`, the fifth `getFunctions(` caller),
+ *    and the App Hosting root binds it too, for the receiver's feed wake-up;
+ *    the six feed helpers of the SP-API package are named in production code
+ *    by ONE module, `feeds/feedsAmazon.ts` (the redactor aside); the App
+ *    Hosting union walk reaches no feed handler — of `feeds/`, only the jobs
+ *    producer and the payload contract; and under `feeds/` only the lease I/O
+ *    and the record's two writers make a Firestore WRITE call;
+ *  - (step 12, PR 12-d) `estoque/` is Next-free, reads no process environment
+ *    and never imports the `@/` alias; its PURE half (the nine modules PR 12-d
+ *    shipped, and every module not in the I/O half below) imports by value only
+ *    its siblings, the shared quantity core, the schemas, the SP-API package,
+ *    `zod`, and exactly two named helpers of `@delfrance/data` (`sha256Hex`,
+ *    `contaRefForms`) (the order import's resolution and the write engine's
+ *    plan as TYPES only; both `@delfrance/data` barrels load Admin modules
+ *    transitively, and no pure module calls one); and under it `publicado` is
+ *    named by the family projection alone (never a gate);
+ *  - (step 12, PR 12-e1) `estoque/`'s I/O half — the resolver, the family
+ *    read, the outcome write-back, the producer and the patch task — loads
+ *    EXACTLY the modules {@link E_S_EM_ESTOQUE} lists, and no pure module
+ *    imports it; `estoque/` is imported by exactly
+ *    {@link IMPORTADORES_DE_ESTOQUE}; under it only the write-back makes a
+ *    Firestore WRITE call (its one precondition update);
+ *    `listings/listingsAmazon.ts` is the ONE caller of the package's three
+ *    listings helpers; the App Hosting union walk reaches none of
+ *    {@link MODULOS_DE_ESTOQUE_FORA_DO_APP_HOSTING}; and the stock root
+ *    (`functions/src/agendadorEstoque.ts`) binds the jobs and the stock queues.
  */
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, posix, relative, sep } from 'node:path';
@@ -518,8 +592,12 @@ function sellersLogados(arquivo: string, texto: string): string[] {
   return achados;
 }
 
-/** The ONE production module under `lib/amazon` that may import the Cloud Tasks SDK. */
-const IMPORTADOR_DO_SDK_DE_TAREFAS = 'notificacoes/agendador.ts';
+/**
+ * The ONE production module under `lib/amazon` that may import the Cloud Tasks
+ * SDK: the shared task-SDK helpers (step 14, PR 14-c — moved there out of the
+ * reads-queue producer `notificacoes/agendador.ts`, which re-exports them).
+ */
+const IMPORTADOR_DO_SDK_DE_TAREFAS = 'core/filaTarefas.ts';
 
 /**
  * Of `fontes` (paths relative to `lib/amazon`, with their text), the PRODUCTION
@@ -535,7 +613,11 @@ function importadoresDoSdkDeTarefas(fontes: readonly (readonly [string, string])
     .sort();
 }
 
-/** The App Hosting composition root of the reads queue (3-c): one of the app's two `getFunctions(` callers. */
+/**
+ * The App Hosting composition root of the reads queue (3-c), since step 14 (PR
+ * 14-d) of the NF-e queue's re-drive producer, and since step 12a (PR 12-c) of
+ * the jobs queue's feed wake-up: one of the app's five `getFunctions(` callers.
+ */
 const ARQUIVO_RAIZ_DA_FILA = 'lib/firebase/filaLeitura.ts';
 
 /** The push receiver's route and body, relative to the app root (3-c). */
@@ -570,8 +652,60 @@ function importacoesProibidasNoReceptor(arquivo: string, texto: string): string[
 /** A CALL of the Admin SDK's `getFunctions` (comments aside): only a composition root binds the queue. */
 const chamaGetFunctions = (texto: string) => /\bgetFunctions\s*\(/.test(semComentarios(texto));
 
-/** The functions codebase's composition root of the reads queue (3-d): the app's other `getFunctions(` caller. */
+/** The functions codebase's composition root of the reads queue (3-d): a second `getFunctions(` caller. */
 const ARQUIVO_RAIZ_DA_FILA_FUNCOES = 'functions/src/agendador.ts';
+
+/** The functions codebase's composition root of the NF-e queue (step 14, PR 14-c): the THIRD caller. */
+const ARQUIVO_RAIZ_DA_FILA_NFE = 'functions/src/agendadorNfe.ts';
+
+/**
+ * The functions codebase's composition root of the Easy Ship scheduling queue
+ * (step 15, PR 15-c): the FOURTH caller, never a second builder in the NF-e
+ * root, whose closure the NF-e trigger's D11 guard pins file by file.
+ */
+const ARQUIVO_RAIZ_DA_FILA_AGENDAMENTO = 'functions/src/agendadorAgendamento.ts';
+
+/**
+ * The functions codebase's composition root of the stock flow (step 12a, PR
+ * 12-c: the jobs queue; step 12, PR 12-e1: the stock queue too): the FIFTH
+ * caller, for the feed handlers' own enqueues, the patch task's own and the
+ * feed providers' (`functions/src/filaLotes.ts`'s seam root). Its own file,
+ * never a producer added to another root, whose closure would then reach the
+ * feed core or the stock flow.
+ */
+const ARQUIVO_RAIZ_DO_AGENDADOR_ESTOQUE = 'functions/src/agendadorEstoque.ts';
+
+/**
+ * Each composition root and the queue(s) it binds, by the path builders it
+ * calls: a root that binds another root's queue — the NF-e producer added to
+ * the functions codebase's reads-queue root, whose closure the NF-e trigger
+ * must never reach — is a different file than this table says. The App
+ * Hosting root binds THREE queues (since step 14, PR 14-d: the re-drive route's
+ * NF-e producer; since step 12a, PR 12-c: the receiver's feed wake-up onto the
+ * jobs queue), behind its ONE `getFunctions(` call
+ * (`lib/firebase/filaLeitura.test.ts` pins the single call); the stock root
+ * binds TWO (since step 12, PR 12-e1: the stock queue beside the jobs queue),
+ * behind its own one call (`functions/src/agendadorEstoque.test.ts`).
+ */
+const FILAS_DE_CADA_RAIZ: Readonly<Record<string, readonly string[]>> = {
+  [ARQUIVO_RAIZ_DA_FILA]: [
+    'caminhoDaFilaAmazon',
+    'caminhoDaFilaLotesAmazon',
+    'caminhoDaFilaNfeAmazon',
+  ],
+  [ARQUIVO_RAIZ_DA_FILA_FUNCOES]: ['caminhoDaFilaAmazon'],
+  [ARQUIVO_RAIZ_DA_FILA_NFE]: ['caminhoDaFilaNfeAmazon'],
+  [ARQUIVO_RAIZ_DA_FILA_AGENDAMENTO]: ['caminhoDaFilaAgendamentoAmazon'],
+  [ARQUIVO_RAIZ_DO_AGENDADOR_ESTOQUE]: ['caminhoDaFilaEstoqueAmazon', 'caminhoDaFilaLotesAmazon'],
+};
+
+/** The queue-path builders a source CALLS (comments aside), sorted and deduplicated. */
+function filasDaRaiz(texto: string): string[] {
+  const nomes = [...semComentarios(texto).matchAll(/\b(caminhoDaFila\w*)\s*\(/g)].map(
+    (m) => m[1] ?? '',
+  );
+  return [...new Set(nomes)].sort();
+}
 
 /* --------------------- step 3 (3-d): the functions codebase --------------------- */
 
@@ -736,6 +870,36 @@ const CHAMADA_DE_GET_ORDER =
 
 const nomeiaGetOrder = (texto: string) => CHAMADA_DE_GET_ORDER.test(semComentarios(texto));
 
+/* -------------- step 14 (14-c): the Delivery calls' single caller -------------- */
+
+/**
+ * The ONE module that may call `getInvoiceStatus` and `submitInvoice` (step-14
+ * plan §2.2: a W10 verification script can spend none of the Delivery budget,
+ * and a second submit path would bypass status-first).
+ */
+const CHAMADOR_DA_ENTREGA = 'lib/amazon/nfe/entregaAmazon.ts';
+
+/**
+ * Production files that NAME a Delivery operation without calling it: the log
+ * and fixture redactor keys its allow-list tables by the operation (its closure
+ * is pinned to `zod` and `@delfrance/core/*`). Tests are exempt by construction
+ * (the scan reads no test file): `nfe/conteudoNfe.test.ts`, `core/escrita.test.ts`
+ * and the package-shaped fixture tests name the helpers to drive a recording
+ * client or an injected fetch, and call nothing real.
+ */
+const NOMEIAM_A_ENTREGA_SEM_CHAMAR = ['lib/amazon/core/redacao.ts'];
+
+/** A `getInvoiceStatus` call site, in comment-free code (the getOrder scan's shape). */
+const CHAMADA_DE_STATUS_DA_NFE =
+  /\bconsultarStatusNotaFiscal\b|\bCAMINHO_STATUS_NOTA_FISCAL\b|\bOPERACAO_GET_INVOICE_STATUS\b|\brespostaStatusNotaFiscalSchema\b|['"`]getInvoiceStatus['"`]/;
+
+/** A `submitInvoice` call site, in comment-free code. */
+const CHAMADA_DE_ENVIO_DA_NFE =
+  /\benviarNotaFiscal\b|\bCAMINHO_NOTA_FISCAL\b|\bOPERACAO_SUBMIT_INVOICE\b|\brespostaEnvioNotaFiscalSchema\b|['"`]submitInvoice['"`]/;
+
+const nomeiaStatusDaNfe = (texto: string) => CHAMADA_DE_STATUS_DA_NFE.test(semComentarios(texto));
+const nomeiaEnvioDaNfe = (texto: string) => CHAMADA_DE_ENVIO_DA_NFE.test(semComentarios(texto));
+
 /** The ONE module that may open a `WriteBatch` (plan §3 decision 1). */
 const LOTE_DO_IMPORTADOR = 'lib/amazon/pedidos/escritaPedido.ts';
 
@@ -779,11 +943,18 @@ const importaModulo = (arquivo: string, texto: string, alvo: string) =>
       (espec.startsWith('.') || espec.startsWith('@/')) && moduloDe(arquivo, espec) === alvo,
   );
 
+/** The jobs queue's pure producer (step 12a, PR 12-c): on the App Hosting walk for the receiver's wake-up. */
+const PRODUTOR_DE_LOTES = 'lib/amazon/feeds/agendadorLotes.ts';
+
+/** The jobs queue's payload contract (step 12a, PR 12-b): what the producer and the receiver build. */
+const CONTRATO_DE_LOTES = 'lib/amazon/feeds/tarefaLote.ts';
+
 /**
  * The App Hosting bundle's entry points, relative to the APP root: every
  * production file under `app/` (the routes, the push receiver's included), the
  * proxy, and — named too, although the routes reach them — the receiver's body,
- * its queue producer and the queue's App Hosting composition root.
+ * its two queue producers (the reads queue's; since step 12a, PR 12-c, the jobs
+ * queue's) and the queues' App Hosting composition root.
  */
 const entradasDoAppHosting = (): string[] => [
   ...arquivosTs(join(RAIZ_APP, 'app'))
@@ -792,8 +963,55 @@ const entradasDoAppHosting = (): string[] => [
   'proxy.ts',
   'lib/amazon/notificacoes/receptor.ts',
   'lib/amazon/notificacoes/agendador.ts',
+  PRODUTOR_DE_LOTES,
   'lib/firebase/filaLeitura.ts',
 ];
+
+/**
+ * The feed core's WIRING (step 12a, PR 12-c), none of which an App Hosting entry
+ * needs: the dispatcher, the four handlers, the one caller of the SP-API feed
+ * helpers and the lease I/O. The receiver's wake-up reaches only
+ * {@link PRODUTOR_DE_LOTES} and {@link CONTRATO_DE_LOTES} of `feeds/`.
+ */
+const MODULOS_DE_FEED_FORA_DO_APP_HOSTING = [
+  'lib/amazon/feeds/processarLote.ts',
+  'lib/amazon/feeds/enviarFeed.ts',
+  'lib/amazon/feeds/resultadoFeed.ts',
+  'lib/amazon/feeds/incertoFeed.ts',
+  'lib/amazon/feeds/recuperarFeed.ts',
+  'lib/amazon/feeds/feedsAmazon.ts',
+  'lib/amazon/feeds/vezFeedFirestore.ts',
+];
+
+/**
+ * The stock flow's WIRING (step 12, PR 12-e1), none of which an App Hosting
+ * entry needs: the patch task (it PATCHes through the engine, behind the queue's
+ * concurrency 1 and its own budget) and its three Firestore I/O modules (the
+ * masked link read, the family read, the outcome write-back). A route that
+ * reaches the task could send a PATCH outside the stock queue; the stock
+ * producer and the payload contract stay allowed (a route may ENQUEUE a task).
+ */
+const MODULOS_DE_ESTOQUE_FORA_DO_APP_HOSTING = [
+  'lib/amazon/estoque/processarEstoque.ts',
+  'lib/amazon/estoque/resolverEstoque.ts',
+  'lib/amazon/estoque/familiaEstoqueFirestore.ts',
+  'lib/amazon/estoque/envioEstoqueFirestore.ts',
+];
+
+/**
+ * The label route (step 15, PR 15-d), relative to the APP root: the ONE App
+ * Hosting entry allowed to reach the write engine (step-15 plan §3 decision 13).
+ * {@link entradasDoAppHosting} discovers every file under `app/`, so taking it out
+ * of the union walk needs this pinned path.
+ */
+const ARQUIVO_ROTA_ETIQUETA = 'app/api/marketplace/amazon/etiqueta/route.ts';
+
+/**
+ * The UNION walk's entries: every App Hosting entry but the label route, which is
+ * walked alone against {@link PROIBIDOS_NA_ROTA_ETIQUETA}.
+ */
+const entradasDaUniaoDoAppHosting = (): string[] =>
+  entradasDoAppHosting().filter((e) => e !== ARQUIVO_ROTA_ETIQUETA);
 
 /**
  * The app's `@/` alias (`tsconfig.json` `paths`: `@/*` → `./*`), as a
@@ -810,26 +1028,91 @@ const resolverAliasDoApp =
     return [`${base}.ts`, `${base}.tsx`, `${base}/index.ts`].find((c) => ler(c) !== null) ?? base;
   };
 
-/** What the App Hosting closure may never reach (the importer and the seam that holds it). */
-const PROIBIDOS_NO_APP_HOSTING = [SEAM_DO_IMPORTADOR, 'lib/amazon/pedidos/importarPedido.ts'];
+/** The SP-API write engine (step 14, PR 14-b): the ONE builder of a write client. */
+const MOTOR_DE_ESCRITA = 'lib/amazon/core/escrita.ts';
 
 /**
- * Why the App Hosting closure (a {@link fechoDeImportacoes} walk with the alias
- * resolver; type edges walked too, since {@link especificadores} reads every
- * `from '…'`) breaks plan §3 decisions 32 and 48; empty when it does not: it
- * reaches the seam or the importer, imports the ViaCEP module (by value or by
- * type), or holds an import the walk could not resolve (fail closed).
+ * What the App Hosting union walk may never reach: the importer and the seam that
+ * holds it (5-e); since the NF-e re-drive route joined the bundle (step 14, PR
+ * 14-d), the write ENGINE, because a route that can reach it can build a write
+ * client and bypass the task's valve and canary (step-14 plan §3 decision 20);
+ * and since the label route (step 15, PR 15-d), the four scheduling modules no
+ * App Hosting entry needs: the task, its producer, its two entries and its
+ * payload (`notificacoes/notificacao.ts` declares the shapes it needs itself);
+ * and since the receiver's feed wake-up (step 12a, PR 12-c), the feed core's
+ * wiring ({@link MODULOS_DE_FEED_FORA_DO_APP_HOSTING}): a bundle that reaches a
+ * handler, the lease I/O or the one caller of the feed helpers can submit a feed
+ * outside the jobs queue; and since the stock queue (step 12, PR 12-e1), the
+ * stock flow's wiring ({@link MODULOS_DE_ESTOQUE_FORA_DO_APP_HOSTING}).
  */
-function violacoesDoAppHosting(fecho: {
-  arquivos: readonly string[];
-  externos: readonly string[];
-}): string[] {
+const PROIBIDOS_NO_APP_HOSTING = [
+  SEAM_DO_IMPORTADOR,
+  'lib/amazon/pedidos/importarPedido.ts',
+  MOTOR_DE_ESCRITA,
+  'lib/amazon/agendamento/agendadorAgendamento.ts',
+  'lib/amazon/agendamento/entradasAgendamento.ts',
+  'lib/amazon/agendamento/processarAgendamento.ts',
+  'lib/amazon/agendamento/tarefaAgendamento.ts',
+  ...MODULOS_DE_FEED_FORA_DO_APP_HOSTING,
+  ...MODULOS_DE_ESTOQUE_FORA_DO_APP_HOSTING,
+];
+
+/**
+ * What the label route's OWN walk may never reach (step-15 plan §3 decision 13):
+ * it may reach the engine, through the run, but it schedules or prints inside a
+ * request and does nothing else. So: not the importer and its seam, not the
+ * NF-e submit modules, not the scheduling task, its producer or its entries.
+ * And, because the route enqueues nothing (step-15 plan §3 decision 14), not
+ * this backend's own producers either: the queue's App Hosting root, the reads
+ * and NF-e producers, and the task-SDK helpers. ViaCEP and `node:crypto` are the
+ * shared `externos` check of {@link violacoesDoAppHosting}.
+ */
+const PROIBIDOS_NA_ROTA_ETIQUETA = [
+  SEAM_DO_IMPORTADOR,
+  'lib/amazon/pedidos/importarPedido.ts',
+  'lib/amazon/nfe/processarNfe.ts',
+  'lib/amazon/nfe/entregaAmazon.ts',
+  'lib/amazon/nfe/conteudoNfe.ts',
+  'lib/amazon/nfe/carimboFreteNfe.ts',
+  'lib/amazon/agendamento/processarAgendamento.ts',
+  'lib/amazon/agendamento/agendadorAgendamento.ts',
+  'lib/amazon/agendamento/entradasAgendamento.ts',
+  'lib/firebase/filaLeitura.ts',
+  'lib/amazon/notificacoes/agendador.ts',
+  'lib/amazon/nfe/agendadorNfe.ts',
+  'lib/amazon/core/filaTarefas.ts',
+];
+
+/**
+ * `node:crypto` (any spelling): the NF-e body's MD5 lives in
+ * `nfe/conteudoNfe.ts`, the task's — an App Hosting file importing it is a
+ * route building an upload.
+ */
+const ehCriptoDoNode = (espec: string) => espec === 'node:crypto' || espec === 'crypto';
+
+/**
+ * Why an App Hosting walk (a {@link fechoDeImportacoes} walk with the alias
+ * resolver; type edges walked too, since {@link especificadores} reads every
+ * `from '…'`) breaks plan §3 decisions 32 and 48 (or step-14 plan §3 decision
+ * 20, or step-15 plan §3 decision 13); empty when it does not: it reaches a file
+ * on `proibidos` (by default {@link PROIBIDOS_NO_APP_HOSTING}; the label route's
+ * walk passes {@link PROIBIDOS_NA_ROTA_ETIQUETA}), imports the ViaCEP module (by
+ * value or by type) or `node:crypto`, or holds an import the walk could not
+ * resolve (fail closed).
+ */
+function violacoesDoAppHosting(
+  fecho: {
+    arquivos: readonly string[];
+    externos: readonly string[];
+  },
+  proibidos: readonly string[] = PROIBIDOS_NO_APP_HOSTING,
+): string[] {
   const violacoes: string[] = [];
   for (const arquivo of fecho.arquivos) {
-    if (PROIBIDOS_NO_APP_HOSTING.includes(arquivo)) violacoes.push(`reaches ${arquivo}`);
+    if (proibidos.includes(arquivo)) violacoes.push(`reaches ${arquivo}`);
   }
   for (const espec of fecho.externos) {
-    if (ehViaCep(espec)) violacoes.push(`imports ${espec}`);
+    if (ehViaCep(espec) || ehCriptoDoNode(espec)) violacoes.push(`imports ${espec}`);
     else if (espec.startsWith('?')) violacoes.push(`unresolved ${espec.slice(1)}`);
   }
   return violacoes;
@@ -924,10 +1207,12 @@ function importacoesDeValor(texto: string): string[] {
 }
 
 /**
- * Why the trigger's closure (a {@link fechoDeImportacoes} walk from app-root
- * paths) could reach Amazon; empty when it cannot:
+ * Why a trigger's closure (a {@link fechoDeImportacoes} walk from app-root
+ * paths) could reach Amazon; empty when it cannot. `proibidos` is the
+ * trigger's OWN list — {@link PROIBIDOS_NO_GATILHO} for the conta trigger,
+ * {@link PROIBIDOS_NO_GATILHO_NFE} for the NF-e one:
  *
- * - every reached file whose RESOLVED path is in {@link PROIBIDOS_NO_GATILHO};
+ * - every reached file whose RESOLVED path is in `proibidos`;
  * - every VALUE import of the SP-API package, or any subpath, in any reached
  *   file ({@link importacoesDeValor}) — a type import is fine, and is what
  *   `core/log.ts` does; a dynamic import of a computed name too (fail closed);
@@ -946,6 +1231,7 @@ function importacoesDeValor(texto: string): string[] {
 function violacoesD11(
   fecho: { arquivos: readonly string[]; externos: readonly string[] },
   ler: LeitorDeFonte,
+  proibidos: readonly RegExp[],
 ): string[] {
   const violacoes: string[] = [];
   const externos = new Set(fecho.externos);
@@ -956,7 +1242,7 @@ function violacoesD11(
     return fecho.arquivos.includes(alvo) || externos.has(`?${alvo}`);
   };
   for (const arquivo of fecho.arquivos) {
-    if (PROIBIDOS_NO_GATILHO.some((re) => re.test(arquivo))) violacoes.push(`reaches ${arquivo}`);
+    if (proibidos.some((re) => re.test(arquivo))) violacoes.push(`reaches ${arquivo}`);
     for (const espec of importacoesDeValor(ler(arquivo) ?? '')) {
       if (ehDoPacoteSpApi(espec)) violacoes.push(`${arquivo} imports ${espec} as a value`);
       else if (espec === '<dinamico>') violacoes.push(`${arquivo} imports a computed module`);
@@ -981,9 +1267,48 @@ const CLIENTE_DE_ESCRITA = /\bcriarClienteEscritaSpApi\b/;
 /** Whether a source names the write-client constructor in CODE (comments aside). */
 const nomeiaClienteDeEscrita = (texto: string) => CLIENTE_DE_ESCRITA.test(semComentarios(texto));
 
+/* --------------------- step 14 (PR 14-c): the NF-e trigger, D11 by construction --------------------- */
+
+/** The NF-e trigger and its composition root, relative to the APP root. */
+const ENTRADAS_DO_GATILHO_NFE = [
+  'functions/src/onNfeAprovadaAmazon.ts',
+  'functions/src/agendadorNfe.ts',
+];
+
 /**
- * The NF-e modules 14-c's trigger closure will reach, kept LIGHT now (their
- * headers and `apps/amazon/CLAUDE.md` say so): relative to the APP root.
+ * The app files (relative to the APP root) the NF-e trigger's closure may never
+ * reach — designed for THIS trigger, which runs on EVERY `nfev4` write of the
+ * project: the conta context and every module that reads a conta, a credential,
+ * the park, a valve or the environment, and the write engine; the intake and the
+ * conta flows; the App Hosting composition roots; every `pedidos/` module but
+ * the importer's digest (`orderIds.ts`, the ownership proof's); the NF-e
+ * task's own modules (the handler, the Amazon calls, the stamp, the content
+ * digest, the decision tables, the status reader, the live gates); and the
+ * functions codebase's other roots (`options.ts` included: the trigger carries
+ * no region of its own).
+ *
+ * ⚠️ This is why the NF-e root is a separate file and why the task-SDK helpers
+ * moved to `core/filaTarefas.ts`: `functions/src/agendador.ts` →
+ * `notificacoes/agendador.ts` → `./notificacao` (by VALUE) → the context, the
+ * conta reads and the SP-API error classes.
+ */
+const PROIBIDOS_NO_GATILHO_NFE = [
+  /^lib\/amazon\/core\/(?:contexto|contas|valvulas|estacionamento|credentialStore|renovacaoUnica|agente|contaCache|escrita)\.ts$/,
+  /^lib\/amazon\/env\.ts$/,
+  /^lib\/amazon\/(?:notificacoes|conta)\//,
+  /^lib\/firebase\//,
+  /^lib\/amazon\/pedidos\/(?!orderIds\.ts$)/,
+  /^lib\/amazon\/nfe\/(?:processarNfe|entregaAmazon|carimboFreteNfe|conteudoNfe|decisaoNfe|statusNfe|gatesPedidoNfe)\.ts$/,
+  /^functions\/src\/(?:depsLeitura|agendador|filaLeitura|filaNfe|pollPedidos|options)\.ts$/,
+];
+
+/**
+ * The three NF-e modules 14-b shipped LIGHT for this trigger (their headers
+ * say so). Their old dedicated guard is SUPERSEDED by the trigger's: they sit
+ * in its EXACT closure, and every check that guard made — a value or computed
+ * import of the SP-API package, any `pedidos/` module but the digest, an
+ * unresolved relative import, an `@/` one — is a check of {@link violacoesD11}
+ * under {@link PROIBIDOS_NO_GATILHO_NFE}, over a superset of their closure.
  */
 const MODULOS_LEVES_DA_NFE = [
   'lib/amazon/nfe/tarefaNfe.ts',
@@ -991,35 +1316,223 @@ const MODULOS_LEVES_DA_NFE = [
   'lib/amazon/nfe/pedidoNfe.ts',
 ];
 
-/** The ONE `pedidos/` module the light NF-e modules may reach: the importer's digest. */
+/** The ONE `pedidos/` module the NF-e trigger may reach: the importer's digest. */
 const ORDER_IDS_DA_NFE = 'lib/amazon/pedidos/orderIds.ts';
 
+/* --------------------- step 15 (PR 15-b): the Easy Ship scheduling --------------------- */
+
 /**
- * Why the light NF-e modules' closure is not light; empty when it is: a reached
- * `pedidos/` file other than the digest, a VALUE import of the SP-API package
- * (or a computed one) in any reached file, an unresolved relative import or an
- * `@/` one (fail closed). A narrower cousin of {@link violacoesD11}; 14-c's
- * trigger guard walks the whole trigger and supersedes it.
+ * The ONLY production callers of the write engine: one per write flow (step-15
+ * plan §3 decision 13) — the scheduling run, the stock patch task (step 12, PR
+ * 12-e1) and the NF-e task.
  */
-function violacoesDosModulosLevesDaNfe(
-  fecho: { arquivos: readonly string[]; externos: readonly string[] },
-  ler: LeitorDeFonte,
-): string[] {
-  const violacoes: string[] = [];
-  for (const arquivo of fecho.arquivos) {
-    if (arquivo.startsWith('lib/amazon/pedidos/') && arquivo !== ORDER_IDS_DA_NFE) {
-      violacoes.push(`reaches ${arquivo}`);
-    }
-    for (const espec of importacoesDeValor(ler(arquivo) ?? '')) {
-      if (ehDoPacoteSpApi(espec)) violacoes.push(`${arquivo} imports ${espec} as a value`);
-      else if (espec === '<dinamico>') violacoes.push(`${arquivo} imports a computed module`);
+const CHAMADORES_DO_MOTOR_DE_ESCRITA = [
+  'lib/amazon/agendamento/executarAgendamento.ts',
+  'lib/amazon/estoque/processarEstoque.ts',
+  'lib/amazon/nfe/processarNfe.ts',
+];
+
+/**
+ * A CALL of the write engine, in comment-free code — a type argument list
+ * allowed, its own declaration (`function executarEscritaAmazon<…>(`) not.
+ */
+const CHAMADA_DO_MOTOR_DE_ESCRITA =
+  /(?<!\bfunction\s+)\bexecutarEscritaAmazon\s*(?:<[^()]*>\s*)?\(/;
+
+const chamaOMotorDeEscrita = (texto: string) =>
+  CHAMADA_DO_MOTOR_DE_ESCRITA.test(semComentarios(texto));
+
+/**
+ * The production files that may NAME the write engine at all: its own module
+ * (the declaration) and its three callers. The NAME scan fails closed where the
+ * call scan cannot: an aliased import (`executarEscritaAmazon as motor`), a
+ * bound reference or a re-export runs the engine under another name, and only
+ * the name gives it away.
+ */
+const NOMEIAM_O_MOTOR_DE_ESCRITA = [MOTOR_DE_ESCRITA, ...CHAMADORES_DO_MOTOR_DE_ESCRITA].sort();
+
+const nomeiaOMotorDeEscrita = (texto: string) =>
+  /\bexecutarEscritaAmazon\b/.test(semComentarios(texto));
+
+/** The ONE module that may name the token mint and the Easy Ship bulk. */
+const CHAMADOR_DO_EASY_SHIP = 'lib/amazon/agendamento/easyShipAmazon.ts';
+
+/**
+ * Production files that NAME the mint or the bulk without calling either, each
+ * with why: the redactor keys its allow-list tables by the operation and its
+ * path (its closure is pinned to `zod` and `@delfrance/core/*`); the logger
+ * holds the bulk's operation as a LOCAL literal
+ * (`OPERACOES_COM_TOKEN_RESTRITO_AMAZON`, the line's `rdt` class: it may import
+ * the package as TYPES only); and three sanitizer modules name the bulk's
+ * operation or path for its capture attachments, never a helper. Tests are
+ * exempt by construction (the scan reads no test file): they name the helpers
+ * to drive a recording client or an injected fetch.
+ */
+const NOMEIAM_O_EASY_SHIP_SEM_CHAMAR = [
+  'lib/amazon/core/log.ts',
+  'lib/amazon/core/redacao.ts',
+  'lib/amazon/sanitizacao/capturaParaFixture.ts',
+  'lib/amazon/sanitizacao/executar.ts',
+  'lib/amazon/sanitizacao/requisicao.ts',
+];
+
+/**
+ * A mint or bulk call site, in comment-free code: either package helper, the
+ * mint's one resource, either operation-name or path constant, either response
+ * schema, either operation name, or either path — anywhere in a string.
+ */
+const CHAMADA_DO_EASY_SHIP =
+  /\bcriarTokenRestrito\b|\bagendarPacotesEasyShip\b|\bRECURSO_RESTRITO_AGENDAMENTO\b|\bOPERACAO_TOKEN_RESTRITO\b|\bCAMINHO_TOKEN_RESTRITO\b|\brespostaTokenRestritoSchema\b|\bOPERACAO_AGENDAMENTO_EASY_SHIP\b|\bCAMINHO_AGENDAMENTO_EASY_SHIP\b|\brespostaAgendamentoEasyShipSchema\b|\bcreateRestrictedDataToken\b|\bcreateScheduledPackageBulk\b|\/tokens\/2021-03-01\/restrictedDataToken|\/easyShip\/2022-03-23\/packages\/bulk/;
+
+const nomeiaOEasyShip = (texto: string) => CHAMADA_DO_EASY_SHIP.test(semComentarios(texto));
+
+/** The write engine's one client builder (step-15 plan §2, PR 15-b). */
+const CONSTRUTOR_LOCAL_DO_MOTOR = 'construirClienteEscrita';
+
+/* --------------------- step 12a (PR 12-b): the batch entry --------------------- */
+
+/**
+ * The ONLY production callers of the write engine's batch entry: since the feed
+ * wiring (step 12a, PR 12-c), the send handler alone — every feed of every
+ * batch fluxo is built and submitted there. A roster of its own, never merged
+ * into {@link CHAMADORES_DO_MOTOR_DE_ESCRITA}: that one is one caller per write
+ * flow of the FIRST entry, and its regexes would refuse a batch caller anyway.
+ */
+const CHAMADORES_DO_LOTE_DE_ESCRITA: readonly string[] = ['lib/amazon/feeds/enviarFeed.ts'];
+
+/**
+ * A CALL of the batch entry, in comment-free code — a type argument list
+ * allowed, its own declaration (`function executarLoteEscritaAmazon<…>(`) not.
+ */
+const CHAMADA_DO_LOTE_DE_ESCRITA =
+  /(?<!\bfunction\s+)\bexecutarLoteEscritaAmazon\s*(?:<[^()]*>\s*)?\(/;
+
+const chamaOLoteDeEscrita = (texto: string) =>
+  CHAMADA_DO_LOTE_DE_ESCRITA.test(semComentarios(texto));
+
+/**
+ * The production files that may NAME the batch entry at all: the engine (the
+ * declaration) and the batch roster. As for the first entry, the NAME scan
+ * fails closed where the call scan cannot (an alias, a bound reference, a
+ * re-export).
+ */
+const NOMEIAM_O_LOTE_DE_ESCRITA = [MOTOR_DE_ESCRITA, ...CHAMADORES_DO_LOTE_DE_ESCRITA].sort();
+
+const nomeiaOLoteDeEscrita = (texto: string) =>
+  /\bexecutarLoteEscritaAmazon\b/.test(semComentarios(texto));
+
+/** The engine's one private write helper: both entries reach the write client through it. */
+const ESCRITA_UNICA_DO_MOTOR = 'escreverUmaVez';
+
+/* --------------------- step 12a (PR 12-c): the feed wiring --------------------- */
+
+/**
+ * The ONE module that may call the SP-API package's six feed helpers
+ * (`createFeedDocument`, `createFeed`, `getFeed`, `getFeedDocument`, the
+ * document upload and the report download): a second caller would spend the
+ * feed operations' small quotas outside the jobs queue's serial dispatch (and
+ * `createFeed` is not idempotent), and the two pre-signed URLs never leave it.
+ */
+const CHAMADOR_DOS_FEEDS = 'lib/amazon/feeds/feedsAmazon.ts';
+
+/**
+ * Production files that NAME a feed operation without calling it, each with
+ * why: the log and fixture redactor keys its allow-list tables by the operation
+ * and its path (its closure is pinned to `zod` and `@delfrance/core/*`, so it
+ * cannot reach a client). Every other mention — the handlers' docblocks, the
+ * sanitizer's method rows (a bare object key, `getFeed: ['GET']`) — is a comment
+ * or no call shape. Tests are exempt by construction (the scan reads no test
+ * file): they name the helpers to drive a scripted fetch.
+ */
+const NOMEIAM_FEEDS_SEM_CHAMAR = ['lib/amazon/core/redacao.ts'];
+
+/**
+ * A feed call site, in comment-free code: any of the six package helpers, the
+ * four operation-name constants, either path constant, the four answer schemas,
+ * any of the four operation names as a WHOLE string, or a feeds path anywhere
+ * in a string.
+ */
+const CHAMADA_DOS_FEEDS =
+  /\b(?:criarDocumentoFeedAmazon|criarFeedAmazon|lerFeedAmazon|lerDocumentoFeedAmazon|enviarDocumentoFeedAmazon|baixarRelatorioFeedAmazon|OPERACAO_CRIAR_DOCUMENTO_FEED|OPERACAO_CRIAR_FEED|OPERACAO_LER_FEED|OPERACAO_LER_DOCUMENTO_FEED|CAMINHO_DOCUMENTOS_FEED|CAMINHO_FEEDS|documentoFeedCriadoSchema|feedCriadoSchema|feedAmazonSchema|documentoFeedSchema)\b|['"`](?:createFeedDocument|createFeed|getFeed|getFeedDocument)['"`]|\/feeds\/2021-06-30\//;
+
+const nomeiaOsFeeds = (texto: string) => CHAMADA_DOS_FEEDS.test(semComentarios(texto));
+
+/**
+ * A Firestore WRITE call under `feeds/`, in comment-free code: `update`,
+ * `create`, `batch`, `merge` and `mergeIfExists` on any receiver, and `set`,
+ * `delete` and `add` on a ref (a name ending in `ref`/`Ref`), a collection
+ * handle (`…Collection`) or a call's result (`docRef(…).set(`). A bare
+ * `.set(`/`.delete(` on any other name is a `Map`'s or a `Set`'s — the report
+ * reducer groups its issues in one — so the scan stays out of it.
+ */
+const ESCRITA_FIRESTORE_EM_FEEDS =
+  /\.\s*(?:update|create|batch|merge|mergeIfExists)\s*\(|(?:\b\w*(?:ref|Ref|Collection)|\))\s*\.\s*(?:set|delete|add)\s*\(/g;
+
+/**
+ * The ONLY files under `feeds/` that write Firestore, each with its writes and
+ * why: the lease I/O (`create` on a missing lease, `update` on the read it
+ * decided from, through `vezFeedAmazonCollection`), the send handler's record
+ * `create` (tier 0, after the lease names the feed) and the result handler's
+ * record `update` (tier 1, through `feedAmazonCollection`). Every other module
+ * — the dispatcher, the uncertain path, the recovery, the producer, the seam —
+ * writes through these or through `avisos/avisos.ts`.
+ */
+const ESCRITORES_EM_FEEDS: Readonly<Record<string, number>> = {
+  'feeds/vezFeedFirestore.ts': 2,
+  'feeds/enviarFeed.ts': 1,
+  'feeds/resultadoFeed.ts': 1,
+};
+
+/* --------------------- step 12 (PR 12-e1): the listings wire --------------------- */
+
+/**
+ * The ONE module that may call the SP-API package's three listings helpers
+ * (`getListingsItem`, `searchListingsItems` and the availability
+ * `patchListingsItem`): a second caller would spend the listings operations'
+ * small rates outside the stock queue's serial dispatch, and a second PATCH
+ * path would sit behind no budget and no ordering guard. Step 13 imports this
+ * module for its own bodies.
+ */
+const CHAMADOR_DOS_LISTINGS = 'lib/amazon/listings/listingsAmazon.ts';
+
+/**
+ * Production files that NAME a listings operation without calling it, each with
+ * why: the log and fixture redactor keys its allow-list tables by the operation
+ * and its path (its closure is pinned to `zod` and `@delfrance/core/*`, so it
+ * cannot reach a client); and the patch task names the PATCH's operation
+ * constant ONLY to tell the PATCH's own failure (it may have landed) from an
+ * LWA exchange's or the read's, on the error's `operacao` — it calls the
+ * helpers through {@link CHAMADOR_DOS_LISTINGS}. Every other mention — the
+ * valves' and the plan's docblocks, the sanitizer's method rows (a bare object
+ * key, `getListingsItem: ['GET', 'PATCH']`) — is a comment or no call shape.
+ * Tests are exempt by construction (the scan reads no test file): they name the
+ * helpers to drive a scripted fetch.
+ */
+const NOMEIAM_LISTINGS_SEM_CHAMAR = [
+  'lib/amazon/core/redacao.ts',
+  'lib/amazon/estoque/processarEstoque.ts',
+];
+
+/**
+ * A listings call site, in comment-free code: any of the three package helpers,
+ * the three operation-name constants, the path constant, the three answer
+ * schemas, any of the three operation names as a WHOLE string, or a listings
+ * path anywhere in a string.
+ */
+const CHAMADA_DOS_LISTINGS =
+  /\b(?:lerListingAmazon|buscarListingsAmazon|enviarDisponibilidadeAmazon|OPERACAO_LER_LISTING|OPERACAO_BUSCAR_LISTINGS|OPERACAO_ENVIAR_LISTING|CAMINHO_LISTINGS|listingAmazonSchema|buscaListingsAmazonSchema|envioListingAmazonSchema)\b|['"`](?:getListingsItem|searchListingsItems|patchListingsItem)['"`]|\/listings\/2021-08-01\//;
+
+const nomeiaOsListings = (texto: string) => CHAMADA_DOS_LISTINGS.test(semComentarios(texto));
+
+/** The source text of the top-level function `nome` in `texto`, or `null`. */
+function textoDaFuncao(texto: string, nome: string): string | null {
+  const fonte = ts.createSourceFile('x.ts', texto, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  for (const declaracao of fonte.statements) {
+    if (ts.isFunctionDeclaration(declaracao) && declaracao.name?.text === nome) {
+      return declaracao.getText(fonte);
     }
   }
-  for (const espec of fecho.externos) {
-    if (espec.startsWith('?')) violacoes.push(`unresolved ${espec.slice(1)}`);
-    else if (espec.startsWith('@/')) violacoes.push(`imports ${espec} (the alias is not walked)`);
-  }
-  return violacoes;
+  return null;
 }
 
 /* -------------------------------- the pinned lines -------------------------------- */
@@ -1049,6 +1562,7 @@ describe('lib/amazon layout', () => {
         'core/contexto.ts',
         'core/credentialStore.ts',
         'core/erros.ts',
+        'core/filaTarefas.ts',
         'core/estacionamento.ts',
         'core/formatoDaRef.ts',
         'core/idConta.ts',
@@ -1059,13 +1573,43 @@ describe('lib/amazon layout', () => {
         'core/renovacaoUnica.ts',
         'core/respond.ts',
         'core/valvulas.ts',
+        'estoque/descobertaEstoque.ts',
+        'estoque/envioEstoque.ts',
+        'estoque/envioEstoqueFirestore.ts',
+        'estoque/familiaEstoque.ts',
+        'estoque/familiaEstoqueFirestore.ts',
+        'estoque/gateListing.ts',
+        'estoque/motivosEstoque.ts',
+        'estoque/opcoesEstoque.ts',
+        'estoque/planoEstoque.ts',
+        'estoque/processarEstoque.ts',
+        'estoque/produtorEstoque.ts',
+        'estoque/resolverEstoque.ts',
+        'estoque/tarefaEstoque.ts',
+        'estoque/vinculoEstoque.ts',
+        'feeds/destinosLote.ts',
+        'feeds/escadaFeed.ts',
+        'feeds/provedorLote.ts',
+        'feeds/registroFeed.ts',
+        'feeds/relatorioFeed.ts',
+        'feeds/tarefaLote.ts',
+        'feeds/vezFeed.ts',
         'frete/estadoFreteAmazon.ts',
         'frete/intFrete.ts',
+        'listings/listingsAmazon.ts',
+        'nfe/agendadorNfe.ts',
+        'nfe/avisoNfe.ts',
+        'nfe/carimboFreteNfe.ts',
         'nfe/conteudoNfe.ts',
         'nfe/decisaoNfe.ts',
+        'nfe/destinoAceite.ts',
+        'nfe/entregaAmazon.ts',
         'nfe/gatesPedidoNfe.ts',
+        'nfe/gatilhoNfe.ts',
         'nfe/motivosNfe.ts',
         'nfe/pedidoNfe.ts',
+        'nfe/processarNfe.ts',
+        'nfe/reenvioNfe.ts',
         'nfe/statusNfe.ts',
         'nfe/tarefaNfe.ts',
         'notificacoes/agendador.ts',
@@ -1075,6 +1619,14 @@ describe('lib/amazon layout', () => {
         'notificacoes/notificacao.ts',
         'notificacoes/prazo.ts',
         'notificacoes/receptor.ts',
+        'agendamento/agendadorAgendamento.ts',
+        'agendamento/decisaoAgendamento.ts',
+        'agendamento/easyShipAmazon.ts',
+        'agendamento/entradasAgendamento.ts',
+        'agendamento/etiquetaAmazon.ts',
+        'agendamento/executarAgendamento.ts',
+        'agendamento/processarAgendamento.ts',
+        'agendamento/tarefaAgendamento.ts',
         'pedidos/clienteAmazon.ts',
         'pedidos/codigosPedidoAmazon.ts',
         'pedidos/dinheiroAmazon.ts',
@@ -1082,6 +1634,7 @@ describe('lib/amazon layout', () => {
         'pedidos/escritaPagamento.ts',
         'pedidos/escritaPedido.ts',
         'pedidos/estadoPedidoAmazon.ts',
+        'pedidos/falhaLeituraAmazon.ts',
         'pedidos/freteAmazon.ts',
         'pedidos/importarPedido.ts',
         'pedidos/incidentesPedidoAmazon.ts',
@@ -1104,7 +1657,9 @@ describe('lib/amazon layout', () => {
         'testing/fixtures.ts',
         'testing/guardaDaLaneDeTarefas.ts',
         'testing/pedidoWireAmazon.ts',
+        'testing/produtorAgendamento.ts',
         'testing/sandboxBr.ts',
+        'testing/zipEtiqueta.ts',
         'sanitizacao/requisicao.ts',
         'sanitizacao/local.ts',
         'sanitizacao/lote.ts',
@@ -1367,13 +1922,19 @@ describe('the step-2b logger guards', () => {
     },
   );
 
-  it('no `console.` under lib/amazon (comments aside): the sink writes stdout itself', () => {
-    for (const arquivo of arquivosTs(RAIZ_LIB).filter((p) => !ehTeste(p))) {
-      expect(semComentarios(readFileSync(arquivo, 'utf8')), rel(arquivo)).not.toMatch(
-        /\bconsole\./,
-      );
-    }
-  });
+  // A parse of every production file under lib/amazon: it took 5.5 s on a CI runner (#2130, #2142)
+  // against vitest's 5 s default. CI headroom, not a budget — the same as the app-wide parse above.
+  it(
+    'no `console.` under lib/amazon (comments aside): the sink writes stdout itself',
+    { timeout: 30_000 },
+    () => {
+      for (const arquivo of arquivosTs(RAIZ_LIB).filter((p) => !ehTeste(p))) {
+        expect(semComentarios(readFileSync(arquivo, 'utf8')), rel(arquivo)).not.toMatch(
+          /\bconsole\./,
+        );
+      }
+    },
+  );
 
   it('neither the logger nor the redactor has a `catch` at all (total by construction)', () => {
     for (const arquivo of ['core/log.ts', 'core/redacao.ts']) {
@@ -1425,23 +1986,43 @@ describe('the step-3 intake guards', () => {
 
   // An app-wide parse (≈ 0.2–0.4 s locally, more on a CI runner): CI headroom, not a budget.
   it(
-    'no file under lib/amazon calls getFunctions(, and the two composition roots are the app’s only callers',
+    'no file under lib/amazon calls getFunctions(, and the FIVE composition roots are the app’s only callers, each binding its own queue',
     { timeout: 30_000 },
     () => {
       const lib = arquivosTs(RAIZ_LIB).filter((p) => !ehTeste(p));
       expect(lib.filter((p) => chamaGetFunctions(readFileSync(p, 'utf8'))).map(rel)).toEqual([]);
-      // The EXACT list of composition roots, app-wide: the App Hosting receiver's
-      // `lib/firebase/filaLeitura.ts` (3-c) and the functions codebase's
-      // `functions/src/agendador.ts` (3-d, the step-4 poll's).
+      // The EXACT list of composition roots, app-wide: the App Hosting
+      // `lib/firebase/filaLeitura.ts` (3-c: the receiver's; since step 14, PR
+      // 14-d, the re-drive route's NF-e producer too; since step 12a, PR 12-c,
+      // the receiver's jobs producer), the functions codebase's
+      // `functions/src/agendador.ts` (3-d, the step-4 poll's), its NF-e root
+      // `functions/src/agendadorNfe.ts` (step 14, PR 14-c), its scheduling
+      // root `functions/src/agendadorAgendamento.ts` (step 15, PR 15-c) and its
+      // stock root `functions/src/agendadorEstoque.ts` (step 12a, PR 12-c: the
+      // jobs queue; step 12, PR 12-e1: the stock queue).
       // Every file the walk returns (`.ts`, `.tsx`, `.mjs`): a `.tsx` page is app code too.
       const app = arquivosTs(RAIZ_APP).filter((p) => !ehTeste(p));
       expect(app.length).toBeGreaterThan(40);
-      expect(
-        app
-          .filter((p) => chamaGetFunctions(readFileSync(p, 'utf8')))
-          .map(relApp)
-          .sort(),
-      ).toEqual([ARQUIVO_RAIZ_DA_FILA_FUNCOES, ARQUIVO_RAIZ_DA_FILA].sort());
+      const raizes = app
+        .filter((p) => chamaGetFunctions(readFileSync(p, 'utf8')))
+        .map(relApp)
+        .sort();
+      expect(raizes).toEqual(
+        [
+          ARQUIVO_RAIZ_DA_FILA_FUNCOES,
+          ARQUIVO_RAIZ_DA_FILA,
+          ARQUIVO_RAIZ_DA_FILA_NFE,
+          ARQUIVO_RAIZ_DA_FILA_AGENDAMENTO,
+          ARQUIVO_RAIZ_DO_AGENDADOR_ESTOQUE,
+        ].sort(),
+      );
+      // ★ Each root's queue set: the NF-e producer added to the functions
+      // codebase's reads-queue root (whose closure reaches the context) is a
+      // different table; the App Hosting root binds both.
+      const filas = Object.fromEntries(
+        raizes.map((r) => [r, filasDaRaiz(lerDoApp(r) ?? '')] as const),
+      );
+      expect(filas).toEqual(FILAS_DE_CADA_RAIZ);
     },
   );
 
@@ -1537,6 +2118,7 @@ describe('the step-4 backstop poll guards (4-a)', () => {
       'pedidos/escritaPagamento.ts',
       'pedidos/escritaPedido.ts',
       'pedidos/estadoPedidoAmazon.ts',
+      'pedidos/falhaLeituraAmazon.ts',
       'pedidos/freteAmazon.ts',
       'pedidos/importarPedido.ts',
       'pedidos/incidentesPedidoAmazon.ts',
@@ -1588,11 +2170,64 @@ describe('the step-4 backstop poll guards (4-a)', () => {
     const texto = lerDoApp(CHAMADOR_DE_SEARCH_ORDERS) ?? '';
     expect(semComentarios(texto)).toMatch(/\behFalhaDoSdkDeTarefasAmazon\(/);
     const especs = especificadores(texto);
-    // The Cloud Tasks SDK's two error modules: the narrowing lives in agendador.ts.
+    // The Cloud Tasks SDK's two error modules: the narrowing lives in
+    // core/filaTarefas.ts, re-exported by agendador.ts (step 14, PR 14-c).
     expect(
       especs.filter((e) => e === 'firebase-admin/functions' || e === 'firebase-admin/app'),
     ).toEqual([]);
     expect(especs).toContain('../notificacoes/agendador');
+  });
+});
+
+describe('the step-14 Delivery calls’ single caller (14-c)', () => {
+  // App-wide parses: CI headroom, not a budget.
+  it.each<[string, (texto: string) => boolean]>([
+    ['getInvoiceStatus', nomeiaStatusDaNfe],
+    ['submitInvoice', nomeiaEnvioDaNfe],
+  ])(
+    `%s has exactly ONE caller module under lib/amazon, app/, functions/src and scripts/: ${CHAMADOR_DA_ENTREGA}`,
+    { timeout: 30_000 },
+    (_operacao, nomeia) => {
+      const nomeiam = fontesDoChamadorDeSearchOrders()
+        .filter((p) => nomeia(readFileSync(p, 'utf8')))
+        .map(relApp)
+        .sort();
+      expect(nomeiam.filter((p) => !NOMEIAM_A_ENTREGA_SEM_CHAMAR.includes(p))).toEqual([
+        CHAMADOR_DA_ENTREGA,
+      ]);
+      // Anti-vacuity: the scan sees the exempt mentions, by name.
+      expect(nomeiam).toEqual(expect.arrayContaining(NOMEIAM_A_ENTREGA_SEM_CHAMAR));
+    },
+  );
+
+  it('the Delivery scans find every call shape, and nothing alike', () => {
+    for (const fonte of [
+      'await consultarStatusNotaFiscal(contexto.cliente, orderId);',
+      'cliente.get({ operacao: OPERACAO_GET_INVOICE_STATUS, caminho: c, schema });',
+      'cliente.get({ operacao: op, caminho: CAMINHO_STATUS_NOTA_FISCAL, schema });',
+      "cliente.get({ operacao: 'getInvoiceStatus', caminho: c, schema: respostaStatusNotaFiscalSchema });",
+    ]) {
+      expect(nomeiaStatusDaNfe(fonte), fonte).toBe(true);
+    }
+    for (const fonte of [
+      'await enviarNotaFiscal(escritor, entrada);',
+      'escritor.post({ operacao: OPERACAO_SUBMIT_INVOICE, caminho: c, corpo, schema });',
+      'escritor.post({ operacao: op, caminho: CAMINHO_NOTA_FISCAL, corpo, schema });',
+      'escritor.post({ operacao: `submitInvoice`, caminho: c, corpo, schema });',
+    ]) {
+      expect(nomeiaEnvioDaNfe(fonte), fonte).toBe(true);
+    }
+    for (const fonte of [
+      '// consultarStatusNotaFiscal(cliente, id)',
+      '/* enviarNotaFiscal(escritor, e) */',
+      '/** the ONE `submitInvoice` of the stored proc */ const y = 1;',
+      'const x = enviarNotaFiscalAmazon;',
+      "const nome = 'getInvoiceStatuses';",
+      'lerStatusNfeNaAmazon(contexto, orderId);',
+      'enviarNfeNaAmazon(escritor, orderId, conteudo);',
+    ]) {
+      expect(nomeiaStatusDaNfe(fonte) || nomeiaEnvioDaNfe(fonte), fonte).toBe(false);
+    }
   });
 });
 
@@ -1698,20 +2333,25 @@ describe('the step-5 seam guards (5-e)', () => {
     },
   );
 
-  it('★ the App Hosting closure (the routes, the receiver, its producer and root) never reaches the seam or the importer, and no app file of it imports the ViaCEP module — type edges and the @/ alias walked', () => {
+  it('★ the App Hosting union walk (every route but the label route, which has its own walk below; the receiver, its producer and root) never reaches the seam, the importer, the write engine or the four scheduling modules, and no app file of it imports the ViaCEP module or node:crypto — type edges and the @/ alias walked', () => {
     const fecho = fechoDeImportacoes(
-      entradasDoAppHosting(),
+      entradasDaUniaoDoAppHosting(),
       lerDoApp,
       resolverAliasDoApp(lerDoApp),
     );
     expect(violacoesDoAppHosting(fecho)).toEqual([]);
     // Anti-vacuity: the walk entered the routes' aliased modules and reached the
     // pipeline the receiver persists through — and the step-5 modules it MAY
-    // reach (the error classes the classifier names, the D17 codes by type).
+    // reach (the error classes the classifier names, the D17 codes by type) —
+    // and, since step 14 (PR 14-d), the NF-e re-drive route, its body and the
+    // NF-e producer it enqueues through.
     expect(fecho.arquivos).toEqual(
       expect.arrayContaining([
+        'app/api/marketplace/amazon/enviar-nfe/route.ts',
         'app/api/webhooks/amazon/route.ts',
         'lib/amazon/core/respond.ts',
+        'lib/amazon/nfe/agendadorNfe.ts',
+        'lib/amazon/nfe/reenvioNfe.ts',
         'lib/amazon/notificacoes/notificacao.ts',
         'lib/amazon/notificacoes/receptor.ts',
         'lib/amazon/pedidos/erros.ts',
@@ -1720,6 +2360,19 @@ describe('the step-5 seam guards (5-e)', () => {
       ]),
     );
     expect(fecho.externos).toEqual(expect.arrayContaining(['@/lib/amazon/notificacoes/receptor']));
+    // ★ The step-14 task's own modules stay OUT of the bundle: the upload (the
+    // MD5 builder, the Delivery helpers' one caller) is the queue's alone.
+    for (const proibido of [
+      'lib/amazon/nfe/conteudoNfe.ts',
+      'lib/amazon/nfe/entregaAmazon.ts',
+      'lib/amazon/nfe/processarNfe.ts',
+      MOTOR_DE_ESCRITA,
+    ]) {
+      expect(fecho.arquivos, proibido).not.toContain(proibido);
+    }
+    // ★ …and no file of it names the SP-API write client (the engine is its only namer).
+    expect(fecho.arquivos.filter((a) => nomeiaClienteDeEscrita(lerDoApp(a) ?? ''))).toEqual([]);
+    expect(MOTOR_DE_ESCRITA).toBe(CONSTRUTOR_DO_CLIENTE_DE_ESCRITA);
   });
 
   it('the functions roots DO reach the importer through the seam (the fill is real, anti-vacuity of the guard above)', () => {
@@ -1735,6 +2388,7 @@ describe('the step-5 seam guards (5-e)', () => {
   // step-20 block below; the seam fill adds no edge to it (that exact list is
   // unchanged), and `PROIBIDOS_NO_GATILHO` already refuses every
   // `notificacoes/` and `pedidos/` module and `functions/src/depsLeitura.ts`.
+  // (The NF-e trigger's closure has its own block, step 14 PR 14-c.)
   it('the conta trigger’s closure reaches neither the seam nor the importer nor the ViaCEP module', () => {
     const fecho = fechoDeImportacoes(ENTRADAS_DO_GATILHO, lerDoApp);
     expect(violacoesDoAppHosting(fecho)).toEqual([]);
@@ -1745,7 +2399,7 @@ describe('the step-5 seam guards (5-e)', () => {
 describe('the step-20 conta trigger guards (D11 by construction)', () => {
   it('the trigger’s import closure reaches no Amazon client, context, credential, park, valve or env reader — transitively, type edges walked', () => {
     const fecho = fechoDeImportacoes(ENTRADAS_DO_GATILHO, lerDoApp);
-    expect(violacoesD11(fecho, lerDoApp)).toEqual([]);
+    expect(violacoesD11(fecho, lerDoApp, PROIBIDOS_NO_GATILHO)).toEqual([]);
     // EXACT, both lists: anti-vacuity AND a review gate. A new edge out of the
     // trigger, the binding or the logger reds this test until a reviewer reads
     // it — the trigger runs on EVERY conta write of every channel, so an
@@ -1785,8 +2439,10 @@ describe('the step-20 conta trigger guards (D11 by construction)', () => {
     );
   });
 
-  it('neither package edge the walk leaves unwalked depends on the SP-API package', () => {
-    for (const pacote of ['schemas', 'data']) {
+  it('no package edge the walks leave unwalked depends on the SP-API package (both triggers)', () => {
+    // `core` too since step 14 (PR 14-c): the NF-e trigger reaches its region,
+    // datetime, wire and documents subpaths.
+    for (const pacote of ['schemas', 'data', 'core']) {
       const manifesto = z
         .object({
           dependencies: z.record(z.string(), z.string()).optional(),
@@ -1830,46 +2486,22 @@ describe('the step-14 write engine guards (14-b)', () => {
     },
   );
 
-  it('★ nfe/tarefaNfe.ts, nfe/motivosNfe.ts and nfe/pedidoNfe.ts stay LIGHT: their closure (type edges walked) holds no SP-API value import and nothing of pedidos/ but orderIds.ts', () => {
-    const fecho = fechoDeImportacoes(MODULOS_LEVES_DA_NFE, lerDoApp);
-    expect(violacoesDosModulosLevesDaNfe(fecho, lerDoApp)).toEqual([]);
-    // Anti-vacuity: the walk read the three modules and reached the digest.
-    expect(fecho.arquivos).toEqual(
-      expect.arrayContaining([...MODULOS_LEVES_DA_NFE, ORDER_IDS_DA_NFE]),
-    );
-  });
-
-  it('the LIGHT check refuses a value import of the SP-API package and any other pedidos/ module, and allows a type import', () => {
-    const TAREFA = 'lib/amazon/nfe/tarefaNfe.ts';
-    const comFonte =
-      (corpo: string): LeitorDeFonte =>
-      (caminho) =>
-        caminho === TAREFA ? corpo : lerDoApp(caminho);
-    const violacoes = (corpo: string) => {
-      const ler = comFonte(corpo);
-      return violacoesDosModulosLevesDaNfe(fechoDeImportacoes([TAREFA], ler), ler);
-    };
-    expect(violacoes(`import { criarClienteSpApi } from '${PACOTE_SP_API}';`)).toEqual([
-      `${TAREFA} imports ${PACOTE_SP_API} as a value`,
-    ]);
-    expect(violacoes("import { importarPedidoAmazon } from '../pedidos/importarPedido';")).toEqual(
-      expect.arrayContaining(['reaches lib/amazon/pedidos/importarPedido.ts']),
-    );
-    expect(violacoes("import { x } from '../pedidos/naoExiste';")).toEqual(
-      expect.arrayContaining(['unresolved lib/amazon/pedidos/naoExiste']),
-    );
-    expect(violacoes(`import type { CredencialSpApi } from '${PACOTE_SP_API}';`)).toEqual([]);
-    expect(violacoes("import { makePedidoIdAmazon } from '../pedidos/orderIds';")).toEqual([]);
-  });
-
   it('nfe/ reads no process environment: the environment is the deps’ `ambiente`', () => {
     const nfe = arquivosTs(join(RAIZ_LIB, 'nfe')).filter((p) => !ehTeste(p));
     expect(nfe.map(rel).sort()).toEqual([
+      'nfe/agendadorNfe.ts',
+      'nfe/avisoNfe.ts',
+      'nfe/carimboFreteNfe.ts',
       'nfe/conteudoNfe.ts',
       'nfe/decisaoNfe.ts',
+      'nfe/destinoAceite.ts',
+      'nfe/entregaAmazon.ts',
       'nfe/gatesPedidoNfe.ts',
+      'nfe/gatilhoNfe.ts',
       'nfe/motivosNfe.ts',
       'nfe/pedidoNfe.ts',
+      'nfe/processarNfe.ts',
+      'nfe/reenvioNfe.ts',
       'nfe/statusNfe.ts',
       'nfe/tarefaNfe.ts',
     ]);
@@ -1885,6 +2517,1473 @@ describe('the step-14 write engine guards (14-b)', () => {
     for (const arquivo of arquivosTs(join(RAIZ_LIB, 'nfe')).filter((p) => !ehTeste(p))) {
       expect(nomeiaClienteDeEscrita(readFileSync(arquivo, 'utf8')), rel(arquivo)).toBe(false);
     }
+  });
+});
+
+describe('the step-14 NF-e trigger guards (14-c, D11 by construction)', () => {
+  it('★ the NF-e trigger’s import closure reaches no context, conta read, credential, park, valve, env reader, write engine, intake, other root, NF-e task module or pedidos/ module but the digest — transitively, type edges walked', () => {
+    const fecho = fechoDeImportacoes(ENTRADAS_DO_GATILHO_NFE, lerDoApp);
+    expect(violacoesD11(fecho, lerDoApp, PROIBIDOS_NO_GATILHO_NFE)).toEqual([]);
+    // EXACT, both lists: anti-vacuity AND a review gate. The trigger runs on
+    // EVERY `nfev4` write of the project, so a new edge out of it — or out of
+    // anything it reaches — reds this test until a reviewer reads it.
+    expect(fecho.arquivos).toEqual([
+      'functions/src/agendadorNfe.ts',
+      'functions/src/lib/admin.ts',
+      'functions/src/onNfeAprovadaAmazon.ts',
+      'lib/amazon/avisos/avisos.ts',
+      'lib/amazon/core/filaTarefas.ts',
+      'lib/amazon/core/formatoDaRef.ts',
+      'lib/amazon/core/idConta.ts',
+      'lib/amazon/core/log.ts',
+      'lib/amazon/core/redacao.ts',
+      'lib/amazon/nfe/agendadorNfe.ts',
+      'lib/amazon/nfe/avisoNfe.ts',
+      'lib/amazon/nfe/gatilhoNfe.ts',
+      'lib/amazon/nfe/motivosNfe.ts',
+      'lib/amazon/nfe/pedidoNfe.ts',
+      'lib/amazon/nfe/tarefaNfe.ts',
+      ORDER_IDS_DA_NFE,
+    ]);
+    // `@delfrance/schemas`, `@delfrance/data` and `@delfrance/core` do not depend
+    // on the SP-API package (their manifests, pinned below), so those package
+    // edges are not walked.
+    expect(fecho.externos).toEqual(
+      [
+        '@delfrance/core/datetime',
+        '@delfrance/core/documents',
+        '@delfrance/core/region',
+        '@delfrance/core/wire',
+        '@delfrance/data/admin',
+        '@delfrance/data/admin/avisos',
+        '@delfrance/data/admin/collections',
+        '@delfrance/schemas',
+        'firebase-admin/app',
+        'firebase-admin/firestore',
+        'firebase-admin/functions',
+        'firebase-functions/v2/firestore',
+        'zod',
+        // TYPE-only, from `core/log.ts` — accepted by the value check above.
+        PACOTE_SP_API,
+      ].sort(),
+    );
+  });
+
+  it('★ the three LIGHT modules of 14-b sit in that closure — the trigger’s guard is theirs now', () => {
+    const fecho = fechoDeImportacoes(ENTRADAS_DO_GATILHO_NFE, lerDoApp);
+    expect(fecho.arquivos).toEqual(
+      expect.arrayContaining([...MODULOS_LEVES_DA_NFE, ORDER_IDS_DA_NFE]),
+    );
+    // …and their own closure is a SUBSET of it, so every check the old guard
+    // made on them is made here.
+    const proprio = fechoDeImportacoes(MODULOS_LEVES_DA_NFE, lerDoApp);
+    expect(proprio.arquivos.filter((a) => !fecho.arquivos.includes(a))).toEqual([]);
+    expect(proprio.externos.filter((e) => !fecho.externos.includes(e))).toEqual([]);
+  });
+
+  it('the list is the NF-e trigger’s OWN: under the conta trigger’s, its closure would fail (it reaches the digest), and the reads root’s closure fails the NF-e list', () => {
+    const fechoNfe = fechoDeImportacoes(ENTRADAS_DO_GATILHO_NFE, lerDoApp);
+    expect(violacoesD11(fechoNfe, lerDoApp, PROIBIDOS_NO_GATILHO)).toEqual(
+      expect.arrayContaining([`reaches ${ORDER_IDS_DA_NFE}`]),
+    );
+    // Anti-vacuity of the split: the reads-queue root really does reach the
+    // context, the conta reads and the SP-API error classes by value.
+    const fechoLeitura = fechoDeImportacoes([ARQUIVO_RAIZ_DA_FILA_FUNCOES], lerDoApp);
+    const violacoes = violacoesD11(fechoLeitura, lerDoApp, PROIBIDOS_NO_GATILHO_NFE);
+    expect(violacoes).toEqual(
+      expect.arrayContaining([
+        `reaches ${ARQUIVO_RAIZ_DA_FILA_FUNCOES}`,
+        'reaches lib/amazon/notificacoes/notificacao.ts',
+        'reaches lib/amazon/core/contexto.ts',
+      ]),
+    );
+  });
+
+  it('the NF-e root binds the NF-e queue and nothing of the reads queue’s producer', () => {
+    const raiz = lerDoApp(ARQUIVO_RAIZ_DA_FILA_NFE) ?? '';
+    expect(chamaGetFunctions(raiz)).toBe(true);
+    expect(especificadores(raiz)).not.toContain('../../lib/amazon/notificacoes/agendador');
+    expect(especificadores(lerDoApp(ARQUIVO_RAIZ_DA_FILA_FUNCOES) ?? '')).not.toContain(
+      '../../lib/amazon/nfe/agendadorNfe',
+    );
+  });
+});
+
+/** The NF-e re-drive route and its body (step 14, PR 14-d), relative to the APP root. */
+const ARQUIVOS_DO_REENVIO_NFE = [
+  'app/api/marketplace/amazon/enviar-nfe/route.ts',
+  'lib/amazon/nfe/reenvioNfe.ts',
+] as const;
+
+/**
+ * What the re-drive (route and body) may never NAME in code (comments aside):
+ * the write valve and its readers (step-14 plan §3 decision 20 — the task is
+ * the one source of truth), the transition predicate (a re-drive is for a
+ * document ALREADY ready), the trigger's named enqueue, and every way to reach
+ * Amazon (the context, the one `getOrder` caller, the Delivery helpers, the
+ * engine, a raw fetch).
+ */
+const PROIBIDOS_NO_REENVIO_NFE =
+  /\b(?:lerValvula|decidirAlvo|decidirLote|AMAZON_MODO_NFE|AMAZON_CANARIO_NFE|decideNfeUploadTransition|enfileirarDoGatilho|idDaTarefaDoGatilhoNfeAmazon|loadAmazonContext|lerPedidoAmazon|consultarStatusNotaFiscal|enviarNotaFiscal|executarEscritaAmazon|criarClienteSpApi|criarClienteEscritaSpApi|fetch)\b/g;
+
+/**
+ * A Firestore WRITE call — a raw ref's or a shared collection handle's (the
+ * body DOES hold two handles, `pedidoCollection` and `nfev4Collection`, whose
+ * `set`, `merge`, `mergeIfExists` and `add` all write) — or the aviso seam's
+ * writers: the re-drive writes nothing. A bare `.add(` is left out (the body's
+ * `Set` of issue paths uses it), so `add` is matched ON the two handles only;
+ * the fake db's write log in `reenvioNfe.test.ts` stays the behavioural pin.
+ */
+const ESCRITA_NO_REENVIO_NFE =
+  /\.\s*(?:set|update|create|delete|batch|merge|mergeIfExists)\s*\(|\b(?:pedidoCollection|nfev4Collection)\s*\.\s*add\s*\(|\b(?:escreverAviso|resolverAviso|avisarNfeAmazon|resolverNfeAmazon|carimbarFreteNfeAmazon)\b/g;
+
+describe('the step-14 NF-e re-drive route guards (14-d)', () => {
+  it('★ neither the route nor its body names the write valve, the transition predicate, the named enqueue or any way to reach Amazon', () => {
+    for (const arquivo of ARQUIVOS_DO_REENVIO_NFE) {
+      const codigo = semComentarios(lerDoApp(arquivo) ?? '');
+      expect(codigo, arquivo).not.toBe('');
+      expect(codigo.match(PROIBIDOS_NO_REENVIO_NFE) ?? [], arquivo).toEqual([]);
+    }
+    // Anti-vacuity: the body DOES read the switch and enqueue, by these names.
+    const corpo = semComentarios(lerDoApp(ARQUIVOS_DO_REENVIO_NFE[1]) ?? '');
+    expect(corpo).toContain('lerChaveDeChamadasAmazon(');
+    expect(corpo).toContain('.enfileirar(');
+    expect(corpo).toContain('tarefaInicialNfeAmazon(');
+  });
+
+  it('★ neither the route nor its body makes a Firestore write or an aviso write', () => {
+    for (const arquivo of ARQUIVOS_DO_REENVIO_NFE) {
+      const codigo = semComentarios(lerDoApp(arquivo) ?? '');
+      expect(codigo.match(ESCRITA_NO_REENVIO_NFE) ?? [], arquivo).toEqual([]);
+    }
+  });
+
+  it('the scans flag what they exist for, and nothing alike (near-misses)', () => {
+    expect('const v = lerValvula(FLUXO_AMAZON.nfe, a);'.match(PROIBIDOS_NO_REENVIO_NFE)).toEqual([
+      'lerValvula',
+    ]);
+    expect("a['AMAZON_MODO_NFE']".match(PROIBIDOS_NO_REENVIO_NFE)).toEqual(['AMAZON_MODO_NFE']);
+    expect('await fetch(url)'.match(PROIBIDOS_NO_REENVIO_NFE)).toEqual(['fetch']);
+    expect('await ref.update({ x: 1 })'.match(ESCRITA_NO_REENVIO_NFE)).toHaveLength(1);
+    // The shared handles' writes, every one.
+    for (const escrita of [
+      'await pedidoCollection.merge(db, {}, pedidoId, { x: 1 });',
+      'await pedidoCollection.mergeIfExists(db, {}, pedidoId, { x: 1 });',
+      'await nfev4Collection.set(db, { pedidoId }, nfeId, {});',
+      'await nfev4Collection.add(db, { pedidoId }, {});',
+      'await pedidoCollection .add(db, {}, {});',
+    ]) {
+      expect(escrita.match(ESCRITA_NO_REENVIO_NFE), escrita).toHaveLength(1);
+    }
+    // NEAR-MISS: a Set's `add`, a handle's ref builders and its reads are no writes.
+    expect(
+      'const c = new Set<string>(); c.add(x); caminhos.add(chave); pedidoCollection.docRef(db, {}, id); nfev4Collection.ref(db, { pedidoId });'.match(
+        ESCRITA_NO_REENVIO_NFE,
+      ),
+    ).toBeNull();
+    // NEAR-MISS: the enqueue, the switch reader and a read are not writes or valves.
+    expect(
+      'await deps.agendador().enfileirar(t); lerChaveDeChamadasAmazon(a); await ref.get();'.match(
+        PROIBIDOS_NO_REENVIO_NFE,
+      ),
+    ).toBeNull();
+    expect(
+      'await ref.get(); const lista = await col.get();'.match(ESCRITA_NO_REENVIO_NFE),
+    ).toBeNull();
+  });
+
+  it('the route verifies PERM.pedido.write — never the integracao bit — and is thin', () => {
+    const rota = semComentarios(lerDoApp(ARQUIVOS_DO_REENVIO_NFE[0]) ?? '');
+    expect(rota).toContain('verifyCaller(req, PERM.pedido.write)');
+    expect(rota).not.toMatch(/PERM\.integracao/);
+    expect(rota).toContain('reenviarNfeAmazon(');
+    expect(rota).toMatch(/export async function POST\(/);
+  });
+});
+
+describe('the step-15 Easy Ship scheduling guards (15-b)', () => {
+  const agendamento = arquivosTs(join(RAIZ_LIB, 'agendamento')).filter((p) => !ehTeste(p));
+
+  it('★ (1) agendamento/ is Next-free, reads no process environment and never imports the @/ alias', () => {
+    expect(agendamento.map(rel).sort()).toEqual([
+      'agendamento/agendadorAgendamento.ts',
+      'agendamento/decisaoAgendamento.ts',
+      'agendamento/easyShipAmazon.ts',
+      'agendamento/entradasAgendamento.ts',
+      'agendamento/etiquetaAmazon.ts',
+      'agendamento/executarAgendamento.ts',
+      'agendamento/processarAgendamento.ts',
+      'agendamento/tarefaAgendamento.ts',
+    ]);
+    for (const arquivo of agendamento) {
+      const texto = readFileSync(arquivo, 'utf8');
+      expect(texto, rel(arquivo)).not.toMatch(/process\s*\.\s*env/);
+      expect(/from 'next(\/[^']*)?'/.test(texto), rel(arquivo)).toBe(false);
+      expect(
+        especificadores(texto).filter((e) => e.startsWith('@/')),
+        rel(arquivo),
+      ).toEqual([]);
+    }
+  });
+
+  // An app-wide parse: CI headroom, not a budget.
+  it(
+    `★ (2) the write engine is CALLED by exactly three production files, one per write flow, and NAMED by no other: ${CHAMADORES_DO_MOTOR_DE_ESCRITA.join(', ')}`,
+    { timeout: 30_000 },
+    () => {
+      const fontes = fontesDoChamadorDeSearchOrders();
+      const chamam = fontes
+        .filter((p) => chamaOMotorDeEscrita(readFileSync(p, 'utf8')))
+        .map(relApp)
+        .sort();
+      expect(chamam).toEqual(CHAMADORES_DO_MOTOR_DE_ESCRITA);
+      // The name scan: no third file reaches the engine under another name.
+      const nomeiam = fontes
+        .filter((p) => nomeiaOMotorDeEscrita(readFileSync(p, 'utf8')))
+        .map(relApp)
+        .sort();
+      expect(nomeiam).toEqual(NOMEIAM_O_MOTOR_DE_ESCRITA);
+      // Anti-vacuity: the engine itself names the function (its declaration) and
+      // is not a caller; the scan read the functions codebase and the scripts.
+      expect(lerDoApp(CONSTRUTOR_DO_CLIENTE_DE_ESCRITA)).toContain('executarEscritaAmazon');
+      expect(fontes.map(relApp)).toEqual(
+        expect.arrayContaining(['functions/src/index.ts', 'scripts/sanitizar.ts']),
+      );
+    },
+  );
+
+  // An app-wide parse: CI headroom, not a budget.
+  it(
+    `★ (3) the token mint and the Easy Ship bulk are named in production code by ONE module: ${CHAMADOR_DO_EASY_SHIP}`,
+    { timeout: 30_000 },
+    () => {
+      const nomeiam = fontesDoChamadorDeSearchOrders()
+        .filter((p) => nomeiaOEasyShip(readFileSync(p, 'utf8')))
+        .map(relApp)
+        .sort();
+      expect(nomeiam.filter((p) => !NOMEIAM_O_EASY_SHIP_SEM_CHAMAR.includes(p))).toEqual([
+        CHAMADOR_DO_EASY_SHIP,
+      ]);
+      // Anti-vacuity: the scan sees every exempt mention, by name.
+      expect(nomeiam).toEqual(expect.arrayContaining(NOMEIAM_O_EASY_SHIP_SEM_CHAMAR));
+      // The caller really calls both helpers.
+      const chamador = semComentarios(lerDoApp(CHAMADOR_DO_EASY_SHIP) ?? '');
+      expect(chamador).toMatch(/\bcriarTokenRestrito\(/);
+      expect(chamador).toMatch(/\bagendarPacotesEasyShip\(/);
+    },
+  );
+
+  it('★ (4) the observer seam stays at FOUR sites, and the engine’s ONE site — and its one write-client constructor call — sit inside its one client builder', () => {
+    const motor = lerDoApp(CONSTRUTOR_DO_CLIENTE_DE_ESCRITA) ?? '';
+    expect(motor.split(SEAM_OK)).toHaveLength(2);
+    const construtor = textoDaFuncao(motor, CONSTRUTOR_LOCAL_DO_MOTOR) ?? '';
+    expect(construtor.split(SEAM_OK)).toHaveLength(2);
+    const codigo = semComentarios(motor);
+    expect(codigo.match(/\bcriarClienteEscritaSpApi\s*\(/g) ?? []).toHaveLength(1);
+    expect(semComentarios(construtor)).toMatch(/\bcriarClienteEscritaSpApi\s*\(/);
+    // The builder builds BOTH clients: its declaration, the LWA client's call
+    // and the restricted factory's call.
+    expect(codigo.match(new RegExp(`\\b${CONSTRUTOR_LOCAL_DO_MOTOR}\\(`, 'g')) ?? []).toHaveLength(
+      3,
+    );
+    // The seam pin itself (`the observer seam: … at exactly 4 sites`, above) is
+    // unchanged: four sites, the engine's once.
+  });
+
+  it('the scans flag what they exist for, and nothing alike (near-misses)', () => {
+    for (const fonte of [
+      'const r = await executarEscritaAmazon({ valvula });',
+      'executarEscritaAmazon<A, P, R>({ valvula });',
+      'return executarEscritaAmazon ({ valvula });',
+    ]) {
+      expect(chamaOMotorDeEscrita(fonte), fonte).toBe(true);
+    }
+    for (const fonte of [
+      'export async function executarEscritaAmazon<A, P extends X, R>(e: E) {}',
+      'function executarEscritaAmazon(e: E) {}',
+      '// executarEscritaAmazon(e)',
+      "import { executarEscritaAmazon } from '../core/escrita';",
+      'const x = executarEscritaAmazonDepois(e);',
+    ]) {
+      expect(chamaOMotorDeEscrita(fonte), fonte).toBe(false);
+    }
+    // What the call scan cannot see, the NAME scan flags: an alias, a bound
+    // reference, a member call, a re-export.
+    for (const fonte of [
+      "import { executarEscritaAmazon as motor } from '../core/escrita';",
+      'const m = executarEscritaAmazon;',
+      'escrita.executarEscritaAmazon.call(null, e);',
+      "export { executarEscritaAmazon as rodar } from '../core/escrita';",
+    ]) {
+      expect(chamaOMotorDeEscrita(fonte), fonte).toBe(false);
+      expect(nomeiaOMotorDeEscrita(fonte), fonte).toBe(true);
+    }
+    for (const fonte of [
+      '// executarEscritaAmazon(e)',
+      '/** see `executarEscritaAmazon` */ const y = 1;',
+      'const x = executarEscritaAmazonDepois(e);',
+    ]) {
+      expect(nomeiaOMotorDeEscrita(fonte), fonte).toBe(false);
+    }
+    for (const fonte of [
+      'await criarTokenRestrito(cliente, RECURSO_RESTRITO_AGENDAMENTO);',
+      'await agendarPacotesEasyShip(escritor, { orderId });',
+      "escritor.post({ operacao: 'createScheduledPackageBulk', caminho: c, corpo, schema });",
+      "escritor.post({ operacao: op, caminho: '/easyShip/2022-03-23/packages/bulk', corpo, schema });",
+      'escritor.post({ operacao: OPERACAO_TOKEN_RESTRITO, caminho: CAMINHO_TOKEN_RESTRITO, corpo, schema });',
+      'escritor.post({ operacao: `createRestrictedDataToken`, caminho: c, corpo, schema });',
+      "const motivo = 'a capture (POST /easyShip/2022-03-23/packages/bulk) only';",
+    ]) {
+      expect(nomeiaOEasyShip(fonte), fonte).toBe(true);
+    }
+    for (const fonte of [
+      '// criarTokenRestrito(cliente, r)',
+      '/* agendarPacotesEasyShip(escritor, e) */',
+      '/** the `createScheduledPackageBulk` bulk */ const y = 1;',
+      'const x = agendarNaAmazon(cliente, restrito, orderId);',
+      "const nome = 'createScheduledPackageBulks';",
+      "const caminho = '/easyShip/2022-03-23/timeSlot';",
+    ]) {
+      expect(nomeiaOEasyShip(fonte), fonte).toBe(false);
+    }
+  });
+});
+
+/**
+ * A Firestore WRITE call (step 15, PR 15-c): a raw ref's or a shared collection
+ * handle's — `set`, `update`, `create`, `delete`, `batch`, `merge`,
+ * `mergeIfExists`, and `add` ON the two handles the task holds (a bare `.add(`
+ * is a `Set`'s). The re-drive route's shape ({@link ESCRITA_NO_REENVIO_NFE})
+ * minus the aviso writers by name: the scheduling task DOES write avisos, and
+ * only through `avisos/avisos.ts`'s seam, outside the folder. A pedido write
+ * under `agendamento/` is what this refuses (step-15 plan §3 decision 6); the
+ * fake db's write log in `processarAgendamento.test.ts` stays the behavioural pin.
+ * The label route's files add the aviso writers by name ({@link ESCRITOR_DE_AVISO}).
+ */
+const ESCRITA_FIRESTORE_NO_AGENDAMENTO =
+  /\.\s*(?:set|update|create|delete|batch|merge|mergeIfExists)\s*\(|\b(?:pedidoCollection|nfev4Collection)\s*\.\s*add\s*\(/g;
+
+/**
+ * The aviso writers the scheduling task raises and resolves through, by name. The
+ * label route answers its refusals and writes no aviso (step-15 plan §3 decision
+ * 14), so its files name none of them.
+ */
+const ESCRITOR_DE_AVISO = /\b(?:sincronizarAvisosDoPedidoAmazon|escreverAviso|resolverAviso)\b/g;
+
+/** The aviso module, as an app-relative module path ({@link importaModulo}). */
+const MODULO_DE_AVISOS = 'lib/amazon/avisos/avisos';
+
+/** A call that enqueues a task, under any of the producers' method names. */
+const ENFILEIRA_TAREFA = /\benfileirar\w*\s*\(/g;
+
+/** The ONE production file that may name the two document helpers (step-15 plan §2, PR 15-d). */
+const CHAMADOR_DOS_DOCUMENTOS = 'lib/amazon/agendamento/etiquetaAmazon.ts';
+
+/**
+ * The package's two document helpers, by name, in RAW text: the guard reads
+ * comments too. A second reader of the pre-signed link would be a path to a
+ * buyer's label that no valve, canary or live decision sits in front of.
+ */
+const NOME_DOS_DOCUMENTOS = /\b(?:baixarDocumentosEasyShip|extrairEtiquetaZplEasyShip)\b/;
+
+/**
+ * Of `fontes` (app-relative paths with their raw text), the PRODUCTION files that
+ * name a document helper. A test and a walked package's file are exempt: they
+ * drive the helpers with a recording `fetch` and call nothing real.
+ */
+function nomeiamOsDocumentos(fontes: readonly (readonly [string, string])[]): string[] {
+  return fontes
+    .filter(([caminho]) => !ehTeste(caminho) && !ehDePacote(caminho))
+    .filter(([, texto]) => NOME_DOS_DOCUMENTOS.test(texto))
+    .map(([caminho]) => caminho)
+    .sort();
+}
+
+describe('the step-15 Easy Ship scheduling wiring guards (15-c)', () => {
+  const agendamento = arquivosTs(join(RAIZ_LIB, 'agendamento')).filter((p) => !ehTeste(p));
+
+  it('★ (mutation 6) no production file under agendamento/ makes a Firestore WRITE call — its reads stay allowed, its avisos go through avisos.ts', () => {
+    expect(agendamento.length).toBeGreaterThanOrEqual(7);
+    for (const arquivo of agendamento) {
+      const codigo = semComentarios(readFileSync(arquivo, 'utf8'));
+      expect(codigo.match(ESCRITA_FIRESTORE_NO_AGENDAMENTO) ?? [], rel(arquivo)).toEqual([]);
+    }
+    // Anti-vacuity: the task DOES read the pedido and its NF-e documents, and
+    // DOES write avisos — through the seam, by these names.
+    const tarefa = semComentarios(lerDoApp('lib/amazon/agendamento/processarAgendamento.ts') ?? '');
+    expect(tarefa).toMatch(/\bpedidoCollection\.docRef\(/);
+    expect(tarefa).toMatch(/\bnfev4Collection\.ref\(/);
+    expect(tarefa).toContain('sincronizarAvisosDoPedidoAmazon(');
+  });
+
+  it('the write scan flags what it exists for, and nothing alike (near-misses)', () => {
+    for (const escrita of [
+      'await ref.update({ x: 1 });',
+      'await pedidoCollection.add(db, {}, {});',
+      'await pedidoCollection.merge(db, {}, pedidoId, { x: 1 });',
+      'await nfev4Collection .set(db, { pedidoId }, nfeId, {});',
+      'const lote = db.batch();',
+    ]) {
+      expect(escrita.match(ESCRITA_FIRESTORE_NO_AGENDAMENTO), escrita).toHaveLength(1);
+    }
+    // NEAR-MISS: the two reads, a Set's add, and the aviso seam's call are no writes here.
+    for (const leitura of [
+      'await pedidoCollection.docRef(db, {}, pedidoId).get();',
+      'await nfev4Collection.ref(db, { pedidoId }).get();',
+      'const c = new Set<string>(); c.add(x);',
+      'await sincronizarAvisosDoPedidoAmazon(db, deps, e);',
+    ]) {
+      expect(leitura.match(ESCRITA_FIRESTORE_NO_AGENDAMENTO), leitura).toBeNull();
+    }
+  });
+
+  it('★ (mutation 13) the NF-e trigger’s D11 closure reaches NO agendamento/ module and not the scheduling root — that closure is unchanged', () => {
+    const fecho = fechoDeImportacoes(ENTRADAS_DO_GATILHO_NFE, lerDoApp);
+    expect(fecho.arquivos.filter((a) => a.startsWith('lib/amazon/agendamento/'))).toEqual([]);
+    expect(fecho.arquivos).not.toContain(ARQUIVO_RAIZ_DA_FILA_AGENDAMENTO);
+    // Anti-vacuity: the scheduling root DOES reach the producer, so a root that
+    // imported it would bring it into the NF-e trigger's closure.
+    const raiz = fechoDeImportacoes([ARQUIVO_RAIZ_DA_FILA_AGENDAMENTO], lerDoApp);
+    expect(raiz.arquivos).toEqual(
+      expect.arrayContaining([
+        ARQUIVO_RAIZ_DA_FILA_AGENDAMENTO,
+        'lib/amazon/agendamento/agendadorAgendamento.ts',
+      ]),
+    );
+    // …and the NF-e root names nothing of the scheduling producer, by any path.
+    expect(
+      especificadores(lerDoApp(ARQUIVO_RAIZ_DA_FILA_NFE) ?? '').filter((e) =>
+        /agendamento|agendadorAgendamento/.test(e),
+      ),
+    ).toEqual([]);
+  });
+
+  it('★ (mutation 25) the App Hosting union walk (every entry but the label route) reaches NO agendamento/ module and not the scheduling root — type edges walked', () => {
+    const fecho = fechoDeImportacoes(
+      entradasDaUniaoDoAppHosting(),
+      lerDoApp,
+      resolverAliasDoApp(lerDoApp),
+    );
+    expect(fecho.arquivos.filter((a) => a.startsWith('lib/amazon/agendamento/'))).toEqual([]);
+    expect(fecho.arquivos).not.toContain(ARQUIVO_RAIZ_DA_FILA_AGENDAMENTO);
+    // Anti-vacuity: the walk DOES reach the module that declares the order
+    // import's deps (its local structural port of the producer) and the NF-e
+    // producer the re-drive route enqueues through.
+    expect(fecho.arquivos).toEqual(
+      expect.arrayContaining([
+        'lib/amazon/notificacoes/notificacao.ts',
+        'lib/amazon/nfe/agendadorNfe.ts',
+      ]),
+    );
+  });
+
+  it('the scheduling root binds the scheduling queue only, and is read by the NF-e queue, the read deps and the scheduling queue — never by the NF-e trigger’s root', () => {
+    const raiz = lerDoApp(ARQUIVO_RAIZ_DA_FILA_AGENDAMENTO) ?? '';
+    expect(chamaGetFunctions(raiz)).toBe(true);
+    expect(filasDaRaiz(raiz)).toEqual(['caminhoDaFilaAgendamentoAmazon']);
+    const importadores = fontesDasFuncoes()
+      .map((p) => [relApp(p), readFileSync(p, 'utf8')] as const)
+      .filter(([, texto]) => especificadores(texto).includes('./agendadorAgendamento'))
+      .map(([arquivo]) => arquivo)
+      .sort();
+    expect(importadores).toEqual([
+      'functions/src/depsLeitura.ts',
+      'functions/src/filaAgendamento.ts',
+      'functions/src/filaNfe.ts',
+    ]);
+  });
+});
+
+describe('the step-15 label route guards (15-d)', () => {
+  const fechoDaRota = () =>
+    fechoDeImportacoes([ARQUIVO_ROTA_ETIQUETA], lerDoApp, resolverAliasDoApp(lerDoApp));
+
+  it('the union walk takes out the label route and no other entry', () => {
+    const todas = entradasDoAppHosting();
+    const uniao = entradasDaUniaoDoAppHosting();
+    expect(lerDoApp(ARQUIVO_ROTA_ETIQUETA)).not.toBeNull();
+    expect(todas.filter((e) => !uniao.includes(e))).toEqual([ARQUIVO_ROTA_ETIQUETA]);
+    // Near-miss: the sibling route that must stay under the union's list.
+    expect(uniao).toContain('app/api/marketplace/amazon/enviar-nfe/route.ts');
+  });
+
+  // The walks read, and the scans parse, every file they reach: CI headroom, not a budget.
+  it(
+    '★ the route’s own walk reaches the write engine and nothing on its forbidden list — type edges and the @/ alias walked',
+    { timeout: 30_000 },
+    () => {
+      const fecho = fechoDaRota();
+      expect(violacoesDoAppHosting(fecho, PROIBIDOS_NA_ROTA_ETIQUETA)).toEqual([]);
+      // Anti-vacuity: the walk entered the body, the run, the one Easy Ship module,
+      // the decisions and the engine.
+      expect(fecho.arquivos).toEqual(
+        expect.arrayContaining([
+          ARQUIVO_ROTA_ETIQUETA,
+          MOTOR_DE_ESCRITA,
+          'lib/amazon/agendamento/decisaoAgendamento.ts',
+          'lib/amazon/agendamento/easyShipAmazon.ts',
+          'lib/amazon/agendamento/etiquetaAmazon.ts',
+          'lib/amazon/agendamento/executarAgendamento.ts',
+        ]),
+      );
+      // The exception is exactly the engine: of the union's list, the route reaches
+      // nothing else.
+      expect(violacoesDoAppHosting(fecho)).toEqual([`reaches ${MOTOR_DE_ESCRITA}`]);
+    },
+  );
+
+  it(
+    '★ on the route’s walk, the files naming the SP-API write client are exactly the engine; on the union walk, no file does',
+    { timeout: 30_000 },
+    () => {
+      const fecho = fechoDaRota();
+      expect(fecho.arquivos.filter((a) => nomeiaClienteDeEscrita(lerDoApp(a) ?? ''))).toEqual([
+        MOTOR_DE_ESCRITA,
+      ]);
+      const uniao = fechoDeImportacoes(
+        entradasDaUniaoDoAppHosting(),
+        lerDoApp,
+        resolverAliasDoApp(lerDoApp),
+      );
+      expect(uniao.arquivos.filter((a) => nomeiaClienteDeEscrita(lerDoApp(a) ?? ''))).toEqual([]);
+    },
+  );
+
+  it(
+    '★ on the union walk, the context is called only by the intake pipeline, and the scheduling run by no file',
+    { timeout: 30_000 },
+    () => {
+      const uniao = fechoDeImportacoes(
+        entradasDaUniaoDoAppHosting(),
+        lerDoApp,
+        resolverAliasDoApp(lerDoApp),
+      );
+      const chamam = (nome: string) =>
+        uniao.arquivos.filter((a) =>
+          new RegExp(`\\b${nome}\\s*\\(`).test(semComentarios(lerDoApp(a) ?? '')),
+        );
+      // `core/contexto.ts` is the declaration. The pipeline sits on this walk for its
+      // error classes and its failure persist; `receptor.test.ts` is what pins the
+      // receiver's happy path to no db handle and no Firestore operation.
+      expect(chamam('loadAmazonContext')).toEqual([
+        'lib/amazon/core/contexto.ts',
+        'lib/amazon/notificacoes/notificacao.ts',
+      ]);
+      expect(chamam('executarAgendamentoAmazon')).toEqual([]);
+      // Anti-vacuity: the label route's body holds both calls.
+      const corpo = semComentarios(lerDoApp(CHAMADOR_DOS_DOCUMENTOS) ?? '');
+      expect(corpo).toMatch(/\bloadAmazonContext\s*\(/);
+      expect(corpo).toMatch(/\bexecutarAgendamentoAmazon\s*\(/);
+    },
+  );
+
+  it(
+    '★ (2) the route file and every agendamento/ file on its walk make no Firestore write, name no aviso writer, import no aviso module and enqueue nothing; the task’s file keeps the last three',
+    { timeout: 30_000 },
+    () => {
+      const fecho = fechoDaRota();
+      const proprios = fecho.arquivos.filter(
+        (a) => a === ARQUIVO_ROTA_ETIQUETA || a.startsWith('lib/amazon/agendamento/'),
+      );
+      // Anti-vacuity: the two files the route owns, and the run it reuses.
+      expect(proprios).toEqual(
+        expect.arrayContaining([
+          ARQUIVO_ROTA_ETIQUETA,
+          CHAMADOR_DOS_DOCUMENTOS,
+          'lib/amazon/agendamento/executarAgendamento.ts',
+        ]),
+      );
+      for (const arquivo of proprios) {
+        const texto = lerDoApp(arquivo) ?? '';
+        const codigo = semComentarios(texto);
+        expect(codigo, arquivo).not.toBe('');
+        expect(codigo.match(ESCRITA_FIRESTORE_NO_AGENDAMENTO) ?? [], arquivo).toEqual([]);
+        expect(codigo.match(ESCRITOR_DE_AVISO) ?? [], arquivo).toEqual([]);
+        expect(codigo.match(ENFILEIRA_TAREFA) ?? [], arquivo).toEqual([]);
+        expect(importaModulo(arquivo, texto, MODULO_DE_AVISOS), arquivo).toBe(false);
+      }
+      // Anti-vacuity: the scheduling task's file trips all three of the scans it keeps.
+      const arquivoDaTarefa = 'lib/amazon/agendamento/processarAgendamento.ts';
+      const tarefa = lerDoApp(arquivoDaTarefa) ?? '';
+      expect(semComentarios(tarefa).match(ESCRITOR_DE_AVISO)).toContain(
+        'sincronizarAvisosDoPedidoAmazon',
+      );
+      expect(semComentarios(tarefa).match(ENFILEIRA_TAREFA)).not.toBeNull();
+      expect(importaModulo(arquivoDaTarefa, tarefa, MODULO_DE_AVISOS)).toBe(true);
+    },
+  );
+
+  it('the aviso and enqueue scans flag what they exist for, and nothing alike (near-misses)', () => {
+    for (const [fonte, nome] of [
+      ['await sincronizarAvisosDoPedidoAmazon(db, deps, e);', 'sincronizarAvisosDoPedidoAmazon'],
+      ['await escreverAviso(db, deps, a);', 'escreverAviso'],
+      ['const r = resolverAviso;', 'resolverAviso'],
+    ] as const) {
+      expect(fonte.match(ESCRITOR_DE_AVISO), fonte).toEqual([nome]);
+    }
+    for (const fonte of [
+      'await resolverAvisosAntigos(db);',
+      'const escreverAvisoDepois = 1;',
+      'const motivo = MOTIVO_AVISO_AMAZON.x;',
+    ]) {
+      expect(fonte.match(ESCRITOR_DE_AVISO), fonte).toBeNull();
+    }
+    for (const [fonte, chamada] of [
+      ['await deps.agendador().enfileirar(t);', 'enfileirar('],
+      ['await produtor.enfileirarEntrada(t, o);', 'enfileirarEntrada('],
+    ] as const) {
+      expect(fonte.match(ENFILEIRA_TAREFA), fonte).toEqual([chamada]);
+    }
+    for (const fonte of [
+      'const enfileirada = 1;',
+      "const r = 'enfileirar';",
+      'jaEnfileirada(x);',
+    ]) {
+      expect(fonte.match(ENFILEIRA_TAREFA), fonte).toBeNull();
+    }
+    const arquivo = 'lib/amazon/agendamento/etiquetaAmazon.ts';
+    for (const espec of ['../avisos/avisos', '@/lib/amazon/avisos/avisos']) {
+      expect(
+        importaModulo(arquivo, `import type { X } from '${espec}';`, MODULO_DE_AVISOS),
+        espec,
+      ).toBe(true);
+    }
+    // NEAR-MISS: another module of that folder, and a same-named one elsewhere.
+    for (const espec of ['../avisos/outro', '../core/avisos']) {
+      expect(importaModulo(arquivo, `import { x } from '${espec}';`, MODULO_DE_AVISOS), espec).toBe(
+        false,
+      );
+    }
+  });
+
+  it(
+    `★ (3) the two document helpers are named by ONE production file of the whole app, comments included: ${CHAMADOR_DOS_DOCUMENTOS}`,
+    { timeout: 30_000 },
+    () => {
+      const fontes = fontesDeTodoOApp().map((p) => [relApp(p), readFileSync(p, 'utf8')] as const);
+      expect(nomeiamOsDocumentos(fontes)).toEqual([CHAMADOR_DOS_DOCUMENTOS]);
+      // Anti-vacuity: the scan read the App Hosting files outside `lib/amazon`,
+      // the functions codebase and the scripts; and the caller calls both helpers.
+      expect(fontes.map(([caminho]) => caminho)).toEqual(
+        expect.arrayContaining([
+          ...FORA_DE_LIB_AMAZON,
+          'functions/src/index.ts',
+          'scripts/sanitizar.ts',
+        ]),
+      );
+      const chamador = semComentarios(lerDoApp(CHAMADOR_DOS_DOCUMENTOS) ?? '');
+      expect(chamador).toMatch(/\bbaixarDocumentosEasyShip\(/);
+      expect(chamador).toMatch(/\bextrairEtiquetaZplEasyShip\(/);
+    },
+  );
+
+  it('the document scan flags a call, an import and a comment anywhere in production code, and nothing alike (near-misses)', () => {
+    const fora = 'lib/amazon/core/outro.ts';
+    for (const texto of [
+      'await baixarDocumentosEasyShip(url, { fetch });',
+      'extrairEtiquetaZplEasyShip(bytes);',
+      "import { baixarDocumentosEasyShip as baixar } from '@delfrance/integrations-amazon-sp-api';",
+      '// see extrairEtiquetaZplEasyShip(bytes)',
+    ]) {
+      expect(nomeiamOsDocumentos([[fora, texto]]), texto).toEqual([fora]);
+    }
+    // NEAR-MISS: a test and a package's own file are exempt, whatever they name.
+    for (const caminho of [
+      'lib/amazon/core/outro.test.ts',
+      '../../packages/integrations/amazon-sp-api/src/documentosEasyShip.ts',
+      '../../packages/integrations/amazon-sp-api/test/documentosEasyShip.ts',
+    ]) {
+      expect(
+        nomeiamOsDocumentos([[caminho, 'baixarDocumentosEasyShip(url, o);']]),
+        caminho,
+      ).toEqual([]);
+    }
+    // NEAR-MISS: the error class and a longer or shorter name are no mention.
+    for (const texto of [
+      'if (err instanceof AmazonDocumentoEasyShipError) throw err;',
+      'baixarDocumentosEasyShipDepois(url);',
+      'extrairEtiquetaZpl(bytes);',
+    ]) {
+      expect(nomeiamOsDocumentos([[fora, texto]]), texto).toEqual([]);
+    }
+  });
+});
+
+describe('the step-12a feed core guards (12-b, 12-c)', () => {
+  const feeds = arquivosTs(join(RAIZ_LIB, 'feeds')).filter((p) => !ehTeste(p));
+
+  it('★ (1) feeds/ is Next-free, reads no process environment and never imports the @/ alias', () => {
+    expect(feeds.map(rel).sort()).toEqual([
+      'feeds/agendadorLotes.ts',
+      'feeds/destinosLote.ts',
+      'feeds/enviarFeed.ts',
+      'feeds/escadaFeed.ts',
+      'feeds/feedsAmazon.ts',
+      'feeds/incertoFeed.ts',
+      'feeds/processarLote.ts',
+      'feeds/provedorLote.ts',
+      'feeds/recuperarFeed.ts',
+      'feeds/registroFeed.ts',
+      'feeds/relatorioFeed.ts',
+      'feeds/resultadoFeed.ts',
+      'feeds/tarefaLote.ts',
+      'feeds/vezFeed.ts',
+      'feeds/vezFeedFirestore.ts',
+    ]);
+    for (const arquivo of feeds) {
+      const texto = readFileSync(arquivo, 'utf8');
+      expect(texto, rel(arquivo)).not.toMatch(/process\s*\.\s*env/);
+      expect(/from 'next(\/[^']*)?'/.test(texto), rel(arquivo)).toBe(false);
+      expect(
+        especificadores(texto).filter((e) => e.startsWith('@/')),
+        rel(arquivo),
+      ).toEqual([]);
+    }
+  });
+
+  // An app-wide parse: CI headroom, not a budget.
+  it(
+    `★ (2) the batch entry is CALLED by exactly one production file, the send handler, and NAMED by no other but the engine: ${CHAMADORES_DO_LOTE_DE_ESCRITA.join(', ')}`,
+    { timeout: 30_000 },
+    () => {
+      expect(CHAMADORES_DO_LOTE_DE_ESCRITA).toEqual(['lib/amazon/feeds/enviarFeed.ts']);
+      const fontes = fontesDoChamadorDeSearchOrders();
+      const chamam = fontes
+        .filter((p) => chamaOLoteDeEscrita(readFileSync(p, 'utf8')))
+        .map(relApp)
+        .sort();
+      expect(chamam).toEqual(CHAMADORES_DO_LOTE_DE_ESCRITA);
+      const nomeiam = fontes
+        .filter((p) => nomeiaOLoteDeEscrita(readFileSync(p, 'utf8')))
+        .map(relApp)
+        .sort();
+      expect(nomeiam).toEqual(NOMEIAM_O_LOTE_DE_ESCRITA);
+      // The first entry's roster is untouched by the second: still one caller
+      // per write flow, and the batch entry is none of them.
+      expect(CHAMADORES_DO_MOTOR_DE_ESCRITA).toEqual([
+        'lib/amazon/agendamento/executarAgendamento.ts',
+        'lib/amazon/estoque/processarEstoque.ts',
+        'lib/amazon/nfe/processarNfe.ts',
+      ]);
+      // Anti-vacuity: the engine declares the entry and does not call it; the
+      // scan read the functions codebase and the scripts.
+      const motor = semComentarios(lerDoApp(MOTOR_DE_ESCRITA) ?? '');
+      expect(motor).toMatch(/\bfunction\s+executarLoteEscritaAmazon\s*</);
+      expect(chamaOLoteDeEscrita(motor)).toBe(false);
+      expect(fontes.map(relApp)).toEqual(
+        expect.arrayContaining(['functions/src/index.ts', 'scripts/sanitizar.ts']),
+      );
+    },
+  );
+
+  it('★ (3) both entries reach the write client through the ONE private write helper, which holds both builder calls', () => {
+    const motor = lerDoApp(MOTOR_DE_ESCRITA) ?? '';
+    const ajudante = semComentarios(textoDaFuncao(motor, ESCRITA_UNICA_DO_MOTOR) ?? '');
+    // The helper holds the LWA client's builder call and the restricted
+    // factory's, and the forced-refresh-once rule.
+    expect(
+      ajudante.match(new RegExp(`\\b${CONSTRUTOR_LOCAL_DO_MOTOR}\\(`, 'g')) ?? [],
+    ).toHaveLength(2);
+    expect(ajudante).toMatch(/\bexecutarComRenovacaoUnica\(/);
+    // Each entry calls the helper exactly once and never names the builder or
+    // the refresh rule itself.
+    for (const entrada of ['executarEscritaAmazon', 'executarLoteEscritaAmazon']) {
+      const corpo = semComentarios(textoDaFuncao(motor, entrada) ?? '');
+      expect(corpo, entrada).not.toBe('');
+      expect(
+        corpo.match(new RegExp(`\\b${ESCRITA_UNICA_DO_MOTOR}\\(`, 'g')) ?? [],
+        entrada,
+      ).toHaveLength(1);
+      expect(corpo, entrada).not.toMatch(new RegExp(`\\b${CONSTRUTOR_LOCAL_DO_MOTOR}\\b`));
+      expect(corpo, entrada).not.toMatch(/\bexecutarComRenovacaoUnica\b/);
+    }
+    // The file-wide pins are unchanged: three builder places, one observer site.
+    const codigo = semComentarios(motor);
+    expect(codigo.match(new RegExp(`\\b${CONSTRUTOR_LOCAL_DO_MOTOR}\\(`, 'g')) ?? []).toHaveLength(
+      3,
+    );
+    expect(motor.split(SEAM_OK)).toHaveLength(2);
+  });
+
+  it('the batch scans flag what they exist for, and nothing alike (near-misses)', () => {
+    for (const fonte of [
+      'const r = await executarLoteEscritaAmazon({ valvula });',
+      'executarLoteEscritaAmazon<P, X, R>({ valvula });',
+      'return executarLoteEscritaAmazon ({ valvula });',
+    ]) {
+      expect(chamaOLoteDeEscrita(fonte), fonte).toBe(true);
+      // The first entry's scans never see a batch call.
+      expect(chamaOMotorDeEscrita(fonte), fonte).toBe(false);
+      expect(nomeiaOMotorDeEscrita(fonte), fonte).toBe(false);
+    }
+    for (const fonte of [
+      'export async function executarLoteEscritaAmazon<P, X, R>(e: E) {}',
+      'function executarLoteEscritaAmazon(e: E) {}',
+      '// executarLoteEscritaAmazon(e)',
+      "import { executarLoteEscritaAmazon } from '../core/escrita';",
+      'const x = executarLoteEscritaAmazonDepois(e);',
+      'const r = await executarEscritaAmazon({ valvula });',
+    ]) {
+      expect(chamaOLoteDeEscrita(fonte), fonte).toBe(false);
+    }
+    // What the call scan cannot see, the NAME scan flags.
+    for (const fonte of [
+      "import { executarLoteEscritaAmazon as lote } from '../core/escrita';",
+      'const m = executarLoteEscritaAmazon;',
+      'escrita.executarLoteEscritaAmazon.call(null, e);',
+      "export { executarLoteEscritaAmazon as rodar } from '../core/escrita';",
+    ]) {
+      expect(chamaOLoteDeEscrita(fonte), fonte).toBe(false);
+      expect(nomeiaOLoteDeEscrita(fonte), fonte).toBe(true);
+    }
+    for (const fonte of [
+      '// executarLoteEscritaAmazon(e)',
+      '/** see `executarLoteEscritaAmazon` */ const y = 1;',
+      'const x = executarLoteEscritaAmazonDepois(e);',
+      'const r = await executarEscritaAmazon({ valvula });',
+    ]) {
+      expect(nomeiaOLoteDeEscrita(fonte), fonte).toBe(false);
+    }
+  });
+
+  // An app-wide parse: CI headroom, not a budget.
+  it(
+    `★ (12-c) the six feed helpers have exactly ONE caller module under lib/amazon, app/, functions/src and scripts/: ${CHAMADOR_DOS_FEEDS}`,
+    { timeout: 30_000 },
+    () => {
+      const fontes = fontesDoChamadorDeSearchOrders();
+      const nomeiam = fontes
+        .filter((p) => nomeiaOsFeeds(readFileSync(p, 'utf8')))
+        .map(relApp)
+        .sort();
+      expect(nomeiam.filter((p) => !NOMEIAM_FEEDS_SEM_CHAMAR.includes(p))).toEqual([
+        CHAMADOR_DOS_FEEDS,
+      ]);
+      // Anti-vacuity: the scan sees the exempt redactor, by name, and the one
+      // caller really calls all six helpers.
+      expect(nomeiam).toEqual(expect.arrayContaining(NOMEIAM_FEEDS_SEM_CHAMAR));
+      const chamador = semComentarios(lerDoApp(CHAMADOR_DOS_FEEDS) ?? '');
+      for (const ajudante of [
+        'criarDocumentoFeedAmazon',
+        'enviarDocumentoFeedAmazon',
+        'criarFeedAmazon',
+        'lerFeedAmazon',
+        'lerDocumentoFeedAmazon',
+        'baixarRelatorioFeedAmazon',
+      ]) {
+        expect(chamador, ajudante).toMatch(new RegExp(`\\b${ajudante}\\s*\\(`));
+      }
+    },
+  );
+
+  it('(12-c) the feed scan finds every call shape, and nothing alike (near-misses)', () => {
+    for (const fonte of [
+      'await criarFeedAmazon(escritor, entrada);',
+      'const d = await lerDocumentoFeedAmazon(cliente, id);',
+      'await enviarDocumentoFeedAmazon(url, bytes, { fetch });',
+      'cliente.get({ operacao: OPERACAO_LER_FEED, caminho: c, schema });',
+      'escritor.post({ operacao: op, caminho: CAMINHO_FEEDS, corpo, schema: feedCriadoSchema });',
+      "cliente.get({ operacao: 'getFeedDocument', caminho: c, schema: s });",
+      'const c = `/feeds/2021-06-30/feeds/${feedId}`;',
+      "import { baixarRelatorioFeedAmazon as baixar } from '@delfrance/integrations-amazon-sp-api';",
+    ]) {
+      expect(nomeiaOsFeeds(fonte), fonte).toBe(true);
+    }
+    for (const fonte of [
+      '// criarFeedAmazon(escritor, entrada)',
+      '/** the ONE `createFeed` of a run */ const y = 1;',
+      'await criarFeedNaAmazon(escritor, entrada);',
+      'await lerFeedNaAmazon(contexto, feedId);',
+      "const nome = 'getFeeds';",
+      "const metodos = { getFeed: ['GET'] };",
+      'const r = registroFeedAmazonSchema.parse(x);',
+      'const v = vezFeedAmazonSchema.parse(x);',
+    ]) {
+      expect(nomeiaOsFeeds(fonte), fonte).toBe(false);
+    }
+  });
+
+  it('★ (12-c) the App Hosting union walk reaches, of feeds/, ONLY the jobs producer and its payload contract — no handler, no lease I/O, not the feed helpers’ caller; type edges and the @/ alias walked', () => {
+    const fecho = fechoDeImportacoes(
+      entradasDaUniaoDoAppHosting(),
+      lerDoApp,
+      resolverAliasDoApp(lerDoApp),
+    );
+    expect(fecho.arquivos.filter((a) => a.startsWith('lib/amazon/feeds/')).sort()).toEqual(
+      [CONTRATO_DE_LOTES, PRODUTOR_DE_LOTES].sort(),
+    );
+    expect(violacoesDoAppHosting(fecho)).toEqual([]);
+    for (const modulo of MODULOS_DE_FEED_FORA_DO_APP_HOSTING) {
+      expect(PROIBIDOS_NO_APP_HOSTING, modulo).toContain(modulo);
+      expect(fecho.arquivos, modulo).not.toContain(modulo);
+    }
+    // Anti-vacuity: the receiver and the App Hosting root are on the walk, and
+    // the root names the jobs producer it binds.
+    expect(fecho.arquivos).toEqual(
+      expect.arrayContaining([
+        'lib/amazon/notificacoes/receptor.ts',
+        ARQUIVO_RAIZ_DA_FILA,
+        PRODUTOR_DE_LOTES,
+      ]),
+    );
+    expect(filasDaRaiz(lerDoApp(ARQUIVO_RAIZ_DA_FILA) ?? '')).toContain('caminhoDaFilaLotesAmazon');
+    // …and the jobs queue's functions root DOES reach every one of them, so the
+    // list above is not vacuous: a bundle importing the queue's body would fail.
+    const fila = fechoDeImportacoes(['functions/src/filaLotes.ts'], lerDoApp);
+    expect(fila.arquivos).toEqual(expect.arrayContaining(MODULOS_DE_FEED_FORA_DO_APP_HOSTING));
+    expect(violacoesDoAppHosting(fila)).toEqual(
+      expect.arrayContaining(MODULOS_DE_FEED_FORA_DO_APP_HOSTING.map((m) => `reaches ${m}`)),
+    );
+  });
+
+  it('(12-c, 12-e1) the stock root binds the jobs and the stock queues only, and only those two queues import it', () => {
+    const raiz = lerDoApp(ARQUIVO_RAIZ_DO_AGENDADOR_ESTOQUE) ?? '';
+    expect(chamaGetFunctions(raiz)).toBe(true);
+    expect(filasDaRaiz(raiz)).toEqual(['caminhoDaFilaEstoqueAmazon', 'caminhoDaFilaLotesAmazon']);
+    const importadores = fontesDasFuncoes()
+      .map((p) => [relApp(p), readFileSync(p, 'utf8')] as const)
+      .filter(([, texto]) => especificadores(texto).includes('./agendadorEstoque'))
+      .map(([arquivo]) => arquivo)
+      .sort();
+    expect(importadores).toEqual(['functions/src/filaEstoque.ts', 'functions/src/filaLotes.ts']);
+  });
+
+  it('★ (12-c) under feeds/, ONLY the lease I/O and the record’s two writers make a Firestore WRITE call — each its own count; the lease handle is the lease I/O’s alone', () => {
+    const escritas = Object.fromEntries(
+      feeds
+        .map((p) => [rel(p), semComentarios(readFileSync(p, 'utf8'))] as const)
+        .map(
+          ([arquivo, codigo]) =>
+            [arquivo, (codigo.match(ESCRITA_FIRESTORE_EM_FEEDS) ?? []).length] as const,
+        )
+        .filter(([, n]) => n !== 0),
+    );
+    expect(escritas).toEqual(ESCRITORES_EM_FEEDS);
+    // The lease's handle is named by the lease I/O alone; the record's by its two writers.
+    const nomeiam = (re: RegExp) =>
+      feeds
+        .filter((p) => re.test(semComentarios(readFileSync(p, 'utf8'))))
+        .map(rel)
+        .sort();
+    expect(nomeiam(/\bvezFeedAmazonCollection\b/)).toEqual(['feeds/vezFeedFirestore.ts']);
+    expect(nomeiam(/\bfeedAmazonCollection\b/)).toEqual([
+      'feeds/enviarFeed.ts',
+      'feeds/resultadoFeed.ts',
+    ]);
+    // Anti-vacuity: the report reducer DOES group its issues in Maps (`.set(`),
+    // which the scan leaves alone; and every exempt writer exists.
+    const relatorio = semComentarios(lerDoApp('lib/amazon/feeds/relatorioFeed.ts') ?? '');
+    expect(relatorio).toMatch(/\.set\(/);
+    for (const arquivo of Object.keys(ESCRITORES_EM_FEEDS)) {
+      expect(feeds.map(rel), arquivo).toContain(arquivo);
+    }
+  });
+
+  it('(12-c) the feeds write scan flags what it exists for, and nothing alike (near-misses)', () => {
+    for (const escrita of [
+      'await ref.update(patch, { lastUpdateTime });',
+      'await ref.create(vez);',
+      'await vezRef.set(vez);',
+      'await feedAmazonCollection.docRef(db, {}, id).create(registro);',
+      'await feedAmazonCollection.docRef(db, {}, id).set(registro);',
+      'await feedAmazonCollection.merge(db, {}, id, { x: 1 });',
+      'await feedAmazonCollection.add(db, {}, {});',
+      'await ref.delete();',
+      'const lote = db.batch();',
+    ]) {
+      expect(escrita.match(ESCRITA_FIRESTORE_EM_FEEDS), escrita).toHaveLength(1);
+    }
+    for (const leitura of [
+      'porSku.set(sku, lista);',
+      'agrupados.set(sku, [p]);',
+      'vistos.delete(sku);',
+      'const c = new Set<string>(); c.add(x);',
+      'await feedAmazonCollection.docRef(db, {}, id).get();',
+      'await vezFeedAmazonCollection.ref(db, {}).doc;',
+    ]) {
+      expect(leitura.match(ESCRITA_FIRESTORE_EM_FEEDS), leitura).toBeNull();
+    }
+  });
+});
+
+/* ------------------------- step 12 (PR 12-d): the stock core ------------------------- */
+
+/**
+ * What a production file under `estoque/` may load AS A VALUE: its siblings,
+ * the shared quantity core, the schemas, the SP-API package (constants and
+ * schemas, no client), `zod` (the task payload) and two `@delfrance/data`
+ * barrels, each for ONE named pure helper ({@link NOMES_PERMITIDOS_EM_ESTOQUE}).
+ * No Firestore handle, no context, no logger, no producer: the stock decisions
+ * stay pure until a reader is wired around them.
+ */
+const VALORES_PERMITIDOS_EM_ESTOQUE = [
+  '@delfrance/data/admin/estoque',
+  '@delfrance/schemas',
+  '@delfrance/integrations-amazon-sp-api',
+  'zod',
+  '@delfrance/data/admin',
+  '@delfrance/data/admin/produtos',
+];
+
+/**
+ * The two `@delfrance/data` barrels above export Firestore readers too, so from
+ * each only the named pure helper may be imported: the task names' digest, and
+ * the conta's two stored ref forms (the order import's own pair).
+ */
+const NOMES_PERMITIDOS_EM_ESTOQUE: Readonly<Record<string, readonly string[]>> = {
+  '@delfrance/data/admin': ['sha256Hex'],
+  '@delfrance/data/admin/produtos': ['contaRefForms'],
+};
+
+/** …and as a TYPE only, on top: the order import's resolution of a SKU, and the write engine's plan. */
+const TIPOS_PERMITIDOS_EM_ESTOQUE = ['../pedidos/vinculoProdutoAmazon', '../core/escrita'];
+
+/**
+ * The I/O half of `estoque/` (step 12, PR 12-e1): each module with EXACTLY the
+ * non-sibling modules it loads AS A VALUE, and why. Every other production file
+ * under `estoque/` is PURE ({@link VALORES_PERMITIDOS_EM_ESTOQUE}), and no pure
+ * file imports one of these, so the 12-d decisions stay Firestore-free and are
+ * proved without a db.
+ *
+ * - `resolverEstoque.ts` — the verdict's Firestore half: the link and produto
+ *   handles (masked reads), the schemas' index-field tuple, and the order
+ *   import's OWN query and dono hop (`pedidos/vinculoProdutoAmazon.ts`: one
+ *   binding, never a second copy of it).
+ * - `familiaEstoqueFirestore.ts` — the family read: the estoque and produto
+ *   handles, the shared quantity core's component rule (the core's own answer to
+ *   "which components"), the schemas' canonical estoque id.
+ * - `envioEstoqueFirestore.ts` — the outcome write-back: the link handle (its
+ *   ONE precondition `update`), the gRPC class readers (a lost precondition is
+ *   9/5), the schemas, and the app's logger (its one WARNING).
+ * - `produtorEstoque.ts` — the stock queue's pure producer: the task-SDK helpers
+ *   (`core/filaTarefas.ts` stays the ONE importer of the SDK under `lib/amazon`).
+ * - `processarEstoque.ts` — the patch task: the region error class (the
+ *   producer's own refusal), the lease handle (ONE masked by-id read), the gRPC
+ *   class reader, the SP-API package (error classes, the dataset and operation
+ *   constants, the path check), the schemas, the avisos seam, the write engine,
+ *   the task-SDK helpers, the logger, the redactor's code grammar, the valves,
+ *   the ONE listings caller and the shared read-failure ladder.
+ */
+const E_S_EM_ESTOQUE: Readonly<Record<string, readonly string[]>> = {
+  'estoque/resolverEstoque.ts': [
+    '../pedidos/vinculoProdutoAmazon',
+    '@delfrance/data/admin/collections',
+    '@delfrance/schemas',
+  ],
+  'estoque/familiaEstoqueFirestore.ts': [
+    '@delfrance/data/admin/collections',
+    '@delfrance/data/admin/estoque',
+    '@delfrance/schemas',
+  ],
+  'estoque/envioEstoqueFirestore.ts': [
+    '../core/log',
+    '@delfrance/data/admin/collections',
+    '@delfrance/data/admin/grpcErrors',
+    '@delfrance/schemas',
+  ],
+  'estoque/produtorEstoque.ts': ['../core/filaTarefas'],
+  'estoque/processarEstoque.ts': [
+    '../avisos/avisos',
+    '../core/escrita',
+    '../core/filaTarefas',
+    '../core/log',
+    '../core/redacao',
+    '../core/valvulas',
+    '../listings/listingsAmazon',
+    '../pedidos/falhaLeituraAmazon',
+    '@delfrance/core/region',
+    '@delfrance/data/admin/collections',
+    '@delfrance/data/admin/grpcErrors',
+    '@delfrance/integrations-amazon-sp-api',
+    '@delfrance/schemas',
+  ],
+};
+
+/**
+ * The ONLY files under `estoque/` that write Firestore, each with its writes
+ * and why: the outcome write-back's ONE `update(…, { lastUpdateTime })` on the
+ * masked link-doc read it decided from (rule 7 tier 1). The patch task writes
+ * through it and through `avisos/avisos.ts`; the readers and the producer write
+ * nothing. The scan is {@link ESCRITA_FIRESTORE_EM_FEEDS}, shape-only.
+ */
+const ESCRITORES_EM_ESTOQUE: Readonly<Record<string, number>> = {
+  'estoque/envioEstoqueFirestore.ts': 1,
+};
+
+/**
+ * Every production file OUTSIDE `estoque/` that imports it (step 12, PR
+ * 12-e1), with the `estoque/` modules it names, and why:
+ *
+ * - `functions/src/agendadorEstoque.ts` — the stock root binds the stock
+ *   producer onto its queue (the payload contract by type);
+ * - `functions/src/filaEstoque.ts` — the stock queue runs the patch task;
+ * - `functions/src/index.ts` — the load-time assertion reads the queue's name;
+ * - `lib/amazon/feeds/destinosLote.ts` — the seam's root names the stock
+ *   producer's TYPE (a provider factory receives it), never a value.
+ */
+const IMPORTADORES_DE_ESTOQUE: Readonly<Record<string, readonly string[]>> = {
+  'functions/src/agendadorEstoque.ts': ['estoque/produtorEstoque', 'estoque/tarefaEstoque'],
+  'functions/src/filaEstoque.ts': ['estoque/processarEstoque'],
+  'functions/src/index.ts': ['estoque/produtorEstoque'],
+  'lib/amazon/feeds/destinosLote.ts': ['estoque/produtorEstoque'],
+};
+
+/** The names an import declaration of `espec` binds (namespace and default imports read as `*`). */
+function nomesImportadosDe(texto: string, espec: string): string[] {
+  const fonte = ts.createSourceFile('x.ts', texto, ts.ScriptTarget.Latest, false, ts.ScriptKind.TS);
+  const saida: string[] = [];
+  for (const no of fonte.statements) {
+    if (!ts.isImportDeclaration(no) || !ts.isStringLiteral(no.moduleSpecifier)) continue;
+    if (no.moduleSpecifier.text !== espec) continue;
+    const clausula = no.importClause;
+    if (clausula?.name !== undefined) saida.push('*');
+    const nomeados = clausula?.namedBindings;
+    if (nomeados !== undefined && ts.isNamespaceImport(nomeados)) saida.push('*');
+    if (nomeados !== undefined && ts.isNamedImports(nomeados)) {
+      for (const e of nomeados.elements) saida.push((e.propertyName ?? e.name).text);
+    }
+  }
+  return saida;
+}
+
+/** A specifier that lands under `lib/amazon/estoque/`, by any relative path or the `@/` alias. */
+const IMPORTA_ESTOQUE = /(?:^|\/)amazon\/estoque\/|^\.\.?\/(?:\.\.\/)*estoque\//;
+
+describe('the step-12 stock core guards (12-d)', () => {
+  const estoque = arquivosTs(join(RAIZ_LIB, 'estoque')).filter((p) => !ehTeste(p));
+
+  /** The pure half: every production file of `estoque/` not on the I/O roster. */
+  const puros = estoque.filter((p) => !(rel(p) in E_S_EM_ESTOQUE));
+
+  it('★ (1) estoque/ is Next-free, reads no process environment and never imports the @/ alias', () => {
+    expect(estoque.map(rel).sort()).toEqual([
+      'estoque/descobertaEstoque.ts',
+      'estoque/envioEstoque.ts',
+      'estoque/envioEstoqueFirestore.ts',
+      'estoque/familiaEstoque.ts',
+      'estoque/familiaEstoqueFirestore.ts',
+      'estoque/gateListing.ts',
+      'estoque/motivosEstoque.ts',
+      'estoque/opcoesEstoque.ts',
+      'estoque/planoEstoque.ts',
+      'estoque/processarEstoque.ts',
+      'estoque/produtorEstoque.ts',
+      'estoque/resolverEstoque.ts',
+      'estoque/tarefaEstoque.ts',
+      'estoque/vinculoEstoque.ts',
+    ]);
+    for (const arquivo of estoque) {
+      const texto = readFileSync(arquivo, 'utf8');
+      expect(texto, rel(arquivo)).not.toMatch(/process\s*\.\s*env/);
+      expect(/from 'next(\/[^']*)?'/.test(texto), rel(arquivo)).toBe(false);
+      expect(
+        especificadores(texto).filter((e) => e.startsWith('@/')),
+        rel(arquivo),
+      ).toEqual([]);
+    }
+  });
+
+  it('★ (2) estoque/’s PURE half: by value it imports only its siblings, the quantity core, the schemas, the SP-API package, zod and two named data helpers; the order import’s resolution and the engine’s plan by type only', () => {
+    // Anti-vacuity: the pure half is the nine 12-d modules, not an emptied list.
+    expect(puros.map(rel).sort()).toEqual([
+      'estoque/descobertaEstoque.ts',
+      'estoque/envioEstoque.ts',
+      'estoque/familiaEstoque.ts',
+      'estoque/gateListing.ts',
+      'estoque/motivosEstoque.ts',
+      'estoque/opcoesEstoque.ts',
+      'estoque/planoEstoque.ts',
+      'estoque/tarefaEstoque.ts',
+      'estoque/vinculoEstoque.ts',
+    ]);
+    for (const arquivo of puros) {
+      const texto = readFileSync(arquivo, 'utf8');
+      const valores = importacoesDeValor(texto).filter((e) => !e.startsWith('./'));
+      for (const espec of valores) {
+        expect(VALORES_PERMITIDOS_EM_ESTOQUE, `${rel(arquivo)} → ${espec}`).toContain(espec);
+      }
+      for (const [espec, permitidos] of Object.entries(NOMES_PERMITIDOS_EM_ESTOQUE)) {
+        for (const nome of nomesImportadosDe(texto, espec)) {
+          expect(permitidos, `${rel(arquivo)} → ${espec} { ${nome} }`).toContain(nome);
+        }
+      }
+      const todos = especificadores(texto).filter((e) => !e.startsWith('./'));
+      for (const espec of todos) {
+        expect(
+          [...VALORES_PERMITIDOS_EM_ESTOQUE, ...TIPOS_PERMITIDOS_EM_ESTOQUE],
+          `${rel(arquivo)} → ${espec}`,
+        ).toContain(espec);
+      }
+    }
+    // Anti-vacuity: the verdict does read the resolution's type, and only as a type.
+    const veredicto = readFileSync(join(RAIZ_LIB, 'estoque', 'vinculoEstoque.ts'), 'utf8');
+    expect(especificadores(veredicto)).toContain('../pedidos/vinculoProdutoAmazon');
+    expect(importacoesDeValor(veredicto)).not.toContain('../pedidos/vinculoProdutoAmazon');
+    // …the plan does read the engine's plan type, and only as a type…
+    const plano = readFileSync(join(RAIZ_LIB, 'estoque', 'planoEstoque.ts'), 'utf8');
+    expect(especificadores(plano)).toContain('../core/escrita');
+    expect(importacoesDeValor(plano)).not.toContain('../core/escrita');
+    // …and each data helper is imported, alone, by the file that needs it.
+    const tarefa = readFileSync(join(RAIZ_LIB, 'estoque', 'tarefaEstoque.ts'), 'utf8');
+    expect(nomesImportadosDe(tarefa, '@delfrance/data/admin')).toEqual(['sha256Hex']);
+    const descoberta = readFileSync(join(RAIZ_LIB, 'estoque', 'descobertaEstoque.ts'), 'utf8');
+    expect(nomesImportadosDe(descoberta, '@delfrance/data/admin/produtos')).toEqual([
+      'contaRefForms',
+    ]);
+  });
+
+  it('the named-helper scan reads every binding form (near-misses)', () => {
+    const e = '@delfrance/data/admin/produtos';
+    expect(nomesImportadosDe(`import { contaRefForms } from '${e}';`, e)).toEqual([
+      'contaRefForms',
+    ]);
+    expect(nomesImportadosDe(`import { resolverProdutoPorSku as r } from '${e}';`, e)).toEqual([
+      'resolverProdutoPorSku',
+    ]);
+    expect(nomesImportadosDe(`import * as dados from '${e}';`, e)).toEqual(['*']);
+    expect(nomesImportadosDe(`import dados, { contaRefForms } from '${e}';`, e)).toEqual([
+      '*',
+      'contaRefForms',
+    ]);
+    expect(nomesImportadosDe(`import { contaRefForms } from '${e}/x';`, e)).toEqual([]);
+  });
+
+  it('★ (2b, 12-e1) estoque/’s I/O half loads EXACTLY its listed modules as values, and no pure module imports it', () => {
+    const es = estoque.filter((p) => rel(p) in E_S_EM_ESTOQUE);
+    expect(es.map(rel).sort()).toEqual(Object.keys(E_S_EM_ESTOQUE).sort());
+    for (const arquivo of es) {
+      const valores = [
+        ...new Set(
+          importacoesDeValor(readFileSync(arquivo, 'utf8')).filter((e) => !e.startsWith('./')),
+        ),
+      ].sort();
+      expect(valores, rel(arquivo)).toEqual([...(E_S_EM_ESTOQUE[rel(arquivo)] ?? [])].sort());
+    }
+    // The pure half never reaches the I/O half, by value or by type.
+    const nomesES = Object.keys(E_S_EM_ESTOQUE).map((a) => `./${a.slice('estoque/'.length, -3)}`);
+    for (const arquivo of puros) {
+      const especs = especificadores(readFileSync(arquivo, 'utf8'));
+      expect(
+        especs.filter((e) => nomesES.includes(e)),
+        rel(arquivo),
+      ).toEqual([]);
+    }
+    // Anti-vacuity: the task does import the I/O siblings it wires.
+    const tarefa = especificadores(
+      readFileSync(join(RAIZ_LIB, 'estoque', 'processarEstoque.ts'), 'utf8'),
+    );
+    expect(tarefa).toEqual(
+      expect.arrayContaining([
+        './resolverEstoque',
+        './familiaEstoqueFirestore',
+        './envioEstoqueFirestore',
+        './produtorEstoque',
+      ]),
+    );
+  });
+
+  it('★ (3, 12-e1) estoque/ is WIRED by EXACTLY the stock root, the stock queue, the functions index and the seam’s root type — lib, app, functions and scripts', () => {
+    const fora = [
+      ...fontesDoChamadorDeSearchOrders(),
+      ...(existsSync(join(RAIZ_APP, 'proxy.ts')) ? [join(RAIZ_APP, 'proxy.ts')] : []),
+    ].filter((p) => !relApp(p).startsWith('lib/amazon/estoque/'));
+    const importadores = Object.fromEntries(
+      fora
+        .map((p) => [relApp(p), especificadores(readFileSync(p, 'utf8'))] as const)
+        .map(
+          ([arquivo, especs]) =>
+            [
+              arquivo,
+              [
+                ...new Set(
+                  especs
+                    .filter((e) => IMPORTA_ESTOQUE.test(e))
+                    .map((e) => (/estoque\/[^/]+$/.exec(e) ?? [e])[0]),
+                ),
+              ].sort(),
+            ] as const,
+        )
+        .filter(([, nomeados]) => nomeados.length > 0),
+    );
+    expect(importadores).toEqual(IMPORTADORES_DE_ESTOQUE);
+    // The seam's root names the stock producer by TYPE only.
+    const seam = readFileSync(join(RAIZ_LIB, 'feeds', 'destinosLote.ts'), 'utf8');
+    expect(importacoesDeValor(seam).filter((e) => IMPORTA_ESTOQUE.test(e))).toEqual([]);
+    // Anti-vacuity: the scan read the functions codebase and the scripts.
+    expect(fora.map(relApp)).toEqual(
+      expect.arrayContaining(['functions/src/index.ts', 'scripts/sanitizar.ts']),
+    );
+  });
+
+  it('★ (5, 12-e1) under estoque/, ONLY the outcome write-back makes a Firestore WRITE call — exactly its one precondition update', () => {
+    const escritas = Object.fromEntries(
+      estoque
+        .map((p) => [rel(p), semComentarios(readFileSync(p, 'utf8'))] as const)
+        .map(
+          ([arquivo, codigo]) =>
+            [arquivo, (codigo.match(ESCRITA_FIRESTORE_EM_FEEDS) ?? []).length] as const,
+        )
+        .filter(([, n]) => n !== 0),
+    );
+    expect(escritas).toEqual(ESCRITORES_EM_ESTOQUE);
+    // Anti-vacuity: that one write IS the precondition update the scan counts.
+    const escritor = semComentarios(
+      readFileSync(join(RAIZ_LIB, 'estoque', 'envioEstoqueFirestore.ts'), 'utf8'),
+    );
+    expect(escritor).toMatch(/\.update\(/);
+    expect(escritor).toMatch(/lastUpdateTime/);
+  });
+
+  it('★ (4) publicado is never a gate: under estoque/ only the family projection names it, and reads it once', () => {
+    const nomeiam = estoque
+      .filter((p) => /\bpublicado\b/.test(semComentarios(readFileSync(p, 'utf8'))))
+      .map(rel);
+    expect(nomeiam).toEqual(['estoque/familiaEstoque.ts']);
+    const familia = semComentarios(
+      readFileSync(join(RAIZ_LIB, 'estoque', 'familiaEstoque.ts'), 'utf8'),
+    );
+    expect(familia.match(/\.publicado\b/g) ?? []).toHaveLength(1);
+    expect(familia).toMatch(/publicado:\s*raw\.publicado === true/);
+  });
+
+  it('the estoque import scan flags what it exists for, and nothing alike (near-misses)', () => {
+    for (const espec of [
+      '../estoque/familiaEstoque',
+      './estoque/familiaEstoque',
+      '../../lib/amazon/estoque/vinculoEstoque',
+      '@/lib/amazon/estoque/gateListing',
+      '../../../estoque/x',
+    ]) {
+      expect(IMPORTA_ESTOQUE.test(espec), espec).toBe(true);
+    }
+    for (const espec of [
+      '@delfrance/data/admin/estoque',
+      '../feeds/provedorLote',
+      './estoqueAmazon',
+      '../pedidos/estoqueX',
+      '@delfrance/schemas',
+    ]) {
+      expect(IMPORTA_ESTOQUE.test(espec), espec).toBe(false);
+    }
+  });
+});
+
+describe('the step-12 patch path guards (12-e1)', () => {
+  const listings = arquivosTs(join(RAIZ_LIB, 'listings')).filter((p) => !ehTeste(p));
+
+  it('★ listings/ is Next-free, reads no process environment, never imports the @/ alias, and reaches nothing of estoque/', () => {
+    expect(listings.map(rel).sort()).toEqual(['listings/listingsAmazon.ts']);
+    for (const arquivo of listings) {
+      const texto = readFileSync(arquivo, 'utf8');
+      expect(texto, rel(arquivo)).not.toMatch(/process\s*\.\s*env/);
+      expect(/from 'next(\/[^']*)?'/.test(texto), rel(arquivo)).toBe(false);
+      const especs = especificadores(texto);
+      expect(
+        especs.filter((e) => e.startsWith('@/')),
+        rel(arquivo),
+      ).toEqual([]);
+      // A later listings flow (step 13) reuses this module: it carries no stock rule.
+      expect(
+        especs.filter((e) => IMPORTA_ESTOQUE.test(e)),
+        rel(arquivo),
+      ).toEqual([]);
+    }
+  });
+
+  // An app-wide parse: CI headroom, not a budget.
+  it(
+    `★ the three listings helpers have exactly ONE caller module under lib/amazon, app/, functions/src and scripts/: ${CHAMADOR_DOS_LISTINGS}`,
+    { timeout: 30_000 },
+    () => {
+      const fontes = fontesDoChamadorDeSearchOrders();
+      const nomeiam = fontes
+        .filter((p) => nomeiaOsListings(readFileSync(p, 'utf8')))
+        .map(relApp)
+        .sort();
+      expect(nomeiam.filter((p) => !NOMEIAM_LISTINGS_SEM_CHAMAR.includes(p))).toEqual([
+        CHAMADOR_DOS_LISTINGS,
+      ]);
+      // Anti-vacuity: the scan sees every exempt mention, by name; the one caller
+      // really calls all three helpers, and the exempt task calls none of them.
+      expect(nomeiam).toEqual(expect.arrayContaining(NOMEIAM_LISTINGS_SEM_CHAMAR));
+      const chamador = semComentarios(lerDoApp(CHAMADOR_DOS_LISTINGS) ?? '');
+      for (const ajudante of [
+        'lerListingAmazon',
+        'buscarListingsAmazon',
+        'enviarDisponibilidadeAmazon',
+      ]) {
+        expect(chamador, ajudante).toMatch(new RegExp(`\\b${ajudante}\\s*\\(`));
+      }
+      const tarefa = semComentarios(lerDoApp('lib/amazon/estoque/processarEstoque.ts') ?? '');
+      expect(tarefa).not.toMatch(
+        /\b(?:lerListingAmazon|buscarListingsAmazon|enviarDisponibilidadeAmazon)\b/,
+      );
+      expect(tarefa).toMatch(/\bOPERACAO_ENVIAR_LISTING\b/);
+      expect(fontes.map(relApp)).toEqual(
+        expect.arrayContaining(['functions/src/index.ts', 'scripts/sanitizar.ts']),
+      );
+    },
+  );
+
+  it('the listings scan finds every call shape, and nothing alike (near-misses)', () => {
+    for (const fonte of [
+      'await lerListingAmazon(cliente, entrada);',
+      'const r = await buscarListingsAmazon(contexto.cliente, entrada);',
+      'await enviarDisponibilidadeAmazon(escritor, entrada);',
+      'cliente.get({ operacao: OPERACAO_LER_LISTING, caminho: c, schema });',
+      "escritor.patch({ operacao: 'patchListingsItem', caminho: c, corpo });",
+      'const c = `/listings/2021-08-01/items/${sellerId}`;',
+      'const s = envioListingAmazonSchema.parse(x);',
+      "import { lerListingAmazon as ler } from '@delfrance/integrations-amazon-sp-api';",
+    ]) {
+      expect(nomeiaOsListings(fonte), fonte).toBe(true);
+    }
+    for (const fonte of [
+      '// lerListingAmazon(cliente, entrada)',
+      '/** the ONE `patchListingsItem` of a run */ const y = 1;',
+      'await lerListingNaAmazon(contexto, entrada);',
+      'await enviarDisponibilidadeNaAmazon(escritor, entrada);',
+      "const metodos = { getListingsItem: ['GET', 'PATCH'] };",
+      "const nome = 'getListingsItems';",
+      'const l: ListingAmazon = x;',
+      'const v = skuTemCaminhoAmazon(sku);',
+    ]) {
+      expect(nomeiaOsListings(fonte), fonte).toBe(false);
+    }
+  });
+
+  it('★ the App Hosting union walk reaches NOTHING of the stock wiring — no task, no link read, no family read, no write-back; type edges and the @/ alias walked', () => {
+    const fecho = fechoDeImportacoes(
+      entradasDaUniaoDoAppHosting(),
+      lerDoApp,
+      resolverAliasDoApp(lerDoApp),
+    );
+    expect(violacoesDoAppHosting(fecho)).toEqual([]);
+    for (const modulo of MODULOS_DE_ESTOQUE_FORA_DO_APP_HOSTING) {
+      expect(PROIBIDOS_NO_APP_HOSTING, modulo).toContain(modulo);
+      expect(fecho.arquivos, modulo).not.toContain(modulo);
+    }
+    // …and the stock queue's functions root DOES reach every one of them, so the
+    // list is not vacuous: a bundle importing the queue's body would fail.
+    const fila = fechoDeImportacoes(['functions/src/filaEstoque.ts'], lerDoApp);
+    expect(fila.arquivos).toEqual(expect.arrayContaining(MODULOS_DE_ESTOQUE_FORA_DO_APP_HOSTING));
+    expect(violacoesDoAppHosting(fila)).toEqual(
+      expect.arrayContaining(MODULOS_DE_ESTOQUE_FORA_DO_APP_HOSTING.map((m) => `reaches ${m}`)),
+    );
+  });
+
+  it('★ the App Hosting list holds EVERY I/O module of estoque/ but the producer — derived from E_S_EM_ESTOQUE, never from itself', () => {
+    // E_S_EM_ESTOQUE is held to the folder by the purity pins above (a module
+    // missing from it must pass the PURE allow-list, which no I/O module does),
+    // so an entry dropped from the App Hosting list reds HERE, even while no
+    // route reaches it yet. The producer stays reachable on purpose: a route
+    // may ENQUEUE a task (the payload contract is pure).
+    const esperado = Object.keys(E_S_EM_ESTOQUE)
+      .filter((arquivo) => arquivo !== 'estoque/produtorEstoque.ts')
+      .map((arquivo) => `lib/amazon/${arquivo}`)
+      .sort();
+    expect(esperado).toContain('lib/amazon/estoque/processarEstoque.ts');
+    expect([...MODULOS_DE_ESTOQUE_FORA_DO_APP_HOSTING].sort()).toEqual(esperado);
   });
 });
 
@@ -2303,6 +4402,107 @@ describe('the guards, on synthetic source', () => {
       ).toEqual([`reaches ${IMPORTADOR}`, `reaches ${SEAM_DO_IMPORTADOR}`].sort());
     });
 
+    it('★ flags the write ENGINE reached from a route, and node:crypto imported by any of its files (step 14, PR 14-d)', () => {
+      expect(
+        violacoesDoAppHosting(
+          fechoCom("import { executarEscritaAmazon } from '../core/escrita';", {
+            [MOTOR_DE_ESCRITA]: 'export function executarEscritaAmazon() {}',
+          }),
+        ),
+      ).toEqual([`reaches ${MOTOR_DE_ESCRITA}`]);
+      for (const espec of ['node:crypto', 'crypto']) {
+        expect(
+          violacoesDoAppHosting(fechoCom(`import { createHash } from '${espec}';`)),
+          espec,
+        ).toEqual([`imports ${espec}`]);
+      }
+      // NEAR-MISS: the Web Crypto global and a longer module name are no edge to it.
+      expect(
+        violacoesDoAppHosting(
+          fechoCom("import { x } from 'crypto-js';\nconst d = globalThis.crypto;"),
+        ),
+      ).toEqual([]);
+    });
+
+    /** A one-edge app: `rota` imports `alvo` through the alias. */
+    function fechoDaRotaCom(rota: string, alvo: string) {
+      const ler = leitor({
+        [rota]: `import type { X } from '@/${alvo.replace(/\.ts$/, '')}';`,
+        [alvo]: 'export type X = 1;',
+      });
+      return fechoDeImportacoes([rota], ler, resolverAliasDoApp(ler));
+    }
+
+    it('★ (step 15, PR 15-d) a synthetic edge from the NF-e re-drive route to the write engine still fails the default list, while the label route’s list allows it', () => {
+      const fecho = fechoDaRotaCom(
+        'app/api/marketplace/amazon/enviar-nfe/route.ts',
+        MOTOR_DE_ESCRITA,
+      );
+      expect(violacoesDoAppHosting(fecho)).toEqual([`reaches ${MOTOR_DE_ESCRITA}`]);
+      expect(violacoesDoAppHosting(fecho, PROIBIDOS_NA_ROTA_ETIQUETA)).toEqual([]);
+    });
+
+    it.each([
+      ['lib/amazon/agendamento/agendadorAgendamento.ts'],
+      ['lib/amazon/agendamento/entradasAgendamento.ts'],
+      ['lib/amazon/agendamento/processarAgendamento.ts'],
+      ['lib/amazon/agendamento/tarefaAgendamento.ts'],
+    ])('★ (step 15, PR 15-d) the default list refuses %s from any route', (alvo) => {
+      expect(violacoesDoAppHosting(fechoDaRotaCom(ROTA, alvo))).toEqual([`reaches ${alvo}`]);
+    });
+
+    it.each([
+      [SEAM_DO_IMPORTADOR],
+      [IMPORTADOR],
+      ['lib/amazon/nfe/processarNfe.ts'],
+      ['lib/amazon/nfe/entregaAmazon.ts'],
+      ['lib/amazon/nfe/conteudoNfe.ts'],
+      ['lib/amazon/nfe/carimboFreteNfe.ts'],
+      ['lib/amazon/agendamento/processarAgendamento.ts'],
+      ['lib/amazon/agendamento/agendadorAgendamento.ts'],
+      ['lib/amazon/agendamento/entradasAgendamento.ts'],
+      ['lib/firebase/filaLeitura.ts'],
+      ['lib/amazon/notificacoes/agendador.ts'],
+      ['lib/amazon/nfe/agendadorNfe.ts'],
+      ['lib/amazon/core/filaTarefas.ts'],
+    ])('★ (step 15, PR 15-d) the label route’s list refuses %s', (alvo) => {
+      expect(
+        violacoesDoAppHosting(
+          fechoDaRotaCom(ARQUIVO_ROTA_ETIQUETA, alvo),
+          PROIBIDOS_NA_ROTA_ETIQUETA,
+        ),
+      ).toEqual([`reaches ${alvo}`]);
+    });
+
+    it.each([
+      ["import type { ViaCepClient } from '@delfrance/core/cep';", '@delfrance/core/cep'],
+      ["import { createHash } from 'node:crypto';", 'node:crypto'],
+      ["import { createHash } from 'crypto';", 'crypto'],
+    ])('★ (step 15, PR 15-d) the label route’s walk still flags %s', (fonte, espec) => {
+      const ler = leitor({ [ARQUIVO_ROTA_ETIQUETA]: fonte });
+      expect(
+        violacoesDoAppHosting(
+          fechoDeImportacoes([ARQUIVO_ROTA_ETIQUETA], ler, resolverAliasDoApp(ler)),
+          PROIBIDOS_NA_ROTA_ETIQUETA,
+        ),
+      ).toEqual([`imports ${espec}`]);
+    });
+
+    it.each([
+      [MOTOR_DE_ESCRITA],
+      ['lib/amazon/agendamento/decisaoAgendamento.ts'],
+      ['lib/amazon/agendamento/easyShipAmazon.ts'],
+      ['lib/amazon/agendamento/executarAgendamento.ts'],
+      ['lib/amazon/agendamento/tarefaAgendamento.ts'],
+    ])('NEAR-MISS (step 15, PR 15-d): the label route’s list allows %s', (alvo) => {
+      expect(
+        violacoesDoAppHosting(
+          fechoDaRotaCom(ARQUIVO_ROTA_ETIQUETA, alvo),
+          PROIBIDOS_NA_ROTA_ETIQUETA,
+        ),
+      ).toEqual([]);
+    });
+
     it('fails closed: an alias or a relative import that resolves to no file', () => {
       const ler = leitor({
         [ROTA]: "import { x } from '@/lib/amazon/sumiu';\nimport { y } from './tambem-sumiu';",
@@ -2673,7 +4873,7 @@ describe('the guards, on synthetic source', () => {
   /** The trigger's closure on synthetic source: the guard's verdict. */
   const d11 = (arquivos: Readonly<Record<string, string>>): string[] => {
     const ler = leitor(arquivos);
-    return violacoesD11(fechoDeImportacoes([GATILHO], ler), ler);
+    return violacoesD11(fechoDeImportacoes([GATILHO], ler), ler, PROIBIDOS_NO_GATILHO);
   };
 
   it.each([
@@ -2858,5 +5058,103 @@ describe('the guards, on synthetic source', () => {
         'lib/amazon/core/contexto.ts': 'export const loadAmazonContext = 1;',
       }),
     ).toEqual([]);
+  });
+
+  /* ------------------- step 14 (14-c): the NF-e trigger's D11 guard ------------------- */
+
+  const GATILHO_NFE = 'functions/src/onNfeAprovadaAmazon.ts';
+  /** The relative specifier the NF-e trigger would write for an app-root path. */
+  const especDoGatilhoNfePara = (alvo: string): string => {
+    const relativo = posix.relative(posix.dirname(GATILHO_NFE), alvo.replace(/\.ts$/, ''));
+    return relativo.startsWith('.') ? relativo : `./${relativo}`;
+  };
+  /** The NF-e trigger's closure on synthetic source: its guard's verdict. */
+  const d11Nfe = (arquivos: Readonly<Record<string, string>>): string[] => {
+    const ler = leitor(arquivos);
+    return violacoesD11(fechoDeImportacoes([GATILHO_NFE], ler), ler, PROIBIDOS_NO_GATILHO_NFE);
+  };
+
+  it.each([
+    'lib/amazon/core/contexto.ts',
+    'lib/amazon/core/contas.ts',
+    'lib/amazon/core/valvulas.ts',
+    'lib/amazon/core/estacionamento.ts',
+    'lib/amazon/core/credentialStore.ts',
+    'lib/amazon/core/renovacaoUnica.ts',
+    'lib/amazon/core/agente.ts',
+    'lib/amazon/core/contaCache.ts',
+    'lib/amazon/core/escrita.ts',
+    'lib/amazon/env.ts',
+    'lib/amazon/notificacoes/agendador.ts',
+    'lib/amazon/notificacoes/notificacao.ts',
+    'lib/amazon/conta/conectar.ts',
+    'lib/firebase/filaLeitura.ts',
+    'lib/amazon/pedidos/importarPedido.ts',
+    'lib/amazon/pedidos/lerPedidoAmazon.ts',
+    'lib/amazon/pedidos/orderIdsX.ts',
+    'lib/amazon/nfe/processarNfe.ts',
+    'lib/amazon/nfe/entregaAmazon.ts',
+    'lib/amazon/nfe/carimboFreteNfe.ts',
+    'lib/amazon/nfe/conteudoNfe.ts',
+    'lib/amazon/nfe/decisaoNfe.ts',
+    'lib/amazon/nfe/statusNfe.ts',
+    'lib/amazon/nfe/gatesPedidoNfe.ts',
+    'functions/src/depsLeitura.ts',
+    'functions/src/agendador.ts',
+    'functions/src/filaLeitura.ts',
+    'functions/src/filaNfe.ts',
+    'functions/src/pollPedidos.ts',
+    'functions/src/options.ts',
+  ])('the NF-e D11 guard forbids reaching %s', (alvo) => {
+    const espec = especDoGatilhoNfePara(alvo);
+    expect(
+      d11Nfe({ [GATILHO_NFE]: `import { x } from '${espec}';`, [alvo]: 'export const x = 1;' }),
+    ).toEqual([`reaches ${alvo}`]);
+  });
+
+  it.each([
+    'lib/amazon/pedidos/orderIds.ts',
+    'lib/amazon/core/filaTarefas.ts',
+    'lib/amazon/core/log.ts',
+    'lib/amazon/avisos/avisos.ts',
+    'lib/amazon/nfe/gatilhoNfe.ts',
+    'lib/amazon/nfe/tarefaNfe.ts',
+    'functions/src/agendadorNfe.ts',
+    'functions/src/lib/admin.ts',
+  ])('NEAR-MISS: the NF-e D11 guard lets the closure reach %s', (alvo) => {
+    const espec = especDoGatilhoNfePara(alvo);
+    expect(
+      d11Nfe({ [GATILHO_NFE]: `import { x } from '${espec}';`, [alvo]: 'export const x = 1;' }),
+    ).toEqual([]);
+  });
+
+  // The intent of 14-b's LIGHT check, now the trigger guard's: a light module
+  // (`tarefaNfe.ts`) reached through the trigger, with its source substituted.
+  it('★ the NF-e guard refuses, ONE hop past the trigger, a value import of the SP-API package, another pedidos/ module, an unresolved import and an `@/` one — and allows a type import and the digest', () => {
+    const TAREFA = 'lib/amazon/nfe/tarefaNfe.ts';
+    const viaTarefa = (corpo: string) =>
+      d11Nfe({
+        [GATILHO_NFE]: `import { x } from '${especDoGatilhoNfePara(TAREFA)}';`,
+        [TAREFA]: corpo,
+        'lib/amazon/pedidos/orderIds.ts': 'export const makePedidoIdAmazon = 1;',
+        'lib/amazon/pedidos/importarPedido.ts': 'export const importarPedidoAmazon = 1;',
+      });
+    expect(viaTarefa(`import { criarClienteSpApi } from '${PACOTE_SP_API}';`)).toEqual([
+      `${TAREFA} imports ${PACOTE_SP_API} as a value`,
+    ]);
+    expect(viaTarefa('const m = await import(nome);')).toEqual([
+      `${TAREFA} imports a computed module`,
+    ]);
+    expect(viaTarefa("import { importarPedidoAmazon } from '../pedidos/importarPedido';")).toEqual([
+      'reaches lib/amazon/pedidos/importarPedido.ts',
+    ]);
+    expect(viaTarefa("import { x } from '../pedidos/naoExiste';")).toEqual([
+      'unresolved lib/amazon/pedidos/naoExiste',
+    ]);
+    expect(viaTarefa("import { x } from '@/lib/amazon/core/contexto';")).toEqual([
+      'imports @/lib/amazon/core/contexto (the alias is not walked)',
+    ]);
+    expect(viaTarefa(`import type { CredencialSpApi } from '${PACOTE_SP_API}';`)).toEqual([]);
+    expect(viaTarefa("import { makePedidoIdAmazon } from '../pedidos/orderIds';")).toEqual([]);
   });
 });

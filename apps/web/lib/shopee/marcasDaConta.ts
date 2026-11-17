@@ -86,6 +86,15 @@ import { marcaShopeeCollection } from '@/lib/data/marcaShopeeCollection';
  *   this session saw deleted must get its baseline back before a removal can
  *   reach it; the section re-seeds it from the server snapshot that shows it
  *   again ({@link ajustesDasBaselinesMarcasShopee}).
+ *   ⚠️ "Salvar mesmo assim" over a removal another tab already did (its
+ *   document deleted meanwhile) leaves nothing to write: it moves that path's
+ *   baseline to "absent", `saveRecord` skips such a `delete` unread and,
+ *   uncommitted, never projects it off the delta, so the removal would stay
+ *   staged forever. The section drops it from the delta the moment the
+ *   registry holds EVERY one of its documents absent
+ *   ({@link remocoesJaFeitasMarcasShopee}) — before the save reads the form
+ *   (#2084 review, the removal mirror of F2). One document still held as a row
+ *   keeps the whole removal staged: that `delete` still writes.
  *
  * On a commit, and on "Recarregar do servidor", each guarded document drops ITS
  * entry from the delta ({@link desfazerAdicaoMarcaShopee},
@@ -458,22 +467,33 @@ export function escritasMarcasDaContaShopee(
   if (alteracoes === null) return [];
   const escritas: TransactionWrite[] = [];
 
-  for (const remocao of alteracoes.remover) {
-    for (const docId of remocao.docIds) {
-      const ref = refDoRegistro(db, integracaoId, docId);
-      const guard: TransactionDocumentGuard = {
-        baseline: context.getBaseline(ref.path),
-        label: `Marca ${String(remocao.brandId)} (registro ${docId})`,
-        formField: CAMPO_MARCAS_SHOPEE,
-        toFormValue: (_atual, valor) => desfazerRemocaoMarcaShopee(valor, remocao.brandId),
-      };
-      escritas.push({ type: 'delete', ref, guard });
-    }
-  }
+  for (const remocao of alteracoes.remover)
+    escritas.push(...escritasDaRemocao(db, integracaoId, remocao, context));
 
   for (const dto of alteracoes.adicionar)
     escritas.push(escritaDoCadastro(db, integracaoId, dto, context));
 
+  return escritas;
+}
+
+/** The guarded `delete`s that remove `remocao`, one per document — the one builder, for the save and for {@link remocoesJaFeitasMarcasShopee}. */
+function escritasDaRemocao(
+  db: Firestore,
+  integracaoId: string,
+  remocao: RemocaoMarcaShopee,
+  context: TransactionWriteContext,
+): (TransactionWrite & { type: 'delete'; guard: TransactionDocumentGuard })[] {
+  const escritas: (TransactionWrite & { type: 'delete'; guard: TransactionDocumentGuard })[] = [];
+  for (const docId of remocao.docIds) {
+    const ref = refDoRegistro(db, integracaoId, docId);
+    const guard: TransactionDocumentGuard = {
+      baseline: context.getBaseline(ref.path),
+      label: `Marca ${String(remocao.brandId)} (registro ${docId})`,
+      formField: CAMPO_MARCAS_SHOPEE,
+      toFormValue: (_atual, valor) => desfazerRemocaoMarcaShopee(valor, remocao.brandId),
+    };
+    escritas.push({ type: 'delete', ref, guard });
+  }
   return escritas;
 }
 
@@ -507,17 +527,21 @@ function escritaDoCadastro(
  * `set` ({@link escritasMarcasDaContaShopee}) is guarded by a baseline equal
  * to the very row it writes. Pure.
  *
- * The only way there (root `CLAUDE.md` rule 7, tier 3): the conflict modal's
- * "Salvar mesmo assim" over a row another operator registered for the same
- * brand with the same names — the section never gives a staged registration's
- * path a row itself ({@link ajustesDasBaselinesMarcasShopee}), and a commit or
- * "Recarregar do servidor" projects the add off the delta anyway. What that
- * operator accepted IS the registration, so nothing is left to write: and
- * `saveRecord` skips such a `set` unread and, not having committed it, never
- * runs its `toFormValue` — the add would stay staged, every later save
- * «Nenhuma alteração para salvar» over a dirty form, or a reset form still
- * holding it (#2084 review F2). The section drops these from the delta the
- * moment the registry holds the row.
+ * The only way a registration stays staged there (root `CLAUDE.md` rule 7,
+ * tier 3): the conflict modal's "Salvar mesmo assim" over a row another
+ * operator registered for the same brand with the same names — the section
+ * never gives a staged registration's path a row itself
+ * ({@link ajustesDasBaselinesMarcasShopee}). What that operator accepted IS
+ * the registration, so nothing is left to write: and `saveRecord` skips such
+ * a `set` unread and, not having committed it, never runs its `toFormValue` —
+ * the add would stay staged, every later save «Nenhuma alteração para
+ * salvar» over a dirty form, or a reset form still holding it (#2084 review
+ * F2). The section drops these from the delta the moment the registry holds
+ * the row. A commit gets here too, and so does "Recarregar do servidor" over
+ * such a row: each rebases the path (to the row the commit wrote, or to the
+ * server's) before ObjectView resets the form, and the rebase notifies
+ * synchronously — so the section also drops the add there: redundant with
+ * ObjectView's own projection, which drops it anyway.
  *
  * Equal is `valuesEqual` over the WHOLE row — the same key set, the same
  * values, nothing folded: a stored row differing only in a display name, in
@@ -540,4 +564,59 @@ export function cadastrosJaGravadosMarcasShopee(
       return guardada !== null && guardada !== undefined && valuesEqual(guardada, escrita.data);
     })
     .map((dto) => dto.brandId);
+}
+
+/**
+ * The staged removals that are already DONE — the brand ids whose every
+ * `delete` ({@link escritasMarcasDaContaShopee}) is guarded by "absent"
+ * (`null`): each document is held as already gone. Pure. The removal mirror
+ * of {@link cadastrosJaGravadosMarcasShopee}.
+ *
+ * Why (root `CLAUDE.md` rule 7, tier 3): the conflict modal's "Salvar mesmo
+ * assim" over a removal another tab already did moves the deleted document's
+ * baseline to the server's version — "absent". What that operator accepted IS
+ * the removal, so nothing is left to write: and `saveRecord` skips a `delete`
+ * guarded by "absent" unread and, not having committed it, never runs its
+ * `toFormValue` — the removal would stay staged, every later save «Nenhuma
+ * alteração para salvar» over a dirty form, or a reset form still holding it
+ * (#2084 review, the removal mirror of F2). The section drops these from the
+ * delta the moment the registry holds them.
+ *
+ * The rules, each pinned by a test:
+ * - **EVERY document, never some.** A removal with one document still held as
+ *   a row has a `delete` left to write, and its commit projects the WHOLE
+ *   brand off (each `delete`'s `toFormValue` drops the brand); dropping it
+ *   here would leave that document, and the brand, in place without a word.
+ * - **`null`, never `undefined`.** No baseline yet is the save's refusal
+ *   (`MissingTransactionBaselineError`), not a removal already done.
+ * - **Only an acknowledgement leaves a still-staged removal here.** The
+ *   section never moves a staged removal's path to `null` itself
+ *   ({@link ajustesDasBaselinesMarcasShopee} exempts it, and its first loop
+ *   only ever moves a listed path's `null` UP to its row). A commit or
+ *   "Recarregar do servidor" can: ObjectView rebases each document — a
+ *   committed or server-deleted one to `null` — before it resets the form,
+ *   and the rebase notifies synchronously. So the section's subscriber drops
+ *   the removal there too, a moment before the reset lands ObjectView's own
+ *   projection, which drops it anyway: redundant, never a different result.
+ *   Nothing that must happen ONLY on an acknowledgement may hang on this
+ *   list.
+ * - **Removals only.** A staged registration is never counted, whatever its
+ *   path is held as — an add guarded by "absent" is a `set` that writes.
+ *
+ * Matching too little is the safe direction here too: a removal this misses
+ * stays staged, visibly; one it matched wrongly would be a delete dropped
+ * without a write.
+ */
+export function remocoesJaFeitasMarcasShopee(
+  db: Firestore,
+  integracaoId: string,
+  alteracoes: AlteracoesMarcasShopee | null,
+  context: TransactionWriteContext,
+): number[] {
+  if (alteracoes === null) return [];
+  return alteracoes.remover
+    .filter((r) =>
+      escritasDaRemocao(db, integracaoId, r, context).every((e) => e.guard.baseline === null),
+    )
+    .map((r) => r.brandId);
 }

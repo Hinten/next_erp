@@ -59,6 +59,7 @@ function makeInput(over: {
       mercadoLivreClient: null,
       shopeeClient: null,
       lojaIntegradaClient: over.lojaIntegradaClient ?? lojaIntegradaClientFalso(),
+      amazonClient: null,
       printJob: vi.fn(),
     },
     ui: over.ui ?? makeUi(),

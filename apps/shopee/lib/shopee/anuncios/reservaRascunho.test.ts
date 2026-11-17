@@ -24,12 +24,14 @@ import {
   MARGEM_ENVIO_SHOPEE_MS,
   PUBLICACAO_EM_CURSO_SHOPEE_TTL_MS,
   estadoPublicacaoRascunhoShopee,
+  logisticaGravadaPeloErpShopee,
 } from '@delfrance/schemas';
 
 import { FIXTURE_ITEM_BASE_INFO_SG_KIT, lerFixture } from '../fixtures/wireCorpus';
 import { BuscaForaDoPrazoShopeeError } from '../kits/localizarKitPorSku';
 import { FakeDb, asDb, grpc } from '../testing/fakeDb';
 import { MOTIVO_PUBLICACAO_BLOQUEADA, ShopeePublishBlockedError } from './errosPublicacao';
+import { dadosDoWriteBack1 } from './publicarAnuncio';
 import {
   ConflitoDeRascunhoShopeeError,
   TENTATIVAS_DA_TRAVA,
@@ -1196,6 +1198,80 @@ describe('reivindicarRascunhoShopee', () => {
   });
 });
 
+/**
+ * #2015 — the claim with the REAL `montar` (write-back #1's `dadosDoWriteBack1`):
+ * the provenance stamp rides the list's own spread, so every branch of the
+ * claim writes the two keys together or neither.
+ */
+describe('reivindicarRascunhoShopee × dadosDoWriteBack1 — o carimbo da logística nos três ramos (#2015)', () => {
+  const ALVO_CLAIM = { produtoId: PRODUTO, linkDocId: RASCUNHO, itemId: ITEM_NOSSO };
+  const ENVIADA = [{ logistic_id: 90_003, enabled: true, is_free: false }];
+  const LEGADA = [{ logistic_id: 90_003, enabled: true, is_free: true }];
+  type Corpo = Parameters<typeof dadosDoWriteBack1>[1]['corpo'];
+
+  function montarReal(comLista: boolean) {
+    const corpo = (comLista
+      ? { item_name: 'Camiseta', logistic_info: ENVIADA }
+      : { item_name: 'Camiseta' }) as unknown as Corpo;
+    return (armazenado: Record<string, unknown>): Record<string, unknown> =>
+      dadosDoWriteBack1(
+        { integracaoId: INTEGRACAO, nowMs: AGORA },
+        { itemId: ITEM_NOSSO, corpo, etapa: 'add_item', taxInfoOmitido: null },
+        armazenado,
+      );
+  }
+
+  /** The three branches, each seeding the draft's document as that branch finds it. */
+  const RAMOS = [
+    ['GUARDADO (ainda rascunho)', rascunho({ logistic_info: LEGADA }), 'mesmo'],
+    [
+      'CONVERGIDO (já é nosso: um replay)',
+      rascunho({ item_id: ITEM_NOSSO, logistic_info: LEGADA }),
+      'mesmo',
+    ],
+    ['BIFURCADO (de outro item)', rascunho({ item_id: ITEM_OUTRO, logistic_info: LEGADA }), 'novo'],
+  ] as const;
+
+  it.each(RAMOS)(
+    '%s: COM a lista ⇒ a lista ENVIADA e o carimbo = nowMs',
+    async (_r, semente, alvo) => {
+      const db = new FakeDb();
+      db.seed(CAMINHO, semente);
+
+      const id = await reivindicarRascunhoShopee(asDb(db), ALVO_CLAIM, montarReal(true));
+
+      expect(id === RASCUNHO).toBe(alvo === 'mesmo');
+      expect(doc(db, `${COLECAO}/${id}`)).toMatchObject({
+        item_id: ITEM_NOSSO,
+        logistic_info: ENVIADA,
+        logisticaGravadaEm: AGORA,
+      });
+      expect(logisticaGravadaPeloErpShopee(doc(db, `${COLECAO}/${id}`) ?? null)).toBe(true);
+      if (alvo === 'novo') {
+        // The other item's document is never touched — its list stays unvouched.
+        expect(doc(db)).toEqual(semente);
+      }
+    },
+  );
+
+  it.each(RAMOS)(
+    '⛔ quase-par — %s: SEM a lista no corpo ⇒ nenhuma das duas chaves é escrita',
+    async (_r, semente) => {
+      const db = new FakeDb();
+      db.seed(CAMINHO, semente);
+
+      const id = await reivindicarRascunhoShopee(asDb(db), ALVO_CLAIM, montarReal(false));
+
+      for (const w of db.writes) {
+        expect(w.patch).not.toHaveProperty('logisticaGravadaEm');
+        expect(w.patch.logistic_info ?? null).toBeNull();
+      }
+      expect(doc(db, `${COLECAO}/${id}`)).not.toHaveProperty('logisticaGravadaEm');
+      expect(logisticaGravadaPeloErpShopee(doc(db, `${COLECAO}/${id}`) ?? null)).toBe(false);
+    },
+  );
+});
+
 /* -------------------------------------------------------------------------- */
 /*                        5 · a liberação GUARDADA pelo token                  */
 /* -------------------------------------------------------------------------- */
@@ -1549,6 +1625,46 @@ describe('reservarRascunhoShopee — um rascunho INCERTO (P5: a busca antes de q
     // tomada + adoção, ambas UPDATEs guardados; nenhum vínculo novo.
     expect(db.patches.filter((p) => p.path === CAMINHO)).toHaveLength(2);
     expect(db.idsEm(COLECAO)).toEqual([RASCUNHO]);
+  });
+
+  describe('(#2015) a adoção NUNCA carimba a logística — a lista legada atravessa sem confiança', () => {
+    /** A list the LEGACY app left on the draft — `is_free: true` and a CUSTOM_PRICE fee. */
+    const LISTA_LEGADA = [
+      { logistic_id: 90_003, enabled: true, is_free: true },
+      { logistic_id: 90_004, enabled: true, is_free: false, shipping_fee: '12.90' },
+    ];
+
+    it('o patch da adoção não traz logisticaGravadaEm, e a lista legada fica INTACTA — o documento adotado continua NÃO confiável', async () => {
+      const db = comProduto(new FakeDb());
+      db.seed(CAMINHO, incerto({ logistic_info: LISTA_LEGADA }));
+      const antes = structuredClone(doc(db)?.logistic_info);
+
+      const r = await reservar(asDb(db), ALVO, controles(), lojaCom(baseDe(ITEM_NOSSO)).busca);
+
+      expect(r).toEqual({ tipo: 'adotada', itemId: ITEM_NOSSO });
+      const [, adocao, ...resto] = escritasEm(db);
+      expect(resto).toEqual([]);
+      expect(adocao).toMatchObject({ item_id: ITEM_NOSSO, criacaoIncertaDesde: null });
+      expect(adocao).not.toHaveProperty('logisticaGravadaEm');
+      expect(adocao).not.toHaveProperty('logistic_info');
+      // Carry-forward: a LISTING now (item_id), holding the legacy list…
+      expect(doc(db)?.item_id).toBe(ITEM_NOSSO);
+      expect(doc(db)?.logistic_info).toEqual(antes);
+      // …which is exactly why trust keys on the stamp ALONE (D1).
+      expect(doc(db)).not.toHaveProperty('logisticaGravadaEm');
+      expect(logisticaGravadaPeloErpShopee(doc(db) ?? null)).toBe(false);
+    });
+
+    it('⛔ quase-par: um rascunho JÁ carimbado (a lista é deste app) atravessa a adoção com o carimbo INTACTO — ela nem tira nem põe', async () => {
+      const db = comProduto(new FakeDb());
+      db.seed(CAMINHO, incerto({ logistic_info: LISTA_LEGADA, logisticaGravadaEm: AGORA - 5 }));
+
+      await reservar(asDb(db), ALVO, controles(), lojaCom(baseDe(ITEM_NOSSO)).busca);
+
+      expect(escritasEm(db).some((w) => 'logisticaGravadaEm' in w)).toBe(false);
+      expect(doc(db)?.logisticaGravadaEm).toBe(AGORA - 5);
+      expect(logisticaGravadaPeloErpShopee(doc(db) ?? null)).toBe(true);
+    });
   });
 
   it('a busca RECUSA (dois achados) ⇒ 422 ambígua; a trava DEVOLVIDA e o registro FICA', async () => {

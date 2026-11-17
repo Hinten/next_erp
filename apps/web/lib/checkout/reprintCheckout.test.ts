@@ -65,6 +65,7 @@ describe('reprintCheckoutEtiqueta — targets the row.pedidoId, its OWN live fre
       mercadoLivreClient: mlClient,
       shopeeClient: null,
       lojaIntegradaClient: null,
+      amazonClient: null,
       formato: 'pdf',
       ui,
     });
@@ -102,6 +103,7 @@ describe('reprintCheckoutEtiqueta — targets the row.pedidoId, its OWN live fre
       mercadoLivreClient: null,
       shopeeClient: null,
       lojaIntegradaClient: null,
+      amazonClient: null,
       formato: 'pdf',
       ui,
     });
@@ -120,6 +122,7 @@ describe('reprintCheckoutEtiqueta — targets the row.pedidoId, its OWN live fre
         mercadoLivreClient: null,
         shopeeClient: null,
         lojaIntegradaClient: null,
+        amazonClient: null,
         formato: 'pdf',
         ui,
       }),
@@ -141,6 +144,7 @@ describe('reprintCheckoutEtiqueta — targets the row.pedidoId, its OWN live fre
         mercadoLivreClient: null,
         shopeeClient: null,
         lojaIntegradaClient: null,
+        amazonClient: null,
         formato: 'pdf',
         ui,
       }),
@@ -171,6 +175,7 @@ describe('reprintCheckoutEtiqueta — targets the row.pedidoId, its OWN live fre
       mercadoLivreClient: null,
       shopeeClient,
       lojaIntegradaClient,
+      amazonClient: null,
       formato: 'zpl2',
       ui,
     });
@@ -189,6 +194,43 @@ describe('reprintCheckoutEtiqueta — targets the row.pedidoId, its OWN live fre
     // The Loja Integrada client threads through too: the soft gates ask it (step 15).
     expect(input.deps.lojaIntegradaClient).toBe(lojaIntegradaClient);
   });
+
+  it('an Amazon pedido reprints on the block, and the Amazon client threads through untouched (step 15)', async () => {
+    const freteAmazon = {
+      integracaoFreteOuterRef: null,
+      externalOptionIntegracao: 'amz',
+      modalidade: '0',
+      estado: 'aguardandoPostagem',
+    };
+    h.getDoc.mockResolvedValueOnce({
+      exists: () => true,
+      data: () => ({ freteInicial: freteAmazon }),
+    });
+    h.dereferenceOuterRef.mockReturnValue(null);
+    h.emitirOuImprimirEtiqueta.mockResolvedValue({ status: 'printed' });
+    const amazonClient = { __amazon: true } as never;
+
+    const res = await reprintCheckoutEtiqueta({
+      db,
+      pedidoId: 'PEDZ',
+      freightClient: null,
+      nfeClient: null,
+      mercadoLivreClient: null,
+      shopeeClient: null,
+      lojaIntegradaClient: null,
+      amazonClient,
+      formato: 'zpl2',
+      ui,
+    });
+
+    expect(res).toEqual({ status: 'printed' });
+    const input = h.emitirOuImprimirEtiqueta.mock.calls[0]![0] as {
+      intFrete: unknown;
+      deps: { amazonClient: unknown };
+    };
+    expect(input.intFrete).toEqual({ fonte: 'bloco', id: null, tipo: 'amz', data: null });
+    expect(input.deps.amazonClient).toBe(amazonClient);
+  });
 });
 
 describe('reprintCheckoutEtiqueta — why an imported Loja Integrada order has no carrier', () => {
@@ -202,6 +244,7 @@ describe('reprintCheckoutEtiqueta — why an imported Loja Integrada order has n
     mercadoLivreClient: null,
     shopeeClient: null,
     lojaIntegradaClient: null,
+    amazonClient: null,
     formato: 'pdf' as const,
     ui,
   });
@@ -267,6 +310,7 @@ describe('reprintCheckoutEtiqueta — a stalled stage becomes a reported failure
         mercadoLivreClient: null,
         shopeeClient: null,
         lojaIntegradaClient: null,
+        amazonClient: null,
         formato: 'pdf',
         ui,
         timeoutMs: 30_000,
@@ -312,6 +356,7 @@ describe('reprintCheckoutEtiqueta — a stalled stage becomes a reported failure
         mercadoLivreClient: null,
         shopeeClient: null,
         lojaIntegradaClient: null,
+        amazonClient: null,
         formato: 'pdf',
         ui,
         timeoutMs: 30_000,

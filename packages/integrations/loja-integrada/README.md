@@ -8,19 +8,23 @@ credential store, the connect route, the sweeps and the write engine) lives in
 
 What ships here:
 
-| Module              | Holds                                                                                                                                                                                             |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `api.ts`            | `URL_BASE_LI`, `CAMINHO_VALIDACAO` and `validarPersonalToken`, the validating GET                                                                                                                 |
-| `client.ts`         | The shared request core (package-internal) and the GET-only read client, `criarClienteLeituraLi`: the strict token check, no redirect following, a `PUT` held to the write routes                 |
-| `escrita.ts`        | The write client, `criarClienteEscritaLi`: the pre-write `GET` (with the scrubbed body text for a restore snapshot) and one `PUT`; a 2xx resolves, an unreadable echo is reported, 202 is pending |
-| `paginacao.ts`      | `paginarLi`, Tastypie paging rebuilt from `meta.next` (only `offset` and the caller's own keys travel), with caller cancellation                                                                  |
-| `pedidos.ts`        | The order import's reads: `buscarPedidoLi`, `listarHistoricoSituacaoLi` (every page) and `buscarProdutoPorIdExternoLi`                                                                            |
-| `catalogo.ts`       | The four catalogue reads: `listarCategoriasLi`, `listarMarcasLi`, `listarGradesLi` (every page, the caller's `limite` and `maxPaginas` both required) and `buscarGradeLi` (one grade's options)   |
-| `pedidosEscrita.ts` | The status write-back's two writes: `atualizarObjetoEnvioLi` (the tracking code) and `alterarSituacaoPedidoLi` (only the three write-back codigos)                                                |
-| `pedidoTipos.ts`    | The order detail, situação, situação-history row and produto-identity response schemas, written against captures; the two write echoes, every field optional                                      |
-| `prazos.ts`         | `PRAZO_LI_MS`, the per-call deadline keyed on the operation class (`leitura`, `escrita`)                                                                                                          |
-| `types.ts`          | The `{ meta, objects }` paging envelope, the pedido search row and the catalogue rows: categoria, marca, grade, and a grade's detail with its options                                             |
-| `errors.ts`         | The typed errors (each message names the verb and the path), the 429 scope (read from the body) and `Retry-After` (from the header)                                                               |
+| Module              | Holds                                                                                                                                                                                                                    |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `api.ts`            | `URL_BASE_LI`, `CAMINHO_VALIDACAO` and `validarPersonalToken`, the validating GET                                                                                                                                        |
+| `client.ts`         | The shared request core (package-internal) and the GET-only read client, `criarClienteLeituraLi`: the strict token check, no redirect following, a `PUT` held to the write routes                                        |
+| `escrita.ts`        | The write client, `criarClienteEscritaLi`: the pre-write `GET` (with the scrubbed body text for a restore snapshot) and one `PUT`; a 2xx resolves, an unreadable echo is reported, 202 is pending                        |
+| `paginacao.ts`      | `paginarLi`, Tastypie paging rebuilt from `meta.next` (only `offset` and the caller's own keys travel), with caller cancellation; its rules live in `proximaPaginaLi`                                                    |
+| `pedidos.ts`        | The order import's reads: `buscarPedidoLi`, `listarHistoricoSituacaoLi` (every page) and `buscarProdutoPorIdExternoLi`                                                                                                   |
+| `catalogo.ts`       | The four catalogue reads: `listarCategoriasLi`, `listarMarcasLi`, `listarGradesLi` (every page, the caller's `limite` and `maxPaginas` both required) and `buscarGradeLi` (one grade's options)                          |
+| `produtos.ts`       | The product import's reads: `lerPaginaLi` (one page of any list, its next offset validated), `lerPaginaProdutosLi` (live or trash) and `buscarProdutoLi`, both projected: no price or stock                              |
+| `cdn.ts`            | The photo reader, `criarLeitorCdnLi`: the pinned CDN host, no credential, no redirect, `PRAZO_CDN_LI_MS`, a byte cap, the type from the bytes; original or `800x800`                                                     |
+| `pedidosEscrita.ts` | The status write-back's two writes: `atualizarObjetoEnvioLi` (the tracking code) and `alterarSituacaoPedidoLi` (only the three write-back codigos)                                                                       |
+| `estoque.ts`        | The stock sync's reads: `lerPaginaEstoqueLi` (one page of the stock list, through `lerPaginaLi`), `buscarEstoqueProdutoLi` (one product's stock, by the produto id) and `produtoIdDoEstoqueLi` (the produto a row names) |
+| `estoqueEscrita.ts` | The stock write, `atualizarEstoqueProdutoLi`: managed stock at a non-negative integer quantity, the two situações fixed (`ESTOQUE_FIXO_ESCRITA_LI`), every number sent unquoted                                          |
+| `pedidoTipos.ts`    | The order detail, situação, situação-history row and produto-identity response schemas, written against captures; the two write echoes, every field optional                                                             |
+| `prazos.ts`         | `PRAZO_LI_MS`, the per-call deadline keyed on the operation class (`leitura`, `escrita`)                                                                                                                                 |
+| `types.ts`          | The `{ meta, objects }` paging envelope, the pedido search row, the catalogue rows (categoria, marca, grade, a grade's options), the produto row, detail and image, and the stock row, detail and write echo             |
+| `errors.ts`         | The typed errors (each message names the verb and the path), the 429 scope (read from the body) and `Retry-After` (from the header)                                                                                      |
 
 ## The token rule
 
@@ -46,12 +50,15 @@ token **raw** after `Basic ` (not base64-encoded by us).
   `criarClienteLeituraLi` makes is a `GET` by construction. The write client
   (`escrita.ts`) is a separate factory, with method names used nowhere else. Every
   `PUT` it can send is held to the package-internal write routes
-  (`rotasEscrita.ts`): exactly two paths, each with one strict body, refused before
-  anything is sent otherwise. So no write can carry a situação outside the three
-  write-back codigos, an empty or non-visible-ASCII tracking code (no write can
-  clear one), a stray key or the token. Its two operations (`pedidosEscrita.ts`)
-  build those calls. The manifest's `exports` map publishes the root alone, so the
-  request core is reachable only through the two clients.
+  (`rotasEscrita.ts`): exactly three paths, each with one strict body, refused
+  before anything is sent otherwise. So no write can carry a situação outside the
+  three write-back codigos, an empty or non-visible-ASCII tracking code (no write
+  can clear one), stock other than managed stock at a non-negative integer
+  quantity with the two fixed situações, a quoted number, a stray key or the
+  token. A body is the route schema's OUTPUT, serialised once: JSON scalars only,
+  a number sent as a JSON number. Its three operations (`pedidosEscrita.ts`,
+  `estoqueEscrita.ts`) build those calls. The manifest's `exports` map publishes
+  the root alone, so the request core is reachable only through the two clients.
 - **Called by the app's write engine only.** `apps/loja-integrada`'s
   `core/escrita.ts` (master-plan step 7) is the only module there that names a
   write operation or a write-client method, and its write context the only one
@@ -82,11 +89,37 @@ token **raw** after `Basic ` (not base64-encoded by us).
   write-back's two writes and their echoes (`pedidosEscrita.ts`), consumed by its
   write engine (master-plan step 7), and the catalogue rows and reads
   (`types.ts`, `catalogo.ts`), consumed by its catalogue routes (master-plan
-  step 10) and written against the owner's catalogue capture C9; every other
-  resource arrives with its first consumer, written against captured responses.
-  The write echoes are the one exception to "against captures": no write is made
+  step 10) and written against the owner's catalogue capture C9, and the produto
+  reads (`types.ts`, `produtos.ts`), for the product import (master-plan step 9),
+  written against the public document's examples and checked against the shapes of
+  the owner's produto capture C10, and the stock rows, reads and write (`types.ts`,
+  `estoque.ts`, `estoqueEscrita.ts`), for the stock sync (master-plan step 12);
+  every other resource arrives with its first consumer, written against captured
+  responses.
+  The write echoes are the exception to "against captures": no write is made
   before the cutover, so they follow the public document and keep every field
-  optional.
+  optional. The stock wire was written against the public document and is
+  pinned against the owner's read-only stock captures (both path forms answer
+  the same for GET; the stock PUT's path form stays unproven, like every write).
+- **No stock decision.** `estoque.ts` and `estoqueEscrita.ts` read, parse and
+  send: which quantity is due, whether a row is already reflected, which ERP
+  product a row belongs to and what a missing row means are the app's. The
+  produto a row names is read by `@delfrance/schemas`' resource-URI reader
+  (`idDoRecursoLi`), the one the product import reads `filhos` and `pai` with,
+  never by a copy. The stock list is read one page at a time through
+  `lerPaginaLi`, at most `MAX_LIMITE_PAGINA_ESTOQUE_LI` rows a page (the largest
+  page measured honoured: 100 in full; 200 is a 400, and 101–199 were not
+  probed; it lives in
+  `@delfrance/schemas` and is re-exported, because the
+  reconcile cursor's stored page size is held to the same binding), with exactly
+  `limit` and
+  `offset` and no filter (the list has none). Each row is read on its own: a row
+  the schema refuses is reported in `ilegiveis` (its position, the produto it
+  names, the field paths) and never costs the rows beside it; only a malformed
+  envelope refuses the page. The detail, which a write decides on, is read whole
+  and strict. The stock write is strict too, so a rollback can only re-send a
+  non-negative quantity under the fixed situações: a prior negative, unmanaged
+  or other-lead-time row cannot be put back exactly.
 - **No catalogue decision.** `catalogo.ts` reads and parses: whether a category's
   parent URI names a parent, whether an option belongs to the grade asked for,
   and what a 403 or a 404 on a catalogue read means are the app's. Every URI is
@@ -98,6 +131,24 @@ token **raw** after `Basic ` (not base64-encoded by us).
   and there is no `/set/` read: a consumer reads a whole list once. A list longer
   than the caller's `maxPaginas` throws `LiPaginacaoError('limite-de-paginas')`;
   it is never returned truncated.
+- **No product decision, and no price or stock.** `produtos.ts` reads and parses:
+  which family a row belongs to, whether a child is orphaned and what a 404 on a
+  detail means are the app's. The produto schemas are passthrough like every other,
+  so both produto reads return an explicit projection: price and stock
+  (`preco_*`, `estoque_*`), `seo`, `tags`, `url` and an image's absolute URLs
+  never leave the package. The produto list is read one page at a time at most 100
+  rows a page (the API answers 400 from 200 up), with `removido` sent on every page;
+  the detail is the plain GET (no `descricao_completa` flag: it changed nothing).
+  Neither sends `id_externo`, `sku`, `ativo` or a date filter.
+- **No credential on the CDN, and no URL from a body.** `cdn.ts` reads a photo from
+  the pinned CDN host (`URL_BASE_CDN_LI`) by its `caminho` alone, never from a
+  body's absolute URL, with no header at all, so the Personal Token never leaves
+  the API host. A refused picture (a malformed `caminho`, a 3xx, a 404 or another
+  status, over the byte cap, not a JPEG, PNG, WebP or GIF by its bytes) is a typed
+  outcome the importer reports per photo; over the cap is its own outcome, the
+  cue to ask for the `800x800` form instead. A CDN 401, 403 or 429 is never the
+  API's auth or throttle error. The deadline and a dropped connection throw the
+  same transport errors as any read.
 - **No decision about an order.** `pedidos.ts` reads and parses; mapping a
   situação, a payment or a line is the app's (`apps/loja-integrada`), through the
   shared situação table in `@delfrance/schemas`.

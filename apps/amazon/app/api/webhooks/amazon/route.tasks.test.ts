@@ -43,7 +43,10 @@
  *     (a mismatch is a silent DROP, no row), and lands with exactly its fields;
  *   - a foreign application id is dropped before the queue, a duplicated
  *     `NotificationId` collapses onto ONE row, and the sweep-only valve makes
- *     the receiver persist the delivery itself.
+ *     the receiver persist the delivery itself;
+ *   - (step 12a, PR 12-c) a `FEED_PROCESSING_FINISHED` never becomes a row
+ *     here, through the real route with BOTH producers bound — while enqueuing
+ *     nothing onto the jobs queue in the lane (case e).
  *
  * ⚠️ NOT covered, and deliberately not asserted:
  *   - the relay (SQS → EventBridge Pipe → API destination): the suite POSTs the
@@ -401,6 +404,46 @@ describe.skipIf(!EMULATED || !TASKS)('webhook Amazon → Cloud Tasks → onTaskD
       // Were the id not deterministic, there would be TWO rows here.
       expect(await idsPorNotificacao(duplicada)).toEqual([`push:${duplicada}`]);
       expect(await idsDaColecao()).toEqual([`push:${duplicada}`, `push:${sentinela}`].sort());
+    },
+  );
+
+  // ⚠️ NOTHING here enqueues onto the jobs queue: the feed type is not ours, and
+  // our own feed is POSTed with the valve closed in THIS process (the jobs
+  // producer reads it per POST), so it stops at the producer. A feed wake-up
+  // never lands in `notificacoesAmazon`, whatever the jobs queue answers.
+  // A real queue hop (the sentinel): the enqueue, the emulator's dispatch and the poll.
+  it(
+    '(e) um FEED_PROCESSING_FINISHED nunca vira linha de notificação — nem ignorado, nem com a fila de lotes fechada — provado por uma sentinela',
+    { timeout: 60_000 },
+    async () => {
+      const sentinela = novaNotificacao();
+      const feed = (feedType: string): Record<string, unknown> => ({
+        notificationType: 'FEED_PROCESSING_FINISHED',
+        payload: {
+          feedProcessingFinishedNotification: {
+            sellerId: SPID_A,
+            accountId: 'amzn1.merchant.o.AXXXXXXXXXXXXX',
+            feedId: '00000000000',
+            feedType,
+            processingStatus: 'DONE',
+          },
+        },
+        notificationMetadata: { applicationId: APLICACAO, notificationId: novaNotificacao() },
+      });
+
+      // Not a feed type this backend submits: dropped before any producer.
+      expect((await entregar(feed('POST_PRODUCT_DATA'))).status).toBe(200);
+      // Ours, with the valve closed: the jobs producer refuses before the SDK.
+      process.env.AMAZON_TASKS_DISABLED = '1';
+      expect((await entregar(feed('JSON_LISTINGS_FEED'))).status).toBe(200);
+      if (VALVULA_ORIGINAL === undefined) delete process.env.AMAZON_TASKS_DISABLED;
+      else process.env.AMAZON_TASKS_DISABLED = VALVULA_ORIGINAL;
+
+      expect((await entregar(corpoOrderChange(sentinela))).status).toBe(200);
+      await aguardarDocumento(`push:${sentinela}`);
+      await aguardar(2_000);
+
+      expect(await idsDaColecao()).toEqual([`push:${sentinela}`]);
     },
   );
 

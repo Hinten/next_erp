@@ -65,6 +65,7 @@ import { z } from 'zod';
 import { MARKETPLACE_ID_BR, type RespostaSpApi, type SpApiLeituraClient } from './client';
 import type { SpApiEscritaClient } from './escrita';
 import { AmazonConfigError } from './errors';
+import { exigirPedidoAmazon } from './transporte';
 
 /** The model's `operationId`s, each call's label on the observer's event. */
 export const OPERACAO_GET_INVOICE_STATUS = 'getInvoiceStatus';
@@ -106,9 +107,6 @@ export const STATUS_FATURA_ITEM_AMAZON = {
   rejected: 'Rejected',
   notFound: 'NotFound',
 } as const satisfies Record<string, string>;
-
-/** An Amazon order id: 3-7-7 digits. Checked here because it travels in a query. */
-const PEDIDO_AMAZON = /^\d{3}-\d{7}-\d{7}$/;
 
 /** The base64 of a 16-byte digest: 22 characters, then `==`. */
 const MD5_BASE64 = /^[A-Za-z0-9+/]{22}==$/;
@@ -181,12 +179,6 @@ export interface EntradaEnvioNotaFiscal {
   readonly contentMD5Value: string;
 }
 
-function exigirPedido(orderId: unknown, operacao: string): asserts orderId is string {
-  if (typeof orderId !== 'string' || !PEDIDO_AMAZON.test(orderId)) {
-    throw new AmazonConfigError('pedido', { operacao, refCredencial: null });
-  }
-}
-
 function base64Valido(valor: unknown): valor is string {
   return (
     typeof valor === 'string' && valor.length > 0 && valor.length % 4 === 0 && BASE64.test(valor)
@@ -214,7 +206,7 @@ export async function consultarStatusNotaFiscal(
   orderId: string,
   sinal?: AbortSignal,
 ): Promise<RespostaSpApi<RespostaStatusNotaFiscal>> {
-  exigirPedido(orderId, OPERACAO_GET_INVOICE_STATUS);
+  exigirPedidoAmazon(orderId, OPERACAO_GET_INVOICE_STATUS);
   return leitor.get({
     operacao: OPERACAO_GET_INVOICE_STATUS,
     caminho: CAMINHO_STATUS_NOTA_FISCAL,
@@ -242,7 +234,7 @@ export async function enviarNotaFiscal(
   sinal?: AbortSignal,
 ): Promise<ResultadoEnvioNotaFiscal> {
   const { orderId, invoiceContent, contentMD5Value } = entrada;
-  exigirPedido(orderId, OPERACAO_SUBMIT_INVOICE);
+  exigirPedidoAmazon(orderId, OPERACAO_SUBMIT_INVOICE);
   if (typeof contentMD5Value !== 'string' || !MD5_BASE64.test(contentMD5Value)) {
     throw new AmazonConfigError('md5', { operacao: OPERACAO_SUBMIT_INVOICE, refCredencial: null });
   }

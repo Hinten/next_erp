@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { TAMANHO_DO_SAL, criarFalsificadorAmazon } from './falsificacao';
-import { lerListagemDoZip, nomeFalsoDeEntrada } from './zip';
+import { EXTENSOES_MANTIDAS, lerListagemDoZip, nomeFalsoDeEntrada } from './zip';
 
 const b = (t: string) => new TextEncoder().encode(t);
 const falsificador = () => criarFalsificadorAmazon(new Uint8Array(TAMANHO_DO_SAL).fill(3));
@@ -42,6 +42,16 @@ describe('★ the zip listing: names faked, sizes kept, never a zip', () => {
     expect(nomeFalsoDeEntrada('label.ZPL', f)).not.toBe(nomeFalsoDeEntrada('label.pdf', f));
     // A faked name is a fixpoint either way.
     expect(nomeFalsoDeEntrada('xx.xxxxxxx', f)).toBe('xx.xxxxxxx');
+  });
+
+  it('★ zpl2 is a kept extension (a label entry may use it), distinct from zpl', () => {
+    const f = falsificador();
+    expect(EXTENSOES_MANTIDAS.has('zpl2')).toBe(true);
+    expect(nomeFalsoDeEntrada('label.zpl2', f)).toBe('xxxxx.zpl2');
+    expect(nomeFalsoDeEntrada('LABEL.ZPL2', f)).toBe('xxxxx.ZPL2');
+    expect(nomeFalsoDeEntrada('label.zpl2', f)).not.toBe(nomeFalsoDeEntrada('label.zpl', f));
+    // Near-miss: a look-alike that is not on the list is shape-faked.
+    expect(nomeFalsoDeEntrada('label.zpl3', f)).toBe('xxxxx.xxx0');
   });
 
   it('a fake name is a fixpoint', () => {

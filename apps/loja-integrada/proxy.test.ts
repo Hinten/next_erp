@@ -114,17 +114,19 @@ describe('CORS methods and headers', () => {
     return (valor ?? '').split(',').map((v) => v.trim());
   }
 
-  it('lists exactly GET, PUT, DELETE and OPTIONS — the credential routes need a PUT and a DELETE preflight', () => {
+  it('lists exactly GET, POST, PUT, DELETE and OPTIONS — the credential routes need a PUT and a DELETE preflight, the product import a POST one', () => {
     vi.stubEnv('NODE_ENV', 'production');
     vi.stubEnv('ALLOWED_ADMIN_ORIGINS', 'https://app.example.com');
 
     const res = preflight('https://app.example.com', {
-      'access-control-request-method': 'PUT',
+      'access-control-request-method': 'POST',
       'access-control-request-headers': 'authorization, content-type',
     });
     expect(res.status).toBe(204);
-    expect(res.headers.get('access-control-allow-methods')).toBe('GET, PUT, DELETE, OPTIONS');
-    // POST is CORS-safelisted and no route here uses it; PATCH is not a verb of this app.
+    expect(res.headers.get('access-control-allow-methods')).toBe('GET, POST, PUT, DELETE, OPTIONS');
+    // The import's start and cancel are POSTs carrying `Authorization` and a JSON body: the
+    // browser preflights them, so the answer must list POST. PATCH is not a verb of this app.
+    expect(listar(res.headers.get('access-control-allow-methods'))).toContain('POST');
     expect(listar(res.headers.get('access-control-allow-methods'))).not.toContain('PATCH');
   });
 

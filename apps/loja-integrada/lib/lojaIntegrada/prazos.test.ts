@@ -2,10 +2,21 @@ import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 
 import { describe, expect, it } from 'vitest';
-import { PRAZO_LI_MS } from '@delfrance/integrations-loja-integrada';
-import { MAX_PAGINAS_CATALOGO_LI } from '@delfrance/schemas';
+import { PRAZO_CDN_LI_MS, PRAZO_LI_MS } from '@delfrance/integrations-loja-integrada';
+import {
+  CAUDA_DESPACHO_IMPORTACAO_LI_MS,
+  MAX_PAGINAS_CATALOGO_LI,
+  ORCAMENTO_DESPACHO_IMPORTACAO_LI_MS,
+} from '@delfrance/schemas';
 
 import { RITMO_LEITURA_LI_MS } from './core/ritmo';
+import {
+  DURACAO_MAXIMA_DESPACHO_IMPORTACAO_LI_MS,
+  PIOR_CASO_FAMILIA_SEM_CHAMADA_LI_MS,
+  PIOR_CASO_UNIDADE_IMPORTACAO_LI_MS,
+  PRAZO_UPLOAD_LI_MS,
+} from './importacao/orcamento';
+import { unidadeDaFotoLi } from './importacao/fotos';
 import { CONCORRENCIA_REDRIVE_LI, LIMITE_REDRIVE_LI } from './notificacoes/notificacao';
 
 /**
@@ -86,6 +97,29 @@ const LEITURAS_DO_CATALOGO = [
   'listarGradesLi(',
   'buscarGradeLi(',
 ] as const;
+
+/**
+ * The product import's routes (step 9) and the cores they delegate to, with how many context loads
+ * (`loadLojaIntegradaContext(`) each file makes. The START core makes exactly ONE — the read switch,
+ * the conta, the credential — and calls nothing through it; the route files, the lifecycle module
+ * (the status, cancel and report routes' only core, and the tax-review list route's job read) and
+ * the tax-review list's reader make none. No file here names a package read: the import's reads
+ * run in the reads queue's dispatch, never in a request.
+ */
+const ROTAS_DA_IMPORTACAO: readonly (readonly [string, number])[] = [
+  ['app/api/marketplace/loja-integrada/conta/[id]/importacoes/route.ts', 0],
+  ['app/api/marketplace/loja-integrada/conta/[id]/importacoes/[jobId]/route.ts', 0],
+  ['app/api/marketplace/loja-integrada/conta/[id]/importacoes/[jobId]/cancelar/route.ts', 0],
+  ['app/api/marketplace/loja-integrada/conta/[id]/importacoes/[jobId]/itens/route.ts', 0],
+  ['app/api/marketplace/loja-integrada/conta/[id]/importacoes/[jobId]/revisao/route.ts', 0],
+  ['lib/lojaIntegrada/importacao/inicio.ts', 1],
+  ['lib/lojaIntegrada/importacao/job.ts', 0],
+  ['lib/lojaIntegrada/importacao/listaRevisaoFiscal.ts', 0],
+];
+
+/** Every package read the import makes (in its dispatch), and the other ways out — none in a request. */
+const SAIDAS_PARA_A_LOJA =
+  /lerPaginaLi\(|lerPaginaProdutosLi\(|buscarProdutoLi\(|baixarImagemLi\(|criarLeitorCdnLi|listarCategoriasLi\(|listarMarcasLi\(|listarGradesLi\(|buscarGradeLi\(|criarClienteLeituraLi|validarPersonalToken|paginarLi|buscarPedidoLi|listarHistoricoSituacaoLi|buscarProdutoPorIdExternoLi|\.get\(\s*\{\s*operacao|fetch\(/;
 
 /** The three conta routes, and how many validating calls and re-drives each may make. */
 const ROTAS: readonly (readonly [string, number, number])[] = [
@@ -238,21 +272,116 @@ describe('the catalogue routes fit inside the backend ceiling', () => {
         /criarClienteLeituraLi|validarPersonalToken|paginarLi|buscarPedidoLi|listarHistoricoSituacaoLi|buscarProdutoPorIdExternoLi|\.get\(\s*\{\s*operacao|fetch\(/,
       );
     }
-    // Complete: every route under the conta folder is a catalogue route or a conta route above,
-    // so a new read route cannot skip both lists.
+    // Complete: every route under the conta folder is a catalogue route, a conta route or an
+    // import route, so a new read route cannot skip every list.
     const pastaDaConta = 'app/api/marketplace/loja-integrada/conta/[id]';
     const naPasta = readdirSync(path.join(APP_DIR, pastaDaConta), { recursive: true })
       .map((f) => `${pastaDaConta}/${String(f).replaceAll('\\', '/')}`)
       .filter((f) => f.endsWith('/route.ts'));
     const doCatalogo = new Set(ROTAS_DO_CATALOGO.map(([a]) => a));
     const daConta = new Set(ROTAS.map(([a]) => a));
-    expect(naPasta.filter((f) => !doCatalogo.has(f) && !daConta.has(f))).toEqual([]);
+    const daImportacao = new Set(ROTAS_DA_IMPORTACAO.map(([a]) => a));
+    expect(
+      naPasta.filter((f) => !doCatalogo.has(f) && !daConta.has(f) && !daImportacao.has(f)),
+    ).toEqual([]);
     expect(naPasta.filter((f) => doCatalogo.has(f))).toHaveLength(4);
     expect(naPasta.filter((f) => daConta.has(f))).toHaveLength(3);
+    expect(naPasta.filter((f) => daImportacao.has(f))).toHaveLength(5);
     // Anti-vacuity: each route delegates to the core, exactly once.
     for (const [arquivo] of ROTAS_DO_CATALOGO.filter(([a]) => a.startsWith('app/'))) {
       const fonte = readFileSync(path.join(APP_DIR, arquivo), 'utf8');
       expect(contar(fonte, 'lerCatalogoLi('), arquivo).toBe(1);
     }
+  });
+});
+
+/**
+ * The product import (step 9). Its ROUTES make no Loja Integrada call: the start loads the context
+ * once (the read switch FIRST, then the conta and one credential read) and creates the job; the
+ * status, cancel and report routes read and write only the job, and the tax-review list route reads
+ * only the job and its list. So each fits the backend's ceiling with the margin alone.
+ *
+ * Its reads run in the reads queue's DISPATCH, held to a time budget (`importacao/orcamento.ts`):
+ * a unit starts only while its worst case still ends inside `ORCAMENTO_DESPACHO_IMPORTACAO_LI_MS`,
+ * and `CAUDA_DESPACHO_IMPORTACAO_LI_MS` covers the hand-off. A photo unit (`importacao/fotos.ts`)
+ * is one CDN download and one upload the app races against its own deadline (the shared uploader
+ * takes none); an original refused as too large is fetched again at 800x800 in a unit of its own. The queue's own arithmetic with that
+ * co-tenant (`3 × (300 + 100) + 2 × 300 ≤ 1 800`) is pinned beside its options in
+ * `functions/src/index.test.ts`.
+ */
+describe('the product import: its routes call nothing, its dispatch fits its budget', () => {
+  it('the start core makes ONE context load; the route files and the lifecycle make none; no file names a package read', () => {
+    for (const [arquivo, contextos] of ROTAS_DA_IMPORTACAO) {
+      const fonte = readFileSync(path.join(APP_DIR, arquivo), 'utf8');
+      expect(contar(fonte, 'loadLojaIntegradaContext('), arquivo).toBe(contextos);
+      expect(fonte, arquivo).not.toMatch(SAIDAS_PARA_A_LOJA);
+    }
+    // Anti-vacuity: the start route delegates to the start core, the job routes to the lifecycle.
+    const [inicio, ...dosJobs] = ROTAS_DA_IMPORTACAO.filter(([a]) => a.startsWith('app/'));
+    expect(
+      contar(readFileSync(path.join(APP_DIR, inicio?.[0] ?? ''), 'utf8'), 'iniciarImportacaoLi('),
+    ).toBe(1);
+    for (const [arquivo] of dosJobs) {
+      expect(readFileSync(path.join(APP_DIR, arquivo), 'utf8'), arquivo).toMatch(
+        /lerJobDaContaLi\(|cancelarImportacaoLi\(/,
+      );
+    }
+    // The tax-review list route reads its list through the list's reader, once.
+    const lista = dosJobs.find(([a]) => a.endsWith('/revisao/route.ts'));
+    expect(
+      contar(
+        readFileSync(path.join(APP_DIR, lista?.[0] ?? ''), 'utf8'),
+        'lerRevisaoFiscalDaImportacaoLi(',
+      ),
+    ).toBe(1);
+  });
+
+  it('the start fits the smallest ceiling with the margin alone (no call to wait for)', () => {
+    const { pinados } = configDoBackend();
+    const tetoS = pinados.length > 0 ? Math.min(...pinados) : TETO_APP_HOSTING_PADRAO_S;
+    expect(MARGEM_MS).toBeLessThanOrEqual(tetoS * 1000);
+  });
+
+  it('a call unit = the pacer + the read deadline; a family with no call = 10 s', () => {
+    expect(PIOR_CASO_UNIDADE_IMPORTACAO_LI_MS.chamada).toBe(
+      RITMO_LEITURA_LI_MS + PRAZO_LI_MS.leitura,
+    );
+    expect(PIOR_CASO_UNIDADE_IMPORTACAO_LI_MS.familia).toBe(PIOR_CASO_FAMILIA_SEM_CHAMADA_LI_MS);
+  });
+
+  it('a photo unit = the pacer + the CDN deadline + the upload deadline = 52 s; the 800x800 refetch is a 52 s unit of its OWN', () => {
+    expect(PRAZO_UPLOAD_LI_MS).toBe(30_000);
+    expect(PIOR_CASO_UNIDADE_IMPORTACAO_LI_MS.foto).toBe(
+      RITMO_LEITURA_LI_MS + PRAZO_CDN_LI_MS + PRAZO_UPLOAD_LI_MS,
+    );
+    expect(PIOR_CASO_UNIDADE_IMPORTACAO_LI_MS.foto).toBe(52_000);
+    expect(PIOR_CASO_UNIDADE_IMPORTACAO_LI_MS.foto).toBeLessThanOrEqual(
+      ORCAMENTO_DESPACHO_IMPORTACAO_LI_MS,
+    );
+    // The photo module asks for that row for every step, the reduced form's included.
+    expect(unidadeDaFotoLi()).toBe('foto');
+    // The original refused as too large and its 800x800 in ONE unit would be 74 s: no 70 s budget
+    // could ever start it, so the refetch is checkpointed and budgeted as a unit of its own.
+    const umaUnidadeSo = 2 * (RITMO_LEITURA_LI_MS + PRAZO_CDN_LI_MS) + PRAZO_UPLOAD_LI_MS;
+    expect(umaUnidadeSo).toBe(74_000);
+    expect(umaUnidadeSo).toBeGreaterThan(ORCAMENTO_DESPACHO_IMPORTACAO_LI_MS);
+    // A photo unit plus the tail stays far inside the reads queue's 300 s function timeout.
+    expect(PIOR_CASO_UNIDADE_IMPORTACAO_LI_MS.foto + CAUDA_DESPACHO_IMPORTACAO_LI_MS).toBeLessThan(
+      300_000,
+    );
+  });
+
+  it('every unit fits an empty budget, and budget + tail ≤ 100 s', () => {
+    for (const custo of Object.values(PIOR_CASO_UNIDADE_IMPORTACAO_LI_MS)) {
+      expect(custo).toBeLessThanOrEqual(ORCAMENTO_DESPACHO_IMPORTACAO_LI_MS);
+    }
+    expect(DURACAO_MAXIMA_DESPACHO_IMPORTACAO_LI_MS).toBe(
+      ORCAMENTO_DESPACHO_IMPORTACAO_LI_MS + CAUDA_DESPACHO_IMPORTACAO_LI_MS,
+    );
+    expect(DURACAO_MAXIMA_DESPACHO_IMPORTACAO_LI_MS).toBeLessThanOrEqual(100_000);
+    // Today's numbers: 70 s of units + a 30 s tail.
+    expect([ORCAMENTO_DESPACHO_IMPORTACAO_LI_MS, CAUDA_DESPACHO_IMPORTACAO_LI_MS]).toEqual([
+      70_000, 30_000,
+    ]);
   });
 });

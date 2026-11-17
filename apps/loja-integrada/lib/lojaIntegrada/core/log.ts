@@ -64,6 +64,7 @@ import {
   type PoliticaCorpoLi,
   type ValorJsonLi,
   bytesUtf8,
+  classificarCaminho,
   cortarUtf8,
   recursoDoCaminho,
   redigirCaminhoEQuery,
@@ -483,12 +484,15 @@ export const MAX_LINHA_RESTAURACAO_BYTES = 200 * 1024;
 
 /** One restore snapshot: the read a write is decided on, as `redacao.ts` lets it out. */
 export interface RestauracaoLi {
-  /** The target resource (the order `numero`). */
+  /** The target resource: an order `numero`, or a produto id. */
   readonly recurso: number;
-  /** The REQUEST path of the deciding read; it is redacted before it reaches the line. */
+  /**
+   * The REQUEST path of the deciding read; it is redacted before it reaches the
+   * line, and the line's `politica` is the path's (`classificarCaminho`).
+   */
   readonly caminho: string;
   readonly status: number;
-  /** `corpoDeRestauracaoLi`'s estrutural walk of the response. */
+  /** `corpoDeRestauracaoLi`'s walk of the response. */
   readonly corpo: ValorJsonLi;
 }
 
@@ -502,7 +506,8 @@ export interface ResultadoRestauracaoLi {
  * The restore line (`evento: 'restauracao'`, INFO) — written only when the
  * whole line fits {@link MAX_LINHA_RESTAURACAO_BYTES}; otherwise NOTHING is
  * written and `escrita` is `false`. Measured on the exact line, through the
- * same campos the sink receives.
+ * same campos the sink receives. Its `politica` is read from the path:
+ * `estrutural` for the order detail, `catalogo` for the stock detail.
  */
 export function registrarRestauracaoLi(
   r: RestauracaoLi,
@@ -515,7 +520,7 @@ export function registrarRestauracaoLi(
       recurso: r.recurso,
       caminho,
       status: r.status,
-      politica: 'estrutural',
+      politica: classificarCaminho(r.caminho),
       corpo: serializarValorLi(r.corpo),
     },
     o,

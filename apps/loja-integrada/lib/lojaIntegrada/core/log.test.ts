@@ -594,6 +594,25 @@ describe('registrarRestauracaoLi — the restore snapshot, capped on the EXACT l
     expect(r.bytes).toBe(bytesDaLinha('extra'));
   });
 
+  it('the line’s politica is its PATH’s: `catalogo` for the stock detail (step 12)', () => {
+    const gravador = gravadorDeLog();
+    const r = registrarRestauracaoLi(
+      { recurso: 7001, caminho: '/v1/produto_estoque/7001', status: 200, corpo: { quantidade: 3 } },
+      { ...REGISTRO, fluxo: 'estoque', escrever: gravador.escrever },
+    );
+    expect(r.escrita).toBe(true);
+    expect(gravador.linhas.map((l) => l.campos)).toEqual([
+      expect.objectContaining({
+        evento: 'restauracao',
+        fluxo: 'estoque',
+        recurso: 7001,
+        caminho: '/v1/produto_estoque/7001',
+        politica: 'catalogo',
+        corpo: '{"quantidade":3}',
+      }),
+    ]);
+  });
+
   it('EQUAL pair: a line of EXACTLY 200 KB (UTF-8, the line as the sink writes it) is written', () => {
     const base = bytesDaLinha('');
     const chave = 'a'.repeat(MAX_LINHA_RESTAURACAO_BYTES - base);

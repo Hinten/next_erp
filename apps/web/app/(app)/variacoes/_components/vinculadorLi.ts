@@ -3,42 +3,24 @@
  * the tab edits in `grupoDeVariacoes.linksVariacoesli`, what a save of the grupo
  * checks, and how a conflicting save merges. No React, no clock, no I/O.
  *
- * ## Untouched entries are written back exactly as stored
+ * The staging marks, "edited or untouched" and the conflict merge are the shared
+ * machinery in `vinculosDeCanal.ts` (its header states the rules); this module
+ * names Loja Integrada's mark and key, and adds the channel's own reading.
  *
  * The field stays tolerant (`z.array(z.json())`): a stored entry nobody touched
  * is carried back as it is — valid or not, of an active conta or not — and a
  * defect among untouched entries is SHOWN, never blocking a save that does not
  * touch them (renaming the grupo, adding a size). Every entry the operator
  * creates or changes must be complete and break no uniqueness rule. The shared
- * validator (`conflitosLinksVariacoesLi`) decides both; this module decides
- * which entries are EDITED.
+ * validator (`conflitosLinksVariacoesLi`) decides both; `vinculosDeCanal.ts`
+ * decides which entries are EDITED.
  *
- * ## Edited or untouched: by VALUE, against the form's seed, failing closed
- *
- * An entry is untouched when it equals (`valuesEqual`: key set + recursive,
- * `null` ≠ absent, arrays positional) an entry of the field's SEED — what the
- * form was last reset to — each seed entry vouching for ONE entry. Anything else
- * is edited, and a seed not yet published makes every entry edited. Object
- * identity is never used: a form re-applies kept edits through clones, a staged
- * removal undone is a copy, and `validate` sees the prepared value.
- *
- * ## Transient marks, stripped on save ({@link prepararVinculosLi})
- *
- *  - `DELETE_MARK` (the app's staged deletion): the entry is dropped on save;
- *  - {@link MARCA_CONFLITO_VINCULO_LI}: a conflict merge's note on an entry —
- *    `alterado` (both sides changed this link: the other side's version is kept,
- *    redo yours) is written as the other side left it; `removido` (the other
- *    side removed what you changed) is dropped, unless you edit it again.
+ * The conflict mark ({@link MARCA_CONFLITO_VINCULO_LI}) and the staged deletion
+ * are stripped on save by {@link prepararVinculosLi}.
  *
  * Every comparison is exact: no case, trim or number↔string fold.
  */
-import {
-  DELETE_MARK,
-  valuesEqual,
-  type ConflictRebaseInput,
-  type ConflictRebaseResult,
-  type ValidationIssue,
-} from '@delfrance/ui';
+import type { ValidationIssue } from '@delfrance/ui';
 import {
   TIPO_CONFLITO_LINK_LI,
   TIPO_ENTRADA_LINK_LI,
@@ -47,17 +29,23 @@ import {
   type ConflitoLinkLi,
   type EntradaLinkVariacoesLi,
 } from '@delfrance/schemas';
+import {
+  CONFLITO_VINCULO,
+  criarNucleoDeVinculos,
+  ehObjeto,
+  idsDasVariantes,
+  nomesDasVariantes,
+  proprio,
+  type ConflitoVinculo,
+  type Registro,
+  type SeedDeVinculos,
+} from './vinculosDeCanal';
 
 /** The transient key a conflict merge sets on an entry (see the module header). */
 export const MARCA_CONFLITO_VINCULO_LI = '_conflitoVinculoLi';
 
-export const CONFLITO_VINCULO_LI = {
-  /** Both sides changed this link: the other side's version is kept. Redo yours. */
-  alterado: 'alterado',
-  /** The other side removed the link you changed: dropped on save unless you edit it again. */
-  removido: 'removido',
-} as const;
-export type ConflitoVinculoLi = (typeof CONFLITO_VINCULO_LI)[keyof typeof CONFLITO_VINCULO_LI];
+export const CONFLITO_VINCULO_LI = CONFLITO_VINCULO;
+export type ConflitoVinculoLi = ConflitoVinculo;
 
 /**
  * Where an element that is NOT an object waits while staged for removal: it is
@@ -66,149 +54,48 @@ export type ConflitoVinculoLi = (typeof CONFLITO_VINCULO_LI)[keyof typeof CONFLI
  */
 const VALOR_ILEGIVEL_LI = '_valorIlegivelLi';
 
-type Registro = Record<string, unknown>;
-
-/** A plain object in the Firestore sense: not `null`, not an array, not a primitive. */
-function ehObjeto(v: unknown): v is Registro {
-  return typeof v === 'object' && v !== null && !Array.isArray(v);
-}
-
-/** An OWN property only: an inherited one is not stored data. */
-function proprio(o: Registro, chave: string): unknown {
-  return Object.hasOwn(o, chave) ? o[chave] : undefined;
-}
-
-/** The marks this module or the app may set on an entry. */
-const MARCAS = [DELETE_MARK, MARCA_CONFLITO_VINCULO_LI] as const;
+const nucleo = criarNucleoDeVinculos({
+  marcaConflito: MARCA_CONFLITO_VINCULO_LI,
+  chaveValorIlegivel: VALOR_ILEGIVEL_LI,
+  /** The (conta, grade) key of an element, or `null` when it has none. Exact. */
+  chaveDe: (entrada) => {
+    const conta = proprio(entrada, 'integracaoLiId');
+    const grade = proprio(entrada, 'grade_id');
+    return typeof conta === 'string' && typeof grade === 'number'
+      ? JSON.stringify([conta, grade])
+      : null;
+  },
+});
 
 /** Whether the operator staged this entry for removal. */
-export function removidaNoFormularioLi(entrada: unknown): boolean {
-  return ehObjeto(entrada) && proprio(entrada, DELETE_MARK) === true;
-}
+export const removidaNoFormularioLi = nucleo.removidaNoFormulario;
 
 /** The conflict merge's note on an entry, or `null`. */
-export function marcaDeConflitoLi(entrada: unknown): ConflitoVinculoLi | null {
-  if (!ehObjeto(entrada)) return null;
-  const marca = proprio(entrada, MARCA_CONFLITO_VINCULO_LI);
-  return marca === CONFLITO_VINCULO_LI.alterado || marca === CONFLITO_VINCULO_LI.removido
-    ? marca
-    : null;
-}
+export const marcaDeConflitoLi = nucleo.marcaDeConflito;
 
-/**
- * The entry as it would be STORED: every mark stripped (a copy only when there
- * was one), a wrapped non-object element unwrapped. Anything else is returned
- * as the very same value.
- */
-export function normalizarEntradaLi(entrada: unknown): unknown {
-  if (!ehObjeto(entrada)) return entrada;
-  if (Object.hasOwn(entrada, VALOR_ILEGIVEL_LI)) return entrada[VALOR_ILEGIVEL_LI];
-  if (!MARCAS.some((m) => Object.hasOwn(entrada, m))) return entrada;
-  const copia: Registro = { ...entrada };
-  for (const m of MARCAS) delete copia[m];
-  return copia;
-}
+/** The entry as it would be STORED: marks stripped, a wrapped element unwrapped. */
+export const normalizarEntradaLi = nucleo.normalizarEntrada;
 
-/** Whether a save drops this entry: staged for removal, or `removido` by a conflict. */
-function descartadaNaGravacao(entrada: unknown): boolean {
-  return (
-    removidaNoFormularioLi(entrada) || marcaDeConflitoLi(entrada) === CONFLITO_VINCULO_LI.removido
-  );
-}
+/** {@link prepararVinculosLi} plus, for each written entry, its index in the form's value. */
+export const prepararVinculosLiComOrigem = nucleo.prepararComOrigem;
 
-/**
- * {@link prepararVinculosLi} plus, for each written entry, its index in the
- * form's value — so a finding on the written list can be shown on the form's.
- */
-export function prepararVinculosLiComOrigem(valor: unknown): {
-  readonly lista: unknown[];
-  readonly origem: number[];
-} {
-  const lista: unknown[] = [];
-  const origem: number[] = [];
-  if (!Array.isArray(valor)) return { lista, origem };
-  const elementos: readonly unknown[] = valor;
-  elementos.forEach((e, i) => {
-    if (descartadaNaGravacao(e)) return;
-    lista.push(normalizarEntradaLi(e));
-    origem.push(i);
-  });
-  return { lista, origem };
-}
-
-/**
- * The field's `prepareForSave`: drops the entries staged for removal (and the
- * `removido` ones), strips every mark from the rest. An entry that carries no
- * mark is written back as the very same object. A value that is not a list
- * passes through (the schema reports it).
- */
-export function prepararVinculosLi(valor: unknown): unknown {
-  return Array.isArray(valor) ? prepararVinculosLiComOrigem(valor).lista : valor;
-}
+/** The field's `prepareForSave`: drops staged and `removido` entries, strips every mark. */
+export const prepararVinculosLi = nucleo.preparar;
 
 /**
  * The form's seed for the linker: the values its two fields were last reset to.
  * Published by the tab; `null` (never published) fails closed everywhere.
  */
-export interface SeedVinculadorLi {
-  readonly links: unknown;
-  readonly variacoes: unknown;
-}
+export type SeedVinculadorLi = SeedDeVinculos;
 
-/**
- * The indices of `lista` (a WRITTEN list: no marks) that this save creates or
- * changes, decided BY VALUE: an entry equal to an unused seed entry is
- * untouched, and consumes it. `seed === null` ⇒ every index (fail closed).
- */
-export function editadasPorValorLi(
-  lista: readonly unknown[],
-  seed: SeedVinculadorLi | null,
-): Set<number> {
-  const editadas = new Set<number>();
-  const guardadas: readonly unknown[] =
-    seed !== null && Array.isArray(seed.links) ? seed.links : [];
-  const usadas = guardadas.map(() => false);
-  lista.forEach((entrada, i) => {
-    if (seed === null) {
-      editadas.add(i);
-      return;
-    }
-    const j = guardadas.findIndex((g, k) => !usadas[k] && valuesEqual(g, entrada));
-    if (j < 0) editadas.add(i);
-    else usadas[j] = true;
-  });
-  return editadas;
-}
+/** The indices of a WRITTEN list this save creates or changes, by value against the seed. */
+export const editadasPorValorLi = nucleo.editadasPorValor;
 
 /** The ids of a `variacoes` value, minus any staged for deletion. Exact, no fold. */
-export function idsDasVariantesLi(variacoes: unknown): string[] {
-  if (!Array.isArray(variacoes)) return [];
-  const lista: readonly unknown[] = variacoes;
-  const ids: string[] = [];
-  for (const v of lista) {
-    if (!ehObjeto(v) || proprio(v, DELETE_MARK) === true) continue;
-    const id = proprio(v, 'id');
-    if (typeof id === 'string') ids.push(id);
-  }
-  return ids;
-}
+export const idsDasVariantesLi = idsDasVariantes;
 
 /** `id → nome` over one or more `variacoes` values; the first name wins. */
-export function nomesDasVariantesLi(...listas: unknown[]): Map<string, string> {
-  const nomes = new Map<string, string>();
-  for (const variacoes of listas) {
-    if (!Array.isArray(variacoes)) continue;
-    const lista: readonly unknown[] = variacoes;
-    for (const v of lista) {
-      if (!ehObjeto(v)) continue;
-      const id = proprio(v, 'id');
-      const nome = proprio(v, 'nome');
-      if (typeof id === 'string' && typeof nome === 'string' && nome !== '' && !nomes.has(id))
-        nomes.set(id, nome);
-    }
-  }
-  return nomes;
-}
+export const nomesDasVariantesLi = nomesDasVariantes;
 
 /** The shared rules over a WRITTEN list, with the variantes this save leaves. */
 function avaliar(
@@ -421,38 +308,11 @@ export function definirVariantesDaOpcaoLi(
   return registro;
 }
 
-/**
- * Undo a staged removal: only what the removal ADDED goes — the staged mark, or
- * the wrapper of a non-object element. A conflict merge's note stays: an undo is
- * not an edit, so a `removido` link is still dropped on save, and an `alterado`
- * one still says so.
- */
-function desfazerRemocaoLi(entrada: Registro): unknown {
-  if (Object.hasOwn(entrada, VALOR_ILEGIVEL_LI)) return entrada[VALOR_ILEGIVEL_LI];
-  const copia: Registro = { ...entrada };
-  delete copia[DELETE_MARK];
-  return copia;
-}
-
 /** Stage the element at `indice` for removal, or undo it: a NEW list. */
-export function alternarRemocaoLi(lista: readonly unknown[], indice: number): unknown[] {
-  return lista.map((e, i) => {
-    if (i !== indice) return e;
-    if (ehObjeto(e) && removidaNoFormularioLi(e)) return desfazerRemocaoLi(e);
-    return ehObjeto(e)
-      ? { ...e, [DELETE_MARK]: true }
-      : { [DELETE_MARK]: true, [VALOR_ILEGIVEL_LI]: e };
-  });
-}
+export const alternarRemocaoLi = nucleo.alternarRemocao;
 
 /** The element at `indice` replaced by `nova`: a NEW list. */
-export function substituirEntradaLi(
-  lista: readonly unknown[],
-  indice: number,
-  nova: unknown,
-): unknown[] {
-  return lista.map((e, i) => (i === indice ? nova : e));
-}
+export const substituirEntradaLi = nucleo.substituirEntrada;
 
 /**
  * A new link of `contaId` (stored verbatim) to `grade`, with no option yet. The
@@ -462,154 +322,8 @@ export function novoVinculoLi(contaId: string, grade: { id: number; nome: string
   return { name: grade.nome, grade_id: grade.id, integracaoLiId: contaId, variationOptions: [] };
 }
 
-/* -------------------------------------------------------------------------- */
-/*                  The conflict merge (a tier-3 save, ADR 0011)               */
-/* -------------------------------------------------------------------------- */
-
-/** The (conta, grade) key of an element, or `null` when it has none. Exact. */
-function chaveDoVinculo(entrada: unknown): string | null {
-  const n = normalizarEntradaLi(entrada);
-  if (!ehObjeto(n)) return null;
-  const conta = proprio(n, 'integracaoLiId');
-  const grade = proprio(n, 'grade_id');
-  return typeof conta === 'string' && typeof grade === 'number'
-    ? JSON.stringify([conta, grade])
-    : null;
-}
-
-/** Same entries, in order — a staged removal counts, a conflict's note does not. */
-function mesmasEntradas(a: readonly unknown[], b: readonly unknown[]): boolean {
-  return (
-    a.length === b.length &&
-    a.every((e, i) => {
-      const semNota = ehObjeto(e) && marcaDeConflitoLi(e) !== null ? semNotaDeConflito(e) : e;
-      return valuesEqual(semNota, b[i]);
-    })
-  );
-}
-
-function semNotaDeConflito(e: Registro): Registro {
-  const copia = { ...e };
-  delete copia[MARCA_CONFLITO_VINCULO_LI];
-  return copia;
-}
-
-function comNota(entrada: unknown, nota: ConflitoVinculoLi): unknown {
-  const n = normalizarEntradaLi(entrada);
-  return ehObjeto(n) ? { ...n, [MARCA_CONFLITO_VINCULO_LI]: nota } : n;
-}
-
-function agruparPorChave(lista: readonly unknown[]): Map<string, unknown[]> {
-  const porChave = new Map<string, unknown[]>();
-  for (const e of lista) {
-    const k = chaveDoVinculo(e);
-    if (k === null) continue;
-    const doGrupo = porChave.get(k) ?? [];
-    doGrupo.push(e);
-    porChave.set(k, doGrupo);
-  }
-  return porChave;
-}
-
-function comoLista(v: unknown): readonly unknown[] | null {
-  if (v === null || v === undefined) return [];
-  return Array.isArray(v) ? v : null;
-}
-
 /**
- * The field's `rebaseOnConflict` merge (ADR 0011 tier 3): the server's list is
- * the base, and every link the operator added, changed or staged for removal —
- * by value against `loaded`, keyed by `(integracaoLiId, grade_id)` — is
- * re-applied on it. Never either side wholesale.
- *
- * Per key: only the operator changed it ⇒ theirs; only the server ⇒ the
- * server's; both, the same way ⇒ the server's; both, differently ⇒ COLLIDED: the
- * server's version is kept, marked `alterado` — or, when the server removed it,
- * the operator's version is shown marked `removido` and dropped on save unless
- * redone. A key held twice on either side is one block, compared whole.
- *
- * Key-less legacy entries (a half-made link) can only be staged for removal
- * here: that removal is re-applied while the server still holds the same entry,
- * and moot when it does not.
+ * The field's `rebaseOnConflict` merge (ADR 0011 tier 3), keyed by
+ * `(integracaoLiId, grade_id)`: `NucleoDeVinculos.rebasePorChave` states the rules.
  */
-export function rebaseVinculosLi({
-  loaded,
-  server,
-  mine,
-}: ConflictRebaseInput): ConflictRebaseResult {
-  const carregada = comoLista(loaded);
-  const doServidor = comoLista(server);
-  const minha = comoLista(mine);
-  if (doServidor === null || carregada === null || minha === null) {
-    // A value that is not a list cannot be merged: keep the server's, and stop.
-    return { value: server, collided: true };
-  }
-  // A `removido` note is already the server's version (absent): not a change.
-  const meus = minha.filter((e) => marcaDeConflitoLi(e) !== CONFLITO_VINCULO_LI.removido);
-  const L = agruparPorChave(carregada);
-  const S = agruparPorChave(doServidor);
-  const M = agruparPorChave(meus);
-  let collided = false;
-
-  const blocoDaChave = (k: string): unknown[] => {
-    const l = L.get(k) ?? [];
-    const s = S.get(k) ?? [];
-    const m = M.get(k) ?? [];
-    if (mesmasEntradas(m, l)) return s;
-    if (mesmasEntradas(s, l)) return m;
-    if (mesmasEntradas(prepararVinculosLi(m) as unknown[], s)) return s;
-    collided = true;
-    if (s.length > 0) return s.map((e) => comNota(e, CONFLITO_VINCULO_LI.alterado));
-    return m
-      .filter((e) => !removidaNoFormularioLi(e))
-      .map((e) => comNota(e, CONFLITO_VINCULO_LI.removido));
-  };
-
-  const saida: unknown[] = [];
-  const tratadas = new Set<string>();
-  for (const e of doServidor) {
-    const k = chaveDoVinculo(e);
-    if (k === null) {
-      saida.push(e);
-      continue;
-    }
-    if (tratadas.has(k)) continue;
-    tratadas.add(k);
-    saida.push(...blocoDaChave(k));
-  }
-  for (const k of M.keys()) {
-    if (tratadas.has(k)) continue;
-    tratadas.add(k);
-    saida.push(...blocoDaChave(k));
-  }
-
-  // Key-less entries: the operator's staged removals, by value.
-  const semChaveCarregadas = carregada.filter((e) => chaveDoVinculo(e) === null);
-  const usadas = semChaveCarregadas.map(() => false);
-  const consumir = (valor: unknown): boolean => {
-    const j = semChaveCarregadas.findIndex((c, k) => !usadas[k] && valuesEqual(c, valor));
-    if (j < 0) return false;
-    usadas[j] = true;
-    return true;
-  };
-  const substituidas = new Set<number>();
-  for (const e of meus) {
-    if (chaveDoVinculo(e) !== null) continue;
-    const valor = normalizarEntradaLi(e);
-    const conhecida = consumir(valor);
-    if (!removidaNoFormularioLi(e)) {
-      if (!conhecida) saida.push(e);
-      continue;
-    }
-    const i = saida.findIndex(
-      (s, k) => !substituidas.has(k) && chaveDoVinculo(s) === null && valuesEqual(s, valor),
-    );
-    if (i >= 0) {
-      saida[i] = e;
-      substituidas.add(i);
-    }
-  }
-
-  const value = saida.length === 0 && !Array.isArray(server) ? (server ?? null) : saida;
-  return { value, collided };
-}
+export const rebaseVinculosLi = nucleo.rebasePorChave;

@@ -19,6 +19,7 @@ function makeInput(notify: EtiquetaProviderInput['ui']['notify']): EtiquetaProvi
       mercadoLivreClient: null,
       shopeeClient: null,
       lojaIntegradaClient: null,
+      amazonClient: null,
       printJob: vi.fn(),
     },
     ui: {
@@ -33,12 +34,13 @@ function makeInput(notify: EtiquetaProviderInput['ui']['notify']): EtiquetaProvi
 }
 
 describe('unsupportedMarketplaceProvider', () => {
-  it('registers the two not-yet-ported marketplace tipos (mercadoLivre and shopee graduated, lojaIntegrada is routed)', () => {
-    // W2: `shopee` here as well as in `providers/shopee.ts` would make the
-    // registry throw at load (a tipo claimed twice); gone from both, the Shopee
-    // row would fall back to this placeholder — see `registry.test.ts`. The
-    // same holds for `lojaIntegrada` and the router provider.
-    expect(unsupportedMarketplaceProvider.tipos).toEqual(['amz', 'magalu']);
+  it('registers only the one not-yet-ported marketplace tipo, magalu (mercadoLivre, shopee and amz graduated, lojaIntegrada is routed)', () => {
+    // W2: `shopee` or `amz` here as well as in its own provider would make the
+    // registry throw at load (a tipo claimed twice); gone from both, the row
+    // would fall back to this placeholder — see `registry.test.ts`. The same
+    // holds for `lojaIntegrada` and the router provider.
+    expect(unsupportedMarketplaceProvider.tipos).toEqual([INTEGRACAO_FRETE.magalu]);
+    expect(unsupportedMarketplaceProvider.tipos).not.toContain(INTEGRACAO_FRETE.amazon);
     expect(unsupportedMarketplaceProvider.tipos).not.toContain(INTEGRACAO_FRETE.shopee);
     expect(unsupportedMarketplaceProvider.tipos).not.toContain(INTEGRACAO_FRETE.lojaIntegrada);
   });

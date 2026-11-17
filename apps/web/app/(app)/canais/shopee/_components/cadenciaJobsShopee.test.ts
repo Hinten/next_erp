@@ -7,16 +7,24 @@ import {
 } from '@delfrance/schemas';
 
 import {
-  INTERVALO_JOB_ESTACIONADO_MS,
   INTERVALO_JOB_MS,
   SEM_PROGRESSO_MS,
-  formatarInstanteJob,
+  ultimoSinalDeVida,
+} from '@/lib/marketplace/contaJobs/cadencia';
+import {
+  INTERVALO_JOB_ESTACIONADO_MS,
   intervaloEnvioPreco,
   intervaloImportacao,
   janelaUpdateTimeEmSegundos,
   semProgresso,
-  ultimoSinalDeVida,
 } from './cadenciaJobsShopee';
+
+/*
+ * `ultimoSinalDeVida` alone and the printed instant are pinned beside the shared
+ * module they moved to (`lib/marketplace/contaJobs/cadencia.test.ts`). The 3 s
+ * and 45-minute values are pinned there AND here: a change to either must still
+ * fit Shopee's own retry ladder, which only this file's reader knows.
+ */
 
 const AGORA = Date.UTC(2026, 9, 14, 15, 0);
 
@@ -149,19 +157,5 @@ describe('janelaUpdateTimeEmSegundos', () => {
     expect(janelaUpdateTimeEmSegundos([null, '2026-10-02'])).toBeNull();
     expect(janelaUpdateTimeEmSegundos(['2026-02-30', '2026-10-02'])).toBeNull();
     expect(janelaUpdateTimeEmSegundos(['2026-10-01', '2026-10-02T10:00:00'])).toBeNull();
-  });
-});
-
-describe('formatarInstanteJob', () => {
-  it('prints São Paulo wall time, whatever the machine zone', () => {
-    // 03:05Z is 00:05 in São Paulo — and midnight prints as 00, never 24.
-    expect(formatarInstanteJob(Date.UTC(2026, 9, 1, 3, 5))).toBe('01/10 00:05');
-    expect(formatarInstanteJob(Date.UTC(2026, 9, 1, 3, 5), { comAno: true })).toBe(
-      '01/10/2026 00:05',
-    );
-  });
-
-  it('prints a dash for a value that is not an instant', () => {
-    expect(formatarInstanteJob(Number.NaN)).toBe('—');
   });
 });

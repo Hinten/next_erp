@@ -76,6 +76,7 @@ const LINK: LinkListagemLido = {
   estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
   kitNativo: false,
   marcaNaoEscolhida: false,
+  logisticaConfiavel: false,
 };
 
 const DESCRICAO = 'Camiseta de algodão penteado, gola redonda, unissex.';

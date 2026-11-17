@@ -10,7 +10,16 @@
  * the app — the link subcollections, the survivor queries, the variação
  * fallbacks — and enters here as two injected readers: `counts`, which decides
  * whether a link doc contributes, and `contaDoLink`, which says where that
- * doc's conta ref lives.
+ * doc's conta ref lives. (The two readers each channel passes are pure, so
+ * they live in `@delfrance/schemas`, side by side.)
+ *
+ * ⚠️ ONE exception to "stays in the app": Loja Integrada's survivor read,
+ * `sobreviventesLi.ts` in this folder. A second caller needs the identical read
+ * and cannot import an app — a `tools/migrations` script that adds a missing
+ * conta through {@link adicionarContaSeViva} — and that add converges only
+ * while its survivor folds exactly as the trigger's remove does, so there must
+ * be one copy. It still enters here as the caller-supplied `sobrevivem`
+ * closure: the module moved, the seam did not.
  *
  * That array is the ANCHOR PRE-FILTER the marketplace sweeps start from: a
  * conta id in it means "this account's sweep visits this produto every run", so
@@ -51,17 +60,19 @@
  *   the callback re-runs — re-checking a predicate against a binding read taken
  *   OUTSIDE the transaction would not be a guard at all. Since #1519 the
  *   survivors reader is a caller-supplied closure (ML's two collection-bound
- *   ones, Shopee's unfiltered `prodshopee` scan), so the class is unchanged:
+ *   ones, Shopee's unfiltered `prodshopee` scan, Loja Integrada's unfiltered
+ *   `produtolojaintegrada` read), so the class is unchanged:
  *   the verdict still comes from the callback's own `tx.get`.
  * - The READ-derived add ({@link adicionarContaSeViva}, #1200 — the monthly ML
- *   link audit that heals a produto whose array lost the conta) is **tier 1
- *   for the same reason as the remove**: its evidence is a walk page read
- *   earlier, not an event. ⚠️ `arrayUnion` having no loser does NOT make it
- *   tier 0 there: a stale add landing after the link CLOSED is a false positive
- *   that never heals, because the close's own event already ran (and found
- *   nothing to remove), {@link planLinkChange}'s fast path ignores every later
- *   write to a closed link, and the audit only ever adds. So it re-reads the
- *   survivors inside the transaction exactly as the remove does.
+ *   link audit that heals a produto whose array lost the conta, and the Loja
+ *   Integrada anchor census in `tools/migrations`) is **tier 1 for the same
+ *   reason as the remove**: its evidence is a walk page read earlier, not an
+ *   event. ⚠️ `arrayUnion` having no loser does NOT make it tier 0 there: a
+ *   stale add landing after the link CLOSED is a false positive that never
+ *   heals, because the close's own event already ran (and found nothing to
+ *   remove), {@link planLinkChange}'s fast path ignores every later write to a
+ *   closed link, and neither caller ever removes. So it re-reads the survivors
+ *   inside the transaction exactly as the remove does.
  * - Never resurrect a produto: the produto cascade deletes these links, so all
  *   three paths narrow `NOT_FOUND` and return.
  *
@@ -241,16 +252,17 @@ export async function removerContaSeOrfa(
  * proves it still holds a qualifying link for that conta — the READ-DERIVED
  * add, the mirror image of {@link removerContaSeOrfa} (#1200).
  *
- * Its caller's evidence is a read, not an event: the monthly ML link audit
- * walked the conta's links, saw a live one on an anchor whose array lacks the
- * conta, and heals it — possibly minutes after that page was read. A plain
+ * Its callers' evidence is a read, not an event: the monthly ML link audit (or
+ * the Loja Integrada anchor census in `tools/migrations`) walked the links, saw
+ * a live one on a produto whose array lacks the conta, and heals it — possibly
+ * minutes after that page was read. A plain
  * {@link adicionarConta} there can lose to a concurrent close: the link closes,
  * the close's trigger runs the guarded remove and finds nothing to remove (the
  * conta was never listed), and THEN the stale `arrayUnion` lands. That false
  * positive is PERMANENT, not one skipped sweep row: {@link planLinkChange}'s
  * fast path ignores every later write to an already-closed link (it neither
- * counted before nor counts now), and the audit never removes, so nothing would
- * ever look at that entry again.
+ * counted before nor counts now), and neither caller ever removes, so nothing
+ * would ever look at that entry again.
  *
  * Tier 1, for the remove's reason. `sobrevivem` runs inside the transaction
  * and the verdict comes from ITS `tx.get` — never from the walk's snapshot,

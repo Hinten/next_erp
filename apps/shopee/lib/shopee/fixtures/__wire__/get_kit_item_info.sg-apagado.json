@@ -9,7 +9,7 @@
       "item_status": "SELLER_DELETE",
       "image": {
         "image_id_list": ["br-11134207-7r98o-lzri4neb5vcv18"],
-        "image_url_list": ["https://example.invalid/file/redacted"],
+        "image_url_list": ["https://redacted.invalid/imagem"],
         "image_ratio": "1:1"
       },
       "long_image": {

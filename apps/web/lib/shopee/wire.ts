@@ -19,9 +19,11 @@
  * browser code keeps importing every answer shape
  * from this one file: the size-chart envelopes (step 18), the taxonomy answers
  * (the category tree, the item bands whole and cut to the size-chart slice,
- * Shopee's category suggestion, and a category's page of brands — #1911), the
- * listing-draft route's answers and error items, and the publish's 202 for a
- * draft's uncertain first create (#1911).
+ * Shopee's category suggestion, a category's page of brands, its attribute
+ * tree and its variation tree — #1911), the
+ * listing-draft route's answers and error items, the publish's 202 for a
+ * draft's uncertain first create (#1911), and the shop's logistics channels
+ * for one produto (#1911 P16).
  *
  * ⚠️ This header must not describe what the OTHER copy does beyond naming it.
  * A comment asserting the behaviour of a file the compiler cannot see is the
@@ -435,9 +437,11 @@ export const shopeeReclamacaoAcaoRespostaSchema = z.object({
 export type ShopeeReclamacaoAcaoResposta = z.infer<typeof shopeeReclamacaoAcaoRespostaSchema>;
 
 /* ---------------------------------------------------------------------------
- * The taxonomy reads (`GET …/taxonomia/{categorias,limites,recomendacao-categoria,marcas}`,
+ * The taxonomy reads (`GET …/taxonomia/{categorias,limites,recomendacao-categoria,atributos,marcas,variacoes}`,
  * step 10's routes — the `/medidas` Shopee tab since step 18, the listing-draft
- * editor and a conta's Marcas section since #1911) and the two size-chart reads
+ * editor and a conta's Marcas section since #1911, the draft's «Atributos»
+ * section since #1911 P13, a grupo's Shopee tab since #1911 P14) and the two
+ * size-chart reads
  * (`GET …/tabela-medidas/{lista,detalhe}`, #1526, step 18)
  * ------------------------------------------------------------------------- */
 
@@ -506,6 +510,33 @@ export {
 } from '@delfrance/schemas';
 
 /**
+ * The attribute tree of one leaf category —
+ * `GET …/taxonomia/atributos?integracaoId=&categoryId=` (#1911 P13), for a
+ * listing draft's «Atributos» section and its publish gate. A non-leaf category
+ * answers the same shape, empty (`leaf: false`). The envelope, one attribute,
+ * its editor metadata and one value; a value's `childAttributeList` holds the
+ * attributes it unlocks, so the tree recurses through both levels.
+ *
+ * - ⚠️ `truncated: true` ⇒ a level was dropped: the tree is NOT complete, so an
+ *   attribute missing from it is not one Shopee does not ask for.
+ * - `valueId: 0` is a legal value id — never read it as "absent".
+ * - `inputType` / `inputValidationType` / `formatType` are Shopee's INTEGER
+ *   enums: decide through `tipoDeEntradaShopee` and the named constants of
+ *   `@delfrance/schemas`' `atributosShopee.ts`, never on a raw number.
+ * - Ids decide; a name never does.
+ */
+export {
+  atributoDtoSchema,
+  atributoInfoDtoSchema,
+  atributoValorDtoSchema,
+  respostaAtributosShopeeSchema,
+  type AtributoDto,
+  type AtributoInfoDto,
+  type AtributoValorDto,
+  type RespostaAtributosShopee,
+} from '@delfrance/schemas';
+
+/**
  * ONE page of a leaf category's brands —
  * `GET …/taxonomia/marcas?integracaoId=&categoryId=[&offset=&pageSize=&status=]`
  * (#1911, D10), for the registration picker of a conta's Marcas section. A
@@ -523,6 +554,59 @@ export {
   respostaMarcasShopeeSchema,
   type MarcaDto,
   type RespostaMarcasShopee,
+} from '@delfrance/schemas';
+
+/**
+ * Shopee's STANDARDISED variation tree of one leaf category —
+ * `GET …/taxonomia/variacoes?integracaoId=&categoryId=` (#1911 P14), for the
+ * Shopee tab of `/variacoes/[id]`. Three levels (variation → group → option); a
+ * non-leaf category answers the same shape, empty (`leaf: false`).
+ *
+ * - ⚠️ A variation with no group, or a group with no option, is NORMAL: most
+ *   categories have nothing to bind. Read the tree through `./variacoes`, never
+ *   by the list's length.
+ * - `variationGroupId: 0` is a VALUE: with the name `''` it is a single-level
+ *   variation's sentinel, and it is what a link stores for it.
+ * - Names are Shopee's, verbatim (` Estampa`, with its space). Ids decide; a name
+ *   never does (two options may both read `Preto`).
+ */
+export {
+  respostaVariacoesShopeeSchema,
+  variacaoDtoSchema,
+  variacaoGrupoDtoSchema,
+  variacaoOpcaoDtoSchema,
+  type RespostaVariacoesShopee,
+  type VariacaoDto,
+  type VariacaoGrupoDto,
+  type VariacaoOpcaoDto,
+} from '@delfrance/schemas';
+
+/**
+ * The shop's logistics channels for ONE produto —
+ * `GET …/canais?integracaoId=&produtoId=` (#1911 P15), for a listing draft's
+ * «Logística» section (P16). One row per channel of Shopee's
+ * `get_channel_list`, in that list's order, and the envelope.
+ *
+ * - ⚠️ Join a row to a draft's channel by `logisticsChannelId`, never by
+ *   position: the rows keep the shop's order, a draft's list is sorted by id.
+ * - `selecionavel`, `obrigatorio`, `bloqueiaFreteGratisDoVendedor`,
+ *   `indisponivel` and `automatica` are VERDICTS: render them, never re-derive
+ *   one (#1369). `automatica.isFree` is already masked by
+ *   `bloqueiaFreteGratisDoVendedor`.
+ * - `nome: null` ⇒ name the channel by its id.
+ * - `medidasCompletas: false` ⇒ the STORED produto lacks its weight or one of
+ *   the three dimensions.
+ * - Every key is required: a missing `medidasCompletas` or `selecionavel` is a
+ *   `ShopeeClientRespostaInvalidaError`, never read as `false`.
+ */
+export {
+  canalDaLojaShopeeDtoSchema,
+  MOTIVO_INDISPONIVEL_CANAL_SHOPEE,
+  motivoIndisponivelCanalShopeeSchema,
+  respostaCanaisShopeeSchema,
+  type CanalDaLojaShopeeDto,
+  type MotivoIndisponivelCanalShopee,
+  type RespostaCanaisShopee,
 } from '@delfrance/schemas';
 
 /**

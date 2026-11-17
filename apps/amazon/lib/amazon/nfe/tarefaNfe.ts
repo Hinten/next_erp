@@ -47,11 +47,11 @@
  * trigger, the re-drive route and the handler's own re-enqueues), so a payload
  * carrying anything more is a producer this module does not know.
  *
- * ⚠️ LIGHT on purpose: the NF-e trigger (14-c) imports this module, and its
- * import closure is pinned (`estrutura.test.ts`, type edges walked) to hold no
- * SP-API value import and nothing of `pedidos/` but `orderIds.ts` — so this
- * file imports `zod` alone, and never the status reader (whose reading names
- * it re-exports from here, never the reverse).
+ * ⚠️ LIGHT on purpose: the NF-e trigger imports this module, and the trigger's
+ * import closure is pinned file by file (`estrutura.test.ts`'s NF-e D11 guard,
+ * type edges walked) to hold no SP-API value import and nothing of `pedidos/`
+ * but `orderIds.ts` — so this file imports `zod` alone, and never the status
+ * reader (whose reading names it re-exports from here, never the reverse).
  */
 import { z } from 'zod';
 
@@ -88,8 +88,9 @@ export const LEITURA_ANTES_NFE_AMAZON = {
 
 /**
  * The verification ladder: the delay, in SECONDS, before rung N's read. Σ
- * 85,680 s ≈ 23.8 h per submit — the "24 h" of the master plan is this RUNG
- * COUNT, not a wall clock (step-14 plan §3 decision 26).
+ * 85,680 s ≈ 23.8 h per submit — the master plan's "10-rung ladder (≈ 23.8 h)
+ * per submit" (formerly its "deadline 24 h") is this RUNG COUNT, not a wall
+ * clock (step-14 plan §3 decision 26).
  */
 export const ESCADA_VERIFICACAO_NFE_AMAZON_S = [
   60, 120, 300, 600, 1800, 3600, 7200, 14400, 28800, 28800,

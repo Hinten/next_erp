@@ -1,0 +1,253 @@
+{
+  "versao": 1,
+  "perfil": "fixture",
+  "credencial": "personal-token",
+  "capturadoEm": "2026-11-16",
+  "requisicao": {
+    "metodo": "GET",
+    "caminho": "/v1/produto_estoque",
+    "query": [
+      [
+        "limit",
+        "20"
+      ]
+    ]
+  },
+  "resposta": {
+    "status": 200,
+    "politica": "catalogo",
+    "forma": "json",
+    "bytes": 4926,
+    "corpo": {
+      "meta": {
+        "limit": 20,
+        "offset": 0,
+        "total_count": 8118,
+        "previous": null,
+        "next": "/api/v1/produto_estoque?limit=20&offset=20"
+      },
+      "objects": [
+        {
+          "gerenciado": true,
+          "id": 988337934710,
+          "produto": "/api/v1/produto/290979797652",
+          "quantidade": 0,
+          "quantidade_reservada": 0,
+          "resource_uri": "/api/v1/produto_estoque/290979797652",
+          "situacao_em_estoque": 0,
+          "situacao_sem_estoque": -1,
+          "quantidade_disponivel": 0
+        },
+        {
+          "gerenciado": true,
+          "id": 371237894456,
+          "produto": "/api/v1/produto/894443283167",
+          "quantidade": 25,
+          "quantidade_reservada": 0,
+          "resource_uri": "/api/v1/produto_estoque/894443283167",
+          "situacao_em_estoque": 0,
+          "situacao_sem_estoque": -1,
+          "quantidade_disponivel": 25
+        },
+        {
+          "gerenciado": true,
+          "id": 747593194058,
+          "produto": "/api/v1/produto/588806735933",
+          "quantidade": 0,
+          "quantidade_reservada": 0,
+          "resource_uri": "/api/v1/produto_estoque/588806735933",
+          "situacao_em_estoque": 0,
+          "situacao_sem_estoque": -1,
+          "quantidade_disponivel": 0
+        },
+        {
+          "gerenciado": true,
+          "id": 315235996844,
+          "produto": "/api/v1/produto/386102185959",
+          "quantidade": 0,
+          "quantidade_reservada": 0,
+          "resource_uri": "/api/v1/produto_estoque/386102185959",
+          "situacao_em_estoque": 0,
+          "situacao_sem_estoque": -1,
+          "quantidade_disponivel": 0
+        },
+        {
+          "gerenciado": true,
+          "id": 160540996281,
+          "produto": "/api/v1/produto/246469867987",
+          "quantidade": 0,
+          "quantidade_reservada": 0,
+          "resource_uri": "/api/v1/produto_estoque/246469867987",
+          "situacao_em_estoque": 0,
+          "situacao_sem_estoque": -1,
+          "quantidade_disponivel": 0
+        },
+        {
+          "gerenciado": true,
+          "id": 452208532564,
+          "produto": "/api/v1/produto/513177733581",
+          "quantidade": 0,
+          "quantidade_reservada": 0,
+          "resource_uri": "/api/v1/produto_estoque/513177733581",
+          "situacao_em_estoque": 0,
+          "situacao_sem_estoque": -1,
+          "quantidade_disponivel": 0
+        },
+        {
+          "gerenciado": true,
+          "id": 502146711977,
+          "produto": "/api/v1/produto/993850023846",
+          "quantidade": 0,
+          "quantidade_reservada": 0,
+          "resource_uri": "/api/v1/produto_estoque/993850023846",
+          "situacao_em_estoque": 0,
+          "situacao_sem_estoque": -1,
+          "quantidade_disponivel": 0
+        },
+        {
+          "gerenciado": true,
+          "id": 160771498030,
+          "produto": "/api/v1/produto/462897077365",
+          "quantidade": 0,
+          "quantidade_reservada": 0,
+          "resource_uri": "/api/v1/produto_estoque/462897077365",
+          "situacao_em_estoque": 0,
+          "situacao_sem_estoque": -1,
+          "quantidade_disponivel": 0
+        },
+        {
+          "gerenciado": true,
+          "id": 304191784951,
+          "produto": "/api/v1/produto/117961742015",
+          "quantidade": 0,
+          "quantidade_reservada": 0,
+          "resource_uri": "/api/v1/produto_estoque/117961742015",
+          "situacao_em_estoque": 0,
+          "situacao_sem_estoque": -1,
+          "quantidade_disponivel": 0
+        },
+        {
+          "gerenciado": true,
+          "id": 422121179061,
+          "produto": "/api/v1/produto/202398278279",
+          "quantidade": 0,
+          "quantidade_reservada": 0,
+          "resource_uri": "/api/v1/produto_estoque/202398278279",
+          "situacao_em_estoque": 0,
+          "situacao_sem_estoque": -1,
+          "quantidade_disponivel": 0
+        },
+        {
+          "gerenciado": true,
+          "id": 606767025844,
+          "produto": "/api/v1/produto/218442451872",
+          "quantidade": 0,
+          "quantidade_reservada": 0,
+          "resource_uri": "/api/v1/produto_estoque/218442451872",
+          "situacao_em_estoque": 0,
+          "situacao_sem_estoque": -1,
+          "quantidade_disponivel": 0
+        },
+        {
+          "gerenciado": true,
+          "id": 259168524272,
+          "produto": "/api/v1/produto/128495293991",
+          "quantidade": 0,
+          "quantidade_reservada": 0,
+          "resource_uri": "/api/v1/produto_estoque/128495293991",
+          "situacao_em_estoque": 0,
+          "situacao_sem_estoque": -1,
+          "quantidade_disponivel": 0
+        },
+        {
+          "gerenciado": true,
+          "id": 106876948581,
+          "produto": "/api/v1/produto/405613065933",
+          "quantidade": 0,
+          "quantidade_reservada": 0,
+          "resource_uri": "/api/v1/produto_estoque/405613065933",
+          "situacao_em_estoque": 0,
+          "situacao_sem_estoque": -1,
+          "quantidade_disponivel": 0
+        },
+        {
+          "gerenciado": true,
+          "id": 445098096958,
+          "produto": "/api/v1/produto/830302721772",
+          "quantidade": 0,
+          "quantidade_reservada": 0,
+          "resource_uri": "/api/v1/produto_estoque/830302721772",
+          "situacao_em_estoque": 0,
+          "situacao_sem_estoque": -1,
+          "quantidade_disponivel": 0
+        },
+        {
+          "gerenciado": false,
+          "id": 144649387840,
+          "produto": "/api/v1/produto/746578146480",
+          "quantidade": 0,
+          "quantidade_reservada": 0,
+          "resource_uri": "/api/v1/produto_estoque/746578146480",
+          "situacao_em_estoque": 0,
+          "situacao_sem_estoque": 0,
+          "quantidade_disponivel": 0
+        },
+        {
+          "gerenciado": false,
+          "id": 566567460724,
+          "produto": "/api/v1/produto/260703754266",
+          "quantidade": 0,
+          "quantidade_reservada": 0,
+          "resource_uri": "/api/v1/produto_estoque/260703754266",
+          "situacao_em_estoque": 0,
+          "situacao_sem_estoque": 0,
+          "quantidade_disponivel": 0
+        },
+        {
+          "gerenciado": true,
+          "id": 358953102306,
+          "produto": "/api/v1/produto/474008817085",
+          "quantidade": 1,
+          "quantidade_reservada": 0,
+          "resource_uri": "/api/v1/produto_estoque/474008817085",
+          "situacao_em_estoque": 0,
+          "situacao_sem_estoque": -1,
+          "quantidade_disponivel": 1
+        },
+        {
+          "gerenciado": true,
+          "id": 782768569713,
+          "produto": "/api/v1/produto/612492452064",
+          "quantidade": 1,
+          "quantidade_reservada": 0,
+          "resource_uri": "/api/v1/produto_estoque/612492452064",
+          "situacao_em_estoque": 0,
+          "situacao_sem_estoque": -1,
+          "quantidade_disponivel": 1
+        },
+        {
+          "gerenciado": true,
+          "id": 325187951869,
+          "produto": "/api/v1/produto/855891232566",
+          "quantidade": 0,
+          "quantidade_reservada": 0,
+          "resource_uri": "/api/v1/produto_estoque/855891232566",
+          "situacao_em_estoque": 0,
+          "situacao_sem_estoque": -1,
+          "quantidade_disponivel": 0
+        },
+        {
+          "gerenciado": true,
+          "id": 988816580947,
+          "produto": "/api/v1/produto/790099236162",
+          "quantidade": 6,
+          "quantidade_reservada": 0,
+          "resource_uri": "/api/v1/produto_estoque/790099236162",
+          "situacao_em_estoque": 0,
+          "situacao_sem_estoque": -1,
+          "quantidade_disponivel": 6
+        }
+      ]
+    }
+  }
+}

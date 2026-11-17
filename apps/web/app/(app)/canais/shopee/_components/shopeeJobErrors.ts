@@ -17,10 +17,10 @@
 import { parseIsoToMillis } from '@delfrance/core/datetime';
 
 import type { ErrosDoCliente } from '@/components/contaJobs/JobCardShell';
+import { formatarInstanteJob } from '@/lib/marketplace/contaJobs/cadencia';
 import type { JobErrorDescription } from '@/lib/marketplace/contaJobs/types';
 import { ShopeeClientHttpError, ShopeeClientNetworkError } from '@/lib/shopee/client';
 import { CODIGO_FALHA_SHOPEE, descreverFalhaShopee } from '@/lib/shopee/erros';
-import { formatarInstanteJob } from './cadenciaJobsShopee';
 
 /**
  * The Shopee client's own classes, handed to the shared `JobCardShell` with every

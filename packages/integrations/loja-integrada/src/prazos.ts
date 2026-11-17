@@ -8,6 +8,10 @@
  * one of these deadlines (`abrirPrazo` from `@delfrance/core/wire`), reads the
  * body inside it, and a call that outlives it throws `LiTimeoutError`.
  *
+ * The CDN reader (`cdn.ts`) is not a call of this transport and keeps its own
+ * scalar, `PRAZO_CDN_LI_MS`, beside it: a photo download goes to another host,
+ * with no credential, and is the one budget a caller may only shorten.
+ *
  * ## Why the budget is keyed on the operation CLASS, not the endpoint
  *
  * The question a budget answers is "what does a cut HERE leave behind?". Melhor

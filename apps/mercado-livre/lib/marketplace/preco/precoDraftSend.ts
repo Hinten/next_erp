@@ -49,24 +49,23 @@
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import { roundReais } from '@delfrance/core/money';
-import { type EnvioPrecoFilaItem, precisaConsultarModeracao } from '@delfrance/schemas';
+import {
+  ESTADO_PUBLICACAO_ML,
+  type EnvioPrecoFilaItem,
+  precisaConsultarModeracao,
+} from '@delfrance/schemas';
 import {
   type MlItem,
   MercadoLivreHttpError,
   MercadoLivreReauthRequiredError,
   estadoFromMlStatus,
+  UPTIN_PENDING_TAG,
 } from '@delfrance/integrations-mercado-livre';
 import { produtoMercadoLivreLinkCollection } from '@delfrance/data/admin/collections';
 
 import { podeEnviarPreco } from './precoPlan';
 import { falhaPatch } from '../core/publishFalhas';
-
-/** ML `tags` prefix marking an in-progress User-Products migration — both known
- * tags (`variations_migration_source` / `variations_migration_uptin`, which
- * `itemsStatusSync.ts` matches individually) share it. A mid-migration listing
- * must not be written to; the migration handoff (#441) re-links it and the
- * NEXT run covers the successor items. */
-const MIGRATION_TAG_PREFIX = 'variations_migration_';
+import { updateListingUnlessMigrating } from '../anuncios/updateListingDuringUptin';
 
 /** The minimal ML API surface a price send needs (injectable for tests). */
 export interface PriceSyncApi {
@@ -202,14 +201,21 @@ export async function enviarPrecoDraft(
     return { kind: 'pulado', code: 'PRECO_ANTIGO_IGUAL', precoAtual: current };
   }
 
-  // ---- (3) Fresh status gate + the mid-migration tag skip (see the
-  // MIGRATION_TAG_PREFIX doc — mirrors itemsStatusSync's tag check).
+  // ---- (3) Fresh status gate + the pending migration tag.
   const gate = podeEnviarPreco(item.status, item.sub_status);
   if (!gate.ok) {
     return { kind: 'pulado', code: gate.code, precoAtual: current };
   }
-  if ((item.tags ?? []).some((t) => t.startsWith(MIGRATION_TAG_PREFIX))) {
+  if (item.tags?.includes(UPTIN_PENDING_TAG)) {
     return { kind: 'pulado', code: 'AGUARDANDO_MIGRACAO', precoAtual: current };
+  }
+  if (freshVariations.length > 0) {
+    const link = await produtoMercadoLivreLinkCollection
+      .docRef(db, { produtoId: draft.produtoId }, draft.linkDocId)
+      .get();
+    if (link.data()?.estado === ESTADO_PUBLICACAO_ML.aguardandoMigracao) {
+      return { kind: 'pulado', code: 'AGUARDANDO_MIGRACAO', precoAtual: current };
+    }
   }
 
   // ---- (4) Decrease guard: never lower a listing's price unless the run
@@ -258,10 +264,13 @@ export async function enviarPrecoDraft(
         // estoqueSend/publish do, record the failure, move on. `mergeIfExists`:
         // the draft's target was planned earlier in the run, so the link may
         // already be gone — never upsert a ghost.
-        await produtoMercadoLivreLinkCollection.mergeIfExists(
+        await updateListingUnlessMigrating(
           db,
-          { produtoId: draft.produtoId },
-          draft.linkDocId,
+          {
+            produtoId: draft.produtoId,
+            linkDocId: draft.linkDocId,
+            ...(draft.kind === 'item' ? { itemId: draft.itemId } : {}),
+          },
           { estado: 'E', ...falhaPatch(err, err.message, 'item'), ultimaModificacao: nowMs },
         );
         return {
@@ -337,10 +346,13 @@ export async function enviarPrecoDraft(
     if (!precisaConsultarModeracao(resp.status, resp.sub_status)) writeback.moderacoes = [];
   }
   // `mergeIfExists` — same reason as the failure stamp above.
-  await produtoMercadoLivreLinkCollection.mergeIfExists(
+  await updateListingUnlessMigrating(
     db,
-    { produtoId: draft.produtoId },
-    draft.linkDocId,
+    {
+      produtoId: draft.produtoId,
+      linkDocId: draft.linkDocId,
+      ...(ehMembro ? {} : { itemId: draft.itemId }),
+    },
     writeback,
   );
 

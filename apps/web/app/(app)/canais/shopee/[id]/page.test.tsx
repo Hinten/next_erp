@@ -925,3 +925,121 @@ describe('«Salvar mesmo assim» over a row IDENTICAL to the staged registration
     expect(saidaBloqueada()).toBe(false);
   });
 });
+
+describe('«Salvar mesmo assim» over a staged removal whose document another tab already deleted: it is done, and leaves the stage (#2084 review, the removal mirror of F2)', () => {
+  /** Remover on `brandId`, then another tab deletes `docId` — not yet seen here. */
+  async function removidaAquiEApagadaEmOutraAba(brandId: number, docId: string) {
+    await clicar('Remover', linhaDaMarca(brandId));
+    escritaConcorrente(marcaPath(docId), null, { listener: false });
+    await salvar();
+    expect(conflito()).toBeTruthy();
+    expect(commits()).toBe(0);
+  }
+
+  it('brand only: nothing to write, and the form comes back pristine — never «Nenhuma alteração para salvar» over a staged removal', async () => {
+    await renderPage();
+    await abrirAba('Marcas');
+    await removidaAquiEApagadaEmOutraAba(1001, ID_NIKE);
+    await clicar('Salvar mesmo assim');
+    expect(conflito()).toBeNull();
+    // The other tab's delete IS ours: there is nothing left to write.
+    expect(commits()).toBe(0);
+    expect(h.docs.has(marcaPath(ID_NIKE))).toBe(false);
+    expect(within(linhaDaMarca(1001)).queryByText('Será removida')).toBeNull();
+    expect(saidaBloqueada()).toBe(false);
+    // The listener catches up: the brand is gone, and nothing is staged.
+    ecoDoListener();
+    await act(async () => rerenderPage());
+    expect(screen.queryByTestId('shopee-marca-1001')).toBeNull();
+    expect(screen.queryByTestId('shopee-marca-removida-fora-1001')).toBeNull();
+    expect(saidaBloqueada()).toBe(false);
+  });
+
+  it('with a conta field, «Salvar e continuar» commits the conta ALONE and leaves no staged removal behind in the reset form', async () => {
+    await renderPage();
+    await act(async () => {
+      fireEvent.change(screen.getByLabelText('Nome'), { target: { value: 'Loja renomeada' } });
+    });
+    await abrirAba('Marcas');
+    await removidaAquiEApagadaEmOutraAba(1001, ID_NIKE);
+    await clicar('Salvar mesmo assim');
+    expect(conflito()).toBeNull();
+    expect(commits()).toBe(1);
+    expect(escritas).toEqual([`update ${CONTA_PATH}`]);
+    expect(h.docs.get(CONTA_PATH)?.nome).toBe('Loja renomeada');
+    expect(h.docs.has(marcaPath(ID_NIKE))).toBe(false);
+    expect(within(linhaDaMarca(1001)).queryByText('Será removida')).toBeNull();
+    expect(saidaBloqueada()).toBe(false);
+    expect(h.toasts.at(-1)).toBe('Salvo.');
+    // The reset form holds no removal: the next save has nothing to write.
+    await salvar();
+    expect(commits()).toBe(1);
+    expect(h.toasts.at(-1)).toBe('Nenhuma alteração para salvar');
+  });
+
+  it('the listener SHOWS the delete first («não está mais na lista»): that line goes with «Salvar mesmo assim», and the form is pristine', async () => {
+    await renderPage();
+    await abrirAba('Marcas');
+    await clicar('Remover', linhaDaMarca(1001));
+    escritaConcorrente(marcaPath(ID_NIKE), null);
+    await act(async () => rerenderPage());
+    expect(screen.getByTestId('shopee-marca-removida-fora-1001')).toBeTruthy();
+    // Still the conflict: the staged removal keeps its seed until accepted.
+    await salvar();
+    expect(conflito()).toBeTruthy();
+    await clicar('Salvar mesmo assim');
+    expect(conflito()).toBeNull();
+    expect(commits()).toBe(0);
+    expect(screen.queryByTestId('shopee-marca-removida-fora-1001')).toBeNull();
+    expect(saidaBloqueada()).toBe(false);
+  });
+
+  it('⭐ NEAR-MISS: a brand of TWO docs with only ONE deleted is not done — «Salvar mesmo assim» deletes the other, and the brand goes', async () => {
+    await renderPage();
+    await abrirAba('Marcas');
+    await removidaAquiEApagadaEmOutraAba(1002, ID_ADIDAS_1);
+    await clicar('Salvar mesmo assim');
+    expect(conflito()).toBeNull();
+    expect(commits()).toBe(1);
+    expect(escritas).toEqual([`delete ${marcaPath(ID_ADIDAS_2)}`]);
+    expect(h.docs.has(marcaPath(ID_ADIDAS_1))).toBe(false);
+    expect(h.docs.has(marcaPath(ID_ADIDAS_2))).toBe(false);
+    expect(h.docs.get(marcaPath(ID_NIKE))).toEqual(legado(1001, 'Nike'));
+    expect(saidaBloqueada()).toBe(false);
+  });
+
+  it('NEAR-MISS: the doc CHANGED meanwhile, not deleted — «Salvar mesmo assim» WRITES the delete', async () => {
+    await renderPage();
+    await abrirAba('Marcas');
+    await clicar('Remover', linhaDaMarca(1001));
+    escritaConcorrente(marcaPath(ID_NIKE), legado(1001, 'NIKE'), { listener: false });
+    await salvar();
+    expect(conflito()).toBeTruthy();
+    expect(commits()).toBe(0);
+    await clicar('Salvar mesmo assim');
+    expect(conflito()).toBeNull();
+    expect(commits()).toBe(1);
+    expect(escritas).toEqual([`delete ${marcaPath(ID_NIKE)}`]);
+    expect(h.docs.has(marcaPath(ID_NIKE))).toBe(false);
+    expect(saidaBloqueada()).toBe(false);
+  });
+
+  it('NEAR-MISS: a registration staged beside the done removal is WRITTEN by the same save', async () => {
+    await renderPage();
+    await abrirAba('Marcas');
+    await adicionarPuma();
+    await removidaAquiEApagadaEmOutraAba(1001, ID_NIKE);
+    await clicar('Salvar mesmo assim');
+    expect(conflito()).toBeNull();
+    expect(commits()).toBe(1);
+    expect(escritas).toEqual([`set ${marcaPath('3003')}`]);
+    expect(h.docs.get(marcaPath('3003'))).toEqual({
+      brand_id: 3003,
+      original_brand_name: 'Puma',
+      display_brand_name: null,
+    });
+    expect(screen.queryByTestId('shopee-marca-nova-3003')).toBeNull();
+    expect(within(linhaDaMarca(1001)).queryByText('Será removida')).toBeNull();
+    expect(saidaBloqueada()).toBe(false);
+  });
+});

@@ -1,0 +1,28 @@
+{
+  "versao": 1,
+  "perfil": "fixture",
+  "credencial": "personal-token",
+  "capturadoEm": "2026-11-16",
+  "requisicao": {
+    "metodo": "GET",
+    "caminho": "/v1/produto_estoque/478271859405",
+    "query": []
+  },
+  "resposta": {
+    "status": 200,
+    "politica": "catalogo",
+    "forma": "json",
+    "bytes": 238,
+    "corpo": {
+      "gerenciado": true,
+      "id": 845684350303,
+      "produto": "/api/v1/produto/478271859405",
+      "quantidade": 3,
+      "quantidade_reservada": 0,
+      "resource_uri": "/api/v1/produto_estoque/478271859405",
+      "situacao_em_estoque": 0,
+      "situacao_sem_estoque": -1,
+      "quantidade_disponivel": 3
+    }
+  }
+}

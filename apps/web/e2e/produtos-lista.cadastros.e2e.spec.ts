@@ -72,6 +72,47 @@ test.describe.serial('Produtos lista e2e — parents only (#119)', () => {
     await expect(page.getByRole('button', { name: 'Configurar colunas' })).toHaveCount(0);
   });
 
+  test('keeps the last column reachable beside the docked actions', async ({ page }) => {
+    await page.setViewportSize({ width: 1024, height: 720 });
+    await page.goto('/produtos');
+
+    const scrollArea = page.getByRole('region', { name: 'Tabela de registros' });
+    const panel = page.getByRole('complementary', { name: 'Ações' });
+    const collapse = panel.getByRole('button', { name: 'Recolher ações' });
+    const expand = panel.getByRole('button', { name: 'Expandir ações' });
+    const sort = scrollArea
+      .getByRole('columnheader', { name: /Última modificação/ })
+      .getByTitle('Ordenar por esta coluna', { exact: true });
+
+    await expect(collapse).toBeVisible();
+    await expect(sort).toBeVisible({ timeout: 20_000 });
+    await expect
+      .poll(() => scrollArea.evaluate((el) => el.scrollWidth - el.clientWidth))
+      .toBeGreaterThan(0);
+    const expandedWidth = await scrollArea.evaluate((el) => el.clientWidth);
+    const dockedLeft = await panel.evaluate((el) => el.getBoundingClientRect().left);
+
+    await scrollArea.focus();
+    await expect(scrollArea).toBeFocused();
+    await sort.scrollIntoViewIfNeeded();
+    expect(await scrollArea.evaluate((el) => el.scrollLeft)).toBeGreaterThan(0);
+    expect(await panel.evaluate((el) => el.getBoundingClientRect().left)).toBe(dockedLeft);
+    await sort.click();
+    await expect(page).toHaveURL((url) => url.searchParams.get('sort') === 'ultimaModificacao:asc');
+
+    await collapse.click();
+    await expect(expand).toBeVisible();
+    await expect
+      .poll(() => scrollArea.evaluate((el) => el.clientWidth))
+      .toBeGreaterThan(expandedWidth);
+    await expect(sort).toBeVisible();
+    await sort.click({ trial: true });
+
+    await expand.click();
+    await expect(collapse).toBeVisible();
+    await sort.click({ trial: true });
+  });
+
   test('keeps the search after opening a produto and cancelling', async ({ page }) => {
     await page.goto('/produtos');
     await searchTableView(page, prefix);

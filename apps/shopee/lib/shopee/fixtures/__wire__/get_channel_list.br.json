@@ -1,0 +1,216 @@
+{
+  "error": "",
+  "message": "",
+  "response": {
+    "logistics_channel_list": [
+      {
+        "logistics_channel_id": 90022,
+        "logistics_channel_name": "Entrega Direta",
+        "cod_enabled": false,
+        "enabled": false,
+        "fee_type": "SIZE_INPUT",
+        "size_list": [],
+        "weight_limit": {
+          "item_max_weight": 30,
+          "item_min_weight": 0
+        },
+        "item_max_dimension": {
+          "height": 120,
+          "width": 120,
+          "length": 120,
+          "unit": "cm",
+          "dimension_sum": 200
+        },
+        "item_min_dimension": {
+          "height": 0,
+          "width": 0,
+          "length": 0,
+          "unit": "UNKNOWN",
+          "dimension_sum": 0
+        },
+        "force_enable": false,
+        "mask_channel_id": 0,
+        "logistics_description": "",
+        "volume_limit": {
+          "item_max_volume": 0,
+          "item_min_volume": 0
+        },
+        "logistics_capability": {
+          "seller_logistics": false,
+          "direct_delivery": true,
+          "spx_instant": false
+        },
+        "seller_logistic_has_configuration": null,
+        "support_cross_border": false,
+        "block_seller_cover_shipping_fee": false,
+        "support_pre_order": false,
+        "support_direct": false,
+        "preprint": false,
+        "service_type_identifier": null,
+        "support_pause": false,
+        "channel_relation_rules": {
+          "related_enabled_channels": [],
+          "related_disabled_channels": [],
+          "related_dependent_block_channels": []
+        },
+        "compulsory_channel": false
+      },
+      {
+        "logistics_channel_id": 90024,
+        "logistics_channel_name": "Retirada pelo Comprador",
+        "cod_enabled": false,
+        "enabled": true,
+        "fee_type": "SIZE_INPUT",
+        "size_list": [],
+        "weight_limit": {
+          "item_max_weight": 30,
+          "item_min_weight": 0.001
+        },
+        "item_max_dimension": {
+          "height": 120,
+          "width": 120,
+          "length": 120,
+          "unit": "cm",
+          "dimension_sum": 200
+        },
+        "item_min_dimension": {
+          "height": 0,
+          "width": 0,
+          "length": 0,
+          "unit": "UNKNOWN",
+          "dimension_sum": 0
+        },
+        "force_enable": false,
+        "mask_channel_id": 0,
+        "logistics_description": "",
+        "volume_limit": {
+          "item_max_volume": 0,
+          "item_min_volume": 0
+        },
+        "logistics_capability": {
+          "seller_logistics": false,
+          "direct_delivery": false,
+          "spx_instant": false
+        },
+        "seller_logistic_has_configuration": null,
+        "support_cross_border": false,
+        "block_seller_cover_shipping_fee": false,
+        "support_pre_order": true,
+        "support_direct": false,
+        "preprint": false,
+        "service_type_identifier": null,
+        "support_pause": false,
+        "channel_relation_rules": {
+          "related_enabled_channels": [],
+          "related_disabled_channels": [],
+          "related_dependent_block_channels": []
+        },
+        "compulsory_channel": false
+      },
+      {
+        "logistics_channel_id": 91006,
+        "logistics_channel_name": "Expresso Aéreo",
+        "cod_enabled": false,
+        "enabled": true,
+        "fee_type": "SIZE_INPUT",
+        "size_list": [],
+        "weight_limit": {
+          "item_max_weight": 30,
+          "item_min_weight": 0.001
+        },
+        "item_max_dimension": {
+          "height": 120,
+          "width": 120,
+          "length": 138,
+          "unit": "cm",
+          "dimension_sum": 270
+        },
+        "item_min_dimension": {
+          "height": 0,
+          "width": 0,
+          "length": 0,
+          "unit": "UNKNOWN",
+          "dimension_sum": 0
+        },
+        "force_enable": false,
+        "mask_channel_id": 0,
+        "logistics_description": "",
+        "volume_limit": {
+          "item_max_volume": 0,
+          "item_min_volume": 0
+        },
+        "logistics_capability": {
+          "seller_logistics": false,
+          "direct_delivery": false,
+          "spx_instant": false
+        },
+        "seller_logistic_has_configuration": null,
+        "support_cross_border": false,
+        "block_seller_cover_shipping_fee": false,
+        "support_pre_order": true,
+        "support_direct": false,
+        "preprint": false,
+        "service_type_identifier": null,
+        "support_pause": false,
+        "channel_relation_rules": {
+          "related_enabled_channels": [],
+          "related_disabled_channels": [],
+          "related_dependent_block_channels": []
+        },
+        "compulsory_channel": false
+      },
+      {
+        "logistics_channel_id": 91003,
+        "logistics_channel_name": "Shopee Xpress",
+        "cod_enabled": false,
+        "enabled": true,
+        "fee_type": "SIZE_INPUT",
+        "size_list": [],
+        "weight_limit": {
+          "item_max_weight": 30,
+          "item_min_weight": 0.001
+        },
+        "item_max_dimension": {
+          "height": 120,
+          "width": 120,
+          "length": 120,
+          "unit": "cm",
+          "dimension_sum": 200
+        },
+        "item_min_dimension": {
+          "height": 0,
+          "width": 0,
+          "length": 0,
+          "unit": "UNKNOWN",
+          "dimension_sum": 0
+        },
+        "force_enable": false,
+        "mask_channel_id": 0,
+        "logistics_description": "Habilite esta opção para oferecer fretes com a Shopee Xpress. Entenda como você pode enviar seus pedidos usando este canal de envio: <br><br>1 - Você poderá optar pela coleta (se disponível) ou pela entrega das suas vendas em uma agência parceira da Shopee. Caso opte pela coleta, certifique que o endereço esteja completo e válido. <br><br>2 - As informações inseridas para seus produtos serão usadas para estimar a taxa de envio dos mesmos. <br><br>3 - Peso e tamanho máximos: 30kg, calculado pelo peso bruto ou volumétrico, e 60 cm x 80 cm x 120 cm para altura, largura e comprimento, respectivamente (além disso, a soma das dimensões não pode ser maior que 200 cm).",
+        "volume_limit": {
+          "item_max_volume": 0,
+          "item_min_volume": 0
+        },
+        "logistics_capability": {
+          "seller_logistics": false,
+          "direct_delivery": false,
+          "spx_instant": false
+        },
+        "seller_logistic_has_configuration": null,
+        "support_cross_border": false,
+        "block_seller_cover_shipping_fee": false,
+        "support_pre_order": true,
+        "support_direct": false,
+        "preprint": false,
+        "service_type_identifier": null,
+        "support_pause": false,
+        "channel_relation_rules": {
+          "related_enabled_channels": [],
+          "related_disabled_channels": [],
+          "related_dependent_block_channels": []
+        },
+        "compulsory_channel": false
+      }
+    ]
+  }
+}

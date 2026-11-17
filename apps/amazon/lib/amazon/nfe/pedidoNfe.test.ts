@@ -11,17 +11,21 @@ import { ESTADO_NFE, MARKETPLACE_PEDIDO_TIPO } from '@delfrance/schemas';
 import { describe, expect, it } from 'vitest';
 
 import { makePedidoIdAmazon } from '../pedidos/orderIds';
-import { FULFILLED_BY_AMAZON } from '../pedidos/estadoPedidoAmazon';
+import { ESTADOS_TERMINAIS_AMAZON, FULFILLED_BY_AMAZON } from '../pedidos/estadoPedidoAmazon';
 import {
   ATENDIDO_PELA_AMAZON,
   PROGRAMA_DBA_AMAZON,
   SEM_NFE_APROVADA_AMAZON,
+  ESTADOS_VENDA_CANCELADA_AMAZON,
   avaliarPedidoParaNfeAmazon,
+  avaliarPedidoParaTarefaNfeAmazon,
   cancelamentoDeNfeAprovadaAmazon,
   escolherNfeParaEnvioAmazon,
   irmaosDaNfeAmazon,
+  notaDeVendaCanceladaAmazon,
   pisoDoPedidoAmazon,
   provaDeIdentidadeAmazon,
+  vendaCanceladaAmazon,
 } from './pedidoNfe';
 
 const AQUI = fileURLToPath(new URL('.', import.meta.url));
@@ -172,6 +176,40 @@ describe('avaliarPedidoParaNfeAmazon', () => {
     ).toEqual({ ok: false, motivo: 'emissao-bloqueada' });
   });
 
+  it('★ (14-c) the TASK’s verdict is the proof and the block, NEVER the stored pre-filter (DBA is decided live)', () => {
+    const naoDba = pedido({ marketplace: { tipo: 'amazon', fulfilledBy: 'AMAZON' } });
+    // The trigger's verdict drops it; the task's lets the live gate decide.
+    expect(avaliarPedidoParaNfeAmazon(PEDIDO_ID, naoDba)).toEqual({ ok: false, motivo: 'nao-dba' });
+    expect(avaliarPedidoParaTarefaNfeAmazon(PEDIDO_ID, naoDba)).toEqual({
+      ok: true,
+      contaId: CONTA,
+      orderId: ORDER,
+    });
+    expect(avaliarPedidoParaTarefaNfeAmazon(PEDIDO_ID, null)).toEqual({
+      ok: false,
+      motivo: 'nao-amazon',
+    });
+    expect(
+      avaliarPedidoParaTarefaNfeAmazon(PEDIDO_ID, pedido({ bloquearEmissaoNFe: true })),
+    ).toEqual({ ok: false, motivo: 'emissao-bloqueada' });
+  });
+
+  it('★ (14-c) the cancelled-sale set is EQUAL to the importer’s terminal pair; vendaCanceladaAmazon reads it exactly', () => {
+    expect([...ESTADOS_VENDA_CANCELADA_AMAZON].sort()).toEqual(
+      [...ESTADOS_TERMINAIS_AMAZON].sort(),
+    );
+    expect([...ESTADOS_VENDA_CANCELADA_AMAZON].sort()).toEqual([
+      'cancelado',
+      'estornadoIntegralmente',
+    ]);
+    expect(vendaCanceladaAmazon(pedido({ estado: 'cancelado' }))).toBe(true);
+    expect(vendaCanceladaAmazon(pedido({ estado: 'estornadoIntegralmente' }))).toBe(true);
+    // NEAR-MISSES: a live estado, another spelling, an absent pedido.
+    expect(vendaCanceladaAmazon(pedido({ estado: 'pago' }))).toBe(false);
+    expect(vendaCanceladaAmazon(pedido({ estado: 'Cancelado' }))).toBe(false);
+    expect(vendaCanceladaAmazon(null)).toBe(false);
+  });
+
   it('the two stored values this module spells equal the importer’s constants (kept out of pedidos/ on purpose)', () => {
     expect(ATENDIDO_PELA_AMAZON).toBe(FULFILLED_BY_AMAZON.amazon);
     expect(PROGRAMA_DBA_AMAZON).toBe('DELIVERY_BY_AMAZON');
@@ -320,6 +358,45 @@ describe('irmaosDaNfeAmazon', () => {
         { id: 'v', raw: nfe({ xml_nfe_proc: proc('1', '4') }) },
       ]),
     ).toEqual({ outraElegivel: false, irmaCancelada: false });
+  });
+});
+
+describe('notaDeVendaCanceladaAmazon — the sibling reader’s cancelled-sale test, exported (step 15)', () => {
+  it('★ a cancelled sale note ⇒ true — its proc gone or illegible included', () => {
+    expect(notaDeVendaCanceladaAmazon(nfe({ estado: ESTADO_NFE.cancelada }))).toBe(true);
+    expect(
+      notaDeVendaCanceladaAmazon(nfe({ estado: ESTADO_NFE.cancelada, xml_nfe_proc: null })),
+    ).toBe(true);
+    expect(
+      notaDeVendaCanceladaAmazon(
+        nfe({ estado: ESTADO_NFE.cancelada, xml_nfe_proc: proc('', '1') }),
+      ),
+    ).toBe(true);
+  });
+
+  it('NEAR-MISS: a cancelled devolução (a legible non-sale proc), an aprovada note, an error note ⇒ false', () => {
+    expect(
+      notaDeVendaCanceladaAmazon(
+        nfe({ estado: ESTADO_NFE.cancelada, xml_nfe_proc: proc('0', '4') }),
+      ),
+    ).toBe(false);
+    expect(notaDeVendaCanceladaAmazon(nfe())).toBe(false);
+    expect(notaDeVendaCanceladaAmazon(nfe({ estado: ESTADO_NFE.error }))).toBe(false);
+  });
+
+  it('agrees with irmaosDaNfeAmazon on every sibling (one rule, the reader calls it)', () => {
+    const casos = [
+      nfe({ estado: ESTADO_NFE.cancelada }),
+      nfe({ estado: ESTADO_NFE.cancelada, xml_nfe_proc: null }),
+      nfe({ estado: ESTADO_NFE.cancelada, xml_nfe_proc: proc('0', '4') }),
+      nfe({ estado: ESTADO_NFE.cancelada, xml_nfe_proc: proc('1', '1', '2') }),
+      nfe(),
+    ];
+    for (const raw of casos) {
+      expect(irmaosDaNfeAmazon('nossa', [{ id: 'irma', raw }]).irmaCancelada).toBe(
+        notaDeVendaCanceladaAmazon(raw),
+      );
+    }
   });
 });
 

@@ -183,8 +183,8 @@ not "deduplicate" them without changing how required checks are published.
    edit that loses raises a conflict, never a silent drop. Re-checking a
    predicate against a binding read *outside* the transaction is not a guard:
    re-derive it from the `tx.get` result. ⚠️ The stamps are **not
-   interchangeable** — `ultimaModificacao` is µs on pedido/pagamento/produto but
-   **ms** on the ML links, and `historicoFtIni.data` is ms while
+   interchangeable** — `ultimaModificacao` is µs on pedido/pagamento but
+   **ms** on produto and the ML links, and `historicoFtIni.data` is ms while
    `historicoEstadoPedido.data` is µs, so a cross-unit comparison is a guard that
    never fires. See ADR 0011. ⚠️ There is deliberately **no lint rule** for this —
    the property is semantic and every syntactic proxy was measured and rejected
@@ -270,7 +270,7 @@ be imported only behind `./admin`; enforced by
 `packages/config-eslint/rules/ai-root-entry-browser-safe.test.js`, because
 breaking it fails nothing) · `integrations/<channel>` — **eight packages, all
 implemented**: nfe, mercado-livre, mercado-pago, freight-br, whatsapp-cloud-api,
-shopee, loja-integrada (a GET-only read client and a separate write client), amazon-sp-api (LWA + GET client + ONE write client, Delivery only). ⚠️ The five throw-only marketplace scaffolds (shopee, magalu,
+shopee, loja-integrada (a GET-only read client and a separate write client), amazon-sp-api (LWA + GET client + ONE write client — Delivery, Tokens, Easy Ship, Listings, Feeds — and pre-signed S3 transfers). ⚠️ The five throw-only marketplace scaffolds (shopee, magalu,
 amazon-sp-api, facebook, loja-integrada) were **deleted** in #815: they existed
 only to typecheck against `MarketplaceChannel`, and had no importer anywhere.
 **Two of the five stay deleted**; `shopee`, `loja-integrada` and `amazon-sp-api` were **re-created** as

@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
 import {
@@ -51,6 +51,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   CATEGORIA_DOC_DO_KIT,
+  CORPOS_BR_1911,
   CORPOS_KIT_ESCRITA,
   CORPOS_KIT_LEITURA,
   FIXTURE_ADD_KIT_ITEM_SG,
@@ -172,14 +173,28 @@ describe('o inventário do corpus', () => {
     // (2026-09-10), e este teste, os loaders e a tabela do README mudaram no
     // MESMO commit — que é a revisão que uma fixture nova precisa ter. O passo
     // 15b fez o mesmo com os quatro corpos de `search_package_list`, o 17 com
-    // os seis das devoluções, o 18 com os quatro das tabelas de medidas e o 19
-    // com os vinte e sete dos kits nativos.
+    // os seis das devoluções, o 18 com os quatro das tabelas de medidas, o 19
+    // com os vinte e sete dos kits nativos e o #1911 com as vinte e uma
+    // capturas de PRODUÇÃO BR.
     // ⚠️ `get_size_chart_detail.doc-id-inexistente` ordena ANTES de
     // `get_size_chart_detail.doc`: `-` (0x2D) < `.` (0x2E).
-    expect(listarFixtures().filter((f) => !CORPOS_KIT.includes(f as never))).toEqual([
-      ...CORPOS_ANTES_DO_PASSO_19,
-    ]);
-    expect(listarFixtures()).toEqual([...CORPOS_ANTES_DO_PASSO_19, ...CORPOS_KIT].sort());
+    expect(
+      listarFixtures().filter(
+        (f) => !CORPOS_KIT.includes(f as never) && !CORPOS_BR_1911.includes(f as never),
+      ),
+    ).toEqual([...CORPOS_ANTES_DO_PASSO_19]);
+    expect(listarFixtures()).toEqual(
+      [...CORPOS_ANTES_DO_PASSO_19, ...CORPOS_KIT, ...CORPOS_BR_1911].sort(),
+    );
+  });
+
+  it('a lista BR (#1911) está ORDENADA, tem vinte e um corpos e não cruza as do kit', () => {
+    // Mesmo motivo do teste abaixo: a constante diz "sorted" no docblock, e o
+    // inventário acima ordena antes de comparar.
+    expect([...CORPOS_BR_1911]).toEqual([...CORPOS_BR_1911].sort());
+    expect(CORPOS_BR_1911).toHaveLength(21);
+    expect(CORPOS_BR_1911.filter((f) => CORPOS_KIT_LEITURA.includes(f as never))).toEqual([]);
+    expect(CORPOS_BR_1911.filter((f) => CORPOS_KIT_ESCRITA.includes(f as never))).toEqual([]);
   });
 
   it('as listas do kit estão ORDENADAS e não se cruzam — a de leitura e a de escrita', () => {
@@ -206,14 +221,62 @@ describe('o inventário do corpus', () => {
     for (const file of CORPOS_DEVOLUCAO) expect(readme, file).toContain(`\`${file}\``);
     for (const file of CORPOS_TABELA_DE_MEDIDAS) expect(readme, file).toContain(`\`${file}\``);
     for (const file of CORPOS_KIT) expect(readme, file).toContain(`\`${file}\``);
+    for (const file of CORPOS_BR_1911) expect(readme, file).toContain(`\`${file}\``);
     expect(readme).toContain('unverified for BR');
     // A contagem da prosa anda com o inventário: um corpo novo sem a frase
     // corrigida deixaria o README mentindo sobre o próprio diretório.
-    expect(listarFixtures()).toHaveLength(46);
-    expect(readme).toContain('Forty-six bodies today');
+    expect(listarFixtures()).toHaveLength(67);
+    expect(readme).toContain('Sixty-seven bodies today');
     // ⚠️ E a âncora do sentido inverso: o slot vazio ACABOU, então a frase que o
     // anunciava não pode sobreviver ao corpo que o preencheu.
     expect(readme).not.toContain('pending from Lucas');
+  });
+
+  it('nada além dos corpos e do README mora em __wire__ — um .txt, um .md ou um dotfile reprova', () => {
+    // `listarFixtures` só vê `*.json`, e as duas camadas de PII leem o que ele
+    // lista: um arquivo ao lado (as notas de uma captura, um `.meta` sem `.json`)
+    // entraria num diretório PÚBLICO sem que nada o lesse. `.sort()` porque a
+    // ordem do `readdir` depende do sistema de arquivos.
+    expect(
+      readdirSync(WIRE_DIR)
+        .filter((f) => f !== 'README.md')
+        .sort(),
+    ).toEqual(listarFixtures());
+  });
+
+  it('#1911: nenhum título de LINHA DE PEDIDO do corpus é `REDACTED` — a regra de título tem QUATRO segmentos', () => {
+    // O quase-igual da regra de título, sobre o CORPUS: `['item_list', '*', 'item_name']`
+    // (três segmentos) casaria a linha do pedido, e um corpo de pedido regravado
+    // com ela passaria no ponto fixo — `REDACTED` é mantido onde nada redige.
+    const ehObj = (v: unknown): v is Record<string, unknown> =>
+      typeof v === 'object' && v !== null && !Array.isArray(v);
+    const titulos: unknown[] = [];
+    for (const file of listarFixtures()) {
+      const corpo: unknown = lerFixture(file);
+      const response = ehObj(corpo) ? corpo.response : undefined;
+      const pedidos = ehObj(response) ? response.order_list : undefined;
+      for (const pedido of Array.isArray(pedidos) ? pedidos : []) {
+        const linhas = ehObj(pedido) ? pedido.item_list : undefined;
+        for (const linha of Array.isArray(linhas) ? linhas : []) {
+          if (ehObj(linha) && 'item_name' in linha) titulos.push(linha.item_name);
+        }
+      }
+    }
+    // Âncora anti-vacuidade: o corpus TEM linhas de pedido com título.
+    expect(titulos.filter((t) => typeof t === 'string' && t.trim() !== '').length).toBeGreaterThan(
+      0,
+    );
+    expect(titulos.filter((t) => t === 'REDACTED').length).toBe(0);
+  });
+
+  it('README: a linha de cada `get_item_base_info.br-*` guarda o TAMANHO da descrição redigida (D-3)', () => {
+    const readme = readFileSync(join(WIRE_DIR, 'README.md'), 'utf8').split('\n');
+    const itens = CORPOS_BR_1911.filter((f) => f.startsWith('get_item_base_info.'));
+    expect(itens).toHaveLength(3);
+    for (const file of itens) {
+      const linha = readme.find((l) => l.startsWith(`| \`${file}\``)) ?? '';
+      expect(/description \d+ characters \(`REDACTED` here\)/.test(linha), file).toBe(true);
+    }
   });
 });
 
@@ -1377,11 +1440,11 @@ describe('os kits nativos — ids por PAPEL, nunca o `1000001` achatado das sond
   });
 
   it.each(CORPOS_KIT)(
-    '%s: nenhuma URL real e nenhum id de imagem da sonda — só o marcador e a imagem da doc',
+    '%s: nenhuma URL real e nenhum id de imagem da sonda — só o placeholder do redator e a imagem da doc',
     (file) => {
       const strings = todasAsStrings(lerFixture(file));
       const urls = strings.filter((s) => /^https?:\/\//.test(s));
-      expect(urls.filter((u) => u !== 'https://example.invalid/file/redacted')).toEqual([]);
+      expect(urls.filter((u) => u !== 'https://redacted.invalid/imagem')).toEqual([]);
       const imagens = strings.filter((s) => /^[a-z]{2}-\d+-/.test(s));
       expect(imagens.filter((i) => i !== IMAGEM_DOC_DO_KIT)).toEqual([]);
       expect('request_id' in (lerFixture(file) as Record<string, unknown>)).toBe(false);

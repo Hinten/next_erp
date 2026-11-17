@@ -29,6 +29,7 @@ export {
   TTL_POLICIES,
   RETENCAO_ENVIO_PRECO_ML_DIAS,
   RETENCAO_ENVIO_PRECO_SHOPEE_DIAS,
+  RETENCAO_FEED_AMAZON_DIAS,
   RETENCAO_HISTORICO_PEDIDO_ANOS,
   RETENCAO_HISTORICO_PRODUTO_DIAS,
   RETENCAO_VINCULO_WHATSAPP_DIAS,
@@ -539,27 +540,43 @@ export {
 
 // The Amazon conta wire contract — the reauthorization arithmetic, the seller-id
 // and routing predicates, the error codes, the status and start answers and the
-// closed OAuth-return reasons that `apps/amazon` and `apps/web` must agree on.
+// closed OAuth-return reasons that `apps/amazon` and `apps/web` must agree on —
+// and (step 14) the NF-e re-drive route's own code set, envelope and answer,
+// and (step 15) the closed slugs of an Easy Ship label refusal and the label
+// route's own code set and envelope.
 // Not a collection: no meta, nothing to register.
 export {
   CHAVE_RETORNO_OAUTH_AMAZON,
   CODIGO_ERRO_AMAZON,
+  CODIGO_ERRO_ETIQUETA_AMAZON,
+  CODIGO_ERRO_NFE_AMAZON,
   LIMIAR_AVISO_AMAZON_DIAS,
   MAX_SELLING_PARTNER_ID,
+  MOTIVO_ETIQUETA_AMAZON,
   MOTIVO_RETORNO_OAUTH_AMAZON,
   VALIDADE_AUTORIZACAO_AMAZON_DIAS,
   contaAmazonRoteavel,
   diasAteDataCivilAmazon,
   diasParaReautorizarAmazon,
   erroContaAmazonSchema,
+  erroEnvioNfeAmazonSchema,
+  erroEtiquetaAmazonSchema,
+  motivoEtiquetaAmazonSchema,
   motivoRetornoOAuthAmazonSchema,
   reautorizarAteAmazon,
+  respostaEnvioNfeAmazonSchema,
   respostaInicioOAuthAmazonSchema,
   sellingPartnerIdValido,
   statusContaAmazonSchema,
   type CodigoErroAmazon,
+  type CodigoErroEtiquetaAmazon,
+  type CodigoErroNfeAmazon,
   type ErroContaAmazon,
+  type ErroEnvioNfeAmazon,
+  type ErroEtiquetaAmazon,
+  type MotivoEtiquetaAmazon,
   type MotivoRetornoOAuthAmazon,
+  type RespostaEnvioNfeAmazon,
   type RespostaInicioOAuthAmazon,
   type StatusContaAmazon,
 } from './contaAmazon';
@@ -626,6 +643,10 @@ export {
   type NotificacaoStatus,
   type NotificacaoMercadoLivre,
 } from './notificacaoMercadoLivre';
+export {
+  migracaoUptinMercadoLivreSchema,
+  type MigracaoUptinVariacao,
+} from './migracaoUptinMercadoLivre';
 
 export {
   // ⚠️ LEGACY-PARITY ONLY (#829) — pre-sale ML questions, written only by the
@@ -1123,6 +1144,20 @@ export {
   type RespostaRecomendacaoCategoriaShopee,
 } from './taxonomiaShopeeDto';
 
+// The Shopee CHANNELS route envelope (#1911, P15), declared once like the
+// taxonomy ones above: `apps/shopee`'s `canais` route builds its 200 against it
+// and `apps/web` (P16) parses with it. Not a collection, so no `registry.ts`
+// entry.
+export {
+  motivoIndisponivelCanalShopeeSchema,
+  MOTIVO_INDISPONIVEL_CANAL_SHOPEE,
+  canalDaLojaShopeeDtoSchema,
+  respostaCanaisShopeeSchema,
+  type MotivoIndisponivelCanalShopee,
+  type CanalDaLojaShopeeDto,
+  type RespostaCanaisShopee,
+} from './logisticaShopeeDto';
+
 // …and THE band check + text resolution the publisher applies to a listing's
 // name and description — the draft editor's counter and pendências call the
 // same functions (#1369 — one copy).
@@ -1151,6 +1186,8 @@ export {
   validarAtributosShopee,
   atributosParaGravarShopee,
   atributosParaEnvioShopee,
+  decimalShopeeDaTela,
+  decimalShopeeParaTela,
   lerDataDeAtributoShopee,
   timestampDeDataShopee,
   origemValorAtributoShopeeSchema,
@@ -1759,6 +1796,9 @@ export {
   MOTIVO_RASTREIO_DIVERGENTE_LI,
   motivoCategoriaSemVinculoLiSchema,
   MOTIVO_CATEGORIA_SEM_VINCULO_LI,
+  motivoEstoqueVinculoLiSchema,
+  MOTIVO_ESTOQUE_VINCULO_LI,
+  MAX_AMOSTRA_AVISO_ESTOQUE_LI,
   situacaoAnuncioForaDaSincronizacaoSchema,
   SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO,
   chaveDeAviso,
@@ -1785,6 +1825,7 @@ export {
   type MotivoReversaoComEtiquetaLi,
   type MotivoRastreioDivergenteLi,
   type MotivoCategoriaSemVinculoLi,
+  type MotivoEstoqueVinculoLi,
   type SituacaoAnuncioForaDaSincronizacao,
 } from './aviso';
 export * from './shared/inicio';
@@ -1830,9 +1871,98 @@ export * from './faseRetirada';
 // nothing to register.
 export * from './notificacaoEscritaLojaIntegrada';
 
+// Admin-only / default-deny (NOT in ALL_DOMAINS) — the Loja Integrada stock sync
+// (master plan step 12, PR 12-a): the per-conta cursor, snapshot and kits map, the
+// daily reconcile's run document, and the stock tasks' ids-only payloads. Bare: no
+// Meta, never a combined `{ schema, meta }`, so `registry.test.ts` sees nothing to
+// register and the rules generator emits nothing.
+export * from './sincEstoqueLojaIntegrada';
+export * from './reconcileEstoqueLojaIntegrada';
+export * from './tarefaEstoqueLojaIntegrada';
+
 // The machine-readable next step of a Shopee publish refusal (step 21, #1529):
 // the refusal sites in `apps/shopee` produce it, the web's wire parses it per row
 // and maps it to a button — one vocabulary, never a second copy (#1369). Also the
 // ONE copy of the wait an uncertain kit create asks for. Not a collection, so no
 // `registry.ts` entry.
 export * from './shopeeAcaoSugerida';
+
+export {
+  // Admin-only / default-deny (NOT in ALL_DOMAINS) — the Amazon feed core (step
+  // 12a, PR 12-b): the per-submission record `feedsAmazon` and the per-(fluxo,
+  // conta) lease `feedsAmazonEmCurso`. Bare: no Meta, never a combined
+  // `{ schema, meta }`, so rules-gen emits nothing for either.
+  DESFECHO_FEED_AMAZON,
+  ESTADO_VEZ_FEED_AMAZON,
+  FEED_ID_REGISTRO_AMAZON_REGEX,
+  FLUXO_FEED_AMAZON,
+  ID_LOTE_FEED_AMAZON_REGEX,
+  ORIGEM_LOTE_FEED_AMAZON_REGEX,
+  STATUS_REGISTRO_FEED_AMAZON,
+  TIPO_LOTE_FEED_AMAZON,
+  camposJanelaFeedAmazon,
+  desfechoFeedAmazonSchema,
+  estadoVezFeedAmazonSchema,
+  fluxoFeedAmazonSchema,
+  idRegistroFeedAmazon,
+  idVezFeedAmazon,
+  janelaFeedAmazonSchema,
+  problemasSemSkuFeedAmazonSchema,
+  registroFeedAmazonSchema,
+  resultadoFeedAmazonSchema,
+  statusRegistroFeedAmazonSchema,
+  tipoLoteFeedAmazonSchema,
+  verificarJanelaFeedAmazon,
+  vezFeedAmazonSchema,
+  type DesfechoFeedAmazon,
+  type EstadoVezFeedAmazon,
+  type FluxoFeedAmazon,
+  type JanelaFeedAmazon,
+  type ProblemasSemSkuFeedAmazon,
+  type RegistroFeedAmazon,
+  type ResultadoFeedAmazon,
+  type StatusRegistroFeedAmazon,
+  type TipoLoteFeedAmazon,
+  type VezFeedAmazon,
+} from './feedAmazon';
+
+export {
+  // Admin-only / default-deny (NOT in ALL_DOMAINS) — the Amazon stock sync (step
+  // 12, PR 12-d): the tick's per-conta state `sincronizacaoEstoqueAmazon`, the
+  // daily reconcile run `reconciliacaoEstoqueAmazon` with its drift blocks
+  // `divergenciasEstoqueAmazon`, the request doc
+  // `pedidoReconciliacaoEstoqueAmazon`, the batch numbers and the index-field
+  // tuples. Bare: no Meta, never a combined `{ schema, meta }`, so rules-gen
+  // emits nothing for any of them.
+  CAMINHO_VINCULO_ESTOQUE_AMAZON_REGEX,
+  CAMPOS_INDICE_JANELA_ESTOQUE_AMAZON,
+  CAMPOS_INDICE_VARREDURA_VINCULOS_AMAZON,
+  CHAVE_CONTAGEM_ESTOQUE_AMAZON_REGEX,
+  FASE_RECONCILIACAO_ESTOQUE_AMAZON,
+  LIMIAR_FEED_ESTOQUE_AMAZON,
+  LIMIAR_ZERO_SEM_LINHA_ESTOQUE_AMAZON,
+  MAX_ITENS_DIVERGENCIA_ESTOQUE_AMAZON,
+  MAX_SKUS_FEED_DELTA_ESTOQUE_AMAZON,
+  REF_DEPOSITO_ESTOQUE_AMAZON_REGEX,
+  contagensReconciliacaoEstoqueAmazonSchema,
+  cursorVarreduraEstoqueAmazonSchema,
+  cursoresVarreduraEstoqueAmazonSchema,
+  divergenciaEstoqueAmazonSchema,
+  faseReconciliacaoEstoqueAmazonSchema,
+  idDivergenciaEstoqueAmazon,
+  itemDivergenciaEstoqueAmazonSchema,
+  pedidoReconciliacaoEstoqueAmazonSchema,
+  reconciliacaoEstoqueAmazonSchema,
+  sincronizacaoEstoqueAmazonSchema,
+  vezSincronizacaoEstoqueAmazonSchema,
+  type ContagensReconciliacaoEstoqueAmazon,
+  type CursorVarreduraEstoqueAmazon,
+  type CursoresVarreduraEstoqueAmazon,
+  type DivergenciaEstoqueAmazon,
+  type FaseReconciliacaoEstoqueAmazon,
+  type ItemDivergenciaEstoqueAmazon,
+  type PedidoReconciliacaoEstoqueAmazon,
+  type ReconciliacaoEstoqueAmazon,
+  type SincronizacaoEstoqueAmazon,
+  type VezSincronizacaoEstoqueAmazon,
+} from './estoqueAmazon';

@@ -1,0 +1,1462 @@
+{
+  "error": "",
+  "message": "",
+  "warning": "",
+  "response": {
+    "tier_variation": [
+      {
+        "name": "Cor",
+        "option_list": [
+          {
+            "option": "Azul Turquesa",
+            "image": {
+              "image_url": "https://redacted.invalid/imagem",
+              "image_id": "imagem-redigida"
+            }
+          },
+          {
+            "option": "Verde",
+            "image": {
+              "image_url": "https://redacted.invalid/imagem",
+              "image_id": "imagem-redigida"
+            }
+          },
+          {
+            "option": "Amarelo Brilhante",
+            "image": {
+              "image_url": "https://redacted.invalid/imagem",
+              "image_id": "imagem-redigida"
+            }
+          },
+          {
+            "option": "Laranja Brilhante",
+            "image": {
+              "image_url": "https://redacted.invalid/imagem",
+              "image_id": "imagem-redigida"
+            }
+          },
+          {
+            "option": "Opção inventada 1",
+            "image": {
+              "image_url": "https://redacted.invalid/imagem",
+              "image_id": "imagem-redigida"
+            }
+          }
+        ]
+      },
+      {
+        "name": "Tamanho",
+        "option_list": [
+          {
+            "option": "PP"
+          },
+          {
+            "option": "P"
+          },
+          {
+            "option": "M"
+          },
+          {
+            "option": "G"
+          },
+          {
+            "option": "GG"
+          }
+        ]
+      }
+    ],
+    "model": [
+      {
+        "model_id": 7596009003,
+        "model_name": "Amarelo Brilhante,GG",
+        "promotion_id": 0,
+        "has_promotion": false,
+        "tier_index": [2, 4],
+        "price_info": [
+          {
+            "current_price": 100,
+            "original_price": 100,
+            "inflated_price_of_current_price": 100,
+            "inflated_price_of_original_price": 100,
+            "currency": "BRL"
+          }
+        ],
+        "model_sku": "SKU-9a1715c1",
+        "pre_order": {
+          "is_pre_order": false,
+          "days_to_ship": 2
+        },
+        "stock_info_v2": {
+          "summary_info": {
+            "total_reserved_stock": 0,
+            "total_available_stock": 10
+          },
+          "seller_stock": [
+            {
+              "location_id": "LOCAL-REDIGIDO",
+              "stock": 10,
+              "if_saleable": true
+            }
+          ],
+          "shopee_stock": [
+            {
+              "location_id": "",
+              "stock": 0
+            }
+          ],
+          "advance_stock": {
+            "sellable_advance_stock": 0,
+            "in_transit_advance_stock": 0
+          }
+        },
+        "gtin_code": "00",
+        "model_status": "MODEL_NORMAL",
+        "weight": "0.26",
+        "dimension": {
+          "package_length": 25,
+          "package_width": 3,
+          "package_height": 19
+        },
+        "is_fulfillment_by_shopee": false
+      },
+      {
+        "model_id": 9247477744,
+        "model_name": "Opção inventada 1,PP",
+        "promotion_id": 0,
+        "has_promotion": false,
+        "tier_index": [4, 0],
+        "price_info": [
+          {
+            "current_price": 100,
+            "original_price": 100,
+            "inflated_price_of_current_price": 100,
+            "inflated_price_of_original_price": 100,
+            "currency": "BRL"
+          }
+        ],
+        "model_sku": "SKU-106ca50d",
+        "pre_order": {
+          "is_pre_order": false,
+          "days_to_ship": 2
+        },
+        "stock_info_v2": {
+          "summary_info": {
+            "total_reserved_stock": 0,
+            "total_available_stock": 0
+          },
+          "seller_stock": [
+            {
+              "location_id": "LOCAL-REDIGIDO",
+              "stock": 0,
+              "if_saleable": true
+            }
+          ],
+          "shopee_stock": [
+            {
+              "location_id": "",
+              "stock": 0
+            }
+          ],
+          "advance_stock": {
+            "sellable_advance_stock": 0,
+            "in_transit_advance_stock": 0
+          }
+        },
+        "gtin_code": "00",
+        "model_status": "MODEL_NORMAL",
+        "weight": "0.26",
+        "dimension": {
+          "package_length": 25,
+          "package_width": 3,
+          "package_height": 19
+        },
+        "is_fulfillment_by_shopee": false
+      },
+      {
+        "model_id": 9462029385,
+        "model_name": "Amarelo Brilhante,M",
+        "promotion_id": 0,
+        "has_promotion": false,
+        "tier_index": [2, 2],
+        "price_info": [
+          {
+            "current_price": 100,
+            "original_price": 100,
+            "inflated_price_of_current_price": 100,
+            "inflated_price_of_original_price": 100,
+            "currency": "BRL"
+          }
+        ],
+        "model_sku": "SKU-97448c56",
+        "pre_order": {
+          "is_pre_order": false,
+          "days_to_ship": 2
+        },
+        "stock_info_v2": {
+          "summary_info": {
+            "total_reserved_stock": 0,
+            "total_available_stock": 10
+          },
+          "seller_stock": [
+            {
+              "location_id": "LOCAL-REDIGIDO",
+              "stock": 10,
+              "if_saleable": true
+            }
+          ],
+          "shopee_stock": [
+            {
+              "location_id": "",
+              "stock": 0
+            }
+          ],
+          "advance_stock": {
+            "sellable_advance_stock": 0,
+            "in_transit_advance_stock": 0
+          }
+        },
+        "gtin_code": "00",
+        "model_status": "MODEL_NORMAL",
+        "weight": "0.26",
+        "dimension": {
+          "package_length": 25,
+          "package_width": 3,
+          "package_height": 19
+        },
+        "is_fulfillment_by_shopee": false
+      },
+      {
+        "model_id": 7103197547,
+        "model_name": "Laranja Brilhante,G",
+        "promotion_id": 0,
+        "has_promotion": false,
+        "tier_index": [3, 3],
+        "price_info": [
+          {
+            "current_price": 100,
+            "original_price": 100,
+            "inflated_price_of_current_price": 100,
+            "inflated_price_of_original_price": 100,
+            "currency": "BRL"
+          }
+        ],
+        "model_sku": "SKU-691d464e",
+        "pre_order": {
+          "is_pre_order": false,
+          "days_to_ship": 2
+        },
+        "stock_info_v2": {
+          "summary_info": {
+            "total_reserved_stock": 0,
+            "total_available_stock": 10
+          },
+          "seller_stock": [
+            {
+              "location_id": "LOCAL-REDIGIDO",
+              "stock": 10,
+              "if_saleable": true
+            }
+          ],
+          "shopee_stock": [
+            {
+              "location_id": "",
+              "stock": 0
+            }
+          ],
+          "advance_stock": {
+            "sellable_advance_stock": 0,
+            "in_transit_advance_stock": 0
+          }
+        },
+        "gtin_code": "00",
+        "model_status": "MODEL_NORMAL",
+        "weight": "0.26",
+        "dimension": {
+          "package_length": 25,
+          "package_width": 3,
+          "package_height": 19
+        },
+        "is_fulfillment_by_shopee": false
+      },
+      {
+        "model_id": 4375086379,
+        "model_name": "Laranja Brilhante,P",
+        "promotion_id": 0,
+        "has_promotion": false,
+        "tier_index": [3, 1],
+        "price_info": [
+          {
+            "current_price": 100,
+            "original_price": 100,
+            "inflated_price_of_current_price": 100,
+            "inflated_price_of_original_price": 100,
+            "currency": "BRL"
+          }
+        ],
+        "model_sku": "SKU-de978f87",
+        "pre_order": {
+          "is_pre_order": false,
+          "days_to_ship": 2
+        },
+        "stock_info_v2": {
+          "summary_info": {
+            "total_reserved_stock": 0,
+            "total_available_stock": 10
+          },
+          "seller_stock": [
+            {
+              "location_id": "LOCAL-REDIGIDO",
+              "stock": 10,
+              "if_saleable": true
+            }
+          ],
+          "shopee_stock": [
+            {
+              "location_id": "",
+              "stock": 0
+            }
+          ],
+          "advance_stock": {
+            "sellable_advance_stock": 0,
+            "in_transit_advance_stock": 0
+          }
+        },
+        "gtin_code": "00",
+        "model_status": "MODEL_NORMAL",
+        "weight": "0.26",
+        "dimension": {
+          "package_length": 25,
+          "package_width": 3,
+          "package_height": 19
+        },
+        "is_fulfillment_by_shopee": false
+      },
+      {
+        "model_id": 5149825905,
+        "model_name": "Verde,GG",
+        "promotion_id": 0,
+        "has_promotion": false,
+        "tier_index": [1, 4],
+        "price_info": [
+          {
+            "current_price": 100,
+            "original_price": 100,
+            "inflated_price_of_current_price": 100,
+            "inflated_price_of_original_price": 100,
+            "currency": "BRL"
+          }
+        ],
+        "model_sku": "SKU-947c89c6",
+        "pre_order": {
+          "is_pre_order": false,
+          "days_to_ship": 2
+        },
+        "stock_info_v2": {
+          "summary_info": {
+            "total_reserved_stock": 0,
+            "total_available_stock": 10
+          },
+          "seller_stock": [
+            {
+              "location_id": "LOCAL-REDIGIDO",
+              "stock": 10,
+              "if_saleable": true
+            }
+          ],
+          "shopee_stock": [
+            {
+              "location_id": "",
+              "stock": 0
+            }
+          ],
+          "advance_stock": {
+            "sellable_advance_stock": 0,
+            "in_transit_advance_stock": 0
+          }
+        },
+        "gtin_code": "00",
+        "model_status": "MODEL_NORMAL",
+        "weight": "0.26",
+        "dimension": {
+          "package_length": 25,
+          "package_width": 3,
+          "package_height": 19
+        },
+        "is_fulfillment_by_shopee": false
+      },
+      {
+        "model_id": 1822255235,
+        "model_name": "Verde,PP",
+        "promotion_id": 0,
+        "has_promotion": false,
+        "tier_index": [1, 0],
+        "price_info": [
+          {
+            "current_price": 100,
+            "original_price": 100,
+            "inflated_price_of_current_price": 100,
+            "inflated_price_of_original_price": 100,
+            "currency": "BRL"
+          }
+        ],
+        "model_sku": "SKU-f365a523",
+        "pre_order": {
+          "is_pre_order": false,
+          "days_to_ship": 2
+        },
+        "stock_info_v2": {
+          "summary_info": {
+            "total_reserved_stock": 0,
+            "total_available_stock": 0
+          },
+          "seller_stock": [
+            {
+              "location_id": "LOCAL-REDIGIDO",
+              "stock": 0,
+              "if_saleable": true
+            }
+          ],
+          "shopee_stock": [
+            {
+              "location_id": "",
+              "stock": 0
+            }
+          ],
+          "advance_stock": {
+            "sellable_advance_stock": 0,
+            "in_transit_advance_stock": 0
+          }
+        },
+        "gtin_code": "00",
+        "model_status": "MODEL_NORMAL",
+        "weight": "0.26",
+        "dimension": {
+          "package_length": 25,
+          "package_width": 3,
+          "package_height": 19
+        },
+        "is_fulfillment_by_shopee": false
+      },
+      {
+        "model_id": 3994365677,
+        "model_name": "Opção inventada 1,G",
+        "promotion_id": 0,
+        "has_promotion": false,
+        "tier_index": [4, 3],
+        "price_info": [
+          {
+            "current_price": 100,
+            "original_price": 100,
+            "inflated_price_of_current_price": 100,
+            "inflated_price_of_original_price": 100,
+            "currency": "BRL"
+          }
+        ],
+        "model_sku": "SKU-4a9f66ed",
+        "pre_order": {
+          "is_pre_order": false,
+          "days_to_ship": 2
+        },
+        "stock_info_v2": {
+          "summary_info": {
+            "total_reserved_stock": 0,
+            "total_available_stock": 10
+          },
+          "seller_stock": [
+            {
+              "location_id": "LOCAL-REDIGIDO",
+              "stock": 10,
+              "if_saleable": true
+            }
+          ],
+          "shopee_stock": [
+            {
+              "location_id": "",
+              "stock": 0
+            }
+          ],
+          "advance_stock": {
+            "sellable_advance_stock": 0,
+            "in_transit_advance_stock": 0
+          }
+        },
+        "gtin_code": "00",
+        "model_status": "MODEL_NORMAL",
+        "weight": "0.26",
+        "dimension": {
+          "package_length": 25,
+          "package_width": 3,
+          "package_height": 19
+        },
+        "is_fulfillment_by_shopee": false
+      },
+      {
+        "model_id": 4606162091,
+        "model_name": "Azul Turquesa,P",
+        "promotion_id": 0,
+        "has_promotion": false,
+        "tier_index": [0, 1],
+        "price_info": [
+          {
+            "current_price": 100,
+            "original_price": 100,
+            "inflated_price_of_current_price": 100,
+            "inflated_price_of_original_price": 100,
+            "currency": "BRL"
+          }
+        ],
+        "model_sku": "SKU-0aff2bed",
+        "pre_order": {
+          "is_pre_order": false,
+          "days_to_ship": 2
+        },
+        "stock_info_v2": {
+          "summary_info": {
+            "total_reserved_stock": 0,
+            "total_available_stock": 10
+          },
+          "seller_stock": [
+            {
+              "location_id": "LOCAL-REDIGIDO",
+              "stock": 10,
+              "if_saleable": true
+            }
+          ],
+          "shopee_stock": [
+            {
+              "location_id": "",
+              "stock": 0
+            }
+          ],
+          "advance_stock": {
+            "sellable_advance_stock": 0,
+            "in_transit_advance_stock": 0
+          }
+        },
+        "gtin_code": "00",
+        "model_status": "MODEL_NORMAL",
+        "weight": "0.26",
+        "dimension": {
+          "package_length": 25,
+          "package_width": 3,
+          "package_height": 19
+        },
+        "is_fulfillment_by_shopee": false
+      },
+      {
+        "model_id": 8882251426,
+        "model_name": "Amarelo Brilhante,PP",
+        "promotion_id": 0,
+        "has_promotion": false,
+        "tier_index": [2, 0],
+        "price_info": [
+          {
+            "current_price": 100,
+            "original_price": 100,
+            "inflated_price_of_current_price": 100,
+            "inflated_price_of_original_price": 100,
+            "currency": "BRL"
+          }
+        ],
+        "model_sku": "SKU-5620b492",
+        "pre_order": {
+          "is_pre_order": false,
+          "days_to_ship": 2
+        },
+        "stock_info_v2": {
+          "summary_info": {
+            "total_reserved_stock": 0,
+            "total_available_stock": 0
+          },
+          "seller_stock": [
+            {
+              "location_id": "LOCAL-REDIGIDO",
+              "stock": 0,
+              "if_saleable": true
+            }
+          ],
+          "shopee_stock": [
+            {
+              "location_id": "",
+              "stock": 0
+            }
+          ],
+          "advance_stock": {
+            "sellable_advance_stock": 0,
+            "in_transit_advance_stock": 0
+          }
+        },
+        "gtin_code": "00",
+        "model_status": "MODEL_NORMAL",
+        "weight": "0.26",
+        "dimension": {
+          "package_length": 25,
+          "package_width": 3,
+          "package_height": 19
+        },
+        "is_fulfillment_by_shopee": false
+      },
+      {
+        "model_id": 6819787976,
+        "model_name": "Amarelo Brilhante,P",
+        "promotion_id": 0,
+        "has_promotion": false,
+        "tier_index": [2, 1],
+        "price_info": [
+          {
+            "current_price": 100,
+            "original_price": 100,
+            "inflated_price_of_current_price": 100,
+            "inflated_price_of_original_price": 100,
+            "currency": "BRL"
+          }
+        ],
+        "model_sku": "SKU-8a167467",
+        "pre_order": {
+          "is_pre_order": false,
+          "days_to_ship": 2
+        },
+        "stock_info_v2": {
+          "summary_info": {
+            "total_reserved_stock": 0,
+            "total_available_stock": 10
+          },
+          "seller_stock": [
+            {
+              "location_id": "LOCAL-REDIGIDO",
+              "stock": 10,
+              "if_saleable": true
+            }
+          ],
+          "shopee_stock": [
+            {
+              "location_id": "",
+              "stock": 0
+            }
+          ],
+          "advance_stock": {
+            "sellable_advance_stock": 0,
+            "in_transit_advance_stock": 0
+          }
+        },
+        "gtin_code": "00",
+        "model_status": "MODEL_NORMAL",
+        "weight": "0.26",
+        "dimension": {
+          "package_length": 25,
+          "package_width": 3,
+          "package_height": 19
+        },
+        "is_fulfillment_by_shopee": false
+      },
+      {
+        "model_id": 6387184660,
+        "model_name": "Opção inventada 1,GG",
+        "promotion_id": 0,
+        "has_promotion": false,
+        "tier_index": [4, 4],
+        "price_info": [
+          {
+            "current_price": 100,
+            "original_price": 100,
+            "inflated_price_of_current_price": 100,
+            "inflated_price_of_original_price": 100,
+            "currency": "BRL"
+          }
+        ],
+        "model_sku": "SKU-0d372b80",
+        "pre_order": {
+          "is_pre_order": false,
+          "days_to_ship": 2
+        },
+        "stock_info_v2": {
+          "summary_info": {
+            "total_reserved_stock": 0,
+            "total_available_stock": 10
+          },
+          "seller_stock": [
+            {
+              "location_id": "LOCAL-REDIGIDO",
+              "stock": 10,
+              "if_saleable": true
+            }
+          ],
+          "shopee_stock": [
+            {
+              "location_id": "",
+              "stock": 0
+            }
+          ],
+          "advance_stock": {
+            "sellable_advance_stock": 0,
+            "in_transit_advance_stock": 0
+          }
+        },
+        "gtin_code": "00",
+        "model_status": "MODEL_NORMAL",
+        "weight": "0.26",
+        "dimension": {
+          "package_length": 25,
+          "package_width": 3,
+          "package_height": 19
+        },
+        "is_fulfillment_by_shopee": false
+      },
+      {
+        "model_id": 6453211909,
+        "model_name": "Azul Turquesa,PP",
+        "promotion_id": 0,
+        "has_promotion": false,
+        "tier_index": [0, 0],
+        "price_info": [
+          {
+            "current_price": 100,
+            "original_price": 100,
+            "inflated_price_of_current_price": 100,
+            "inflated_price_of_original_price": 100,
+            "currency": "BRL"
+          }
+        ],
+        "model_sku": "SKU-82fd8821",
+        "pre_order": {
+          "is_pre_order": false,
+          "days_to_ship": 2
+        },
+        "stock_info_v2": {
+          "summary_info": {
+            "total_reserved_stock": 0,
+            "total_available_stock": 0
+          },
+          "seller_stock": [
+            {
+              "location_id": "LOCAL-REDIGIDO",
+              "stock": 0,
+              "if_saleable": true
+            }
+          ],
+          "shopee_stock": [
+            {
+              "location_id": "",
+              "stock": 0
+            }
+          ],
+          "advance_stock": {
+            "sellable_advance_stock": 0,
+            "in_transit_advance_stock": 0
+          }
+        },
+        "gtin_code": "00",
+        "model_status": "MODEL_NORMAL",
+        "weight": "0.26",
+        "dimension": {
+          "package_length": 25,
+          "package_width": 3,
+          "package_height": 19
+        },
+        "is_fulfillment_by_shopee": false
+      },
+      {
+        "model_id": 2207445953,
+        "model_name": "Opção inventada 1,P",
+        "promotion_id": 0,
+        "has_promotion": false,
+        "tier_index": [4, 1],
+        "price_info": [
+          {
+            "current_price": 100,
+            "original_price": 100,
+            "inflated_price_of_current_price": 100,
+            "inflated_price_of_original_price": 100,
+            "currency": "BRL"
+          }
+        ],
+        "model_sku": "SKU-57fe015f",
+        "pre_order": {
+          "is_pre_order": false,
+          "days_to_ship": 2
+        },
+        "stock_info_v2": {
+          "summary_info": {
+            "total_reserved_stock": 0,
+            "total_available_stock": 10
+          },
+          "seller_stock": [
+            {
+              "location_id": "LOCAL-REDIGIDO",
+              "stock": 10,
+              "if_saleable": true
+            }
+          ],
+          "shopee_stock": [
+            {
+              "location_id": "",
+              "stock": 0
+            }
+          ],
+          "advance_stock": {
+            "sellable_advance_stock": 0,
+            "in_transit_advance_stock": 0
+          }
+        },
+        "gtin_code": "00",
+        "model_status": "MODEL_NORMAL",
+        "weight": "0.26",
+        "dimension": {
+          "package_length": 25,
+          "package_width": 3,
+          "package_height": 19
+        },
+        "is_fulfillment_by_shopee": false
+      },
+      {
+        "model_id": 9664835100,
+        "model_name": "Azul Turquesa,GG",
+        "promotion_id": 0,
+        "has_promotion": false,
+        "tier_index": [0, 4],
+        "price_info": [
+          {
+            "current_price": 100,
+            "original_price": 100,
+            "inflated_price_of_current_price": 100,
+            "inflated_price_of_original_price": 100,
+            "currency": "BRL"
+          }
+        ],
+        "model_sku": "SKU-700c0f60",
+        "pre_order": {
+          "is_pre_order": false,
+          "days_to_ship": 2
+        },
+        "stock_info_v2": {
+          "summary_info": {
+            "total_reserved_stock": 0,
+            "total_available_stock": 0
+          },
+          "seller_stock": [
+            {
+              "location_id": "LOCAL-REDIGIDO",
+              "stock": 0,
+              "if_saleable": true
+            }
+          ],
+          "shopee_stock": [
+            {
+              "location_id": "",
+              "stock": 0
+            }
+          ],
+          "advance_stock": {
+            "sellable_advance_stock": 0,
+            "in_transit_advance_stock": 0
+          }
+        },
+        "gtin_code": "00",
+        "model_status": "MODEL_NORMAL",
+        "weight": "0.26",
+        "dimension": {
+          "package_length": 25,
+          "package_width": 3,
+          "package_height": 19
+        },
+        "is_fulfillment_by_shopee": false
+      },
+      {
+        "model_id": 9542796875,
+        "model_name": "Laranja Brilhante,GG",
+        "promotion_id": 0,
+        "has_promotion": false,
+        "tier_index": [3, 4],
+        "price_info": [
+          {
+            "current_price": 100,
+            "original_price": 100,
+            "inflated_price_of_current_price": 100,
+            "inflated_price_of_original_price": 100,
+            "currency": "BRL"
+          }
+        ],
+        "model_sku": "SKU-20907afd",
+        "pre_order": {
+          "is_pre_order": false,
+          "days_to_ship": 2
+        },
+        "stock_info_v2": {
+          "summary_info": {
+            "total_reserved_stock": 0,
+            "total_available_stock": 10
+          },
+          "seller_stock": [
+            {
+              "location_id": "LOCAL-REDIGIDO",
+              "stock": 10,
+              "if_saleable": true
+            }
+          ],
+          "shopee_stock": [
+            {
+              "location_id": "",
+              "stock": 0
+            }
+          ],
+          "advance_stock": {
+            "sellable_advance_stock": 0,
+            "in_transit_advance_stock": 0
+          }
+        },
+        "gtin_code": "00",
+        "model_status": "MODEL_NORMAL",
+        "weight": "0.26",
+        "dimension": {
+          "package_length": 25,
+          "package_width": 3,
+          "package_height": 19
+        },
+        "is_fulfillment_by_shopee": false
+      },
+      {
+        "model_id": 1189812350,
+        "model_name": "Laranja Brilhante,M",
+        "promotion_id": 0,
+        "has_promotion": false,
+        "tier_index": [3, 2],
+        "price_info": [
+          {
+            "current_price": 100,
+            "original_price": 100,
+            "inflated_price_of_current_price": 100,
+            "inflated_price_of_original_price": 100,
+            "currency": "BRL"
+          }
+        ],
+        "model_sku": "SKU-515075cd",
+        "pre_order": {
+          "is_pre_order": false,
+          "days_to_ship": 2
+        },
+        "stock_info_v2": {
+          "summary_info": {
+            "total_reserved_stock": 0,
+            "total_available_stock": 10
+          },
+          "seller_stock": [
+            {
+              "location_id": "LOCAL-REDIGIDO",
+              "stock": 10,
+              "if_saleable": true
+            }
+          ],
+          "shopee_stock": [
+            {
+              "location_id": "",
+              "stock": 0
+            }
+          ],
+          "advance_stock": {
+            "sellable_advance_stock": 0,
+            "in_transit_advance_stock": 0
+          }
+        },
+        "gtin_code": "00",
+        "model_status": "MODEL_NORMAL",
+        "weight": "0.26",
+        "dimension": {
+          "package_length": 25,
+          "package_width": 3,
+          "package_height": 19
+        },
+        "is_fulfillment_by_shopee": false
+      },
+      {
+        "model_id": 4110733326,
+        "model_name": "Azul Turquesa,M",
+        "promotion_id": 0,
+        "has_promotion": false,
+        "tier_index": [0, 2],
+        "price_info": [
+          {
+            "current_price": 100,
+            "original_price": 100,
+            "inflated_price_of_current_price": 100,
+            "inflated_price_of_original_price": 100,
+            "currency": "BRL"
+          }
+        ],
+        "model_sku": "SKU-ec663ef9",
+        "pre_order": {
+          "is_pre_order": false,
+          "days_to_ship": 2
+        },
+        "stock_info_v2": {
+          "summary_info": {
+            "total_reserved_stock": 0,
+            "total_available_stock": 0
+          },
+          "seller_stock": [
+            {
+              "location_id": "LOCAL-REDIGIDO",
+              "stock": 0,
+              "if_saleable": true
+            }
+          ],
+          "shopee_stock": [
+            {
+              "location_id": "",
+              "stock": 0
+            }
+          ],
+          "advance_stock": {
+            "sellable_advance_stock": 0,
+            "in_transit_advance_stock": 0
+          }
+        },
+        "gtin_code": "00",
+        "model_status": "MODEL_NORMAL",
+        "weight": "0.26",
+        "dimension": {
+          "package_length": 25,
+          "package_width": 3,
+          "package_height": 19
+        },
+        "is_fulfillment_by_shopee": false
+      },
+      {
+        "model_id": 5455048453,
+        "model_name": "Laranja Brilhante,PP",
+        "promotion_id": 0,
+        "has_promotion": false,
+        "tier_index": [3, 0],
+        "price_info": [
+          {
+            "current_price": 100,
+            "original_price": 100,
+            "inflated_price_of_current_price": 100,
+            "inflated_price_of_original_price": 100,
+            "currency": "BRL"
+          }
+        ],
+        "model_sku": "SKU-0c12a76b",
+        "pre_order": {
+          "is_pre_order": false,
+          "days_to_ship": 2
+        },
+        "stock_info_v2": {
+          "summary_info": {
+            "total_reserved_stock": 0,
+            "total_available_stock": 0
+          },
+          "seller_stock": [
+            {
+              "location_id": "LOCAL-REDIGIDO",
+              "stock": 0,
+              "if_saleable": true
+            }
+          ],
+          "shopee_stock": [
+            {
+              "location_id": "",
+              "stock": 0
+            }
+          ],
+          "advance_stock": {
+            "sellable_advance_stock": 0,
+            "in_transit_advance_stock": 0
+          }
+        },
+        "gtin_code": "00",
+        "model_status": "MODEL_NORMAL",
+        "weight": "0.26",
+        "dimension": {
+          "package_length": 25,
+          "package_width": 3,
+          "package_height": 19
+        },
+        "is_fulfillment_by_shopee": false
+      },
+      {
+        "model_id": 8634091663,
+        "model_name": "Verde,G",
+        "promotion_id": 0,
+        "has_promotion": false,
+        "tier_index": [1, 3],
+        "price_info": [
+          {
+            "current_price": 100,
+            "original_price": 100,
+            "inflated_price_of_current_price": 100,
+            "inflated_price_of_original_price": 100,
+            "currency": "BRL"
+          }
+        ],
+        "model_sku": "SKU-83d3f72f",
+        "pre_order": {
+          "is_pre_order": false,
+          "days_to_ship": 2
+        },
+        "stock_info_v2": {
+          "summary_info": {
+            "total_reserved_stock": 0,
+            "total_available_stock": 0
+          },
+          "seller_stock": [
+            {
+              "location_id": "LOCAL-REDIGIDO",
+              "stock": 0,
+              "if_saleable": true
+            }
+          ],
+          "shopee_stock": [
+            {
+              "location_id": "",
+              "stock": 0
+            }
+          ],
+          "advance_stock": {
+            "sellable_advance_stock": 0,
+            "in_transit_advance_stock": 0
+          }
+        },
+        "gtin_code": "00",
+        "model_status": "MODEL_NORMAL",
+        "weight": "0.26",
+        "dimension": {
+          "package_length": 25,
+          "package_width": 3,
+          "package_height": 19
+        },
+        "is_fulfillment_by_shopee": false
+      },
+      {
+        "model_id": 6009812446,
+        "model_name": "Verde,M",
+        "promotion_id": 0,
+        "has_promotion": false,
+        "tier_index": [1, 2],
+        "price_info": [
+          {
+            "current_price": 100,
+            "original_price": 100,
+            "inflated_price_of_current_price": 100,
+            "inflated_price_of_original_price": 100,
+            "currency": "BRL"
+          }
+        ],
+        "model_sku": "SKU-bb2e7c8c",
+        "pre_order": {
+          "is_pre_order": false,
+          "days_to_ship": 2
+        },
+        "stock_info_v2": {
+          "summary_info": {
+            "total_reserved_stock": 0,
+            "total_available_stock": 0
+          },
+          "seller_stock": [
+            {
+              "location_id": "LOCAL-REDIGIDO",
+              "stock": 0,
+              "if_saleable": true
+            }
+          ],
+          "shopee_stock": [
+            {
+              "location_id": "",
+              "stock": 0
+            }
+          ],
+          "advance_stock": {
+            "sellable_advance_stock": 0,
+            "in_transit_advance_stock": 0
+          }
+        },
+        "gtin_code": "00",
+        "model_status": "MODEL_NORMAL",
+        "weight": "0.26",
+        "dimension": {
+          "package_length": 25,
+          "package_width": 3,
+          "package_height": 19
+        },
+        "is_fulfillment_by_shopee": false
+      },
+      {
+        "model_id": 5192228912,
+        "model_name": "Verde,P",
+        "promotion_id": 0,
+        "has_promotion": false,
+        "tier_index": [1, 1],
+        "price_info": [
+          {
+            "current_price": 100,
+            "original_price": 100,
+            "inflated_price_of_current_price": 100,
+            "inflated_price_of_original_price": 100,
+            "currency": "BRL"
+          }
+        ],
+        "model_sku": "SKU-a1f61041",
+        "pre_order": {
+          "is_pre_order": false,
+          "days_to_ship": 2
+        },
+        "stock_info_v2": {
+          "summary_info": {
+            "total_reserved_stock": 0,
+            "total_available_stock": 10
+          },
+          "seller_stock": [
+            {
+              "location_id": "LOCAL-REDIGIDO",
+              "stock": 10,
+              "if_saleable": true
+            }
+          ],
+          "shopee_stock": [
+            {
+              "location_id": "",
+              "stock": 0
+            }
+          ],
+          "advance_stock": {
+            "sellable_advance_stock": 0,
+            "in_transit_advance_stock": 0
+          }
+        },
+        "gtin_code": "00",
+        "model_status": "MODEL_NORMAL",
+        "weight": "0.26",
+        "dimension": {
+          "package_length": 25,
+          "package_width": 3,
+          "package_height": 19
+        },
+        "is_fulfillment_by_shopee": false
+      },
+      {
+        "model_id": 6818948817,
+        "model_name": "Opção inventada 1,M",
+        "promotion_id": 0,
+        "has_promotion": false,
+        "tier_index": [4, 2],
+        "price_info": [
+          {
+            "current_price": 100,
+            "original_price": 100,
+            "inflated_price_of_current_price": 100,
+            "inflated_price_of_original_price": 100,
+            "currency": "BRL"
+          }
+        ],
+        "model_sku": "SKU-6cd340fd",
+        "pre_order": {
+          "is_pre_order": false,
+          "days_to_ship": 2
+        },
+        "stock_info_v2": {
+          "summary_info": {
+            "total_reserved_stock": 0,
+            "total_available_stock": 10
+          },
+          "seller_stock": [
+            {
+              "location_id": "LOCAL-REDIGIDO",
+              "stock": 10,
+              "if_saleable": true
+            }
+          ],
+          "shopee_stock": [
+            {
+              "location_id": "",
+              "stock": 0
+            }
+          ],
+          "advance_stock": {
+            "sellable_advance_stock": 0,
+            "in_transit_advance_stock": 0
+          }
+        },
+        "gtin_code": "00",
+        "model_status": "MODEL_NORMAL",
+        "weight": "0.26",
+        "dimension": {
+          "package_length": 25,
+          "package_width": 3,
+          "package_height": 19
+        },
+        "is_fulfillment_by_shopee": false
+      },
+      {
+        "model_id": 4197113598,
+        "model_name": "Azul Turquesa,G",
+        "promotion_id": 0,
+        "has_promotion": false,
+        "tier_index": [0, 3],
+        "price_info": [
+          {
+            "current_price": 100,
+            "original_price": 100,
+            "inflated_price_of_current_price": 100,
+            "inflated_price_of_original_price": 100,
+            "currency": "BRL"
+          }
+        ],
+        "model_sku": "SKU-0fbee1a9",
+        "pre_order": {
+          "is_pre_order": false,
+          "days_to_ship": 2
+        },
+        "stock_info_v2": {
+          "summary_info": {
+            "total_reserved_stock": 0,
+            "total_available_stock": 0
+          },
+          "seller_stock": [
+            {
+              "location_id": "LOCAL-REDIGIDO",
+              "stock": 0,
+              "if_saleable": true
+            }
+          ],
+          "shopee_stock": [
+            {
+              "location_id": "",
+              "stock": 0
+            }
+          ],
+          "advance_stock": {
+            "sellable_advance_stock": 0,
+            "in_transit_advance_stock": 0
+          }
+        },
+        "gtin_code": "00",
+        "model_status": "MODEL_NORMAL",
+        "weight": "0.26",
+        "dimension": {
+          "package_length": 25,
+          "package_width": 3,
+          "package_height": 19
+        },
+        "is_fulfillment_by_shopee": false
+      },
+      {
+        "model_id": 6537884451,
+        "model_name": "Amarelo Brilhante,G",
+        "promotion_id": 0,
+        "has_promotion": false,
+        "tier_index": [2, 3],
+        "price_info": [
+          {
+            "current_price": 100,
+            "original_price": 100,
+            "inflated_price_of_current_price": 100,
+            "inflated_price_of_original_price": 100,
+            "currency": "BRL"
+          }
+        ],
+        "model_sku": "SKU-af1d4588",
+        "pre_order": {
+          "is_pre_order": false,
+          "days_to_ship": 2
+        },
+        "stock_info_v2": {
+          "summary_info": {
+            "total_reserved_stock": 0,
+            "total_available_stock": 10
+          },
+          "seller_stock": [
+            {
+              "location_id": "LOCAL-REDIGIDO",
+              "stock": 10,
+              "if_saleable": true
+            }
+          ],
+          "shopee_stock": [
+            {
+              "location_id": "",
+              "stock": 0
+            }
+          ],
+          "advance_stock": {
+            "sellable_advance_stock": 0,
+            "in_transit_advance_stock": 0
+          }
+        },
+        "gtin_code": "00",
+        "model_status": "MODEL_NORMAL",
+        "weight": "0.26",
+        "dimension": {
+          "package_length": 25,
+          "package_width": 3,
+          "package_height": 19
+        },
+        "is_fulfillment_by_shopee": false
+      }
+    ],
+    "standardise_tier_variation": [
+      {
+        "variation_id": 101054,
+        "variation_name": "Cor",
+        "variation_option_list": [
+          {
+            "variation_option_id": 9632,
+            "variation_option_name": "Azul Turquesa",
+            "image_id": "imagem-redigida",
+            "image_url": "https://redacted.invalid/imagem"
+          },
+          {
+            "variation_option_id": 6245,
+            "variation_option_name": "Verde",
+            "image_id": "imagem-redigida",
+            "image_url": "https://redacted.invalid/imagem"
+          },
+          {
+            "variation_option_id": 9186,
+            "variation_option_name": "Amarelo Brilhante",
+            "image_id": "imagem-redigida",
+            "image_url": "https://redacted.invalid/imagem"
+          },
+          {
+            "variation_option_id": 9179,
+            "variation_option_name": "Laranja Brilhante",
+            "image_id": "imagem-redigida",
+            "image_url": "https://redacted.invalid/imagem"
+          },
+          {
+            "variation_option_id": 0,
+            "variation_option_name": "Opção inventada 1",
+            "image_id": "imagem-redigida",
+            "image_url": "https://redacted.invalid/imagem"
+          }
+        ]
+      },
+      {
+        "variation_id": 101056,
+        "variation_name": "Tamanho",
+        "variation_group_id": 844758844060204,
+        "variation_option_list": [
+          {
+            "variation_option_id": 7211,
+            "variation_option_name": "PP"
+          },
+          {
+            "variation_option_id": 6857,
+            "variation_option_name": "P"
+          },
+          {
+            "variation_option_id": 6933,
+            "variation_option_name": "M"
+          },
+          {
+            "variation_option_id": 6863,
+            "variation_option_name": "G"
+          },
+          {
+            "variation_option_id": 6921,
+            "variation_option_name": "GG"
+          }
+        ]
+      }
+    ]
+  },
+  "debug_message": ""
+}

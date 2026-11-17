@@ -10,15 +10,25 @@ import {
 } from '@delfrance/schemas';
 import { VarianteEditor } from './VarianteEditor';
 import { VinculadorLojaIntegrada } from './VinculadorLojaIntegrada';
+import { VinculadorDaShopee } from './VinculadorDaShopee';
 import { prepararVinculosLi, rebaseVinculosLi } from './vinculadorLi';
+import { prepararVinculosShopee, rebaseVinculosShopee } from './vinculadorShopee';
 
 /**
  * Shared ObjectView configuration for the `grupoDeVariacoes` create (`novo`)
  * and edit (`[id]`) screens, so labels, tabs and the custom inputs stay in sync.
+ * The `*_EDICAO` constants are the edit page's: only it carries the Shopee tab.
  */
 
 /** The tab of the Loja Integrada variation links (master plan step 10). */
 export const SECAO_LOJA_INTEGRADA = 'Loja Integrada';
+
+/**
+ * The tab of the Shopee variation links (#1911 P14). ⚠️ The publisher's refusal of
+ * an unpaired standard tier names this tab («Variações (aba Shopee)»), so a rename
+ * here has to travel to that sentence.
+ */
+export const SECAO_SHOPEE = 'Shopee';
 
 /**
  * Whether the grupo screens carry the Loja Integrada tab: the channel's
@@ -29,10 +39,22 @@ export const SECAO_LOJA_INTEGRADA = 'Loja Integrada';
 export const VINCULADOR_LI_VISIVEL =
   marketplaceCapsFor(INTEGRACAO_TIPO.lojaIntegrada).variacoes === 'sim';
 
+/** Whether the grupo's EDIT page carries the Shopee tab, by the same reasoning. */
+export const VINCULADOR_SHOPEE_VISIVEL =
+  marketplaceCapsFor(INTEGRACAO_TIPO.shopee).variacoes === 'sim';
+
 /** Tab order for the grupo ObjectView. */
 export const GRUPO_SECTIONS: string[] = VINCULADOR_LI_VISIVEL
   ? ['Dados gerais', 'Variantes', SECAO_LOJA_INTEGRADA]
   : ['Dados gerais', 'Variantes'];
+
+/**
+ * The edit page's tabs. `novo` carries no Shopee tab by #1911 P14's scope; the tab
+ * itself binds the form's live variantes, saved or not.
+ */
+export const GRUPO_SECTIONS_EDICAO: string[] = VINCULADOR_SHOPEE_VISIVEL
+  ? [...GRUPO_SECTIONS, SECAO_SHOPEE]
+  : GRUPO_SECTIONS;
 
 /**
  * Tabs kept FULLY mounted while hidden: the Loja Integrada tab publishes the
@@ -43,11 +65,18 @@ export const GRUPO_PERSISTENT_SECTIONS: readonly string[] = VINCULADOR_LI_VISIVE
   ? [SECAO_LOJA_INTEGRADA]
   : [];
 
+/** The edit page's: the Shopee tab publishes its seed for the same reason. */
+export const GRUPO_PERSISTENT_SECTIONS_EDICAO: readonly string[] = VINCULADOR_SHOPEE_VISIVEL
+  ? [...GRUPO_PERSISTENT_SECTIONS, SECAO_SHOPEE]
+  : GRUPO_PERSISTENT_SECTIONS;
+
 /**
  * Fields hidden from the grupo ObjectView: audit stamps, the denormalized id
- * list (`variacoesIds` is derived on save), and the marketplace link arrays
- * that only the legacy app ever authored (Shopee, Amazon). The Loja Integrada
- * array is authored by its tab.
+ * list (`variacoesIds` is derived on save), and the marketplace link arrays no
+ * tab of THIS screen authors. Amazon's only the legacy app ever authored. Shopee's
+ * is authored by the product import and by the edit page's tab
+ * ({@link GRUPO_EXCLUDED_FIELDS_EDICAO}). The Loja Integrada array is authored by
+ * its tab.
  */
 export const GRUPO_EXCLUDED_FIELDS: string[] = [
   'timestamp',
@@ -57,6 +86,11 @@ export const GRUPO_EXCLUDED_FIELDS: string[] = [
   ...(VINCULADOR_LI_VISIVEL ? [] : ['linksVariacoesli']),
   'linksVariacoesAmazon',
 ];
+
+/** The edit page's: {@link GRUPO_EXCLUDED_FIELDS} minus the array its Shopee tab authors. */
+export const GRUPO_EXCLUDED_FIELDS_EDICAO: string[] = VINCULADOR_SHOPEE_VISIVEL
+  ? GRUPO_EXCLUDED_FIELDS.filter((campo) => campo !== 'linksVariacoesShopee')
+  : GRUPO_EXCLUDED_FIELDS;
 
 /**
  * Mirror Flutter `GrupoDeVariacoes.save()` (`models.dart:4696`): `variacoesIds`
@@ -75,16 +109,18 @@ export function deriveVariacoesIds(values: Record<string, unknown>): { variacoes
 
 /**
  * The `novo` page's `transformCopiedValues`: a copy ("copiar" on the list)
- * starts with NO Loja Integrada links. A create writes every field, so a copied
- * link would be created by that save while counting as untouched (it is the
- * form's seed) and skipping every check a new link must pass; and a valid one
- * would put the same store grade and options in two grupos, which publishing
- * and importing treat as ambiguous for both. The operator links the copy.
+ * starts with NO Loja Integrada and NO Shopee links. A create writes every field,
+ * so a copied link would be created by that save while counting as untouched (it
+ * is the form's seed) and skipping every check a new link must pass; and a valid
+ * one would put the same store grade or Shopee options in two grupos, which
+ * publishing and importing treat as ambiguous (Loja Integrada) or settle by read
+ * order, silently (Shopee). The operator links the copy. Amazon's array is left
+ * to #2071.
  */
-export function copiarGrupoSemVinculosLi(
+export function copiarGrupoSemVinculos(
   origem: Readonly<Record<string, unknown>>,
 ): Record<string, unknown> {
-  return { ...origem, linksVariacoesli: null };
+  return { ...origem, linksVariacoesli: null, linksVariacoesShopee: null };
 }
 
 const TIPO_OPTIONS = Object.entries(TIPO_VARIACAO_LABELS).map(([value, label]) => ({
@@ -99,7 +135,9 @@ const TIPO_OPTIONS = Object.entries(TIPO_VARIACAO_LABELS).map(([value, label]) =
  * deletions via `stripMarkedForDeletion`; `linksVariacoesli` renders the Loja
  * Integrada tab, writes back every entry it did not touch as stored (its
  * `prepareForSave` only drops staged removals and strips the tab's marks), and
- * merges link by link on a conflicting save.
+ * merges link by link on a conflicting save; `linksVariacoesShopee` does the same
+ * for the Shopee tab, keyed by (conta, category). The `novo` page excludes that
+ * field, so its override never renders there.
  */
 export const grupoFields: Record<string, FieldConfig> = {
   nome: { label: 'Nome', section: 'Dados gerais' },
@@ -151,6 +189,20 @@ export const grupoFields: Record<string, FieldConfig> = {
     rebaseOnConflict: { label: 'mescla por vínculo', merge: rebaseVinculosLi },
     renderInput: (p) => (
       <VinculadorLojaIntegrada
+        value={p.value}
+        onChange={p.onChange}
+        disabled={p.disabled}
+        error={p.error}
+      />
+    ),
+  },
+  linksVariacoesShopee: {
+    label: 'Vínculos Shopee',
+    section: SECAO_SHOPEE,
+    prepareForSave: prepararVinculosShopee,
+    rebaseOnConflict: { label: 'mescla por conta e categoria', merge: rebaseVinculosShopee },
+    renderInput: (p) => (
+      <VinculadorDaShopee
         value={p.value}
         onChange={p.onChange}
         disabled={p.disabled}

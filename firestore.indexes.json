@@ -1613,6 +1613,16 @@
       ]
     },
     {
+      "collectionGroup": "itens",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "metodo_pgto",
       "queryScope": "COLLECTION",
       "fields": [
@@ -1794,6 +1804,16 @@
     },
     {
       "collectionGroup": "produtoMercadoLivre",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "produtolojaintegrada",
       "queryScope": "COLLECTION_GROUP",
       "fields": [
         {
@@ -2842,6 +2862,12 @@
     },
     {
       "collectionGroup": "mensagens",
+      "fieldPath": "expiraEm",
+      "ttl": true,
+      "indexes": []
+    },
+    {
+      "collectionGroup": "feedsAmazon",
       "fieldPath": "expiraEm",
       "ttl": true,
       "indexes": []

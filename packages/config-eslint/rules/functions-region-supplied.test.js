@@ -117,7 +117,6 @@ const KNOWN_BUILDERS = [
   '.github/workflows/ci-mercado-livre.yml',
   '.github/workflows/ci-shopee.yml',
   '.github/workflows/ci-storage.yml',
-  '.github/workflows/copilot-setup-steps.yml',
   '.github/workflows/e2e-emulator.yml',
   '.github/workflows/e2e-reusable.yml',
 ];

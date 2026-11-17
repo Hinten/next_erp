@@ -61,6 +61,14 @@ const PERMANENTES: ReadonlyArray<{ collection: string; scope: Escopo; leitor: st
     scope: 'COLLECTION',
     leitor: 'tools/cmun-table dump — re-export/seed of the CEP table, after the cutover too (#785)',
   },
+  {
+    collection: 'itens',
+    scope: 'COLLECTION',
+    leitor:
+      'apps/loja-integrada product import report pages — GET …/importacoes/[jobId]/itens and the ' +
+      "job's actionable count at its end (importacao/job.indexes.test.ts); the collection id also " +
+      'covers pedidos/{id}/itens',
+  },
 ];
 
 function lerCaminhadas(): Caminhada[] {

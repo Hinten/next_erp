@@ -59,6 +59,7 @@ import {
   type ShopeeLogisticsChannel,
   SHOPEE_ITEM_STATUS_WRITABLE,
 } from '@delfrance/integrations-shopee';
+import { ESTADO_ANUNCIO_SHOPEE } from '@delfrance/schemas';
 
 import type { AtributosProjetados } from '../taxonomia/dto';
 import type { VerdictoFolha } from '../taxonomia/categorias';
@@ -536,9 +537,16 @@ export function planejarPublicacao(
       ? SHOPEE_ITEM_STATUS_WRITABLE.unlist
       : contexto.statusPedido;
 
+  // #2015: the stored list is re-sent only when the projection says THIS app
+  // wrote it (`logisticaConfiavel`, the one predicate over the raw link) — never
+  // re-derived here. The listing to import is the one this plan updates, unless
+  // the link says it is gone (a draft's `itemId` is already `null`).
   const logistica = construirLogistica({
     canais: contexto.canais,
     armazenado: contexto.link?.logistic_info ?? null,
+    armazenadoConfiavel: contexto.link?.logisticaConfiavel === true,
+    itemIdImportavel:
+      contexto.link?.estadoAnuncio === ESTADO_ANUNCIO_SHOPEE.removido ? null : itemId,
     pesoKg: pesoParaPublicar(produto),
     dimensaoCm: dimensaoParaPublicar(produto),
     ofereceFreteGratis: produto.ofereceFreteGratis,

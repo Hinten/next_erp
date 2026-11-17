@@ -1,8 +1,9 @@
 /**
  * The push receiver (`receptor.ts`), driven with a stream spy, a logger spy,
- * the app's fake db and a scripted producer. D11: nothing here reaches Amazon
- * or Cloud Tasks — the producer is a fake, or the REAL one over a transport
- * that rejects with the SDK's own classes (`testing/falhaDeEnfileiramento.ts`).
+ * the app's fake db and scripted producers — the reads queue's and, since step
+ * 12a (PR 12-c), the jobs queue's. D11: nothing here reaches Amazon or Cloud
+ * Tasks — each producer is a fake, or the REAL one over a transport that
+ * rejects with the SDK's own classes (`testing/falhaDeEnfileiramento.ts`).
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -11,13 +12,22 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ZodError } from 'zod';
 import { MissingRegionError } from '@delfrance/core/region';
 import { verifyStaticSecret } from '@delfrance/data/admin/signatures';
+import { TIPO_FEED_LISTINGS } from '@delfrance/integrations-amazon-sp-api';
 import { CABECALHO_CHAVE_RELAY_AMAZON } from '@delfrance/schemas';
 
 import type { AmbienteAmazon } from '../env';
+import {
+  type AgendadorLotesAmazon,
+  AmazonLotesTarefasDesligadasError,
+  type OpcoesDaTarefaLoteAmazon,
+  criarAgendadorLotesAmazon,
+} from '../feeds/agendadorLotes';
+import { type TarefaLoteAmazon, nomeNotificacaoFeed } from '../feeds/tarefaLote';
 import { DIRETORIO_WIRE_AMAZON } from '../fixtures/wireCorpus';
 import { FakeDb, asDb, grpc } from '../testing/fakeDb';
 import {
   CORPO_DA_RESPOSTA_DO_TASKS,
+  falhaDeTarefaJaExistente,
   falhaDoFunctions,
   rejeicaoDoTransporte,
 } from '../testing/falhaDeEnfileiramento';
@@ -36,9 +46,12 @@ import {
   criarAgendadorAmazon,
 } from './agendador';
 import { MAX_CORPO_RECEPTOR_BYTES, MAX_MENSAGEM_SQS_BYTES } from './corpo';
+import { TIPO_FEED_JSON_LISTINGS } from './envelope';
 import type { PayloadNotificacaoAmazon } from './notificacao';
 import {
+  DETALHE_FEED_RECEPTOR_AMAZON,
   type DepsReceptorAmazon,
+  MOTIVO_DESCARTE_RECEPTOR_AMAZON,
   PRAZO_ENFILEIRAMENTO_RECEPTOR_MS,
   PRAZO_PERSISTENCIA_RECEPTOR_MS,
   type RespostaReceptorAmazon,
@@ -86,31 +99,52 @@ const PEDIDO = String(
 const PUBLISH_MS = Date.UTC(2020, 6, 13, 19, 42, 4, 284);
 const DOC = `${COLECAO}/push:${NOTIFICACAO}`;
 
-/** A camelCase FEED_PROCESSING_FINISHED, in-test (placeholder ids; no committed fixture, §3 decision 28). */
+/** The feed every in-test FEED_PROCESSING_FINISHED names: digits, the task's grammar. */
+const FEED = '00000000000';
+
+/**
+ * A camelCase FEED_PROCESSING_FINISHED, in-test (placeholder ids; no committed
+ * fixture): Amazon's model example — the first `examples` entry
+ * of its `FeedProcessingFinishedNotification` schema — key for key, with every
+ * id replaced by a placeholder and our application id put in. Its `feedType` is
+ * the example's own, `POST_PRODUCT_DATA`; `over` replaces payload fields
+ * (`undefined` deletes one).
+ */
 function corpoFeed(over: Record<string, unknown> = {}): Record<string, unknown> {
+  const notificacao: Record<string, unknown> = {
+    sellerId: SPID_A,
+    accountId: 'amzn1.merchant.o.AXXXXXXXXXXXXX',
+    feedId: FEED,
+    feedType: 'POST_PRODUCT_DATA',
+    processingStatus: 'DONE',
+    resultFeedDocumentId: 'documento-resultado-0000000000',
+  };
+  for (const [chave, valor] of Object.entries(over)) {
+    if (valor === undefined) delete notificacao[chave];
+    else notificacao[chave] = valor;
+  }
   return {
     notificationVersion: '2020-09-04',
     notificationType: 'FEED_PROCESSING_FINISHED',
     payloadVersion: '2020-09-04',
     eventTime: '2020-07-13T19:42:04.284Z',
-    payload: {
-      feedProcessingFinishedNotification: {
-        sellerId: SPID_A,
-        accountId: 'amzn1.merchant.o.AXXXXXXXXXXXXX',
-        feedId: '00000000000',
-        feedType: 'POST_PRODUCT_DATA',
-        processingStatus: 'DONE',
-        ...over,
-      },
-    },
+    payload: { feedProcessingFinishedNotification: notificacao },
     notificationMetadata: {
       applicationId: APPLICATION_ID,
-      subscriptionId: '00000000-0000-0000-0000-000000000000',
+      subscriptionId: 'subscription-id-00000000-0000-0000-0000-000000000000',
       publishTime: '2020-07-13T19:42:04.284Z',
       notificationId: '00000000-0000-0000-0000-000000000099',
     },
   };
 }
+
+/** One of OUR feeds: the model example with the feed type this backend submits. */
+const corpoFeedDeListings = (over: Record<string, unknown> = {}) =>
+  corpoFeed({ feedType: 'JSON_LISTINGS_FEED', ...over });
+
+/** The model example's SECOND entry: a vendor group's, with no `sellerId`. */
+const corpoFeedDeGrupo = (over: Record<string, unknown> = {}) =>
+  corpoFeed({ sellerId: undefined, accountId: 'amzn1.vg.0000000', ...over });
 
 const AMBIENTE: AmbienteAmazon = Object.freeze({
   AMAZON_RELAY_SECRET: SEGREDO_RELAY,
@@ -156,6 +190,8 @@ function entrega(
 let db: FakeDb;
 let linhas: LinhaDeLog[];
 let enfileirados: PayloadNotificacaoAmazon[];
+/** What the jobs producer was asked to enqueue: the task and the caller's whole request. */
+let lotes: { tarefa: TarefaLoteAmazon; pedido: unknown }[];
 
 const agendadorQueAceita: AgendadorAmazon = {
   enfileirar(p) {
@@ -164,6 +200,37 @@ const agendadorQueAceita: AgendadorAmazon = {
   },
 };
 
+const agendadorLotesQueAceita: AgendadorLotesAmazon = {
+  enfileirarLote(tarefa, pedido) {
+    lotes.push({ tarefa, pedido });
+    return Promise.resolve('enfileirada');
+  },
+};
+
+/**
+ * The REAL jobs producer over a recording queue that, like Cloud Tasks, refuses
+ * a task id it already holds (the SDK's own 409) — or rejects every enqueue
+ * with `falha()`.
+ */
+function agendadorLotesReal(falha?: () => unknown) {
+  const ids = new Set<string>();
+  const enqueue = vi.fn(
+    (_tarefa: TarefaLoteAmazon, opcoes?: OpcoesDaTarefaLoteAmazon): Promise<void> => {
+      if (falha !== undefined) return Promise.reject(falha());
+      const id = opcoes?.id;
+      if (id !== undefined) {
+        if (ids.has(id)) return Promise.reject(falhaDeTarefaJaExistente(id));
+        ids.add(id);
+      }
+      return Promise.resolve();
+    },
+  );
+  return {
+    agendador: criarAgendadorLotesAmazon({ desligado: false, fila: () => ({ enqueue }) }),
+    enqueue,
+  };
+}
+
 function deps(over: Partial<DepsReceptorAmazon> = {}): DepsReceptorAmazon {
   const espiao = loggerEspiao();
   linhas = espiao.linhas;
@@ -171,6 +238,7 @@ function deps(over: Partial<DepsReceptorAmazon> = {}): DepsReceptorAmazon {
     ambiente: AMBIENTE,
     regiao: () => REGIAO,
     agendador: agendadorQueAceita,
+    agendadorLotes: agendadorLotesQueAceita,
     db: () => asDb(db),
     logger: espiao.logger,
     agora: () => AGORA,
@@ -195,6 +263,7 @@ const ouvir = (motivo: unknown) => {
 beforeEach(() => {
   db = new FakeDb();
   enfileirados = [];
+  lotes = [];
   linhas = [];
   rejeicoesNaoTratadas.length = 0;
   process.on('unhandledRejection', ouvir);
@@ -227,6 +296,8 @@ describe('the happy path', () => {
     expect(Object.keys(enfileirados[0] ?? {}).sort()).toEqual(
       ['amazonOrderId', 'notificationId', 'origem', 'publishTimeMs', 'sellerId', 'tipo'].sort(),
     );
+    // An order never reaches the jobs queue.
+    expect(lotes).toEqual([]);
   });
 
   it('touches no Firestore at all', async () => {
@@ -648,19 +719,288 @@ describe('200 + drop: never a 4xx', () => {
     expect(ultima()?.meta?.amazonOrderId).toBeNull();
   });
 
-  it('FEED_PROCESSING_FINISHED (camelCase) ⇒ parsed, then feed-sem-consumidor (INFO), never enqueued', async () => {
-    expect(await receber(entrega(corpoFeed()))).toEqual(descartada('feed-sem-consumidor'));
-    expect(ultima()?.nivel).toBe('info');
+  it('FEED_PROCESSING_FINISHED (camelCase) is checked like any delivery: its fields, and its app id first — neither producer', async () => {
+    const r = await receber(entrega(corpoFeedDeListings({ accountId: undefined })));
+    expect(r).toEqual(descartada('campo-invalido:accountId'));
+    expect(ultima()?.nivel).toBe('warn');
     expect(ultima()?.meta?.casing).toBe('camel');
     expect(ultima()?.meta?.tipo).toBe('FEED_PROCESSING_FINISHED');
-    expect(enfileirados).toEqual([]);
-    // Its own fields are checked too, and its app id first.
-    expect((await receber(entrega(corpoFeed({ accountId: undefined })))).detalhe).toBe(
-      'campo-invalido:accountId',
-    );
-    const estrangeiro = corpoFeed();
+    const estrangeiro = corpoFeedDeListings();
     (estrangeiro.notificationMetadata as Record<string, unknown>).applicationId = 'outra';
-    expect((await receber(entrega(estrangeiro))).detalhe).toBe('aplicacao-estrangeira');
+    (
+      (estrangeiro.payload as Record<string, unknown>).feedProcessingFinishedNotification as Record<
+        string,
+        unknown
+      >
+    ).feedId = 'nao digitos';
+    expect(await receber(entrega(estrangeiro))).toEqual(descartada('aplicacao-estrangeira'));
+    expect(ultima()?.nivel).toBe('warn');
+    expect(enfileirados).toEqual([]);
+    expect(lotes).toEqual([]);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                   The feed wake-up (step 12a, PR 12-c)                     */
+/* -------------------------------------------------------------------------- */
+
+describe('the feed wake-up: FEED_PROCESSING_FINISHED onto the jobs queue', () => {
+  const descartada = (detalhe: string) => ({ status: 200, resultado: 'descartada', detalhe });
+  const TAREFA = {
+    v: 1,
+    tipo: 'feed-resultado',
+    contaId: null,
+    feedId: FEED,
+    rodada: 0,
+    origem: 'notificacao',
+  };
+
+  it('the feed type the receiver wakes for is the package’s own', () => {
+    expect(TIPO_FEED_JSON_LISTINGS).toBe(TIPO_FEED_LISTINGS);
+  });
+
+  it.each([
+    ['a seller’s (the first entry)', corpoFeed],
+    ['a vendor group’s, with no sellerId (the second entry)', corpoFeedDeGrupo],
+  ])(
+    '★ Amazon’s model example, %s, parses: its POST_PRODUCT_DATA is feed-tipo-ignorado (INFO), neither producer',
+    async (_caso, corpo) => {
+      expect(await receber(entrega(corpo()))).toEqual(descartada('feed-tipo-ignorado'));
+      const linha = ultima();
+      expect(linha?.nivel).toBe('info');
+      expect(linha?.meta).toMatchObject({
+        casing: 'camel',
+        tipo: 'FEED_PROCESSING_FINISHED',
+        documentoResultado: 'presente',
+      });
+      // Not a feed of ours: its id is never logged.
+      expect(linha?.meta?.feedId).toBeUndefined();
+      expect(enfileirados).toEqual([]);
+      expect(lotes).toEqual([]);
+    },
+  );
+
+  it('★ ours (JSON_LISTINGS_FEED) ⇒ ONE NAMED enqueue on the JOBS producer, the reads producer untouched, 200 feed-enfileirado', async () => {
+    const resolverDb = vi.fn(() => asDb(db));
+    const r = await receber(entrega(corpoFeedDeListings()), deps({ db: resolverDb }));
+    expect(r).toEqual({ status: 200, resultado: 'enfileirada', detalhe: 'feed-enfileirado' });
+    expect(DETALHE_FEED_RECEPTOR_AMAZON.enfileirado).toBe('feed-enfileirado');
+    expect(lotes).toEqual([
+      { tarefa: TAREFA, pedido: { nome: nomeNotificacaoFeed(SPID_A, FEED) } },
+    ]);
+    expect(Object.keys(lotes[0]?.tarefa ?? {}).sort()).toEqual(Object.keys(TAREFA).sort());
+    expect(enfileirados).toEqual([]);
+    // The wake-up touches no Firestore at all.
+    expect(resolverDb).not.toHaveBeenCalled();
+    expect(db.operacoes).toBe(0);
+    // ONE line: the feed id (digits, past the grammar) and the document's presence only.
+    expect(linhas).toHaveLength(1);
+    expect(linhas[0]?.nivel).toBe('info');
+    expect(linhas[0]?.meta).toMatchObject({
+      evento: 'notificacao',
+      status: 200,
+      resultado: 'enfileirada',
+      detalhe: 'feed-enfileirado',
+      casing: 'camel',
+      tipo: 'FEED_PROCESSING_FINISHED',
+      feedId: FEED,
+      documentoResultado: 'presente',
+      amazonOrderId: null,
+    });
+    expect(JSON.stringify(linhas)).not.toContain('documento-resultado-0000000000');
+  });
+
+  it('★ NEAR-MISS: a vendor group’s (no sellerId) is named by `-`, never by a seller', async () => {
+    await receber(entrega(corpoFeedDeGrupo({ feedType: 'JSON_LISTINGS_FEED' })));
+    expect(lotes).toEqual([{ tarefa: TAREFA, pedido: { nome: nomeNotificacaoFeed(null, FEED) } }]);
+    expect(nomeNotificacaoFeed(null, FEED)).not.toBe(nomeNotificacaoFeed(SPID_A, FEED));
+  });
+
+  it.each([
+    ['absent', undefined],
+    ['null', null],
+  ])(
+    'an %s resultFeedDocumentId (OPTIONAL) is logged ausente and still wakes the handler',
+    async (_caso, valor) => {
+      const r = await receber(entrega(corpoFeedDeListings({ resultFeedDocumentId: valor })));
+      expect(r.detalhe).toBe('feed-enfileirado');
+      expect(ultima()?.meta?.documentoResultado).toBe('ausente');
+      expect(lotes).toHaveLength(1);
+    },
+  );
+
+  it('★ a second identical delivery ⇒ feed-ja-enfileirado (the REAL producer; Cloud Tasks holds the name) — both 200, nothing persisted', async () => {
+    const real = agendadorLotesReal();
+    const instancia = criarEstadoDaInstanciaReceptorAmazon();
+    const d = () => deps({ agendadorLotes: real.agendador, instancia });
+    expect(await receber(entrega(corpoFeedDeListings()), d())).toEqual({
+      status: 200,
+      resultado: 'enfileirada',
+      detalhe: 'feed-enfileirado',
+    });
+    expect(await receber(entrega(corpoFeedDeListings()), d())).toEqual({
+      status: 200,
+      resultado: 'enfileirada',
+      detalhe: 'feed-ja-enfileirado',
+    });
+    expect(ultima()?.nivel).toBe('info');
+    const nome = nomeNotificacaoFeed(SPID_A, FEED);
+    expect(real.enqueue.mock.calls).toEqual([
+      [TAREFA, { id: nome }],
+      [TAREFA, { id: nome }],
+    ]);
+    expect(db.operacoes).toBe(0);
+    // NEAR-MISS: the same feed of ANOTHER seller is another name, enqueued.
+    const outro = corpoFeedDeGrupo({ feedType: 'JSON_LISTINGS_FEED' });
+    expect((await receber(entrega(outro), d())).detalhe).toBe('feed-enfileirado');
+  });
+
+  it.each([
+    [
+      'the jobs queue’s valve (the REAL producer, closed)',
+      () =>
+        criarAgendadorLotesAmazon({
+          desligado: true,
+          fila: () => {
+            throw new Error('a fila não pode ser resolvida com a válvula fechada');
+          },
+        }),
+      'enfileiramento/AmazonLotesTarefasDesligadasError',
+    ],
+    [
+      'a named transient (the REAL producer over a 503)',
+      () => agendadorLotesReal(() => falhaDoFunctions('unknown-error', 503)).agendador,
+      'enfileiramento/AmazonTarefasTransitoriasError/functions/unknown-error',
+    ],
+    [
+      'a raw SDK permission-denied (deploy-shaped)',
+      () => agendadorLotesReal(() => falhaDoFunctions('permission-denied', 403)).agendador,
+      'enfileiramento/FirebaseFunctionsError/functions/permission-denied',
+    ],
+  ])(
+    '★ %s ⇒ 200 + ONE WARNING feed-nao-enfileirado, NOTHING persisted',
+    async (_caso, criar, falha) => {
+      const resolverDb = vi.fn(() => asDb(db));
+      const r = await receber(
+        entrega(corpoFeedDeListings()),
+        deps({ agendadorLotes: criar(), db: resolverDb }),
+      );
+      expect(r).toEqual(descartada('feed-nao-enfileirado'));
+      expect(MOTIVO_DESCARTE_RECEPTOR_AMAZON.feedNaoEnfileirado).toBe('feed-nao-enfileirado');
+      expect(linhasDeEntrega()).toHaveLength(1);
+      expect(ultima()?.nivel).toBe('warn');
+      expect(ultima()?.meta).toMatchObject({ falha, feedId: FEED });
+      // Never into notificacoesAmazon: it holds orders, and the poll chain reads the feed.
+      expect(resolverDb).not.toHaveBeenCalled();
+      expect(db.caminhos()).toEqual([]);
+      expect(enfileirados).toEqual([]);
+      expect(JSON.stringify(linhas)).not.toContain(CORPO_DA_RESPOSTA_DO_TASKS);
+    },
+  );
+
+  it('NEAR-MISS: the READS queue’s valve class from the jobs producer is not the jobs queue’s — rethrown (500), nothing persisted', async () => {
+    const erro = new AmazonTarefasDesligadasError();
+    const agendadorLotes: AgendadorLotesAmazon = { enfileirarLote: () => Promise.reject(erro) };
+    await expect(receber(entrega(corpoFeedDeListings()), deps({ agendadorLotes }))).rejects.toBe(
+      erro,
+    );
+    expect(db.caminhos()).toEqual([]);
+    expect(ultima()?.meta).toMatchObject({
+      status: 500,
+      resultado: 'falhou',
+      detalhe: 'enfileiramento/AmazonTarefasDesligadasError',
+    });
+  });
+
+  it('a TypeError from the jobs enqueue ⇒ rethrown (500), NOTHING persisted, one ERROR line', async () => {
+    const erro = new TypeError('bug no produtor de lotes');
+    const agendadorLotes: AgendadorLotesAmazon = { enfileirarLote: () => Promise.reject(erro) };
+    await expect(receber(entrega(corpoFeedDeListings()), deps({ agendadorLotes }))).rejects.toBe(
+      erro,
+    );
+    expect(db.caminhos()).toEqual([]);
+    expect(linhasDeEntrega()).toHaveLength(1);
+    expect(ultima()?.nivel).toBe('error');
+    expect(ultima()?.meta).toMatchObject({ status: 500, detalhe: 'enfileiramento/TypeError' });
+    expect(JSON.stringify(linhas)).not.toContain('bug no produtor de lotes');
+  });
+
+  it.each(['F-0000000001', '000000000000000000001', '-1', '1.5'])(
+    '★ a feedId outside the task’s grammar (%j) ⇒ campo-invalido:feedId (INFO), no enqueue, not logged',
+    async (feedId) => {
+      expect(await receber(entrega(corpoFeedDeListings({ feedId })))).toEqual(
+        descartada('campo-invalido:feedId'),
+      );
+      expect(ultima()?.nivel).toBe('info');
+      expect(ultima()?.meta?.feedId).toBeUndefined();
+      expect(lotes).toEqual([]);
+      expect(enfileirados).toEqual([]);
+    },
+  );
+
+  it('NEAR-MISS: a feedId outside the ENVELOPE’s grammar stays the envelope’s WARNING', async () => {
+    expect(await receber(entrega(corpoFeedDeListings({ feedId: 'com espaco' })))).toEqual(
+      descartada('campo-invalido:feedId'),
+    );
+    expect(ultima()?.nivel).toBe('warn');
+    // …and a 20-digit one, the grammar's bound, is ours.
+    const vinteDigitos = '9'.repeat(20);
+    expect((await receber(entrega(corpoFeedDeListings({ feedId: vinteDigitos })))).detalhe).toBe(
+      'feed-enfileirado',
+    );
+    expect(lotes.map((l) => l.tarefa.tipo === 'feed-resultado' && l.tarefa.feedId)).toEqual([
+      vinteDigitos,
+    ]);
+  });
+
+  it.each([
+    'POST_PRODUCT_DATA',
+    'JSON_LISTINGS_FEED_V2',
+    'json_listings_feed',
+    ' JSON_LISTINGS_FEED',
+  ])(
+    '★ feedType %j is not ours ⇒ feed-tipo-ignorado (INFO), neither producer',
+    async (feedType) => {
+      const r = await receber(entrega(corpoFeed({ feedType })));
+      // A value with a space is outside the envelope's opaque grammar.
+      expect(r).toEqual(
+        descartada(feedType.includes(' ') ? 'campo-invalido:feedType' : 'feed-tipo-ignorado'),
+      );
+      expect(lotes).toEqual([]);
+      expect(enfileirados).toEqual([]);
+    },
+  );
+
+  it('feed-sem-consumidor stays in the closed drop set and no feed outcome writes it', async () => {
+    expect(MOTIVO_DESCARTE_RECEPTOR_AMAZON.feedSemConsumidor).toBe('feed-sem-consumidor');
+    const detalhes: string[] = [];
+    for (const corpo of [
+      corpoFeed(),
+      corpoFeedDeGrupo(),
+      corpoFeedDeListings(),
+      corpoFeedDeListings({ feedId: 'F-1' }),
+    ]) {
+      detalhes.push((await receber(entrega(corpo))).detalhe);
+    }
+    detalhes.push(
+      (
+        await receber(
+          entrega(corpoFeedDeListings()),
+          deps({
+            agendadorLotes: {
+              enfileirarLote: () => Promise.reject(new AmazonLotesTarefasDesligadasError()),
+            },
+          }),
+        )
+      ).detalhe,
+    );
+    expect(detalhes).toEqual([
+      'feed-tipo-ignorado',
+      'feed-tipo-ignorado',
+      'feed-enfileirado',
+      'campo-invalido:feedId',
+      'feed-nao-enfileirado',
+    ]);
   });
 });
 
@@ -834,6 +1174,40 @@ describe('the deadlines', () => {
     expect(rejeicoesNaoTratadas).toEqual([]);
   });
 
+  it('★ a feed wake-up whose enqueue never resolves ⇒ 200 feed-nao-enfileirado at the enqueue deadline, NOTHING persisted; a late jobs-valve rejection is a consumed WARNING', async () => {
+    let rejeitar: (e: unknown) => void = () => undefined;
+    const agendadorLotes: AgendadorLotesAmazon = {
+      enfileirarLote: () =>
+        new Promise((_res, rej) => {
+          rejeitar = rej;
+        }),
+    };
+    let resposta: RespostaReceptorAmazon | null = null;
+    void receber(entrega(corpoFeedDeListings()), deps({ agendadorLotes })).then((r) => {
+      resposta = r;
+    });
+    await vi.advanceTimersByTimeAsync(PRAZO_ENFILEIRAMENTO_RECEPTOR_MS - 1);
+    expect(resposta).toBeNull();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(resposta).toEqual({
+      status: 200,
+      resultado: 'descartada',
+      detalhe: 'feed-nao-enfileirado',
+    });
+    expect(ultima()?.nivel).toBe('warn');
+    expect(ultima()?.meta?.falha).toBe('enfileiramento/AmazonTarefasTransitoriasError/prazo');
+    // No persist deadline runs after it: nothing is written for a feed.
+    expect(db.caminhos()).toEqual([]);
+
+    rejeitar(new AmazonLotesTarefasDesligadasError());
+    await new Promise<void>((r) => setImmediate(r));
+    const tardias = linhas.filter((l) => l.meta?.resultado === 'rejeicao-tardia');
+    expect(tardias.map((l) => [l.nivel, l.meta?.classe])).toEqual([
+      ['warn', 'AmazonLotesTarefasDesligadasError'],
+    ]);
+    expect(rejeicoesNaoTratadas).toEqual([]);
+  });
+
   it('a persist that never resolves ⇒ 500 at its deadline', async () => {
     db.antesDaProximaEscrita(DOC, () => new Promise<void>(() => undefined));
     const agendador: AgendadorAmazon = {
@@ -878,6 +1252,15 @@ describe('the log lines', () => {
       [entrega(BASE), {}],
       [entrega(estrangeiro), {}],
       [entrega(corpoFeed()), {}],
+      [entrega(corpoFeedDeListings()), {}],
+      [
+        entrega(corpoFeedDeListings()),
+        {
+          agendadorLotes: {
+            enfileirarLote: () => Promise.reject(new AmazonLotesTarefasDesligadasError()),
+          },
+        },
+      ],
       [entrega(BASE, { chave: 'errada' }), {}],
       [entrega(BASE), { ambiente: { ...AMBIENTE, AMAZON_RELAY_SECRET: undefined } }],
       [

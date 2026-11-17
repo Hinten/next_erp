@@ -11,14 +11,28 @@ Every other file in this folder is one fixture envelope, `<nome>.json`, written 
   Integrada before the cutover (master plan D17).
 - Personal and store-identifying values are fakes of the same JSON type: customer data,
   product names, descriptions, URLs, image paths, tracking codes, external order ids,
-  configuration labels and cost (`fixture` profile of `core/redacao.ts`).
-- SKUs, order numeros, dates, quantities and prices are real (master plan D17, Q3).
+  a product's GTIN, part number and external id, configuration labels and cost
+  (`fixture` profile of `core/redacao.ts`).
+- Order SKUs, order numeros, dates, quantities and prices are real (master plan D17, Q3).
+- Stock rows (`c11-*`) keep their `quantidade`, `quantidade_reservada`,
+  `quantidade_disponivel`, `gerenciado` and both situações as captured; their ids are
+  pseudonyms like every catalogue id (below).
+- Catalogue SKUs are not: in a `catalogo` fixture every SKU (a product row's or
+  detail's `sku`, and a `sku=` value of the request or of `meta.next`/`meta.previous`)
+  is a keyed pseudonym of the same length and shape, built one character at a time
+  from the characters before it (`scripts/README.md`, "The pseudonym key"). One real
+  SKU is one pseudonym in every file and both stores, and a variation whose SKU is its
+  parent's plus a suffix still starts with its parent's pseudonym. A digit that would
+  close a run the check-digit scan reads as a CPF or CNPJ is an upper-case letter
+  instead. Never key a test on a particular SKU value.
 - Catalogue ids are not: in a `catalogo` fixture every Loja Integrada id (a row's `id`
-  or `*_id`, the ids inside `resource_uri`, `categoria_pai`, an option's `grade` and its
+  or `*_id`, the ids inside `resource_uri`, `categoria_pai`, a product's `filhos` and
+  `pai`, a stock row's `produto`, an option's `grade` and its
   `/grade/<g>/variacao/<v>`, the ids of the request path and of `meta.next`/
-  `meta.previous`, and a `produto=` query value) is a keyed 9-digit pseudonym
+  `meta.previous`, and a `produto=` query value) is a keyed 12-digit pseudonym
   (`scripts/README.md`, "The pseudonym key"). One real id is one pseudonym in every
-  file and both stores, so the relations hold: a row's URI ends in its id, a
+  file and both stores, so the relations hold: a row's URI ends in its id (a stock
+  row's ends in the id of the produto its `produto` names, never in its own), a
   `categoria_pai` names a category of the same store, a grade detail is a row of its
   store's grade list, and distinct rows keep distinct ids. Never key a test on a
   particular id value; the whole catalogue corpus shares ONE key, which outlives the
@@ -38,22 +52,26 @@ Every other file in this folder is one fixture envelope, `<nome>.json`, written 
 
 `wireCorpus.test.ts` reads this folder: every file must be a valid envelope, serialised
 as `JSON.stringify(v, null, 2) + '\n'`, and pass both layers of `piiScan.ts`.
-`MINIMO_DE_FIXTURES` is the number of committed fixtures (29 since step 10: 18 from the
-owner's first captures, step 3, plus the 11 catalogue captures `c9-*`), and the test
-asserts the count equals it: a fixture that disappears fails, and so does one added
-without moving it. A change that adds or deliberately removes a fixture moves it in the
-same commit.
+`MINIMO_DE_FIXTURES` is the number of committed fixtures (75 since step 12: 18 from the
+owner's first captures, step 3, the 11 catalogue captures `c9-*`, step 10, the 13
+product captures `c10-*`, step 9, and the 33 stock captures `c11-*`, step 12), and the
+test asserts the count equals it: a fixture
+that disappears fails, and so does one added without moving it. A change that adds or
+deliberately removes a fixture moves it in the same commit.
 
 A change to `core/redacao.ts` can change what the sanitizer writes for a fixture already
 committed. Re-run the dry run over every pair: a fixture whose bytes would change is
 reported `fixture-existente-diferente`. Rewrite it in the same change with
 `--so <nome> --sobrescrever`, and show the owner its diff. The corpus test catches part of
 this: a resource that two fixtures hold must carry one `resource_uri` in both. It also
-pins the catalogue ids' function without naming one (each row's URI ends in its id,
-every `categoria_pai` names a category of its store, each grade detail is one grade
+pins the catalogue ids' function without naming one (each row's URI ends in its id —
+except a stock row's, which ends in the id of the produto its `produto` leaf names, never
+in its own `id` —, every `categoria_pai` names a category of its store, each grade detail is one grade
 listed by its store, a store's category, grade and brand rows and a grade's options
 carry distinct ids) and that every catalogue id is in the pseudonym range
-`[100000000, 999999999]`.
+`[100000000000, 999999999999]`, which no real id reaches (the sanitizer refuses a pair
+holding one that does); and the catalogue SKUs' (every variation a product row names
+in `filhos`, held by the same store, starts with its parent's SKU).
 
 ## Excluded on purpose
 
@@ -64,6 +82,12 @@ carry distinct ids) and that every catalogue id is in the pseudonym range
   The raw pair stays in the owner's capture folder until he deletes it, and a sanitizer
   run without `--so` would write it back: delete that raw pair first, or regenerate with
   `--so` naming only the pairs wanted.
+- The rest of the owner's read-only stock captures: the larger store's other 78 stock
+  pages and its middle-page re-read, both stores' `limit=100` probe (the same request as
+  the walk's first page, so the replay could not tell them apart), and the order searches
+  taken beside them. They stay in the owner's capture folder, and a sanitizer run without
+  `--so` writes them all back: regenerate the stock fixtures only with `--so` naming the
+  committed ones.
 
 This folder is excluded from Prettier and checked out with LF line endings
 (`.prettierignore`, `.gitattributes`), so a re-run over an unchanged capture writes

@@ -356,7 +356,7 @@ describe('MOTIVO_IMPORTACAO_PARADA_AMAZON', () => {
   });
 });
 
-describe('the two Amazon order-import tipos (Amazon steps 5 and 7)', () => {
+describe('the two Amazon tipos, per pedido and per conta (Amazon steps 5, 7 and 12)', () => {
   const FONTE = readFileSync(join(import.meta.dirname, 'aviso.ts'), 'utf8');
 
   /** One tipo's docblock entry: from its bold heading to the next ` * ---`. */
@@ -395,31 +395,63 @@ describe('the two Amazon order-import tipos (Amazon steps 5 and 7)', () => {
     }
   });
 
-  it('★ MOTIVO_PEDIDO_AMAZON has exactly the eight motivos, its constant member for member', () => {
+  it('★ MOTIVO_PEDIDO_AMAZON has exactly the ten motivos, its constant member for member', () => {
     expect([...motivoPedidoAmazonSchema.options].sort()).toEqual(
       [
         'aceitar-cancelamento',
+        'agendamento-recusado',
         'cancelado-so-no-erp',
         'cancelamento-solicitado',
         'coleta-cancelada',
+        'dimensoes-ausentes',
         'divergencia-itens',
         'logistica-desconhecida',
         'pacote-status-desconhecido',
         'status-desconhecido',
       ].sort(),
     );
+    // Step 15 (PR 15-b): the two Easy Ship scheduling refusals.
+    expect(motivoPedidoAmazonSchema.options).toHaveLength(10);
+    expect(MOTIVO_PEDIDO_AMAZON.dimensoesAusentes).toBe('dimensoes-ausentes');
+    expect(MOTIVO_PEDIDO_AMAZON.agendamentoRecusado).toBe('agendamento-recusado');
     expect(Object.values(MOTIVO_PEDIDO_AMAZON).sort()).toEqual(
       [...motivoPedidoAmazonSchema.options].sort(),
     );
   });
 
-  it('★ MOTIVO_CONTA_AMAZON has exactly the two motivos, its constant member for member', () => {
+  it('★ MOTIVO_CONTA_AMAZON has exactly the seven motivos, its constant member for member', () => {
     expect([...motivoContaAmazonSchema.options].sort()).toEqual(
-      ['conta-sem-operacao', 'intermediador-divergente'].sort(),
+      [
+        'conta-sem-operacao',
+        'intermediador-divergente',
+        'estoque-sem-deposito',
+        'estoque-deposito-sem-linhas',
+        'estoque-vinculos-recusados',
+        'estoque-recusado-pela-amazon',
+        'feed-estoque-falhou',
+      ].sort(),
     );
     expect(Object.values(MOTIVO_CONTA_AMAZON).sort()).toEqual(
       [...motivoContaAmazonSchema.options].sort(),
     );
+  });
+
+  it('★ step 12: the five stock motivos, each named in the companion', () => {
+    expect(motivoContaAmazonSchema.options).toHaveLength(7);
+    expect(MOTIVO_CONTA_AMAZON.estoqueSemDeposito).toBe('estoque-sem-deposito');
+    expect(MOTIVO_CONTA_AMAZON.estoqueDepositoSemLinhas).toBe('estoque-deposito-sem-linhas');
+    expect(MOTIVO_CONTA_AMAZON.estoqueVinculosRecusados).toBe('estoque-vinculos-recusados');
+    expect(MOTIVO_CONTA_AMAZON.estoqueRecusadoPelaAmazon).toBe('estoque-recusado-pela-amazon');
+    expect(MOTIVO_CONTA_AMAZON.feedEstoqueFalhou).toBe('feed-estoque-falhou');
+    // NEAR-MISSES: a per-SKU or per-feed spelling is not a per-conta motivo.
+    for (const quase of [
+      'estoque-recusado',
+      'feed-falhou',
+      'feed-estoque-falhou ',
+      'sem-deposito',
+    ]) {
+      expect(motivoContaAmazonSchema.safeParse(quase).success, quase).toBe(false);
+    }
   });
 
   it('near-miss: the informational reasons are pedido INCIDENTES, never aviso motivos', () => {
@@ -453,6 +485,8 @@ describe('the two Amazon order-import tipos (Amazon steps 5 and 7)', () => {
     ['cancelamento-solicitado', 'atencao'],
     ['pacote-status-desconhecido', 'atencao'],
     ['coleta-cancelada', 'atencao'],
+    ['dimensoes-ausentes', 'critico'],
+    ['agendamento-recusado', 'critico'],
   ])(
     '★ the per-pedido docblock gives `%s` its severity (%s), a resolver and a residue',
     (motivo, severidade) => {
@@ -463,7 +497,15 @@ describe('the two Amazon order-import tipos (Amazon steps 5 and 7)', () => {
     },
   );
 
-  it.each([['conta-sem-operacao'], ['intermediador-divergente']])(
+  it.each([
+    ['conta-sem-operacao'],
+    ['intermediador-divergente'],
+    ['estoque-sem-deposito'],
+    ['estoque-deposito-sem-linhas'],
+    ['estoque-vinculos-recusados'],
+    ['estoque-recusado-pela-amazon'],
+    ['feed-estoque-falhou'],
+  ])(
     '★ the per-conta docblock gives `%s` its severity (atencao), a resolver and a residue',
     (motivo) => {
       const bullet = bulletDoMotivo(blocoDoTipo(TIPO_AVISO.amazonContaPrecisaAtencao), motivo);
@@ -472,6 +514,19 @@ describe('the two Amazon order-import tipos (Amazon steps 5 and 7)', () => {
       expect(bullet).toContain('Residue:');
     },
   );
+
+  it.each([
+    ['estoque-sem-deposito', 'RAISED only by the 5-minute stock tick'],
+    ['estoque-deposito-sem-linhas', 'RAISED by the reconcile’s decision'],
+    ['estoque-vinculos-recusados', 'RAISED by the reconcile’s close'],
+    ['estoque-recusado-pela-amazon', 'RAISED by the stock patch task'],
+    ['feed-estoque-falhou', 'RAISED by the feed’s send, result, deadline and recovery paths'],
+  ])('★ the per-conta docblock names the RAISER of the stock motivo `%s`', (motivo, raiser) => {
+    const bullet = bulletDoMotivo(blocoDoTipo(TIPO_AVISO.amazonContaPrecisaAtencao), motivo);
+    // One line of prose, whatever the docblock's wrapping.
+    const prosa = bullet.replace(/\s*\n\s*\*\s*/g, ' ').replace(/'/g, '’');
+    expect(prosa).toContain(raiser);
+  });
 
   it('each docblock entry covers its whole enum: every motivo has a bullet', () => {
     const pedido = blocoDoTipo(TIPO_AVISO.amazonPedidoPrecisaAtencao);

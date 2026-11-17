@@ -11,6 +11,13 @@
  * so the dialog cannot open on a default the backend does not have. The choices
  * are preferences and persist across opens (no safety opt-in here, unlike the
  * price dialog's `baixarPreco`), and the body always carries all of them.
+ *
+ * A «Sobrescrever …» box counts only while the box it depends on is ticked:
+ * greyed out, it is shown unticked and sent `false` — never omitted, because
+ * the route's sanitizer fills an omitted key from the defaults, where
+ * `sobrescreverPreco` is `true` (#2099). The labels are still Mercado Livre's,
+ * but these SEMANTICS now differ from ML's dialog on purpose (#2099; ML's own
+ * copy of the trap is #2123).
  */
 import { useState } from 'react';
 import { Button, Checkbox, Group, Modal, Stack, Text } from '@mantine/core';
@@ -22,18 +29,28 @@ import {
 } from '@delfrance/schemas';
 
 import { ContasSelecionadas } from '@/components/contaJobs/ContasSelecionadas';
+import {
+  DESCRICAO_IMPORTAR_FOTOS_SHOPEE,
+  ROTULO_OPCAO_IMPORTACAO_SHOPEE,
+  ROTULO_STATUS_IMPORTACAO_SHOPEE,
+} from '@/lib/shopee/rotulosImportacaoShopee';
 import { janelaUpdateTimeEmSegundos } from './cadenciaJobsShopee';
 import type { ImportarTodosShopeeActionState } from './useImportarTodosShopeeAction';
 
-/** The four statuses a scan may ask for, in the order the body sends them. */
+/**
+ * The four statuses a scan may ask for, in the order the body sends them.
+ * Every label on this dialog is read from `@/lib/shopee/rotulosImportacaoShopee`,
+ * which the refusal copy naming these boxes reads too (#2015, the #1369 rule).
+ */
 const STATUS_DO_ANUNCIO: readonly { valor: ShopeeImportStatus; rotulo: string }[] = [
-  { valor: SHOPEE_IMPORT_STATUS.normal, rotulo: 'Ativos' },
-  { valor: SHOPEE_IMPORT_STATUS.unlist, rotulo: 'Inativos' },
-  { valor: SHOPEE_IMPORT_STATUS.banned, rotulo: 'Banidos' },
-  { valor: SHOPEE_IMPORT_STATUS.reviewing, rotulo: 'Em revisão' },
-];
+  SHOPEE_IMPORT_STATUS.normal,
+  SHOPEE_IMPORT_STATUS.unlist,
+  SHOPEE_IMPORT_STATUS.banned,
+  SHOPEE_IMPORT_STATUS.reviewing,
+].map((valor) => ({ valor, rotulo: ROTULO_STATUS_IMPORTACAO_SHOPEE[valor] }));
 
 const PADRAO = OPCOES_IMPORTACAO_SHOPEE_PADRAO;
+const ROTULO = ROTULO_OPCAO_IMPORTACAO_SHOPEE;
 
 export function ImportarTodosShopeeDialog({ state }: { state: ImportarTodosShopeeActionState }) {
   const [statuses, setStatuses] = useState<readonly ShopeeImportStatus[]>(PADRAO.statuses);
@@ -56,6 +73,14 @@ export function ImportarTodosShopeeDialog({ state }: { state: ImportarTodosShope
   );
   const [janela, setJanela] = useState<[string | null, string | null]>([null, null]);
 
+  // A «Sobrescrever …» box counts only while the box it depends on is ticked:
+  // greyed out, it is neither shown ticked nor sent — sent `false`, never
+  // omitted (an omitted key takes the server default, `sobrescreverPreco:
+  // true`) (#2099). The preference survives in state for a re-tick.
+  const sobrescreverEstoqueEfetivo = importarEstoque && sobrescreverEstoque;
+  const sobrescreverPrecoEfetivo = importarPreco && sobrescreverPreco;
+  const sobrescreverDadosProdutoEfetivo = atualizarProdutoPai && sobrescreverDadosProduto;
+
   const semStatus = statuses.length === 0;
   // Both ends or neither: half a window is a mistake to point out, not a filter
   // to guess the other half of.
@@ -74,7 +99,7 @@ export function ImportarTodosShopeeDialog({ state }: { state: ImportarTodosShope
         </Text>
         <ContasSelecionadas contas={state.contas} />
         <Checkbox.Group
-          label="Status dos anúncios"
+          label={ROTULO.statuses}
           value={[...statuses]}
           onChange={(valores) =>
             // Kept in the canonical order, whatever order they were clicked in.
@@ -89,57 +114,58 @@ export function ImportarTodosShopeeDialog({ state }: { state: ImportarTodosShope
           </Group>
         </Checkbox.Group>
         <Checkbox
-          label="Importar estoque"
+          label={ROTULO.importarEstoque}
           checked={importarEstoque}
           onChange={(e) => setImportarEstoque(e.currentTarget.checked)}
         />
         <Checkbox
-          label="Sobrescrever estoque existente"
-          checked={sobrescreverEstoque}
+          label={ROTULO.sobrescreverEstoque}
+          checked={sobrescreverEstoqueEfetivo}
           onChange={(e) => setSobrescreverEstoque(e.currentTarget.checked)}
           disabled={!importarEstoque}
         />
         <Checkbox
-          label="Importar preço"
+          label={ROTULO.importarPreco}
           checked={importarPreco}
           onChange={(e) => setImportarPreco(e.currentTarget.checked)}
         />
         <Checkbox
-          label="Sobrescrever preço existente"
-          checked={sobrescreverPreco}
+          label={ROTULO.sobrescreverPreco}
+          checked={sobrescreverPrecoEfetivo}
           onChange={(e) => setSobrescreverPreco(e.currentTarget.checked)}
           disabled={!importarPreco}
         />
         <Checkbox
-          label="Importar fotos"
+          label={ROTULO.importarFotos}
+          description={DESCRICAO_IMPORTAR_FOTOS_SHOPEE}
           checked={importarFotos}
           onChange={(e) => setImportarFotos(e.currentTarget.checked)}
         />
         <Checkbox
-          label="Importar categorias"
+          label={ROTULO.importarCategorias}
           checked={importarCategorias}
           onChange={(e) => setImportarCategorias(e.currentTarget.checked)}
         />
         <Checkbox
-          label="Completar dados do produto pai"
+          label={ROTULO.atualizarProdutoPai}
           checked={atualizarProdutoPai}
           onChange={(e) => setAtualizarProdutoPai(e.currentTarget.checked)}
         />
         <Checkbox
-          label="Sobrescrever dados do produto (marca, dimensões, SKU)"
+          label={ROTULO.sobrescreverDadosProduto}
           description="Por padrão a importação só preenche campos vazios. Marque para substituir também os valores já cadastrados. A descrição e a categoria nunca são substituídas."
-          checked={sobrescreverDadosProduto}
+          checked={sobrescreverDadosProdutoEfetivo}
           onChange={(e) => setSobrescreverDadosProduto(e.currentTarget.checked)}
           disabled={!atualizarProdutoPai}
         />
         <Checkbox
-          label="Atualizar anúncios já cadastrados"
+          label={ROTULO.atualizarCadastrados}
           checked={atualizarCadastrados}
           onChange={(e) => setAtualizarCadastrados(e.currentTarget.checked)}
         />
         <DatePickerInput
           type="range"
-          label="Janela de atualização (opcional)"
+          label={ROTULO.janela}
           description="Só traz mudanças de cadastro — preço e estoque não alteram essa data."
           placeholder="Todas as datas"
           valueFormat="DD/MM/YYYY"
@@ -154,13 +180,13 @@ export function ImportarTodosShopeeDialog({ state }: { state: ImportarTodosShope
             void state.start({
               statuses: [...statuses],
               importarEstoque,
-              sobrescreverEstoque,
+              sobrescreverEstoque: sobrescreverEstoqueEfetivo,
               importarPreco,
-              sobrescreverPreco,
+              sobrescreverPreco: sobrescreverPrecoEfetivo,
               importarFotos,
               importarCategorias,
               atualizarProdutoPai,
-              sobrescreverDadosProduto,
+              sobrescreverDadosProduto: sobrescreverDadosProdutoEfetivo,
               atualizarCadastrados,
               updateTimeFromS: janelaEmSegundos?.[0] ?? null,
               updateTimeToS: janelaEmSegundos?.[1] ?? null,

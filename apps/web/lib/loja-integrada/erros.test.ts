@@ -259,6 +259,7 @@ describe('descreverFalhaCredencialLi — every code the credential routes answer
     CODIGO_ERRO_LI.importacaoEmAndamento,
     CODIGO_ERRO_LI.importacaoNaoEncontrada,
     CODIGO_ERRO_LI.importacaoEncerrada,
+    CODIGO_ERRO_LI.importacaoEmConflito,
   ]);
 
   it.each(

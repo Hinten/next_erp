@@ -63,6 +63,37 @@ export function respostaJson(status: number, corpo: unknown): NextResponse {
   return comCabecalhosAmazon(NextResponse.json(corpo, { status }));
 }
 
+/** A label file name: letters, digits, `_`, `.` and `-`, so it can never break out of its header. */
+const NOME_DE_ARQUIVO_DE_ETIQUETA = /^[\w.-]+$/;
+
+/**
+ * The ONE byte answer of this app: the Easy Ship ZPL label (step 15, PR 15-d).
+ * `Content-Type` is exactly `text/plain`, with no charset parameter: the bytes
+ * are Amazon's verbatim, and the print agent is keyed on that exact type. The
+ * name is built by the caller and guarded here (a `TypeError` outside
+ * {@link NOME_DE_ARQUIVO_DE_ETIQUETA}): a header is never built from Amazon's
+ * `Content-Disposition` or a zip entry's name.
+ */
+export function respostaEtiquetaZpl(etiqueta: {
+  readonly bytes: Uint8Array;
+  readonly nomeArquivo: string;
+}): NextResponse {
+  if (!NOME_DE_ARQUIVO_DE_ETIQUETA.test(etiqueta.nomeArquivo)) {
+    throw new TypeError('respond.ts: nome de arquivo da etiqueta fora da gramática');
+  }
+  return comCabecalhosAmazon(
+    // A Uint8Array is a valid undici body; the cast only bridges the DOM lib's
+    // `BodyInit`, whose `BufferSource` excludes a view over `ArrayBufferLike`.
+    new NextResponse(etiqueta.bytes as BodyInit, {
+      status: 200,
+      headers: {
+        'Content-Type': 'text/plain',
+        'Content-Disposition': `attachment; filename="${etiqueta.nomeArquivo}"`,
+      },
+    }),
+  );
+}
+
 /** One error envelope. Every refusal below goes through here. */
 export function respostaErro(
   status: number,

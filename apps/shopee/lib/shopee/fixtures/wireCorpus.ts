@@ -2,7 +2,7 @@
  * Reader for the committed `__wire__/` corpus — Shopee response bodies, redacted
  * by `redact.ts` before they were written.
  *
- * ⚠️ **Two provenances, and they are not equally strong.** Before step 19, SIX
+ * ⚠️ **Three provenances, and they are not equally strong.** Before step 19, SIX
  * of these bodies were what SHOPEE SENT — the SG sandbox order in `READY_TO_SHIP` (pasted
  * 2026-09-09), its `get_escrow_detail` twin and the same order re-read after
  * arrange-shipment (both pasted 2026-09-10), and step 15b's three
@@ -20,6 +20,21 @@
  * SENT: the SG sandbox answering the two kit probes. Their ids were flattened by
  * the probes' own masking and are reassigned BY ROLE ({@link IDS_DO_KIT_NO_CORPUS});
  * see the kit section below and `__wire__/README.md`.
+ *
+ * #1911 added a THIRD provenance, the strongest and the most sensitive: BR
+ * PRODUCTION reads ({@link CORPOS_BR_1911}), taken read-only on 2026-11-04 with
+ * the live legacy app's token — the shop's own listings, their models and item
+ * bands, and the BR taxonomy (category cut, attribute trees, variation trees,
+ * channels). The capture script keyed-pseudonymised every listing and model id
+ * and every SKU and dropped `request_id`; `redact.ts` then redacted the titles,
+ * descriptions and media URLs of the item-read pages before the commit, the
+ * category tree is CUT ({@link FOLHAS_CAPTURADAS_BR}, `cortarCategorias.ts`),
+ * and the four listing reads are NEUTRALISED (`neutralizarAnuncio.ts`: prices,
+ * stock, listing dates and the seller-typed option name replaced by invented
+ * constants — cut → neutralise → redact).
+ * ⚠️ **Never join a BR pseudonym with the corpus's fixed SG ids** — a BR body
+ * joins only with another BR body of the same capture. See the BR section below
+ * and `__wire__/README.md`.
  *
  * ⚠️ **Read them, never rewrite them.** A test that edits a body to make an
  * assertion pass has converted the only evidence in the suite back into a
@@ -426,7 +441,136 @@ export const CORPOS_KIT_ESCRITA = [
   FIXTURE_UPDATE_STOCK_SG_KIT,
 ] as const;
 
-/** Every committed body, sorted. Excludes the README and any dotfile. */
+/*
+ * The BR PRODUCTION captures (#1911) — read-only reads of the live BR shop,
+ * 2026-11-04, through the live legacy app's token. What Shopee SENT, not what a
+ * page prints; the per-file request parameters, each source's sha256 and each
+ * description's length are the README rows.
+ *
+ * ⚠️ **Their listing and model ids and their SKUs are KEYED PSEUDONYMS** (the
+ * capture script's; a SKU reads `SKU-` + eight lowercase hex — with step 19's
+ * `SONDA-KIT…` probe markers, one of the two SKU shapes `redact.ts` keeps on the
+ * item-read pages (`SKUS_SEM_CONTEUDO`), besides the empty exit). Joins hold
+ * within this capture only — never with the SG sandbox, doc-sample or kit ids.
+ *
+ * ⚠️ **Titles, descriptions and media URLs are redacted** (`redact.ts`, the
+ * item-read entries). A test may assert that a title reads `REDACTED`; it may
+ * never name a value.
+ *
+ * ⚠️ **The four listing reads are NEUTRALISED** (`neutralizarAnuncio.ts`, Lucas
+ * 2026-11-05) — {@link FIXTURE_ITEM_BASE_INFO_BR_ANUNCIO_ATRIBUTOS},
+ * {@link FIXTURE_ITEM_BASE_INFO_BR_ANUNCIO_LOGISTICA},
+ * {@link FIXTURE_ITEM_BASE_INFO_BR_ANUNCIO_VARIACOES} (their `create_time` /
+ * `update_time`) and {@link FIXTURE_MODEL_LIST_BR_ANUNCIO_VARIACOES} (prices,
+ * stock and the one seller-typed option name, in every `model_name` that
+ * spells it). Those leaves are invented constants, not the shop's: no test may
+ * read a price, a stock sum or a date there as a wire fact. Tax data, weights,
+ * dimensions, attribute values and the logistics block are kept verbatim.
+ *
+ * Taxonomy ids (category, attribute, attribute value, variation, variation
+ * group, logistics channel) are Shopee's PUBLIC taxonomy and stay verbatim.
+ */
+
+/** `get_attribute_tree` for the category of capture `a-caneca`. */
+export const FIXTURE_ATTRIBUTE_TREE_BR_A_CANECA = 'get_attribute_tree.br-a-caneca.json';
+/** `get_attribute_tree` for the category of listing `anuncio-atributos`. */
+export const FIXTURE_ATTRIBUTE_TREE_BR_ANUNCIO_ATRIBUTOS =
+  'get_attribute_tree.br-anuncio-atributos.json';
+/** `get_attribute_tree` for the category of listing `anuncio-logistica`. */
+export const FIXTURE_ATTRIBUTE_TREE_BR_ANUNCIO_LOGISTICA =
+  'get_attribute_tree.br-anuncio-logistica.json';
+/** `get_attribute_tree` for the category of listing `anuncio-variacoes`. */
+export const FIXTURE_ATTRIBUTE_TREE_BR_ANUNCIO_VARIACOES =
+  'get_attribute_tree.br-anuncio-variacoes.json';
+/** `get_attribute_tree` for the category of capture `b-capa`. */
+export const FIXTURE_ATTRIBUTE_TREE_BR_B_CAPA = 'get_attribute_tree.br-b-capa.json';
+/** `get_attribute_tree` for the category of capture `c-camiseta`. */
+export const FIXTURE_ATTRIBUTE_TREE_BR_C_CAMISETA = 'get_attribute_tree.br-c-camiseta.json';
+/** `get_attribute_tree` for the category of capture `d-cafe`. */
+export const FIXTURE_ATTRIBUTE_TREE_BR_D_CAFE = 'get_attribute_tree.br-d-cafe.json';
+/** `get_attribute_tree` for the category of capture `d-shampoo`. */
+export const FIXTURE_ATTRIBUTE_TREE_BR_D_SHAMPOO = 'get_attribute_tree.br-d-shampoo.json';
+/**
+ * `get_category`, CUT to the paths of
+ * {@link FOLHAS_CAPTURADAS_BR} plus every root (`cortarCategorias.ts`). The
+ * whole-tree facts the cut cannot carry are README prose, dated.
+ */
+export const FIXTURE_CATEGORY_BR_RECORTE = 'get_category.br-recorte.json';
+/** `get_channel_list` — the shop's logistics channels. */
+export const FIXTURE_CHANNEL_LIST_BR = 'get_channel_list.br.json';
+/** `get_item_base_info` of listing `anuncio-atributos`. */
+export const FIXTURE_ITEM_BASE_INFO_BR_ANUNCIO_ATRIBUTOS =
+  'get_item_base_info.br-anuncio-atributos.json';
+/** `get_item_base_info` of listing `anuncio-logistica`. */
+export const FIXTURE_ITEM_BASE_INFO_BR_ANUNCIO_LOGISTICA =
+  'get_item_base_info.br-anuncio-logistica.json';
+/** `get_item_base_info` of listing `anuncio-variacoes`. */
+export const FIXTURE_ITEM_BASE_INFO_BR_ANUNCIO_VARIACOES =
+  'get_item_base_info.br-anuncio-variacoes.json';
+/** `get_item_limit` for the category of listing `anuncio-atributos`. */
+export const FIXTURE_ITEM_LIMIT_BR_ANUNCIO_ATRIBUTOS = 'get_item_limit.br-anuncio-atributos.json';
+/** `get_item_limit` for the category of capture `c-camiseta`. */
+export const FIXTURE_ITEM_LIMIT_BR_C_CAMISETA = 'get_item_limit.br-c-camiseta.json';
+/** `get_item_limit` with NO `category_id` — the shop-wide bands. */
+export const FIXTURE_ITEM_LIMIT_BR_LOJA = 'get_item_limit.br-loja.json';
+/** `get_model_list` of listing `anuncio-variacoes`. */
+export const FIXTURE_MODEL_LIST_BR_ANUNCIO_VARIACOES = 'get_model_list.br-anuncio-variacoes.json';
+/** `get_variation_tree` for the category of capture `a-caneca` — answered 200. */
+export const FIXTURE_VARIATION_TREE_BR_A_CANECA = 'get_variation_tree.br-a-caneca.json';
+/** `get_variation_tree` for the category of listing `anuncio-variacoes` — answered 200. */
+export const FIXTURE_VARIATION_TREE_BR_ANUNCIO_VARIACOES =
+  'get_variation_tree.br-anuncio-variacoes.json';
+/** `get_variation_tree` for the category of capture `c-camiseta` — answered 200. */
+export const FIXTURE_VARIATION_TREE_BR_C_CAMISETA = 'get_variation_tree.br-c-camiseta.json';
+/**
+ * The `c-camiseta` read on the samples' spelling, `/api/v2/product/get_variations` — the
+ * bare `{"error": "error_not_found"}`.
+ *
+ * ⚠️ It arrived with HTTP **404**, which the file cannot record: serve it with
+ * 404 (the file name says so), like {@link FIXTURE_KIT_ITEM_LIMIT_SG_HTTP404}.
+ */
+export const FIXTURE_VARIATIONS_BR_C_CAMISETA_HTTP404 = 'get_variations.br-c-camiseta-http404.json';
+
+/** The BR production set (#1911), sorted. */
+export const CORPOS_BR_1911 = [
+  FIXTURE_ATTRIBUTE_TREE_BR_A_CANECA,
+  FIXTURE_ATTRIBUTE_TREE_BR_ANUNCIO_ATRIBUTOS,
+  FIXTURE_ATTRIBUTE_TREE_BR_ANUNCIO_LOGISTICA,
+  FIXTURE_ATTRIBUTE_TREE_BR_ANUNCIO_VARIACOES,
+  FIXTURE_ATTRIBUTE_TREE_BR_B_CAPA,
+  FIXTURE_ATTRIBUTE_TREE_BR_C_CAMISETA,
+  FIXTURE_ATTRIBUTE_TREE_BR_D_CAFE,
+  FIXTURE_ATTRIBUTE_TREE_BR_D_SHAMPOO,
+  FIXTURE_CATEGORY_BR_RECORTE,
+  FIXTURE_CHANNEL_LIST_BR,
+  FIXTURE_ITEM_BASE_INFO_BR_ANUNCIO_ATRIBUTOS,
+  FIXTURE_ITEM_BASE_INFO_BR_ANUNCIO_LOGISTICA,
+  FIXTURE_ITEM_BASE_INFO_BR_ANUNCIO_VARIACOES,
+  FIXTURE_ITEM_LIMIT_BR_ANUNCIO_ATRIBUTOS,
+  FIXTURE_ITEM_LIMIT_BR_C_CAMISETA,
+  FIXTURE_ITEM_LIMIT_BR_LOJA,
+  FIXTURE_MODEL_LIST_BR_ANUNCIO_VARIACOES,
+  FIXTURE_VARIATION_TREE_BR_A_CANECA,
+  FIXTURE_VARIATION_TREE_BR_ANUNCIO_VARIACOES,
+  FIXTURE_VARIATION_TREE_BR_C_CAMISETA,
+  FIXTURE_VARIATIONS_BR_C_CAMISETA_HTTP404,
+] as const;
+
+/**
+ * The eight LEAF categories the BR captures read — what
+ * {@link FIXTURE_CATEGORY_BR_RECORTE} keeps the paths to (`cortarCategorias.ts`).
+ * Public taxonomy ids, sorted.
+ */
+export const FOLHAS_CAPTURADAS_BR = [
+  100244, 100352, 100490, 100824, 100869, 101239, 101775, 101787,
+] as const;
+
+/**
+ * Every committed body, sorted. Only `*.json`; the README and every other entry
+ * are excluded — and the inventory test in `wireCorpus.test.ts` pins that no
+ * other entry exists, so a sidecar (a `.txt`, a `.md`, a dotfile) reds there
+ * instead of sitting in the public directory unscanned.
+ */
 export function listarFixtures(): string[] {
   if (!existsSync(WIRE_DIR)) return [];
   return readdirSync(WIRE_DIR)

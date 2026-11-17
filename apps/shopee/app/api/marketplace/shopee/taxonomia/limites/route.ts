@@ -64,10 +64,14 @@ export async function GET(req: Request): Promise<NextResponse> {
       categoryId: id,
       limites,
       gtinLimit,
-      // ⚠️ DERIVED from the `-1` sentinel on `days_to_ship_limit` (guide 209 §4),
-      // and NOT Shopee's `support_pre_order` — that boolean is declared on the
-      // KIT page only. The raw band travels on `dtsLimit` untouched, so a caller
-      // can see the `-1` for itself.
+      // ⚠️ DERIVED from `days_to_ship_limit` (guide 209 §4's `-1` sentinel; no
+      // band at all also answers `false`), and NOT Shopee's `support_pre_order`
+      // — the ITEM page's table never declares that boolean, though the BR wire
+      // sends it (`true` for 100244, `false` for 101787, absent shop-wide). The
+      // derivation agrees on both category reads and no `-1` was observed: the
+      // `pino 4` describe of `lib/shopee/fixtures/capturasBr.test.ts`
+      // (2026-11-04). The raw band travels on `dtsLimit` untouched, so a caller
+      // can see it for itself.
       supportsPreOrder,
     } satisfies z.input<typeof respostaLimitesDoItemShopeeSchema>);
   } catch (err) {

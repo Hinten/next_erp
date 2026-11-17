@@ -1,5 +1,6 @@
 'use client';
 
+import { useMemo } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { Anchor, Group, Stack, Title } from '@mantine/core';
@@ -11,10 +12,11 @@ import { grupoDeVariacoesCollection } from '@/lib/data/grupoDeVariacoesCollectio
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useAuth, usePermission } from '@/lib/auth';
 import {
-  GRUPO_EXCLUDED_FIELDS,
-  GRUPO_PERSISTENT_SECTIONS,
-  GRUPO_SECTIONS,
+  GRUPO_EXCLUDED_FIELDS_EDICAO,
+  GRUPO_PERSISTENT_SECTIONS_EDICAO,
+  GRUPO_SECTIONS_EDICAO,
   VINCULADOR_LI_VISIVEL,
+  VINCULADOR_SHOPEE_VISIVEL,
   deriveVariacoesIds,
   grupoFields,
 } from '../_components/grupoFields';
@@ -22,6 +24,10 @@ import {
   EstadoVinculadorLiProvider,
   useEstadoVinculadorLi,
 } from '../_components/estadoVinculadorLi';
+import {
+  EstadoVinculadorShopeeProvider,
+  useEstadoVinculadorShopee,
+} from '../_components/estadoVinculadorShopee';
 
 export default function GrupoVariacaoPage() {
   const params = useParams<{ id: string }>();
@@ -30,9 +36,21 @@ export default function GrupoVariacaoPage() {
   const { allowed: canWrite } = usePermission(PERM.produto.write);
   const { allowed: canDelete } = usePermission(PERM.produto.delete);
   const db = getFirebaseFirestore();
-  // The Loja Integrada tab publishes the form's seed here; `validar` checks the
+  // Each link tab publishes the form's seed to its state; `validar` checks the
   // links this save edits against it (see `estadoVinculadorLi`).
   const estadoLi = useEstadoVinculadorLi();
+  const estadoShopee = useEstadoVinculadorShopee();
+  // A stable identity: `ObjectView` rebuilds its resolver whenever `validate` changes.
+  const validate = useMemo(
+    () =>
+      VINCULADOR_LI_VISIVEL || VINCULADOR_SHOPEE_VISIVEL
+        ? (values: Record<string, unknown>) => [
+            ...(VINCULADOR_LI_VISIVEL ? estadoLi.validar(values) : []),
+            ...(VINCULADOR_SHOPEE_VISIVEL ? estadoShopee.validar(values) : []),
+          ]
+        : undefined,
+    [estadoLi, estadoShopee],
+  );
 
   async function handleDelete(id: string) {
     await deleteDoc(grupoDeVariacoesCollection.docRef(db, {}, id));
@@ -49,25 +67,27 @@ export default function GrupoVariacaoPage() {
       </Group>
 
       <EstadoVinculadorLiProvider value={estadoLi}>
-        <ObjectView
-          schema={grupoDeVariacoesSchema}
-          collection={grupoDeVariacoesCollection}
-          db={db}
-          currentUserUid={user?.uid ?? ''}
-          recordId={params.id}
-          sections={GRUPO_SECTIONS}
-          persistentSections={GRUPO_PERSISTENT_SECTIONS}
-          fields={grupoFields}
-          excludedFields={GRUPO_EXCLUDED_FIELDS}
-          deriveOnSave={deriveVariacoesIds}
-          validate={VINCULADOR_LI_VISIVEL ? estadoLi.validar : undefined}
-          saveLabel="Salvar alterações"
-          canEdit={canWrite}
-          readOnly={!canWrite}
-          canDelete={canDelete}
-          onDelete={handleDelete}
-          onSaved={() => router.replace('/variacoes')}
-        />
+        <EstadoVinculadorShopeeProvider value={estadoShopee}>
+          <ObjectView
+            schema={grupoDeVariacoesSchema}
+            collection={grupoDeVariacoesCollection}
+            db={db}
+            currentUserUid={user?.uid ?? ''}
+            recordId={params.id}
+            sections={GRUPO_SECTIONS_EDICAO}
+            persistentSections={GRUPO_PERSISTENT_SECTIONS_EDICAO}
+            fields={grupoFields}
+            excludedFields={GRUPO_EXCLUDED_FIELDS_EDICAO}
+            deriveOnSave={deriveVariacoesIds}
+            validate={validate}
+            saveLabel="Salvar alterações"
+            canEdit={canWrite}
+            readOnly={!canWrite}
+            canDelete={canDelete}
+            onDelete={handleDelete}
+            onSaved={() => router.replace('/variacoes')}
+          />
+        </EstadoVinculadorShopeeProvider>
       </EstadoVinculadorLiProvider>
     </Stack>
   );

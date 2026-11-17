@@ -1237,7 +1237,9 @@ export function renderResumoPublicacao(r: ResumoPublicacaoShopee): string[] {
   linhas.push('');
   linhas.push(`### logistic_info (${String(r.logistica.length)} a enviar)`);
   if (r.logistica.length === 0) {
-    linhas.push('  (nenhum — a publicação está bloqueada por logistica-sem-canal)');
+    linhas.push(
+      '  (nenhum — a publicação está bloqueada: veja os problemas de logistic_info abaixo)',
+    );
   } else {
     for (const l of r.logistica) {
       linhas.push(

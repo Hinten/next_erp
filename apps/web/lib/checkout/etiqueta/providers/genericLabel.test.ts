@@ -56,6 +56,7 @@ function makeInput(over: {
       mercadoLivreClient: null,
       shopeeClient: null,
       lojaIntegradaClient: over.lojaIntegradaClient ?? lojaIntegradaClientFalso(),
+      amazonClient: null,
       printJob: over.printJob ?? (vi.fn(async () => 'printed') as never),
     },
     ui: {

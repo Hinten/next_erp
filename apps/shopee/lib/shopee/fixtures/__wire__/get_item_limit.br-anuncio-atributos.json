@@ -1,0 +1,71 @@
+{
+  "error": "",
+  "message": "",
+  "warning": "",
+  "response": {
+    "price_limit": {
+      "min_limit": 1,
+      "max_limit": 100000
+    },
+    "wholesale_price_threshold_percentage": {
+      "min_limit": 1,
+      "max_limit": 100
+    },
+    "stock_limit": {
+      "min_limit": 0,
+      "max_limit": 10000000
+    },
+    "item_name_length_limit": {
+      "min_limit": 2,
+      "max_limit": 120
+    },
+    "item_image_count_limit": {
+      "min_limit": 1,
+      "max_limit": 9
+    },
+    "item_description_length_limit": {
+      "min_limit": 10,
+      "max_limit": 5000
+    },
+    "tier_variation_name_length_limit": {
+      "min_limit": 1,
+      "max_limit": 30
+    },
+    "tier_variation_option_length_limit": {
+      "min_limit": 1,
+      "max_limit": 30
+    },
+    "item_count_limit": {
+      "max_limit": 5000
+    },
+    "extended_description_limit": {
+      "description_text_length_min": 10,
+      "description_text_length_max": 5000,
+      "description_image_num_min": 1,
+      "description_image_num_max": 12,
+      "description_image_width_min": 700,
+      "description_image_height_min": 32,
+      "description_image_aspect_ratio_min": 0.5,
+      "description_image_aspect_ratio_max": 32
+    },
+    "dts_limit": {
+      "non_pre_order_days_to_ship": 2,
+      "support_pre_order": false
+    },
+    "weight_limit": {
+      "weight_mandatory": true
+    },
+    "dimension_limit": {
+      "dimension_mandatory": true
+    },
+    "size_chart_limit": {
+      "size_chart_mandatory": false,
+      "support_image_size_chart": true,
+      "support_template_size_chart": true
+    },
+    "gtin_limit": {
+      "gtin_validation_rule": "Optional"
+    }
+  },
+  "debug_message": ""
+}

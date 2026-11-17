@@ -271,15 +271,15 @@ describe('createShopClient', () => {
   });
 
   it('passes SHOPEE_VARIATIONS_PATH through as the get_variations override', async () => {
-    // The pair to the case above. The path is inside the HMAC base string, so
-    // this override is how the documented-vs-sampled contradiction is settled by
-    // one env var instead of a redeploy.
-    vi.stubEnv('SHOPEE_VARIATIONS_PATH', '/api/v2/product/get_variation_tree');
+    // The pair to the case above. The default is settled on BR
+    // (`get_variation_tree`); the override stays an escape hatch, so the example
+    // is the samples' spelling — a value that DIFFERS from the default.
+    vi.stubEnv('SHOPEE_VARIATIONS_PATH', '/api/v2/product/get_variations');
     const ctx = await loadShopeeContext(db, 'int-1');
     ctx.createShopClient();
 
     const config = h.createShopeeClient.mock.calls[0]?.[0] as Record<string, unknown>;
-    expect(config.paths).toEqual({ getVariations: '/api/v2/product/get_variation_tree' });
+    expect(config.paths).toEqual({ getVariations: '/api/v2/product/get_variations' });
   });
 });
 

@@ -785,6 +785,22 @@ function totaisDaAtualizacao(e: {
 }
 
 /**
+ * Whether the pedido's stored `freteInicial` block is THIS channel's own — the
+ * importer's ownership rule: no block at all (`null`: the import seeds one), or
+ * a block whose `externalOptionIntegracao` is EXACTLY `amz`. A present block of
+ * another integradora, or one WITHOUT `externalOptionIntegracao` (an incomplete
+ * ref), is another modality's: the import never touches it (its freight group,
+ * its refreshed fields and its freight money). `freteRaw` is the stored field
+ * read as an object; anything that is not one reads as no block.
+ *
+ * EXPORTED for the Easy Ship scheduling's stored gate (step 15), which refuses a
+ * foreign block by this very rule: one rule, never a second copy of it.
+ */
+export function freteInicialDaAmazon(freteRaw: Readonly<Record<string, unknown>> | null): boolean {
+  return freteRaw === null || freteRaw.externalOptionIntegracao === INTEGRACAO_FRETE.amazon;
+}
+
+/**
  * The write for one attempt (module header), from THAT attempt's raw snapshots
  * of the pedido and its pagamento (`null` = absent).
  */
@@ -830,8 +846,7 @@ export function montarEscritaPedidoAmazon(
   const aprovadoNaAmazon = venda.fase === 'apr' || venda.fase === 'env';
 
   const freteRaw = armazenadoRaw === null ? null : objeto(armazenadoRaw.freteInicial);
-  const freteNosso =
-    freteRaw === null || freteRaw.externalOptionIntegracao === INTEGRACAO_FRETE.amazon;
+  const freteNosso = freteInicialDaAmazon(freteRaw);
   const dinheiroArmazenado: DinheiroArmazenadoAmazon = {
     descontoTotal: armazenadoRaw === null ? null : numero(armazenadoRaw.descontoTotal),
     valorFrete: freteRaw === null ? null : numero(freteRaw.valorCobrado),

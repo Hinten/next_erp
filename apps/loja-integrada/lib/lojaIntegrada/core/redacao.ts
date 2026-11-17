@@ -24,7 +24,9 @@
  *    a keep-list per resource, at the root (detail) and under `objects.*` (list).
  * 4. **`catalogo`** (produto, estoque, preço, imagem, categoria, marca, grades):
  *    carries no personal data, so the `log` profile keeps a 2xx body's whole text
- *    behind the regex layer; the `fixture` profile walks a keep-list.
+ *    behind the regex layer; the `fixture` profile walks a keep-list. The write
+ *    engine's restore snapshot of ONE catalogue path, the stock detail, is a
+ *    keep-list walk too — byte-faithful or `null` (`corpoDeRestauracaoLi`).
  * 5. **`webhook`** (`/webhooks/…`): no excerpt, ever — its body carries the
  *    receiver's secret.
  * 6. **Non-2xx JSON bodies** get an error walk (`percorrerErro`) that keeps
@@ -77,7 +79,10 @@
  *   of the `log` profile (item 6), with fakes in place of `'<redacted>'`, so a
  *   fixture is never laxer than a log line. On top of the log tables it fakes
  *   tracking codes, the pedido's external ids and `preco_custo`, and
- *   configuration labels.
+ *   configuration labels; on the catalogue class it fakes names, descriptions,
+ *   URLs, image paths, cost and every external identifier (`gtin`, `mpn`,
+ *   `id_externo`). The catalogue ids and SKUs it keeps are then replaced by keyed
+ *   pseudonyms in the sanitizer (`sanitizacao/pseudonimo.ts`), never here.
  *
  * ## The regex layer is deliberately its OWN
  *
@@ -184,7 +189,6 @@ export type NomePredicadoLi =
   | 'sku'
   | 'rastreio'
   | 'rotulo'
-  | 'gtin'
   | 'ncm'
   | 'mime'
   /** `meta.next` / `meta.previous`: kept only through `redigirCaminhoEQuery`. */
@@ -207,7 +211,6 @@ const SKU_TEXTO = /^[\x21-\x7E]{1,64}$/;
 const RASTREIO_CORREIOS = /^[A-Z]{2}\d{9}[A-Z]{2}$/;
 const RASTREIO_GERAL = /^[A-Za-z0-9-]{6,40}$/;
 const ROTULO = /^[\p{L}\p{N} ._/-]{1,60}$/u;
-const GTIN = /^\d{8,14}$/;
 const NCM = /^\d{8}$/;
 const MIME = /^[a-z]+\/[a-z0-9.+-]{1,40}$/;
 
@@ -225,7 +228,6 @@ const PREDICADOS: Readonly<Record<Exclude<NomePredicadoLi, 'urlLi'>, (v: unknown
   sku: texto(SKU_TEXTO),
   rastreio: (v) => typeof v === 'string' && (RASTREIO_CORREIOS.test(v) || RASTREIO_GERAL.test(v)),
   rotulo: texto(ROTULO),
-  gtin: texto(GTIN),
   ncm: texto(NCM),
   mime: texto(MIME),
 };
@@ -268,6 +270,18 @@ const ONZE_DIGITOS = /(?<!\d)\d{11}(?!\d)/g;
 const QUATORZE_DIGITOS = /(?<!\d)\d{14}(?!\d)/g;
 const CNPJ_COM_LETRA =
   /(?<![A-Za-z0-9])(?=[A-Za-z0-9]{0,11}[A-Za-z])[A-Za-z0-9]{12}\d{2}(?![A-Za-z0-9])/g;
+
+/**
+ * The digit layer of {@link mascararTexto}, in the order it runs: a bare run and the
+ * check digits that make it a document. ONE table, read by the layer and by
+ * {@link fimDeTrechoDaCamadaDeDigitosLi}, so the sanitizer's SKU pseudonyms are kept
+ * clear of exactly what the layer masks.
+ */
+const CAMADA_DE_DIGITOS: readonly (readonly [RegExp, TipoMascaraLi, (m: string) => boolean])[] = [
+  [ONZE_DIGITOS, 'cpf', validateCPF],
+  [QUATORZE_DIGITOS, 'cnpj', validateCNPJ],
+  [CNPJ_COM_LETRA, 'cnpj', validateCNPJ],
+];
 
 const ehAlfaNum = (c: number) =>
   (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122);
@@ -342,11 +356,30 @@ export function mascararTexto(
   s = trocar(s, TELEFONE, 'telefone');
   s = trocar(s, CEP, 'cep');
   if (opts.digitos) {
-    s = trocar(s, ONZE_DIGITOS, 'cpf', validateCPF);
-    s = trocar(s, QUATORZE_DIGITOS, 'cnpj', validateCNPJ);
-    s = trocar(s, CNPJ_COM_LETRA, 'cnpj', validateCNPJ);
+    for (const [re, tipo, valida] of CAMADA_DE_DIGITOS) s = trocar(s, re, tipo, valida);
   }
   return { texto: s, mascarados };
+}
+
+/**
+ * Where the digit layer of {@link mascararTexto} would first strike `t`: the end
+ * (exclusive) of the earliest-ending bare run it masks — 11 digits with valid CPF
+ * check digits, 14 digits or the letter-bearing CNPJ shape with valid CNPJ ones — or
+ * `null` when it masks none. Each pattern is tried on `t` as given; the layer runs
+ * them one after another, and a text this returns `null` for is one it leaves
+ * whole. The sanitizer's SKU pseudonyms ask this, never a copy of the patterns.
+ */
+export function fimDeTrechoDaCamadaDeDigitosLi(t: string): number | null {
+  let fim: number | null = null;
+  for (const [re, , valida] of CAMADA_DE_DIGITOS) {
+    for (const m of t.matchAll(re)) {
+      if (!valida(m[0])) continue;
+      const aqui = m.index + m[0].length;
+      if (fim === null || aqui < fim) fim = aqui;
+      break;
+    }
+  }
+  return fim;
 }
 
 /** `redigirTexto` is the regex layer as the plan names it: always with the digit check. */
@@ -799,13 +832,17 @@ const IMAGEM: Entradas = [
   ['resource_uri', 'uriRecurso'],
 ];
 
+/**
+ * A catalogue table keeps no external identifier: `gtin`, `mpn` and `id_externo`
+ * are faked by key ({@link CHAVES_FALSAS_CATALOGO_LI}). A GTIN's company prefix
+ * names whoever registered it, a part number its supplier, and an external id
+ * another channel's public listing. The `sku` is kept here and then replaced by
+ * its keyed pseudonym (`sanitizacao/pseudonimo.ts`).
+ */
 const PRODUTO: Entradas = [
   ['id', 'inteiro'],
-  ['id_externo', 'token'],
-  ['mpn', 'token'],
   ['tipo', 'token'],
   ['sku', 'sku'],
-  ['gtin', 'gtin'],
   ['ncm', 'ncm'],
   ['pai', 'uriRecurso'],
   ['marca', 'uriRecurso'],
@@ -860,24 +897,20 @@ const PRECO: Entradas = [
 
 const CATEGORIA: Entradas = [
   ['id', 'inteiro'],
-  ['id_externo', 'token'],
   ['categoria_pai', 'uriRecurso'],
   ['resource_uri', 'uriRecurso'],
 ];
 
 const MARCA: Entradas = [
   ['id', 'inteiro'],
-  ['id_externo', 'token'],
   ['ativo', 'booleano'],
   ['resource_uri', 'uriRecurso'],
 ];
 
 const GRADE: Entradas = [
   ['id', 'inteiro'],
-  ['id_externo', 'token'],
   ['resource_uri', 'uriRecurso'],
   ['variacoes.*.id', 'inteiro'],
-  ['variacoes.*.id_externo', 'token'],
   ['variacoes.*.grade', 'uriRecurso'],
   ['variacoes.*.resource_uri', 'uriRecurso'],
 ];
@@ -980,6 +1013,25 @@ const TABELA_DO_CATALOGO: ReadonlyMap<string, TabelaRedacaoLi> = new Map([
   ['grades', TABELAS_LI.grade],
   ['grade', TABELAS_LI.grade],
 ]);
+
+/**
+ * The ONE catalogue path a restore snapshot is made for (`corpoDeRestauracaoLi`):
+ * one product's stock detail, `/v1/produto_estoque/{produto id}`, exactly as the
+ * write engine asks it — no trailing slash, a canonical id, no query, the same
+ * form the stock write's route accepts. Tested on the RAW path: the slash form
+ * the store also answers, a list, `;`-joined ids, `/set/`, a query, every other
+ * catalogue resource is NOT it. A local pattern: this file may not import the
+ * package.
+ */
+const CAMINHO_RESTAURACAO_ESTOQUE_LI = /^\/v1\/produto_estoque\/[1-9][0-9]*$/;
+
+/**
+ * The restore snapshot's keep-list for that path: the `ESTOQUE` leaves at the
+ * ROOT only (a detail; no `meta`, no `objects.*`). Module-private and outside
+ * {@link TABELAS_LI}, so the log and fixture profiles and the spec-coverage
+ * table do not see it.
+ */
+const TABELA_RESTAURACAO_ESTOQUE_LI = tabela('produto-estoque-restauracao', ESTOQUE);
 
 /**
  * The catalogue resource names (`recursoDoCaminho`). A path naming one that
@@ -1086,8 +1138,10 @@ export const PREFIXOS_NEGADOS_LI: readonly string[] = [
 
 /**
  * Catalogue keys FAKED by the `fixture` profile (names, descriptions, URLs,
- * image paths, cost). Everything off the keep-list is faked anyway; this list
- * is what the spec-coverage test reads as "redacted on purpose".
+ * image paths, cost, and the external identifiers: GTIN, part number, another
+ * channel's id), at any depth. Everything off the keep-list is faked anyway;
+ * this list is what the spec-coverage test reads as "redacted on purpose".
+ * `null` and `''` carry nothing and stay as captured.
  */
 export const CHAVES_FALSAS_CATALOGO_LI: ReadonlySet<string> = new Set([
   'nome',
@@ -1099,6 +1153,9 @@ export const CHAVES_FALSAS_CATALOGO_LI: ReadonlySet<string> = new Set([
   'pequena',
   'icone',
   'id_anymarket',
+  'id_externo',
+  'gtin',
+  'mpn',
   'imagem_variacao',
   'imagem',
   'tags',
@@ -1620,9 +1677,17 @@ export interface EntradaRestauracaoLi {
  *   walk of the `log` profile, with NO 2 KB cut (the line's own size is capped
  *   by the logger). Only the table's leaves survive: `situacao.*`, `envios.*.id`
  *   and `envios.*.objeto` among them; the buyer is `<redacted>`.
- * - **`catalogo`**: `null` until the first catalogue write builds its
- *   byte-faithful branch (master plan steps 11–13), so a catalogue write cannot
- *   run before it has one.
+ * - **`catalogo`**: ONE branch, byte-faithful or nothing — one product's stock
+ *   detail, `GET /v1/produto_estoque/{produto id}`, in its exact no-slash form
+ *   ({@link CAMINHO_RESTAURACAO_ESTOQUE_LI}; master plan step 12). The root must
+ *   be an object holding all nine `ESTOQUE` keep-list leaves, each coming out of
+ *   the walk UNCHANGED (the same primitive: the store's quantity and its
+ *   reservation ride the line verbatim); a leaf missing, or one the walk would
+ *   alter (a predicate refusal, an object, a masked string), is `null`. Any
+ *   other key is kept with a `<redacted>` value, as on an estrutural body, so a
+ *   new store field shows up in the line without being carried. Every other
+ *   catalogue path stays `null` until its own write builds a branch (master
+ *   plan steps 11–13), so such a write cannot run before it has one.
  * - **`webhook`**, **`configuracao`**: `null` — no write of either restores from here.
  * - A non-2xx answer, an empty or non-JSON body, a body over
  *   `LIMITE_ANALISE_BYTES.log` or nested deeper than `PROFUNDIDADE_MAXIMA_JSON`:
@@ -1631,12 +1696,43 @@ export interface EntradaRestauracaoLi {
  * Pure and total, like the rest of this module.
  */
 export function corpoDeRestauracaoLi(e: EntradaRestauracaoLi): ValorJsonLi | null {
+  if (!ehSucesso(e.status)) return null;
   const politica = classificarCaminho(e.caminho);
-  if (politica !== 'estrutural' || !ehSucesso(e.status)) return null;
-  const analise = analisar(e.texto, bytesUtf8(e.texto), LIMITE_ANALISE_BYTES.log);
-  if (analise.forma !== 'json') return null;
-  const ctx = percurso('log', tabelaDoCaminho(e.caminho), politica, false);
-  return percorrer2xx(analise.valor, '', null, 0, ctx);
+  switch (politica) {
+    case 'estrutural': {
+      const analise = analisar(e.texto, bytesUtf8(e.texto), LIMITE_ANALISE_BYTES.log);
+      if (analise.forma !== 'json') return null;
+      const ctx = percurso('log', tabelaDoCaminho(e.caminho), politica, false);
+      return percorrer2xx(analise.valor, '', null, 0, ctx);
+    }
+    case 'catalogo':
+      return CAMINHO_RESTAURACAO_ESTOQUE_LI.test(e.caminho)
+        ? restauracaoDoEstoqueLi(e.texto)
+        : null;
+    case 'configuracao':
+    case 'webhook':
+      return null;
+  }
+}
+
+/**
+ * The stock detail's restore snapshot: the `log` walk of
+ * {@link TABELA_RESTAURACAO_ESTOQUE_LI} (no denied keys, no fakes), then every
+ * keep-list leaf checked to be present and to come out as the SAME primitive it
+ * went in — else `null`. So for a well-formed detail the snapshot serialises
+ * exactly as the parsed body does, key order included.
+ */
+function restauracaoDoEstoqueLi(texto: string): ValorJsonLi | null {
+  const analise = analisar(texto, bytesUtf8(texto), LIMITE_ANALISE_BYTES.log);
+  if (analise.forma !== 'json' || !ehObjeto(analise.valor)) return null;
+  const lido = analise.valor;
+  const ctx = percurso('log', TABELA_RESTAURACAO_ESTOQUE_LI, 'catalogo', false);
+  const saida = percorrer2xx(lido, '', null, 0, ctx);
+  if (!ehObjeto(saida)) return null;
+  for (const folha of TABELA_RESTAURACAO_ESTOQUE_LI.permitidas.keys()) {
+    if (!Object.hasOwn(lido, folha) || saida[folha] !== lido[folha]) return null;
+  }
+  return saida;
 }
 
 /* -------------------------------------------------------------------------- */

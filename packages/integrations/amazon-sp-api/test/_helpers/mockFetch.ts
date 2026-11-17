@@ -84,10 +84,11 @@ export function verificarFormaDasRequisicoes(): void {
 
 /**
  * `afterEach(verificarFormaDasRequisicoesSpApi)`, for the files that exercise the
- * write client (`escrita.test.ts`, `entrega.test.ts`): every request was EITHER
- * a `GET` with no body to the SP-API host, OR a `POST` to the SP-API host whose
- * body is a STRING and whose `content-type` is `application/json`. Never the LWA
- * endpoint, never another host, never a GET with a body. Clears the record.
+ * write client (`escrita.test.ts`, `entrega.test.ts`, `listings.test.ts`,
+ * `feeds.test.ts`): every request was EITHER a `GET` with no body to the SP-API
+ * host, OR a `POST` or `PATCH` to the SP-API host whose body is a STRING and whose
+ * `content-type` is `application/json`. Never the LWA endpoint, never another
+ * host, never a GET with a body. Clears the record.
  */
 export function verificarFormaDasRequisicoesSpApi(): void {
   const fora = vistas.filter(([input, init]) => {
@@ -95,14 +96,14 @@ export function verificarFormaDasRequisicoesSpApi(): void {
     if (url.origin !== URL_BASE_SP_API) return true;
     const metodo = init?.method;
     if (metodo === 'GET') return init?.body != null;
-    if (metodo !== 'POST' || typeof init?.body !== 'string') return true;
+    if ((metodo !== 'POST' && metodo !== 'PATCH') || typeof init?.body !== 'string') return true;
     return new Headers(init.headers).get('content-type') !== 'application/json';
   });
   const total = vistas.length;
   vistas.length = 0;
   if (fora.length > 0) {
     throw new Error(
-      `${String(fora.length)} de ${String(total)} requisição(ões) não foram nem GET sem corpo nem POST JSON à SP-API.`,
+      `${String(fora.length)} de ${String(total)} requisição(ões) não foram nem GET sem corpo nem POST/PATCH JSON à SP-API.`,
     );
   }
 }

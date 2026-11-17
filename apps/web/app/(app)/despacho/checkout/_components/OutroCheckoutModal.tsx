@@ -7,6 +7,7 @@ import type { Firestore } from 'firebase/firestore';
 import { MODALIDADE_FRETE } from '@delfrance/schemas';
 import type { NFeHttpClient } from '@delfrance/integrations-nfe/http-provider';
 import type { FreightHttpClient } from '@delfrance/integrations-freight-br/http-client';
+import type { AmazonClient } from '@/lib/amazon/client';
 import type { LojaIntegradaClient } from '@/lib/loja-integrada/client';
 import type { MercadoLivreClient } from '@/lib/mercado-livre/client';
 import type { ShopeeClient } from '@/lib/shopee/client';
@@ -165,6 +166,7 @@ export interface OutroCheckoutModalProps {
   mercadoLivreClient: MercadoLivreClient | null;
   shopeeClient: ShopeeClient | null;
   lojaIntegradaClient: LojaIntegradaClient | null;
+  amazonClient: AmazonClient | null;
   formatoDanfe: CheckoutDanfeFormat;
   formatoEtiqueta: 'pdf' | 'zpl2';
 }
@@ -189,6 +191,7 @@ export function OutroCheckoutModal({
   mercadoLivreClient,
   shopeeClient,
   lojaIntegradaClient,
+  amazonClient,
   formatoDanfe,
   formatoEtiqueta,
 }: OutroCheckoutModalProps) {
@@ -263,6 +266,7 @@ export function OutroCheckoutModal({
         mercadoLivreClient,
         shopeeClient,
         lojaIntegradaClient,
+        amazonClient,
         formato: formatoEtiqueta,
         ui,
       });
@@ -276,6 +280,7 @@ export function OutroCheckoutModal({
     mercadoLivreClient,
     shopeeClient,
     lojaIntegradaClient,
+    amazonClient,
     formatoEtiqueta,
     ui,
     printInFlight,

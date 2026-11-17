@@ -5,7 +5,7 @@
   "capturadoEm": "2026-10-28",
   "requisicao": {
     "metodo": "GET",
-    "caminho": "/v1/grades/809090580/",
+    "caminho": "/v1/grades/558809090580/",
     "query": []
   },
   "resposta": {
@@ -14,47 +14,47 @@
     "forma": "json",
     "bytes": 792,
     "corpo": {
-      "id": 809090580,
+      "id": 558809090580,
       "id_externo": null,
       "nome": "REDACTED",
       "nome_visivel": "REDACTED",
       "specification_id": null,
-      "resource_uri": "/api/v1/grades/809090580",
+      "resource_uri": "/api/v1/grades/558809090580",
       "variacoes": [
         {
-          "grade": "/api/v1/grades/809090580",
-          "id": 708944930,
+          "grade": "/api/v1/grades/558809090580",
+          "id": 302208944930,
           "id_externo": null,
           "nome": "REDACTED",
-          "resource_uri": "/api/v1/grade/809090580/variacao/708944930"
+          "resource_uri": "/api/v1/grade/558809090580/variacao/302208944930"
         },
         {
-          "grade": "/api/v1/grades/809090580",
-          "id": 843548017,
+          "grade": "/api/v1/grades/558809090580",
+          "id": 576843548017,
           "id_externo": null,
           "nome": "REDACTED",
-          "resource_uri": "/api/v1/grade/809090580/variacao/843548017"
+          "resource_uri": "/api/v1/grade/558809090580/variacao/576843548017"
         },
         {
-          "grade": "/api/v1/grades/809090580",
-          "id": 592829932,
+          "grade": "/api/v1/grades/558809090580",
+          "id": 284992829932,
           "id_externo": null,
           "nome": "REDACTED",
-          "resource_uri": "/api/v1/grade/809090580/variacao/592829932"
+          "resource_uri": "/api/v1/grade/558809090580/variacao/284992829932"
         },
         {
-          "grade": "/api/v1/grades/809090580",
-          "id": 181440520,
+          "grade": "/api/v1/grades/558809090580",
+          "id": 199981440520,
           "id_externo": null,
           "nome": "REDACTED",
-          "resource_uri": "/api/v1/grade/809090580/variacao/181440520"
+          "resource_uri": "/api/v1/grade/558809090580/variacao/199981440520"
         },
         {
-          "grade": "/api/v1/grades/809090580",
-          "id": 510502885,
+          "grade": "/api/v1/grades/558809090580",
+          "id": 950010502885,
           "id_externo": null,
           "nome": "REDACTED",
-          "resource_uri": "/api/v1/grade/809090580/variacao/510502885"
+          "resource_uri": "/api/v1/grade/558809090580/variacao/950010502885"
         }
       ]
     }

@@ -155,8 +155,8 @@ export async function loadShopeeContext(
         // What the package DOES do with the value it receives is validate it at
         // CONSTRUCTION: a malformed `SHOPEE_VARIATIONS_PATH` raises
         // `ShopeeConfigError` before any call, because the path is inside the
-        // HMAC base string and a wrong one comes back as `error_sign` rather
-        // than as a 404.
+        // HMAC base string. A well-formed but wrong path is not caught here: BR
+        // answers it HTTP 404 `error_not_found`.
         ...(config.variationsPath !== null
           ? { paths: { getVariations: config.variationsPath } }
           : {}),

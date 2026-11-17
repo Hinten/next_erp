@@ -6,12 +6,13 @@ each account gets its own independent job, and the panel shows one card per
 account. Only two things differ per channel — **how a job is started** and
 **which throwables that channel's client considers its own**. Both are injected.
 
-| File                    | What it is                                                                                                                            |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| `types.ts`              | `ContaRef`, `contaRefFromRow`, `ContaJobOutcome`, `FanOutResult`, and the `JobErrorDescription` **port**                              |
-| `startJobsForContas.ts` | the React-free fan-out — `Promise.allSettled`, input order preserved                                                                  |
-| `useContaJobFan.ts`     | the ledger + in-flight flag on top of it                                                                                              |
-| `envioPrecoCsv.ts`      | the "Atualizar preços" CSV — builder, filename, header, `MAX_PAGINAS_RELATORIO_PRECO`; typed on the relatório row both channels store |
+| File                    | What it is                                                                                                                             |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `types.ts`              | `ContaRef`, `contaRefFromRow`, `ContaJobOutcome`, `FanOutResult`, and the `JobErrorDescription` **port**                               |
+| `startJobsForContas.ts` | the React-free fan-out — `Promise.allSettled`, input order preserved                                                                   |
+| `useContaJobFan.ts`     | the ledger + in-flight flag on top of it                                                                                               |
+| `envioPrecoCsv.ts`      | the "Atualizar preços" CSV — builder, filename, header, `MAX_PAGINAS_RELATORIO_PRECO`; typed on the relatório row both channels store  |
+| `cadencia.ts`           | the card clock — `INTERVALO_JOB_MS` (3 s), `SEM_PROGRESSO_MS` (45 min), `ultimoSinalDeVida`, `silencioExcedido`, `formatarInstanteJob` |
 
 The shared card chrome is React, so it lives beside the other cross-route
 components in `apps/web/components/contaJobs/`:
@@ -22,6 +23,7 @@ components in `apps/web/components/contaJobs/`:
 | `PriceSyncEntryList.tsx`    | the skip/failure sample with its "+N mais" tail, over `AmostraDeJob`                                             |
 | `BaixarRelatorioButton.tsx` | "Baixar CSV" with its page counter                                                                               |
 | `ContasSelecionadas.tsx`    | the start dialogs' list of the contas a run will touch                                                           |
+| `AvisoSemProgresso.tsx`     | the "sem progresso desde …" line a card shows once its channel's rule says the run went silent                   |
 
 ## Adding a channel
 
@@ -31,7 +33,9 @@ components in `apps/web/components/contaJobs/`:
    Mercado Livre's lives in `canais/mercado-livre/_components/mercadoLivreJobErrors.ts`.
    Shopee's (#1529) in `canais/shopee/_components/shopeeJobErrors.ts`, with `ERROS_DO_CLIENTE_SHOPEE`.
 2. In the action hook: `const fan = useContaJobFan(describe<Job>StartError);`
-   then `await fan.run(contas, (contaId) => client.start<Job>(contaId))`.
+   then `await fan.run(contas, (contaId) => client.start<Job>(contaId))`. The
+   run resolves with its own outcomes (one per conta, input order) for a caller
+   that must act on one conta's result; `entries` is the ledger the cards read.
 3. Render `fan.entries` with `components/contaJobs/*`, passing the channel's
    own `ErrosDoCliente` with every `onCancel` (Mercado Livre's is
    `ERROS_DO_CLIENTE_ML`, beside its describers). The cards, the panel, the
@@ -80,3 +84,12 @@ spy, and `useBaixarRelatorioPreco.test.ts` never reaches the cap — so they got
 pins of their own: `ERROS_DO_CLIENTE_ML`'s tag and two classes in
 `mercadoLivreJobErrors.test.ts`, and the literal `100` in
 `envioPrecoCsv.test.ts`.
+
+The Loja Integrada product import (master plan step 9) moved the card clock the
+same way: `cadencia.ts` is the channel-neutral half of Shopee's
+`cadenciaJobsShopee.ts` — the 3 s cadence, the 45-minute rule, the last sign of
+life and the printed instant, names and behaviour unchanged. The one addition,
+`silencioExcedido`, is the comparison Shopee's `semProgresso` used to inline;
+which statuses count as running stays with each channel's own enum. The
+sentence the cards print for it moved with it, out of Shopee's cards:
+`components/contaJobs/AvisoSemProgresso.tsx`, its copy unchanged.

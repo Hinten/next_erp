@@ -17,7 +17,17 @@
  *    PR 6's `forma-pagamento-desconhecida` and `pagamento-dividido`, and PR
  *    5-f's `desconto-nao-detalhado` and `imposto-destacado` (what the order
  *    money cannot state: check the NF-e's values before emitting it).
- *    `subtipo` = the code.
+ *    `subtipo` = the code;
+ *  - `amz-nfe-pedido-cancelado` (step 14, PR 14-c) — a CANCELLED sale whose
+ *    pedido holds an authorized sale NF-e: nothing can be sent to Amazon (the
+ *    Delivery API has no cancel), so the operator is told to cancel the NF-e at
+ *    SEFAZ inside the deadline, or to issue the devolução (step-14 plan §3
+ *    decision 17(a)). Filed by the NF-e task (the stored pedido cancelled, or
+ *    the live order CANCELLED) and by the order import on its transition INTO
+ *    a cancelled sale (`cancelado` or `estornadoIntegralmente`;
+ *    {@link registrarIncidenteNfePedidoCanceladoAmazon}). A
+ *    DEDICATED id: the importer's decision codes (`INCIDENTE_PEDIDO_AMAZON`,
+ *    `codigosPedidoAmazon.ts`) are not widened by it.
  *
  * ## Tier 0, and they can never block
  *
@@ -53,6 +63,12 @@ export function idIncidenteLinhaAmazon(orderItemId: string): string {
 
 /** The incidente id (and `subtipo`) of an approved pedido with no cliente. */
 export const ID_INCIDENTE_CLIENTE_SEM_IDENTIDADE_AMAZON = 'amz-cliente-sem-identidade';
+
+/**
+ * The incidente id (and `subtipo`) of a cancelled sale with an authorized NF-e
+ * (step 14, PR 14-c; module header).
+ */
+export const ID_INCIDENTE_NFE_PEDIDO_CANCELADO_AMAZON = 'amz-nfe-pedido-cancelado';
 
 /** The incidente id of an informational code. */
 export function idIncidenteDoCodigoAmazon(codigo: IncidentePedidoAmazon): string {
@@ -130,6 +146,73 @@ function textoClienteSemIdentidade(orderId: string): string {
   );
 }
 
+/** The text of {@link ID_INCIDENTE_NFE_PEDIDO_CANCELADO_AMAZON}: the order id, never the access key. */
+export function textoNfePedidoCanceladoAmazon(orderId: string): string {
+  return (
+    `[Amazon] O pedido ${orderId} foi cancelado, mas tem uma NF-e de venda autorizada. ` +
+    'Nada pode ser enviado à Amazon para cancelá-la: cancele a NF-e na SEFAZ dentro do ' +
+    'prazo, ou emita a NF-e de devolução.'
+  );
+}
+
+/** One incidente to create. */
+interface PlanoIncidenteAmazon {
+  readonly id: string;
+  readonly subtipo: string;
+  readonly motivo: string;
+  readonly externalId: string | null;
+}
+
+/** `create` at the deterministic id; `true` when THIS call created it (only ALREADY_EXISTS swallowed). */
+async function criarIncidente(
+  db: Firestore,
+  pedidoId: string,
+  plano: PlanoIncidenteAmazon,
+  nowUs: number,
+): Promise<boolean> {
+  try {
+    await incidenteCollection.docRef(db, { pedidoId }, plano.id).create(
+      incidenteCollection.parse({
+        origem: ORIGEM_INCIDENTE.outros,
+        tipo: TIPO_INCIDENTE.outros,
+        subtipo: plano.subtipo,
+        motivoDoIncidente: plano.motivo,
+        comentarios: null,
+        timestamp: nowUs,
+        ultimaModificacao: nowUs,
+        externalId: plano.externalId,
+        resolucao: null,
+      }),
+    );
+    return true;
+  } catch (err) {
+    if (!isAlreadyExists(err)) throw err;
+    return false;
+  }
+}
+
+/**
+ * File `amz-nfe-pedido-cancelado` on one pedido (module header): tier 0, `true`
+ * when this call created it — a repeat (the task's retry, the importer's next
+ * cancel transition, both producers) creates nothing.
+ */
+export function registrarIncidenteNfePedidoCanceladoAmazon(
+  db: Firestore,
+  entrada: { readonly pedidoId: string; readonly orderId: string; readonly nowUs: number },
+): Promise<boolean> {
+  return criarIncidente(
+    db,
+    entrada.pedidoId,
+    {
+      id: ID_INCIDENTE_NFE_PEDIDO_CANCELADO_AMAZON,
+      subtipo: ID_INCIDENTE_NFE_PEDIDO_CANCELADO_AMAZON,
+      motivo: textoNfePedidoCanceladoAmazon(entrada.orderId),
+      externalId: null,
+    },
+    entrada.nowUs,
+  );
+}
+
 /**
  * Create every incidente of one import (module header). Returns the ids it
  * CREATED — a redelivery legitimately creates none.
@@ -139,12 +222,7 @@ export async function registrarIncidentesDoPedidoAmazon(
   entrada: IncidentesDoPedidoAmazon,
 ): Promise<string[]> {
   const { pedidoId, orderId, nowUs } = entrada;
-  const planos: {
-    readonly id: string;
-    readonly subtipo: string;
-    readonly motivo: string;
-    readonly externalId: string | null;
-  }[] = [];
+  const planos: PlanoIncidenteAmazon[] = [];
   for (const linha of entrada.linhasSemProduto) {
     planos.push({
       id: idIncidenteLinhaAmazon(linha.orderItemId),
@@ -172,24 +250,7 @@ export async function registrarIncidentesDoPedidoAmazon(
 
   const criados: string[] = [];
   for (const plano of planos) {
-    try {
-      await incidenteCollection.docRef(db, { pedidoId }, plano.id).create(
-        incidenteCollection.parse({
-          origem: ORIGEM_INCIDENTE.outros,
-          tipo: TIPO_INCIDENTE.outros,
-          subtipo: plano.subtipo,
-          motivoDoIncidente: plano.motivo,
-          comentarios: null,
-          timestamp: nowUs,
-          ultimaModificacao: nowUs,
-          externalId: plano.externalId,
-          resolucao: null,
-        }),
-      );
-      criados.push(plano.id);
-    } catch (err) {
-      if (!isAlreadyExists(err)) throw err;
-    }
+    if (await criarIncidente(db, pedidoId, plano, nowUs)) criados.push(plano.id);
   }
   return criados;
 }

@@ -1,0 +1,201 @@
+{
+  "versao": 1,
+  "perfil": "fixture",
+  "credencial": "modelo-sandbox",
+  "papeis": [
+    "nao-se-aplica"
+  ],
+  "capturadoEm": "2026-11-11",
+  "limiteTaxa": null,
+  "requisicao": {
+    "tipo": "http",
+    "metodo": "GET",
+    "caminho": "/listings/2021-08-01/items/<sellerId>/SKU-Z0e2345fa",
+    "query": [],
+    "corpo": null
+  },
+  "resposta": {
+    "status": 200,
+    "politica": "estrutural",
+    "forma": "json",
+    "bytes": 2731,
+    "corpo": {
+      "sku": "SKU-Z0e2345fa",
+      "summaries": [
+        {
+          "marketplaceId": "ATVPDKIKX0DER",
+          "asin": "B0ZZO8AON0",
+          "productType": "LUGGAGE",
+          "conditionType": "new_new",
+          "status": [
+            "BUYABLE"
+          ],
+          "itemName": "REDACTED",
+          "createdDate": "2021-02-01T00:00:00Z",
+          "lastUpdatedDate": "2021-03-01T00:00:00Z",
+          "mainImage": {
+            "link": "REDACTED",
+            "height": 0,
+            "width": 0
+          }
+        },
+        {
+          "marketplaceId": "A2EUQ1WTGCTBG2",
+          "asin": "B0ZZO8AON0",
+          "productType": "LUGGAGE",
+          "conditionType": "new_new",
+          "status": [],
+          "itemName": "REDACTED",
+          "createdDate": "2021-02-02T01:00:00Z",
+          "lastUpdatedDate": "2021-03-05T00:00:00Z",
+          "mainImage": {
+            "link": "REDACTED",
+            "height": 0,
+            "width": 0
+          }
+        }
+      ],
+      "offers": [
+        {
+          "marketplaceId": "REDACTED",
+          "offerType": "REDACTED",
+          "price": {
+            "currencyCode": "REDACTED",
+            "amount": "100.00"
+          },
+          "audience": {
+            "value": "REDACTED",
+            "displayName": "REDACTED"
+          }
+        },
+        {
+          "marketplaceId": "REDACTED",
+          "offerType": "REDACTED",
+          "price": {
+            "currencyCode": "REDACTED",
+            "amount": "130.00"
+          },
+          "audience": {
+            "value": "REDACTED",
+            "displayName": "REDACTED"
+          }
+        }
+      ],
+      "fulfillmentAvailability": [
+        {
+          "fulfillmentChannelCode": "DEFAULT",
+          "quantity": 100
+        }
+      ],
+      "issues": [
+        {
+          "code": "90220",
+          "message": "REDACTED",
+          "severity": "ERROR",
+          "attributeNames": [
+            "size"
+          ],
+          "categories": [
+            "MISSING_ATTRIBUTE",
+            "LISTING"
+          ],
+          "marketplaceIds": [
+            "ATVPDKIKX0DER"
+          ]
+        },
+        {
+          "code": "18027",
+          "message": "REDACTED",
+          "severity": "ERROR",
+          "categories": [
+            "INVALID_IMAGE",
+            "LISTING"
+          ],
+          "enforcements": {
+            "actions": [
+              {
+                "action": "REDACTED"
+              }
+            ],
+            "exemption": {
+              "status": "EXEMPT_UNTIL_EXPIRY_DATE",
+              "expiryDate": "REDACTED"
+            }
+          },
+          "marketplaceIds": [
+            "ATVPDKIKX0DER",
+            "A2EUQ1WTGCTBG2"
+          ]
+        },
+        {
+          "code": "99300",
+          "message": "REDACTED",
+          "severity": "ERROR",
+          "categories": [
+            "PRODUCT"
+          ],
+          "enforcements": {
+            "actions": [
+              {
+                "action": "REDACTED"
+              }
+            ],
+            "exemption": {
+              "status": "EXEMPT"
+            }
+          },
+          "marketplaceIds": [
+            "ATVPDKIKX0DER",
+            "A2EUQ1WTGCTBG2"
+          ]
+        },
+        {
+          "code": "18155",
+          "message": "REDACTED",
+          "severity": "ERROR",
+          "categories": [
+            "INVALID_PRICE",
+            "LISTING"
+          ],
+          "enforcements": {
+            "actions": [
+              {
+                "action": "REDACTED"
+              }
+            ],
+            "exemption": {
+              "status": "NOT_EXEMPT"
+            }
+          },
+          "marketplaceIds": [
+            "ATVPDKIKX0DER"
+          ]
+        },
+        {
+          "code": "18742",
+          "message": "REDACTED",
+          "severity": "ERROR",
+          "categories": [
+            "PRODUCT"
+          ],
+          "enforcements": {
+            "actions": [
+              {
+                "action": "REDACTED"
+              }
+            ],
+            "exemption": {
+              "status": "NOT_EXEMPT"
+            }
+          },
+          "marketplaceIds": [
+            "ATVPDKIKX0DER"
+          ]
+        }
+      ]
+    }
+  },
+  "anexos": {
+    "zip": null
+  }
+}

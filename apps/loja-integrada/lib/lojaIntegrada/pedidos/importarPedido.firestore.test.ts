@@ -62,6 +62,15 @@
  * `nome`), so a trigger run finds nothing to patch. Its id is no other suite's.
  * Each `beforeEach` deletes what this file reads; `afterAll` removes the freight
  * docs BEFORE the conta, so the delete trigger finds nothing to deactivate.
+ *
+ * ⚠️ The link docs this file seeds fire the ANCHOR trigger too
+ * (`onProdutoLojaIntegradaLinkChanged`, master plan step 9): each one adds the
+ * conta to its produto's `integracoesComProduto`. So the case that seeds them
+ * awaits that write on each seeded produto UNCONDITIONALLY before it imports or
+ * asserts — never "only if it fails" — and ends by deleting its links and
+ * awaiting the anchor's last write (the conta leaving the array) before the next
+ * wipe removes the produtos, so no anchor write of this file lands in the next
+ * case or the next file (`testing/ancoraLi.ts`).
  */
 import { env } from 'node:process';
 import {
@@ -113,6 +122,7 @@ import {
   plataformaLi,
   type RespostaRoteirizadaLi,
 } from '../testing/pedidosLi';
+import { aguardarAncoraLi, comConta, semConta } from '../testing/ancoraLi';
 import { relogioDoDocumentoUs } from '../avisos/avisos';
 import { chaveDoAvisoDeFreteLi, chaveDoAvisoDoPedidoLi } from './avisosPedidoLi';
 import { dataLiParaMicros } from './dataLi';
@@ -831,6 +841,12 @@ describe.skipIf(!EMULATED)('the Loja Integrada order import on real Firestore', 
         id: ID_PRODUTO_LI + 1,
         sku: 'sku-b',
       });
+    // Each link create fires the anchor trigger, which writes the produto: await that write
+    // on BOTH produtos, unconditionally, before the import reads them (header). The bare ref
+    // form reaching the anchor is part of the proof: the trigger reads both stored forms.
+    for (const produto of ['p-canonico', 'p-nu']) {
+      await aguardarAncoraLi(db(), produto, comConta(CONTA), `com a conta (${produto})`);
+    }
     const [linha] = pedidoLiBruto().itens as DocumentData[];
     const c = cena({
       itens: [
@@ -857,7 +873,15 @@ describe.skipIf(!EMULATED)('the Loja Integrada order import on real Firestore', 
     await importar(c);
     const itens = (await refPedido().get()).data()?.itens as Record<string, DocumentData[]>;
     expect(Object.keys(itens).sort()).toEqual(['p-canonico', 'p-nu']);
-  });
+
+    // The anchor's LAST write before the next wipe: delete the links while the produtos still
+    // exist and await the conta leaving each array (header).
+    await produtos.doc('p-canonico').collection('produtolojaintegrada').doc('l1').delete();
+    await produtos.doc('p-nu').collection('produtolojaintegrada').doc('l2').delete();
+    for (const produto of ['p-canonico', 'p-nu']) {
+      await aguardarAncoraLi(db(), produto, semConta(CONTA), `sem a conta (${produto})`);
+    }
+  }, 120_000);
 
   it('the step-7 loop: a newer stamp with LI shipped and the same code moves only the clocks', async () => {
     const comCodigo = (horas: number) =>

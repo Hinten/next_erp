@@ -1,0 +1,33 @@
+{
+  "error": "",
+  "message": "",
+  "warning": "",
+  "data": {
+    "standardise_variation_list": [
+      {
+        "variation_id": 101054,
+        "variation_name": "Cor"
+      },
+      {
+        "variation_id": 103236,
+        "variation_name": "Estilo"
+      },
+      {
+        "variation_id": 101264,
+        "variation_name": " Estampa"
+      },
+      {
+        "variation_id": 102870,
+        "variation_name": "Capacidade"
+      },
+      {
+        "variation_id": 103394,
+        "variation_name": "Variação"
+      },
+      {
+        "variation_id": 103302,
+        "variation_name": "Unidades por pacote"
+      }
+    ]
+  }
+}

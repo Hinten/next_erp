@@ -4,8 +4,10 @@ import { Alert, Button, Group, Modal, Stack, Table, Text } from '@mantine/core';
 import { IconAlertTriangle } from '@tabler/icons-react';
 import {
   CAMPO_RASCUNHO_SHOPEE,
+  ordenadosPorCanalLogisticaShopee,
   textoUtilizavelShopee,
   type CampoRascunhoShopee,
+  type CanalLogisticaRascunhoShopee,
   type ConflitoRascunhoShopee,
 } from '@delfrance/schemas';
 
@@ -15,6 +17,7 @@ import {
   FRASE_RASCUNHO_CARREGANDO_SHOPEE,
   ROTULO_CAMPO_RASCUNHO_SHOPEE,
   TITULO_CONFLITO_RASCUNHO_SHOPEE,
+  linhaDoCanalSomenteLeituraShopee,
   type OperacaoRascunhoShopee,
 } from '@/lib/shopee/anuncioProduto';
 import type { EdicaoRascunhoShopee } from '@/lib/shopee/rascunho';
@@ -69,6 +72,37 @@ export interface ConflitoRascunhoShopeeModalProps {
 /** A cell with no value to show. */
 const VAZIO = '(vazio)';
 
+/** One entry of a `logistic_info` cell read without a schema: the projection's shape, or `null`. */
+function canalDaCelula(entrada: unknown): CanalLogisticaRascunhoShopee | null {
+  if (typeof entrada !== 'object' || entrada === null) return null;
+  const { logistic_id: id, enabled, is_free: freteGratis } = entrada as Record<string, unknown>;
+  if (typeof id !== 'number' || !Number.isFinite(id) || typeof enabled !== 'boolean') return null;
+  if (freteGratis !== null && typeof freteGratis !== 'boolean') return null;
+  return { logistic_id: id, enabled, is_free: freteGratis };
+}
+
+/**
+ * A channel list as the «Logística» cells show it (#1911 P16, Lucas
+ * 2026-11-16 Q-B): ONE line per channel — the Logística section's own
+ * read-only line ({@link linhaDoCanalSomenteLeituraShopee}, by id: the modal
+ * has no channel list to name them) — joined by «; », in the schemas' ONE
+ * channel ordering, so the cell says WHICH channel is on and which ships free.
+ * Two lists with the same number of channels on (a free-shipping flip, a
+ * swapped on/off pair) read DIFFERENT; the same list stored in another order
+ * reads the same (the write folds that order too). `[]` has no line: «(vazio)».
+ * `null` ⇔ an entry this build cannot read — the cell then says so.
+ */
+function textoDosCanaisDoRascunhoShopee(lista: readonly unknown[]): string | null {
+  const canais: CanalLogisticaRascunhoShopee[] = [];
+  for (const entrada of lista) {
+    const canal = canalDaCelula(entrada);
+    if (canal === null) return null;
+    canais.push(canal);
+  }
+  if (canais.length === 0) return VAZIO;
+  return ordenadosPorCanalLogisticaShopee(canais).map(linhaDoCanalSomenteLeituraShopee).join('; ');
+}
+
 /**
  * One draft field's value as the modal shows it — DISPLAY ONLY: it decides
  * nothing (the editor rebases on the stored document, never on these cells).
@@ -105,14 +139,19 @@ export function textoDoValorDoRascunhoShopee(campo: CampoRascunhoShopee, valor: 
       if (valor === null || valor === undefined) return '(nenhum)';
       if (!Array.isArray(valor)) break;
       return valor.length === 0 ? '(nenhum)' : `${String(valor.length)} atributo(s)`;
-    case CAMPO_RASCUNHO_SHOPEE.logisticInfo:
+    case CAMPO_RASCUNHO_SHOPEE.logisticInfo: {
+      // `null` is a CHOICE: «Automática» (no channel list).
       if (valor === null || valor === undefined) return '(automática)';
-      return 'definida';
+      if (!Array.isArray(valor)) break;
+      const texto = textoDosCanaisDoRascunhoShopee(valor);
+      if (texto === null) break;
+      return texto;
+    }
   }
   return '(valor não reconhecido)';
 }
 
-/** What the operator holds for `campo`: the form's value for the four form fields, else the held projection's (the form does not edit it). */
+/** What the operator holds for `campo`: the form's value for the six form fields (`attributes` since the attribute editor, #1911 P13, and `logistic_info` since the logistics editor, P16 — the EDITED values, so «Sua alteração» shows what the operator holds now), else the held projection's. */
 function valorDaEdicao(
   edicao: EdicaoRascunhoShopee,
   campo: CampoRascunhoShopee,
@@ -122,6 +161,22 @@ function valorDaEdicao(
     return edicao.atual[campo as keyof typeof edicao.atual];
   }
   return edicao.base[campo];
+}
+
+/**
+ * The «Sua alteração» value of a row: the form's ({@link valorDaEdicao}) —
+ * EXCEPT `logistic_info` on a CREATE retry (#1911 P16, D16-9): a new draft
+ * never had a channel choice, and «Salvar mesmo assim» re-sends without the
+ * key, so the stored value — the row's «Salvo agora» — is what stays. Display
+ * only (`rebasearEdicaoRascunhoShopee` takes the stored list itself).
+ */
+function valorDaSuaAlteracao(
+  edicao: EdicaoRascunhoShopee,
+  conflito: ConflitoRascunhoShopee,
+  criacao: boolean,
+): unknown {
+  if (criacao && conflito.campo === CAMPO_RASCUNHO_SHOPEE.logisticInfo) return conflito.atual;
+  return valorDaEdicao(edicao, conflito.campo, 'atual');
 }
 
 /**
@@ -135,7 +190,10 @@ function valorDaEdicao(
  *
  * - Columns: «Quando você abriu» (the entry's held projection — an EDIT only:
  *   a create retry opened nothing stored), «Salvo agora» (the 409's
- *   `conflitos[].atual`, DISPLAY-ONLY) and «Sua alteração» (the form).
+ *   `conflitos[].atual`, DISPLAY-ONLY) and «Sua alteração» (the form — on a
+ *   create retry's «Logística» row, the stored value it leaves, D16-9).
+ * - «Logística» cells: «(automática)», or one line per channel by id
+ *   (#1911 P16, Q-B — `textoDosCanaisDoRascunhoShopee`).
  * - Neither resolving button acts while the links snapshot lacks the stored
  *   draft (`servidorCarregado: false`): both rebase on THAT document, never on
  *   the 409's values (rev. 2a #19), and a resend against an older snapshot
@@ -182,38 +240,41 @@ export function ConflitoRascunhoShopeeModal({
               </Table.Tr>
             </Table.Thead>
             <Table.Tbody>
-              {conflito.conflitos.map(({ campo, atual }) => (
-                <Table.Tr key={campo} data-testid={`shopee-rascunho-conflito-${campo}`}>
-                  <Table.Td>{ROTULO_CAMPO_RASCUNHO_SHOPEE[campo]}</Table.Td>
-                  {!criacao && (
+              {conflito.conflitos.map((linha) => {
+                const { campo, atual } = linha;
+                return (
+                  <Table.Tr key={campo} data-testid={`shopee-rascunho-conflito-${campo}`}>
+                    <Table.Td>{ROTULO_CAMPO_RASCUNHO_SHOPEE[campo]}</Table.Td>
+                    {!criacao && (
+                      <Table.Td>
+                        <Text size="sm" lineClamp={4}>
+                          {edicao === null
+                            ? '—'
+                            : textoDoValorDoRascunhoShopee(
+                                campo,
+                                valorDaEdicao(edicao, campo, 'base'),
+                              )}
+                        </Text>
+                      </Table.Td>
+                    )}
+                    <Table.Td>
+                      <Text size="sm" lineClamp={4}>
+                        {textoDoValorDoRascunhoShopee(campo, atual)}
+                      </Text>
+                    </Table.Td>
                     <Table.Td>
                       <Text size="sm" lineClamp={4}>
                         {edicao === null
                           ? '—'
                           : textoDoValorDoRascunhoShopee(
                               campo,
-                              valorDaEdicao(edicao, campo, 'base'),
+                              valorDaSuaAlteracao(edicao, linha, criacao),
                             )}
                       </Text>
                     </Table.Td>
-                  )}
-                  <Table.Td>
-                    <Text size="sm" lineClamp={4}>
-                      {textoDoValorDoRascunhoShopee(campo, atual)}
-                    </Text>
-                  </Table.Td>
-                  <Table.Td>
-                    <Text size="sm" lineClamp={4}>
-                      {edicao === null
-                        ? '—'
-                        : textoDoValorDoRascunhoShopee(
-                            campo,
-                            valorDaEdicao(edicao, campo, 'atual'),
-                          )}
-                    </Text>
-                  </Table.Td>
-                </Table.Tr>
-              ))}
+                  </Table.Tr>
+                );
+              })}
             </Table.Tbody>
           </Table>
 

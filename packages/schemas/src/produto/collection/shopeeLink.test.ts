@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { ZodError } from 'zod';
 import {
   produtoShopeeLinkSchema,
   variacaoShopeeLinkSchema,
@@ -1333,7 +1334,7 @@ describe('publicacaoEmCurso — a trava do rascunho (#1911, D4)', () => {
 
   it('o inventário de escritores do cabeçalho nomeia o sétimo grupo', () => {
     const fonte = readFileSync(join(import.meta.dirname, 'shopeeLink.ts'), 'utf8');
-    expect(fonte).toContain('Eight groups of fields have a named writer set');
+    expect(fonte).toContain('Nine groups of fields have a named writer set');
     expect(fonte).toContain('**`publicacaoEmCurso`** (#1911, D4)');
     expect(fonte).toContain('estadoPublicacaoRascunhoShopee');
   });
@@ -1412,7 +1413,7 @@ describe('criacaoIncertaDesde — a criação incerta do rascunho (#1911, D5)', 
 
   it('o inventário de escritores do cabeçalho nomeia o oitavo grupo e as suas DUAS leituras', () => {
     const fonte = readFileSync(join(import.meta.dirname, 'shopeeLink.ts'), 'utf8');
-    expect(fonte).toContain('none of the eight overlap');
+    expect(fonte).toContain('none of the nine overlap');
     expect(fonte).toContain('**`criacaoIncertaDesde`** (#1911, D5)');
     expect(fonte).toContain('janelaDaCriacaoIncertaShopee');
   });
@@ -1467,5 +1468,140 @@ describe('o SKU ENVIADO — `publicacaoEmCurso.sku` e `criacaoIncertaSku` (batch
   it('o cabeçalho nomeia o par do registro', () => {
     const fonte = readFileSync(join(import.meta.dirname, 'shopeeLink.ts'), 'utf8');
     expect(fonte).toContain('**`criacaoIncertaSku`**');
+  });
+});
+
+// ===========================================================================
+// #2015 — a PROCEDÊNCIA de `logistic_info` (`logisticaGravadaEm`)
+// ===========================================================================
+
+describe('logisticaGravadaEm — a procedência de logistic_info (#2015)', () => {
+  const LINK = {
+    contaProdutoShopeeOuterRef: CONTA_REF,
+    item_name: 'Camiseta Básica',
+    item_id: ITEM_ID,
+    logistic_info: [{ logistic_id: 90001, enabled: true, is_free: true }],
+  };
+  const CARIMBO = 1_730_000_000_000;
+
+  it('⚠️ PAR: um link SEM a chave (toda linha migrada) faz parse e a chave continua AUSENTE — carimbo de servidor', () => {
+    const lido = produtoShopeeLinkSchema.parse(LINK) as Record<string, unknown>;
+    expect(lido).not.toHaveProperty('logisticaGravadaEm');
+    // O contraste: `violacoesLidasEm` (`.nullable().default(null)`, bloco do
+    // passo 11) ENTRA null — e a lista que o carimbo avaliza sobrevive intacta.
+    expect(lido).toHaveProperty('violacoesLidasEm', null);
+    expect(lido.logistic_info).toEqual(LINK.logistic_info);
+  });
+
+  it('PAR: `null` sobrevive `null`; um instante inteiro em ms sobrevive inalterado (0 inclusive)', () => {
+    const ler = (v: unknown) =>
+      (produtoShopeeLinkSchema.parse({ ...LINK, logisticaGravadaEm: v }) as Record<string, unknown>)
+        .logisticaGravadaEm;
+    expect(ler(null)).toBeNull();
+    expect(ler(CARIMBO)).toBe(CARIMBO);
+    expect(ler(0)).toBe(0);
+  });
+
+  it('um inteiro sobrevive o parse de MERGE (`.partial()`, o que `parseMergePatch` roda) — e só ele entra no patch', () => {
+    // `parseMergePatch` (`packages/data/src/zodParse.ts`) parses the patch
+    // through `schema.partial()` and keeps only the keys supplied: the stamp
+    // rides its patch alone, and a missing key never becomes a `null`.
+    const patch = produtoShopeeLinkSchema.partial().parse({
+      logistic_info: LINK.logistic_info,
+      logisticaGravadaEm: CARIMBO,
+    }) as Record<string, unknown>;
+    expect(patch.logisticaGravadaEm).toBe(CARIMBO);
+    expect(patch.logistic_info).toEqual(LINK.logistic_info);
+    const semCarimbo = produtoShopeeLinkSchema.partial().parse({ item_status: 'NORMAL' }) as Record<
+      string,
+      unknown
+    >;
+    expect(semCarimbo).not.toHaveProperty('logisticaGravadaEm');
+  });
+
+  it('⛔ NEAR-MISS: um carimbo em TEXTO é recusado com ZodError — a declaração é o que recusa (o shape é `.passthrough()`)', () => {
+    // Without the declaration the `.passthrough()` shape would keep the string
+    // verbatim: this is the test that fails if the field is ever dropped.
+    expect(() =>
+      produtoShopeeLinkSchema.parse({ ...LINK, logisticaGravadaEm: String(CARIMBO) }),
+    ).toThrow(ZodError);
+    expect(() =>
+      produtoShopeeLinkSchema.partial().parse({ logisticaGravadaEm: String(CARIMBO) }),
+    ).toThrow(ZodError);
+  });
+
+  it('⛔ NEAR-MISS: fracionário, booleano, objeto, não finito ou além de 2^53 são recusados', () => {
+    for (const ruim of [
+      CARIMBO + 0.5,
+      true,
+      { em: CARIMBO },
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      2 ** 53,
+    ]) {
+      expect(
+        produtoShopeeLinkSchema.safeParse({ ...LINK, logisticaGravadaEm: ruim }).success,
+        String(ruim),
+      ).toBe(false);
+    }
+  });
+
+  it('a forma: `z.number().int().nullable().optional()` — `undefined` passa ausente, NUNCA `.default(null)`', () => {
+    const campo = produtoShopeeLinkSchema.shape.logisticaGravadaEm;
+    expect(campo.parse(undefined)).toBeUndefined();
+    expect(campo.parse(null)).toBeNull();
+    expect(campo.unwrap().unwrap().safeParse(CARIMBO).success).toBe(true);
+    expect(campo.unwrap().unwrap().safeParse(1.5).success).toBe(false);
+  });
+
+  it('o MODELO (`variashopee`) não declara o carimbo — ele avaliza a lista do ANÚNCIO', () => {
+    expect(variacaoShopeeLinkSchema.shape).not.toHaveProperty('logisticaGravadaEm');
+  });
+
+  it('o campo abre o SEU bloco (#2015) depois de `criacaoIncertaSku` — nunca no bloco do passo 11, que é todo `.default(null)`', () => {
+    const fonte = readFileSync(join(import.meta.dirname, 'shopeeLink.ts'), 'utf8');
+    const bloco = fonte.indexOf('// === #2015');
+    const campo = fonte.indexOf('logisticaGravadaEm: z.number().int().nullable().optional(),');
+    const sku = fonte.indexOf('criacaoIncertaSku: z.string().nullable().optional(),');
+    expect(bloco).toBeGreaterThan(-1);
+    expect(sku).toBeGreaterThan(-1);
+    expect(bloco).toBeGreaterThan(sku);
+    expect(campo).toBeGreaterThan(bloco);
+    // Exactly ONE declaration in the file (never a second one on the model).
+    expect(fonte.split('logisticaGravadaEm: z.').length).toBe(2);
+  });
+
+  it('o inventário de escritores do cabeçalho nomeia o NONO grupo, a sua regra e a sua leitura', () => {
+    const fonte = readFileSync(join(import.meta.dirname, 'shopeeLink.ts'), 'utf8');
+    expect(fonte).toContain('Nine groups of fields have a named writer set');
+    expect(fonte).toContain('none of the nine overlap');
+    expect(fonte).toContain('**`logistic_info` + `logisticaGravadaEm`** (#2015)');
+    // #1911 P15: a edição do rascunho é o QUINTO escritor (antes: 'FOUR writer sites').
+    expect(fonte).toContain('FIVE writer sites');
+    expect(fonte).toMatch(
+      /the stamp rides the SAME patch, under[\s*]+the SAME condition, as the list/,
+    );
+    expect(fonte).toContain('`dadosLinkListagem`');
+    expect(fonte).toContain('`escreverVinculoDoKit`');
+    expect(fonte).toContain('`atualizarRascunhoShopee`');
+    expect(fonte).toContain('logisticaGravadaPeloErpShopee');
+    // O NEAR-MISS: a contagem antiga não pode sobreviver ao lado da nova.
+    expect(fonte).not.toContain('Eight groups');
+    expect(fonte).not.toContain('none of the eight');
+    expect(fonte).not.toContain('FOUR writer sites');
+  });
+
+  it('#1911 P15: o docblock do campo nomeia a lista que o operador escolheu num rascunho e os CINCO sítios — nunca os quatro', () => {
+    const fonte = readFileSync(join(import.meta.dirname, 'shopeeLink.ts'), 'utf8');
+    const campo = fonte.indexOf('logisticaGravadaEm: z.number().int().nullable().optional(),');
+    const bloco = fonte.lastIndexOf('// === #2015', campo);
+    expect(bloco).toBeGreaterThan(-1);
+    // Read the FIELD's own docblock (between its block comment and its
+    // declaration), so the header inventory cannot satisfy these by accident.
+    const docblock = fonte.slice(bloco, campo);
+    expect(docblock).toContain('or the one the operator chose on a draft');
+    expect(docblock).toMatch(/names[\s*]+the five sites/);
+    // O NEAR-MISS: a contagem antiga não sobrevive em lugar nenhum do arquivo.
+    expect(fonte).not.toMatch(/names[\s*]+the four sites/);
   });
 });

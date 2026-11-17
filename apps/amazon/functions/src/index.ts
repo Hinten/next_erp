@@ -16,6 +16,7 @@ import { onSchedule } from 'firebase-functions/v2/scheduler';
 
 import { type CacheReport, readCacheDelta, readCacheMark } from '@delfrance/data/admin/cache';
 
+import { FILA_AGENDAMENTO_AMAZON } from '../../lib/amazon/agendamento/tarefaAgendamento';
 import {
   type ExpiracaoSweepAmazonResult,
   sweepAmazonExpiracoes,
@@ -26,6 +27,8 @@ import {
   camposSeguros,
   registrarEventoAmazon,
 } from '../../lib/amazon/core/log';
+import { FILA_ESTOQUE_AMAZON } from '../../lib/amazon/estoque/produtorEstoque';
+import { FILA_LOTES_AMAZON } from '../../lib/amazon/feeds/agendadorLotes';
 import {
   FILA_LEITURA_AMAZON,
   FLUXO_LEITURA_AMAZON,
@@ -33,8 +36,13 @@ import {
   reprocessarAdiadasAmazon,
   reprocessarNotificacoesAmazon,
 } from '../../lib/amazon/notificacoes/notificacao';
+import { FILA_NFE_AMAZON } from '../../lib/amazon/nfe/tarefaNfe';
 import { SEGREDOS_DE_LEITURA_AMAZON, depsDeLeituraAmazon } from './depsLeitura';
+import * as filaAgendamento from './filaAgendamento';
+import * as filaEstoque from './filaEstoque';
 import * as filaLeitura from './filaLeitura';
+import * as filaLotes from './filaLotes';
+import * as filaNfe from './filaNfe';
 import { getDb } from './lib/admin';
 
 /**
@@ -53,7 +61,29 @@ import { getDb } from './lib/admin';
  * Step 20 adds the conta trigger (`onIntegracaoAmazonChanged`,
  * ./onIntegracaoAmazonChanged): the codebase's first Firestore trigger, which
  * keeps each Amazon conta's `int_frete` doc in step with the conta and makes no
- * Amazon call.
+ * Amazon call. Step 14 (PR 14-c) adds the NF-e trigger (`onNfeAprovadaAmazon`,
+ * ./onNfeAprovadaAmazon), the first producer of the NF-e queue, through its
+ * own composition root (./agendadorNfe) — it makes no Amazon call either — and
+ * the NF-e queue itself (`processAmazonNfeUpload`, ./filaNfe), the codebase's
+ * SECOND task queue and its first Amazon WRITER (behind the read switch, the
+ * NF-e valve and its canary). Step 15 (PR 15-c) adds the Easy Ship scheduling
+ * queue (`processAmazonEasyShipSchedule`, ./filaAgendamento), the THIRD task
+ * queue — one queue per WRITE flow — fed by the NF-e task's acceptance seam, the
+ * order import and its own re-enqueues, all through its own composition root
+ * (./agendadorAgendamento); it books an order's pickup behind the read switch,
+ * the scheduling valve and its canary. Step 12a (PR 12-c) adds the JOBS queue
+ * (`processAmazonListingsJob`, ./filaLotes), the FOURTH task queue — the reads
+ * queue, one per write flow, and now the jobs queue — which carries every task of the
+ * `JSON_LISTINGS_FEED` core (a feed's send, its poll rungs and wake-ups, the
+ * wait after a lost `createFeed` answer, the recoveries), fed by its own
+ * handlers through its own composition root (./agendadorEstoque); a feed is
+ * submitted only behind the read switch, the fluxo's valve and a canary list of
+ * exactly `*`, and the seam that names a fluxo's provider is empty for now.
+ * Step 12 (PR 12-e1) adds the STOCK queue (`processAmazonStockPatch`,
+ * ./filaEstoque), the FIFTH task queue: one SKU's availability PATCH per task,
+ * its quantity computed when the task runs, fed by its own read-back and 429
+ * pause through the same stock root (./agendadorEstoque), which now binds two
+ * queues; a PATCH needs the read switch, the stock valve and a canary hit.
  *
  * ⚠️ ONE logger: every line goes through `LOGGER_STDOUT_AMAZON` /
  * `registrarEventoAmazon` (`lib/amazon/core/log.ts`). This file never imports
@@ -81,14 +111,92 @@ if (!(FILA_LEITURA_AMAZON in filaLeitura)) {
   );
 }
 
+// The same assertion for the NF-e queue (step 14, PR 14-c): every NF-e producer
+// — the trigger's root, the handler's own re-enqueues, the re-drive route — targets
+// `FILA_NFE_AMAZON`.
+if (!(FILA_NFE_AMAZON in filaNfe)) {
+  throw new Error(
+    '[amazon] function-name drift: functions/src/filaNfe.ts must export a ' +
+      `handler named '${FILA_NFE_AMAZON}' (the enqueue target). ` +
+      'Rename the export and the FILA_NFE_AMAZON constant together.',
+  );
+}
+
+// The same assertion for the Easy Ship scheduling queue (step 15, PR 15-c):
+// every scheduling producer — the acceptance seam, the order import, the
+// handler's own re-enqueues — targets `FILA_AGENDAMENTO_AMAZON`.
+if (!(FILA_AGENDAMENTO_AMAZON in filaAgendamento)) {
+  throw new Error(
+    '[amazon] function-name drift: functions/src/filaAgendamento.ts must export a ' +
+      `handler named '${FILA_AGENDAMENTO_AMAZON}' (the enqueue target). ` +
+      'Rename the export and the FILA_AGENDAMENTO_AMAZON constant together.',
+  );
+}
+
+// The same assertion for the jobs queue (step 12a, PR 12-c): every feed task's
+// producer — the handlers' own enqueues, the receiver's wake-up — targets
+// `FILA_LOTES_AMAZON`.
+if (!(FILA_LOTES_AMAZON in filaLotes)) {
+  throw new Error(
+    '[amazon] function-name drift: functions/src/filaLotes.ts must export a ' +
+      `handler named '${FILA_LOTES_AMAZON}' (the enqueue target). ` +
+      'Rename the export and the FILA_LOTES_AMAZON constant together.',
+  );
+}
+
+// The same assertion for the stock queue (step 12, PR 12-e1): every stock
+// task's producer — the task's own read-back and pause, the feed providers'
+// per-SKU hand-offs — targets `FILA_ESTOQUE_AMAZON`.
+if (!(FILA_ESTOQUE_AMAZON in filaEstoque)) {
+  throw new Error(
+    '[amazon] function-name drift: functions/src/filaEstoque.ts must export a ' +
+      `handler named '${FILA_ESTOQUE_AMAZON}' (the enqueue target). ` +
+      'Rename the export and the FILA_ESTOQUE_AMAZON constant together.',
+  );
+}
+
 /** The ONE reads queue (one dispatch at a time, retry with backoff). */
 export { filaLeituraAmazon } from './filaLeitura';
+
+/**
+ * The NF-e queue (step 14, PR 14-c): the upload of an approved sale NF-e to
+ * Amazon, status first, behind the read switch, the NF-e valve and its canary.
+ */
+export { processAmazonNfeUpload } from './filaNfe';
+
+/**
+ * The Easy Ship scheduling queue (step 15, PR 15-c): one pickup booked per
+ * order once Amazon accepted its NF-e, the live order read first, behind the
+ * read switch, the scheduling valve and its canary.
+ */
+export { processAmazonEasyShipSchedule } from './filaAgendamento';
+
+/**
+ * The jobs queue (step 12a, PR 12-c): the `JSON_LISTINGS_FEED` core's four
+ * tasks, one at a time, behind the read switch, each fluxo's valve and its
+ * canary; no fluxo has a provider yet.
+ */
+export { processAmazonListingsJob } from './filaLotes';
+
+/**
+ * The stock queue (step 12, PR 12-e1): one SKU's availability PATCH per task,
+ * the quantity read when the task runs, behind the read switch, the stock valve
+ * and its canary; one task at a time (the ordering guard between patches).
+ */
+export { processAmazonStockPatch } from './filaEstoque';
 
 /** The 15-minute backstop poll: the reads queue's second producer (./pollPedidos). */
 export { pollAmazonOrders } from './pollPedidos';
 
 /** The conta trigger (step 20): each Amazon conta's `int_frete` doc follows the conta. */
 export { onIntegracaoAmazonChanged } from './onIntegracaoAmazonChanged';
+
+/**
+ * The NF-e trigger (step 14, PR 14-c): an approved sale `nfev4` of a proved
+ * Amazon pedido is enqueued for upload (named after the CloudEvent); an approved
+ * one cancelled while the order lives raises an aviso. No Amazon call (D11).
+ */
+export { onNfeAprovadaAmazon } from './onNfeAprovadaAmazon';
 
 /**
  * Documents examined per lane on each tick of the reprocess sweep. NOT exported:

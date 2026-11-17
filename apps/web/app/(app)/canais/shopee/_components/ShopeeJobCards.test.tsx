@@ -20,7 +20,7 @@ vi.mock('@/lib/shopee/client', async (importOriginal) => {
 });
 
 const { EnvioPrecoShopeeJobCard, ImportacaoShopeeJobCard } = await import('./ShopeeJobCards');
-const { SEM_PROGRESSO_MS } = await import('./cadenciaJobsShopee');
+const { SEM_PROGRESSO_MS } = await import('@/lib/marketplace/contaJobs/cadencia');
 
 const CONTA: ContaRef = { id: 'int-1', nome: 'Loja Shopee' };
 

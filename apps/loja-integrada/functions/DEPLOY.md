@@ -52,6 +52,25 @@ the importer does not either. Deployed into a project, it writes that project's
 create, patch or deactivate. That is why this deploy waits for the window's
 `int_frete` adoption pass (Prerequisites below).
 
+⚠️ **The anchor trigger stands outside the switch too.**
+`onProdutoLojaIntegradaLinkChanged` (master-plan step 9) makes no Loja Integrada
+call either. Deployed into a project, it writes that project's
+`produtos.integracoesComProduto` on every write of a Loja Integrada link doc
+that moves membership — a counting link created or pulled back out of the
+trash adds its conta, the loss of a produto's last counting link removes it.
+It never fires for a link that arrives by IMPORT: a Firestore import fires no
+trigger, so the migrated links reach the anchor only through the window's
+anchor census, `migrate:li-integracoes-com-produto` (Prerequisites below).
+
+⚠️ **The product import (master-plan step 9) stops at the same switch.** Its
+job-creation trigger `onImportacaoLojaIntegradaCriada` makes no Loja Integrada
+call: for a job document created `pendente` (only the import's start route
+creates one, and that route is itself refused while the switch is unset) it
+enqueues the job's first slice onto `filaLeituraLojaIntegrada`, and the slice
+stops at the context's switch FIRST, ending the job `falhou/chamadas-desligadas`
+with zero calls. A job document written by hand `pendente` would take that path
+too; nothing else creates one.
+
 ⚠️ **The status write-back (master-plan step 7) has a valve of its own, and it
 stays UNSET too.** `LOJA_INTEGRADA_MODO_RASTREIO` unset (or blank, or `off`)
 means the freight-history trigger returns before any read and enqueues nothing,
@@ -72,8 +91,12 @@ exists — so nothing is ever written to Loja Integrada before the window.
   the reason none is declared. The conta trigger binds none either: it never
   calls Loja Integrada.
 - **The triggers' database.** `onIntegracaoLojaIntegradaChanged` listens on
-  `integracao/{integracaoId}` and `onHistoricoFreteLojaIntegrada` (master-plan
-  step 7) on `pedidos/{pedidoId}/historicoFtIni/{historicoId}`, both in the
+  `integracao/{integracaoId}`, `onHistoricoFreteLojaIntegrada` (master-plan
+  step 7) on `pedidos/{pedidoId}/historicoFtIni/{historicoId}` and
+  `onProdutoLojaIntegradaLinkChanged` (master-plan step 9) on
+  `produtos/{produtoId}/produtolojaintegrada/{linkId}` and
+  `onImportacaoLojaIntegradaCriada` (master-plan step 9) on
+  `importacoesLojaIntegrada/{jobId}`, all four in the
   NAMED `default` database — never the `(default)` sentinel, which deploys fine
   and never fires. `build.mjs` inlines
   `FIREBASE_DATABASE_ID` (unset or blank → `default`) and the preflight prints
@@ -102,6 +125,16 @@ exists — so nothing is ever written to Loja Integrada before the window.
   `produtolojaintegrada (contaLojaIntegrada ASC, id ASC)` with every stored form
   of the conta reference; without it Enterprise full-scans every produto's link
   docs on each line, and bills the scan.
+- **The migrated links' anchor census run before the stock and price valves
+  reach `on`**: `migrate:li-integracoes-com-produto`, runbook
+  `tools/migrations/li-integracoes-com-produto.README.md` ("Verifying a first
+  deploy", item 7). The anchor trigger derives `integracoesComProduto` from
+  link WRITES, and the data import writes none it sees, so a migrated link
+  whose produto's array lacks the conta is invisible to the stock and price
+  sweeps — a silent outage, never an error. The trigger needs
+  no index of its own: its survivor read takes the produto's whole
+  `produtolojaintegrada` subcollection, a handful of documents, and filters in
+  code.
 - **`apps/web` deployed before the read switch is set** (master plan §5 item 1;
   §5 item 5 rolls it out after this codebase). The order import owns six aviso
   tipos (`lojaIntegradaSituacaoDesconhecida`, `lojaIntegradaPedidoContestado`,
@@ -118,6 +151,34 @@ exists — so nothing is ever written to Loja Integrada before the window.
   writes queue only under
   `LOJA_INTEGRADA_MODO_RASTREIO=on`: **the web build carrying its copy must be
   live before that valve is set to `on`**, or the avisos panel cannot render it.
+- **The product import's job and report indexes READY before this deploy**
+  (master-plan step 9). The import's start guard (App Hosting) and the web's
+  list read `importacoesLojaIntegrada (integracaoId ASC, iniciadoEmMs DESC)`; a
+  dispatch reads its job by id. The report's pages — the items route's, and the
+  job's own actionable count at its end — are expected to range-seek on
+  `itens (__name__ ASC)`: Enterprise keeps no implicit key index, so without it
+  every page is expected to walk the job's whole report (#1874 measured both
+  plans on a root collection; a per-parent subcollection's plan is not measured
+  yet). On Enterprise a missing index does not fail, it full-scans and bills the
+  scan.
+- **The default bucket's object grant, before the first "complete" import
+  with photos** (master-plan step 9). The import's photos are this codebase's
+  FIRST Storage write: the functions runtime SA uploads each picture to the
+  project's default bucket (see "Photos: the runtime SA writes the default
+  bucket" under the IAM section). The bucket NAME is read from the runtime's own
+  `FIREBASE_CONFIG.storageBucket` (no env var to set); when nothing names one,
+  a run skips its photos and its card shows "fotos indisponíveis" instead of
+  failing. The `storage` functions codebase (`apps/functions`, its
+  `resizeProductImage` trigger) makes the 200/400/jpeg derivatives of every
+  picture uploaded `resizeState: 'pending'`, so it is deployed first, as it is
+  for every other product photo.
+- **`apps/web` carrying the import's three aviso tipos before the read switch is
+  set** (master-plan step 9): `lojaIntegradaImportacaoComPendencias` (raised at
+  an `aplicar` import's end), `lojaIntegradaCategoriaSemVinculo` and
+  `lojaIntegradaRevisaoFiscal`. Only a slice past the switch raises one, and a
+  web build older than them has no wording for those rows. Deploy
+  `apps/loja-integrada` (the import routes) no later than `apps/web` (its import
+  screen probes the routes).
 - **The writes store's index READY before this deploy.**
   `notificacoesEscritaLojaIntegrada (status ASC, processedAt ASC)` serves both
   lanes of the varredura; on Enterprise a missing index does not fail, it
@@ -175,16 +236,18 @@ are local builds; neither deploys anything.
 
 ## Functions in this codebase
 
-| Export                                | Trigger                                | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| ------------------------------------- | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `filaLeituraLojaIntegrada`            | `onTaskDispatched` (Cloud Tasks queue) | The ONE reads queue of the channel (order intake now; the import-job and reconcile reads join it later). The body dispatches on the task's `tipo`: `pedido` runs one notification through the pipeline, any other `tipo` is logged and dropped. `rateLimits { maxConcurrentDispatches: 1, maxDispatchesPerSecond: 1 }`, `retryConfig` 3 attempts with 60 s → 300 s backoff and one doubling, `timeoutSeconds 300`. **No `secrets:`.** Persists to `notificacoesLojaIntegrada` only on retry-exhaustion, park or defer.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `reprocessLojaIntegradaNotifications` | `onSchedule('*/30 * * * *')`           | The backstop, draining BOTH lanes on one tick (`limit 10` each): `failed` notifications older than the hot window, then the deferred lane (a parked conta, an inactive conta, a missing credential, the switch off). Logged separately — summing them would hide a growing deferred backlog inside a healthy `processed`. `America/Sao_Paulo`, `timeoutSeconds 540`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `sweepLojaIntegradaTokenExpiry`       | `onSchedule('30 6 * * *')`             | The DAILY token-expiry sweep: raises the expiry and reconnection avisos at the 30-day horizon, resolves them once a new date or credential lands, and closes the orphaned rows of contas that no longer exist. Reads only the stored credential — **no Loja Integrada call**, so the read switch does not gate it. `America/Sao_Paulo`, `timeoutSeconds 120`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| `pollLojaIntegradaPedidos`            | `onSchedule('*/5 * * * *')`            | The 5-minute order poller, behind TWO gates that each stop a tick with zero reads: the importer seam (filled in master-plan step 5, so it passes) and the read switch. Per active conta, one after another, starting from a different conta each tick (220 s per tick, at most 100 s per conta): a single-flight lease and a durable cursor on `pollPedidosLojaIntegrada/{id}`, `GET /v1/pedido/search/` paced at the reads interval (at most 20 pages), one synthetic notification per changed order onto the reads queue (persisted `failed` instead in sweep-only mode). A refusal or a stuck window is counted on the same document and raises the `critico` aviso `lojaIntegradaImportacaoParada`. Reads `LOJA_INTEGRADA_POLL_LOOKBACK_H`. `America/Sao_Paulo`, `timeoutSeconds 300`.                                                                                                                                                                                                                                                                                                                                                 |
-| `filaEscritaLojaIntegrada`            | `onTaskDispatched` (Cloud Tasks queue) | Master-plan step 7 — the ONE writes queue of the channel: every write to Loja Integrada (today the status write-back; later the stock, price and catalogue writes) and its own sweep. The body dispatches on the task's `tipo`: `rastreio` runs one write event through the writes pipeline (a fresh pedido read, the deciding read of the order, at most one write, the read-back), `varredura` runs both lanes of `notificacoesEscritaLojaIntegrada` INSIDE the queue (one row at a time, a 140 s budget), any other `tipo` is logged and dropped. `rateLimits { maxConcurrentDispatches: 1, maxDispatchesPerSecond: 1 }`, **`concurrency: 1` and `maxInstances: 1`** (one instance serving one request), `retryConfig` 3 attempts with a FLAT 300 s backoff (no doubling) — no write starts later than 260 s after a dispatch began, so a retry starts only after an abandoned attempt can no longer write — `timeoutSeconds 300`. **No `secrets:`.** Persists to `notificacoesEscritaLojaIntegrada` only on retry-exhaustion, a landed write whose effect is not confirmed, park or defer.                                             |
-| `onHistoricoFreteLojaIntegrada`       | `onDocumentCreated` (Firestore)        | Master-plan step 7 — the status write-back's producer, on `pedidos/{pedidoId}/historicoFtIni/{historicoId}`. For a created freight history row whose estado is `postado`, `entregue` or `aguardandoRetirada`, with the write valve at `dry-run` or `on`, it reads the pedido ONCE and, for an imported Loja Integrada order, enqueues ONE task named `rastreio-<event digest>` onto `filaEscritaLojaIntegrada` (`task-already-exists` is success). A non-target estado or the valve `off` returns with ZERO reads and no line; an unrecognised valve value logs ONE WARNING. Tasks disabled or a transient Cloud Tasks failure ⇒ the event is persisted `failed` for the varredura. `database` **`default`**, `retry: true`, **no secrets**, no Loja Integrada call.                                                                                                                                                                                                                                                                                                                                                                       |
-| `varrerEscritasLojaIntegrada`         | `onSchedule('15,45 * * * *')`          | Master-plan step 7 — the writes queue's backstop timer. It only enqueues ONE `varredura` task per tick onto `filaEscritaLojaIntegrada`, named after the tick's schedule time; the sweep runs inside the queue, never here, so a retry can never race a fresh write. It does not read the write valve (the task does). Tasks disabled or a transient failure ⇒ one WARNING and the next tick tries again. `America/Sao_Paulo`, `timeoutSeconds 60`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| `onIntegracaoLojaIntegradaChanged`    | `onDocumentWritten` (Firestore)        | Master-plan step 20 — the codebase's FIRST Firestore trigger, on `integracao/{integracaoId}`. Keeps each Loja Integrada conta's `int_frete` doc (tipo `lojaIntegrada`) in step with the conta through the shared core `@delfrance/data/admin/frete`: adopt the migrated doc by `contaLojaIntegradaEnviosOuterRef`, else create `lojaIntegrada-<integracaoId>`; patch only the mirrored fields that moved (`nome`, `ativo`, the filial, `dataCadastro`), never `mapa` or `horarioDeCorte`; deactivate, never delete, once the conta is gone or no longer Loja Integrada. State-driven: the core re-reads the conta itself, so a replayed or out-of-order delivery cannot roll anything back. EVERY channel's conta write reaches it, and it returns with ZERO reads unless the conta is, or was, Loja Integrada and the write moved a mirrored field (or the tipo, or created or deleted the conta). Logs the conta id and the action with field names, never a value. `database` **`default`**, `retry: true`, **no secrets**, no `invoker` (Eventarc invokes it; it enqueues nothing), no Loja Integrada call. No per-function `region:`. |
+| Export                                | Trigger                                | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| ------------------------------------- | -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `filaLeituraLojaIntegrada`            | `onTaskDispatched` (Cloud Tasks queue) | The ONE reads queue of the channel (order intake, and since master-plan step 9 the product import; the reconcile reads join it later). The body dispatches on the task's `tipo`: `pedido` runs one notification through the pipeline; `importacao` runs ONE slice of a product import — at most 70 s of units plus a 30 s tail, every unit checkpointed on the job, then the next slice enqueued by name (`li-importacao-<jobId>-<seq>`, 2 s later; 60 s after a 429) — so an order waits at most one slice; any other `tipo` is logged and dropped. `rateLimits { maxConcurrentDispatches: 1, maxDispatchesPerSecond: 1 }`, `retryConfig` 3 attempts with 60 s → 300 s backoff and one doubling, `timeoutSeconds 300`. **No `secrets:`.** Persists to `notificacoesLojaIntegrada` only on retry-exhaustion, park or defer.                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `reprocessLojaIntegradaNotifications` | `onSchedule('*/30 * * * *')`           | The backstop, draining BOTH lanes on one tick (`limit 10` each): `failed` notifications older than the hot window, then the deferred lane (a parked conta, an inactive conta, a missing credential, the switch off). Logged separately — summing them would hide a growing deferred backlog inside a healthy `processed`. `America/Sao_Paulo`, `timeoutSeconds 540`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `sweepLojaIntegradaTokenExpiry`       | `onSchedule('30 6 * * *')`             | The DAILY token-expiry sweep: raises the expiry and reconnection avisos at the 30-day horizon, resolves them once a new date or credential lands, and closes the orphaned rows of contas that no longer exist. Reads only the stored credential — **no Loja Integrada call**, so the read switch does not gate it. `America/Sao_Paulo`, `timeoutSeconds 120`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `pollLojaIntegradaPedidos`            | `onSchedule('*/5 * * * *')`            | The 5-minute order poller, behind TWO gates that each stop a tick with zero reads: the importer seam (filled in master-plan step 5, so it passes) and the read switch. Per active conta, one after another, starting from a different conta each tick (220 s per tick, at most 100 s per conta): a single-flight lease and a durable cursor on `pollPedidosLojaIntegrada/{id}`, `GET /v1/pedido/search/` paced at the reads interval (at most 20 pages), one synthetic notification per changed order onto the reads queue (persisted `failed` instead in sweep-only mode). A refusal or a stuck window is counted on the same document and raises the `critico` aviso `lojaIntegradaImportacaoParada`. Reads `LOJA_INTEGRADA_POLL_LOOKBACK_H`. `America/Sao_Paulo`, `timeoutSeconds 300`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `filaEscritaLojaIntegrada`            | `onTaskDispatched` (Cloud Tasks queue) | Master-plan step 7 — the ONE writes queue of the channel: every write to Loja Integrada (today the status write-back; later the stock, price and catalogue writes) and its own sweep. The body dispatches on the task's `tipo`: `rastreio` runs one write event through the writes pipeline (a fresh pedido read, the deciding read of the order, at most one write, the read-back), `varredura` runs both lanes of `notificacoesEscritaLojaIntegrada` INSIDE the queue (one row at a time, a 140 s budget), any other `tipo` is logged and dropped. `rateLimits { maxConcurrentDispatches: 1, maxDispatchesPerSecond: 1 }`, **`concurrency: 1` and `maxInstances: 1`** (one instance serving one request), `retryConfig` 3 attempts with a FLAT 300 s backoff (no doubling) — no write starts later than 260 s after a dispatch began, so a retry starts only after an abandoned attempt can no longer write — `timeoutSeconds 300`. **No `secrets:`.** Persists to `notificacoesEscritaLojaIntegrada` only on retry-exhaustion, a landed write whose effect is not confirmed, park or defer.                                                                                                                                                                                          |
+| `onHistoricoFreteLojaIntegrada`       | `onDocumentCreated` (Firestore)        | Master-plan step 7 — the status write-back's producer, on `pedidos/{pedidoId}/historicoFtIni/{historicoId}`. For a created freight history row whose estado is `postado`, `entregue` or `aguardandoRetirada`, with the write valve at `dry-run` or `on`, it reads the pedido ONCE and, for an imported Loja Integrada order, enqueues ONE task named `rastreio-<event digest>` onto `filaEscritaLojaIntegrada` (`task-already-exists` is success). A non-target estado or the valve `off` returns with ZERO reads and no line; an unrecognised valve value logs ONE WARNING. Tasks disabled or a transient Cloud Tasks failure ⇒ the event is persisted `failed` for the varredura. `database` **`default`**, `retry: true`, **no secrets**, no Loja Integrada call.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `varrerEscritasLojaIntegrada`         | `onSchedule('15,45 * * * *')`          | Master-plan step 7 — the writes queue's backstop timer. It only enqueues ONE `varredura` task per tick onto `filaEscritaLojaIntegrada`, named after the tick's schedule time; the sweep runs inside the queue, never here, so a retry can never race a fresh write. It does not read the write valve (the task does). Tasks disabled or a transient failure ⇒ one WARNING and the next tick tries again. `America/Sao_Paulo`, `timeoutSeconds 60`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `onIntegracaoLojaIntegradaChanged`    | `onDocumentWritten` (Firestore)        | Master-plan step 20 — the codebase's FIRST Firestore trigger, on `integracao/{integracaoId}`. Keeps each Loja Integrada conta's `int_frete` doc (tipo `lojaIntegrada`) in step with the conta through the shared core `@delfrance/data/admin/frete`: adopt the migrated doc by `contaLojaIntegradaEnviosOuterRef`, else create `lojaIntegrada-<integracaoId>`; patch only the mirrored fields that moved (`nome`, `ativo`, the filial, `dataCadastro`), never `mapa` or `horarioDeCorte`; deactivate, never delete, once the conta is gone or no longer Loja Integrada. State-driven: the core re-reads the conta itself, so a replayed or out-of-order delivery cannot roll anything back. EVERY channel's conta write reaches it, and it returns with ZERO reads unless the conta is, or was, Loja Integrada and the write moved a mirrored field (or the tipo, or created or deleted the conta). Logs the conta id and the action with field names, never a value. `database` **`default`**, `retry: true`, **no secrets**, no `invoker` (Eventarc invokes it; it enqueues nothing), no Loja Integrada call. No per-function `region:`.                                                                                                                                              |
+| `onProdutoLojaIntegradaLinkChanged`   | `onDocumentWritten` (Firestore)        | Master-plan step 9 — the `integracoesComProduto` anchor, on `produtos/{produtoId}/produtolojaintegrada/{linkId}` (a parent's link under the ERP root and a child's under the ERP child alike). Keeps each produto's `integracoesComProduto` — the pre-filter the stock and price sweeps open with — in step with its Loja Integrada links, through the shared core `@delfrance/data/admin/produtos`: a link COUNTS when its `id` names a store product and it is not in the trash (hidden and blocked links count); a counting link created or pulled back out of the trash adds its conta (`arrayUnion`, tier 0), and a link that stops counting or is deleted makes the core re-read the produto's whole link subcollection inside its guarded write and remove the conta only when no counting link of it survives (tier 1). The decision is taken from the event payload before any read, so an edit that moves no membership (a name, the mirror fields, a publication code) costs ZERO reads. Logs the produto, the link doc and the conta ids with the write's outcome, never a value. `database` **`default`**, `retry: true`, **no secrets**, no `invoker` (Eventarc invokes it; it enqueues nothing), no index of its own, no Loja Integrada call. No per-function `region:`. |
+| `onImportacaoLojaIntegradaCriada`     | `onDocumentCreated` (Firestore)        | Master-plan step 9 — the product import's first producer, on `importacoesLojaIntegrada/{jobId}`. For a job document CREATED `pendente` (the import's start route creates it) it enqueues ONE task named `li-importacao-<jobId>-0` onto `filaLeituraLojaIntegrada` (`task-already-exists` is success); a document created in any other status returns with ZERO reads and no line. Tasks disabled ⇒ the job is stamped `falhou/tarefas-desligadas` (never left `pendente` with nothing queued); a transient Cloud Tasks failure is rethrown for the retry. `database` **`default`**, `retry: true`, **no secrets**, no Loja Integrada call.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 
 ⚠️ **The export name IS the queue name.** Firebase binds one function per queue
 and names the queue after the function, so renaming `filaLeituraLojaIntegrada`
@@ -223,6 +286,24 @@ Livre's `onIntegracaoMercadoLivreChanged` and Shopee's `onIntegracaoShopeeChange
 (and `apps/functions`' `onIntegracaoDeleted` cascade also fires on a delete). So
 every conta write of any channel costs three Eventarc invocations, and each of
 the three returns with zero reads for a write that is not its own channel's.
+
+⚠️ **The anchor trigger writes a field other channels write too.**
+`onProdutoLojaIntegradaLinkChanged` is the only function on
+`produtos/{produtoId}/produtolojaintegrada/{linkId}`, but the array it maintains,
+`produtos.integracoesComProduto`, is shared with the Mercado Livre and Shopee
+anchors — each adds and removes only its OWN conta ids, by `arrayUnion` /
+`arrayRemove`, so none can drop another's. It writes no other key (no
+`ultimaModificacao`, so the produtos list never flashes for it), and the field
+is in `onProdutoChanged`'s history ignore list. When a produto is deleted,
+`apps/functions`' `onProdutoDeleted` cascade deletes its link docs AFTER it, and
+each delete fires this trigger: its remove finds the produto gone (`NOT_FOUND`,
+narrowed by the core) and writes nothing — a deleted produto is never
+re-created. One residual it does leave: its add reads nothing, and Eventarc
+guarantees no order, so an add handled AFTER its link's close (a late or retried
+create) lists a conta with no counting link, and nothing automatic removes it.
+That is the cheap direction — one skipped sweep row per run, never a silent
+outage — and only a hand fix clears it (the window's anchor census looks for
+the opposite gap, a counting link whose conta is missing).
 
 ⚠️ **The pacer.** Every Loja Integrada call made through a context waits 2,000 ms
 first, so one queue makes at most 30 calls a minute across task boundaries
@@ -429,6 +510,15 @@ functions runtime SA, the identity the poller runs as (by default
 `PROJECT_NUMBER-compute@developer.gserviceaccount.com`); step 4 revisits this
 block when the App Hosting runtime SA joins.
 
+**The product import (master-plan step 9) needs NO new Cloud Tasks grant** (its
+photos need a STORAGE grant: "Photos: the runtime SA writes the default bucket"
+below). Its two producers — the `onImportacaoLojaIntegradaCriada` trigger (a
+job's first slice) and each import slice handing off to the next — both run as
+the functions runtime SA and enqueue onto the SAME reads queue
+`filaLeituraLojaIntegrada`, so the reads queue's three grants already cover them.
+The import's start route (App Hosting) only creates the job document and never
+enqueues.
+
 **The writes queue (master-plan step 7) needs the same three, for its own
 queue.** `filaEscritaLojaIntegrada` is enqueued by the history trigger and the
 varredura timer, both running as the functions runtime SA and nothing else, so
@@ -498,6 +588,49 @@ principal is the enqueuer's own identity, and a gen2 function is a Cloud Run
 service, so that principal needs `run.invoker` ON THE SERVICE. Without it the
 task is created and delivered and the service answers 403 `run.routes.invoke`,
 with NO failure document written anywhere.
+
+### Photos: the runtime SA writes the default bucket (master-plan step 9)
+
+A product import run with "completar" and photos ("só em produtos sem fotos")
+uploads each picture to the project's DEFAULT bucket through the shared uploader
+(`putArquivoAdmin`): an `arquivos` document first (Firestore, which the runtime
+SA already writes), then the object
+`produtos/<produtoId>/originals/<sha-512>.<ext>`. **That is the first Storage
+write this codebase makes, and it needs a grant the Cloud Tasks section above
+does not cover**: the functions runtime SA must create objects in that bucket,
+and OVERWRITE one — an upload retried after its object landed but before its
+document recorded it writes the same object name again, and Cloud Storage
+requires delete permission to replace an object. So grant
+`roles/storage.objectUser` ON THE BUCKET (not the project); `roles/storage.objectCreator`
+alone lets a first upload through and refuses that retry with a 403. Nothing
+here reads, lists or deletes objects of its own accord. No new Cloud Tasks grant:
+photos run as the import dispatch's `foto` units (one picture each), on the reads
+queue.
+
+```bash
+# The bucket is the one FIREBASE_CONFIG names on the deployed functions — on a
+# project created after late 2024 that is <project-id>.firebasestorage.app,
+# NOT <project-id>.appspot.com. Confirm it first:
+gcloud storage buckets list --project=<project-id>
+gcloud storage buckets add-iam-policy-binding gs://<default-bucket> \
+  --member="serviceAccount:<functions-runtime-sa>" \
+  --role="roles/storage.objectUser"
+```
+
+⚠️ On the NEW project the default compute SA may not hold Editor (an org policy
+can disable that automatic grant), so do not assume the old project's implicit
+access carries over. Without the grant every photo upload fails with a 403,
+which propagates: the task retries the slice and fails the same way each time,
+so the job stops at the first picture it tries to store and stays `executando`
+with nothing queued (its card flags it after 45 minutes without progress). The
+writes before it stay — that family's fills, or its create with the links that
+ride the create's batch; an existing family's links come after its photos, so
+they are not written yet — and a restart redoes none of them
+(every import write is fill-empty, create-only or idempotent). Cancelar ends
+the job; grant, then start it again. The same stranding follows a TRANSIENT
+Storage failure (a 5xx or 429 from Cloud Storage) that happens to hit the
+queue's last attempt: no Storage error class is narrowed there, so it is never
+stamped `tentativas-esgotadas` — Cancelar is the recovery in both cases.
 
 ### The deploy aborts if `TASKS_INVOKER_SA` is missing (#1133)
 
@@ -701,6 +834,85 @@ of this section passes.
    `[loja-integrada] onHistoricoFreteLojaIntegrada enfileirado` line, a
    `[loja-integrada]` `diff` line from the writes queue, and a `deferred` row in
    `notificacoesEscritaLojaIntegrada` whose `erro` starts with `adiado/dry-run`.
+
+7. **The anchor trigger (master-plan step 9).** The console lists
+   `onProdutoLojaIntegradaLinkChanged` as a Firestore trigger on database
+   `default`, and the Eventarc trigger carries that filter:
+
+   ```bash
+   gcloud eventarc triggers list --project <project-id>
+   # expect a trigger for onprodutolojaintegradalinkchanged,
+   # event type google.cloud.firestore.document.v1.written,
+   # filtered to database 'default' + the produtos/*/produtolojaintegrada/* document path
+   ```
+
+   Then prove both arms on ONE test produto created for this check (never a real
+   one: once the stock and price flows exist, an anchored produto is one their
+   sweeps visit), with no Loja Integrada call involved — the trigger makes none.
+   ⚠️ **Use a conta id that names NO conta** — an obviously fake one such as
+   `conta-teste-ancora`, with no `integracao` doc behind it. The trigger reads no
+   conta document, so a real id proves nothing more, and it costs something: by
+   now the order import may be running (items 5 and 6), and its link lookup
+   matches ANY link with that conta and `id` — this hand-written one included,
+   even once it is stored `removido: true`, since the lookup does not read
+   `removido`. Under a real conta, an order for a store product with that `id`
+   would bind its line to the test produto (deleted at the end of this check), or
+   come out `vinculo-ambiguo` beside a migrated link.
+   - write one link by hand at
+     `produtos/<test-produto>/produtolojaintegrada/<n>` carrying
+     `contaLojaIntegrada: 'documents/integracao/<fake-conta-id>'`, a positive
+     integer `id`, a `sku` and `removido: false`; the produto's
+     `integracoesComProduto` gains `<fake-conta-id>`, and the log shows
+     `[loja-integrada] onProdutoLojaIntegradaLinkChanged add` with `escrito: true`;
+   - edit only that link's `nome`: NO line follows (the zero-read path);
+   - set `removido: true` on it (or delete it): `<fake-conta-id>` leaves the
+     array, and the log shows the `check` line with `removido: true`;
+   - delete the test link and the test produto.
+
+   The anchor census for the MIGRATED links, `migrate:li-integracoes-com-produto`
+   (runbook: `tools/migrations/li-integracoes-com-produto.README.md`), runs after
+   this check and before the stock and price valves reach `on`. Its re-run must
+   read `GATE li: ausente=0 campo-invalido=0` with `contas-li` and
+   `vinculos-que-contam` above 0. A `GATE li: NAO-AVALIADO` line is a stop, never
+   a pass. Why the window: the production project exists only then, and the
+   imported corpus fired no trigger.
+
+8. **The product import's trigger (master-plan step 9).** The console lists
+   `onImportacaoLojaIntegradaCriada` as a Firestore trigger on database
+   `default`:
+
+   ```bash
+   gcloud eventarc triggers list --project <project-id>
+   # expect a trigger for onimportacaolojaintegradacriada,
+   # event type google.cloud.firestore.document.v1.created,
+   # filtered to database 'default' + the importacoesLojaIntegrada/* document path
+   ```
+
+   The indexes `importacoesLojaIntegrada (integracaoId ASC, iniciadoEmMs DESC)`
+   and `itens (__name__ ASC)` (collection scope) are READY (Prerequisites). With
+   the read switch still UNSET, one import started
+   from the web is refused by its route (503, no job). Once the switch is on, the
+   first import of a conta is a person's step of the window, never this check:
+   a Simular, then its report read, before any `aplicar`.
+
+9. **The import's photos (master-plan step 9, "complete").** Before the first
+   `aplicar` run with "completar" and photos, the functions runtime SA holds
+   object create AND overwrite on the default bucket (the IAM section's
+   "Photos" block):
+
+   ```bash
+   gcloud storage buckets get-iam-policy gs://<default-bucket> --project=<project-id>
+   # expect serviceAccount:<functions-runtime-sa> under roles/storage.objectUser
+   ```
+
+   The bucket named there is the one the deployed functions' `FIREBASE_CONFIG`
+   carries (`gcloud storage buckets list` shows the project's default; a
+   project created after late 2024 names it `<project-id>.firebasestorage.app`).
+   Then the first such run's card does NOT show "fotos indisponíveis", and a
+   produto it gave pictures to shows them in the web editor with their
+   thumbnails (the `storage` codebase's resize trigger made the derivatives).
+   Why the window: the production project and its bucket exist only then, and
+   before the switch no import runs.
 
 ## The status write-back in the window (master-plan step 7)
 
