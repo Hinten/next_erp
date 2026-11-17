@@ -528,8 +528,9 @@ export function RascunhoShopee({
             )}
           </div>
           {/* Stamps the attributes' field id on its own root (the focus target). */}
+          {/* Sibling keys must differ (two siblings both keyed `0` trip React's duplicate-key error). */}
           <AtributosRascunhoShopee
-            key={revisaoDoDesfazer}
+            key={`atributos-${String(revisaoDoDesfazer)}`}
             linkDocId={linkDocId}
             {...atributos}
             publicacao={bloco.publicacao}
@@ -538,7 +539,7 @@ export function RascunhoShopee({
           />
           {/* Stamps the logistics' field id itself (its rows' container, else its root). */}
           <LogisticaRascunhoShopee
-            key={revisaoDoDesfazer}
+            key={`logistica-${String(revisaoDoDesfazer)}`}
             linkDocId={linkDocId}
             contaId={contaId}
             produtoId={produtoId}
