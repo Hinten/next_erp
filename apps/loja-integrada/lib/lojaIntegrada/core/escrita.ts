@@ -1174,7 +1174,8 @@ export async function lerDeVoltaLi(
 /**
  * Requirement 5: whether the read-back holds what was written — `deepEqual`,
  * no fold (case, spacing, a number and its string, `null` and absent all
- * differ; for a stock kind, the four leaves written, in any key order). A
+ * differ; for a stock kind, the four leaves written, in any key order, as the
+ * package parsed them — a quoted integer already read as its number). A
  * difference is one WARNING `deriva` line; what it MEANS (an aviso, a re-check)
  * is the flow's. A read-back of another reader than the kind's is a `TypeError`.
  */

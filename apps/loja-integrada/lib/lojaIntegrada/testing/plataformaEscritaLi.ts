@@ -18,8 +18,11 @@
  *  - `GET /v1/produto_estoque/{produto id}` answers the row; an unknown id —
  *    a stock row's OWN id included — answers 404 with an empty body;
  *  - `PUT` on the same path sets exactly the four leaves a stock write sends
- *    and recomputes the available quantity as the store does
- *    (`quantidade_disponivel = quantidade − quantidade_reservada`, unfloored).
+ *    and recomputes the available quantity by the formula the store's GET rows
+ *    show (`quantidade_disponivel = quantidade − quantidade_reservada`,
+ *    unfloored). What a real PUT does with pending reservations is an
+ *    assumption here, unproven until the first canary write: no engine outcome
+ *    depends on it, since the engine compares only the four leaves it writes.
  *
  * Only the no-slash form is modelled, though the store answers the slash GET
  * identically: the engine never asks it, so a path regression answers 500 here.
@@ -65,7 +68,7 @@ export function idDaLinhaDeEstoqueLi(produtoId: number): number {
 /** `ID_PRODUTO_LI`'s stock row id. */
 export const ID_LINHA_ESTOQUE_LI = idDaLinhaDeEstoqueLi(ID_PRODUTO_LI);
 
-/** The store's available quantity: its own formula, unfloored (test data only). */
+/** The available quantity by the formula the store's GET rows show, unfloored (test data only). */
 function recalcularDisponivel(linha: DocData): void {
   const { quantidade, quantidade_reservada: reserva } = linha;
   if (typeof quantidade === 'number' && typeof reserva === 'number') {

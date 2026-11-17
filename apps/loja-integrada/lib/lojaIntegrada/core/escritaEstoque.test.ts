@@ -258,7 +258,7 @@ describe('estoque-produto under `on`: the deciding GET, the restore line, ONE PU
     expect(m.p.textosDosPuts).toEqual([
       '{"gerenciado":true,"quantidade":7,"situacao_em_estoque":0,"situacao_sem_estoque":-1}',
     ]);
-    // The store applied it: the quantity, and its own available figure recomputed.
+    // The fake applied it: the quantity, and the available figure by the GET rows' formula.
     expect(m.p.estado.estoque.get(ID_PRODUTO_LI)).toMatchObject({
       quantidade: 7,
       quantidade_disponivel: 5,
@@ -389,8 +389,32 @@ describe('estoque-produto’s read-back: a SEPARATE GET, compared on the four wr
     expect(doEvento(m.linhas, 'deriva')).toEqual([]);
   });
 
+  it('EQUAL pair: a read-back answering the quantity QUOTED (`"7"`) ⇒ `igual` — the package’s parse reads it as 7, no deriva line', async () => {
+    const m = await montar();
+    const base = lida(await lerBaseLi(m.motor, ALVO, 'produto-estoque'));
+    await escreverLi(m.motor, ESTOQUE, corpo(7), base);
+    m.p.fila.push(naProxima(CAMINHO, 'GET', linhaComo({ quantidade: '7' })));
+    const leitura = await lerDeVoltaLi(m.motor, ALVO, 'estoque-produto');
+    if (!leitura.verificado) throw new TypeError('não verificada');
+    expect(leitura.produtoEstoque.quantidade).toBe(7);
+    expect(conferirEscritaLi(m.motor, ESTOQUE, corpo(7), leitura)).toBe('igual');
+    expect(doEvento(m.linhas, 'deriva')).toEqual([]);
+  });
+
+  it('⚠️ NEAR-MISS: a quantity quoted as a fraction (`"7.5"`) is not 7 — the read-back comes back unverified, never `igual`', async () => {
+    const m = await montar();
+    const base = lida(await lerBaseLi(m.motor, ALVO, 'produto-estoque'));
+    await escreverLi(m.motor, ESTOQUE, corpo(7), base);
+    m.p.fila.push(naProxima(CAMINHO, 'GET', linhaComo({ quantidade: '7.5' })));
+    const leitura = await lerDeVoltaLi(m.motor, ALVO, 'estoque-produto');
+    expect(leitura).toMatchObject({ verificado: false, classe: 'LiSchemaError' });
+    expect(doEvento(m.linhas, 'deriva')).toEqual([]);
+  });
+
   it.each([
     ['a quantity one below what was written', { quantidade: 6 }],
+    ['a quantity one above what was written', { quantidade: 8 }],
+    ['a quantity one above what was written, quoted (`"8"`)', { quantidade: '8' }],
     ['the same quantity, the product unmanaged', { quantidade: 7, gerenciado: false }],
     [
       'the same quantity, another out-of-stock situação',
@@ -463,11 +487,14 @@ describe('estoque-produto not `on`: the deciding read, its restore line, ONE dif
   });
 
   it.each([
+    ['a quantity one below the body', { quantidade: 6 }],
+    ['a quantity one above the body', { quantidade: 8 }],
     ['the same quantity, the product unmanaged', { quantidade: 7, gerenciado: false }],
     [
       'the same quantity, another out-of-stock situação',
       { quantidade: 7, situacao_sem_estoque: 0 },
     ],
+    ['the same quantity, another in-stock situação', { quantidade: 7, situacao_em_estoque: 3 }],
   ])('⚠️ NEAR-MISS: a row holding %s ⇒ `mudou: true`', async (_c, over) => {
     const m = await montar({ modo: MODO_LI.dryRun, p: plataforma(over) });
     const base = lida(await lerBaseLi(m.motor, ALVO, 'produto-estoque'));
