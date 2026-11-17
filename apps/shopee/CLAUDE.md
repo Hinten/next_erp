@@ -1431,9 +1431,6 @@ The first WRITER of a listing. Reasoning: `anuncios/README.md`.
   (model-leg exceptions: `anuncios/README.md`); a rejection is a `problema` on
   the field that fixes it. Both vocabularies PERSIST.
 - `item_status` comes from the READ-BACK, never the request.
-- A DONE publish (item result, kit `criado`/`retomado`/`atualizado`; paused
-  included, never an `incerto`) ticks the produto's `publicado` through
-  `marcarProdutoPublicado` — the only produto field the publish writes.
 - `size_chart_info` (step 18) rides create AND update: the tabela's template for
   the listing's resolved category (`categoriaDoAnuncio`), else its FIRST photo,
   else nothing — never the `0`/`''` detach. A refusal is a 422 on
