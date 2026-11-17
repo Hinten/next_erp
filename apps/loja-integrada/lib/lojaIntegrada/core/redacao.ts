@@ -24,7 +24,9 @@
  *    a keep-list per resource, at the root (detail) and under `objects.*` (list).
  * 4. **`catalogo`** (produto, estoque, preço, imagem, categoria, marca, grades):
  *    carries no personal data, so the `log` profile keeps a 2xx body's whole text
- *    behind the regex layer; the `fixture` profile walks a keep-list.
+ *    behind the regex layer; the `fixture` profile walks a keep-list. The write
+ *    engine's restore snapshot of ONE catalogue path, the stock detail, is a
+ *    keep-list walk too — byte-faithful or `null` (`corpoDeRestauracaoLi`).
  * 5. **`webhook`** (`/webhooks/…`): no excerpt, ever — its body carries the
  *    receiver's secret.
  * 6. **Non-2xx JSON bodies** get an error walk (`percorrerErro`) that keeps
@@ -1013,6 +1015,25 @@ const TABELA_DO_CATALOGO: ReadonlyMap<string, TabelaRedacaoLi> = new Map([
 ]);
 
 /**
+ * The ONE catalogue path a restore snapshot is made for (`corpoDeRestauracaoLi`):
+ * one product's stock detail, `/v1/produto_estoque/{produto id}`, exactly as the
+ * write engine asks it — no trailing slash, a canonical id, no query, the same
+ * form the stock write's route accepts. Tested on the RAW path: the slash form
+ * the store also answers, a list, `;`-joined ids, `/set/`, a query, every other
+ * catalogue resource is NOT it. A local pattern: this file may not import the
+ * package.
+ */
+const CAMINHO_RESTAURACAO_ESTOQUE_LI = /^\/v1\/produto_estoque\/[1-9][0-9]*$/;
+
+/**
+ * The restore snapshot's keep-list for that path: the `ESTOQUE` leaves at the
+ * ROOT only (a detail; no `meta`, no `objects.*`). Module-private and outside
+ * {@link TABELAS_LI}, so the log and fixture profiles and the spec-coverage
+ * table do not see it.
+ */
+const TABELA_RESTAURACAO_ESTOQUE_LI = tabela('produto-estoque-restauracao', ESTOQUE);
+
+/**
  * The catalogue resource names (`recursoDoCaminho`). A path naming one that
  * `classificarCaminho` does not admit as `catalogo` (a sub-resource no step reads
  * yet) falls to `estrutural`; the capture sanitizer refuses it, since only the
@@ -1656,9 +1677,17 @@ export interface EntradaRestauracaoLi {
  *   walk of the `log` profile, with NO 2 KB cut (the line's own size is capped
  *   by the logger). Only the table's leaves survive: `situacao.*`, `envios.*.id`
  *   and `envios.*.objeto` among them; the buyer is `<redacted>`.
- * - **`catalogo`**: `null` until the first catalogue write builds its
- *   byte-faithful branch (master plan steps 11–13), so a catalogue write cannot
- *   run before it has one.
+ * - **`catalogo`**: ONE branch, byte-faithful or nothing — one product's stock
+ *   detail, `GET /v1/produto_estoque/{produto id}`, in its exact no-slash form
+ *   ({@link CAMINHO_RESTAURACAO_ESTOQUE_LI}; master plan step 12). The root must
+ *   be an object holding all nine `ESTOQUE` keep-list leaves, each coming out of
+ *   the walk UNCHANGED (the same primitive: the store's quantity and its
+ *   reservation ride the line verbatim); a leaf missing, or one the walk would
+ *   alter (a predicate refusal, an object, a masked string), is `null`. Any
+ *   other key is kept with a `<redacted>` value, as on an estrutural body, so a
+ *   new store field shows up in the line without being carried. Every other
+ *   catalogue path stays `null` until its own write builds a branch (master
+ *   plan steps 11–13), so such a write cannot run before it has one.
  * - **`webhook`**, **`configuracao`**: `null` — no write of either restores from here.
  * - A non-2xx answer, an empty or non-JSON body, a body over
  *   `LIMITE_ANALISE_BYTES.log` or nested deeper than `PROFUNDIDADE_MAXIMA_JSON`:
@@ -1667,12 +1696,43 @@ export interface EntradaRestauracaoLi {
  * Pure and total, like the rest of this module.
  */
 export function corpoDeRestauracaoLi(e: EntradaRestauracaoLi): ValorJsonLi | null {
+  if (!ehSucesso(e.status)) return null;
   const politica = classificarCaminho(e.caminho);
-  if (politica !== 'estrutural' || !ehSucesso(e.status)) return null;
-  const analise = analisar(e.texto, bytesUtf8(e.texto), LIMITE_ANALISE_BYTES.log);
-  if (analise.forma !== 'json') return null;
-  const ctx = percurso('log', tabelaDoCaminho(e.caminho), politica, false);
-  return percorrer2xx(analise.valor, '', null, 0, ctx);
+  switch (politica) {
+    case 'estrutural': {
+      const analise = analisar(e.texto, bytesUtf8(e.texto), LIMITE_ANALISE_BYTES.log);
+      if (analise.forma !== 'json') return null;
+      const ctx = percurso('log', tabelaDoCaminho(e.caminho), politica, false);
+      return percorrer2xx(analise.valor, '', null, 0, ctx);
+    }
+    case 'catalogo':
+      return CAMINHO_RESTAURACAO_ESTOQUE_LI.test(e.caminho)
+        ? restauracaoDoEstoqueLi(e.texto)
+        : null;
+    case 'configuracao':
+    case 'webhook':
+      return null;
+  }
+}
+
+/**
+ * The stock detail's restore snapshot: the `log` walk of
+ * {@link TABELA_RESTAURACAO_ESTOQUE_LI} (no denied keys, no fakes), then every
+ * keep-list leaf checked to be present and to come out as the SAME primitive it
+ * went in — else `null`. So for a well-formed detail the snapshot serialises
+ * exactly as the parsed body does, key order included.
+ */
+function restauracaoDoEstoqueLi(texto: string): ValorJsonLi | null {
+  const analise = analisar(texto, bytesUtf8(texto), LIMITE_ANALISE_BYTES.log);
+  if (analise.forma !== 'json' || !ehObjeto(analise.valor)) return null;
+  const lido = analise.valor;
+  const ctx = percurso('log', TABELA_RESTAURACAO_ESTOQUE_LI, 'catalogo', false);
+  const saida = percorrer2xx(lido, '', null, 0, ctx);
+  if (!ehObjeto(saida)) return null;
+  for (const folha of TABELA_RESTAURACAO_ESTOQUE_LI.permitidas.keys()) {
+    if (!Object.hasOwn(lido, folha) || saida[folha] !== lido[folha]) return null;
+  }
+  return saida;
 }
 
 /* -------------------------------------------------------------------------- */

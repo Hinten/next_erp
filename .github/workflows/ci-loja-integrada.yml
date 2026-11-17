@@ -13,7 +13,7 @@ name: CI — Loja Integrada
 # behind its own gate. A skip of this lane therefore loses only the emulator
 # round trip, never the unit suites.
 #
-# ONE job, nine suite files today:
+# ONE job; the suite files include (the glob, not this list, is authoritative):
 #   - `apps/loja-integrada/functions/src/filaLeitura.tasks.test.ts` — the reads
 #     round trip below;
 #   - `apps/loja-integrada/functions/src/filaEscrita.tasks.test.ts` — the
@@ -39,7 +39,15 @@ name: CI — Loja Integrada
 #   - `apps/loja-integrada/functions/src/onProdutoLojaIntegradaLinkChanged.tasks.test.ts`
 #     — the anchor trigger (step 9): a write to a `produtolojaintegrada` link →
 #     the real deployed `onDocumentWritten` → the shared `integracoesComProduto`
-#     core → the produto's anchor array, read back raw.
+#     core → the produto's anchor array, read back raw;
+#   - `apps/loja-integrada/lib/lojaIntegrada/estoque/processarEstoque.tasks.test.ts`
+#     — one stock send run (step 12) IN PROCESS, its valve and the read switch on
+#     as PARAMETERS only, against a scripted store: its real Firestore queries
+#     (both depósito ref forms, the any-depósito listing, the collection-group
+#     duplicate probe) and its one `deriva` follow-up enqueued through the real
+#     producer root onto `filaEstoqueLojaIntegrada`. The DISPATCHED follow-up
+#     stops at the stock valve, which this job leaves unset, so that hop is
+#     unobservable here by design; its options and dispatch are pinned offline.
 # ⚠️ The triggers fire on EVERY suite's writes, not only their own: the
 # functions emulator loads the whole codebase. The conta trigger fires on every
 # `integracao` write, the history trigger (`onHistoricoFreteLojaIntegrada`,
@@ -129,7 +137,9 @@ name: CI — Loja Integrada
 #     emulator — dispatch is pure FIFO (firebase-tools#8254, open). The reads
 #     queue sets none today; a producer that adds one must not assert it here,
 #     because a delayed enqueue would dispatch immediately and the test would
-#     pass for the wrong reason.
+#     pass for the wrong reason. The stock producer (step 12) sets a
+#     `scheduleTime`, which the emulator ignores the same way; its suite does not
+#     assert it, and the schedule is pinned offline.
 #   - `rateLimits` and `retryConfig`, and the writes queue's instance limits
 #     (`concurrency`, `maxInstances`). Whether the emulator honours
 #     `maxConcurrentDispatches` is unverified; the options are pinned OFFLINE, off

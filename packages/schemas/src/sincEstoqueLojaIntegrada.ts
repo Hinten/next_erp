@@ -125,9 +125,9 @@ export const contadoresEstoqueLiSchema = z.record(
 /* -------------------------------------------------------------------------- */
 
 /**
- * The largest page the store's stock list is asked for: a BOUND, not a measurement. The
- * produto list answered `limit=100` in full and refused 200 and above with a 400; the stock
- * list's own ceiling is not measured yet.
+ * The largest page the store's stock list is asked for, as measured: the owner's read-only
+ * stock captures saw the stock list honour `limit=100` exactly and refuse `limit=200` with a
+ * 400, the same as the produto list.
  *
  * ⚠️ The ONE bound. The cursor below holds its `limite` to it and the wire's page reader
  * (`lerPaginaEstoqueLi`, which re-exports this binding) refuses anything above it, so a page

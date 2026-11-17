@@ -59,6 +59,7 @@ import {
   estadoAnuncioShopeeSchema,
   type AcaoSugeridaPublicacaoShopee,
   type CampoRascunhoShopee,
+  type CanalLogisticaRascunhoShopee,
   type EstadoAnuncioShopee,
   type EstadoPublicacaoRascunhoShopee,
   type FaixaDto,
@@ -1800,9 +1801,31 @@ export const FRASE_RASCUNHO_CARREGANDO_SHOPEE = 'Carregando a versão do servido
 export const FRASE_RASCUNHO_AGUARDANDO_SERVIDOR_SHOPEE =
   'Salvo. Aguardando a versão do servidor para editar de novo…';
 
-/** Logistics are not authored on a draft yet (DC §2.6, #1911 P15/P16). */
+/**
+ * What «Automática» does (#1911 P16, design-C-LOG §5.3): the draft's
+ * «Logística (canais de envio)» section shows it whenever the draft holds no
+ * channel choice (`logistic_info: null`) — a new draft, a legacy unstamped
+ * list, or «Automática» chosen. «Oferece frete grátis» is the produto field's
+ * own label (`produtoFields.ts`).
+ */
 export const FRASE_LOGISTICA_RASCUNHO_SHOPEE =
-  'Logística: escolhida automaticamente na publicação, entre os canais ativos da loja.';
+  'Automática: a publicação liga todos os canais ativos da loja em que o pacote cabe, com o ' +
+  'frete grátis definido no produto («Oferece frete grátis»).';
+
+/**
+ * ONE channel of a draft's `logistic_info`, read-only, by its id (#1911 P16,
+ * design-C-LOG §5.3): «Canal 90003: ligado, frete grátis» / «Canal 90005:
+ * desligado». Free shipping only when `is_free` is `true` (a `null` read from
+ * a stored list is not free — what the checkbox shows). THE one spelling of
+ * that line: the Logística section without a conta (no channel names to read)
+ * and the conflict modal's «Logística» cells (Lucas 2026-11-16, Q-B: one line
+ * per channel, ids — the modal has no channel list either) both call it.
+ */
+export function linhaDoCanalSomenteLeituraShopee(canal: CanalLogisticaRascunhoShopee): string {
+  const estado = canal.enabled ? 'ligado' : 'desligado';
+  const freteGratis = canal.is_free === true ? ', frete grátis' : '';
+  return `Canal ${String(canal.logistic_id)}: ${estado}${freteGratis}`;
+}
 
 /**
  * A category change on a draft whose attributes are filled — stored, or typed

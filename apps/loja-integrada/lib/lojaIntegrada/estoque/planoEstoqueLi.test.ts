@@ -107,7 +107,7 @@ describe('refletidoLi: the store already shows the body — ALL four fields, exa
     expect(refletidoLi(linha(12, 2, { situacao_sem_estoque: '-1' }), 12)).toBe(false);
   });
 
-  it('⚠️ an unmanaged row reads back as all zeros, and is NOT a reflected 0', () => {
+  it('⚠️ an unmanaged row at quantity 0 is NOT a reflected 0', () => {
     const naoGerenciada = {
       gerenciado: false,
       quantidade: 0,
@@ -119,6 +119,16 @@ describe('refletidoLi: the store already shows the body — ALL four fields, exa
     expect(decidirEnvioEstoqueLi({ S: 0, cap: SEM_TETO, linha: naoGerenciada }).tipo).toBe(
       'escrever',
     );
+  });
+
+  it('⚠️ NEAR-MISS: an unmanaged row at a positive quantity, under the body’s own situações, is NOT a reflected value either', () => {
+    // The stores hold such rows: unmanaged is not "all zeros", whatever the document says.
+    const naoGerenciada = linha(5, 0, { gerenciado: false });
+    expect(refletidoLi(naoGerenciada, 5)).toBe(false);
+    expect(decidirEnvioEstoqueLi({ S: 5, cap: SEM_TETO, linha: naoGerenciada })).toEqual({
+      tipo: 'escrever',
+      corpo: { gerenciado: true, quantidade: 5, situacao_em_estoque: 0, situacao_sem_estoque: -1 },
+    });
   });
 });
 

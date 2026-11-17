@@ -2793,9 +2793,13 @@ describe('#1911 P15 — logistic_info no rascunho: a lista e o carimbo no MESMO 
 /* -------------------------------------------------------------------------- */
 
 // #1911 P15 retitled this describe (it was «descartarRascunhoShopee — base
-// INTEIRA conferida + delete guardado»): `logistic_info` is optional in the
-// base until P16 (D-LOG-10), so the base is the five form fields at least.
-describe('descartarRascunhoShopee — a base conferida (os cinco campos, e logistic_info quando nomeada) + delete guardado', () => {
+// INTEIRA conferida + delete guardado»), and #1911 P16 again (it was «… — a base
+// conferida (os cinco campos, e logistic_info quando nomeada) + delete
+// guardado»): the body now reads an ABSENT `logistic_info` as `null`
+// («Automática», what every screen before the logistics editor showed;
+// D-LOG-10), so the route always compares all six fields — a stale five-key
+// tab included.
+describe('descartarRascunhoShopee — a base conferida (os seis campos; logistic_info ausente = null) + delete guardado', () => {
   it('LIVRE e a base é o gravado ⇒ apaga com a precondição, sem atestação, criacaoIncerta: false', async () => {
     const db = new FakeDb();
     db.seed(CAMINHO, rascunho());
@@ -3072,8 +3076,14 @@ describe('descartarRascunhoShopee — a base conferida (os cinco campos, e logis
         logisticaGravadaEm: AGORA - 86_400_000,
       });
 
-      it('(D-LOG-10) a base de CINCO chaves — a da web já implantada, montada à mão, não vista() — sobre uma lista carimbada ⇒ descartado sem comparar ⟷ a base com logistic_info null sobre a mesma ⇒ 409 CONFLITO [logistic_info]', async () => {
-        // What a web deployed before P16 sends: the five form fields, by name.
+      // #1911 P16 (D-LOG-10) — antes: «(D-LOG-10) a base de CINCO chaves — a da web já
+      // implantada, montada à mão, não vista() — sobre uma lista carimbada ⇒ descartado
+      // sem comparar ⟷ a base com logistic_info null sobre a mesma ⇒ 409 CONFLITO
+      // [logistic_info]»: the five-key base then compared only what it named, so a
+      // stale tab deleted a channel choice it never saw.
+      it('PAR (D): a base de CINCO chaves (tela anterior ao editor) sobre uma lista carimbada ⇒ 409 CONFLITO [logistic_info], nada apagado ⟷ ⛔ QUASE: a mesma base sobre um rascunho Automática (sem lista, ou lista legada sem carimbo) ⇒ descartado', async () => {
+        // What a tab from before the logistics editor sends: the five form fields, by
+        // name — built by hand, never vista().
         const cincoChaves = {
           item_name: 'Camiseta do rascunho',
           description: null,
@@ -3081,30 +3091,37 @@ describe('descartarRascunhoShopee — a base conferida (os cinco campos, e logis
           marca: { brand_id: 0, original_brand_name: null },
           attributes: null,
         };
-        // ÂNCORA: the projection has a SIXTH key, and it is not «Automática» here.
+        // ÂNCORA: the projection has a SIXTH key, and it is not «Automática» here…
         expect(Object.keys(vista(escolhida))).toHaveLength(6);
         expect(vista(escolhida).logistic_info).toEqual([CANAL_A, CANAL_C]);
+        // …and the body reads the absent key as «Automática» — what that tab SAW.
+        expect(corpoDescartar(cincoChaves).base.logistic_info).toBeNull();
 
-        // The base that NAMES the list as «Automática» is a conflict…
-        const db = new FakeDb();
-        db.seed(CAMINHO, escolhida);
-        const err = await recusaDe(
-          descartarRascunhoShopee(
-            deps(db),
-            corpoDescartar({ ...cincoChaves, logistic_info: null }),
-          ),
-        );
-        expect(err.code).toBe(CODIGO_RASCUNHO_SHOPEE.conflito);
-        expect(err.conflitos).toEqual([
-          { campo: CAMPO_RASCUNHO_SHOPEE.logisticInfo, atual: [CANAL_A, CANAL_C] },
-        ]);
-        expect(doc(db)).toEqual(escolhida);
-        expect(db.deletes).toEqual([]);
+        // PAR: over channels another tab chose, the five keys and the explicit `null`
+        // are the SAME base — the worded 409, nothing discarded.
+        for (const base of [cincoChaves, { ...cincoChaves, logistic_info: null }]) {
+          const db = new FakeDb();
+          db.seed(CAMINHO, escolhida);
+          const err = await recusaDe(descartarRascunhoShopee(deps(db), corpoDescartar(base)));
+          expect(err.code, JSON.stringify(base)).toBe(CODIGO_RASCUNHO_SHOPEE.conflito);
+          expect(err.conflitos).toEqual([
+            { campo: CAMPO_RASCUNHO_SHOPEE.logisticInfo, atual: [CANAL_A, CANAL_C] },
+          ]);
+          expect(doc(db)).toEqual(escolhida);
+          expect(db.deletes).toEqual([]);
+        }
 
-        // …while the five-key base compares only what it names (the P15 → P16 gap).
-        const r = await descartarRascunhoShopee(deps(db), corpoDescartar(cincoChaves));
-        expect(r).toEqual({ linkDocId: RASCUNHO, descartado: true, criacaoIncerta: false });
-        expect(db.deletes).toEqual([{ path: CAMINHO, comPrecondicao: true }]);
+        // ⛔ QUASE: the same five keys over an Automática draft — no list at all, or an
+        // unstamped legacy list (both project `null`) — still discard.
+        for (const automatica of [rascunho(), rascunho({ logistic_info: [CANAL_A] })]) {
+          expect(vista(automatica).logistic_info).toBeNull();
+          const db = new FakeDb();
+          db.seed(CAMINHO, automatica);
+          const r = await descartarRascunhoShopee(deps(db), corpoDescartar(cincoChaves));
+          expect(r).toEqual({ linkDocId: RASCUNHO, descartado: true, criacaoIncerta: false });
+          expect(doc(db)).toBeUndefined();
+          expect(db.deletes).toEqual([{ path: CAMINHO, comPrecondicao: true }]);
+        }
       });
 
       it('PAR: a base de SEIS chaves = a projeção ordenada sobre uma lista carimbada guardada em outra ordem ⇒ descartado ⟷ QUASE: a mesma base invertida ⇒ 409 [logistic_info]', async () => {

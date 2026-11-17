@@ -752,10 +752,10 @@ export interface CamposRascunhoShopee {
   readonly attributes: readonly AtributoShopeeRequisicao[] | null;
   /**
    * The channel choice (P15), sorted by `logistic_id`. `null` = «Automática»:
-   * nothing stored, nothing readable, or a list the ERP never stamped. Produced
-   * ALWAYS since P15; optional in the TYPE until P16.
+   * nothing stored, nothing readable, or a list the ERP never stamped.
+   * REQUIRED since P16: every builder decides; produced always since P15.
    */
-  readonly logistic_info?: readonly CanalLogisticaRascunhoShopee[] | null;
+  readonly logistic_info: readonly CanalLogisticaRascunhoShopee[] | null;
 }
 
 /** A stored string, VERBATIM; anything else (absent included) is `null`. */
@@ -777,11 +777,14 @@ function atributosGuardados(bruto: unknown): readonly AtributoShopeeRequisicao[]
 /**
  * Channels in `logistic_id` order — a STABLE sort (ES2019), so two entries with
  * one id keep the order they came in. A copy: the input is never reordered.
- * The ONE ordering of a draft's channel list: the projection and the write
- * whitelist both sort through it, so what a write stores and what the
- * projection reads back can never be ordered two ways.
+ * The ONE ordering of a draft's channel list: the projection, the write
+ * whitelist and the web Logística editor's value (#1911 P16) all sort through
+ * it, so what a write stores and what the projection reads back can never be
+ * ordered two ways.
  */
-function ordenadosPorCanal<T extends { readonly logistic_id: number }>(canais: readonly T[]): T[] {
+export function ordenadosPorCanalLogisticaShopee<T extends { readonly logistic_id: number }>(
+  canais: readonly T[],
+): T[] {
   return [...canais].sort((a, b) => a.logistic_id - b.logistic_id);
 }
 
@@ -799,7 +802,7 @@ function logisticaGuardada(
   if (!logisticaGravadaPeloErpShopee(link)) return null;
   const lidas = lerLogisticaArmazenadaShopee(link.logistic_info);
   if (lidas === null) return null;
-  return ordenadosPorCanal(
+  return ordenadosPorCanalLogisticaShopee(
     lidas.map(
       (entrada): CanalLogisticaRascunhoShopee => ({
         logistic_id: entrada.logisticId,
@@ -1371,7 +1374,7 @@ const logisticaConteudoSchema = z
       ctx.addIssue({ code: 'custom', message: MSG_LOGISTICA_SEM_CANAL_LIGADO_RASCUNHO_SHOPEE });
     }
   })
-  .transform((canais) => ordenadosPorCanal(canais));
+  .transform((canais) => ordenadosPorCanalLogisticaShopee(canais));
 
 /**
  * **The draft WRITE whitelist** (#1911, D1/D2) — every field a draft create
@@ -1620,12 +1623,19 @@ export type CorpoAtualizarRascunhoShopee = z.output<typeof corpoAtualizarRascunh
 
 /**
  * `POST /api/marketplace/shopee/rascunho/descartar` — delete a draft. `base`
- * carries the five form fields (K1-13) — `attributes` too, since P6 projects
- * them — and `logistic_info` OPTIONALLY, compared only when named (the P15 →
- * P16 deploy gap, D-LOG-10: the web deployed before P16 sends five keys): the
- * route refuses the discard when the stored draft is not what the operator
- * saw, so an edit made meanwhile — in another tab, by another operator — is
- * never discarded unseen.
+ * carries the six form fields (K1-13) — `attributes` too, since P6 projects
+ * them — and the route refuses the discard when the stored draft is not what
+ * the operator saw, so an edit made meanwhile — in another tab, by another
+ * operator — is never discarded unseen. The five P10/P13 fields are REQUIRED;
+ * `logistic_info` may be absent and is then read as `null` (#1911 P16,
+ * D-LOG-10): absent ⇒ `null`: what every screen before the logistics editor
+ * showed («escolhida automaticamente»), so a stale tab discarding a draft
+ * whose channels were chosen meanwhile is a 409, never a silent delete — and
+ * the same tab discarding an Automática draft still discards. A value that is
+ * present (`null` or a list) stays VERBATIM, through the base's own list
+ * schema (no sort, `is_free` nullable); the base stays strict. Only the
+ * REQUEST tolerates the absence — `z.input` keeps the key optional,
+ * `z.output` always holds it — so the route compares all six fields.
  * `confirmarCriacaoIncerta: true` is the operator's attestation, after a check
  * in Seller Centre, that the uncertain last create left NOTHING this draft must
  * become (K1-6): it did not reach Shopee, or the listing it made is ALREADY
@@ -1638,13 +1648,18 @@ export const corpoDescartarRascunhoShopeeSchema = z.strictObject({
   integracaoId: idDeDocumentoSchema,
   produtoId: idDeDocumentoSchema,
   linkDocId: idDeDocumentoSchema,
-  base: baseRascunhoShopeeSchema.required({
-    item_name: true,
-    description: true,
-    category_id: true,
-    marca: true,
-    attributes: true,
-  }),
+  base: baseRascunhoShopeeSchema
+    .required({
+      item_name: true,
+      description: true,
+      category_id: true,
+      marca: true,
+      attributes: true,
+    })
+    .extend({
+      // #1911 P16 (D-LOG-10): absent ⇒ «Automática», what the stale tab showed.
+      logistic_info: baseRascunhoShopeeSchema.shape.logistic_info.unwrap().default(null),
+    }),
   confirmarCriacaoIncerta: z.boolean().nullable().optional(),
 });
 export type CorpoDescartarRascunhoShopee = z.output<typeof corpoDescartarRascunhoShopeeSchema>;

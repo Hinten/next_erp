@@ -84,6 +84,7 @@ import {
   type ShopeeClient,
 } from '@/lib/shopee/client';
 import { CODIGO_FALHA_SHOPEE, descreverFalhaShopee, shopeeQueryRetry } from '@/lib/shopee/erros';
+import { logisticaEscolhidaNoRascunhoShopee } from '@/lib/shopee/logisticaRascunho';
 import {
   algumRascunhoShopeeSujo,
   categoriaAceitaNoBlocoShopee,
@@ -1925,8 +1926,11 @@ function EditorShopee({
    * entry from the snapshot — only under server truth, which the block's
    * `camposEditaveis` says (and the category only as the block accepts it:
    * any pick while `categoriaEditavel`; in `incerta`, only the held category
-   * put back — `categoriaAceitaNoBlocoShopee`). Never `attributes`: the type
-   * refuses it, a list goes only through {@link definirAtributo}.
+   * put back — `categoriaAceitaNoBlocoShopee`; and the channels only while
+   * `logisticaEditavel` — a SAVED draft: a local new one never holds a
+   * channel list, which its create would drop behind a 201, D-13 / D16-5).
+   * Never `attributes`: the type refuses it, a list goes only through
+   * {@link definirAtributo}.
    */
   function definirCampo<C extends CampoSimplesDoFormularioRascunhoShopee>(
     linkDocId: string,
@@ -1941,6 +1945,7 @@ function EditorShopee({
     ) {
       return;
     }
+    if (campo === CAMPO_RASCUNHO_SHOPEE.logisticInfo && !entrada.bloco.logisticaEditavel) return;
     const { contaId, link } = entrada;
     const naRender = edicoes.get(linkDocId);
     const efetiva = efetivas.get(linkDocId) ?? null;
@@ -2474,6 +2479,9 @@ function EditorShopee({
       skuEnviado: janelaDaCriacaoIncertaShopee(entrada.link)?.sku ?? null,
       podePublicar: podePublicarAgora(linkDocId),
       podeDescartar: entrada.bloco.podeDescartar,
+      // The STORED draft's channels (what its «Publicar» sent) — never the
+      // form's: an unsaved switch to «Automática» routes nothing differently.
+      logisticaEscolhida: entrada.link !== null && logisticaEscolhidaNoRascunhoShopee(entrada.link),
       onSaida: (saida) => saidaDoProblema(linkDocId, saida),
     };
   }
@@ -2492,6 +2500,10 @@ function EditorShopee({
       contaId: conta.encontrada ? conta.id : null,
       contaNome: conta.nome,
       linkDocId,
+      produtoId,
+      // The WATCHED produto document's stamp (`saveRecord` writes it on every
+      // save): the Logística section reads the channels again after a save.
+      revisaoDoProduto: produto?.ultimaModificacao ?? null,
       bloco,
       // §H Q1's "stored" brand: the HELD projection's (a local draft has none).
       marcaGuardada: link === null ? null : projecaoGuardadaDoRascunhoShopee(edicao, link).marca,

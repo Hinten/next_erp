@@ -15,8 +15,10 @@
  * ## The queue
  *
  * ONE writes queue, {@link FILA_ESCRITA_LI} (= the function name), at one
- * dispatch at a time — every write to Loja Integrada of this channel goes
- * through it, its sweep included, so retries stay single-file. The function and
+ * dispatch at a time — every write to Loja Integrada of this channel but stock
+ * goes through it, its sweep included, so retries stay single-file. Stock has a
+ * single-file queue of its own (`functions/src/filaEstoque.ts`, master plan
+ * step 12), so at most two writes are in flight per store. The function and
  * its scheduler live in the functions codebase (master plan step 7, PR 7-e).
  *
  * ## Dispositions ({@link toDispositionEscritaLi}, phase-independent)

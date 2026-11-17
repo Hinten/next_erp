@@ -89,11 +89,15 @@ runConfig:
 #                                          runs in the functions codebase only — its
 #                                          trigger, the writes queue and its varredura —
 #                                          so set BOTH in its `.env.deploy`; a row for
-#                                          either here does nothing.
+#                                          either here does nothing. Since step 12
+#                                          (PR 12-e) the ESTOQUE pair is read by the
+#                                          functions codebase's stock queue too, and
+#                                          this backend has no reader of it yet.
 #
 # Read ONLY by the nested functions codebase (step 3), so a row for any of them
 # here would be read by nothing: LOJA_INTEGRADA_TASKS_REGION,
-# LOJA_INTEGRADA_TASKS_DISABLED and LOJA_INTEGRADA_POLL_LOOKBACK_H live in
+# LOJA_INTEGRADA_TASKS_DISABLED, LOJA_INTEGRADA_POLL_LOOKBACK_H and — since step
+# 12, the stock send run's upper cap — LOJA_INTEGRADA_ESTOQUE_MAX live in
 # `functions/.env.deploy`. This backend gets its own LOJA_INTEGRADA_TASKS_REGION
 # (and the sweep-only valve) in step 4, with its first Cloud Tasks enqueuer, and
 # it must then equal the FUNCTIONS_REGION the functions bundle was built for.

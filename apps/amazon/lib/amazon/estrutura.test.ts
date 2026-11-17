@@ -1941,13 +1941,19 @@ describe('the step-2b logger guards', () => {
     },
   );
 
-  it('no `console.` under lib/amazon (comments aside): the sink writes stdout itself', () => {
-    for (const arquivo of arquivosTs(RAIZ_LIB).filter((p) => !ehTeste(p))) {
-      expect(semComentarios(readFileSync(arquivo, 'utf8')), rel(arquivo)).not.toMatch(
-        /\bconsole\./,
-      );
-    }
-  });
+  // A parse of every production file under lib/amazon: it took 5.5 s on a CI runner (#2130, #2142)
+  // against vitest's 5 s default. CI headroom, not a budget — the same as the app-wide parse above.
+  it(
+    'no `console.` under lib/amazon (comments aside): the sink writes stdout itself',
+    { timeout: 30_000 },
+    () => {
+      for (const arquivo of arquivosTs(RAIZ_LIB).filter((p) => !ehTeste(p))) {
+        expect(semComentarios(readFileSync(arquivo, 'utf8')), rel(arquivo)).not.toMatch(
+          /\bconsole\./,
+        );
+      }
+    },
+  );
 
   it('neither the logger nor the redactor has a `catch` at all (total by construction)', () => {
     for (const arquivo of ['core/log.ts', 'core/redacao.ts']) {

@@ -199,6 +199,33 @@ describe('descartar — 200', () => {
     expect(Date.now).toHaveBeenCalledTimes(1);
   });
 
+  it('um corpo sem `base.logistic_info` chega ao domínio com `null` (200 sobre um Automática), nunca 400 ⟷ ⛔ o mesmo corpo sobre uma lista carimbada ⇒ 409 CONFLITO [logistic_info] (#1911 P16, D-LOG-10)', async () => {
+    // ÂNCORA: BASE is the five keys a tab from before the logistics editor sends.
+    expect(BASE).not.toHaveProperty('logistic_info');
+    semear();
+
+    const res = await POST(req(corpo()));
+
+    expect(res.status).toBe(200);
+    expect(db.store[CAMINHO]).toBeUndefined();
+
+    // ⛔ The same body over channels another tab chose: the absent key reached the
+    // domain as «Automática», so it is compared — refused, the draft BYTE-identical.
+    const canal = { logistic_id: 90_003, enabled: true, is_free: false };
+    db.seed(CAMINHO, rascunho({ logistic_info: [canal], logisticaGravadaEm: T0 - 86_400_000 }));
+    const antes = structuredClone(db.store[CAMINHO]?.data);
+
+    const recusa = await POST(req(corpo()));
+
+    expect(recusa.status).toBe(409);
+    await expect(recusa.json()).resolves.toMatchObject({
+      code: CODIGO_RASCUNHO_SHOPEE.conflito,
+      conflitos: [{ campo: CAMPO_RASCUNHO_SHOPEE.logisticInfo, atual: [canal] }],
+    });
+    expect(db.store[CAMINHO]?.data).toEqual(antes);
+    expect(db.deletes).toEqual([{ path: CAMINHO, comPrecondicao: true }]);
+  });
+
   it('⛔ NEAR-MISS (batch-A review): a trava vencida NUNCA carimbada, sem registro, é `livre` — apaga SEM atestação', async () => {
     semear(rascunho(travaSemCarimbo(T0 - AGUARDAR_ANUNCIO_INCERTO_SHOPEE_MS - 1)));
 

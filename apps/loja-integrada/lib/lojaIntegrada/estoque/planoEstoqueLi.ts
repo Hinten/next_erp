@@ -13,7 +13,8 @@
  *     alone: whether a stock-record write can move ANY store quantity (then the trigger pays its
  *     reads), and whether it can move the produto's OWN one (then it enqueues the direct task).
  *  3. **The run's plan** ({@link planoEstoqueLi}): which outcome a child produto of a conta is
- *     in ({@link PlanoEstoqueLi}) — skip reasons first, S last.
+ *     in ({@link PlanoEstoqueLi}) — skip reasons first, S last. Its link-only first half
+ *     ({@link planoDosVinculosEstoqueLi}) is asked first, so a link skip reads no stock record.
  *  4. **Kits** with at most 30 store kits per component ({@link kitsSinalizadosLi}): the
  *     tie-inclusive, fail-open filter, and the zero-cost skip ({@link irmaosParaLerLi}). A
  *     sibling is read by its PATH — a record id is unique only under its owner.
@@ -135,8 +136,11 @@ export interface EstoqueNaLojaLi {
 /**
  * The store row already shows the body that would be sent for `quantidade`: ALL FOUR fields
  * exactly — `gerenciado === true`, `quantidade === quantidade`, `situacao_em_estoque === 0`,
- * `situacao_sem_estoque === -1`. Any one off is a write: an unmanaged row reads back as all
- * zeros (`spec tag Estoque`), so a `gerenciado: false` row at quantity 0 is NOT a reflected 0.
+ * `situacao_sem_estoque === -1`. Any one off is a write. An unmanaged row is never "zero stock"
+ * and never a reflected value, whatever it holds: the public document says it reads back as all
+ * zeros (`spec tag Estoque`), but the owner's read-only stock captures show unmanaged rows at a
+ * positive quantity and with lead times as well as at zero. So a `gerenciado: false` row at
+ * quantity 0 is NOT a reflected 0, nor one at 5 a reflected 5.
  */
 export function refletidoLi(linha: EstoqueNaLojaLi, quantidade: number): boolean {
   return (
@@ -401,6 +405,69 @@ function ehLinkPai(link: Readonly<Record<string, unknown>>): boolean {
   return Array.isArray(grades) && grades.length > 0;
 }
 
+/** What the conta's links on one produto say, before anything else is read. */
+type VinculoDaContaLi =
+  | { readonly tipo: 'sem-vinculo' }
+  | { readonly tipo: 'pai' }
+  | { readonly tipo: 'nao-suportado' }
+  | { readonly tipo: 'vinculo-ambiguo' }
+  /** Exactly one store product of the conta, linked as a child. */
+  | { readonly tipo: 'vinculado'; readonly idLi: string };
+
+/** Steps 1–3 of {@link planoEstoqueLi}: the links alone, in that order. */
+function vinculoDaContaLi(contaId: string, links: readonly unknown[]): VinculoDaContaLi {
+  const daConta = links
+    .filter(ehObjeto)
+    .filter((link) => contaDoLinkLi(link) === contaId && vinculoLiConta(link));
+  if (daConta.length === 0) return { tipo: 'sem-vinculo' };
+
+  const ids = new Set<string>();
+  for (const link of daConta) {
+    const id = inteiroPositivoCanonicoLi(proprio(link, 'id'));
+    if (id !== null) ids.add(id);
+  }
+  if (ids.size > 1) return { tipo: 'vinculo-ambiguo' };
+  const [idLi] = ids;
+  // Unreachable: `vinculoLiConta` counts a link only when the same reader reads its id.
+  if (idLi === undefined) return { tipo: 'sem-vinculo' };
+
+  if (!daConta.some((link) => proprio(link, 'paiProdutoIntegradaId') != null)) {
+    return daConta.every(ehLinkPai) ? { tipo: 'pai' } : { tipo: 'nao-suportado' };
+  }
+  return { tipo: 'vinculado', idLi };
+}
+
+/** {@link planoDosVinculosEstoqueLi}'s answer: a link-shaped skip, or the store id to go on with. */
+export type PlanoDosVinculosEstoqueLi =
+  | { readonly tipo: 'sem-vinculo' }
+  | { readonly tipo: 'pai' }
+  | { readonly tipo: 'nao-suportado' }
+  | { readonly tipo: 'vinculo-ambiguo' }
+  | { readonly tipo: 'paridade'; readonly idLi: string }
+  | { readonly tipo: 'vinculado'; readonly idLi: string };
+
+/**
+ * The part of the plan that needs only the produto and its links: {@link planoEstoqueLi}'s
+ * steps 1–3 and the parity skip (step 5), with no duplicate found — exactly the verdict
+ * {@link planoEstoqueLi} reaches with `duplicado: false` whenever that verdict is one of these
+ * five; otherwise `vinculado`, with the store id.
+ *
+ * Why it exists: the send run asks it FIRST, so a produto these links already skip costs no read
+ * of its stock records (`estoque/processarEstoque.ts`). It is the same code as the full plan's
+ * first steps, never a copy: {@link planoEstoqueLi} calls the same link reader.
+ */
+export function planoDosVinculosEstoqueLi(
+  entrada: Pick<EntradaPlanoEstoqueLi, 'contaId' | 'links' | 'produto'>,
+): PlanoDosVinculosEstoqueLi {
+  const vinculo = vinculoDaContaLi(entrada.contaId, entrada.links);
+  if (vinculo.tipo !== 'vinculado') return vinculo;
+  const { idLi } = vinculo;
+  if (envioDeEstoqueDesligadoLi(entrada.produto.statusProdutosMarketplace, entrada.contaId, idLi)) {
+    return { tipo: 'paridade', idLi };
+  }
+  return vinculo;
+}
+
 /** The kit components' records at the depósito, each component resolved to at most one. */
 interface ComponentesNoDepositoLi {
   /** One record per component that has exactly one, or a canonical one among several. */
@@ -471,24 +538,9 @@ function componentesNoDepositoLi(
  * Throws `RangeError` where {@link estoqueNoDepositoLi} and {@link membroEstoqueLi} do (bugs).
  */
 export function planoEstoqueLi(entrada: EntradaPlanoEstoqueLi): PlanoEstoqueLi {
-  const daConta = entrada.links
-    .filter(ehObjeto)
-    .filter((link) => contaDoLinkLi(link) === entrada.contaId && vinculoLiConta(link));
-  if (daConta.length === 0) return { tipo: 'sem-vinculo' };
-
-  const ids = new Set<string>();
-  for (const link of daConta) {
-    const id = inteiroPositivoCanonicoLi(proprio(link, 'id'));
-    if (id !== null) ids.add(id);
-  }
-  if (ids.size > 1) return { tipo: 'vinculo-ambiguo' };
-  const [idLi] = ids;
-  // Unreachable: `vinculoLiConta` counts a link only when the same reader reads its id.
-  if (idLi === undefined) return { tipo: 'sem-vinculo' };
-
-  if (!daConta.some((link) => proprio(link, 'paiProdutoIntegradaId') != null)) {
-    return daConta.every(ehLinkPai) ? { tipo: 'pai' } : { tipo: 'nao-suportado' };
-  }
+  const vinculo = vinculoDaContaLi(entrada.contaId, entrada.links);
+  if (vinculo.tipo !== 'vinculado') return vinculo;
+  const { idLi } = vinculo;
 
   if (entrada.duplicado) return { tipo: 'vinculo-duplicado', idLi };
   if (envioDeEstoqueDesligadoLi(entrada.produto.statusProdutosMarketplace, entrada.contaId, idLi)) {
@@ -804,8 +856,9 @@ function deltaDaLinha(linha: EstoqueNaLojaLi, S: number): number {
  * In sync exactly when the send run would find the row reflected ({@link decidirEnvioEstoqueLi}
  * with the entry's S): `gerenciado === true`, situações (0, −1) and
  * `quantidade − max(0, quantidade_reservada) === min(S, cap)`. Anything else on a `v` entry is a
- * candidate — a `gerenciado: false` row (all zeros, not "zero stock"), a negative row, a row whose
- * reservation cannot be read — and the send run re-derives everything it sends.
+ * candidate — a `gerenciado: false` row (never "zero stock" and never a reflected value, whatever
+ * it holds: {@link refletidoLi}), a negative row, a row whose reservation cannot be read — and the
+ * send run re-derives everything it sends.
  *
  * Throws `RangeError` for a `v` entry without S or produto (the snapshot schema forbids both) or a
  * bad cap.

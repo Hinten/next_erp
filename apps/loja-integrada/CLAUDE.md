@@ -16,7 +16,9 @@ Master plan: `.master_plans/loja-integrada/loja-integrada-marketplace-integratio
   `pedidos/[pedidoId]/…` (below).
 - Step 7 (the status write-back, in stacked PRs): the write engine and its write context
   (`core/escrita.ts`, `core/contextoEscrita.ts`; "Write engine" below). No flow runs on it
-  yet, and every write valve is off until the window.
+  yet, and every write valve is off until the window. Step 12's engine seam (PR 12-d) adds the
+  two stock kinds and the stock detail's restore branch; the stock send run (PR 12-e) is the
+  second flow on it ("Stock send run" below).
 - Step 10 (the catalogue reads): four `GET`s in the conta route family (below), the core
   `lib/lojaIntegrada/catalogo/catalogo.ts` and its caches `catalogo/cache.ts`. The web's
   variation linker reads the grades; categories and brands wait for step 11's product tab.
@@ -620,11 +622,12 @@ apps/loja-integrada/lib/lojaIntegrada/testing/especificacaoFolhas.json` (no pair
 - A fixture is pushed only after Lucas has seen it (the repo is public), and only after
   `sanitizar --entrada … --verificar <files>` passes over the new fixtures, the changed docs
   and the PR-body draft. `wireCorpus.test.ts` re-scans the corpus in CI (no store list
-  there); its floor `MINIMO_DE_FIXTURES` is the committed count (42: the 18 step-3 captures,
-  the 11 step-10 catalogue captures, `c9-*`, and the 13 step-9 product captures, `c10-*`),
-  so a fixture that disappears fails it, and so does one added without moving it. The
-  product captures are replayed through the import's own reads by
-  `importacao/capturasProdutos.test.ts`.
+  there); its floor `MINIMO_DE_FIXTURES` is the committed count (75: the 18 step-3 captures,
+  the 11 step-10 catalogue captures, `c9-*`, the 13 step-9 product captures, `c10-*`, and
+  the 33 step-12 stock captures, `c11-*`), so a fixture that disappears fails it, and so
+  does one added without moving it. The product captures are replayed through the import's
+  own reads by `importacao/capturasProdutos.test.ts`, and the stock captures through the
+  package's stock reads and the stock plan's decisions by `estoque/capturasEstoque.test.ts`.
 - ⚠️ The owner's raw `pedido-enviado` pair duplicates `pedido-boleto` (the same order,
   identical sanitized bytes) and is EXCLUDED from the corpus. It stays in `~/li-capturas`
   until he deletes it, so a sanitizer run without `--so` writes it back: delete that raw
@@ -636,7 +639,9 @@ apps/loja-integrada/lib/lojaIntegrada/testing/especificacaoFolhas.json` (no pair
   passes by chance about 1% of the time, and the sibling variant's window fails), LI's own
   numeric ids where the profile keeps them on the configuration class (platform-wide
   constants; catalogue ids are pseudonyms, above), `meta.total_count` (the kept numeros
-  already show the store's scale) and `resposta.bytes` (step 11 sizes snapshots with it). ⚠️ An
+  already show the store's scale), `resposta.bytes` (step 11 sizes snapshots with it), and a
+  stock row's `quantidade`, `quantidade_reservada`, `quantidade_disponivel`, `gerenciado` and
+  both situações (the `ESTOQUE` keep-list; the row's ids are pseudonyms). ⚠️ An
   order detail's top-level `id` is FAKED (`0`) and so is every `itens.*.produto`
   (a placeholder, not even a URI): no capture test may key on either, and the produto
   reference form has no real capture yet. Catalogue SKUs are NOT on this list: the product
@@ -702,8 +707,20 @@ apps/loja-integrada/lib/lojaIntegrada/testing/especificacaoFolhas.json` (no pair
   both getters refuse a different stored ref with ZERO requests (`LiCredencialTrocadaError`,
   transient). The ref carries the save's stamp, so even the same token saved again is
   refused. A park still throws `LiContaParadaError` first.
+- **Four write kinds, two readers** (`TipoEscritaLi`): the order kinds `objeto-envio` and
+  `situacao-pedido` read the order detail `GET /v1/pedido/{numero}/`; the stock kinds
+  (step 12) `estoque-produto` and `estoque-produto-lote` read one product's stock detail
+  `GET /v1/produto_estoque/{produto id}` (no slash, keyed by the PRODUCT id — a stock row's own
+  id answers 404, `ausente`) and write its four-leaf body (`campo: 'estoque'`, the package's
+  three fixed leaves plus the quantity, checked before the diff). The base and the read-back are
+  unions discriminated by `leitura`. A kind is sent, or diffed, only under its own flow's valve
+  (`FLUXO_DO_TIPO_ESCRITA_LI`). `estoque-produto` is read back by its own GET;
+  `estoque-produto-lote` declares `leituraDeVolta: 'lista'` and has NO read-back call (the stock
+  list's next walk is its read-back). The history read and the confirming read are the order
+  flow's only. Whether the row read names the product asked for is the flow's to check
+  (`produtoIdDoEstoqueLi`), not the engine's.
 - **Every write has its own deciding read** (`lerBaseLi(motor, alvo, leitura)`, with the
-  reader its kind's `LEITURA_PREVIA_LI` row names: two pacer intervals, the order detail, the
+  reader its kind's `LEITURA_PREVIA_LI` row names: two pacer intervals, the detail read, the
   pin, the restore line). A deciding read decides at most ONE write attempt, a write refuses a
   base its kind's reader did not read, and a read-back is another type, never a base. **No
   write follows one that landed or MAY have landed** in the same run: a write closes the run
@@ -713,10 +730,15 @@ apps/loja-integrada/lib/lojaIntegrada/testing/especificacaoFolhas.json` (no pair
   `escreverLi` throws a `TypeError`.
 - **The restore line** (`evento: 'restauracao'`, INFO): the read's token-scrubbed text
   through `corpoDeRestauracaoLi` (`redacao.ts`: the estrutural keep-list walk, NO 2 KB cut;
-  `null` for a catalogue, configuration or webhook path, a non-2xx, a non-JSON body, over 1 MiB
-  or deeper than 256). Capped at 200 KB on the EXACT line (`linhaSerializadaLi`, UTF-8,
-  newline excluded): over the cap or `null` ⇒ no line and NO write (`sem-restauracao`),
-  never a truncated snapshot.
+  `null` for a configuration or webhook path, a non-2xx, a non-JSON body, over 1 MiB or deeper
+  than 256). Of the catalogue paths ONLY the stock detail `/v1/produto_estoque/{id}`, in its
+  exact no-slash form, has a branch: byte-faithful or `null` — all nine leaves of the stock
+  detail present and carried verbatim (the store's reservation included), an unknown extra key
+  kept with a `<redacted>` value; a leaf missing or one the walk would alter ⇒ `null`. Every
+  other catalogue path (the slash form and the stock list included) is `null`. The line's
+  `politica` is its path's (`estrutural`, or `catalogo` for the stock detail). Capped at 200 KB
+  on the EXACT line (`linhaSerializadaLi`, UTF-8, newline excluded): over the cap or `null` ⇒
+  no line and NO write (`sem-restauracao`), never a truncated snapshot.
 - **The serialiser.** A structured value reaches a line only through `serializarValorLi`
   (`log.ts`): JSON for a JSON value, a marker (`<ciclo>`, `<bigint>`, `<ausente>`, `<fundo>`
   past depth 32, `<nao-serializavel>`) otherwise, no getter ever called, no `catch`. The
@@ -762,8 +784,9 @@ apps/loja-integrada/lib/lojaIntegrada/testing/especificacaoFolhas.json` (no pair
   a flat 300 s backoff), `varrerEscritas.ts` (`15,45 * * * *`: it only enqueues the
   varredura, named after its tick), `agendadorEscrita.ts` (the root, through the reads
   root's region and valve readers) and `depsEscrita.ts` (the one binding of a write run's
-  deps; the handler stamps the dispatch start FIRST). The writes queue is the only place a
-  write — or its sweep — may run.
+  deps; the handler stamps the dispatch start FIRST). The writes queue and the stock queue
+  (step 12, below) are the only two places a write may run, and the writes queue the only
+  place its sweep may.
 - **Paid codigos only.** The first filter is step 15's `veredictoDoCodigoLi`; the matrix
   (`MATRIZ_RASTREIO_LI`) is typed over EVERY codigo, so a new one does not compile until its
   row is decided, and an unknown string is refused (`situacao-desconhecida`). `NUNCA_ESCREVER_LI`
@@ -825,7 +848,89 @@ apps/loja-integrada/lib/lojaIntegrada/testing/especificacaoFolhas.json` (no pair
   index, no re-drive index); doc id = the event digest, task id `rastreio-<evento>`; the
   producer treats an answered `functions/task-already-exists` as success.
 - Tests: `testing/plataformaEscritaLi.ts` is a stateful LI (one order, its history, both
-  write routes); the global `fetch` is stubbed to throw in every suite.
+  order write routes, and the store's stock rows by product id for the engine's stock suite,
+  `core/escritaEstoque.test.ts`); the global `fetch` is stubbed to throw in every suite.
+
+## Stock send run (step 12, PR 12-e)
+
+The full stock-sync section (the trigger, the kit fan-out, the reconcile, the manual push)
+lands with the rest of step 12; this is the send run and its queue.
+
+- **Files.** `estoque/processarEstoque.ts` (ONE run: one child produto of one conta, through
+  the write engine only), `estoque/leituraEstoqueErp.ts` (its ERP reads, `db` a parameter, every
+  query built from the field constants its index-pin test reads), `estoque/agendadorEstoque.ts`
+  (the pure stock-queue producer: window, name, schedule, the strict parse before anything
+  leaves), `estoque/avisosEstoque.ts` (the one aviso). In `functions/src/`: `filaEstoque.ts`
+  (`filaEstoqueLojaIntegrada`), `agendadorEstoque.ts` (the root, through the reads root's region
+  and valve readers) and `depsEscrita.ts`'s `depsDeEstoqueLi` (spreads the writes run's deps, so
+  the two queues cannot disagree on the environment, the clock or the deadline).
+- **The queue** has its OWN function so the status write-back never waits behind a stock pass,
+  with options EQUAL to the writes queue's (`index.test.ts` pins the equality): one dispatch at
+  a time, `concurrency: 1`, `maxInstances: 1`, 3 attempts on a flat 300 s backoff, 300 s timeout
+  (the worst run, `PIOR_EXECUCAO_ESTOQUE_LI_MS`, is 68 s; the PUT starts ≤ 24 s in). It routes the
+  RAW `tipo`: `estoque` runs; `estoque-kits` is dropped `sem-consumidor` until its consumer and
+  producer ship together; anything else `tipo-desconhecido`. ONE info line per dispatch, raw ids
+  only; a thrown run writes none.
+- **The payload is ids only** (`tarefaEstoqueLiSchema`, strict): the quantity is derived when
+  the task runs, never carried. Task id `estoque-` + sha256 of
+  `estoque:<origem>:<conta>:<produto>:<d|w>:<janela>`, `janela = ⌊now/60 s⌋` from the clock read
+  RIGHT BEFORE the enqueue, `scheduleTime = (janela + 1)·60 s + 60 s + hash(produto) mod 30 s`
+  — so a name never meets a task that may already have dispatched. An answered
+  `task-already-exists` is success; a transient Cloud Tasks failure is
+  `LiTarefasTransitoriasError`; the closed sweep-only valve `LiTarefasDesligadasError`.
+- **Order of a run, every skip BEFORE the write context:** strict parse, the valve
+  (`iniciarEscritaLi(FLUXO_LI.estoque)`, `off` = zero reads), the cap
+  `LOJA_INTEGRADA_ESTOQUE_MAX` from `ambiente` (unset/blank = none; only a canonical positive
+  integer; anything else refuses every run, zero reads), the conta and its depósito, the masked
+  produto + its where-less links, the link-only plan (`planoDosVinculosEstoqueLi`: a link skip
+  reads no stock record), the records (a canonical `estoqueId` hint by id only when it IS
+  `makeEstoqueUid(produto, depósito)` at the depósito — never a delete's, whose hint names the
+  record deleted — else the `in` query over both ref forms, limit 3; a kit's bounding
+  components; a constrained kit's own record is not read), the
+  never-had-stock listing only on `consultar-estoques`, the duplicate probe only on `enviar`,
+  then `decidirAlvo` on `<conta>:<store id>` (only an exact `*` widens), the write context, the
+  deciding GET, the row-identity check (`produtoIdDoEstoqueLi`), model A
+  (`decidirEnvioEstoqueLi`), the write.
+- **Costs** (ERP Firestore ops / credential reads / store calls), pinned by
+  `processarEstoque.test.ts`: valve off, bad payload, bad cap 0/0/0; a link skip 3/0/0; a record
+  skip 4/0/0; held 5/0/0; duplicate 6/0/0; read switch off 6/0/0; 404 or a row of another produto
+  6/2/1; reflected 7/2/1 under `on` (the aviso pre-read); dry-run 6/2/1 (one restore line, one
+  diff line); an event, manual, publish or `deriva` PUT 7/4/3 (GET, PUT, read-back); a reconcile
+  or kit PUT (`estoque-produto-lote`) 7/3/2, no read-back. A kit its components bound reads no
+  record of its own but its k bounding components': with the payload's canonical ids ONE
+  `getAll` (k reads), a PUT 6 + k under `on`; without them two group queries per 30 components,
+  then one own-collection query per component whose CANONICAL record is still unread — none
+  found, or only legacy ones (a record with no `parentId`, the canonical one included, is
+  invisible to the join, so a legacy hit never stands for the whole answer: it could hide the
+  record that wins, or a second legacy one that makes it ambiguous). A component with no record at
+  the depósito, or with legacy records only, pays it on EVERY run (k = 2, one unresolved: a PUT
+  9/4/3). **No Firestore write on success**, at most ONE PUT per run.
+- **The drift rule** after a read-back: written leaves read back differently, the store's
+  reservation moved so model A now targets another quantity, or the read-back could not be made
+  (fail open) ⇒ ONE `deriva` follow-up (generation 1) from a generation-0 run; a generation-1
+  run only logs `deriva-sem-seguimento`. The closed valve ⇒ one WARNING and the write stands;
+  any other enqueue rejection (a transient Cloud Tasks failure, a deploy or region
+  misconfiguration, the strict parse) rethrows — a permitted post-write throw, `escrita.ts`
+  requirement 6 (i) — and the retry's fresh GET decides. A read-back refused with 401/403
+  parks the conta and still enqueues the follow-up (it drops at the park unless the token is
+  fixed before it runs).
+- **Errors.** 429 and 5xx THROW (a PUT answered either may have landed: the run closes, the
+  retry re-GETs); another 3xx/4xx on the PUT rethrows until the LAST attempt, then `recusado`,
+  one ERROR and, under `on`, `lojaIntegradaEstoqueRecusado` (per produto, clocked by the
+  dispatch start). 401/403 on a deciding read PARKS the conta and drops; on the PUT the next
+  deciding read confirms (refused ⇒ park; reads fine ⇒ the 4xx rule). A deciding read off its
+  schema (`formato`) drops with one ERROR; the credential pin, the write deadline, network,
+  `LiConfigError` and gRPC rethrow; the context's refusals (the read switch included) drop.
+  Only `lojaIntegradaEstoqueRecusado` is raised or resolved by a run — resolved only when OPEN
+  (one pre-read, so a success writes nothing); duplicado, ambiguous record, held and 404 are
+  WARNING lines whose per-conta avisos are the reconcile's.
+- **Rollback** is a person re-sending the restore line's `quantidade` through the same strict
+  route: only a NON-NEGATIVE quantity under the four fixed leaves — a prior negative quantity,
+  unmanaged row or lead-time setting cannot be restored that way (`functions/DEPLOY.md`).
+- No transaction (no inventory row); `reserva-arithmetic-inventory.test.js` lists the run (it
+  reads the STORE's reservation, only through `alvoEstoqueLi`). No new index: the run reads
+  three declared ones (`leituraEstoqueErp.test.ts` pins each query against
+  `firestore.indexes.json`).
 
 ## Notification pipeline (step 3)
 
@@ -975,7 +1080,7 @@ apps/loja-integrada/lib/lojaIntegrada/testing/especificacaoFolhas.json` (no pair
 - A re-import keeps the `externalOptionData` keys Loja Integrada does not own (`agency`).
 - `pedidos/importarPedido.firestore.test.ts` (emulator, CI below) pins the batch.
 
-## CI (steps 3, 5, 7, 9 and 20)
+## CI (steps 3, 5, 7, 9, 12 and 20)
 
 - Two homes, disjoint by filename suffix. `vitest.config.ts` (`pnpm test`, in `CI test`
   of `ci.yml`, unfiltered) EXCLUDES `*.firestore.test.ts` and `*.tasks.test.ts`;
@@ -1059,12 +1164,18 @@ firebase.loja-integrada.tasks.json --only firestore,functions,tasks` (ports 8085
   identity that the remove is handed the closure that shared read built for its produto and
   conta: `lib/lojaIntegrada/produtos/integracoesComProdutoLi.test.ts`); the emulator case shows only
   that the real guarded write runs and that losing the last counting link removes the conta.
+- Since step 12 (PR 12-e) `lib/lojaIntegrada/estoque/processarEstoque.tasks.test.ts` runs the
+  stock send run IN PROCESS (valve, canary and read switch on as PARAMETERS, a scripted store):
+  the real queries (both depósito ref forms, the any-depósito listing, the collection-group
+  duplicate probe) and the `deriva` follow-up through the real producer root. It keeps the
+  anchor trigger's rules above. The DISPATCHED follow-up stops at the stock valve, which the
+  lane leaves unset: that hop has no Firestore-observable outcome by design.
 - The lane cannot prove: Cloud Scheduler firing (`onSchedule` is ignored),
-  `scheduleDelaySeconds` (firebase-tools#8254), index declarations, rules, that the
-  emulator honours `maxConcurrentDispatches` or the instance limits, named-task dedup
+  `scheduleDelaySeconds` and `scheduleTime` (firebase-tools#8254), index declarations, rules,
+  that the emulator honours `maxConcurrentDispatches` or the instance limits, named-task dedup
   (the emulator accepts a named enqueue; a duplicate's answer is not asserted), Eventarc
-  ordering or redelivery, or a trigger's `database` binding (pinned offline in
-  `functions/src/index.test.ts`).
+  ordering or redelivery, the stock queue's dispatch (above), or a trigger's `database`
+  binding (pinned offline in `functions/src/index.test.ts`).
 
 ## Config
 

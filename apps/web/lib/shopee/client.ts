@@ -24,9 +24,11 @@
  * answers for the draft editor — the item bands WHOLE (`limitesDoItem`, beside
  * `limites`' size-chart slice), Shopee's category suggestion and a leaf
  * category's attribute tree (`atributos`, P13) — pages a category's brands for
- * a conta's Marcas section (`marcas`), and reads a leaf category's standardised
- * variation tree for a grupo's Shopee tab (`variacoes`).
- * Every method of {@link ShopeeClient} — thirty today; re-count the
+ * a conta's Marcas section (`marcas`), reads a leaf category's standardised
+ * variation tree for a grupo's Shopee tab (`variacoes`), and reads the shop's
+ * logistics channels for ONE produto for a draft's «Logística» section
+ * (`canais`, P16).
+ * Every method of {@link ShopeeClient} — thirty-one today; re-count the
  * interface, never bump this number — is answered by `apps/shopee` over an
  * authenticated cross-origin call (its `proxy.ts` allows exactly
  * `/api/marketplace/*`).
@@ -48,6 +50,7 @@ import type {
   AcaoStatusAnuncio,
   AtributoShopeeRequisicao,
   CamposRascunhoShopee,
+  ConteudoRascunhoShopee,
   corpoAtualizarRascunhoShopeeSchema,
   corpoCriarRascunhoShopeeSchema,
   corpoDescartarRascunhoShopeeSchema,
@@ -78,6 +81,7 @@ import {
   priceSyncStatusShopeeSchema,
   respostaAtributosShopeeSchema,
   respostaAtualizarRascunhoShopeeSchema,
+  respostaCanaisShopeeSchema,
   respostaCategoriasShopeeSchema,
   respostaCriarRascunhoShopeeSchema,
   respostaDescartarRascunhoShopeeSchema,
@@ -107,6 +111,7 @@ import {
   type PriceSyncStatusShopee,
   type RespostaAtributosShopee,
   type RespostaAtualizarRascunhoShopee,
+  type RespostaCanaisShopee,
   type RespostaCategoriasShopee,
   type RespostaCriarRascunhoShopee,
   type RespostaDescartarRascunhoShopee,
@@ -391,13 +396,40 @@ export interface PublicarShopeeInput {
 }
 
 /**
- * A draft's fields as a draft body names them (#1911): the projection's shape
- * (`CamposRascunhoShopee`, `@delfrance/schemas`) WITHOUT the reserved
- * `logistic_info`, which no draft body accepts yet. `marca` is ONE value over
- * the stored pair; `description: null` is "the produto's own"; `attributes`
- * travel in the REQUEST shape.
+ * A draft's fields as an edit's `base` and a discard's `base` name them
+ * (#1911): the projection's shape (`CamposRascunhoShopee`, `@delfrance/schemas`),
+ * all SIX — `logistic_info` too since the logistics editor (P16), in the
+ * projection's shape (`is_free` may be `null`: a base is what the operator
+ * SAW, verbatim). `marca` is ONE value over the stored pair; `description:
+ * null` is "the produto's own"; `attributes` travel in the REQUEST shape;
+ * `logistic_info: null` is «Automática».
  */
-export type CamposDoCorpoRascunhoShopee = Omit<CamposRascunhoShopee, 'logistic_info'>;
+export type CamposDoCorpoRascunhoShopee = CamposRascunhoShopee;
+
+/**
+ * A create's `conteudo`: the five fields of {@link CamposDoCorpoRascunhoShopee}
+ * WITHOUT `logistic_info` (D-13) — channels are chosen on a SAVED draft, so a
+ * create body naming them is a 400 on the route and a compile error here.
+ */
+export type CamposDaCriacaoRascunhoShopee = Omit<CamposRascunhoShopee, 'logistic_info'>;
+
+/**
+ * One channel of an edit's `patch`, in the draft route's write-whitelist
+ * OUTPUT (`ConteudoRascunhoShopee`): `is_free` is a BOOLEAN — never the
+ * `null` a base's channel may carry from the projection.
+ */
+export type CanalLogisticaDoPatchShopee = NonNullable<
+  ConteudoRascunhoShopee['logistic_info']
+>[number];
+
+/**
+ * An edit's `patch`: any of the create's five fields, and `logistic_info` as
+ * the whitelist stores it ({@link CanalLogisticaDoPatchShopee}; `null` =
+ * back to «Automática»).
+ */
+export type PatchDoCorpoRascunhoShopee = Partial<CamposDaCriacaoRascunhoShopee> & {
+  readonly logistic_info?: readonly CanalLogisticaDoPatchShopee[] | null;
+};
 
 /**
  * Create a draft (`POST …/rascunho`).
@@ -406,10 +438,12 @@ export type CamposDoCorpoRascunhoShopee = Omit<CamposRascunhoShopee, 'logistic_i
  *   (`PADRAO_ID_RASCUNHO_SHOPEE`, 20 letters or digits; never a UUID). A create
  *   at an id holding a document that is not this draft is a 409
  *   `rascunhoIdEmUso`; this draft with OTHER content, a 409 `rascunhoConflito`.
- * - `conteudo` — EVERY field; `attributes` is the attribute editor's
- *   normalised list (`corpoCriarRascunhoShopee`), `null` when the form holds
- *   none. `item_name` `null` or blank is a CODELESS 400 (the editor never lets
- *   it out).
+ * - `conteudo` — EVERY field a create takes, the five of
+ *   {@link CamposDaCriacaoRascunhoShopee} — never `logistic_info` (D-13: a new
+ *   draft is «Automática» until an edit chooses its channels); `attributes` is
+ *   the attribute editor's normalised list (`corpoCriarRascunhoShopee`), `null`
+ *   when the form holds none. `item_name` `null` or blank is a CODELESS 400
+ *   (the editor never lets it out).
  * - `confirmarSegundoAnuncio` — the operator confirmed a SECOND listing on the
  *   conta (after a 409 `rascunhoContaJaTemAnuncio`); omitted when absent.
  */
@@ -417,7 +451,7 @@ export interface CriarRascunhoShopeeInput {
   integracaoId: string;
   produtoId: string;
   linkDocId: string;
-  conteudo: CamposDoCorpoRascunhoShopee;
+  conteudo: CamposDaCriacaoRascunhoShopee;
   confirmarSegundoAnuncio?: true;
 }
 
@@ -427,28 +461,32 @@ export interface CriarRascunhoShopeeInput {
  * shape.
  *
  * - `patch` — the CHANGED fields only, at least one; an absent key is "not
- *   changed".
+ *   changed". `logistic_info` in the whitelist's shape
+ *   ({@link PatchDoCorpoRascunhoShopee}: each channel's `is_free` a boolean),
+ *   in the order the caller's plan put it — never sorted here.
  * - `base` — what the operator SAW, VERBATIM, for exactly the fields
  *   `camposDaBaseDoRascunhoShopee(patch)` names (`@delfrance/schemas`): the
  *   patch's, plus `attributes` when the patch changes `category_id` without
  *   them, and `category_id` when the patch writes `attributes` without it
  *   (P13 Q1). Any other key set is a CODELESS 400 — read it from that
- *   function, never hand-roll it.
+ *   function, never hand-roll it. Its `logistic_info` is the projection's,
+ *   in the projection's order (`is_free` may be `null`).
  */
 export interface AtualizarRascunhoShopeeInput {
   integracaoId: string;
   produtoId: string;
   linkDocId: string;
   base: Partial<CamposDoCorpoRascunhoShopee>;
-  patch: Partial<CamposDoCorpoRascunhoShopee>;
+  patch: PatchDoCorpoRascunhoShopee;
 }
 
 /**
  * Discard a draft (`POST …/rascunho/descartar`).
  *
- * - `base` — what the operator SAW for EVERY field, verbatim (`null` allowed):
- *   a draft edited meanwhile is refused (409 `rascunhoConflito`), never
- *   discarded unseen.
+ * - `base` — what the operator SAW for EVERY field, all SIX — `logistic_info`
+ *   included (P16; `null` = «Automática») — verbatim (`null` allowed): a draft
+ *   edited meanwhile, its channels chosen in another tab included, is refused
+ *   (409 `rascunhoConflito`), never discarded unseen.
  * - `confirmarCriacaoIncerta` — the operator's attestation, after checking in
  *   Seller Centre, that the uncertain last create left nothing this draft must
  *   become (after a 409 `rascunhoCriacaoIncerta`); omitted when absent.
@@ -805,6 +843,26 @@ export interface ShopeeClient {
    * `useVariacoesShopee` (`./variacoes`), which also owns the copy of a failure.
    */
   variacoes(input: { integracaoId: string; categoryId: number }): Promise<RespostaVariacoesShopee>;
+  /**
+   * The shop's logistics channels for ONE produto (PERM.integracao.read) — what
+   * a listing draft's «Logística» section renders (#1911 P16): one row per
+   * channel of Shopee's `get_channel_list`, in that list's order, each with the
+   * PUBLISHER's verdict for this produto (`selecionavel`, `obrigatorio`,
+   * `bloqueiaFreteGratisDoVendedor`, `indisponivel`, `automatica`) — render
+   * them, never re-derive one (#1369). The fit is the STORED produto's
+   * (`medidasCompletas: false` ⇒ its weight or a dimension is missing), so an
+   * unsaved weight edit is not reflected.
+   *
+   * ⚠️ Each call is ONE uncached `get_channel_list` on Shopee, and the CALLER
+   * decides when: never on render for «Automática», a legacy (unstamped) list
+   * or a new draft. Never retried by this client (the query's
+   * `shopeeQueryRetry` decides), and no `signal`: nothing here cancels it.
+   *
+   * A produto that is gone is a CODELESS 404 whose `message` is the route's
+   * sentence; a conta that is not Shopee's is a 404/409 with its code; a Shopee
+   * failure is the 502 with its `kind`.
+   */
+  canais(input: { integracaoId: string; produtoId: string }): Promise<RespostaCanaisShopee>;
 }
 
 /** The label route. */
@@ -853,6 +911,9 @@ const MARCAS_PATH = '/api/marketplace/shopee/taxonomia/marcas';
 
 /** A leaf category's standardised variation tree — a grupo's Shopee tab (#1911 P14). */
 const VARIACOES_PATH = '/api/marketplace/shopee/taxonomia/variacoes';
+
+/** The shop's logistics channels for one produto — a draft's «Logística» section (#1911 P16). */
+const CANAIS_PATH = '/api/marketplace/shopee/canais';
 
 /**
  * A query string from named parameters, each value percent-encoded and an
@@ -1089,12 +1150,17 @@ function corpoDaPublicacao(p: PublicarShopeeInput): Record<string, unknown> {
 
 /*
  * #1911 — the three draft bodies. Every one is rebuilt BY NAME, down to each
- * attribute value, and typed against the draft route's OWN body schema
- * (`@delfrance/schemas`): the route parses STRICT, so a key a caller's object
- * carries beyond these — `item_id`, `logistic_info`, a decoder's bookkeeping —
- * would be a 400, and a renamed field is a compile error here instead. Values
- * travel VERBATIM: nothing is trimmed, defaulted or normalised (a `base` is
- * compared, byte for byte, against what is stored).
+ * attribute value and each channel, and typed against the draft route's OWN
+ * body schema (`@delfrance/schemas`): the route parses STRICT, so a key a
+ * caller's object carries beyond these — `item_id`, a lifecycle field, a
+ * decoder's bookkeeping, a channel's `logistic_name` or `size_id` — would be a
+ * 400, and a renamed field is a compile error here instead. `logistic_info` is
+ * named BY NAME since the logistics editor (P16), never a 400: on an edit
+ * (`base` and `patch`) and a discard (`base`), NEVER on a create (D-13 — its
+ * builder takes five fields, so a sixth is a compile error). Values travel
+ * VERBATIM: nothing is trimmed, defaulted, normalised or SORTED (a `base` is
+ * compared, byte for byte and in order, against what is stored; a patch's
+ * order is the caller's plan's).
  */
 
 /** The brand pair, by name — `null` stays `null` ("no brand chosen"). */
@@ -1120,8 +1186,37 @@ function atributosPorNome(atributos: readonly AtributoShopeeRequisicao[] | null)
       }));
 }
 
-/** EVERY draft field, by name — the create's `conteudo`, the discard's `base`. */
-function camposPorNome(campos: CamposDoCorpoRascunhoShopee) {
+/**
+ * One channel of a draft's `logistic_info` in either of its two shapes: a
+ * base's (`is_free` may be the projection's `null`) or a patch's (`is_free` a
+ * boolean, {@link CanalLogisticaDoPatchShopee}) — `F` carries which.
+ */
+interface CanalPorNome<F extends boolean | null> {
+  readonly logistic_id: number;
+  readonly enabled: boolean;
+  readonly is_free: F;
+}
+
+/**
+ * A channel list, by name: each entry rebuilt `{logistic_id, enabled,
+ * is_free}` (a stray `logistic_name` / `size_id` is never forwarded), in the
+ * caller's ORDER — never sorted — and `is_free` VERBATIM in its own type (a
+ * base's `null` stays `null`, never `false`). `null` («Automática») stays `null`.
+ */
+function logisticaPorNome<F extends boolean | null>(
+  canais: readonly CanalPorNome<F>[] | null,
+): { logistic_id: number; enabled: boolean; is_free: F }[] | null {
+  return canais === null
+    ? null
+    : canais.map((canal) => ({
+        logistic_id: canal.logistic_id,
+        enabled: canal.enabled,
+        is_free: canal.is_free,
+      }));
+}
+
+/** The create's five fields, by name — its `conteudo`; never `logistic_info` (D-13). */
+function camposDaCriacaoPorNome(campos: CamposDaCriacaoRascunhoShopee) {
   return {
     item_name: campos.item_name,
     description: campos.description,
@@ -1131,17 +1226,34 @@ function camposPorNome(campos: CamposDoCorpoRascunhoShopee) {
   };
 }
 
+/** EVERY draft field, by name, all six — the discard's `base`. */
+function camposPorNome(campos: CamposDoCorpoRascunhoShopee) {
+  return {
+    ...camposDaCriacaoPorNome(campos),
+    logistic_info: logisticaPorNome(campos.logistic_info),
+  };
+}
+
 /**
- * Only the fields the caller NAMED, by name — an edit's `patch` and `base`. A
- * key whose value is `undefined` is absent; `null` is a value and is sent.
+ * Only the fields the caller NAMED, by name — an edit's `base` (the
+ * projection's channels) and its `patch` (the whitelist's), one builder with
+ * the channel shape carried through `F`. A key whose value is `undefined` is
+ * absent; `null` is a value and is sent.
  */
-function camposNomeadosPorNome(campos: Partial<CamposDoCorpoRascunhoShopee>) {
+function camposNomeadosPorNome<F extends boolean | null>(
+  campos: Partial<CamposDaCriacaoRascunhoShopee> & {
+    readonly logistic_info?: readonly CanalPorNome<F>[] | null;
+  },
+) {
   return {
     ...(campos.item_name === undefined ? {} : { item_name: campos.item_name }),
     ...(campos.description === undefined ? {} : { description: campos.description }),
     ...(campos.category_id === undefined ? {} : { category_id: campos.category_id }),
     ...(campos.marca === undefined ? {} : { marca: marcaPorNome(campos.marca) }),
     ...(campos.attributes === undefined ? {} : { attributes: atributosPorNome(campos.attributes) }),
+    ...(campos.logistic_info === undefined
+      ? {}
+      : { logistic_info: logisticaPorNome(campos.logistic_info) }),
   };
 }
 
@@ -1152,7 +1264,7 @@ function corpoDoRascunhoCriado(
     integracaoId: p.integracaoId,
     produtoId: p.produtoId,
     linkDocId: p.linkDocId,
-    conteudo: camposPorNome(p.conteudo),
+    conteudo: camposDaCriacaoPorNome(p.conteudo),
     ...(p.confirmarSegundoAnuncio === undefined
       ? {}
       : { confirmarSegundoAnuncio: p.confirmarSegundoAnuncio }),
@@ -1570,6 +1682,16 @@ export function createShopeeClient(config: {
           categoryId: input.categoryId,
         })}`,
         respostaVariacoesShopeeSchema,
+      ),
+    // #1911 P16: a GET, both ids percent-encoded, parsed with the SHARED
+    // envelope; no `signal` and no retry here.
+    canais: (input) =>
+      call(
+        `${CANAIS_PATH}?${consulta({
+          integracaoId: input.integracaoId,
+          produtoId: input.produtoId,
+        })}`,
+        respostaCanaisShopeeSchema,
       ),
   };
 }
