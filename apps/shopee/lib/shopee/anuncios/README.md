@@ -2322,6 +2322,19 @@ never resurrected by a status write.
 so adding `ultimaPublicacao` or `falhaPublicacao` to a lifecycle patch is a
 runtime TypeError, not a silent success. A test in each suite pins the shape.
 
+### A done publish ticks the produto's `publicado` (2026-11-17)
+
+The publish writes the LINK documents, never the produto — with ONE exception:
+`publicarShopee` calls `marcarProdutoPublicado` (`@delfrance/data/admin/produtos`)
+once a run comes back DONE (the item arm's result, a kit's `criado` /
+`retomado` / `atualizado`), so the ERP catalogue shows the produto as
+**Publicado**. Paused listings count; an uncertain outcome (`item-incerto`, a
+kit's `incerto`) never does, and the dry run writes nothing. The helper writes
+`publicado` alone (no `ultimaModificacao`), skips a produto already `true`,
+and rides the read's `updateTime` (rule 7 tier 1): an operator edit in between
+wins and nothing is written. Writing the flag is not gating on it — no Shopee
+path reads `publicado`. Pinned in `publicarShopee.test.ts` (`publicado (2026-11-17)`).
+
 ### The link trigger: the zero-read fast path and why the survivor scan needs no index
 
 `onProdutoShopeeLinkChanged` (`functions/src/`) is the **first Firestore trigger

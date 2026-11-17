@@ -1262,6 +1262,35 @@ describe('RT15 — a criação dupla ACEITA (R-w, registro 303)', () => {
 /*  M176 — the incerto command is arm-specific                                 */
 /* ========================================================================== */
 
+describe('publicado (2026-11-17) — o braço de KIT marca o produto publicado', () => {
+  it('kit-criar `criado` ⇒ K publicado: true; os componentes ficam intocados', async () => {
+    const db = new FakeDb();
+    semearComponentes(db);
+    semearFamilia(db, { publicado: false });
+
+    const r = await kit(publicar(db, novaLoja()));
+
+    expect(r.desfecho).toBe('criado');
+    expect(doc(db, `produtos/${K}`)?.publicado).toBe(true);
+    expect(doc(db, 'produtos/comp-a')?.publicado).toBeUndefined();
+    expect(doc(db, 'produtos/comp-b')?.publicado).toBeUndefined();
+  });
+
+  it('⛔ quase-par: kit-criar `incerto` ⇒ K continua publicado: false e nada é gravado', async () => {
+    const db = new FakeDb();
+    semearComponentes(db);
+    semearFamilia(db, { publicado: false });
+    const loja = novaLoja();
+    loja.falhaAposCriar = muitasConexoes();
+
+    const r = await kit(publicar(db, loja));
+
+    expect(r.desfecho).toBe('incerto');
+    expect(doc(db, `produtos/${K}`)?.publicado).toBe(false);
+    expect(db.writes).toEqual([]);
+  });
+});
+
 describe('(M176) o `comando` do `incerto` é o do BRAÇO', () => {
   it('criar: nem --recriar nem --converter-em-kit nem --link — com o --principal enviado', async () => {
     const db = new FakeDb();
@@ -1750,6 +1779,66 @@ describe('#1911 (P1, D3) — um RASCUNHO nunca é o anúncio vivo, pela entrada'
 
     expect(contexto?.link).toMatchObject({ item_id: null, ehRascunho: true });
     expect(contexto?.ehAtualizacao).toBe(false);
+  });
+
+  describe('publicado (2026-11-17) — o braço de ITEM marca o produto publicado', () => {
+    const OUTRO = 'prod-outro';
+    const escritasNoProduto = (db: FakeDb, id: string) =>
+      db.writes.filter((w) => w.path === `produtos/${id}`);
+
+    it('uma publicação que deu certo marca publicado: true — e SÓ esse campo; outro produto fica intocado', async () => {
+      const db = new FakeDb();
+      semear(db, { publicado: false, ultimaModificacao: 1 });
+      db.seed(`produtos/${OUTRO}`, { nome: 'Outro', paiId: null, publicado: false });
+
+      const r = await publicarShopee(depsDeItem(db, lojaDeItem()), entradaDoItem());
+
+      expect(r?.tipo).toBe('item');
+      expect(doc(db, `produtos/${PRODUTO}`)).toMatchObject({
+        publicado: true,
+        ultimaModificacao: 1,
+      });
+      expect(escritasNoProduto(db, PRODUTO)).toHaveLength(1);
+      expect(doc(db, `produtos/${OUTRO}`)?.publicado).toBe(false);
+      expect(escritasNoProduto(db, OUTRO)).toEqual([]);
+    });
+
+    it('⛔ quase-par: um produto JÁ publicado não recebe escrita nenhuma', async () => {
+      const db = new FakeDb();
+      semear(db, { publicado: true });
+
+      const r = await publicarShopee(depsDeItem(db, lojaDeItem()), entradaDoItem());
+
+      expect(r?.tipo).toBe('item');
+      expect(escritasNoProduto(db, PRODUTO)).toEqual([]);
+    });
+
+    it('o add_item INCERTO (item-incerto) NÃO marca publicado — nada diz que o anúncio existe', async () => {
+      const db = new FakeDb();
+      semear(db, { publicado: false });
+      vi.mocked(publicarAnuncioShopee).mockRejectedValueOnce(
+        new CriacaoDeAnuncioIncertaError(
+          {
+            produtoId: PRODUTO,
+            linkDocId: RASCUNHO,
+            aguardarMs: 240_000,
+            reenvioVerificaSku: true,
+            recusa: null,
+            mensagem: 'frase',
+          },
+          new ShopeeNetworkError('caiu'),
+        ),
+      );
+
+      const r = await publicarShopee(
+        depsDeItem(db, lojaDeItem()),
+        entradaDoItem({ linkDocId: RASCUNHO }),
+      );
+
+      expect(r?.tipo).toBe('item-incerto');
+      expect(doc(db, `produtos/${PRODUTO}`)?.publicado).toBe(false);
+      expect(escritasNoProduto(db, PRODUTO)).toEqual([]);
+    });
   });
 
   describe('#1911 P5 (D5) — o add_item INCERTO de um anúncio comum é um RESULTADO, nunca um throw', () => {
