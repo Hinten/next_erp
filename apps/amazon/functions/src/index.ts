@@ -84,6 +84,11 @@ import { getDb } from './lib/admin';
  * its quantity computed when the task runs, fed by its own read-back and 429
  * pause through the same stock root (./agendadorEstoque), which now binds two
  * queues; a PATCH needs the read switch, the stock valve and a canary hit.
+ * Step 12 (PR 12-e2) adds the five-minute stock TICK (`sweepAmazonStock`,
+ * ./sweepEstoque), the stock queue's producer for the SKUs whose estoque rows
+ * moved, through the same stock root; it makes no Amazon call and binds no
+ * secret, and it reads nothing unless the read switch is on and the stock
+ * valve is not off.
  *
  * ⚠️ ONE logger: every line goes through `LOGGER_STDOUT_AMAZON` /
  * `registrarEventoAmazon` (`lib/amazon/core/log.ts`). This file never imports
@@ -187,6 +192,12 @@ export { processAmazonStockPatch } from './filaEstoque';
 
 /** The 15-minute backstop poll: the reads queue's second producer (./pollPedidos). */
 export { pollAmazonOrders } from './pollPedidos';
+
+/**
+ * The five-minute stock tick (step 12, PR 12-e2): one named patch task per
+ * moved SKU onto the stock queue (./sweepEstoque). No Amazon call, no secret.
+ */
+export { sweepAmazonStock } from './sweepEstoque';
 
 /** The conta trigger (step 20): each Amazon conta's `int_frete` doc follows the conta. */
 export { onIntegracaoAmazonChanged } from './onIntegracaoAmazonChanged';

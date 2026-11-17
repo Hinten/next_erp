@@ -122,9 +122,9 @@ export const MAX_ITENS_DIVERGENCIA_ESTOQUE_AMAZON = 300;
  * The tick's window query, IN INDEX ORDER: a collection-group read of
  * `estoques` with `depositoOuterRef ==` one ref form and `ultimaModificacao`
  * bounded on both sides. Typed against the estoque schema's own keys, so a
- * renamed field breaks the build here. Not yet pinned against
- * `firestore.indexes.json`: the index is declared with the query's first
- * reader.
+ * renamed field breaks the build here. Pinned against `firestore.indexes.json`
+ * (the collection-group entry, with the trailing `__name__` the query orders
+ * by) by `estoqueAmazon.indexes.test.ts`.
  */
 export const CAMPOS_INDICE_JANELA_ESTOQUE_AMAZON = [
   'depositoOuterRef',

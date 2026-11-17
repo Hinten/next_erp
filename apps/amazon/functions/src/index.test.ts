@@ -19,6 +19,12 @@ import { __setRelogioDoCacheParaTestes } from '../../lib/amazon/core/contaCache'
 import { LOGGER_STDOUT_AMAZON } from '../../lib/amazon/core/log';
 import { ORCAMENTO_ANTES_DO_PATCH_MS } from '../../lib/amazon/estoque/processarEstoque';
 import { FILA_ESTOQUE_AMAZON } from '../../lib/amazon/estoque/produtorEstoque';
+import {
+  INTERVALO_TICK_ESTOQUE_AMAZON_MS,
+  LEASE_TICK_ESTOQUE_AMAZON_MS,
+  ORCAMENTO_TICK_ESTOQUE_AMAZON_MS,
+  TEMPO_LIMITE_TICK_ESTOQUE_AMAZON_S,
+} from '../../lib/amazon/estoque/sincronizacaoEstoque';
 import { FILA_LOTES_AMAZON } from '../../lib/amazon/feeds/agendadorLotes';
 import { DESTINO_LOTE_AMAZON } from '../../lib/amazon/feeds/destinosLote';
 import { ORCAMENTO_MONTAGEM_LOTE_MS } from '../../lib/amazon/feeds/enviarFeed';
@@ -140,6 +146,7 @@ const {
   processAmazonStockPatch,
   reprocessAmazonNotifications,
   sweepAmazonExpirations,
+  sweepAmazonStock,
 } = modulo;
 const notificacao = await import('../../lib/amazon/notificacoes/notificacao');
 const destinos = await import('../../lib/amazon/notificacoes/destinos');
@@ -159,6 +166,7 @@ const AGENDAMENTOS = {
   pollAmazonOrders,
   reprocessAmazonNotifications,
   sweepAmazonExpirations,
+  sweepAmazonStock,
 } as const;
 
 /**
@@ -756,6 +764,60 @@ describe('pollAmazonOrders — the options and their arithmetic', () => {
   });
 });
 
+describe('sweepAmazonStock — the options and their arithmetic (step 12, PR 12-e2)', () => {
+  const minutos = minutosDoCron(gatilhoDe(sweepAmazonStock).schedule);
+  const timeoutMs = (endpointOf(sweepAmazonStock).timeoutSeconds as number) * 1000;
+
+  it('runs at :03, :08, … :58 — a minute LIST, America/Sao_Paulo', () => {
+    expect(gatilhoDe(sweepAmazonStock).schedule).toBe('3,8,13,18,23,28,33,38,43,48,53,58 * * * *');
+    expect(gatilhoDe(sweepAmazonStock).timeZone).toBe('America/Sao_Paulo');
+    // A step expression (`*/5`) would read as null here, and the interval
+    // below could not be checked.
+    expect(minutos).toEqual([3, 8, 13, 18, 23, 28, 33, 38, 43, 48, 53, 58]);
+  });
+
+  it('fires every 5 minutes EXACTLY — the interval the body budgets with (INTERVALO_TICK_ESTOQUE_AMAZON_MS)', () => {
+    // Every gap, the wrap across the hour included.
+    expect(intervalosDoCronMs(minutos ?? [])).toEqual(Array.from({ length: 12 }, () => 300_000));
+    expect(new Set(intervalosDoCronMs(minutos ?? []))).toEqual(
+      new Set([INTERVALO_TICK_ESTOQUE_AMAZON_MS]),
+    );
+  });
+
+  it('has timeoutSeconds 240 — the value the body budgets against (TEMPO_LIMITE_TICK_ESTOQUE_AMAZON_S)', () => {
+    expect(endpointOf(sweepAmazonStock).timeoutSeconds).toBe(240);
+    expect(endpointOf(sweepAmazonStock).timeoutSeconds).toBe(TEMPO_LIMITE_TICK_ESTOQUE_AMAZON_S);
+  });
+
+  it('★ the tick budget < the timeout < the lease < the interval, read off the deployed endpoint', () => {
+    // The tick's budget fits the timeout (the last conta keeps room for its
+    // final write).
+    expect(ORCAMENTO_TICK_ESTOQUE_AMAZON_MS).toBeLessThan(timeoutMs);
+    // A live run's lease never expires under it.
+    expect(LEASE_TICK_ESTOQUE_AMAZON_MS).toBeGreaterThan(timeoutMs);
+    // A crashed run's leases are all free by the next tick: each runs to this
+    // long after the TICK's start, whichever conta took it
+    // (`sincronizacaoEstoque.test.ts` pins that anchor).
+    const intervalo = Math.min(...intervalosDoCronMs(minutos ?? []));
+    expect(intervalo).toBeGreaterThan(LEASE_TICK_ESTOQUE_AMAZON_MS);
+    // ÂNCORA: the numbers this arithmetic was written for.
+    expect([
+      ORCAMENTO_TICK_ESTOQUE_AMAZON_MS,
+      timeoutMs,
+      LEASE_TICK_ESTOQUE_AMAZON_MS,
+      intervalo,
+    ]).toEqual([200_000, 240_000, 270_000, 300_000]);
+  });
+
+  it('retries nothing: a failed tick waits for the next one (a retry would only race its lease)', () => {
+    expect(gatilhoDe(sweepAmazonStock).retryConfig?.retryCount).toBe(0);
+  });
+
+  it('binds NO secret — the tick makes no Amazon call', () => {
+    expect(segredosDe(sweepAmazonStock)).toEqual([]);
+  });
+});
+
 describe('sweepAmazonExpirations', () => {
   it('runs DAILY at 07:15 America/Sao_Paulo', () => {
     expect(gatilhoDe(sweepAmazonExpirations).schedule).toBe('15 7 * * *');
@@ -1311,12 +1373,13 @@ describe('onNfeAprovadaAmazon (step 14, PR 14-c)', () => {
 describe('every trigger of the codebase', () => {
   const TODOS = { ...AGENDAMENTOS, ...FILAS, ...GATILHOS };
 
-  it('every onSchedule export is in AGENDAMENTOS — and there are exactly three', () => {
+  it('every onSchedule export is in AGENDAMENTOS — and there are exactly four', () => {
     expect(exportadosCom('scheduleTrigger')).toEqual(Object.keys(AGENDAMENTOS).sort());
     expect(exportadosCom('scheduleTrigger')).toEqual([
       'pollAmazonOrders',
       'reprocessAmazonNotifications',
       'sweepAmazonExpirations',
+      'sweepAmazonStock',
     ]);
   });
 
@@ -1477,11 +1540,12 @@ describe('every trigger of the codebase', () => {
   );
 
   it('binds the LWA secret on the five queues, the reprocess and the poll, and NOTHING else anywhere', () => {
-    // The expiry sweep and the two Firestore triggers make no Amazon call
-    // (D11): a declared secret missing from Secret Manager would fail the whole
-    // deploy for a function that never reads it.
+    // The expiry sweep, the stock tick and the two Firestore triggers make no
+    // Amazon call (D11): a declared secret missing from Secret Manager would
+    // fail the whole deploy for a function that never reads it.
     const SEM_SEGREDO = [
       'sweepAmazonExpirations',
+      'sweepAmazonStock',
       'onIntegracaoAmazonChanged',
       'onNfeAprovadaAmazon',
     ];
@@ -1490,7 +1554,7 @@ describe('every trigger of the codebase', () => {
       expect(segredosDe(fn), nome).toEqual(esperado);
     }
     // ÂNCORA: the walk covers all three families.
-    expect(Object.keys(TODOS)).toHaveLength(10);
+    expect(Object.keys(TODOS)).toHaveLength(11);
   });
 
   it('runs in the inlined region (the bare options import, #1108) and caps instances at 10', () => {
@@ -1502,20 +1566,42 @@ describe('every trigger of the codebase', () => {
 
   it("the schedules are DISTINCT, and none is the half-hour cron other channels' sweeps use", () => {
     const crons = Object.values(AGENDAMENTOS).map((fn) => gatilhoDe(fn).schedule);
-    expect(crons).toHaveLength(3);
+    expect(crons).toHaveLength(4);
     expect(new Set(crons).size).toBe(crons.length);
     expect(crons).not.toContain('*/30 * * * *');
   });
 
-  it("no two schedules share a minute: the poll's four slots miss the reprocess's :10/:40 and the expiry's :15", () => {
+  it("★ no two schedules share a minute: the poll's four slots, the reprocess's :10/:40, the expiry's :15 and the stock tick's twelve", () => {
     const poll = minutosDoCron(gatilhoDe(pollAmazonOrders).schedule) ?? [];
     const reprocesso = minutosDoCron(gatilhoDe(reprocessAmazonNotifications).schedule) ?? [];
     // The expiry runs daily (`15 7 * * *`): its minute field is its first.
     const expiracao = Number((gatilhoDe(sweepAmazonExpirations).schedule ?? '').split(' ')[0]);
+    const estoque = minutosDoCron(gatilhoDe(sweepAmazonStock).schedule) ?? [];
     expect(poll).toHaveLength(4);
     expect(reprocesso).toEqual([10, 40]);
     expect(expiracao).toBe(15);
-    expect(poll.filter((m) => reprocesso.includes(m) || m === expiracao)).toEqual([]);
+    expect(estoque).toHaveLength(12);
+    // Every PAIR of schedules, as minute sets: a minute in two of them is a
+    // collision whichever two they are.
+    const familias: Record<string, readonly number[]> = {
+      poll,
+      reprocesso,
+      expiracao: [expiracao],
+      estoque,
+    };
+    const nomes = Object.keys(familias);
+    for (const [i, a] of nomes.entries()) {
+      for (const b of nomes.slice(i + 1)) {
+        const emB = new Set(familias[b]);
+        expect(
+          (familias[a] ?? []).filter((m) => emB.has(m)),
+          `${a} × ${b}`,
+        ).toEqual([]);
+      }
+    }
+    // ÂNCORA: 4 + 2 + 1 + 12 minutes, none of them twice.
+    expect(Object.values(familias).flat()).toHaveLength(19);
+    expect(new Set(Object.values(familias).flat()).size).toBe(19);
   });
 
   it("imports './options' FIRST and ALONE — the global options precede every trigger", () => {

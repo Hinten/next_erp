@@ -106,7 +106,8 @@ the checkout print and the `/pedidos` row action), which needs this backend depl
   `feeds/`, ONLY the jobs producer and the payload contract (`agendadorLotes.ts`,
   `tarefaLote.ts`): `PROIBIDOS_NO_APP_HOSTING` lists the seven wiring modules (the dispatcher,
   the four handlers, `feedsAmazon.ts`, `vezFeedFirestore.ts`). Since step 12 (PR 12-e1) it also
-  lists the stock wiring (`estoque/{processarEstoque,resolverEstoque,familiaEstoqueFirestore,envioEstoqueFirestore}.ts`):
+  lists the stock wiring (`estoque/{processarEstoque,resolverEstoque,familiaEstoqueFirestore,envioEstoqueFirestore}.ts`,
+  and since PR 12-e2 `estoque/{descobertaFirestore,sincronizacaoEstoque,deltaEstoque}.ts`):
   a route may reach the stock producer and its payload (to enqueue), never the task or its I/O.
 - ⚠️ **The label route is the ONE App Hosting entry allowed to reach the engine** (step 15, PR
   15-d; `ARQUIVO_ROTA_ETIQUETA` in `estrutura.test.ts`), because the label must be in the request's
@@ -162,7 +163,8 @@ the checkout print and the `/pedidos` row action), which needs this backend depl
   `FILA_ESTOQUE_AMAZON`, asserted at load),
   `reprocessAmazonNotifications` (both lanes, logged separately),
   `sweepAmazonExpirations` (the step-2 expiry body, daily, NO secret), `pollAmazonOrders`
-  (the step-4 backstop poll, `src/pollPedidos.ts`), `onIntegracaoAmazonChanged` (the step-20
+  (the step-4 backstop poll, `src/pollPedidos.ts`), `sweepAmazonStock` (the step-12 stock
+  tick, `src/sweepEstoque.ts`, NO secret), `onIntegracaoAmazonChanged` (the step-20
   conta trigger, NO secret) and `onNfeAprovadaAmazon` (the step-14 NF-e trigger, NO secret).
   `index.test.ts` pins every option off `__endpoint`, in three families (schedules, queues,
   Firestore triggers), each exhaustive: FIVE queues (`FILAS`) and TWO triggers (`GATILHOS`,
@@ -189,8 +191,9 @@ the checkout print and the `/pedidos` row action), which needs this backend depl
   `src/depsLeitura.ts` — and the scheduling task's own re-enqueues) and
   `functions/src/agendadorEstoque.ts` (step 12a, PR 12-c: the jobs queue, for the feed
   handlers' own enqueues; since step 12, PR 12-e1, ALSO the stock queue, for the patch task's
-  own enqueues — TWO producers behind its ONE `getFunctions(` call; bound by `src/filaLotes.ts`
-  and `src/filaEstoque.ts`, and the only roots that import it). Each reads the region as
+  own enqueues — TWO producers behind its ONE `getFunctions(` call; bound by `src/filaLotes.ts`,
+  `src/filaEstoque.ts` and, since PR 12-e2, the stock tick's `src/sweepEstoque.ts`, the only
+  roots that import it). Each reads the region as
   an object literal of STATIC `process.env` reads (esbuild's `define`). ⚠️
   `functions/src/agendador.ts` was deliberately NOT given the NF-e producer: its closure
   reaches `notificacoes/notificacao.ts` by value (the context, the conta reads, the SP-API
@@ -264,8 +267,11 @@ the checkout print and the `/pedidos` row action), which needs this backend depl
   S3-shaped fake URLs and refusing anything else (the recovery's refuses every call). No new
   sharing rule.
 - (step 12, PR 12-e1) The functions emulator also loads the stock queue, and nothing in the
-  lane enqueues onto it: no producer outside the task exists yet, and the stock valve is unset.
-  The stock suites (`estoque/{resolverEstoque,familiaEstoqueFirestore,envioEstoqueFirestore,processarEstoque}.firestore.test.ts`)
+  lane enqueues onto it: the functions emulator never fires the stock tick's `onSchedule` (PR
+  12-e2), and the stock valve is unset.
+  The stock suites (`estoque/{resolverEstoque,familiaEstoqueFirestore,envioEstoqueFirestore,processarEstoque}.firestore.test.ts`,
+  and since PR 12-e2 `estoque/{descobertaFirestore,sincronizacaoEstoque,deltaEstoque}.firestore.test.ts`,
+  the tick's and the recovery delta's through the real producer over a recording queue)
   run IN-PROCESS under the existing rules: conta ids no other suite seeds
   (`e2e-estoque-<suite>-…`), INCOMPLETE contas (no filial, no `dataCadastro`) carrying a
   `depositoOuterRef`, so the conta trigger only reads; the task's producer is a recording fake,
@@ -458,8 +464,8 @@ the checkout print and the `/pedidos` row action), which needs this backend depl
   payload (`.strict()`; invalid ⇒ one WARNING, nothing read). **P1** the stock valve read and
   logged FIRST, then the target (`<contaId>:<sku>`); `off` ⇒ ZERO Firestore operations. **P2**
   the context (the read switch first), then the conta's depósito off the context's cached conta
-  (either stored form): none ⇒ `conta-sem-deposito`; a `reconciliacao` task whose `depositoId`
-  is not it ⇒ `deposito-mudou`. NO aviso here (the tick owns `estoque-sem-deposito`). **P3** the
+  (either stored form, through `depositoIdDaContaEstoqueAmazon`): none ⇒ `conta-sem-deposito`;
+  a `reconciliacao` task whose `depositoId` is not it ⇒ `deposito-mudou`. NO aviso here (the tick owns `estoque-sem-deposito`). **P3** the
   link (`resolverEstoque.ts`: step 5's OWN query and dono hop, extracted from
   `pedidos/vinculoProdutoAmazon.ts`, every read masked — `getAll(…, { fieldMask })` or a
   classic `.select`; the unit's children sought `paiId == … orderBy nome limit 2`, ids only),
@@ -503,12 +509,69 @@ the checkout print and the `/pedidos` row action), which needs this backend depl
   NAMED enqueues per payload (`nomeDaTarefaEstoque`), a batch ≤ 16 in flight with a deadline
   hook, the read-back (named, 360 s) and the pause (UNNAMED, 60 s); delays WHOLE seconds,
   ≤ 3,600. Its valve class is `AmazonEstoqueTarefasDesligadasError`.
+- **The tick** (PR 12-e2) `functions/src/sweepEstoque.ts` (`sweepAmazonStock`,
+  `3,8,13,…,58 * * * *`, 240 s, no retry, NO secret: no Amazon call) → `estoque/sincronizacaoEstoque.ts`,
+  T1–T9. **T1** the read switch not exactly `on`, or the stock valve `off` ⇒ ZERO Firestore
+  operations and ONE INFO line (the root writes no summary then). **T2** the contas UNCACHED,
+  rotated by the five-minute slot; a conta's deadline is min(200 s, what the tick has left)
+  − 20 s, checked before every window page, produto read, listing batch and enqueue. **T3** the
+  conta RAW and uncached; its depósito through the ONE parse, kept only inside the stock
+  documents' id grammar (`depositoIdGravavelDaContaEstoqueAmazon`, `familiaEstoque.ts`; outside
+  it counts as none). **T4** the sync doc `sincronizacaoEstoqueAmazon/{contaId}` and its lease
+  (`create`, or `update(…, { lastUpdateTime })` once expired), held to 270 s after the TICK's
+  start whichever conta took it, so it is free by the next tick: no
+  depósito ⇒ `semDeposito`; no cursor ⇒ the cursor stored at now, no window; a depósito other
+  than `depositoDoCursor` (compared as ids) ⇒ no window, the WARNING `deposito-do-cursor-mudou`.
+  **T5–T6** `janelaDoTick` — its `RangeError` caught BY CLASS around that call alone
+  (`janela-invalida`, the cursor untouched, the next conta goes on) — then
+  `descobrirJanelaEstoqueAmazon` (`descobertaFirestore.ts`, the ONE window reader): per depósito
+  ref form ONE collection-group query (never `in`), `ultimaModificacao >` the start AND `<=` the
+  end, ordered by the stamp then `__name__`, projected to the stamp, 300 a page, ≤ 10 pages over
+  both forms (the CG index `estoques (depositoOuterRef, ultimaModificacao, __name__)`, DECLARED
+  and pinned by `packages/schemas/src/estoqueAmazon.indexes.test.ts`; deploying it is window
+  work); the kept rows' produtos masked to `paiId`; each probe's `prodAmazon` partition listed
+  ONCE, no `where`, ≤ 16 at once. The deadline before or between window pages ⇒
+  `orcamento-esgotado`, the cursor kept (slow reads, not a mass movement); before the produtos
+  or the listings ⇒ a reconcile. **T7** the 30-SKU switch (`destinoDoLoteDelta`): 1–30 ⇒ one
+  patch task per SKU NAMED by its observation (the newest commit `updateTime` of its rows, never
+  the tick's clock), ≤ 16 in flight; a SKU no payload can carry (> 40 code points, which no
+  write path sends) counted and dropped; 31–3,000 ⇒ a delta feed; more or a truncated window ⇒
+  a reconcile. ⚠️ Neither hand-off has a consumer yet: each is a
+  WARNING placeholder (`feed-necessario`, `reconciliacao-necessaria`) with the cursor KEPT.
+  **T8** the aviso `estoque-sem-deposito` BEFORE the final write (clocked by T4's read time),
+  on the flag's TRANSITION, and re-synced to the current condition by a run that took over an
+  UNRELEASED lease (an earlier run may have landed its aviso and lost the flag); then the final
+  write on the lease's `writeTime`, the cursor advance-only and moved only past a window whose
+  every SKU the payload can carry was enqueued (or that had none).
+  **T9** ONE `evento: 'estoque'` line
+  per conta (`fase: 'tick'`). A Firestore status error and an unparseable sync doc are contained
+  per conta; a named producer failure ⇒ `enfileiramento-falhou`, the cursor kept; anything
+  else fails the tick.
+- **The recovery delta** (PR 12-e2) `estoque/deltaEstoque.ts`, `enviarDeltaEstoqueAmazon`, with
+  NO caller until the stock feed provider: `janelaDaRecuperacao` (its `RangeError` caught by
+  class: `janela-invalida`, nothing read) → the same window reader → ≤ 30 SKUs as patch tasks
+  (a FORCED SKU `origem: 'catch-up'`, named by the recovered feed's reference; any other
+  `delta`, named by its observation, so a movement the tick already enqueued dedupes); 31–3,000,
+  more, truncated or its deadline ⇒ the same two WARNING placeholders, the answer carrying the
+  window. A Firestore or producer failure propagates (the recovery's queue retries; the names
+  dedupe). ONE `evento: 'estoque'` line (`fase: 'recuperacao'`).
+- The fake db (`testing/fakeDb.ts`) models the window exactly: `>` / `<=` numeric bounds only,
+  `orderBy('__name__')` and EVERY query's implicit tie as the full PATH compared segment by
+  segment, a group `startAfter` only from a snapshot the fake built, and the where-less
+  `prodAmazon` partition listing.
 - `estrutura.test.ts` pins the I/O half: each of `resolverEstoque.ts`,
-  `familiaEstoqueFirestore.ts`, `envioEstoqueFirestore.ts`, `produtorEstoque.ts` and
-  `processarEstoque.ts` loads EXACTLY its listed modules as values (`E_S_EM_ESTOQUE`), no pure
-  module imports one, ONLY the write-back makes a Firestore WRITE call, and the production
-  importers of `estoque/` are exactly the stock root, the stock queue, the functions index
-  and the seam's root type (`IMPORTADORES_DE_ESTOQUE`).
+  `familiaEstoqueFirestore.ts`, `envioEstoqueFirestore.ts`, `produtorEstoque.ts`,
+  `processarEstoque.ts` and (PR 12-e2) `descobertaFirestore.ts`, `sincronizacaoEstoque.ts` and
+  `deltaEstoque.ts` loads EXACTLY its listed modules as values (`E_S_EM_ESTOQUE`), no pure
+  module imports one, ONLY the write-back and the tick (its lease and its final write) make a
+  Firestore WRITE call, and the production importers of `estoque/` are exactly the stock root,
+  the stock queue, the stock tick's schedule, the functions index and the seam's root type
+  (`IMPORTADORES_DE_ESTOQUE`). Since PR 12-e2 it also pins that the tick's own write calls
+  touch only its sync document (no other module of `estoque/` names that handle; the aviso goes
+  through the avisos seam) and that it only reads the conta; that every production READ of a
+  `depositoOuterRef` is the ONE parse's sole argument (an object-literal key is not a read); and
+  that no module of `estoque/` names the produto's `integracoesComProduto`: a SKU is found
+  through the link partition.
 
 ## Layout
 
@@ -681,7 +744,11 @@ the checkout print and the `/pedidos` row action), which needs this backend depl
   `estrutura.test.ts`; both `@delfrance/data` barrels load Admin modules transitively, and no
   pure module calls one, nor imports the I/O half PR 12-e1 added — see "Stock (step 12)"):
   `opcoesEstoque.ts` (the core's
-  options, PINNED: component-min, no virtual-kit skip, no ceiling); `familiaEstoque.ts` (the
+  options, PINNED: component-min, no virtual-kit skip, no ceiling); `familiaEstoque.ts` (since
+  PR 12-e2 also the ONE parse of a conta's depósito ref, `depositoIdDaContaEstoqueAmazon`, pure
+  so every stock surface reads the depósito the same way — the patch task's P2, and the tick's
+  T3 through `depositoIdGravavelDaContaEstoqueAmazon`, the same id kept only when the stock
+  documents can store it; the
   unit's row at the depósito — the canonical id, else the partition row in either ref form,
   smallest doc id first; every kit component's produto from its PATH, never its stored `parentId`;
   THE quantity = `quantidadeDoMembroCore` under those options, never a second rule);
@@ -955,8 +1022,10 @@ no `env:` block.
 | Provisional `incerto` outcome (step 12) | 2 (via 1) | the write-back below, BEFORE the retry's throw, with the PATCH's own `emMs` and quantity: the retry's plan reads it as a recent send of that quantity, so a lost answer whose PATCH applies late is corrected, never taken for `igual`. ⚠️ Residue: written only once a failure is OBSERVED, so a dispatch that dies after its PATCH left, a write-back lost inside the boundary, or a provisional entry landing after the retry's read leaves no record, and a retry inside the 15-min lag may take `igual` over a late PATCH (the next movement or the daily reconcile corrects it) |
 | `envioEstoqueAmazon` on the link docs (step 12) | 2 (via 1) | `estoque/envioEstoqueFirestore.ts`: each link doc read with `getAll(…, { fieldMask: ['envioEstoqueAmazon'] })`, `decidirGravacaoEnvioEstoque` (strictly newer `emMs` wins, equal keeps the stored), `update({ envioEstoqueAmazon }, { lastUpdateTime })`; 9/5 ⇒ only the loser re-read and re-decided, ≤ 3, then ONE WARNING for the call, never a throw. An `emMs` more than 24 h ahead (µs, not ms) is a `RangeError`, nothing read |
 | Stock read-back task (step 12) | 0 | NAMED by (conta, Amazon's `submissionId`, SKU), 360 s later: a retried patch task enqueues it once; never chained (a read-back earns none), never for a reconcile's patch |
-| Stock-queue enqueues (step 12) | 0 / unnamed | NAMED per observation (`nomeDaTarefaEstoque`: origem, conta, reference, SKU); `ALREADY_EXISTS` = already durable. UNNAMED: the 429 pause (a name would collide with the running task). ⚠️ The pause carries no counter: a 429 that never ends re-pauses every 60 s until the stock valve is `off`, the read switch is not `on`, or a pause enqueue fails (then the queue's five attempts bound it) |
-| Stock conta avisos (step 12) | seam, tier 2 on the Firestore timeline | `sincronizarAvisoContaEstoqueAmazon` (`avisos/avisos.ts`, the five stock motivos only): a raise clocked by its raiser's Firestore read time (the patch task's `INVALID`: the write-back's link-doc read, raised only when that outcome won or is still in conflict); a resolve SEEDS a resolved row when none exists, so an older raise arriving later is dropped |
+| Stock-queue enqueues (step 12) | 0 / unnamed | NAMED per observation (`nomeDaTarefaEstoque`: origem, conta, reference, SKU); `ALREADY_EXISTS` = already durable. The tick's tasks and a recovery's unforced ones are named by the OBSERVATION (a re-read window dedupes; a row written again moves its commit time, so a new name), a recovery's FORCED ones by the recovered feed's reference. UNNAMED: the 429 pause (a name would collide with the running task). ⚠️ The pause carries no counter: a 429 that never ends re-pauses every 60 s until the stock valve is `off`, the read switch is not `on`, or a pause enqueue fails (then the queue's five attempts bound it) |
+| Stock conta avisos (step 12) | seam, tier 2 on the Firestore timeline | `sincronizarAvisoContaEstoqueAmazon` (`avisos/avisos.ts`, the five stock motivos only): a raise clocked by its raiser's Firestore read time (the patch task's `INVALID`: the write-back's link-doc read, raised only when that outcome won or is still in conflict; the tick's `estoque-sem-deposito`: its T4 sync-doc read, raised or resolved on the flag's transition, or by a run taking over an unreleased lease, and BEFORE the flag's write); a resolve SEEDS a resolved row when none exists, so an older raise arriving later is dropped |
+| Stock sync doc lease (step 12, PR 12-e2) | 1 | `estoque/sincronizacaoEstoque.ts`: `create`, or once the stored `vez` EXPIRED `update({ vez }, { lastUpdateTime })`, its expiry 270 s after the TICK's start; ALREADY_EXISTS / FAILED_PRECONDITION ⇒ another tick holds it, nothing more written |
+| Stock sync doc final write (step 12, PR 12-e2) | 1 | `update(…, { lastUpdateTime: <the lease's writeTime> })`: the lease released, `ultimoTickMs`, `semDeposito`, `falhasSeguidas` and `cursorMs` (advance-only, moved only past a window whose every SKU the payload can carry was enqueued or that had none, never on a hand-off placeholder) with `depositoDoCursor`; on 9/5 re-read ONCE: another tick's lease ⇒ nothing written; still ours ⇒ RE-DERIVED from the re-read and retried once |
 
 This app adds **ONE** multi-document atomic-write site: the order import's batch
 (`pedidos/escritaPedido.ts`), each write under its own precondition. It opens **no** transaction

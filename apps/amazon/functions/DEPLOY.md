@@ -112,8 +112,10 @@ ONE named wake-up of the result handler (below).
 ⚠️ **The stock queue has its own switch too** (master-plan step 12, PR 12-e1).
 `processAmazonStockPatch` sends ONE `patchListingsItem` of a SKU's available
 quantity, computed when the task runs and compared with Amazon's live listing
-first. Nothing in this codebase enqueues onto it yet but the task itself (its
-one read-back and its 429 pause). The task reads the stock write valve
+first. Its producers in this codebase are the task itself (its one read-back
+and its 429 pause) and, since PR 12-e2, the five-minute stock tick
+`sweepAmazonStock` (below), which reads NOTHING unless the read switch is `on`
+and the stock valve is not `off`. The task reads the stock write valve
 `AMAZON_MODO_ESTOQUE` FIRST and, while it is not `on` or `dry-run`, ends with
 ZERO Firestore reads and no Amazon call; `dry-run` (or `on` outside the canary
 list `AMAZON_CANARIO_ESTOQUE`) reads the live listing and logs the diff, never
@@ -130,8 +132,8 @@ stay UNSET until the window ramps the write valves, as for the other flows.
   12a) `processAmazonListingsJob` and (step 12) `processAmazonStockPatch`
   declare it as `secrets:`, and **a declared secret that is missing fails the WHOLE
   deploy**, every function of the codebase included.
-  `sweepAmazonExpirations`, `onIntegracaoAmazonChanged` and `onNfeAprovadaAmazon`
-  declare none: none of them calls Amazon.
+  `sweepAmazonExpirations`, (step 12) `sweepAmazonStock`, `onIntegracaoAmazonChanged`
+  and `onNfeAprovadaAmazon` declare none: none of them calls Amazon.
 - **Region match: `FUNCTIONS_REGION` equals `AMAZON_TASKS_REGION`.** Each queue
   (`filaLeituraAmazon`, since step 14 `processAmazonNfeUpload`, since step 15
   `processAmazonEasyShipSchedule`, since step 12a `processAmazonListingsJob`, and
@@ -146,11 +148,13 @@ stay UNSET until the window ramps the write valves, as for the other flows.
   (`src/agendador.ts`, the step-4 poll's; `src/agendadorNfe.ts`, the NF-e
   trigger's and the NF-e task's own re-enqueues; `src/agendadorAgendamento.ts`,
   the scheduling queue's two entries and its own re-enqueues;
-  `src/agendadorEstoque.ts`, the jobs and stock queues' own enqueues) throw on
+  `src/agendadorEstoque.ts`, the jobs and stock queues' own enqueues and the
+  stock tick's) throw on
   the enqueue (a scheduling entry then logs one WARNING
   `agendamento-nao-enfileirado` naming `MissingRegionError`; the stock task names
   a lost read-back in its WARNING dispatch line, and a refused 429 pause falls
-  back to the queue's own retry after that line).
+  back to the queue's own retry after that line; the stock tick ends that conta
+  `enfileiramento-falhou`, naming the class, with its cursor KEPT).
   A mismatch is the #1108 failure: the task targets a queue that does not exist
   and is **silently dropped** while the caller sees success. Set the App
   Hosting backend's `AMAZON_TASKS_REGION` (console) to exactly the
@@ -177,6 +181,24 @@ stay UNSET until the window ramps the write valves, as for the other flows.
   resolves its produto through that query (the conta's link docs by SKU, no SKU
   fallback): without the index each line full-scans every `prodAmazon` link doc
   of every produto, billed, and still answers.
+- **The collection-group index
+  `estoques (depositoOuterRef ASC, ultimaModificacao ASC, __name__ ASC)` READY
+  before the stock tick may read** (master-plan step 12, PR 12-e2): before the
+  read switch is `on` while the stock valve `AMAZON_MODO_ESTOQUE` is anything but
+  `off`. The tick's window query rides it (one equality on the depósito ref, a
+  range on the stamp both sides, ordered by the stamp and the document key);
+  without it every five-minute tick scans, billed, and still answers. The index
+  is declared in `firestore.indexes.json` and pinned by
+  `packages/schemas/src/estoqueAmazon.indexes.test.ts`; deploying it is a window
+  step by a person, in the indexes phase. READY proves the index exists, not that
+  the tick rides it: on staging, once it is READY and before the stock valve
+  leaves `off`, a person measures the window query and one
+  `produtos/{id}/prodAmazon` partition listing through the pipeline translation
+  of each (classic explain is refused on Enterprise). Expect the window to ride
+  this index with both stamp bounds as a range under `• Limit` (about one page of
+  index rows), and the listing to scan about that produto's own links, never the
+  whole `prodAmazon` group; the listing runs for every moved produto and its
+  parent on every tick, and its partition bound is unmeasured.
 - **Before `functions:amazon` (step 20), in this order:**
   1. the index
      `int_frete (tipo, contaAmazonContaFreteAmazonOuterRef, ativo, dataCadastro DESC)`
@@ -280,6 +302,30 @@ are local builds; neither deploys anything.
   the 240-s tick budget, below the 360-s lease, itself below the 15-minute interval),
   `retryCount 0`, `secrets: AMAZON_LWA_CLIENT_SECRET`. ⚠️ It is the queue's SECOND enqueuer:
   the functions runtime SA needs the same three IAM grants as the receiver's (below).
+- **`sweepAmazonStock`** — `onSchedule('3,8,13,18,23,28,33,38,43,48,53,58 * * * *')`. The
+  FIVE-MINUTE STOCK TICK (master plan step 12, PR 12-e2;
+  `lib/amazon/estoque/sincronizacaoEstoque.ts`): per active conta, the `estoques` rows stamped
+  at the conta's depósito since the durable cursor in `sincronizacaoEstoqueAmazon/{contaId}`
+  (one collection-group window query per depósito ref form, at most ten pages), their
+  produtos' `prodAmazon` partitions, and — for 1 to 30 moved SKUs — ONE patch task per SKU
+  onto `processAmazonStockPatch`, NAMED by its observation (the newest commit time among the
+  SKU's rows), so a re-read window dedupes. 31 to 3,000 SKUs (a delta feed), more, a
+  truncated window, a window not mapped in time, or a conta whose depósito is not the one
+  the cursor was taken at (a reconcile) are each ONE WARNING placeholder for now, the cursor
+  KEPT. ⚠️ Until the stock feed and the reconcile exist (PR 12-f) to make those hand-offs
+  durable, keep `AMAZON_MODO_ESTOQUE` `off` wherever the read switch is `on`: a placeholder
+  never moves the cursor, so every tick re-reads the growing window (up to ten pages, about
+  2,700 masked produto reads and their partition listings) for up to 24 h, and past 24 h the
+  window is clamped to a reconcile placeholder: every tick then reads nothing and the cursor
+  never moves again. Two gates with ZERO Firestore operations: the read switch, then the stock valve
+  `AMAZON_MODO_ESTOQUE` (`off` while unset), each ONE INFO line. A conta with no depósito
+  raises `estoque-sem-deposito` once (on the transition; resolved the same way). **No Amazon
+  call**, so **no `secrets:`**. `America/Sao_Paulo`, `timeoutSeconds 240` (above the 200-s
+  tick budget, below the 270-s lease, itself below the 5-minute interval), `retryCount 0`.
+  ⚠️ Its window query needs the declared collection-group index
+  `estoques (depositoOuterRef, ultimaModificacao, __name__)` READY before the valve leaves
+  `off`: without it Enterprise full-scans every tick. Enqueues as the functions runtime SA, through
+  `src/agendadorEstoque.ts`.
 - **`onIntegracaoAmazonChanged`** — `onDocumentWritten` (Firestore) on
   `integracao/{integracaoId}`, master-plan step 20: the codebase's FIRST Firestore trigger,
   and the FOURTH on that path (Mercado Livre, Shopee, Loja Integrada; plus `apps/functions`'
@@ -379,8 +425,9 @@ maxConcurrentDispatches: 1, maxDispatchesPerSecond: 2 }` — ⚠️ concurrency 
   clock Amazon compares). `retryConfig` 5 attempts, 10 s → 300 s, three
   doublings; `timeoutSeconds 300` (the 160-s Amazon worst case, and the task's
   own 200-s budget before its PATCH, both pinned in `src/index.test.ts`);
-  `secrets: AMAZON_LWA_CLIENT_SECRET`. Enqueued by ITSELF through
-  `src/agendadorEstoque.ts` (the functions runtime SA). ONE `evento: 'estoque'`
+  `secrets: AMAZON_LWA_CLIENT_SECRET`. Enqueued by ITSELF and by the stock tick
+  (`sweepAmazonStock`), both through `src/agendadorEstoque.ts` (the functions
+  runtime SA). ONE `evento: 'estoque'`
   dispatch line per run: the closed `motivo`, both quantities, Amazon's status
   and issue CODES through their grammar — never an issue message or a body.
 - **`onNfeAprovadaAmazon`** — `onDocumentWritten` (Firestore) on
@@ -412,7 +459,10 @@ enqueuer targets (`FILA_LEITURA_AMAZON`, `FILA_NFE_AMAZON`,
 `LOGGER_STDOUT_AMAZON` (`severity` + `message`): one `evento: 'tarefa'` line per
 dispatch, one `evento: 'varredura'` line per sweep lane (and one per expiry
 run), per poll tick one `evento: 'poll'` line per conta run plus ONE summary
-line (`[amazon] poll de pedidos`, the counters flattened), and one
+line (`[amazon] poll de pedidos`, the counters flattened), per stock tick one
+`evento: 'estoque'` line per conta run (`fase: 'tick'`, never a SKU, a ref or a
+value) plus ONE summary line (`[amazon/estoque] tick de estoque`) — a gated tick
+writes only its one INFO line naming the gate —, and one
 `evento: 'int-frete'` line per conta-trigger reconcile (WARNING on
 `incompleto`). The order import (step 5) adds `evento: 'pedido'` lines (one
 closed code each, the order id and counts) and its `getOrder` call lines, and the
@@ -594,7 +644,11 @@ below stays COMMENTED OUT until the window:**
 # reads it). ⚠️ Since step 12 it ALSO stops every stock-queue enqueue of this
 # codebase (the stock task's read-back and its 429 pause), with NO sweep behind
 # it: the task names each loss in its WARNING dispatch line, and a refused pause
-# falls back to the queue's own retry (one attempt spent). Strict `=== '1'`:
+# falls back to the queue's own retry (one attempt spent). The stock tick's
+# patch tasks too: the tick ends the conta `enfileiramento-falhou` and KEEPS its
+# cursor, so every tick while the valve stays closed re-reads the whole, growing
+# window, and once the cursor is 24 h old the window is clamped to a reconcile
+# hand-off (a WARNING placeholder until PR 12-f: see `sweepAmazonStock`). Strict `=== '1'`:
 # unset, blank, `true` and `1 ` all leave enqueuing ON. Use it before the queue
 # IAM is granted.
 # AMAZON_TASKS_DISABLED=1
@@ -627,7 +681,12 @@ below stays COMMENTED OUT until the window:**
 # per dispatch, before any Firestore read), which nothing enqueues yet. Since
 # step 12 the stock pair is ALSO read by `processAmazonStockPatch` on every
 # dispatch, FIRST (the valve line; `off` reads nothing else), its canary keyed
-# `<contaId>:<sku>`; a feed still needs the list exactly `*`. A valve is
+# `<contaId>:<sku>`; a feed still needs the list exactly `*`. The stock VALVE
+# also gates the five-minute stock tick `sweepAmazonStock` (PR 12-e2), before
+# any read: `off` (and so unset or unrecognised) reads nothing; `dry-run` or
+# `on` lets it enqueue tasks, which then decide per SKU. Until PR 12-f makes the
+# tick's two hand-offs durable, keep it `off` wherever the read switch is `on`
+# (see `sweepAmazonStock`). A valve is
 # off | dry-run | on: only the exact `on` writes, only the exact `dry-run`
 # diffs, anything else is off. A list: unset/blank = NO target, exactly `*` =
 # every target, else `<contaId>:<sku>` (stock, price) or `<contaId>:<orderId>`
@@ -734,8 +793,9 @@ And the same two onto `processAmazonListingsJob` (step 12a), each needing
 And onto `processAmazonStockPatch` (step 12):
 
 - the **functions runtime service account** — every producer today: the stock
-  task's OWN enqueues (the read-back, the 429 pause), through
-  `src/agendadorEstoque.ts`, the same root as the jobs queue. No App Hosting
+  task's OWN enqueues (the read-back, the 429 pause) and the stock tick's patch
+  tasks (`sweepAmazonStock`), through `src/agendadorEstoque.ts`, the same root
+  as the jobs queue. No App Hosting
   code enqueues onto it yet, but the deploy grants it to BOTH runtime SAs
   anyway: `TASKS_INVOKER_SA` is ONE list, applied to every task function of the
   codebase.
@@ -790,7 +850,8 @@ gcloud tasks queues add-iam-policy-binding filaLeituraAmazon \
 # wake-up logs one WARNING `feed-nao-enfileirado` and persists nothing; a feed
 # handler's own enqueue is rethrown for its queue's retry; the stock task names
 # a lost read-back in its WARNING dispatch line, and a refused pause falls back
-# to the queue's own retry after that line).
+# to the queue's own retry after that line; the stock tick ends the conta
+# `enfileiramento-falhou` with its cursor kept).
 gcloud iam service-accounts add-iam-policy-binding <enqueuing-sa> \
   --project=<project-id> \
   --member="serviceAccount:<enqueuing-sa>" \
@@ -977,7 +1038,8 @@ flipped:
    second and a 30-s minimum backoff, its Cloud Run service
    `processamazonlistingsjob` at 1 GiB of memory, and (step 12)
    `processAmazonStockPatch` with concurrency 1, 2 dispatches per second and a
-   10-s minimum backoff; Cloud Scheduler lists the three schedule functions.
+   10-s minimum backoff; Cloud Scheduler lists the four schedule functions
+   (since step 12, `sweepAmazonStock` among them).
 2. For EACH of the five queues,
    `gcloud run services get-iam-policy <service> --region=<region> --project=<project-id>`
    (the queue name lowercased, as `gcloud run services list` shows it: see the
@@ -1015,3 +1077,8 @@ flipped:
    before it proves nothing. A plain conta save proves nothing either: one that
    moves no mirrored field writes nothing by design, and right after the
    adoption pass's `--apply` the adopted doc is already in step.
+9. (step 12) A stock tick logs ONE INFO `evento: 'estoque'` line with
+   `portao: chamadas-desligadas` (the read switch, still off) and no summary
+   line, and `sincronizacaoEstoqueAmazon` holds no document: the gate reads and
+   writes nothing in Firestore. The collection-group index
+   `estoques (depositoOuterRef, ultimaModificacao, __name__)` is READY.
