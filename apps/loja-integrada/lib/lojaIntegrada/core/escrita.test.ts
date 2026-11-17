@@ -57,7 +57,7 @@ import {
   POLITICA_CAMPO_ESCRITA_LI,
   PRAZO_ULTIMA_ESCRITA_MS,
   PrazoDeEscritaEsgotadoLiError,
-  type TipoEscritaLi,
+  type TipoEscritaPedidoLi,
   conferirEscritaLi,
   confirmarCredencialLi,
   criarMotorEscritaLi,
@@ -301,6 +301,8 @@ const SITUACAO = { tipo: 'situacao-pedido', alvo: ALVO } as const;
 const OBJETO = { tipo: 'objeto-envio', alvo: ALVO, envioId: ID_ENVIO_LI } as const;
 const ENVIADO = { campo: 'codigo', valor: 'pedido_enviado' } as const;
 const COM_CODIGO = { campo: 'objeto', valor: CODIGO } as const;
+/** The order kinds this suite covers; the stock kinds are `escritaEstoque.test.ts`'s. */
+const TIPOS_DO_PEDIDO: readonly TipoEscritaPedidoLi[] = ['objeto-envio', 'situacao-pedido'];
 
 /* -------------------------------------------------------------------------- */
 /*                  Requirement 1: the valve first, off = nothing             */
@@ -517,8 +519,13 @@ describe('requirement 1 — the valve is read first; off reaches nothing; a dry-
 
 describe('requirement 2 — one pre-write read per write kind, in a table keyed by the kind', () => {
   it('the table is total over the kinds and names the reader AND the read-back strategy', () => {
-    expect(Object.keys(LEITURA_PREVIA_LI).sort()).toEqual(['objeto-envio', 'situacao-pedido']);
-    for (const tipo of Object.keys(LEITURA_PREVIA_LI) as TipoEscritaLi[]) {
+    expect(Object.keys(LEITURA_PREVIA_LI).sort()).toEqual([
+      'estoque-produto',
+      'estoque-produto-lote',
+      'objeto-envio',
+      'situacao-pedido',
+    ]);
+    for (const tipo of TIPOS_DO_PEDIDO) {
       expect(LEITURA_PREVIA_LI[tipo]).toEqual({
         leitura: 'pedido',
         leituraDeVolta: 'recurso',
@@ -526,9 +533,24 @@ describe('requirement 2 — one pre-write read per write kind, in a table keyed 
         ausente: 'dry-run',
       });
     }
+    // The stock rows (step 12): their own reader; a lote is read back by the list's next walk.
+    expect(LEITURA_PREVIA_LI['estoque-produto']).toEqual({
+      leitura: 'produto-estoque',
+      leituraDeVolta: 'recurso',
+      obrigatoria: true,
+      ausente: 'dry-run',
+    });
+    expect(LEITURA_PREVIA_LI['estoque-produto-lote']).toEqual({
+      leitura: 'produto-estoque',
+      leituraDeVolta: 'lista',
+      obrigatoria: true,
+      ausente: 'dry-run',
+    });
     expect(CAMPO_DO_TIPO_ESCRITA_LI).toEqual({
       'objeto-envio': 'objeto',
       'situacao-pedido': 'codigo',
+      'estoque-produto': 'estoque',
+      'estoque-produto-lote': 'estoque',
     });
     // A kind without a row does not compile.
     // @ts-expect-error — `catalogo` is not a write kind yet
@@ -547,7 +569,7 @@ describe('requirement 2 — one pre-write read per write kind, in a table keyed 
     const m = await montar();
     const base = lida(await lerBaseLi(m.motor, ALVO, LEITURA_PREVIA_LI['situacao-pedido'].leitura));
     expect(base.leitura).toBe('pedido');
-    for (const tipo of Object.keys(LEITURA_PREVIA_LI) as TipoEscritaLi[]) {
+    for (const tipo of TIPOS_DO_PEDIDO) {
       expect(LEITURA_PREVIA_LI[tipo].leitura, tipo).toBe(base.leitura);
     }
     // @ts-expect-error — a reader no row names does not exist yet
@@ -780,7 +802,11 @@ describe('requirement 4 — a restore line before EACH write, from its own decid
 
 describe('requirement 5 — dry-run diffs, a separate read-back with its deriva, a policy per field', () => {
   it('every field declares its policy, and both write-back fields log their value', () => {
-    expect(POLITICA_CAMPO_ESCRITA_LI).toEqual({ objeto: 'valor', codigo: 'valor' });
+    expect(POLITICA_CAMPO_ESCRITA_LI).toEqual({
+      objeto: 'valor',
+      codigo: 'valor',
+      estoque: 'valor',
+    });
   });
 
   it('the write sends ONE request — the read-back is a separate call, two intervals after it', async () => {

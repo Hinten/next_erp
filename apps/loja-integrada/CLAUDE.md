@@ -16,7 +16,8 @@ Master plan: `.master_plans/loja-integrada/loja-integrada-marketplace-integratio
   `pedidos/[pedidoId]/…` (below).
 - Step 7 (the status write-back, in stacked PRs): the write engine and its write context
   (`core/escrita.ts`, `core/contextoEscrita.ts`; "Write engine" below). No flow runs on it
-  yet, and every write valve is off until the window.
+  yet, and every write valve is off until the window. Step 12's engine seam (PR 12-d) adds the
+  two stock kinds and the stock detail's restore branch; the stock flow itself comes later.
 - Step 10 (the catalogue reads): four `GET`s in the conta route family (below), the core
   `lib/lojaIntegrada/catalogo/catalogo.ts` and its caches `catalogo/cache.ts`. The web's
   variation linker reads the grades; categories and brands wait for step 11's product tab.
@@ -705,8 +706,20 @@ apps/loja-integrada/lib/lojaIntegrada/testing/especificacaoFolhas.json` (no pair
   both getters refuse a different stored ref with ZERO requests (`LiCredencialTrocadaError`,
   transient). The ref carries the save's stamp, so even the same token saved again is
   refused. A park still throws `LiContaParadaError` first.
+- **Four write kinds, two readers** (`TipoEscritaLi`): the order kinds `objeto-envio` and
+  `situacao-pedido` read the order detail `GET /v1/pedido/{numero}/`; the stock kinds
+  (step 12) `estoque-produto` and `estoque-produto-lote` read one product's stock detail
+  `GET /v1/produto_estoque/{produto id}` (no slash, keyed by the PRODUCT id — a stock row's own
+  id answers 404, `ausente`) and write its four-leaf body (`campo: 'estoque'`, the package's
+  three fixed leaves plus the quantity, checked before the diff). The base and the read-back are
+  unions discriminated by `leitura`. A kind is sent, or diffed, only under its own flow's valve
+  (`FLUXO_DO_TIPO_ESCRITA_LI`). `estoque-produto` is read back by its own GET;
+  `estoque-produto-lote` declares `leituraDeVolta: 'lista'` and has NO read-back call (the stock
+  list's next walk is its read-back). The history read and the confirming read are the order
+  flow's only. Whether the row read names the product asked for is the flow's to check
+  (`produtoIdDoEstoqueLi`), not the engine's.
 - **Every write has its own deciding read** (`lerBaseLi(motor, alvo, leitura)`, with the
-  reader its kind's `LEITURA_PREVIA_LI` row names: two pacer intervals, the order detail, the
+  reader its kind's `LEITURA_PREVIA_LI` row names: two pacer intervals, the detail read, the
   pin, the restore line). A deciding read decides at most ONE write attempt, a write refuses a
   base its kind's reader did not read, and a read-back is another type, never a base. **No
   write follows one that landed or MAY have landed** in the same run: a write closes the run
@@ -716,10 +729,15 @@ apps/loja-integrada/lib/lojaIntegrada/testing/especificacaoFolhas.json` (no pair
   `escreverLi` throws a `TypeError`.
 - **The restore line** (`evento: 'restauracao'`, INFO): the read's token-scrubbed text
   through `corpoDeRestauracaoLi` (`redacao.ts`: the estrutural keep-list walk, NO 2 KB cut;
-  `null` for a catalogue, configuration or webhook path, a non-2xx, a non-JSON body, over 1 MiB
-  or deeper than 256). Capped at 200 KB on the EXACT line (`linhaSerializadaLi`, UTF-8,
-  newline excluded): over the cap or `null` ⇒ no line and NO write (`sem-restauracao`),
-  never a truncated snapshot.
+  `null` for a configuration or webhook path, a non-2xx, a non-JSON body, over 1 MiB or deeper
+  than 256). Of the catalogue paths ONLY the stock detail `/v1/produto_estoque/{id}`, in its
+  exact no-slash form, has a branch: byte-faithful or `null` — all nine leaves of the stock
+  detail present and carried verbatim (the store's reservation included), an unknown extra key
+  kept with a `<redacted>` value; a leaf missing or one the walk would alter ⇒ `null`. Every
+  other catalogue path (the slash form and the stock list included) is `null`. The line's
+  `politica` is its path's (`estrutural`, or `catalogo` for the stock detail). Capped at 200 KB
+  on the EXACT line (`linhaSerializadaLi`, UTF-8, newline excluded): over the cap or `null` ⇒
+  no line and NO write (`sem-restauracao`), never a truncated snapshot.
 - **The serialiser.** A structured value reaches a line only through `serializarValorLi`
   (`log.ts`): JSON for a JSON value, a marker (`<ciclo>`, `<bigint>`, `<ausente>`, `<fundo>`
   past depth 32, `<nao-serializavel>`) otherwise, no getter ever called, no `catch`. The
@@ -828,7 +846,8 @@ apps/loja-integrada/lib/lojaIntegrada/testing/especificacaoFolhas.json` (no pair
   index, no re-drive index); doc id = the event digest, task id `rastreio-<evento>`; the
   producer treats an answered `functions/task-already-exists` as success.
 - Tests: `testing/plataformaEscritaLi.ts` is a stateful LI (one order, its history, both
-  write routes); the global `fetch` is stubbed to throw in every suite.
+  order write routes, and the store's stock rows by product id for the engine's stock suite,
+  `core/escritaEstoque.test.ts`); the global `fetch` is stubbed to throw in every suite.
 
 ## Notification pipeline (step 3)
 
