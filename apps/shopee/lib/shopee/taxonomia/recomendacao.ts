@@ -11,6 +11,10 @@
  * name — and nothing published says whether it is a ranked list of candidates or
  * a root-to-leaf path. So `position` is the index it arrived at (1-based) and
  * nothing more: this module does not decide what the order means.
+ *
+ * ⚠️ A name Shopee cannot place comes back with `category_id` absent or `null`;
+ * the wire schema folds that to `[]`, so it is the `recomendacoes: []` answer
+ * below — "no suggestion", never an error.
  */
 import type { RecomendacaoDto } from '@delfrance/schemas';
 
