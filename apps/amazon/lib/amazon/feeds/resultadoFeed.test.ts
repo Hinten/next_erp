@@ -65,6 +65,7 @@ import {
   tokenDeAcesso,
 } from '../testing/fixtures';
 import { type FilaLotesAmazon, criarAgendadorLotesAmazon } from './agendadorLotes';
+import type { ProvedoresLoteAmazon } from './destinosLote';
 import { ACAO_ENVIO_FEED, enviarFeedAmazon } from './enviarFeed';
 import { CONSULTA_HORARIA_FEED_S, ESCADA_CONSULTA_FEED_S } from './escadaFeed';
 import { avisarContaDoLoteAmazon } from './incertoFeed';
@@ -382,6 +383,8 @@ interface Espiao {
   readonly gravacoes: ResultadoLoteAmazon[];
   readonly recuperacoes: RecuperacaoLoteAmazon[];
   readonly repasses: (readonly string[])[];
+  /** What each write-back received in its context: the lease and its clock. */
+  readonly contextos: { readonly vez: unknown; readonly relogioVez: unknown }[];
 }
 
 function mensagem(sku: string) {
@@ -398,10 +401,10 @@ function mensagem(sku: string) {
 }
 
 /** A fake provider of `fluxo`: it imports no stock module. */
-function provedorDeTeste(
+function provedorDeTeste<F extends 'estoque' | 'preco'>(
   espiao: Espiao,
-  fluxo: 'estoque' | 'preco',
-): ProvedorLoteAmazon<'estoque' | 'preco', number> {
+  fluxo: F,
+): ProvedorLoteAmazon<F, number> {
   return {
     fluxo,
     membros: (ctx) => {
@@ -414,8 +417,9 @@ function provedorDeTeste(
         snapshotEmMs,
         diff: { acao: 'enviaria', skusMudados: on.length },
       }),
-    gravarResultado: (_ctx, r) => {
+    gravarResultado: (ctx, r) => {
       espiao.gravacoes.push(r);
+      espiao.contextos.push({ vez: ctx.vez, relogioVez: ctx.relogioVez });
       return Promise.resolve();
     },
     recuperar: (_ctx, r) => {
@@ -456,7 +460,13 @@ function mundo() {
   const db = comRelogios(fake);
   const log = loggerEspiao();
   const ids = new Set<string>();
-  const espiao: Espiao = { membros: 0, gravacoes: [], recuperacoes: [], repasses: [] };
+  const espiao: Espiao = {
+    membros: 0,
+    gravacoes: [],
+    recuperacoes: [],
+    repasses: [],
+    contextos: [],
+  };
   const m = {
     fake,
     db,
@@ -481,10 +491,11 @@ function mundo() {
       [VALVULA_ENV_AMAZON.preco]: 'on',
       [CANARIO_ENV_AMAZON.preco]: '*',
     } as Record<string, string | undefined>,
+    // The seam rows as the jobs root BOUND them (a case may null one).
     provedores: {
       estoque: provedorDeTeste(espiao, 'estoque'),
       preco: provedorDeTeste(espiao, 'preco'),
-    } as Record<'estoque' | 'preco', ProvedorLoteAmazon<'estoque' | 'preco', number> | null>,
+    } as { -readonly [F in keyof ProvedoresLoteAmazon]: ProvedoresLoteAmazon[F] },
     deps(): DepsProcessarLoteAmazon {
       return {
         ambiente: m.ambiente,
@@ -517,7 +528,7 @@ function mundo() {
               },
             }),
           }),
-        provedorDe: (fluxo) => m.provedores[fluxo],
+        provedores: m.provedores,
         registro: { tentativa: 0, idTarefa: 'tarefa-lote-teste-1' },
         fetch: async (input, init) => {
           const url = new URL(String(input));
@@ -568,11 +579,13 @@ function mundo() {
       };
     },
     resultado(t: TarefaResultadoFeedAmazon): Promise<ResultadoConsultaFeedAmazon> {
-      return processarResultadoFeedAmazon(db, t, m.deps());
+      return processarResultadoFeedAmazon(db, t, {
+        ...m.deps(),
+        provedorDe: (fluxo) => m.provedores[fluxo],
+      });
     },
     enviar(t: TarefaEnviarFeedAmazon) {
-      const deps = m.deps();
-      return enviarFeedAmazon(db, t, { ...deps, provedor: deps.provedorDe(t.fluxo) });
+      return enviarFeedAmazon(db, t, { ...m.deps(), provedor: m.provedores[t.fluxo] });
     },
     /** A task as the queue would dispatch it: through the dispatcher. */
     despachar(t: TarefaLoteAmazon) {
@@ -1681,5 +1694,18 @@ describe('record writes and the successor enqueue', () => {
     m.falhasDaFila.push(() => falhaDoFunctions('unavailable'));
     await expect(m.resultado(rodada(0))).rejects.toThrow();
     expect(m.chamadas).toEqual([]);
+  });
+});
+
+describe('★ the result side hands the provider NO lease (`ctx.vez`)', () => {
+  it('★ the write-back’s context carries `vez: null` and no send-side clock — while the lease document exists', async () => {
+    const m = mundo();
+    semear(m, registro(), vez({ ultimoFeedConcluidoEmMs: AGORA_MS - 2 * HORA }));
+    expect(lease(m)).toMatchObject({ ultimoFeedConcluidoEmMs: AGORA_MS - 2 * HORA });
+    m.rotas.feed = [feedEm('DONE')];
+    await m.resultado(rodada(0));
+
+    expect(m.espiao.gravacoes).toHaveLength(1);
+    expect(m.espiao.contextos).toEqual([{ vez: null, relogioVez: null }]);
   });
 });

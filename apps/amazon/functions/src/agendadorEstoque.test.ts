@@ -8,10 +8,11 @@ import { MissingRegionError } from '@delfrance/core/region';
 import { falhaDeTarefaJaExistente } from '../../lib/amazon/testing/falhaDeEnfileiramento';
 
 /**
- * The functions codebase's COMPOSITION ROOT of the jobs queue's producer (step
- * 12a, PR 12-c): what it reads from the environment (the valve, the region)
- * and what it hands the Admin SDK (the region-qualified queue path, the
- * payload, a task's name and delay).
+ * The functions codebase's COMPOSITION ROOT of the stock flow's two producers
+ * (step 12a, PR 12-c: the jobs queue; step 12, PR 12-e1: the stock queue): what
+ * it reads from the environment (the ONE valve, the ONE region) and what it
+ * hands the Admin SDK (each region-qualified queue path, the payload, a task's
+ * name and delay).
  *
  * Mocked: only the transport seams — `getFunctions` and the admin app. The SDK's
  * error CLASSES stay real (the pure producer narrows on them). No network is
@@ -36,9 +37,14 @@ vi.mock('./lib/admin', () => ({ getAdminApp: () => APP }));
 
 const {
   criarAgendadorLotesAmazonDoAmbiente,
-  regiaoDaFilaLotesAmazon,
-  tarefasLotesAmazonDesligadas,
+  criarProdutorEstoqueAmazonDoAmbiente,
+  regiaoDasFilasDoEstoqueAmazon,
+  tarefasDoEstoqueAmazonDesligadas,
 } = await import('./agendadorEstoque');
+const { AmazonEstoqueTarefasDesligadasError, ATRASO_PAUSA_ESTOQUE_S } =
+  await import('../../lib/amazon/estoque/produtorEstoque');
+const { nomeDaTarefaEstoque, tarefaEstoqueAmazonSchema } =
+  await import('../../lib/amazon/estoque/tarefaEstoque');
 const { AmazonLotesTarefasDesligadasError } = await import('../../lib/amazon/feeds/agendadorLotes');
 const { nomeConsultaFeed, tarefaLoteAmazonSchema } =
   await import('../../lib/amazon/feeds/tarefaLote');
@@ -60,6 +66,15 @@ const ESPERA = tarefaLoteAmazonSchema.parse({
   fluxo: 'estoque',
   contaId: CONTA,
   execucaoId: 'exec-teste-0001',
+});
+/** A stock task: a delta of one observation (identities only, never a quantity). */
+const PATCH = tarefaEstoqueAmazonSchema.parse({
+  v: 1,
+  contaId: CONTA,
+  sku: 'SKU-TESTE-1',
+  origem: 'delta',
+  referencia: '1700000000.000000001',
+  depositoId: null,
 });
 
 const chamadasDeRede: string[] = [];
@@ -103,6 +118,7 @@ describe('the queue path', () => {
       'filaLeituraAmazon',
       'processAmazonNfeUpload',
       'processAmazonEasyShipSchedule',
+      'processAmazonStockPatch',
     ]) {
       expect(h.taskQueue).not.toHaveBeenCalledWith(expect.stringContaining(outra));
     }
@@ -134,7 +150,7 @@ describe('the queue path', () => {
 
   it('AMAZON_TASKS_REGION wins over FUNCTIONS_REGION', () => {
     ambiente({ tasksRegion: 'xx-regiao2', functionsRegion: 'xx-regiao1' });
-    expect(regiaoDaFilaLotesAmazon()).toBe('xx-regiao2');
+    expect(regiaoDasFilasDoEstoqueAmazon()).toBe('xx-regiao2');
   });
 
   // NEAR-MISS of the fallback: a DECLARED but blank variable is not "set".
@@ -184,10 +200,12 @@ describe('the queue path', () => {
     expect(codigo.match(/\bgetFunctions\s*\(/g)).toHaveLength(1);
   });
 
-  it('the NF-e root names nothing of the feed core — the NF-e trigger’s closure does not grow', () => {
+  it('the NF-e root names nothing of the feed core or of the stock flow — the NF-e trigger’s closure does not grow', () => {
     const nfe = readFileSync(fileURLToPath(new URL('./agendadorNfe.ts', import.meta.url)), 'utf8');
     expect(nfe).not.toMatch(/feeds\//);
     expect(nfe).not.toMatch(/Lotes/);
+    expect(nfe).not.toMatch(/estoque\//);
+    expect(nfe).not.toMatch(/Estoque/);
   });
 });
 
@@ -195,7 +213,7 @@ describe('the queue valve', () => {
   it("★ exactly '1' closes it: the enqueue rejects with the jobs queue’s class, and the SDK is never touched", async () => {
     ambiente({ functionsRegion: 'xx-regiao1', desligado: '1' });
 
-    expect(tarefasLotesAmazonDesligadas()).toBe(true);
+    expect(tarefasDoEstoqueAmazonDesligadas()).toBe(true);
     const agendador = criarAgendadorLotesAmazonDoAmbiente();
     await expect(agendador.enfileirarLote(RODADA, { nome: NOME })).rejects.toBeInstanceOf(
       AmazonLotesTarefasDesligadasError,
@@ -220,9 +238,89 @@ describe('the queue valve', () => {
     async (valor) => {
       ambiente({ functionsRegion: 'xx-regiao1', desligado: valor });
 
-      expect(tarefasLotesAmazonDesligadas()).toBe(false);
+      expect(tarefasDoEstoqueAmazonDesligadas()).toBe(false);
       await criarAgendadorLotesAmazonDoAmbiente().enfileirarLote(ESPERA);
       expect(h.enqueue).toHaveBeenCalledExactlyOnceWith(ESPERA);
+    },
+  );
+});
+
+describe('the stock queue (step 12, PR 12-e1)', () => {
+  it('★ enqueues onto locations/<region>/functions/processAmazonStockPatch, on the admin app — never the jobs queue', async () => {
+    ambiente({ tasksRegion: 'xx-regiao1', functionsRegion: 'xx-regiao1' });
+
+    expect(await criarProdutorEstoqueAmazonDoAmbiente().enfileirar(PATCH)).toBe('enfileirada');
+
+    expect(h.getFunctions).toHaveBeenCalledExactlyOnceWith(APP);
+    expect(h.taskQueue).toHaveBeenCalledExactlyOnceWith(
+      'locations/xx-regiao1/functions/processAmazonStockPatch',
+    );
+    expect(h.taskQueue).not.toHaveBeenCalledWith(
+      expect.stringContaining('processAmazonListingsJob'),
+    );
+    expect(h.enqueue.mock.calls).toEqual([[PATCH, { id: nomeDaTarefaEstoque(PATCH) }]]);
+  });
+
+  it('the 429 pause goes UNNAMED, delayed in whole seconds, through the same root', async () => {
+    ambiente({ functionsRegion: 'xx-regiao1' });
+
+    await criarProdutorEstoqueAmazonDoAmbiente().enfileirarPausa(PATCH);
+
+    expect(h.enqueue.mock.calls).toEqual([
+      [PATCH, { scheduleDelaySeconds: ATRASO_PAUSA_ESTOQUE_S }],
+    ]);
+  });
+
+  it('the SDK’s own 409 for a held name reads ja-enfileirada through the root', async () => {
+    ambiente({ functionsRegion: 'xx-regiao1' });
+    h.enqueue.mockImplementationOnce(() =>
+      Promise.reject(falhaDeTarefaJaExistente(nomeDaTarefaEstoque(PATCH))),
+    );
+
+    expect(await criarProdutorEstoqueAmazonDoAmbiente().enfileirar(PATCH)).toBe('ja-enfileirada');
+  });
+
+  it('★ shares the jobs queue’s region: AMAZON_TASKS_REGION wins, a blank one falls back, none at all REFUSES before the transport', async () => {
+    ambiente({ tasksRegion: 'xx-regiao2', functionsRegion: 'xx-regiao1' });
+    await criarProdutorEstoqueAmazonDoAmbiente().enfileirarPausa(PATCH);
+    ambiente({ tasksRegion: '   ', functionsRegion: 'xx-regiao1' });
+    await criarProdutorEstoqueAmazonDoAmbiente().enfileirarPausa(PATCH);
+    expect(h.taskQueue.mock.calls).toEqual([
+      ['locations/xx-regiao2/functions/processAmazonStockPatch'],
+      ['locations/xx-regiao1/functions/processAmazonStockPatch'],
+    ]);
+
+    h.taskQueue.mockClear();
+    h.enqueue.mockClear();
+    ambiente({});
+    await expect(
+      criarProdutorEstoqueAmazonDoAmbiente().enfileirarPausa(PATCH),
+    ).rejects.toBeInstanceOf(MissingRegionError);
+    expect(h.taskQueue).not.toHaveBeenCalled();
+    expect(h.enqueue).not.toHaveBeenCalled();
+  });
+
+  it("★ the SAME valve: exactly '1' refuses with the stock queue’s class, the SDK never touched", async () => {
+    ambiente({ functionsRegion: 'xx-regiao1', desligado: '1' });
+
+    const produtor = criarProdutorEstoqueAmazonDoAmbiente();
+    await expect(produtor.enfileirar(PATCH)).rejects.toBeInstanceOf(
+      AmazonEstoqueTarefasDesligadasError,
+    );
+    await expect(produtor.enfileirarPausa(PATCH)).rejects.toBeInstanceOf(
+      AmazonEstoqueTarefasDesligadasError,
+    );
+    expect(h.getFunctions).not.toHaveBeenCalled();
+    expect(h.taskQueue).not.toHaveBeenCalled();
+  });
+
+  // NEAR-MISS: the valve is opt-in at EXACTLY '1' for this producer too.
+  it.each([['1 '], ['true'], [''], [undefined]])(
+    'AMAZON_TASKS_DISABLED=%j leaves the stock enqueue ON',
+    async (valor) => {
+      ambiente({ functionsRegion: 'xx-regiao1', desligado: valor });
+      await criarProdutorEstoqueAmazonDoAmbiente().enfileirarPausa(PATCH);
+      expect(h.enqueue).toHaveBeenCalledOnce();
     },
   );
 });

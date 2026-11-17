@@ -14,13 +14,15 @@
  * | `amazonSegredoLwaRecusado` | per app | `critico` | none |
  * | `amazonImportacaoParada` (step 4) | per conta | `critico` | the poll document's commit time (µs) |
  * | `amazonPedidoPrecisaAtencao` (step 5) | per (conta, order, motivo) | per motivo | a Firestore commit or read time (µs) |
- * | `amazonContaPrecisaAtencao` (step 5) | per (conta, motivo) | `atencao` | the conta read's read time (µs) |
+ * | `amazonContaPrecisaAtencao` (step 5) | per (conta, motivo) | `atencao` | the raiser's own Firestore read time (µs) |
  *
  * The two step-5 tipos: their keys and the orphan pass's handling (PR 5-b), and
  * their producers, {@link sincronizarAvisosDoPedidoAmazon} and
  * {@link sincronizarAvisosDaContaAmazon} (PR 5-d), called by the order import,
- * which decides which motivos to raise and which to resolve. Their motivos,
- * resolvers and residues are in the tipos' docblock entries
+ * which decides which motivos to raise and which to resolve. Since step 12 the
+ * stock sync raises and resolves its five per-conta motivos one at a time
+ * through {@link sincronizarAvisoContaEstoqueAmazon}. Their motivos, resolvers
+ * and residues are in the tipos' docblock entries
  * (`packages/schemas/src/aviso.ts`).
  *
  * Every raise is in-app only: no `escalar` is ever passed. Every param is
@@ -109,6 +111,7 @@ import {
   CANAL_AVISO,
   FUSO_FISCAL,
   LIMIAR_AVISO_AMAZON_DIAS,
+  MOTIVO_CONTA_AMAZON,
   MOTIVO_PEDIDO_AMAZON,
   type MotivoContaAmazon,
   type MotivoImportacaoParadaAmazon,
@@ -186,8 +189,9 @@ export const TIPOS_AVISO_AMAZON: ReadonlySet<string> = new Set([
  * (`conta/expiracaoSweep.ts`), so a tipo listed here must have its key computed
  * there too: `amazonImportacaoParada` (step 4, PR 4-b) without
  * {@link chaveImportacaoParada} in that set would close EVERY live conta's open
- * import aviso, every day — and `amazonContaPrecisaAtencao` (step 5) needs BOTH
- * of its keys there ({@link chavesContaPrecisaAtencao}).
+ * import aviso, every day — and `amazonContaPrecisaAtencao` (step 5) needs EVERY
+ * one of its keys there, one per motivo, seven since step 12
+ * ({@link chavesContaPrecisaAtencao}).
  *
  * ⚠️ `amazonPedidoPrecisaAtencao` is deliberately NOT here: its key names an
  * ORDER, which the pass cannot compute for a listed conta, so listing it would
@@ -900,6 +904,83 @@ export function sincronizarAvisosDaContaAmazon(
     levantar: e.levantar.map(plano),
     resolver: e.resolver.map(plano),
   });
+}
+
+/**
+ * The five `amazonContaPrecisaAtencao` motivos the stock sync (step 12) owns:
+ * every member but the order import's two.
+ */
+export const MOTIVOS_CONTA_ESTOQUE_AMAZON = [
+  MOTIVO_CONTA_AMAZON.estoqueSemDeposito,
+  MOTIVO_CONTA_AMAZON.estoqueDepositoSemLinhas,
+  MOTIVO_CONTA_AMAZON.estoqueVinculosRecusados,
+  MOTIVO_CONTA_AMAZON.estoqueRecusadoPelaAmazon,
+  MOTIVO_CONTA_AMAZON.feedEstoqueFalhou,
+] as const satisfies readonly MotivoContaAmazon[];
+export type MotivoContaEstoqueAmazon = (typeof MOTIVOS_CONTA_ESTOQUE_AMAZON)[number];
+
+/** What {@link sincronizarAvisoContaEstoqueAmazon} does with its motivo. */
+export const ACAO_AVISO_CONTA_ESTOQUE_AMAZON = {
+  levantar: 'levantar',
+  resolver: 'resolver',
+} as const;
+export type AcaoAvisoContaEstoqueAmazon =
+  (typeof ACAO_AVISO_CONTA_ESTOQUE_AMAZON)[keyof typeof ACAO_AVISO_CONTA_ESTOQUE_AMAZON];
+
+/** What {@link sincronizarAvisoContaEstoqueAmazon} did. */
+export type SincroniaAvisoContaEstoqueAmazon =
+  | { readonly acao: 'levantado'; readonly resultado: ResultadoAviso }
+  | { readonly acao: 'resolvido'; readonly fechou: boolean };
+
+/**
+ * Raise or resolve ONE of the stock sync's per-conta rows
+ * ({@link MOTIVOS_CONTA_ESTOQUE_AMAZON}), CLOCKED by `relogio` — a Firestore
+ * read time the RAISER took (the tick's read of its sync document, the
+ * reconcile's first read, the patch task's link-doc read, …), converted HERE
+ * by {@link relogioDoDocumentoUs}. An equal clock is dropped by both the
+ * writer and the resolver, so a retried raiser writes nothing new.
+ *
+ * Unlike {@link sincronizarAvisosDaContaAmazon}, the resolve SEEDS: an absent
+ * row becomes a resolved row carrying the clock, so a raise clocked by an
+ * OLDER observation that lands after it is dropped instead of opening a row
+ * whose next resolver may be a day away (the reconcile). It costs at most one
+ * document per (conta, motivo) — five per conta — never one per SKU. Stamped
+ * `condicao-encerrada`, the tipo's machine resolution. `params` are exactly the
+ * motivo, as for every per-conta row.
+ *
+ * @throws {RangeError} a motivo outside the five (the order import's two are
+ *   raised by the import alone), nothing read or written.
+ */
+export async function sincronizarAvisoContaEstoqueAmazon(
+  db: Firestore,
+  deps: AvisoDepsAmazon,
+  e: {
+    readonly integracaoId: string;
+    readonly motivo: MotivoContaEstoqueAmazon;
+    readonly acao: AcaoAvisoContaEstoqueAmazon;
+    readonly relogio: CommitDoDocumento;
+  },
+): Promise<SincroniaAvisoContaEstoqueAmazon> {
+  if (!(MOTIVOS_CONTA_ESTOQUE_AMAZON as readonly string[]).includes(e.motivo)) {
+    throw new RangeError('avisos.ts: motivo fora dos cinco do estoque');
+  }
+  const plano = sementeContaPrecisaAtencao(
+    e.integracaoId,
+    e.motivo,
+    relogioDoDocumentoUs(e.relogio),
+  );
+  if (e.acao === ACAO_AVISO_CONTA_ESTOQUE_AMAZON.levantar) {
+    const { resultado } = await escreverAviso(db, plano, depsDeEscrita(deps));
+    return { acao: 'levantado', resultado };
+  }
+  const fechou = await resolverAviso(
+    db,
+    chaveContaPrecisaAtencao(e.integracaoId, e.motivo),
+    MOTIVO_AVISO_AMAZON.condicaoEncerrada,
+    { agoraUs: agoraUsDe(deps) },
+    plano,
+  );
+  return { acao: 'resolvido', fechou };
 }
 
 /* -------------------------------------------------------------------------- */

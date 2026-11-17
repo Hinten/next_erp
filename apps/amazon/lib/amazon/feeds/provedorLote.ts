@@ -3,7 +3,8 @@
  * step 12, price in step 13) hands the core to have its batch submitted as one
  * `JSON_LISTINGS_FEED`, plus the core's closed abort motivos and its timing
  * constants. TYPES and constants only: no provider exists yet, and the core
- * never imports a fluxo's module — the jobs root binds one per fluxo (12-c).
+ * never imports a fluxo's module — the jobs root binds one per fluxo, through
+ * the seam table's factories (`./destinosLote`).
  *
  * ## The seam
  *
@@ -42,7 +43,12 @@
  *    window batch may wait for the lease before going per SKU.
  */
 import type { MensagemListingsFeed } from '@delfrance/integrations-amazon-sp-api';
-import type { JanelaFeedAmazon, MotivoContaAmazon, TimestampLike } from '@delfrance/schemas';
+import type {
+  JanelaFeedAmazon,
+  MotivoContaAmazon,
+  TimestampLike,
+  VezFeedAmazon,
+} from '@delfrance/schemas';
 import type { Firestore } from 'firebase-admin/firestore';
 
 import type { ContextoAmazon } from '../core/contexto';
@@ -102,6 +108,13 @@ export interface ContextoLoteAmazon {
    * clock and the aviso module converts one.
    */
   readonly relogioVez: TimestampLike | null;
+  /**
+   * The lease as the send dispatch's E4 read found it (its
+   * `ultimoFeedConcluidoEmMs` included: a stock build's recent-feed rule reads
+   * it from here, never with a second read); `null` on the result and recovery
+   * sides, which read no lease, and when no lease document exists yet.
+   */
+  readonly vez: VezFeedAmazon | null;
 }
 
 /** A provider refusal to build (module header). */

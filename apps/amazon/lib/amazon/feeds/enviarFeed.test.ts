@@ -245,6 +245,15 @@ interface Espiao {
   readonly repasses: (readonly string[])[];
   /** The lease's `estado` at each hand-off to the per-SKU path. */
   readonly vezNosRepasses: unknown[];
+  /**
+   * The lease each provider call received in its context (`ctx.vez`), by
+   * method, with how many reads of that lease the run had made by then.
+   */
+  readonly vezNosContextos: {
+    readonly metodo: string;
+    readonly vez: unknown;
+    readonly leiturasDaVez: number;
+  }[];
 }
 
 interface OpcoesProvedor {
@@ -310,10 +319,13 @@ function provedorDeTeste(
   fluxo: 'estoque' | 'preco' = 'estoque',
   o: OpcoesProvedor = {},
 ): ProvedorLoteAmazon<'estoque' | 'preco', { readonly snapshotEmMs: number }> {
+  const caminhoDaVez = fluxo === 'preco' ? VEZ_PRECO : VEZ;
+  const lidas = () => c.fake.leituras.filter((p) => p === caminhoDaVez).length;
   return {
     fluxo,
     membros: (ctx) => {
       c.espiao.membros += 1;
+      c.espiao.vezNosContextos.push({ metodo: 'membros', vez: ctx.vez, leiturasDaVez: lidas() });
       // The window's snapshot BEFORE its first window query (the provider's rule).
       const snapshotEmMs = ctx.agora();
       c.relogio += o.duracaoMembrosMs ?? 0;
@@ -322,6 +334,7 @@ function provedorDeTeste(
     },
     montar: (ctx, _entrada, membrosOn, dados) => {
       c.espiao.montar.push(membrosOn);
+      c.espiao.vezNosContextos.push({ metodo: 'montar', vez: ctx.vez, leiturasDaVez: lidas() });
       c.relogio += o.duracaoMontarMs ?? 0;
       const falha = o.falhasDoMontar?.shift();
       if (falha !== undefined) return Promise.reject(falha());
@@ -336,8 +349,13 @@ function provedorDeTeste(
     },
     gravarResultado: () => Promise.resolve(),
     recuperar: () => Promise.resolve({ nada: true }),
-    repassarParaPatches: (_ctx, _entrada, skus) => {
+    repassarParaPatches: (ctx, _entrada, skus) => {
       c.espiao.repasses.push(skus);
+      c.espiao.vezNosContextos.push({
+        metodo: 'repassarParaPatches',
+        vez: ctx.vez,
+        leiturasDaVez: lidas(),
+      });
       c.espiao.vezNosRepasses.push(c.fake.ler(fluxo === 'preco' ? VEZ_PRECO : VEZ)?.estado);
       c.ordem.push('repasse');
       return Promise.resolve({ tarefas: skus.length });
@@ -372,7 +390,7 @@ function cenario(o: OpcoesProvedor & { fluxo?: 'estoque' | 'preco' } = {}): Cena
     chamadas: [],
     enfileiradas: [],
     vistosNoCriarFeed: [],
-    espiao: { membros: 0, montar: [], repasses: [], vezNosRepasses: [] },
+    espiao: { membros: 0, montar: [], repasses: [], vezNosRepasses: [], vezNosContextos: [] },
     falhasDaFila: [],
     falharEnfileiramento: null,
     ordem: [],
@@ -1894,5 +1912,49 @@ describe('★ a fake PRICE provider drives the send with no stock module (the st
     expect(c.fake.ler(AVISO)?.relogioEvento).toBe(
       relogioDoDocumentoUs(tomada?.writeTime ?? { seconds: 0, nanoseconds: 0 }) - 1,
     );
+  });
+});
+
+describe('★ the provider’s context carries the send dispatch’s E4 lease read (`ctx.vez`)', () => {
+  it('★ membros and montar receive the lease AS E4 READ IT, its ultimoFeedConcluidoEmMs included — never a second read, never the take’s write', async () => {
+    const c = cenario();
+    const lida = vez({ ultimoFeedConcluidoEmMs: AGORA_MS - 4 * MIN, falhasSeguidas: 1 });
+    semear(c, lida);
+    const r = await c.rodar(janelaDoTick());
+
+    expect(r.acao).toBe(ACAO_ENVIO_FEED.enviado);
+    expect(c.espiao.vezNosContextos.map((x) => x.metodo)).toEqual(['membros', 'montar']);
+    for (const { vez: noContexto } of c.espiao.vezNosContextos) {
+      expect(noContexto).toEqual(lida);
+      expect(noContexto).toMatchObject({ ultimoFeedConcluidoEmMs: AGORA_MS - 4 * MIN });
+    }
+    // NEAR-MISS: the take wrote `montando`; the context still carries the READ (`livre`).
+    expect(c.espiao.vezNosContextos[0]?.vez).toMatchObject({ estado: 'livre' });
+    expect(escritasDaVez(c)[0]?.dados?.estado).toBe('montando');
+    // By the build, the lease was read ONCE (E4): the context adds no read of its own.
+    expect(c.espiao.vezNosContextos.map((x) => x.leiturasDaVez)).toEqual([1, 1]);
+  });
+
+  it('a conta with no lease document yet ⇒ `ctx.vez` is null (nothing on record)', async () => {
+    const c = cenario();
+    await c.rodar(janelaDoTick());
+    expect(c.espiao.vezNosContextos.map((x) => x.vez)).toEqual([null, null]);
+  });
+
+  it('★ a window batch handed to patches behind another holder: repassarParaPatches gets THAT holder’s lease as read', async () => {
+    const c = cenario();
+    const holder = enviadoDe(ESPERA_MAXIMA_ATRAS_DE_FEED_MS + MIN, {
+      ultimoFeedConcluidoEmMs: AGORA_MS - 2 * HORA,
+    });
+    semear(c, holder);
+    const r = await c.rodar(janelaDoTick());
+    expect(r.acao).toBe(ACAO_ENVIO_FEED.repassado);
+    expect(c.espiao.vezNosContextos.map((x) => x.metodo)).toEqual([
+      'membros',
+      'repassarParaPatches',
+    ]);
+    for (const { vez: noContexto } of c.espiao.vezNosContextos) {
+      expect(noContexto).toEqual(holder);
+    }
   });
 });

@@ -3,7 +3,7 @@
  * `tipo`. The four handlers are SPIED (each is proved end to end in its own
  * suite, and `resultadoFeed.test.ts` drives send → result → recovery through
  * this dispatcher with the real ones): here only what reaches which handler,
- * with which provider, and what a refused payload writes.
+ * with which provider of the BOUND seam rows, and what a refused payload writes.
  *
  * ⚠️ D11: nothing here reaches a handler body that could call Amazon, and the
  * global `fetch` refuses. PLACEHOLDERS ONLY (public repository).
@@ -14,6 +14,7 @@ import { FLUXO_FEED_AMAZON, MOTIVO_CONTA_AMAZON } from '@delfrance/schemas';
 import { FakeDb, asDb, increment } from '../testing/fakeDb';
 import { AGORA_MS, AMBIENTE_LIGADO, loggerEspiao } from '../testing/fixtures';
 import type { AgendadorLotesAmazon } from './agendadorLotes';
+import type { ProvedoresLoteAmazon } from './destinosLote';
 import type { ProvedorLoteAmazon } from './provedorLote';
 import {
   TIPO_TAREFA_LOTE_AMAZON,
@@ -77,7 +78,7 @@ const PAYLOADS = {
   },
 } as const satisfies Record<TarefaLoteAmazon['tipo'], Record<string, unknown>>;
 
-function provedor(fluxo: 'estoque' | 'preco'): ProvedorLoteAmazon<'estoque' | 'preco', unknown> {
+function provedor<F extends 'estoque' | 'preco'>(fluxo: F): ProvedorLoteAmazon<F, unknown> {
   return {
     fluxo,
     membros: () => Promise.reject(new Error('não chamado')),
@@ -92,8 +93,11 @@ function provedor(fluxo: 'estoque' | 'preco'): ProvedorLoteAmazon<'estoque' | 'p
 function mundo() {
   const fake = new FakeDb();
   const log = loggerEspiao();
-  const provedores = { estoque: provedor('estoque'), preco: provedor('preco') };
-  const provedorDe = vi.fn((fluxo: 'estoque' | 'preco') => provedores[fluxo]);
+  // The rows as the jobs root BOUND them (a fresh object per world, so a case may null one).
+  const provedores: { -readonly [F in keyof ProvedoresLoteAmazon]: ProvedoresLoteAmazon[F] } = {
+    estoque: provedor('estoque'),
+    preco: provedor('preco'),
+  };
   const agendador = (): AgendadorLotesAmazon => ({
     enfileirarLote: () => Promise.reject(new Error('não enfileira')),
   });
@@ -103,7 +107,7 @@ function mundo() {
     logger: log.logger,
     increment,
     agendador,
-    provedorDe,
+    provedores,
     registro: { tentativa: 2, idTarefa: 'tarefa-despacho-1' },
     fetch: () => Promise.reject(new Error('teste: nenhuma chamada de rede')),
   };
@@ -111,7 +115,6 @@ function mundo() {
     fake,
     log,
     provedores,
-    provedorDe,
     deps,
     rodar: (dados: unknown) => processarLoteAmazon(asDb(fake), dados, deps),
   };
@@ -196,12 +199,12 @@ describe('P0 — the strict payload', () => {
   });
 });
 
-describe('the routing on tipo, with the provider read from the seam PER RUN', () => {
+describe('the routing on tipo, with the provider read from the BOUND seam rows', () => {
   it('feed-enviar ⇒ the send handler, with the PAYLOAD’s fluxo’s provider', async () => {
     const m = mundo();
     const r = await m.rodar(PAYLOADS['feed-enviar']);
     expect(r).toEqual({ tipo: 'feed-enviar', r: { acao: 'espiado' } });
-    expect(m.provedorDe).toHaveBeenCalledWith(FLUXO_FEED_AMAZON.preco);
+    expect(PAYLOADS['feed-enviar'].fluxo).toBe(FLUXO_FEED_AMAZON.preco);
     const [db, t, deps] = espioes.enviar.mock.calls[0] as [
       unknown,
       unknown,
@@ -213,17 +216,20 @@ describe('the routing on tipo, with the provider read from the seam PER RUN', ()
     expect(deps).toMatchObject({ registro: m.deps.registro, fetch: m.deps.fetch });
   });
 
-  it('feed-resultado ⇒ the result handler, with the seam ITSELF (the record names the fluxo)', async () => {
+  it('feed-resultado ⇒ the result handler, with a reader of the bound rows (the record names the fluxo)', async () => {
     const m = mundo();
     await m.rodar(PAYLOADS['feed-resultado']);
     const [, t, deps] = espioes.resultado.mock.calls[0] as [
       unknown,
       unknown,
-      Record<string, unknown>,
+      { readonly provedorDe: (fluxo: 'estoque' | 'preco') => unknown },
     ];
     expect(t).toEqual(PAYLOADS['feed-resultado']);
-    expect(deps.provedorDe).toBe(m.provedorDe);
-    expect(m.provedorDe).not.toHaveBeenCalled();
+    expect(deps.provedorDe(FLUXO_FEED_AMAZON.estoque)).toBe(m.provedores.estoque);
+    expect(deps.provedorDe(FLUXO_FEED_AMAZON.preco)).toBe(m.provedores.preco);
+    // NEAR-MISS: the reader reads the rows at CALL time, never a copy taken per dispatch.
+    m.provedores.preco = null;
+    expect(deps.provedorDe(FLUXO_FEED_AMAZON.preco)).toBeNull();
   });
 
   it('feed-incerto ⇒ the uncertain path, with its fluxo’s provider', async () => {
@@ -231,6 +237,14 @@ describe('the routing on tipo, with the provider read from the seam PER RUN', ()
     await m.rodar(PAYLOADS['feed-incerto']);
     const [, , deps] = espioes.incerto.mock.calls[0] as [unknown, unknown, Record<string, unknown>];
     expect(deps.provedor).toBe(m.provedores.estoque);
+  });
+
+  it('NEAR-MISS: a PRICE feed-incerto gets the price row, never the stock one', async () => {
+    const m = mundo();
+    await m.rodar({ ...PAYLOADS['feed-incerto'], fluxo: 'preco' });
+    const [, , deps] = espioes.incerto.mock.calls[0] as [unknown, unknown, Record<string, unknown>];
+    expect(deps.provedor).toBe(m.provedores.preco);
+    expect(deps.provedor).not.toBe(m.provedores.estoque);
   });
 
   it('feed-recuperar ⇒ the recovery handler, with its fluxo’s provider', async () => {
@@ -246,7 +260,7 @@ describe('the routing on tipo, with the provider read from the seam PER RUN', ()
 
   it('a null seam row is handed through as null (each handler answers it)', async () => {
     const m = mundo();
-    m.provedorDe.mockReturnValue(null as never);
+    m.provedores.preco = null;
     await m.rodar(PAYLOADS['feed-enviar']);
     const [, , deps] = espioes.enviar.mock.calls[0] as [unknown, unknown, Record<string, unknown>];
     expect(deps.provedor).toBeNull();

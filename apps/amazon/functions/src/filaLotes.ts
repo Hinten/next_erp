@@ -3,14 +3,22 @@ import { onTaskDispatched } from 'firebase-functions/v2/tasks';
 
 import { LOGGER_STDOUT_AMAZON } from '../../lib/amazon/core/log';
 import { LWA_CLIENT_SECRET_ENV } from '../../lib/amazon/env';
-import { provedorDoLoteAmazon } from '../../lib/amazon/feeds/destinosLote';
+import {
+  DESTINO_LOTE_AMAZON,
+  type ProvedoresLoteAmazon,
+  type RaizLoteAmazon,
+  vincularDestinosLoteAmazon,
+} from '../../lib/amazon/feeds/destinosLote';
 import type { RegistroLoteAmazon } from '../../lib/amazon/feeds/incertoFeed';
 import {
   type DepsProcessarLoteAmazon,
   processarLoteAmazon,
 } from '../../lib/amazon/feeds/processarLote';
 import { sanitizarFalhaDaTarefaAmazon } from '../../lib/amazon/notificacoes/notificacao';
-import { criarAgendadorLotesAmazonDoAmbiente } from './agendadorEstoque';
+import {
+  criarAgendadorLotesAmazonDoAmbiente,
+  criarProdutorEstoqueAmazonDoAmbiente,
+} from './agendadorEstoque';
 import { getDb } from './lib/admin';
 import { tasksInvokerOptions } from './tasksInvoker';
 
@@ -36,6 +44,29 @@ export const SEGREDOS_DOS_LOTES_AMAZON: readonly string[] = [LWA_CLIENT_SECRET_E
 export const TENTATIVAS_LOTE_AMAZON = 5;
 
 /**
+ * What a provider factory of the seam receives (`RaizLoteAmazon`): the stock
+ * root's TWO producers, as thunks — the jobs queue's (a recovery's
+ * `feed-enviar`, a reconcile hand-off) and the stock queue's (one patch task
+ * per SKU handed to the per-SKU path). Neither is built here: a provider
+ * builds one only when it enqueues.
+ */
+export const RAIZ_DOS_LOTES_AMAZON: RaizLoteAmazon = {
+  agendadorLotes: criarAgendadorLotesAmazonDoAmbiente,
+  produtorEstoque: criarProdutorEstoqueAmazonDoAmbiente,
+};
+
+/**
+ * The seam table BOUND, ONCE per process (`lib/amazon/feeds/destinosLote.ts`):
+ * each non-null factory called exactly once with {@link RAIZ_DOS_LOTES_AMAZON},
+ * at module load, and every dispatch reads these same rows. Both rows are
+ * `null` until a fluxo fills its own, so today nothing is called here.
+ */
+export const PROVEDORES_DOS_LOTES_AMAZON: ProvedoresLoteAmazon = vincularDestinosLoteAmazon(
+  RAIZ_DOS_LOTES_AMAZON,
+  DESTINO_LOTE_AMAZON,
+);
+
+/**
  * The dependencies of ONE jobs-queue dispatch, bound to the runtime — the one
  * place this codebase binds them:
  *
@@ -46,8 +77,9 @@ export const TENTATIVAS_LOTE_AMAZON = 5;
  *   poll rungs, the uncertain wait, the recoveries, a turned-away batch's wait)
  *   — the functions codebase's stock root (`./agendadorEstoque`), built only
  *   when one is due.
- * - `provedorDe`: the seam table (`lib/amazon/feeds/destinosLote.ts`), read per
- *   run; both rows are empty until a fluxo fills its own.
+ * - `provedores`: the seam's rows, BOUND once per process
+ *   ({@link PROVEDORES_DOS_LOTES_AMAZON}); both are empty until a fluxo fills
+ *   its own.
  * - `fetch`: the global one, read at CALL time, handed to the context, the
  *   write client and both document transfers alike (the package never defaults
  *   it).
@@ -62,7 +94,7 @@ export function depsDosLotesAmazon(registro: RegistroLoteAmazon): DepsProcessarL
     logger: LOGGER_STDOUT_AMAZON,
     increment: (by: number) => FieldValue.increment(by),
     agendador: criarAgendadorLotesAmazonDoAmbiente,
-    provedorDe: provedorDoLoteAmazon,
+    provedores: PROVEDORES_DOS_LOTES_AMAZON,
     registro,
     fetch: (input, init) => globalThis.fetch(input, init),
   };
@@ -75,7 +107,8 @@ export function depsDosLotesAmazon(registro: RegistroLoteAmazon): DepsProcessarL
  * wait after a lost `createFeed` answer, and the recoveries. The body is
  * `lib/amazon/feeds/processarLote.ts`, which dispatches on the payload's
  * `tipo`. Its producers: the handlers' own enqueues (through `./agendadorEstoque`,
- * the functions runtime SA) and the push receiver's `FEED_PROCESSING_FINISHED`
+ * the functions runtime SA), the seam's providers (through the same root, once
+ * a fluxo fills its row) and the push receiver's `FEED_PROCESSING_FINISHED`
  * wake-up (through `lib/firebase/filaLeitura.ts`, the App Hosting runtime SA).
  *
  * ⚠️ The export name IS the deployed function AND queue name, and it must equal

@@ -1,7 +1,7 @@
 /**
  * The link verdict of the Amazon stock sync (step 12, PR 12-d), pure: whether
  * a SKU's link docs may be trusted to publish stock at all, and if so, for
- * which unit. Unwired here: the readers that hand it the documents come later.
+ * which unit. Its reader is `resolverEstoque.ts` (PR 12-e1).
  *
  * ## The binding is the order import's, never a second one
  *

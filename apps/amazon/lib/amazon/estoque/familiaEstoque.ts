@@ -2,7 +2,7 @@
  * The family read model of the Amazon stock sync (step 12, PR 12-d), pure:
  * how the documents a SKU's unit is read from become the
  * {@link MembroDaFamilia} the shared quantity core reads, and the ONE call into
- * that core. Unwired here: the readers that hand it what they read come later.
+ * that core. Its reader is `familiaEstoqueFirestore.ts` (PR 12-e1).
  *
  * ## The quantity is the core's, never a second rule
  *
