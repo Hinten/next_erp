@@ -18,6 +18,7 @@ import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { readCacheDelta, readCacheMark } from '@delfrance/data/admin/cache';
 
 import { sweepLojaIntegradaTokenExpiry as runTokenExpirySweep } from '../../lib/lojaIntegrada/conta/expiracaoSweep';
+import { FILA_ESTOQUE_LI } from '../../lib/lojaIntegrada/estoque/agendadorEstoque';
 import {
   FILA_LEITURA_LI,
   type RegistroTarefaLi,
@@ -28,6 +29,7 @@ import {
 import { FILA_ESCRITA_LI } from '../../lib/lojaIntegrada/rastreio/notificacaoEscrita';
 import { depsDeLeituraLi } from './depsLeitura';
 import * as filaEscrita from './filaEscrita';
+import * as filaEstoque from './filaEstoque';
 import * as filaLeitura from './filaLeitura';
 import { getDb } from './lib/admin';
 
@@ -50,7 +52,8 @@ import { getDb } from './lib/admin';
  *
  * Master plan step 7 adds the status write-back: the WRITES queue
  * (`filaEscritaLojaIntegrada`, ./filaEscrita) — one dispatch at a time, one
- * instance, every write of the channel and its own sweep — its producer, the
+ * instance, every write of the channel but stock (step 12 has its own queue,
+ * below) and its own sweep — its producer, the
  * freight-history trigger (`onHistoricoFreteLojaIntegrada`,
  * ./onHistoricoFreteLojaIntegrada), and the 30-minute timer that enqueues the
  * in-queue sweep (`varrerEscritasLojaIntegrada`, ./varrerEscritas). Until the
@@ -68,6 +71,13 @@ import { getDb } from './lib/admin';
  * READS queue, which runs each slice (`tipo: importacao`) and enqueues the next
  * one by name. Until the window the read switch stops every slice at its first
  * act, so no import reads the store.
+ *
+ * Master plan step 12 (PR 12-e) adds the STOCK queue (`filaEstoqueLojaIntegrada`,
+ * ./filaEstoque): one send run of one produto per task, options identical to the
+ * writes queue's, a queue of its own so the status write-back never waits behind a
+ * stock pass. Its only producer so far is the run's own `deriva` follow-up; the
+ * stock trigger and the reconcile come later. Until the window the stock valve is
+ * unset, so every run returns before any read.
  *
  * Every export below is a Cloud Function name, and the names are unique across
  * codebases (`functions-export-names.test.js`): keep the exports explicit and
@@ -100,14 +110,30 @@ if (!(FILA_ESCRITA_LI in filaEscrita)) {
   );
 }
 
+// And for the STOCK queue: every stock producer enqueues against `FILA_ESTOQUE_LI`.
+if (!(FILA_ESTOQUE_LI in filaEstoque)) {
+  throw new Error(
+    '[loja-integrada] function-name drift: functions/src/filaEstoque.ts must export a ' +
+      `handler named '${FILA_ESTOQUE_LI}' (the enqueue target). ` +
+      'Rename the export and the FILA_ESTOQUE_LI constant together.',
+  );
+}
+
 /** The ONE reads queue (rate-limited to one dispatch at a time, retry with backoff). */
 export { filaLeituraLojaIntegrada } from './filaLeitura';
 
 /**
- * The ONE writes queue (master plan step 7): one dispatch at a time on one
- * instance, every write to Loja Integrada and its own sweep (./filaEscrita).
+ * The writes queue (master plan step 7): one dispatch at a time on one
+ * instance, every write to Loja Integrada but stock, and its own sweep
+ * (./filaEscrita).
  */
 export { filaEscritaLojaIntegrada } from './filaEscrita';
+
+/**
+ * The stock queue (master plan step 12): one send run per task, one dispatch at a
+ * time on one instance, beside the writes queue (./filaEstoque).
+ */
+export { filaEstoqueLojaIntegrada } from './filaEstoque';
 
 /**
  * The status write-back trigger: a freight history row of an imported Loja

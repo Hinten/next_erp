@@ -124,7 +124,8 @@ async function despachar(
 /**
  * The Loja Integrada WRITES queue (master plan step 7, PR 7-e): ONE function —
  * and so ONE Cloud Tasks queue, auto-provisioned and named after it — for every
- * write this channel makes to Loja Integrada, dispatching on the task's `tipo`:
+ * write this channel makes to Loja Integrada but stock, dispatching on the
+ * task's `tipo`:
  *
  *  - `rastreio`: one freight event of one pedido (posted, delivered, awaiting
  *    pickup) written back to its Loja Integrada order, through the shared
@@ -137,8 +138,13 @@ async function despachar(
  *    a delivered order back to "enviado" and e-mail the buyer after "entregue".
  *  - anything else: dropped, with one line.
  *
- * Later write kinds (stock, price, the catalogue) join THIS queue, so every
- * write of the channel stays single-file.
+ * Later write kinds (price, the catalogue) join THIS queue, so they stay
+ * single-file with the status write-back. Stock does NOT (master plan step 12):
+ * a full stock pass enqueues one task per produto, and the write-back must never
+ * wait behind it, so stock runs on its own queue with these same options
+ * (`./filaEstoque`, `filaEstoqueLojaIntegrada`) — single-file on its own, at
+ * most two writes in flight per store across the two queues, each paced by the
+ * engine.
  *
  * ⚠️ The export name IS the deployed function AND queue name, and it must equal
  * `FILA_ESCRITA_LI` — the producer targets that string. `index.ts` asserts the
