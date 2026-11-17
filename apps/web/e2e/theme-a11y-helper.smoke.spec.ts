@@ -562,6 +562,7 @@ test.describe('Theme readability checker rejects rendering defects', () => {
       // background is genuinely non-uniform once it is scrolled into view.
       // Anchored to the span, not the cell: `<th>` centres its text, so a
       // patch at the cell's left edge would miss every glyph.
+      if (!(el instanceof HTMLElement)) throw new TypeError('#col-7 must be an HTML span');
       const cell = el.parentElement!;
       cell.style.position = 'relative';
       el.style.position = 'relative';
