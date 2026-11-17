@@ -645,6 +645,55 @@ describe('«Carregar todas as marcas» — the remaining pages, one after anothe
     expect(h.marcas).toHaveBeenCalledTimes(2);
   });
 
+  it('clicking it again after a failed page RETRIES that page (same cursor) and resumes the walk', async () => {
+    h.marcas
+      .mockResolvedValueOnce(pagina({ hasNextPage: true, nextOffset: 37 }))
+      .mockRejectedValueOnce(new ShopeeClientHttpError('Falha no servidor.', 500, null))
+      .mockResolvedValueOnce(
+        pagina({ offset: 37, marcas: [PUMA], hasNextPage: true, nextOffset: 81 }),
+      )
+      .mockResolvedValueOnce(
+        pagina({ offset: 81, marcas: [marca(1004, 'Fila')], hasNextPage: false }),
+      );
+    show();
+    await escolher();
+    await opcao(1001);
+    fireEvent.click(screen.getByRole('button', { name: 'Carregar todas as marcas' }));
+    await screen.findByTestId('shopee-marcas-erro-mais');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Carregar todas as marcas' }));
+
+    await opcao(1004);
+    expect(h.marcas.mock.calls.map((c) => (c[0] as { offset: number }).offset)).toEqual([
+      0, 37, 37, 81,
+    ]);
+    expect(screen.queryByTestId('shopee-marcas-erro-mais')).toBeNull();
+  });
+
+  it('after a failed MANUAL «Carregar mais», «Carregar todas» retries that page and walks on', async () => {
+    h.marcas
+      .mockResolvedValueOnce(pagina({ hasNextPage: true, nextOffset: 37 }))
+      .mockRejectedValueOnce(new ShopeeClientHttpError('Falha no servidor.', 500, null))
+      .mockResolvedValueOnce(
+        pagina({ offset: 37, marcas: [PUMA], hasNextPage: true, nextOffset: 81 }),
+      )
+      .mockResolvedValueOnce(
+        pagina({ offset: 81, marcas: [marca(1004, 'Fila')], hasNextPage: false }),
+      );
+    show();
+    await escolher();
+    await opcao(1001);
+    fireEvent.click(screen.getByRole('button', { name: 'Carregar mais' }));
+    await screen.findByTestId('shopee-marcas-erro-mais');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Carregar todas as marcas' }));
+
+    await opcao(1004);
+    expect(h.marcas.mock.calls.map((c) => (c[0] as { offset: number }).offset)).toEqual([
+      0, 37, 37, 81,
+    ]);
+  });
+
   it(`stops at ${String(MAX_PAGINAS_MARCAS_SHOPEE)} pages and leaves the rest to «Carregar mais»`, async () => {
     let n = 0;
     h.marcas.mockImplementation(() => {

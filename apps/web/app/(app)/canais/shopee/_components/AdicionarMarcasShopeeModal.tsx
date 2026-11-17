@@ -433,7 +433,13 @@ function EtapaMarcas({
                 variant="subtle"
                 loading={percorrendo}
                 disabled={paginas.isFetchingNextPage && !percorrendo}
-                onClick={() => setCarregandoTodas(true)}
+                onClick={() => {
+                  setCarregandoTodas(true);
+                  // After a failed page (in a walk, or a manual «Carregar mais»)
+                  // the walk is held by `isFetchNextPageError`: this click is
+                  // the retry of THAT page, and its success resumes the walk.
+                  if (paginas.isFetchNextPageError) void paginas.fetchNextPage();
+                }}
               >
                 Carregar todas as marcas
               </Button>
