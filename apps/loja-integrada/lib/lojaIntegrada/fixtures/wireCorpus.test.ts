@@ -17,17 +17,24 @@ import {
 
 /**
  * The floor that keeps the assertions below non-vacuous: the number of committed
- * fixtures — the Mercado Livre corpus test is the precedent. 42 since step 9:
+ * fixtures — the Mercado Livre corpus test is the precedent. 75 since step 12:
  * 18 from the owner's first captures (step 3), the 11 catalogue captures
  * (`c9-*`, step 10: categories, brands, grades and two grade details per store,
- * plus the larger store's second category page, `c9-loja1-categorias-p2`) and
- * the 13 product captures (`c10-*`, step 9: both stores' first live page and
+ * plus the larger store's second category page, `c9-loja1-categorias-p2`), the
+ * 13 product captures (`c10-*`, step 9: both stores' first live page and
  * trash list; the larger store's second and last pages, its unfiltered first
  * page, a page at `limit=100` and the `limit=200` refusal; a parent's, a
- * variation's and a trashed parent's detail, and an unknown id). The step-3
- * captures held 19 pairs; `pedido-enviado` was a byte-identical duplicate of
- * `pedido-boleto` (the same order requested twice) and is not committed
- * (`__wire__/README.md`).
+ * variation's and a trashed parent's detail, and an unknown id) and the 33
+ * stock captures (`c11-*`, step 12: the smaller store's whole stock list in
+ * five pages of 100 and its third page re-read minutes later; the larger
+ * store's first, third, 71st and last pages; per store, the list at `limit=20`
+ * with and without a trailing slash, at `limit=50`, the `limit=200` refusal and
+ * a page past the end; a variation's detail with and without the slash, a
+ * parent's and a trashed parent's detail (the larger store also its one trashed
+ * simple product), an unknown id and a stock row's own id as the detail path).
+ * The step-3 captures held 19 pairs; `pedido-enviado` was a byte-identical
+ * duplicate of `pedido-boleto` (the same order requested twice) and is not
+ * committed (`__wire__/README.md`).
  *
  * ⚠️ It equals the count on purpose, and the first test asserts the equality:
  * a fixture that disappears fails there instead of silently shrinking what the
@@ -37,7 +44,7 @@ import {
  * it, in the same commit. Below it, "every fixture is valid and clean" holds of
  * fewer files than were reviewed.
  */
-const MINIMO_DE_FIXTURES = 42;
+const MINIMO_DE_FIXTURES = 75;
 
 /**
  * The two body classes whose redaction tables KEEP a row's Loja Integrada `id`.
@@ -161,19 +168,45 @@ function objetosDe(
 const doCatalogo = (fixtures: FixturesLi) =>
   fixtures.filter(([, e]) => e.resposta.politica === 'catalogo');
 
-/** Every object holding a numeric `id` and a kept `resource_uri`: the URI's last id is that id. */
-function urisQueDivergemDoId(fixtures: FixturesLi): { divergencias: string[]; linhas: number } {
+/** A stock row's own URI (`/api/v1/produto_estoque/<n>`): it names a PRODUCT, never the row. */
+const URI_DE_ESTOQUE = /\/produto_estoque\/\d+\/?$/;
+/** A product's URI (`/api/v1/produto/<n>`), what a stock row's `produto` leaf holds. */
+const URI_DE_PRODUTO = /\/produto\/\d+\/?$/;
+
+/**
+ * Every object holding a numeric `id` and a kept `resource_uri`: the URI's last id is that id —
+ * except on a STOCK row. A stock row's `resource_uri` is `/api/v1/produto_estoque/<produto id>`,
+ * the id of the product its `produto` leaf names, while its own `id` is another number (every row
+ * of the owner's read-only stock captures). A stock row is therefore compared with its `produto`
+ * instead, and counted apart (`linhasDeEstoque`): its URI must end in the id its `produto` URI
+ * ends in.
+ */
+function urisQueDivergemDoId(fixtures: FixturesLi): {
+  divergencias: string[];
+  linhas: number;
+  linhasDeEstoque: number;
+} {
   const divergencias: string[] = [];
   let linhas = 0;
+  let linhasDeEstoque = 0;
   for (const [arquivo, envelope] of doCatalogo(fixtures)) {
     for (const { onde, objeto } of objetosDe(envelope.resposta.corpo)) {
-      const { id, resource_uri: uri } = objeto;
+      const { id, resource_uri: uri, produto } = objeto;
       if (typeof id !== 'number' || !ehUriDeRecurso(uri)) continue;
+      if (URI_DE_ESTOQUE.test(uri)) {
+        linhasDeEstoque += 1;
+        const doProduto =
+          ehUriDeRecurso(produto) && URI_DE_PRODUTO.test(produto) ? ultimoId(produto) : undefined;
+        if (doProduto === undefined || ultimoId(uri) !== doProduto) {
+          divergencias.push(`${arquivo} ${onde} :: resource_uri`);
+        }
+        continue;
+      }
       linhas += 1;
       if (ultimoId(uri) !== String(id)) divergencias.push(`${arquivo} ${onde} :: resource_uri`);
     }
   }
-  return { divergencias, linhas };
+  return { divergencias, linhas, linhasDeEstoque };
 }
 
 /** The ids of the rows of every list fixture of `colecao` (`/v1/categoria/`), per store. */
@@ -576,6 +609,75 @@ describe('one resource, one resource_uri: what the corpus check compares', () =>
   });
 });
 
+describe("a row's resource_uri against its id: what the corpus check compares", () => {
+  const lista = (caminho: string, linhas: readonly ValorJsonLi[]): EnvelopeFixtureLi => ({
+    versao: 1,
+    perfil: 'fixture',
+    credencial: 'personal-token',
+    capturadoEm: '2026-11-16',
+    requisicao: { metodo: 'GET', caminho, query: [] },
+    resposta: {
+      status: 200,
+      politica: 'catalogo',
+      forma: 'json',
+      bytes: 2,
+      corpo: { meta: { next: null }, objects: linhas },
+    },
+  });
+  const estoque = (linha: ValorJsonLi) =>
+    urisQueDivergemDoId([['a.json', lista('/v1/produto_estoque', [linha])]]);
+
+  it("EQUAL: a stock row whose resource_uri ends in its produto's id, its own id another number", () => {
+    expect(
+      estoque({ id: 5, produto: '/api/v1/produto/7', resource_uri: '/api/v1/produto_estoque/7' }),
+    ).toEqual({ divergencias: [], linhas: 0, linhasDeEstoque: 1 });
+  });
+
+  it('NEAR-MISS: a stock row whose resource_uri ends in its OWN id, or in another produto’s, is a divergence', () => {
+    const divergente = {
+      divergencias: ['a.json objects.* :: resource_uri'],
+      linhas: 0,
+      linhasDeEstoque: 1,
+    };
+    expect(
+      estoque({ id: 5, produto: '/api/v1/produto/7', resource_uri: '/api/v1/produto_estoque/5' }),
+    ).toEqual(divergente);
+    expect(
+      estoque({ id: 5, produto: '/api/v1/produto/7', resource_uri: '/api/v1/produto_estoque/8' }),
+    ).toEqual(divergente);
+    // A `produto` that is no product URI names nothing to compare with.
+    expect(
+      estoque({
+        id: 5,
+        produto: '/api/v1/produto_estoque/7',
+        resource_uri: '/api/v1/produto_estoque/7',
+      }),
+    ).toEqual(divergente);
+    expect(estoque({ id: 5, resource_uri: '/api/v1/produto_estoque/7' })).toEqual(divergente);
+  });
+
+  it('every other row keeps the old rule: its resource_uri ends in its own id', () => {
+    const categoria = (uri: string) =>
+      urisQueDivergemDoId([
+        [
+          'a.json',
+          lista('/v1/categoria/', [{ id: 7, produto: '/api/v1/produto/8', resource_uri: uri }]),
+        ],
+      ]);
+    expect(categoria('/api/v1/categoria/7')).toEqual({
+      divergencias: [],
+      linhas: 1,
+      linhasDeEstoque: 0,
+    });
+    // NEAR-MISS: the stock rule does not reach a non-stock row naming a produto.
+    expect(categoria('/api/v1/categoria/8')).toEqual({
+      divergencias: ['a.json objects.* :: resource_uri'],
+      linhas: 1,
+      linhasDeEstoque: 0,
+    });
+  });
+});
+
 /*
  * Catalogue fixtures carry keyed pseudonyms, never the stores' real ids (the
  * sanitizer's `.chave-fixtures`, `scripts/README.md`). These tests pin what the
@@ -590,8 +692,8 @@ describe('__wire__ corpus — catalogue ids keep their function without a real i
     if (leitura.ok) fixtures.push([arquivo, leitura.data]); // else reported by the corpus test
   }
 
-  it("every catalogue row's resource_uri ends in its own id", () => {
-    const { divergencias, linhas } = urisQueDivergemDoId(fixtures);
+  it("every catalogue row's resource_uri ends in its own id, and every stock row's in its produto's", () => {
+    const { divergencias, linhas, linhasDeEstoque } = urisQueDivergemDoId(fixtures);
     expect(divergencias).toEqual([]);
     // Non-vacuous: every category, brand and grade row, both grade roots per store, and
     // every grade option (67 + 15 + 1 categories, 3 brands, 21 grade rows, 4 roots, 74 options:
@@ -599,6 +701,10 @@ describe('__wire__ corpus — catalogue ids keep their function without a real i
     // product details' roots, `imagem_principal` and `imagens` (variation 1, parent 1 + 1 + 12,
     // trashed parent 1 + 1 + 3: 20).
     expect(linhas).toBe(588);
+    // Every stock row: the smaller store's six pages of 100 rows but the last's 99 (599), the
+    // larger store's three of 100 and its last of 18 (318), and per store 20 + 20 + 50 at the
+    // smaller sizes (180): 1097 list rows; and the nine detail roots (1106).
+    expect(linhasDeEstoque).toBe(1106);
   });
 
   it('every categoria_pai names a category row of the same store (across its pages)', () => {
@@ -630,8 +736,10 @@ describe('__wire__ corpus — catalogue ids keep their function without a real i
     const { foraDaFaixa, ids } = idsForaDaFaixa(fixtures);
     expect(foraDaFaixa).toEqual([]);
     // Non-vacuous: every id of the catalogue fixtures (bodies, URIs, request paths): 577 in
-    // the step-10 and step-3 ones, 848 in the product captures.
-    expect(ids).toBe(1425);
+    // the step-10 and step-3 ones, 848 in the product captures, and 3331 in the stock
+    // captures (each of the 1097 list rows' `id`, `produto` and `resource_uri`: 3291; each of
+    // the nine details' three and its request path: 36; the four 404s' request paths: 4).
+    expect(ids).toBe(4756);
   });
 
   it("every variation a product row names, held by the same store, starts with its parent's SKU", () => {
@@ -729,7 +837,7 @@ describe('catalogue id relations: what the corpus checks compare', () => {
       urisQueDivergemDoId([
         ['c9-loja1-x.json', categorias({ id: 5, resource_uri: '/v1/categoria/5' })],
       ]),
-    ).toEqual({ divergencias: [], linhas: 1 });
+    ).toEqual({ divergencias: [], linhas: 1, linhasDeEstoque: 0 });
     expect(
       urisQueDivergemDoId([
         ['c9-loja1-x.json', categorias({ id: 5, resource_uri: '/v1/categoria/50' })],
@@ -750,7 +858,7 @@ describe('catalogue id relations: what the corpus checks compare', () => {
         ],
         ['c9-loja1-x.json', categorias({ id: 5, resource_uri: 'REDACTED' })],
       ]),
-    ).toEqual({ divergencias: [], linhas: 0 });
+    ).toEqual({ divergencias: [], linhas: 0, linhasDeEstoque: 0 });
   });
 
   it("EQUAL: a parent on the store's other page; NEAR-MISS: a parent only the OTHER store has", () => {

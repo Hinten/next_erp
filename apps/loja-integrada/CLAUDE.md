@@ -620,11 +620,12 @@ apps/loja-integrada/lib/lojaIntegrada/testing/especificacaoFolhas.json` (no pair
 - A fixture is pushed only after Lucas has seen it (the repo is public), and only after
   `sanitizar --entrada … --verificar <files>` passes over the new fixtures, the changed docs
   and the PR-body draft. `wireCorpus.test.ts` re-scans the corpus in CI (no store list
-  there); its floor `MINIMO_DE_FIXTURES` is the committed count (42: the 18 step-3 captures,
-  the 11 step-10 catalogue captures, `c9-*`, and the 13 step-9 product captures, `c10-*`),
-  so a fixture that disappears fails it, and so does one added without moving it. The
-  product captures are replayed through the import's own reads by
-  `importacao/capturasProdutos.test.ts`.
+  there); its floor `MINIMO_DE_FIXTURES` is the committed count (75: the 18 step-3 captures,
+  the 11 step-10 catalogue captures, `c9-*`, the 13 step-9 product captures, `c10-*`, and
+  the 33 step-12 stock captures, `c11-*`), so a fixture that disappears fails it, and so
+  does one added without moving it. The product captures are replayed through the import's
+  own reads by `importacao/capturasProdutos.test.ts`, and the stock captures through the
+  package's stock reads and the stock plan's decisions by `estoque/capturasEstoque.test.ts`.
 - ⚠️ The owner's raw `pedido-enviado` pair duplicates `pedido-boleto` (the same order,
   identical sanitized bytes) and is EXCLUDED from the corpus. It stays in `~/li-capturas`
   until he deletes it, so a sanitizer run without `--so` writes it back: delete that raw
@@ -636,7 +637,9 @@ apps/loja-integrada/lib/lojaIntegrada/testing/especificacaoFolhas.json` (no pair
   passes by chance about 1% of the time, and the sibling variant's window fails), LI's own
   numeric ids where the profile keeps them on the configuration class (platform-wide
   constants; catalogue ids are pseudonyms, above), `meta.total_count` (the kept numeros
-  already show the store's scale) and `resposta.bytes` (step 11 sizes snapshots with it). ⚠️ An
+  already show the store's scale), `resposta.bytes` (step 11 sizes snapshots with it), and a
+  stock row's `quantidade`, `quantidade_reservada`, `quantidade_disponivel`, `gerenciado` and
+  both situações (the `ESTOQUE` keep-list; the row's ids are pseudonyms). ⚠️ An
   order detail's top-level `id` is FAKED (`0`) and so is every `itens.*.produto`
   (a placeholder, not even a URI): no capture test may key on either, and the produto
   reference form has no real capture yet. Catalogue SKUs are NOT on this list: the product

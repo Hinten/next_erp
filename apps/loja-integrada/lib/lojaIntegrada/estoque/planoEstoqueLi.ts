@@ -135,8 +135,11 @@ export interface EstoqueNaLojaLi {
 /**
  * The store row already shows the body that would be sent for `quantidade`: ALL FOUR fields
  * exactly — `gerenciado === true`, `quantidade === quantidade`, `situacao_em_estoque === 0`,
- * `situacao_sem_estoque === -1`. Any one off is a write: an unmanaged row reads back as all
- * zeros (`spec tag Estoque`), so a `gerenciado: false` row at quantity 0 is NOT a reflected 0.
+ * `situacao_sem_estoque === -1`. Any one off is a write. An unmanaged row is never "zero stock"
+ * and never a reflected value, whatever it holds: the public document says it reads back as all
+ * zeros (`spec tag Estoque`), but the owner's read-only stock captures show unmanaged rows at a
+ * positive quantity and with lead times as well as at zero. So a `gerenciado: false` row at
+ * quantity 0 is NOT a reflected 0, nor one at 5 a reflected 5.
  */
 export function refletidoLi(linha: EstoqueNaLojaLi, quantidade: number): boolean {
   return (
@@ -804,8 +807,9 @@ function deltaDaLinha(linha: EstoqueNaLojaLi, S: number): number {
  * In sync exactly when the send run would find the row reflected ({@link decidirEnvioEstoqueLi}
  * with the entry's S): `gerenciado === true`, situações (0, −1) and
  * `quantidade − max(0, quantidade_reservada) === min(S, cap)`. Anything else on a `v` entry is a
- * candidate — a `gerenciado: false` row (all zeros, not "zero stock"), a negative row, a row whose
- * reservation cannot be read — and the send run re-derives everything it sends.
+ * candidate — a `gerenciado: false` row (never "zero stock" and never a reflected value, whatever
+ * it holds: {@link refletidoLi}), a negative row, a row whose reservation cannot be read — and the
+ * send run re-derives everything it sends.
  *
  * Throws `RangeError` for a `v` entry without S or produto (the snapshot schema forbids both) or a
  * bad cap.

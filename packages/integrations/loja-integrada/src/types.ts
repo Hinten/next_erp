@@ -32,10 +32,9 @@
  * `removido`, its trash, a parent's and a child's detail).
  *
  * The stock schemas (`produto_estoque`, master-plan step 12), at the very end,
- * are the one exception to "against captures": they ship ahead of the owner's
- * read-only stock captures, written against the public document's schema and
- * examples alone, and the change that adds those captures pins real rows
- * against them before anything consumes them.
+ * were written against the public document's schema and examples, and are
+ * pinned against the owner's read-only stock captures (both stores' lists and
+ * details; `apps/loja-integrada/lib/lojaIntegrada/estoque/capturasEstoque.test.ts`).
  *
  * Every other resource (preço, imagem, envio) arrives with its first consumer,
  * written against captured responses rather than the public document's
@@ -387,9 +386,12 @@ export const liProdutoDetalheSchema = liProdutoLinhaSchema.extend({
  * `quantidade`, `quantidade_disponivel`, `quantidade_reservada`, `resource_uri`,
  * `situacao_em_estoque`, `situacao_sem_estoque`.
  *
- * ⚠️ Written against the public document ALONE (header): the owner's read-only
- * stock captures are not in yet, and the change that adds them pins real rows
- * against this schema before anything consumes it.
+ * Checked against the owner's read-only stock captures (header): every list row
+ * and every detail carried exactly these nine leaves, every integer a JSON
+ * number (never text) and `gerenciado` a boolean; a detail equals its list row
+ * leaf for leaf; the row's own `id` differs from the produto id in every row;
+ * and `quantidade_disponivel` equals `quantidade − quantidade_reservada` in
+ * every row.
  *
  * Declared: the leaves a stock decision reads, each REQUIRED, because a row
  * without one cannot be judged by anyone.
@@ -404,7 +406,8 @@ export const liProdutoDetalheSchema = liProdutoLinhaSchema.extend({
  *    `situacao_sem_estoque`: integers through `wireInt()`, so a quoted one
  *    (`'5'`) reads as the number and never costs the page. Any sign: the
  *    document's own rows carry `quantidade: -2` and `-4`, and
- *    `situacao_sem_estoque: -1`. Never a fraction.
+ *    `situacao_sem_estoque: -1`; the captured rows hold negative quantities in
+ *    both stores, and positive situações (lead times) in one. Never a fraction.
  *
  * Not declared, and kept by `.passthrough()`: the row's own `id`,
  * `resource_uri` (`/api/v1/produto_estoque/<produto id>`) and

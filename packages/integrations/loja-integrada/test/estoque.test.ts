@@ -38,7 +38,9 @@ import { json, mockFetch, requisicao, TOKEN, texto, verificarSoGet } from './_he
  * (`_fixtures/especificacao.ts`: every leaf verbatim, the ids replaced) pin
  * that the schemas read what the document shows. Every other row is INVENTED,
  * shaped like them, with small synthetic ids (`1001`, `5001`) that are no real
- * store's: the owner's stock captures are not in yet. Nothing here reaches Loja
+ * store's. The owner's read-only stock captures are replayed in the app
+ * (`apps/loja-integrada/lib/lojaIntegrada/estoque/capturasEstoque.test.ts`);
+ * the rows here stay invented. Nothing here reaches Loja
  * Integrada — every client gets a stub `fetch`, the global one throws for the
  * whole file, and the `afterEach` asserts every request was a `GET` with no
  * body.

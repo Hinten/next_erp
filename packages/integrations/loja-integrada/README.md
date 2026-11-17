@@ -96,19 +96,21 @@ token **raw** after `Basic ` (not base64-encoded by us).
   `estoque.ts`, `estoqueEscrita.ts`), for the stock sync (master-plan step 12);
   every other resource arrives with its first consumer, written against captured
   responses.
-  The write echoes are one exception to "against captures": no write is made
+  The write echoes are the exception to "against captures": no write is made
   before the cutover, so they follow the public document and keep every field
-  optional. The stock wire is the other: it ships ahead of the owner's read-only
-  stock captures, against the public document alone, and the change that adds
-  those captures pins real rows against it before anything consumes it.
+  optional. The stock wire was written against the public document and is
+  pinned against the owner's read-only stock captures (both path forms answer
+  the same for GET; the stock PUT's path form stays unproven, like every write).
 - **No stock decision.** `estoque.ts` and `estoqueEscrita.ts` read, parse and
   send: which quantity is due, whether a row is already reflected, which ERP
   product a row belongs to and what a missing row means are the app's. The
   produto a row names is read by `@delfrance/schemas`' resource-URI reader
   (`idDoRecursoLi`), the one the product import reads `filhos` and `pai` with,
   never by a copy. The stock list is read one page at a time through
-  `lerPaginaLi`, at most `MAX_LIMITE_PAGINA_ESTOQUE_LI` rows a page (a bound, not
-  yet measured; it lives in `@delfrance/schemas` and is re-exported, because the
+  `lerPaginaLi`, at most `MAX_LIMITE_PAGINA_ESTOQUE_LI` rows a page (the largest
+  page measured honoured: 100 in full; 200 is a 400, and 101–199 were not
+  probed; it lives in
+  `@delfrance/schemas` and is re-exported, because the
   reconcile cursor's stored page size is held to the same binding), with exactly
   `limit` and
   `offset` and no filter (the list has none). Each row is read on its own: a row
