@@ -13,6 +13,7 @@ import type {
 
 const h = vi.hoisted(() => ({
   categorias: vi.fn(),
+  buscarCategorias: vi.fn(),
   semCliente: { value: false },
 }));
 
@@ -21,7 +22,10 @@ vi.mock('@/lib/shopee/client', async (importActual) => {
   const actual = await importActual<typeof import('@/lib/shopee/client')>();
   return {
     ...actual,
-    useShopeeClient: () => (h.semCliente.value ? null : { categorias: h.categorias }),
+    useShopeeClient: () =>
+      h.semCliente.value
+        ? null
+        : { categorias: h.categorias, buscarCategorias: h.buscarCategorias },
   };
 });
 
@@ -131,7 +135,127 @@ function pedidos(): (number | null)[] {
 beforeEach(() => {
   h.categorias.mockReset();
   h.categorias.mockImplementation(arvore);
+  h.buscarCategorias.mockReset();
   h.semCliente.value = false;
+});
+
+describe('ShopeeCategoriaBrowser — text search over the whole tree', () => {
+  const BUSCA = {
+    resultados: [
+      { ...CAMISETAS, pathFromRoot: [ROUPAS, CAMISETAS] },
+      { ...VESTIDOS, pathFromRoot: [ROUPAS, VESTIDOS] },
+    ],
+    truncated: false,
+  };
+
+  function digitar(texto: string) {
+    fireEvent.change(screen.getByRole('textbox', { name: 'Buscar categoria' }), {
+      target: { value: texto },
+    });
+  }
+
+  it('asks the backend with the TRIMMED query and lists each hit with its path', async () => {
+    h.buscarCategorias.mockResolvedValue(BUSCA);
+    show();
+    await screen.findByTestId('shopee-categoria-linha-100001');
+
+    digitar('  cami ');
+
+    const lista = await screen.findByTestId('shopee-categoria-busca-resultados');
+    expect(h.buscarCategorias).toHaveBeenCalledWith({ integracaoId: 'int-1', q: 'cami' });
+    expect(within(lista).getByText('Roupas › Camisetas')).toBeTruthy();
+    expect(within(lista).getByText('Roupas › Vestidos')).toBeTruthy();
+    // The levels give way to the hits.
+    expect(screen.queryByTestId('shopee-categoria-linha-100001')).toBeNull();
+  });
+
+  it('a LEAF hit offers "Escolher" and hands back the plain row, without its path', async () => {
+    h.buscarCategorias.mockResolvedValue(BUSCA);
+    const { onEscolher } = show();
+    digitar('cami');
+
+    const hit = await screen.findByTestId('shopee-categoria-busca-100087');
+    fireEvent.click(within(hit).getByRole('button', { name: 'Escolher' }));
+
+    expect(onEscolher).toHaveBeenCalledWith(CAMISETAS);
+  });
+
+  it('a MID-TREE hit offers "Abrir": it drills there and clears the search', async () => {
+    h.buscarCategorias.mockResolvedValue(BUSCA);
+    const { onEscolher } = show();
+    digitar('vest');
+
+    const hit = await screen.findByTestId('shopee-categoria-busca-100090');
+    expect(within(hit).queryByRole('button', { name: 'Escolher' })).toBeNull();
+    fireEvent.click(within(hit).getByRole('button', { name: 'Abrir' }));
+
+    await waitFor(() => expect(pedidos()).toContain(100090));
+    expect(
+      (screen.getByRole('textbox', { name: 'Buscar categoria' }) as HTMLInputElement).value,
+    ).toBe('');
+    expect(onEscolher).not.toHaveBeenCalled();
+  });
+
+  it('NEAR-MISS: one character asks nothing and keeps the levels', async () => {
+    show();
+    await screen.findByTestId('shopee-categoria-linha-100001');
+    digitar(' c ');
+
+    await new Promise((r) => setTimeout(r, 400));
+    expect(h.buscarCategorias).not.toHaveBeenCalled();
+    expect(screen.getByTestId('shopee-categoria-linha-100001')).toBeTruthy();
+  });
+
+  it('"Limpar busca" brings the levels back', async () => {
+    h.buscarCategorias.mockResolvedValue(BUSCA);
+    show();
+    digitar('cami');
+    await screen.findByTestId('shopee-categoria-busca-resultados');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Limpar busca' }));
+
+    expect(await screen.findByTestId('shopee-categoria-linha-100001')).toBeTruthy();
+    expect(screen.queryByTestId('shopee-categoria-busca-resultados')).toBeNull();
+  });
+
+  it('says so when nothing matched, and when the list was cut', async () => {
+    h.buscarCategorias.mockResolvedValueOnce({ resultados: [], truncated: false });
+    show();
+    digitar('xyz');
+    expect((await screen.findByTestId('shopee-categoria-busca-vazia')).textContent).toBe(
+      'Nenhuma categoria encontrada para «xyz».',
+    );
+
+    h.buscarCategorias.mockResolvedValueOnce({ ...BUSCA, truncated: true });
+    digitar('cam');
+    expect((await screen.findByTestId('shopee-categoria-busca-truncada')).textContent).toContain(
+      'refine a busca',
+    );
+  });
+
+  it('a failed search offers "Tentar de novo" once the automatic retries are spent', async () => {
+    let falhas = 0;
+    h.buscarCategorias.mockImplementation(() => {
+      falhas += 1;
+      return falhas <= 3
+        ? Promise.reject(new ShopeeClientHttpError('Indisponível', 503, 'SHOPEE_NETWORK_ERROR'))
+        : Promise.resolve(BUSCA);
+    });
+    show();
+    digitar('cami');
+
+    const tentar = await screen.findByRole('button', { name: 'Tentar de novo' }, { timeout: 8000 });
+    fireEvent.click(tentar);
+
+    expect(await screen.findByTestId('shopee-categoria-busca-resultados')).toBeTruthy();
+  }, 12_000);
+
+  it('disabled: the box is disabled', () => {
+    show({ disabled: true });
+    expect(
+      (screen.getByRole('textbox', { name: 'Buscar categoria' }) as HTMLInputElement).disabled,
+    ).toBe(true);
+  });
 });
 
 describe('ShopeeCategoriaBrowser — drill-down, leaf-only pick', () => {

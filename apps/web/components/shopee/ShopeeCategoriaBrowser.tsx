@@ -7,13 +7,16 @@ import {
   Anchor,
   Breadcrumbs,
   Button,
+  CloseButton,
   Group,
   Loader,
   Paper,
   Stack,
   Text,
+  TextInput,
 } from '@mantine/core';
-import { IconChevronRight } from '@tabler/icons-react';
+import { useDebouncedValue } from '@mantine/hooks';
+import { IconChevronRight, IconSearch } from '@tabler/icons-react';
 
 import { useShopeeClient, type ShopeeClient } from '@/lib/shopee/client';
 import {
@@ -23,7 +26,12 @@ import {
   descreverFalhaShopee,
   shopeeQueryRetry,
 } from '@/lib/shopee/erros';
-import type { CategoriaResumoDto, RespostaCategoriasShopee } from '@/lib/shopee/wire';
+import type {
+  CategoriaEncontradaDto,
+  CategoriaResumoDto,
+  RespostaBuscaCategoriasShopee,
+  RespostaCategoriasShopee,
+} from '@/lib/shopee/wire';
 
 /**
  * A drill-down over ONE Shopee conta's category tree, through the backend's
@@ -41,8 +49,14 @@ import type { CategoriaResumoDto, RespostaCategoriasShopee } from '@/lib/shopee/
  * - **A drill-down, not a tree.** The route answers the ROOTS, or ONE node with
  *   its ancestors (`pathFromRoot`, the breadcrumb) and its direct children; the
  *   whole tree never crosses the wire.
- * - **No text filter.** A filter is a fold (case, accents) and would have to be
- *   inventoried as one (root `CLAUDE.md`, #1372); a level is short.
+ * - **A text search over the WHOLE tree**, beside the drill-down: from
+ *   {@link BUSCA_CATEGORIAS_MINIMO} characters (debounced) the levels give way
+ *   to the backend's `categorias/busca` answer — the categories whose own name
+ *   holds every word, each with its path, leaves first. The fold
+ *   (`correspondeABuscaShopee`, `@delfrance/schemas`: case and accents only)
+ *   runs on the SERVER, over the cached index; this file folds nothing. A leaf
+ *   hit offers "Escolher", a mid-tree one "Abrir" (it drills there and clears
+ *   the search). Clearing the box returns to the level the operator was on.
  * - `categoriaInicial` opens the browser where an existing pick lives: a LEAF
  *   opens on its parent's level (so its siblings are the alternatives), a legacy
  *   non-leaf on its own children. One the tree no longer holds (404
@@ -100,6 +114,35 @@ function lerCategorias(
   // `enabled` keeps a null client from ever reaching here; this is the type's due.
   if (client === null) throw new Error('cliente da Shopee indisponível');
   return client.categorias({ integracaoId, categoryId });
+}
+
+/** The shortest search (trimmed) the backend answers; shorter ones keep the drill-down. */
+export const BUSCA_CATEGORIAS_MINIMO = 2;
+/** The longest search the backend accepts — the box stops there. */
+export const BUSCA_CATEGORIAS_MAXIMO = 100;
+/** How long the box waits after the last keystroke before asking. */
+export const BUSCA_CATEGORIAS_ESPERA_MS = 300;
+
+/** `['shopee','categorias-busca',integracaoId,q]` — one entry per conta and trimmed query. */
+export function chaveBuscaCategoriasShopee(integracaoId: string, q: string): readonly unknown[] {
+  return ['shopee', 'categorias-busca', integracaoId, q];
+}
+
+function lerBusca(
+  client: ShopeeClient | null,
+  integracaoId: string,
+  q: string,
+): Promise<RespostaBuscaCategoriasShopee> {
+  // `enabled` keeps a null client from ever reaching here; this is the type's due.
+  if (client === null) throw new Error('cliente da Shopee indisponível');
+  return client.buscarCategorias({ integracaoId, q });
+}
+
+/** A search hit's label: its path from the root (root › … › hit), else the hit alone. */
+function rotuloDoResultado(c: CategoriaEncontradaDto): string {
+  return c.pathFromRoot.length > 0
+    ? c.pathFromRoot.map(rotuloCategoriaShopee).join(' › ')
+    : rotuloCategoriaShopee(c);
 }
 
 /** The ONE label of a category row: display name, else the original name, else its id. */
@@ -183,8 +226,35 @@ export function ShopeeCategoriaBrowser({
 
   const irPara = (id: number | null) => setFocoEscolhido({ id });
 
+  const client = useShopeeClient();
+  const [busca, setBusca] = useState('');
+  const [buscaAdiada] = useDebouncedValue(busca, BUSCA_CATEGORIAS_ESPERA_MS);
+  const consultaBusca = buscaAdiada.trim();
+  // The box emptied ⇒ back to the levels at once, never after the debounce.
+  const buscando = busca.trim() !== '' && [...consultaBusca].length >= BUSCA_CATEGORIAS_MINIMO;
+  const resultadoBusca = useQuery({
+    queryKey: chaveBuscaCategoriasShopee(integracaoId, consultaBusca),
+    queryFn: () => lerBusca(client, integracaoId, consultaBusca),
+    enabled: client !== null && buscando,
+    staleTime: CATEGORIAS_SHOPEE_STALE_MS,
+    retry: shopeeQueryRetry,
+  });
+
   let corpo: ReactNode;
-  if (foco === undefined) {
+  if (buscando) {
+    corpo = (
+      <ResultadosDaBusca
+        consulta={consultaBusca}
+        resultado={resultadoBusca}
+        disabled={disabled}
+        onEscolher={onEscolher}
+        onAbrir={(id) => {
+          setBusca('');
+          irPara(id);
+        }}
+      />
+    );
+  } else if (foco === undefined) {
     corpo = inicial.isError ? (
       <ErroComRetentativa
         err={inicial.error}
@@ -307,8 +377,114 @@ export function ShopeeCategoriaBrowser({
             {MENSAGEM_CATEGORIA_DESCONHECIDA}
           </Alert>
         )}
+        <TextInput
+          aria-label="Buscar categoria"
+          placeholder="Buscar categoria pelo nome"
+          size="sm"
+          value={busca}
+          maxLength={BUSCA_CATEGORIAS_MAXIMO}
+          disabled={disabled}
+          leftSection={<IconSearch size={16} />}
+          rightSection={
+            busca !== '' ? (
+              <CloseButton
+                size="sm"
+                aria-label="Limpar busca"
+                disabled={disabled}
+                onClick={() => setBusca('')}
+              />
+            ) : undefined
+          }
+          // Enter never submits a form this browser sits in (the produto form).
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') e.preventDefault();
+          }}
+          onChange={(e) => setBusca(e.currentTarget.value)}
+          data-testid="shopee-categoria-busca"
+        />
         {corpo}
       </Stack>
     </Paper>
+  );
+}
+
+/** The search's answer: the hits with their paths, or why there are none. */
+function ResultadosDaBusca({
+  consulta,
+  resultado,
+  disabled,
+  onEscolher,
+  onAbrir,
+}: {
+  consulta: string;
+  resultado: UseQueryResult<RespostaBuscaCategoriasShopee, unknown>;
+  disabled: boolean;
+  onEscolher: (categoria: CategoriaResumoDto) => void;
+  onAbrir: (categoryId: number) => void;
+}) {
+  if (resultado.isError) {
+    return <ErroComRetentativa err={resultado.error} onTentar={() => void resultado.refetch()} />;
+  }
+  if (resultado.data === undefined) {
+    return (
+      <Group justify="center" p="md">
+        <Loader size="sm" />
+      </Group>
+    );
+  }
+  const { resultados, truncated } = resultado.data;
+  if (resultados.length === 0) {
+    return (
+      <Text size="sm" c="dimmed" data-testid="shopee-categoria-busca-vazia">
+        {`Nenhuma categoria encontrada para «${consulta}».`}
+      </Text>
+    );
+  }
+  return (
+    <Stack gap={4} data-testid="shopee-categoria-busca-resultados">
+      {resultados.map((c) => (
+        <Group
+          key={c.categoryId}
+          justify="space-between"
+          wrap="nowrap"
+          gap="xs"
+          data-testid={`shopee-categoria-busca-${String(c.categoryId)}`}
+        >
+          <Text size="sm">{rotuloDoResultado(c)}</Text>
+          {c.isLeaf ? (
+            <Button
+              size="xs"
+              variant="light"
+              disabled={disabled}
+              onClick={() =>
+                onEscolher({
+                  categoryId: c.categoryId,
+                  name: c.name,
+                  originalName: c.originalName,
+                  isLeaf: c.isLeaf,
+                })
+              }
+            >
+              Escolher
+            </Button>
+          ) : (
+            <Button
+              size="xs"
+              variant="subtle"
+              rightSection={<IconChevronRight size={14} />}
+              disabled={disabled}
+              onClick={() => onAbrir(c.categoryId)}
+            >
+              Abrir
+            </Button>
+          )}
+        </Group>
+      ))}
+      {truncated && (
+        <Text size="xs" c="dimmed" data-testid="shopee-categoria-busca-truncada">
+          {`Mostrando as primeiras ${String(resultados.length)} — refine a busca para ver outras.`}
+        </Text>
+      )}
+    </Stack>
   );
 }

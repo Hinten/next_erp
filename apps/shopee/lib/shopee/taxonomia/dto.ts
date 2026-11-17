@@ -32,6 +32,7 @@ import {
   type AtributoDto,
   type AtributoInfoDto,
   type AtributoValorDto,
+  type CategoriaEncontradaDto,
   type CategoriaNoDto,
   type CategoriaResumoDto,
   type MarcaDto,
@@ -102,6 +103,19 @@ export function projetarNoDeCategoria(
       projetarCategoria(indice, no),
     ),
     children: filhosDe(indice, row.category_id).map((no) => projetarCategoria(indice, no)),
+  };
+}
+
+/** Project one text-search hit: the row and its path from the root (the row LAST). */
+export function projetarCategoriaEncontrada(
+  indice: ShopeeCategoriaIndice,
+  row: ShopeeCategoria,
+): CategoriaEncontradaDto {
+  return {
+    ...projetarCategoria(indice, row),
+    pathFromRoot: caminhoDaCategoria(indice, row.category_id).map((no) =>
+      projetarCategoria(indice, no),
+    ),
   };
 }
 

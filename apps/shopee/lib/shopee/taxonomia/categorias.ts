@@ -49,6 +49,7 @@
  * the one this module walks must be the one the wire was parsed against.
  */
 import type { ShopeeCategoria } from '@delfrance/integrations-shopee';
+import { correspondeABuscaShopee } from '@delfrance/schemas';
 
 /**
  * The whole tree, indexed both ways.
@@ -170,4 +171,46 @@ export function filhosDe(
  */
 export function raizes(indice: ShopeeCategoriaIndice): readonly ShopeeCategoria[] {
   return indice.filhosPorPai.get(0) ?? [];
+}
+
+/** How many categories one text search answers at most (`buscarCategorias`). */
+export const SHOPEE_BUSCA_CATEGORIAS_LIMITE = 50;
+
+/** What one text search over the tree found. */
+export interface ResultadoBuscaCategorias {
+  /** Leaves first, then mid-tree nodes; each group in the order Shopee sent the tree. */
+  readonly encontradas: readonly ShopeeCategoria[];
+  /** More nodes matched than {@link SHOPEE_BUSCA_CATEGORIAS_LIMITE} — the operator refines the query. */
+  readonly truncada: boolean;
+}
+
+/**
+ * The nodes whose OWN name — `display_category_name` or
+ * `original_category_name` — holds every term of the search
+ * (`correspondeABuscaShopee`, `@delfrance/schemas`: case and accents fold
+ * away, punctuation and other letters do not). An ancestor's name never makes
+ * a descendant match, or searching «Moda» would answer every category under
+ * it.
+ *
+ * Leaves first, because only a leaf is pickable; a mid-tree match is still
+ * answered — the picker drills into it. An empty `termos` answers nothing
+ * (a blank search is not "everything"). Pure; reads the cached index only.
+ */
+export function buscarCategorias(
+  indice: ShopeeCategoriaIndice,
+  termos: readonly string[],
+  limite: number = SHOPEE_BUSCA_CATEGORIAS_LIMITE,
+): ResultadoBuscaCategorias {
+  if (termos.length === 0) return { encontradas: [], truncada: false };
+  const folhas: ShopeeCategoria[] = [];
+  const meio: ShopeeCategoria[] = [];
+  for (const row of indice.lista) {
+    if (!correspondeABuscaShopee([row.display_category_name, row.original_category_name], termos)) {
+      continue;
+    }
+    if (ehFolha(indice, row.category_id) === 'folha') folhas.push(row);
+    else meio.push(row);
+  }
+  const todas = [...folhas, ...meio];
+  return { encontradas: todas.slice(0, limite), truncada: todas.length > limite };
 }

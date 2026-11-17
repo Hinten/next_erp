@@ -82,6 +82,7 @@ import {
   respostaAtributosShopeeSchema,
   respostaAtualizarRascunhoShopeeSchema,
   respostaCanaisShopeeSchema,
+  respostaBuscaCategoriasShopeeSchema,
   respostaCategoriasShopeeSchema,
   respostaCriarRascunhoShopeeSchema,
   respostaDescartarRascunhoShopeeSchema,
@@ -112,6 +113,7 @@ import {
   type RespostaAtributosShopee,
   type RespostaAtualizarRascunhoShopee,
   type RespostaCanaisShopee,
+  type RespostaBuscaCategoriasShopee,
   type RespostaCategoriasShopee,
   type RespostaCriarRascunhoShopee,
   type RespostaDescartarRascunhoShopee,
@@ -554,6 +556,16 @@ export interface ShopeeClient {
     categoryId: number | null;
   }): Promise<RespostaCategoriasShopee>;
   /**
+   * The category picker's TEXT search over the conta's whole tree
+   * (`PERM.integracao.read`): the categories whose own name holds every word of
+   * `q` (case and accents fold away), each with its path, leaves first, capped
+   * (`truncated`). `q` must be 2–100 characters once trimmed, else a 400.
+   */
+  buscarCategorias(input: {
+    integracaoId: string;
+    q: string;
+  }): Promise<RespostaBuscaCategoriasShopee>;
+  /**
    * One category's item bands, read for its `sizeChartLimit` only
    * (`PERM.integracao.read`). ADVICE — never a reason to refuse a pick.
    */
@@ -874,6 +886,7 @@ const RECLAMACAO_ACAO_PATH = '/api/marketplace/shopee/reclamacao/acao';
 
 /** The two taxonomy routes the size-chart tab reads (step 10's) and the two size-chart reads (#1526, step 18). */
 const CATEGORIAS_PATH = '/api/marketplace/shopee/taxonomia/categorias';
+const BUSCA_CATEGORIAS_PATH = '/api/marketplace/shopee/taxonomia/categorias/busca';
 const LIMITES_PATH = '/api/marketplace/shopee/taxonomia/limites';
 const TABELA_MEDIDAS_LISTA_PATH = '/api/marketplace/shopee/tabela-medidas/lista';
 const TABELA_MEDIDAS_DETALHE_PATH = '/api/marketplace/shopee/tabela-medidas/detalhe';
@@ -1496,6 +1509,11 @@ export function createShopeeClient(config: {
           categoryId: input.categoryId ?? undefined,
         })}`,
         respostaCategoriasShopeeSchema,
+      ),
+    buscarCategorias: (input) =>
+      call(
+        `${BUSCA_CATEGORIAS_PATH}?${consulta({ integracaoId: input.integracaoId, q: input.q })}`,
+        respostaBuscaCategoriasShopeeSchema,
       ),
     limites: (input) =>
       call(

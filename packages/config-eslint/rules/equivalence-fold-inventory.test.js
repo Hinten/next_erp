@@ -60,7 +60,7 @@ import { gitGrep } from './lib/repo-scan.js';
  * bottom of this file.
  */
 const PATTERN =
-  '\\b(normalizeLoose|parseDecimalPtBr|parseCentesimos|localizarDecimal|deepEqual|stripNullsDeep|skuDoMembroUnico|skuPaiDoMembroUnico|sanitizeSearchDsl|foldSearchText|findSearchRegexMatches|firstSearchRegexMatch|searchRegexMatches|mesmoPrecoEmReais|mesmaReceitaKitShopee|chaveReceitaKitErp|principalDoKitShopee|mesmoEnderecoDeComponente|modeloDoComponenteKit|skuDoItemShopee|opcaoDoTierKit|situacaoDoSkuDoKit|chaveReceitaArmazenadaDoFilho|chaveDoPaiDaFamiliaDeUm|receitaFielAosEnderecos|chaveFormaEnvioLi|idDoAlvoDoMapaLi|entradaDoMapaPorChaveLi|montarEntradaDoMapaLi|inteiroPositivoCanonicoLi|idServicoMelhorEnvioLi|decidirLinhaDoMapaLi|avaliarAlvoDoMapaLi|planejarRotaEtiquetaLi|recusaDoDocLiParaRotaLi|idIntFreteDaRefLi|preimagemPedidoLi|contaIdDoPedidoLi|bandeiraDoNomeDaMarca|mesmoValorDoRascunhoShopee|mesmoValorGravadoDoRascunhoShopee|chaveDaEntradaShopee|ehEntradaShopeeDaChave|resolverEntradaShopeeDoGrupo|nomeDeTierShopee|idDoRecursoLi|opcaoDoRecursoLi|skuParecidoLi|decimalShopeeDaTela|decimalShopeeParaTela)\\b';
+  '\\b(normalizeLoose|parseDecimalPtBr|parseCentesimos|localizarDecimal|deepEqual|stripNullsDeep|skuDoMembroUnico|skuPaiDoMembroUnico|sanitizeSearchDsl|foldSearchText|findSearchRegexMatches|firstSearchRegexMatch|searchRegexMatches|mesmoPrecoEmReais|mesmaReceitaKitShopee|chaveReceitaKitErp|principalDoKitShopee|mesmoEnderecoDeComponente|modeloDoComponenteKit|skuDoItemShopee|opcaoDoTierKit|situacaoDoSkuDoKit|chaveReceitaArmazenadaDoFilho|chaveDoPaiDaFamiliaDeUm|receitaFielAosEnderecos|chaveFormaEnvioLi|idDoAlvoDoMapaLi|entradaDoMapaPorChaveLi|montarEntradaDoMapaLi|inteiroPositivoCanonicoLi|idServicoMelhorEnvioLi|decidirLinhaDoMapaLi|avaliarAlvoDoMapaLi|planejarRotaEtiquetaLi|recusaDoDocLiParaRotaLi|idIntFreteDaRefLi|preimagemPedidoLi|contaIdDoPedidoLi|bandeiraDoNomeDaMarca|mesmoValorDoRascunhoShopee|mesmoValorGravadoDoRascunhoShopee|chaveDaEntradaShopee|ehEntradaShopeeDaChave|resolverEntradaShopeeDoGrupo|nomeDeTierShopee|idDoRecursoLi|opcaoDoRecursoLi|skuParecidoLi|decimalShopeeDaTela|decimalShopeeParaTela|dobrarTextoBuscaShopee|termosDaBuscaShopee|correspondeABuscaShopee)\\b';
 
 /**
  * Source only. Tests are excluded deliberately: a test SHOULD exercise a fold
@@ -273,7 +273,20 @@ const INVENTARIO = {
   'packages/ai/src/index.ts': 'Barrel re-export of `normalizeLoose`. No fold.',
   'packages/data/src/index.ts': 'Barrel re-export of `sanitizeSearchDsl`. No fold.',
   'packages/schemas/src/index.ts':
-    'Barrel re-export of `bandeiraDoNomeDaMarca`, and of `decimalShopeeDaTela` / `decimalShopeeParaTela` (#1911 P13). No fold.',
+    "Barrel re-export of `bandeiraDoNomeDaMarca`, of `decimalShopeeDaTela` / `decimalShopeeParaTela` (#1911 P13), and of the Shopee pickers' search fold (`dobrarTextoBuscaShopee` / `termosDaBuscaShopee` / `correspondeABuscaShopee`). No fold.",
+  'packages/schemas/src/taxonomiaShopeeDto.ts':
+    "Comment only — the category-search envelope's docblock names `correspondeABuscaShopee` to say how `resultados` was matched. It declares shapes; nothing here decides sameness.",
+  'apps/web/components/shopee/ShopeeCategoriaBrowser.tsx':
+    'Comment only — the header names `correspondeABuscaShopee` to say the category search folds on the SERVER (`apps/shopee` `buscarCategorias`, its own row). The browser sends the trimmed query verbatim and renders what comes back; it folds nothing.',
+  // ---- Search folds: decide only what is SHOWN ------------------------------
+  'packages/schemas/src/buscaTextoShopee.ts':
+    'DEFINES the Shopee pickers\' ONE text-search fold: `dobrarTextoBuscaShopee` (NFD, drop diacritics, pt-BR lowercase, collapse whitespace, trim — `normalizeLoose`\'s fold, inlined because `schemas` cannot depend on `ai`), `termosDaBuscaShopee` (the folded query\'s distinct words) and `correspondeABuscaShopee` (every word a SUBSTRING of at least one folded text). It decides only which rows a picker SHOWS — no write, identity or diff reads it — so folding too much shows an extra row and folding too little hides one. Equal: case and accents (`Calçados` ≡ `calcados`, a decomposed accent ≡ a precomposed one), whitespace runs, word order, and a word inside a longer one (`cami` finds `Camiseta`). Distinct: punctuation and separators inside a word (`tshirt` vs `T-Shirt`, `t-shirt` vs `TShirt`) and any non-accent letter (`calca` vs `Calda`). Near-miss: `buscaTextoShopee.test.ts` — "⚠️ NEAR-MISS: punctuation and separators are NOT folded — `tshirt` does not find `T-Shirt`" and "⚠️ NEAR-MISS: a different letter is a different word — `calca` does not find `Calda`", paired with "EQUAL pair: case and accents fold away — `calcados` finds `Calçados`" and "EQUAL pair: word order does not matter, and a word is a substring".',
+  'apps/shopee/lib/shopee/taxonomia/categorias.ts':
+    'CALLS `correspondeABuscaShopee` verbatim in `buscarCategorias`, the category picker\'s text search over the cached tree index: a node matches when its OWN `display_category_name` or `original_category_name` holds every word — an ancestor\'s name never makes a descendant match. It decides only which categories the picker lists (a pick still goes through the leaf gate and the publish), so folding too much lists an extra category and folding too little hides one. Equal: `CALCADOS` and `calçados` find «Calçados»; `home` finds a category whose original name is «Home». Distinct: `camisetaz` finds nothing; `moda camisetas` finds nothing (the words sit on two nodes). Near-miss: `categorias.test.ts` — "⚠️ NEAR-MISS: uma letra diferente não casa — `camisetaz` não acha «Camisetas»" and "todas as palavras precisam casar o nome do PRÓPRIO nó — o ancestral não conta", paired with "EQUAL pair: acha pelo nome sem acento nem caixa".',
+  'apps/shopee/app/api/marketplace/shopee/taxonomia/categorias/busca/route.ts':
+    'CALLS `termosDaBuscaShopee` to split the validated `q` into the words `buscarCategorias` (its own row) matches; the route folds nothing of its own. Equal and distinct are that row\'s. Near-miss: `busca/route.test.ts` — "⚠️ QUASE: uma letra diferente não acha nada — resultados vazios é uma resposta", paired with "acha pelo nome sem acento nem caixa e devolve o caminho a partir da raiz".',
+  'apps/web/app/(app)/canais/shopee/_components/AdicionarMarcasShopeeModal.tsx':
+    'CALLS `termosDaBuscaShopee` + `correspondeABuscaShopee` verbatim to filter the brand pages ALREADY LOADED by their original and display names (Shopee\'s `get_brand_list` has no name search). It decides only which rows are SHOWN: a brand ticked and then hidden stays ticked and is handed on, and the count says what the filter covered. Equal: `ACAI` finds «Açaí Brasil»; `originals` finds Adidas through its display name «adidas Originals». Distinct: `nikr` hides «Nike». Near-miss: `AdicionarMarcasShopeeModal.test.tsx` — "⚠️ NEAR-MISS: another letter is another brand — `nikr` hides Nike, and says the miss may be unloaded", paired with "EQUAL pair: case and accents fold away, and the DISPLAY name counts too".',
   'apps/web/app/(app)/produtos/page.tsx':
     'Comment only — `produtoSearch.toTextQuery` returns the RAW term and its docblock names `sanitizeSearchDsl` to say why it must not pre-quote (quoting neutralises the DSL operators but also suppresses the pt-BR analyzer, so `Leao` stops reaching `Leão`). The call itself is in `TableView`, above. Nothing here decides sameness.',
   'packages/ai/src/cells.ts':
@@ -653,6 +666,22 @@ describe('every file folding a value to decide sameness is inventoried', () => {
     expect(regex.test('decimalShopeeParaTelaLegado(x)')).toBe(false);
     expect(regex.test('if (ehDecimal(no)) return texto;')).toBe(false);
     expect(regex.test('decimalShopee(x)')).toBe(false);
+  });
+
+  it("⚠️ matches the Shopee pickers' search fold and NOT its lookalikes or `normalizeLoose`-free text", () => {
+    // The same two controls for the category search + brand filter: called,
+    // the three helpers must match; a longer name built on any of them, a
+    // shorter stem and plain search wording must stay out.
+    const regex = new RegExp(PATTERN);
+
+    expect(regex.test('const t = dobrarTextoBuscaShopee(nome);')).toBe(true);
+    expect(regex.test('const termos = termosDaBuscaShopee(filtro);')).toBe(true);
+    expect(regex.test('correspondeABuscaShopee([dto.originalBrandName], termos)')).toBe(true);
+
+    expect(regex.test('dobrarTextoBuscaShopeeLegado(x)')).toBe(false);
+    expect(regex.test('termosDaBuscaShopeeCrus(x)')).toBe(false);
+    expect(regex.test('correspondeABusca(x)')).toBe(false);
+    expect(regex.test('const busca = filtro.trim();')).toBe(false);
   });
 
   it('⚠️ still covers the file the guard was written for', () => {
