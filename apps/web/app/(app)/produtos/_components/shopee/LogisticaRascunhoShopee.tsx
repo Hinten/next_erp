@@ -38,6 +38,7 @@ import {
   freteGratisTravadoShopee,
   interruptorTravadoShopee,
   linhasDaLogisticaShopee,
+  mesmaChaveCanaisShopee,
   modoDaLogisticaShopee,
   type CanalForaDaLojaShopee,
   type LinhaLogisticaShopee,
@@ -232,6 +233,8 @@ function lerCanais(
 interface Atual {
   readonly valor: readonly Canal[] | null;
   readonly editavel: boolean;
+  /** The read's key the section shows now — another stored revision, or conta, is another key. */
+  readonly chave: readonly unknown[];
   readonly onMudar: (valor: readonly Canal[] | null) => void;
 }
 
@@ -272,9 +275,16 @@ interface Atual {
  *   one call) and applies the prefill ONLY when nothing moved meanwhile: the
  *   same click (a generation; «Automática» clicked, a hide or an unmount bump
  *   it), the CURRENT value still `null` (another tab's list that landed
- *   during the read wins — the section shows it, nothing is dirty), and the
- *   block still editable — each read at apply time from the last committed
- *   render, through that render's `onMudar`. A dropped apply clears the
+ *   during the read wins — the section shows it, nothing is dirty), the block
+ *   still editable, and the read's key still the section's
+ *   (`mesmaChaveCanaisShopee`: a stored produto that moved during the read, or
+ *   another conta, is another key, whose answer — or failure — is never the
+ *   prefill; the observer's own read of the new key, made while the choose was
+ *   reading, is never applied either, and nothing reads again for the
+ *   prefill: the next «Escolher canais» reads the new key) — each read at
+ *   apply time from the last committed render, through that render's
+ *   `onMudar`. The generation answers first: a superseded click's read never
+ *   ends the newer choose, whatever its key. A dropped apply clears the
  *   choosing state. Never an effect that writes the form when data lands.
  * - **`<Activity>`** hides the produto's Shopee tab by running every effect
  *   cleanup: the cleanup bumps the generation and clears the choosing state,
@@ -325,9 +335,10 @@ export function LogisticaRascunhoShopee({
   // time a choose reads or shows a loader.
   const [lendo, setLendo] = useState(false);
   const geracao = useRef(0);
-  const atual = useRef<Atual>({ valor, editavel, onMudar });
+  const chave = chaveCanaisShopee(contaId ?? '', produtoId, revisaoDoProduto);
+  const atual = useRef<Atual>({ valor, editavel, chave, onMudar });
   useLayoutEffect(() => {
-    atual.current = { valor, editavel, onMudar };
+    atual.current = { valor, editavel, chave, onMudar };
   });
   useEffect(() => {
     const g = geracao;
@@ -340,7 +351,6 @@ export function LogisticaRascunhoShopee({
     };
   }, []);
 
-  const chave = chaveCanaisShopee(contaId ?? '', produtoId, revisaoDoProduto);
   const consulta = useQuery({
     queryKey: chave,
     queryFn: () => lerCanais(client, contaId, produtoId),
@@ -413,6 +423,13 @@ export function LogisticaRascunhoShopee({
     setLendo(false);
     const agora = atual.current;
     if (agora.valor !== null || !agora.editavel) {
+      setEscolhendo(false);
+      return;
+    }
+    // The stored produto moved during the read, or the conta changed (another
+    // key): its answer — or its failure — is of a key nobody shows. Dropped,
+    // never re-read here; the value stays `null`, «Escolher canais» reads anew.
+    if (!mesmaChaveCanaisShopee(chave, agora.chave)) {
       setEscolhendo(false);
       return;
     }

@@ -82,13 +82,17 @@
  * - **A repeated id** (in the value: the projection keeps it, the write never
  *   stores one; in the DTO: never sent) — the FIRST sighting speaks, in the
  *   rows and in the rebuild alike, and the rebuild writes the id once.
+ * - **Two query keys are the same read only element by element, exactly**
+ *   ({@link mesmaChaveCanaisShopee}): revision `2` never matches `1`, `null`
+ *   never matches `0`. No fold.
  *
  * ## The query key
  *
  * {@link chaveCanaisShopee} carries the STORED produto's revision (its
  * `ultimaModificacao`): the route answers from the stored produto, and the app
  * never refetches on focus, so a produto save must read the channels again
- * (D16-10).
+ * (D16-10) — and an answer read for another revision never becomes the
+ * prefill ({@link mesmaChaveCanaisShopee}).
  */
 import {
   MSG_LOGISTICA_CANAL_REPETIDO_RASCUNHO_SHOPEE,
@@ -143,6 +147,18 @@ export function chaveCanaisShopee(
   revisaoDoProduto: number | null,
 ): readonly unknown[] {
   return ['shopee', 'canais', contaId, produtoId, revisaoDoProduto];
+}
+
+/**
+ * Whether two {@link chaveCanaisShopee} keys name the SAME read: the same
+ * length and `===` element by element over the key's primitives. EQUAL: two
+ * keys built from the same three values. DISTINCT: any element apart — another
+ * revision (by one too), `null` (unknown) and `0`, another produto, another
+ * conta. «Escolher canais» drops an answer whose key is no longer the
+ * section's: the stored produto moved, or the conta changed, during the read.
+ */
+export function mesmaChaveCanaisShopee(a: readonly unknown[], b: readonly unknown[]): boolean {
+  return a.length === b.length && a.every((parte, i) => parte === b[i]);
 }
 
 /* -------------------------------------------------------------------------- */

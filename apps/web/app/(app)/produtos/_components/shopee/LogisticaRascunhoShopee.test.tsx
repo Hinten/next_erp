@@ -426,6 +426,197 @@ describe('LogisticaRascunhoShopee — «Escolher canais»: o prefill e quando el
     expect(segundo.onMudar).not.toHaveBeenCalled();
   });
 
+  it('⭐ revisão: outra `revisaoDoProduto` com a leitura em voo ⇒ a resposta da revisão ANTIGA não entra — nenhum `onMudar`, de volta a «Automática», sem carregando nem leitura nova ⟷ QUASE-PAR: só outro campo mudou (a mesma chave) ⇒ aplicada uma vez', async () => {
+    // The stored produto moves during the read (another tab flips «Oferece
+    // frete grátis», the weight, the measures): the old answer's fit verdicts
+    // and `automatica.isFree` are no longer this produto's.
+    const lida = adiada<RespostaCanaisShopee>();
+    h.canais.mockReturnValueOnce(lida.promise);
+    const { onMudar, rerenderCom, unmount } = show({ revisao: 1 });
+    escolher();
+    rerenderCom({ revisao: 2 });
+    await assentar();
+    // Still the click's read in flight: the choose is open.
+    expect(screen.getByTestId(`${RAIZ}-carregando`)).toBeTruthy();
+    await act(async () => {
+      lida.resolve(LOJA_AB);
+      await lida.promise;
+    });
+    await assentar();
+    expect(onMudar).not.toHaveBeenCalled();
+    expect(radio(ROTULO_LOGISTICA_AUTOMATICA_SHOPEE).checked).toBe(true);
+    expect(screen.queryByTestId(`${RAIZ}-carregando`)).toBeNull();
+    expect(secao().textContent).toContain(FRASE_LOGISTICA_RASCUNHO_SHOPEE);
+    // The click's read + the observer's read of the new key while the choose
+    // was reading — and NO read after the drop (never an automatic re-read).
+    expect(h.canais).toHaveBeenCalledTimes(2);
+    // The choose is over: yet another revision reads nothing for it.
+    rerenderCom({ revisao: 3 });
+    await assentar();
+    expect(h.canais).toHaveBeenCalledTimes(2);
+    expect(onMudar).not.toHaveBeenCalled();
+    unmount();
+
+    // QUASE-PAR: the same revision, another prop of the section moved.
+    const outra = adiada<RespostaCanaisShopee>();
+    h.canais.mockReturnValueOnce(outra.promise);
+    const segundo = show({ revisao: 1 });
+    escolher();
+    segundo.rerenderCom({ revisao: 1, legado: true });
+    await act(async () => {
+      outra.resolve(LOJA_AB);
+      await outra.promise;
+    });
+    await waitFor(() => expect(segundo.onMudar).toHaveBeenCalledTimes(1));
+    expect(segundo.onMudar).toHaveBeenCalledWith(escolhaInicialShopee(LOJA_AB));
+    await assentar();
+    expect(segundo.onMudar).toHaveBeenCalledTimes(1);
+  });
+
+  it('revisão A→B→A durante a leitura ⇒ a chave volta a ser a da seção (a resposta é da revisão mostrada) ⇒ aplicada uma vez', async () => {
+    const lida = adiada<RespostaCanaisShopee>();
+    h.canais.mockReturnValueOnce(lida.promise);
+    const { onMudar, rerenderCom } = show({ revisao: 1 });
+    escolher();
+    rerenderCom({ revisao: 2 });
+    await assentar();
+    rerenderCom({ revisao: 1 });
+    await assentar();
+    await act(async () => {
+      lida.resolve(LOJA_AB);
+      await lida.promise;
+    });
+    await waitFor(() => expect(onMudar).toHaveBeenCalledTimes(1));
+    expect(onMudar).toHaveBeenCalledWith(escolhaInicialShopee(LOJA_AB));
+    await assentar();
+    expect(onMudar).toHaveBeenCalledTimes(1);
+  });
+
+  it('depois de uma escolha largada pela revisão, «Escolher canais» de novo lê a chave NOVA e aplica a resposta DELA, uma vez — nunca a da revisão antiga', async () => {
+    // The new revision's answer: A only, with free shipping.
+    const daRevisaoNova = resposta([canal(A, { automatica: { isFree: true } })]);
+    h.canais.mockResolvedValue(daRevisaoNova);
+    const lida = adiada<RespostaCanaisShopee>();
+    h.canais.mockReturnValueOnce(lida.promise);
+    const { onMudar, rerenderCom } = show({ revisao: 1 });
+    escolher();
+    rerenderCom({ revisao: 2 });
+    await assentar();
+    await act(async () => {
+      lida.resolve(LOJA_AB);
+      await lida.promise;
+    });
+    await assentar();
+    expect(onMudar).not.toHaveBeenCalled();
+    expect(radio(ROTULO_LOGISTICA_AUTOMATICA_SHOPEE).checked).toBe(true);
+
+    escolher();
+    await waitFor(() => expect(onMudar).toHaveBeenCalledTimes(1));
+    expect(onMudar).toHaveBeenCalledWith(escolhaInicialShopee(daRevisaoNova));
+    expect(onMudar).not.toHaveBeenCalledWith(escolhaInicialShopee(LOJA_AB));
+    await assentar();
+    expect(onMudar).toHaveBeenCalledTimes(1);
+    // The dropped click's read, the observer's read of the new key, the new click's read.
+    expect(h.canais).toHaveBeenCalledTimes(3);
+  });
+
+  it('⛔ QUASE: a geração ANTES da revisão — a leitura de um clique ANTERIOR, de uma revisão que já mudou, termina com o clique NOVO ainda lendo ⇒ nada muda: o carregando do clique novo continua, «Escolher canais» marcada, nenhum `onMudar` ⟷ a resposta do clique novo aplica uma vez', async () => {
+    const primeira = adiada<RespostaCanaisShopee>();
+    const segunda = adiada<RespostaCanaisShopee>();
+    // 1: the first click's read (revision 1); 2: the observer's read of
+    // revision 2 while that choose was reading; 3: the second click's read.
+    h.canais
+      .mockReturnValueOnce(primeira.promise)
+      .mockResolvedValueOnce(LOJA)
+      .mockReturnValueOnce(segunda.promise);
+    const { onMudar, rerenderCom } = show({ revisao: 1 });
+    escolher();
+    rerenderCom({ revisao: 2 });
+    await assentar();
+    // «Automática», then «Escolher canais» again on revision 2: a NEWER click
+    // (another generation) whose own read is in flight.
+    automatica();
+    escolher();
+    await assentar();
+    expect(h.canais).toHaveBeenCalledTimes(3);
+    expect(screen.getByTestId(`${RAIZ}-carregando`)).toBeTruthy();
+    // The FIRST click's read ends: another click's, and of a key gone by. The
+    // generation answers first — that read ends nothing of the NEWER choose.
+    await act(async () => {
+      primeira.resolve(LOJA_AB);
+      await primeira.promise;
+    });
+    await assentar();
+    expect(screen.getByTestId(`${RAIZ}-carregando`)).toBeTruthy();
+    expect(radio(ROTULO_ESCOLHER_CANAIS_SHOPEE).checked).toBe(true);
+    expect(onMudar).not.toHaveBeenCalled();
+    await act(async () => {
+      segunda.resolve(LOJA);
+      await segunda.promise;
+    });
+    await waitFor(() => expect(onMudar).toHaveBeenCalledTimes(1));
+    expect(onMudar).toHaveBeenCalledWith(escolhaInicialShopee(LOJA));
+    await assentar();
+    expect(onMudar).toHaveBeenCalledTimes(1);
+    expect(h.canais).toHaveBeenCalledTimes(3);
+  });
+
+  it('a conta muda com a leitura em voo (some: `contaId` null; ou outra conta) ⇒ a resposta da conta ANTIGA não entra — nenhum `onMudar`, de volta a «Automática», sem carregando ⟷ QUASE-PAR: a mesma conta (outro campo mudou) ⇒ aplicada uma vez', async () => {
+    const lida = adiada<RespostaCanaisShopee>();
+    h.canais.mockReturnValueOnce(lida.promise);
+    const { onMudar, rerenderCom, unmount } = show({ revisao: 1 });
+    escolher();
+    // The draft's tab names no conta that can answer any more.
+    rerenderCom({ revisao: 1, contaId: null });
+    await assentar();
+    await act(async () => {
+      lida.resolve(LOJA_AB);
+      await lida.promise;
+    });
+    await assentar();
+    expect(onMudar).not.toHaveBeenCalled();
+    expect(secao().textContent).toContain(FRASE_LOGISTICA_RASCUNHO_SHOPEE);
+    // The conta back: the choose is over, nothing was applied, nothing reads.
+    rerenderCom({ revisao: 1 });
+    await assentar();
+    expect(onMudar).not.toHaveBeenCalled();
+    expect(radio(ROTULO_LOGISTICA_AUTOMATICA_SHOPEE).checked).toBe(true);
+    expect(screen.queryByTestId(`${RAIZ}-carregando`)).toBeNull();
+    expect(h.canais).toHaveBeenCalledTimes(1);
+    unmount();
+
+    // Another conta: its own read runs (the observer, while choosing), and
+    // the old conta's answer never becomes its prefill.
+    const daOutra = adiada<RespostaCanaisShopee>();
+    h.canais.mockReturnValueOnce(daOutra.promise);
+    const outra = show({ revisao: 1 });
+    escolher();
+    outra.rerenderCom({ revisao: 1, contaId: 'int-12' });
+    await assentar();
+    await act(async () => {
+      daOutra.resolve(LOJA_AB);
+      await daOutra.promise;
+    });
+    await assentar();
+    expect(outra.onMudar).not.toHaveBeenCalled();
+    expect(radio(ROTULO_LOGISTICA_AUTOMATICA_SHOPEE).checked).toBe(true);
+    expect(screen.queryByTestId(`${RAIZ}-carregando`)).toBeNull();
+    outra.unmount();
+
+    // QUASE-PAR: the same conta, another prop moved.
+    const mesma = adiada<RespostaCanaisShopee>();
+    h.canais.mockReturnValueOnce(mesma.promise);
+    const terceiro = show({ revisao: 1 });
+    escolher();
+    terceiro.rerenderCom({ revisao: 1, legado: true });
+    await act(async () => {
+      mesma.resolve(LOJA_AB);
+      await mesma.promise;
+    });
+    await waitFor(() => expect(terceiro.onMudar).toHaveBeenCalledTimes(1));
+    expect(terceiro.onMudar).toHaveBeenCalledWith(escolhaInicialShopee(LOJA_AB));
+  });
+
   it('⭐ F3: escondida por `<Activity mode="hidden">` com a leitura em voo ⇒ nada aplicado e, ao voltar, «Automática» marcada, sem carregando preso ⟷ sem esconder ⇒ aplicada uma vez', async () => {
     const lida = adiada<RespostaCanaisShopee>();
     h.canais.mockReturnValueOnce(lida.promise);
@@ -723,6 +914,49 @@ describe('LogisticaRascunhoShopee — uma leitura que falha', () => {
     await waitFor(() => expect(onMudar).toHaveBeenCalledTimes(1));
     expect(onMudar).toHaveBeenCalledWith(escolhaInicialShopee(LOJA_AB));
     expect(h.canais).toHaveBeenCalledTimes(2);
+  });
+
+  it('⛔ QUASE: a leitura de «Escolher canais» FALHA depois que a `revisaoDoProduto` mudou ⇒ a escolha acaba — «Automática», sem a frase da falha nem «Tentar de novo», mesmo com a leitura da revisão nova falhando também ⟷ QUASE-PAR: a mesma revisão (outro campo mudou) ⇒ a frase + «Tentar de novo»', async () => {
+    const lida = adiada<RespostaCanaisShopee>();
+    h.canais.mockReturnValueOnce(lida.promise);
+    // Every later read fails too — the observer's read of the new key included.
+    h.canais.mockRejectedValue(new ShopeeClientHttpError('Shopee caiu.', 500, null));
+    const { onMudar, rerenderCom, unmount } = show({ revisao: 1 });
+    escolher();
+    rerenderCom({ revisao: 2 });
+    await assentar();
+    await act(async () => {
+      lida.reject(new ShopeeClientHttpError('Shopee caiu.', 500, null));
+      await lida.promise.catch(() => undefined);
+    });
+    await assentar();
+    expect(radio(ROTULO_LOGISTICA_AUTOMATICA_SHOPEE).checked).toBe(true);
+    expect(screen.queryByTestId(`${RAIZ}-falha`)).toBeNull();
+    expect(screen.queryByRole('button', { name: ROTULO_TENTAR_DE_NOVO_CANAIS_SHOPEE })).toBeNull();
+    expect(screen.queryByTestId(`${RAIZ}-carregando`)).toBeNull();
+    expect(secao().textContent).toContain(FRASE_LOGISTICA_RASCUNHO_SHOPEE);
+    expect(onMudar).not.toHaveBeenCalled();
+    // The click's read + the observer's read of the new key; nothing after.
+    expect(h.canais).toHaveBeenCalledTimes(2);
+    unmount();
+
+    // QUASE-PAR: the same revision, another prop moved — the failure shows.
+    const outra = adiada<RespostaCanaisShopee>();
+    h.canais.mockReturnValueOnce(outra.promise);
+    const segundo = show({ revisao: 1 });
+    escolher();
+    segundo.rerenderCom({ revisao: 1, legado: true });
+    await act(async () => {
+      outra.reject(new ShopeeClientHttpError('Shopee caiu.', 500, null));
+      await outra.promise.catch(() => undefined);
+    });
+    const falha = await screen.findByTestId(`${RAIZ}-falha`);
+    expect(falha.textContent).toContain('Shopee caiu.');
+    expect(
+      within(falha).getByRole('button', { name: ROTULO_TENTAR_DE_NOVO_CANAIS_SHOPEE }),
+    ).toBeTruthy();
+    expect(radio(ROTULO_ESCOLHER_CANAIS_SHOPEE).checked).toBe(true);
+    expect(segundo.onMudar).not.toHaveBeenCalled();
   });
 
   it('uma escolha que FALHOU, e a lista de outra aba que chega e volta a «Automática» ⇒ «Automática», sem carregando preso nem `onMudar`', async () => {

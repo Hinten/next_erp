@@ -26,6 +26,7 @@ import {
   interruptorTravadoShopee,
   linhasDaLogisticaShopee,
   logisticaEscolhidaNoRascunhoShopee,
+  mesmaChaveCanaisShopee,
   modoDaLogisticaShopee,
   motivoDaLogisticaInvalidaShopee,
   type LinhaLogisticaShopee,
@@ -168,6 +169,57 @@ describe('chaveCanaisShopee — uma leitura por conta, produto e revisão do pro
     expect(JSON.stringify(chaveCanaisShopee('int-1', 'prod-12', 1_700_000_000_000))).not.toBe(
       JSON.stringify(chave),
     );
+  });
+});
+
+describe('mesmaChaveCanaisShopee — a resposta ainda é da chave da seção (a revisão mudou durante a leitura?)', () => {
+  const REV = 1_700_000_000_000;
+
+  it('⭐ duas chaves montadas dos MESMOS três valores (outro array) ⇒ a mesma leitura; também com a revisão `null` dos dois lados ⟷ ⛔ QUASE: a revisão a +1, `null` × `0` (nos dois sentidos), outro produto, outra conta, a conta `""` ⇒ distintas', () => {
+    const chave = chaveCanaisShopee('int-1', 'prod-1', REV);
+    const deNovo = chaveCanaisShopee('int-1', 'prod-1', REV);
+    expect(deNovo).not.toBe(chave);
+    expect(mesmaChaveCanaisShopee(chave, deNovo)).toBe(true);
+    expect(mesmaChaveCanaisShopee(chave, chave)).toBe(true);
+    expect(
+      mesmaChaveCanaisShopee(
+        chaveCanaisShopee('int-1', 'prod-1', null),
+        chaveCanaisShopee('int-1', 'prod-1', null),
+      ),
+    ).toBe(true);
+
+    // ⛔ QUASE: one element apart, alone.
+    expect(mesmaChaveCanaisShopee(chave, chaveCanaisShopee('int-1', 'prod-1', REV + 1))).toBe(
+      false,
+    );
+    expect(
+      mesmaChaveCanaisShopee(
+        chaveCanaisShopee('int-1', 'prod-1', null),
+        chaveCanaisShopee('int-1', 'prod-1', 0),
+      ),
+    ).toBe(false);
+    expect(
+      mesmaChaveCanaisShopee(
+        chaveCanaisShopee('int-1', 'prod-1', 0),
+        chaveCanaisShopee('int-1', 'prod-1', null),
+      ),
+    ).toBe(false);
+    expect(mesmaChaveCanaisShopee(chave, chaveCanaisShopee('int-1', 'prod-12', REV))).toBe(false);
+    expect(mesmaChaveCanaisShopee(chave, chaveCanaisShopee('int-12', 'prod-1', REV))).toBe(false);
+    // The section's `contaId ?? ''`: no conta never matches a conta.
+    expect(mesmaChaveCanaisShopee(chave, chaveCanaisShopee('', 'prod-1', REV))).toBe(false);
+  });
+
+  it('⛔ exata: comprimentos diferentes — um prefixo, ou um `undefined` a mais — e uma igualdade frouxa (`1` × `"1"`, `null` × `undefined`) nunca são a mesma leitura', () => {
+    const chave = chaveCanaisShopee('int-1', 'prod-1', 1);
+    const prefixo = chave.slice(0, 4);
+    expect(mesmaChaveCanaisShopee(chave, prefixo)).toBe(false);
+    expect(mesmaChaveCanaisShopee(prefixo, chave)).toBe(false);
+    expect(mesmaChaveCanaisShopee([...prefixo, undefined], prefixo)).toBe(false);
+    expect(mesmaChaveCanaisShopee(chave, [...prefixo, '1'])).toBe(false);
+    expect(
+      mesmaChaveCanaisShopee(chaveCanaisShopee('int-1', 'prod-1', null), [...prefixo, undefined]),
+    ).toBe(false);
   });
 });
 
@@ -738,11 +790,13 @@ describe('logisticaEscolhidaNoRascunhoShopee — pela projeção do rascunho gua
 /* -------------------------------------------------------------------------- */
 
 describe('o módulo não re-deriva regra do servidor (#1369)', () => {
-  it('⭐ `logisticaRascunho.ts` nunca soletra um campo cru da Shopee, o carimbo, o leitor da lista guardada, uma comparação ou uma ordenação própria', () => {
+  it('⭐ `logisticaRascunho.ts` nunca soletra um campo cru da Shopee, o carimbo, o leitor da lista guardada, uma comparação de valores ou uma ordenação própria', () => {
     const aqui = dirname(fileURLToPath(import.meta.url));
     const fonte = readFileSync(join(aqui, 'logisticaRascunho.ts'), 'utf8');
     // Built from parts (the `atributosRascunho.test.ts` shape). Only the MODULE
     // is read: this file's fixtures may name the stamp, the module may not.
+    // The comparison banned is of draft VALUES; `mesmaChaveCanaisShopee`
+    // compares two query keys, never a value.
     const proibidos = [
       ['mask', 'channel', 'id'].join('_'),
       ['fee', 'type'].join('_'),
