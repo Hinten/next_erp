@@ -862,7 +862,10 @@ describe('the read-back and the ONE deriva follow-up', () => {
     });
     pedidoSaiDuranteOEnvio(c.p, 2);
     expect(await c.rodar()).toEqual({ kind: 'escrito', seguimento: 'tarefas-desligadas' });
-    expect(c.motivos()).toContain('deriva-tarefas-desligadas');
+    // ONE line for the closed queue (beside the drift's own), never an ERROR, never a throw.
+    expect(c.motivos().filter((m) => m === 'deriva-tarefas-desligadas')).toHaveLength(1);
+    expect(c.erros).toEqual([]);
+    expect(c.enfileiradas).toHaveLength(1);
   });
 
   it('⚠️ a TRANSIENT enqueue failure is rethrown: the retry re-derives from a fresh GET', async () => {

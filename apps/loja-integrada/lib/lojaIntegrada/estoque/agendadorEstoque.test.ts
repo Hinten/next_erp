@@ -129,6 +129,65 @@ describe('the window and the schedule', () => {
   });
 });
 
+describe('the naming property: an enqueue never meets a task that could already have dispatched', () => {
+  /** Every ms offset that sits on a window boundary, or one ms either side of it. */
+  const BORDAS = [0, 1, 29_999, 30_000, 59_998, 59_999];
+  const PRODUTOS = ['prod-1', 'prod-2', 'x', 'kit-9', 'est-a-b'];
+
+  it('at every boundary of the window, the task an enqueue names dispatches more than the margin AFTER that enqueue', () => {
+    for (const desvio of BORDAS) {
+      for (const janela of [JANELA - 1, JANELA, JANELA + 1]) {
+        const agora = janela * JANELA_ESTOQUE_LI_MS + desvio;
+        expect(janelaEstoqueLi(agora)).toBe(janela);
+        for (const produtoId of PRODUTOS) {
+          const folga = agendamentoEstoqueLi(janelaEstoqueLi(agora), produtoId) - agora;
+          // The tightest case is the window's LAST ms: still a margin and one ms ahead.
+          expect(folga).toBeGreaterThan(MARGEM_AGENDAMENTO_ESTOQUE_LI_MS);
+          expect(folga).toBeLessThanOrEqual(2 * JANELA_ESTOQUE_LI_MS + DISPERSAO_ESTOQUE_LI_MS - 1);
+        }
+      }
+    }
+    // ÂNCORA: the tightest gap, spelled out.
+    expect(agendamentoEstoqueLi(JANELA, 'prod-1') - (JANELA * 60_000 + 59_999)).toBe(60_001 + 1049);
+  });
+
+  it('any two enqueues that share a name share a window — so the EARLIER one’s task has not dispatched when the later one is made', () => {
+    // Every pair of instants across three windows, 7 919 ms apart (a prime: it walks every
+    // offset class), boundaries included.
+    const instantes: number[] = [];
+    for (let t = (JANELA - 1) * 60_000; t < (JANELA + 2) * 60_000; t += 7_919) instantes.push(t);
+    for (const desvio of BORDAS) instantes.push(JANELA * 60_000 + desvio);
+    instantes.sort((a, b) => a - b);
+    let colisoes = 0;
+    for (const [i, antes] of instantes.entries()) {
+      for (const depois of instantes.slice(i)) {
+        const idAntes = idDaTarefaEstoqueLi(tarefa({ janela: janelaEstoqueLi(antes) }));
+        const idDepois = idDaTarefaEstoqueLi(tarefa({ janela: janelaEstoqueLi(depois) }));
+        if (idAntes !== idDepois) continue;
+        colisoes += 1;
+        const despachoDoAnterior = agendamentoEstoqueLi(janelaEstoqueLi(antes), 'prod-1');
+        expect(despachoDoAnterior - depois).toBeGreaterThan(MARGEM_AGENDAMENTO_ESTOQUE_LI_MS);
+      }
+    }
+    // ÂNCORA: the walk really met names it had to compare.
+    expect(colisoes).toBeGreaterThan(instantes.length);
+  });
+
+  it('⚠️ NEAR-MISS: a name taken from the EVENT’s time instead of the enqueue’s DOES meet a task that already dispatched', () => {
+    // A movement at `evento`, enqueued late (a retried trigger, a slow read) at `agora`. Named
+    // by the event's window, it would collide with the task of that window — which already
+    // dispatched, read the ERP before this movement, and so never sends it.
+    const evento = JANELA * 60_000 + 10_000;
+    const agora = (JANELA + 3) * 60_000;
+    const doEvento = tarefa({ janela: janelaEstoqueLi(evento) });
+    expect(agendamentoEstoqueLi(doEvento.janela, 'prod-1')).toBeLessThanOrEqual(agora);
+    // Named by the clock at the enqueue, it is another task, scheduled after `agora`.
+    const doRelogio = tarefa({ janela: janelaEstoqueLi(agora) });
+    expect(idDaTarefaEstoqueLi(doRelogio)).not.toBe(idDaTarefaEstoqueLi(doEvento));
+    expect(agendamentoEstoqueLi(doRelogio.janela, 'prod-1')).toBeGreaterThan(agora);
+  });
+});
+
 /** A transport that records every enqueue, or rejects with `falha`. */
 function fila(falha: Error | null = null) {
   const chamadas: { tarefa: unknown; opcoes: { id: string; scheduleTime: Date } }[] = [];

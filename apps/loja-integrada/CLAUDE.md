@@ -17,7 +17,8 @@ Master plan: `.master_plans/loja-integrada/loja-integrada-marketplace-integratio
 - Step 7 (the status write-back, in stacked PRs): the write engine and its write context
   (`core/escrita.ts`, `core/contextoEscrita.ts`; "Write engine" below). No flow runs on it
   yet, and every write valve is off until the window. Step 12's engine seam (PR 12-d) adds the
-  two stock kinds and the stock detail's restore branch; the stock flow itself comes later.
+  two stock kinds and the stock detail's restore branch; the stock send run (PR 12-e) is the
+  second flow on it ("Stock send run" below).
 - Step 10 (the catalogue reads): four `GET`s in the conta route family (below), the core
   `lib/lojaIntegrada/catalogo/catalogo.ts` and its caches `catalogo/cache.ts`. The web's
   variation linker reads the grades; categories and brands wait for step 11's product tab.
@@ -783,8 +784,9 @@ apps/loja-integrada/lib/lojaIntegrada/testing/especificacaoFolhas.json` (no pair
   a flat 300 s backoff), `varrerEscritas.ts` (`15,45 * * * *`: it only enqueues the
   varredura, named after its tick), `agendadorEscrita.ts` (the root, through the reads
   root's region and valve readers) and `depsEscrita.ts` (the one binding of a write run's
-  deps; the handler stamps the dispatch start FIRST). The writes queue is the only place a
-  write — or its sweep — may run.
+  deps; the handler stamps the dispatch start FIRST). The writes queue and the stock queue
+  (step 12, below) are the only two places a write may run, and the writes queue the only
+  place its sweep may.
 - **Paid codigos only.** The first filter is step 15's `veredictoDoCodigoLi`; the matrix
   (`MATRIZ_RASTREIO_LI`) is typed over EVERY codigo, so a new one does not compile until its
   row is decided, and an unknown string is refused (`situacao-desconhecida`). `NUNCA_ESCREVER_LI`
@@ -848,6 +850,75 @@ apps/loja-integrada/lib/lojaIntegrada/testing/especificacaoFolhas.json` (no pair
 - Tests: `testing/plataformaEscritaLi.ts` is a stateful LI (one order, its history, both
   order write routes, and the store's stock rows by product id for the engine's stock suite,
   `core/escritaEstoque.test.ts`); the global `fetch` is stubbed to throw in every suite.
+
+## Stock send run (step 12, PR 12-e)
+
+The full stock-sync section (the trigger, the kit fan-out, the reconcile, the manual push)
+lands with the rest of step 12; this is the send run and its queue.
+
+- **Files.** `estoque/processarEstoque.ts` (ONE run: one child produto of one conta, through
+  the write engine only), `estoque/leituraEstoqueErp.ts` (its ERP reads, `db` a parameter, every
+  query built from the field constants its index-pin test reads), `estoque/agendadorEstoque.ts`
+  (the pure stock-queue producer: window, name, schedule, the strict parse before anything
+  leaves), `estoque/avisosEstoque.ts` (the one aviso). In `functions/src/`: `filaEstoque.ts`
+  (`filaEstoqueLojaIntegrada`), `agendadorEstoque.ts` (the root, through the reads root's region
+  and valve readers) and `depsEscrita.ts`'s `depsDeEstoqueLi` (spreads the writes run's deps, so
+  the two queues cannot disagree on the environment, the clock or the deadline).
+- **The queue** has its OWN function so the status write-back never waits behind a stock pass,
+  with options EQUAL to the writes queue's (`index.test.ts` pins the equality): one dispatch at
+  a time, `concurrency: 1`, `maxInstances: 1`, 3 attempts on a flat 300 s backoff, 300 s timeout
+  (the worst run, `PIOR_EXECUCAO_ESTOQUE_LI_MS`, is 68 s; the PUT starts ≤ 24 s in). It routes the
+  RAW `tipo`: `estoque` runs; `estoque-kits` is dropped `sem-consumidor` until its consumer and
+  producer ship together; anything else `tipo-desconhecido`. ONE info line per dispatch, raw ids
+  only; a thrown run writes none.
+- **The payload is ids only** (`tarefaEstoqueLiSchema`, strict): the quantity is derived when
+  the task runs, never carried. Task id `estoque-` + sha256 of
+  `estoque:<origem>:<conta>:<produto>:<d|w>:<janela>`, `janela = ⌊now/60 s⌋` from the clock read
+  RIGHT BEFORE the enqueue, `scheduleTime = (janela + 1)·60 s + 60 s + hash(produto) mod 30 s`
+  — so a name never meets a task that may already have dispatched. An answered
+  `task-already-exists` is success; a transient Cloud Tasks failure is
+  `LiTarefasTransitoriasError`; the closed sweep-only valve `LiTarefasDesligadasError`.
+- **Order of a run, every skip BEFORE the write context:** strict parse, the valve
+  (`iniciarEscritaLi(FLUXO_LI.estoque)`, `off` = zero reads), the cap
+  `LOJA_INTEGRADA_ESTOQUE_MAX` from `ambiente` (unset/blank = none; only a canonical positive
+  integer; anything else refuses every run, zero reads), the conta and its depósito, the masked
+  produto + its where-less links, the link-only plan (`planoDosVinculosEstoqueLi`: a link skip
+  reads no stock record), the records (a canonical `estoqueId` hint by id only when it IS
+  `makeEstoqueUid(produto, depósito)` at the depósito, else the `in` query over both ref forms,
+  limit 3; a kit's bounding components; a constrained kit's own record is not read), the
+  never-had-stock listing only on `consultar-estoques`, the duplicate probe only on `enviar`,
+  then `decidirAlvo` on `<conta>:<store id>` (only an exact `*` widens), the write context, the
+  deciding GET, the row-identity check (`produtoIdDoEstoqueLi`), model A
+  (`decidirEnvioEstoqueLi`), the write.
+- **Costs** (ERP Firestore ops / credential reads / store calls), pinned by
+  `processarEstoque.test.ts`: valve off, bad payload, bad cap 0/0/0; a link skip 3/0/0; a record
+  skip 4/0/0; held 5/0/0; duplicate 6/0/0; read switch off 6/0/0; 404 or a row of another produto
+  6/2/1; reflected 7/2/1 under `on` (the aviso pre-read); dry-run 6/2/1 (one restore line, one
+  diff line); an event, manual, publish or `deriva` PUT 7/4/3 (GET, PUT, read-back); a reconcile
+  or kit PUT (`estoque-produto-lote`) 7/3/2, no read-back. **No Firestore write on success**, at
+  most ONE PUT per run.
+- **The drift rule** after a read-back: written leaves read back differently, the store's
+  reservation moved so model A now targets another quantity, or the read-back could not be made
+  (fail open) ⇒ ONE `deriva` follow-up (generation 1) from a generation-0 run; a generation-1
+  run only logs `deriva-sem-seguimento`. The closed valve ⇒ one WARNING and the write stands; a
+  transient enqueue failure rethrows (the retry's fresh GET decides).
+- **Errors.** 429 and 5xx THROW (a PUT answered either may have landed: the run closes, the
+  retry re-GETs); another 3xx/4xx on the PUT rethrows until the LAST attempt, then `recusado`,
+  one ERROR and, under `on`, `lojaIntegradaEstoqueRecusado` (per produto, clocked by the
+  dispatch start). 401/403 on a deciding read PARKS the conta and drops; on the PUT the next
+  deciding read confirms (refused ⇒ park; reads fine ⇒ the 4xx rule). A deciding read off its
+  schema (`formato`) drops with one ERROR; the credential pin, the write deadline, network,
+  `LiConfigError` and gRPC rethrow; the context's refusals (the read switch included) drop.
+  Only `lojaIntegradaEstoqueRecusado` is raised or resolved by a run — resolved only when OPEN
+  (one pre-read, so a success writes nothing); duplicado, ambiguous record, held and 404 are
+  WARNING lines whose per-conta avisos are the reconcile's.
+- **Rollback** is a person re-sending the restore line's `quantidade` through the same strict
+  route: only a NON-NEGATIVE quantity under the four fixed leaves — a prior negative quantity,
+  unmanaged row or lead-time setting cannot be restored that way (`functions/DEPLOY.md`).
+- No transaction (no inventory row); `reserva-arithmetic-inventory.test.js` lists the run (it
+  reads the STORE's reservation, only through `alvoEstoqueLi`). No new index: the run reads
+  three declared ones (`leituraEstoqueErp.test.ts` pins each query against
+  `firestore.indexes.json`).
 
 ## Notification pipeline (step 3)
 
@@ -1081,12 +1152,18 @@ firebase.loja-integrada.tasks.json --only firestore,functions,tasks` (ports 8085
   identity that the remove is handed the closure that shared read built for its produto and
   conta: `lib/lojaIntegrada/produtos/integracoesComProdutoLi.test.ts`); the emulator case shows only
   that the real guarded write runs and that losing the last counting link removes the conta.
+- Since step 12 (PR 12-e) `lib/lojaIntegrada/estoque/processarEstoque.tasks.test.ts` runs the
+  stock send run IN PROCESS (valve, canary and read switch on as PARAMETERS, a scripted store):
+  the real queries (both depósito ref forms, the any-depósito listing, the collection-group
+  duplicate probe) and the `deriva` follow-up through the real producer root. It keeps the
+  anchor trigger's rules above. The DISPATCHED follow-up stops at the stock valve, which the
+  lane leaves unset: that hop has no Firestore-observable outcome by design.
 - The lane cannot prove: Cloud Scheduler firing (`onSchedule` is ignored),
-  `scheduleDelaySeconds` (firebase-tools#8254), index declarations, rules, that the
-  emulator honours `maxConcurrentDispatches` or the instance limits, named-task dedup
+  `scheduleDelaySeconds` and `scheduleTime` (firebase-tools#8254), index declarations, rules,
+  that the emulator honours `maxConcurrentDispatches` or the instance limits, named-task dedup
   (the emulator accepts a named enqueue; a duplicate's answer is not asserted), Eventarc
-  ordering or redelivery, or a trigger's `database` binding (pinned offline in
-  `functions/src/index.test.ts`).
+  ordering or redelivery, the stock queue's dispatch (above), or a trigger's `database`
+  binding (pinned offline in `functions/src/index.test.ts`).
 
 ## Config
 

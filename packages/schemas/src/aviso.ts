@@ -1370,9 +1370,12 @@ export const TIPO_AVISO_LABELS = {
  *    and the orphan pass once the conta is gone. A repeat replaces `params`.
  *
  * **`lojaIntegradaEstoqueRecusado`** — Loja Integrada refused a child's stock
- *    write with a 4xx other than 429 on the task's LAST attempt (401/403 park
- *    the conta instead, through `lojaIntegradaReconexaoPendente`): the store's
- *    number for that product was not updated.
+ *    write with a 4xx other than 429 on the task's LAST attempt: the store's
+ *    number for that product was not updated. A write refused with 401/403 is
+ *    confirmed first by the next deciding read on the same credential: refused
+ *    too ⇒ the conta parks instead, through `lojaIntegradaReconexaoPendente`;
+ *    read fine ⇒ the refusal is the write's own, and this aviso carries its
+ *    401/403 status like any other.
  *
  *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId, entidade: produtoId })`
  *    — one row per child produto.

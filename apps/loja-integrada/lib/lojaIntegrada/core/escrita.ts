@@ -70,7 +70,11 @@
  *     (b) the read-back's or the history read's credential re-read failing in
  *     Firestore (gRPC), rethrown by requirement 7; (c) the flow's aviso writes
  *     after a write; (d) the park after a read-back's 401/403
- *     (`tratarFalhaDeAutenticacao`); (e) the pipeline's disposition persist; and
+ *     (`tratarFalhaDeAutenticacao`); (e) the pipeline's disposition persist;
+ *     (i) the stock flow's ONE `deriva` follow-up enqueue after a read-back,
+ *     rethrown on a transient Cloud Tasks failure
+ *     (`estoque/processarEstoque.ts`: the retry's GET decides, and the quantity
+ *     it sends is absolute, never a delta); and
  *     the package's three (`escrita.ts` in the package): (f) the caller's own
  *     abort — this engine passes none; (g) an observer that throws — the app
  *     logger is total, pinned in `log.test.ts` on every PUT outcome; (h) a 2xx

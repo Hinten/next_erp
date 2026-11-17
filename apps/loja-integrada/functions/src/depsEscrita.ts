@@ -1,10 +1,12 @@
 import { FieldValue } from 'firebase-admin/firestore';
 import { logger } from 'firebase-functions/v2';
 
+import type { DepsEstoqueLi } from '../../lib/lojaIntegrada/estoque/processarEstoque';
 import type {
   DepsEscritaLi,
   RegistroEscritaLi,
 } from '../../lib/lojaIntegrada/rastreio/processarRastreio';
+import { criarAgendadorEstoqueLiDoAmbiente } from './agendadorEstoque';
 
 /**
  * The dependencies of one WRITE run — a `rastreio` dispatch of the writes queue,
@@ -48,5 +50,28 @@ export function depsDeEscritaLi(
     increment: (by: number) => FieldValue.increment(by),
     logger,
     registro,
+  };
+}
+
+/**
+ * The dependencies of one STOCK send run — a dispatch of the stock queue (master plan step 12,
+ * PR 12-e) — bound HERE, beside the writes queue's, by spreading {@link depsDeEscritaLi}: the two
+ * queues can then never disagree about the environment, the clock, the pacer's sleep or the write
+ * deadline. The stock valve, its canary list, the read switch and the cap
+ * (`LOJA_INTEGRADA_ESTOQUE_MAX`) all ride the same LIVE `ambiente`, read by the run itself.
+ *
+ * - `tentativa`: the Cloud Tasks attempt, 0-based — only the queue's LAST one concludes a refused
+ *   write (`recusado` and its aviso); every earlier one rethrows so the retry re-derives.
+ * - `agendador`: the stock queue's producer, for the run's one `deriva` follow-up, built from the
+ *   environment per dispatch (the sweep-only valve read once, the queue resolved per enqueue).
+ */
+export function depsDeEstoqueLi(
+  registro: { readonly tentativa: number; readonly idTarefa: string | null },
+  inicioDaTarefaMs: number,
+): DepsEstoqueLi {
+  return {
+    ...depsDeEscritaLi(registro, inicioDaTarefaMs),
+    tentativa: registro.tentativa,
+    agendador: criarAgendadorEstoqueLiDoAmbiente(),
   };
 }
