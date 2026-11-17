@@ -186,6 +186,10 @@ export const produtoSchema = z.object({
    *
    * Hiding a produto in the ERP is not a request to stop syncing a live
    * listing; close or pause the listing on the channel for that.
+   *
+   * ✅ A channel may WRITE it: a successful publish ticks it to `true`
+   * (`marcarProdutoPublicado`, `@delfrance/data/admin/produtos` — Shopee since
+   * 2026-11-17). Writing it is not gating on it; the rule above stands.
    */
   publicado: z.boolean().default(false),
   ofereceFreteGratis: z.boolean().default(false),
