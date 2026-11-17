@@ -484,7 +484,10 @@ function resultado(
   return { fluxo: t.fluxo, contaId: t.contaId, acao, ...VAZIO, ...extra };
 }
 
-/** The context the provider receives: this dispatch's, clocked by its lease read. */
+/**
+ * The context the provider receives: this dispatch's, clocked by its lease
+ * read, and carrying that E4 read's lease itself (`vez`).
+ */
 function contextoDoLote(e: Execucao, lida: LeituraVezFeed): ContextoLoteAmazon {
   const sellerId = e.contexto.conta.selling_partner_id;
   if (typeof sellerId !== 'string' || sellerId === '') {
@@ -498,6 +501,7 @@ function contextoDoLote(e: Execucao, lida: LeituraVezFeed): ContextoLoteAmazon {
     agora: e.deps.agora,
     sellerId,
     relogioVez: lida.readTime,
+    vez: lida.vez,
   };
 }
 

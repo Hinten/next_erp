@@ -59,7 +59,7 @@ export interface DepsRecuperarFeedAmazon {
   /** Now, in MILLISECONDS. Read per decision, never captured. */
   readonly agora: () => number;
   readonly logger: LoggerAmazon;
-  /** The fluxo's provider, read from the seam per run; `null` while the row is empty. */
+  /** The fluxo's provider, from the seam's bound rows; `null` while the row is empty. */
   readonly provedor: ProvedorLoteAmazon<FluxoComLoteAmazon, unknown> | null;
   readonly registro: RegistroLoteAmazon;
   /** REQUIRED, never the global: the context's client takes the SAME `fetch`. */
@@ -239,6 +239,7 @@ async function executarRecuperacao(
       agora: deps.agora,
       sellerId,
       relogioVez: null,
+      vez: null,
     },
     {
       desfecho: t.desfecho,

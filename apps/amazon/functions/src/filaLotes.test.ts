@@ -1,18 +1,20 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
-import { idRegistroFeedAmazon } from '@delfrance/schemas';
+import { MOTIVO_CONTA_AMAZON, idRegistroFeedAmazon } from '@delfrance/schemas';
 
 import { __setRelogioDoCacheParaTestes } from '../../lib/amazon/core/contaCache';
-import { DESTINO_LOTE_AMAZON, provedorDoLoteAmazon } from '../../lib/amazon/feeds/destinosLote';
+import { DESTINO_LOTE_AMAZON } from '../../lib/amazon/feeds/destinosLote';
+import type { ProvedorLoteAmazon } from '../../lib/amazon/feeds/provedorLote';
 import { FakeDb, asDb } from '../../lib/amazon/testing/fakeDb';
 import { AGORA_MS, espiarStdout } from '../../lib/amazon/testing/fixtures';
 
 /**
  * The jobs queue's BODY (step 12a, PR 12-c): what the function binds (the live
- * environment, the app's ONE logger, the stock root's producer, the seam table
- * read per run, a `fetch` read at call time), the dispatcher's one line for a
- * refused payload, and the sanitizing boundary of a throw. The declared options
+ * environment, the app's ONE logger, the stock root's producer, the seam's rows
+ * BOUND once per process to that root's two producers — step 12, PR 12-e1 —, a
+ * `fetch` read at call time), the dispatcher's one line for a refused payload,
+ * and the sanitizing boundary of a throw. The declared options
  * live in `index.test.ts`; the handlers in `lib/amazon/feeds/*.test.ts`. No
  * network is reachable (D11): every `fetch` is refused and counted.
  */
@@ -27,9 +29,15 @@ vi.mock('./lib/admin', () => ({
   },
 }));
 
-const { processAmazonListingsJob, depsDosLotesAmazon, SEGREDOS_DOS_LOTES_AMAZON } =
-  await import('./filaLotes');
-const { criarAgendadorLotesAmazonDoAmbiente } = await import('./agendadorEstoque');
+const {
+  processAmazonListingsJob,
+  depsDosLotesAmazon,
+  PROVEDORES_DOS_LOTES_AMAZON,
+  RAIZ_DOS_LOTES_AMAZON,
+  SEGREDOS_DOS_LOTES_AMAZON,
+} = await import('./filaLotes');
+const { criarAgendadorLotesAmazonDoAmbiente, criarProdutorEstoqueAmazonDoAmbiente } =
+  await import('./agendadorEstoque');
 
 afterAll(() => {
   if (originalTasksInvokerSa === undefined) delete process.env.TASKS_INVOKER_SA;
@@ -81,21 +89,67 @@ function linhas(): Record<string, unknown>[] {
 }
 
 describe('processAmazonListingsJob — the body', () => {
-  it('binds the LIVE environment, the stock root’s producer and the seam table itself', () => {
+  it('binds the LIVE environment, the stock root’s producer and the seam’s BOUND rows', () => {
     const deps = depsDosLotesAmazon({ tentativa: 3, idTarefa: 't' });
     expect(deps.ambiente).toBe(process.env);
     expect(deps.agendador).toBe(criarAgendadorLotesAmazonDoAmbiente);
-    expect(deps.provedorDe).toBe(provedorDoLoteAmazon);
+    expect(deps.provedores).toBe(PROVEDORES_DOS_LOTES_AMAZON);
     expect(deps.registro).toEqual({ tentativa: 3, idTarefa: 't' });
     expect(SEGREDOS_DOS_LOTES_AMAZON).toEqual(['AMAZON_LWA_CLIENT_SECRET']);
   });
 
-  it('the seam is EMPTY in this PR: both fluxos read null through the bound reader', () => {
+  it('★ the seam’s root holds BOTH of the stock root’s producers, as thunks (never built at load)', () => {
+    expect(RAIZ_DOS_LOTES_AMAZON.agendadorLotes).toBe(criarAgendadorLotesAmazonDoAmbiente);
+    expect(RAIZ_DOS_LOTES_AMAZON.produtorEstoque).toBe(criarProdutorEstoqueAmazonDoAmbiente);
+  });
+
+  it('the seam is EMPTY in this PR: both fluxos bind to null', () => {
     expect(DESTINO_LOTE_AMAZON).toEqual({ estoque: null, preco: null });
     const deps = depsDosLotesAmazon({ tentativa: 0, idTarefa: null });
-    expect(deps.provedorDe('estoque')).toBeNull();
-    expect(deps.provedorDe('preco')).toBeNull();
+    expect(deps.provedores).toEqual({ estoque: null, preco: null });
   });
+
+  // Re-importing the root after `vi.resetModules()` loads the whole feed core again: CI headroom.
+  it(
+    '★ a FILLED row’s factory runs ONCE per process, with the root holding both producers, and every dispatch reads its one provider',
+    { timeout: 30_000 },
+    async () => {
+      vi.resetModules();
+      const provedor: ProvedorLoteAmazon<'estoque', unknown> = {
+        fluxo: 'estoque',
+        membros: () => Promise.reject(new Error('teste: não chamado')),
+        montar: () => Promise.reject(new Error('teste: não chamado')),
+        gravarResultado: () => Promise.reject(new Error('teste: não chamado')),
+        recuperar: () => Promise.reject(new Error('teste: não chamado')),
+        repassarParaPatches: () => Promise.reject(new Error('teste: não chamado')),
+        motivoFalha: MOTIVO_CONTA_AMAZON.contaSemOperacao,
+      };
+      const fabrica = vi.fn((_raiz: unknown) => provedor);
+      vi.doMock('../../lib/amazon/feeds/destinosLote', async (importOriginal) => ({
+        ...(await importOriginal<typeof import('../../lib/amazon/feeds/destinosLote')>()),
+        DESTINO_LOTE_AMAZON: { estoque: fabrica, preco: null },
+      }));
+      try {
+        const fila = await import('./filaLotes');
+        const raiz = await import('./agendadorEstoque');
+        expect(fabrica).toHaveBeenCalledOnce();
+        expect(fabrica.mock.calls[0]?.[0]).toEqual({
+          agendadorLotes: raiz.criarAgendadorLotesAmazonDoAmbiente,
+          produtorEstoque: raiz.criarProdutorEstoqueAmazonDoAmbiente,
+        });
+        const a = fila.depsDosLotesAmazon({ tentativa: 0, idTarefa: null });
+        const b = fila.depsDosLotesAmazon({ tentativa: 1, idTarefa: 't-2' });
+        expect(a.provedores.estoque).toBe(provedor);
+        expect(a.provedores.preco).toBeNull();
+        expect(b.provedores).toBe(a.provedores);
+        // Two dispatches' deps later, still ONE call: never a factory per dispatch.
+        expect(fabrica).toHaveBeenCalledOnce();
+      } finally {
+        vi.doUnmock('../../lib/amazon/feeds/destinosLote');
+        vi.resetModules();
+      }
+    },
+  );
 
   it('★ binds a fetch that reads the global AT CALL TIME — never a copy taken at load', async () => {
     const deps = depsDosLotesAmazon({ tentativa: 0, idTarefa: null });

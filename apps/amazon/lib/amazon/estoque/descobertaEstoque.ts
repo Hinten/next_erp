@@ -1,9 +1,9 @@
 /**
  * The discovery planner of the Amazon stock sync (step 12, PR 12-d), pure:
  * WHICH movement a stock batch reads, and how its estoque rows become the
- * conta's SKUs with their observations. Unwired here: the window query, the
- * produto reads and the partition listings come later; this module decides
- * everything they feed.
+ * conta's SKUs with their observations. The window query and its row-to-SKU
+ * reads arrive with the tick and the recovery delta (PR 12-e2); this module
+ * decides everything they feed.
  *
  * ## The two windows
  *

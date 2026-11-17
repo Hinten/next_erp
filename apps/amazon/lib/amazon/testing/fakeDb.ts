@@ -34,12 +34,46 @@
  *    because `escreverAviso` writes `deps.increment(1)`;
  *  - (step 5) `getAll(...refs)` — every snapshot of ONE call shares one
  *    `readTime` and carries its `updateTime`, as the server's consistent
- *    multi-document read does; a read option (a field mask) or a ref that is not
- *    this fake's throws;
+ *    multi-document read does; a ref that is not this fake's throws;
+ *  - (step 12, PR 12-e1) `getAll(...refs, { fieldMask })` — see "Field masks
+ *    and projections" below. Any OTHER read option, an option that is not the
+ *    LAST argument, or a mask that is not a list of plain top-level field
+ *    names throws;
  *  - (step 5) `batch()` — see "The batch" below;
  *  - (step 5) every document ref, and every query result's `ref`, carries
  *    `parent` (the collection) and `parent.parent` (its owning document, or
  *    `null` at the root): a link doc's owner is `ref.parent.parent.id`.
+ *
+ * ## Field masks and projections (step 12, PR 12-e1)
+ *
+ * On Enterprise a read is billed by the data it returns, and a link doc
+ * carries a whole product payload, so the stock reads ask for named fields:
+ *
+ *  - `getAll(...refs, { fieldMask: ['a', 'b'] })` answers each document with
+ *    ONLY those of its fields it holds: an unmasked field reads `undefined`,
+ *    exactly as the server leaves it out. The snapshot keeps its `exists`,
+ *    `updateTime` and `readTime` (a masked read still feeds a precondition).
+ *    An empty mask answers the keys alone;
+ *  - a query's classic `.select('a', 'b')` projects every document it returns
+ *    the same way; `.select()` with no field answers the keys alone (the
+ *    server returns only the document names). A later `select` replaces an
+ *    earlier one, as in the SDK. A projection changes no index the query
+ *    needs, so the shape table below ignores it;
+ *  - a field path is a plain top-level name: a dotted path or a `FieldPath`
+ *    object is not modelled and throws;
+ *  - {@link FakeDb.exigirMascaraEm} makes ONE collection's documents refuse
+ *    any read without a mask: a `get()`, an unmasked `getAll`, or a query on
+ *    it without a `select` throws. A suite opts in for the collections whose
+ *    reads it pins (a link doc read whole is the cost it guards against).
+ *
+ * ## The operation log
+ *
+ * {@link FakeDb.leituras} (every document path read), {@link FakeDb.consultas}
+ * (every query, whole, its `limite` and its `selecao` included) and
+ * {@link FakeDb.escritas} (every write that landed) are the raw log;
+ * {@link FakeDb.leiturasDetalhadas} adds, per document read, how it was read
+ * (`get`, or the n-th `getAll`) and the mask it carried; and
+ * {@link FakeDb.contagem} counts them, which is what a cost test asserts.
  *
  * ## The batch — all or nothing, each write under its own precondition
  *
@@ -78,12 +112,12 @@
  * read-and-write call is not, and this fake gains no method shaped like it:
  * this app runs none (`estrutura.test.ts` scans the fakes too).
  *
- * ## Queries: ONLY the six indexed shapes, and one subcollection listing
+ * ## Queries: ONLY the indexed shapes, and two subcollection listings
  *
  * On Enterprise an unindexed query does not fail — it full-scans and bills
- * (root rule 1). So this fake refuses every query shape except the six this
+ * (root rule 1). So this fake refuses every query shape except the ones this
  * app runs, each of which is a declared composite (or its equality prefix), and
- * the one listing that needs no index (7):
+ * the two listings that need no index (7 and 9):
  *
  *  1. `integracao` · `tipo ==`, `selling_partner_id ==`, `ativo ==` · no order
  *     (the seller guard and step 3's routing; step 2 PR r's index);
@@ -105,7 +139,16 @@
  *  7. (step 14, PR 14-c) `pedidos/{id}/nfev4` · NO filter, NO order, NO limit —
  *     the NF-e task's and the importer's ONE unfiltered listing of one pedido's
  *     NF-e documents: a subcollection read whole, never a scan of the
- *     collection group. Any filter, order or limit on it is refused.
+ *     collection group. Any filter, order or limit on it is refused;
+ *  8. (step 12, PR 12-e1) `produtos` · `paiId ==` · `orderBy(nome asc)` ·
+ *     `limit` (the stock resolver's seek of a unit's children; the declared
+ *     `produtos (paiId ASC, nome ASC)` composite). ⚠️ Its `orderBy` drops a
+ *     child LACKING `nome`, as the server's does;
+ *  9. (step 12, PR 12-e1) `produtos/{id}/estoques` · NO filter, NO order, NO
+ *     limit — the stock family read's listing of ONE produto's estoque
+ *     partition when its canonical row is absent (a `select` is allowed, as
+ *     on every query). Any filter, order or limit on it is refused, and so is
+ *     the `estoques` collection group.
  *
  * Semantics follow the server: `==` is strict equality on the stored value (a
  * missing field never matches); `in` is `===` against ANY of 1 to 30 values (an
@@ -292,10 +335,65 @@ export interface ConsultaFake {
   readonly ordens: readonly [string, 'asc' | 'desc'][];
   readonly limite: number | null;
   readonly apos: string | null;
+  /**
+   * The classic `select` projection, when the query carried one (`[]` = the
+   * keys alone); absent on a query that returns whole documents.
+   */
+  readonly selecao?: readonly string[];
+}
+
+/** One document read, as {@link FakeDb.leiturasDetalhadas} records it. */
+export interface LeituraFake {
+  readonly caminho: string;
+  /** `get` (one document) or `getAll` (one consistent read of several). */
+  readonly via: 'get' | 'getAll';
+  /** The `getAll` call it belongs to (1, 2, … per fake); absent on a `get`. */
+  readonly chamada?: number;
+  /** The field mask it carried (`[]` = the keys alone), or `null` for the whole document. */
+  readonly mascara: readonly string[] | null;
+}
+
+/** The operations of one fake, counted (module header, "The operation log"). */
+export interface ContagemFake {
+  /** Documents read, by `get()` or inside a `getAll`. */
+  readonly leituras: number;
+  /** `getAll` calls: each one consistent read, however many documents it holds. */
+  readonly chamadasGetAll: number;
+  /** Queries run. */
+  readonly consultas: number;
+  /** Writes that landed. */
+  readonly escritas: number;
 }
 
 /**
- * The six query shapes this app may run, each a declared index or its equality
+ * A field path as this fake models one: a non-empty plain top-level name. A
+ * dotted path, a `FieldPath` object or anything else throws, synchronously.
+ */
+function validarCampo(campo: unknown, onde: string): string {
+  if (typeof campo !== 'string' || campo === '' || campo.includes('.')) {
+    throw new Error(
+      `FakeDb: ${onde} só modela nomes de campo de primeiro nível (sem ponto, sem FieldPath)`,
+    );
+  }
+  return campo;
+}
+
+/** `dados` holding only the fields of `campos` it has (module header, "Field masks"). */
+function projetar(dados: DocData, campos: readonly string[]): DocData {
+  const saida: DocData = {};
+  for (const campo of campos) {
+    if (Object.hasOwn(dados, campo)) saida[campo] = dados[campo];
+  }
+  return saida;
+}
+
+/** The id of the collection a document path sits in (`produtos/p/prodAmazon/l` → `prodAmazon`). */
+function colecaoDoCaminho(caminho: string): string {
+  return caminho.split('/').at(-2) ?? '';
+}
+
+/**
+ * The query shapes this app may run, each a declared index or its equality
  * prefix (module header). `colecao` is matched exactly; filters (an operator
  * other than `==` named with it) and orders in order; `grupo` for a group query.
  */
@@ -326,10 +424,14 @@ const FORMAS_INDEXADAS: readonly {
     ordens: [],
   },
   { colecao: 'prodAmazon', grupo: true, filtros: ['contaAmazonOuterRef in', 'sku'], ordens: [] },
+  { colecao: 'produtos', grupo: false, filtros: ['paiId'], ordens: ['nome asc'] },
 ];
 
 /** Shape 7 (module header): ONE pedido's `nfev4` subcollection, by its full path. */
 const LISTAGEM_NFEV4 = /^pedidos\/[^/]+\/nfev4$/;
+
+/** Shape 9 (module header): ONE produto's `estoques` subcollection, by its full path. */
+const LISTAGEM_ESTOQUES = /^produtos\/[^/]+\/estoques$/;
 
 function formaIndexada(
   colecao: string,
@@ -338,7 +440,7 @@ function formaIndexada(
   ordens: readonly Ordem[],
   limite: number | null,
 ) {
-  if (!grupo && LISTAGEM_NFEV4.test(colecao)) {
+  if (!grupo && (LISTAGEM_NFEV4.test(colecao) || LISTAGEM_ESTOQUES.test(colecao))) {
     return filtros.length === 0 && ordens.length === 0 && limite === null;
   }
   const f = filtros.map(rotuloDoFiltro).join(',');
@@ -388,7 +490,18 @@ interface EstadoConsulta {
   readonly ordens: readonly Ordem[];
   readonly limite: number | null;
   readonly apos: Posicao | null;
+  /** The classic `select` projection, or `null` for whole documents. */
+  readonly selecao: readonly string[] | null;
 }
+
+/** A fresh query: no filter, no order, no limit, no cursor, whole documents. */
+const CONSULTA_INICIAL: EstadoConsulta = {
+  filtros: [],
+  ordens: [],
+  limite: null,
+  apos: null,
+  selecao: null,
+};
 
 /** A write's precondition, as the single-document `update` and the batch take it. */
 interface PrecondicaoFake {
@@ -464,6 +577,21 @@ function caminhoDoRef(ref: unknown): string {
 /** Marks a document ref this fake built (a hand-built `{ path }` is refused). */
 const MARCA_DO_REF = Symbol('refDoFakeDb');
 
+/** A `getAll` read-options object: a plain object that is no document ref (it has no `path`). */
+function ehOpcoesDeLeitura(v: unknown): v is Readonly<Record<string, unknown>> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v) && !('path' in v);
+}
+
+/** The ONE read option modelled, `{ fieldMask: [...] }`, read; any other shape throws. */
+function mascaraDasOpcoes(opcoes: Readonly<Record<string, unknown>>): readonly string[] {
+  const chaves = Object.keys(opcoes);
+  const mascara: unknown = opcoes.fieldMask;
+  if (chaves.length !== 1 || chaves[0] !== 'fieldMask' || !Array.isArray(mascara)) {
+    throw new Error('FakeDb: getAll() com opções de leitura não é modelado (só { fieldMask })');
+  }
+  return mascara.map((campo: unknown) => validarCampo(campo, 'getAll({ fieldMask })'));
+}
+
 /** `ref.parent` (the collection) and `ref.parent.parent` (its owning doc, or `null` at the root). */
 function paiDoCaminho(caminho: string): {
   readonly id: string;
@@ -488,11 +616,15 @@ export class FakeDb {
   private readonly falhasDeEscrita = new Map<string, Error>();
   private readonly falhasDeConsulta = new Map<string, Error>();
   private lotes = 0;
+  private chamadasGetAll = 0;
+  private readonly mascarasExigidas = new Set<string>();
 
   /** Every write that LANDED, in order. A refused write is not here. */
   readonly escritas: EscritaFake[] = [];
   /** Every document path read with `get()` or `getAll()`, in order. */
   readonly leituras: string[] = [];
+  /** Every document read, in order, with how it was read and its mask (module header). */
+  readonly leiturasDetalhadas: LeituraFake[] = [];
   /** Every query, whole, in order. */
   readonly consultas: ConsultaFake[] = [];
   /** Every batch commit ATTEMPTED (landed or refused), as its paths in queue order. */
@@ -501,6 +633,35 @@ export class FakeDb {
   /** Every Firestore operation of any kind, counted: reads, queries and writes. */
   get operacoes(): number {
     return this.leituras.length + this.consultas.length + this.escritas.length;
+  }
+
+  /** The operations so far, counted by kind (module header, "The operation log"). */
+  get contagem(): ContagemFake {
+    return {
+      leituras: this.leituras.length,
+      chamadasGetAll: this.chamadasGetAll,
+      consultas: this.consultas.length,
+      escritas: this.escritas.length,
+    };
+  }
+
+  /**
+   * From now on, every read of a document of the collection `idColecao` (a
+   * `get()`, a `getAll`, a query) must carry a field mask or a `select`, or it
+   * throws (module header, "Field masks and projections").
+   */
+  exigirMascaraEm(idColecao: string): void {
+    if (idColecao === '' || idColecao.includes('/')) {
+      throw new Error('FakeDb: exigirMascaraEm() precisa de um id de coleção, sem barra');
+    }
+    this.mascarasExigidas.add(idColecao);
+  }
+
+  /** Throws when `caminho`'s collection requires a mask and the read carries none. */
+  private conferirMascara(caminho: string, mascara: readonly string[] | null): void {
+    if (mascara === null && this.mascarasExigidas.has(colecaoDoCaminho(caminho))) {
+      throw new Error(`FakeDb: leitura de ${caminho} sem máscara de campos (exigirMascaraEm)`);
+    }
   }
 
   /** Store a document without logging a write (fixtures). Takes a stamp. */
@@ -658,10 +819,14 @@ export class FakeDb {
     })();
   }
 
-  /** One snapshot of `caminho`, read NOW (the read is logged by the caller). */
-  private snapshot(caminho: string, readTime: CarimboFake) {
+  /**
+   * One snapshot of `caminho`, read NOW, holding only the masked fields when
+   * `mascara` is not `null` (the read is logged by the caller).
+   */
+  private snapshot(caminho: string, readTime: CarimboFake, mascara: readonly string[] | null) {
     const atual = this.store.get(caminho);
-    const dados = atual === undefined ? undefined : structuredClone(atual.data);
+    const inteiro = atual === undefined ? undefined : structuredClone(atual.data);
+    const dados = inteiro === undefined || mascara === null ? inteiro : projetar(inteiro, mascara);
     return {
       id: caminho.split('/').at(-1) ?? '',
       ref: this.docRef(caminho, caminho.split('/').at(-1) ?? ''),
@@ -679,10 +844,12 @@ export class FakeDb {
       path: caminho,
       parent: paiDoCaminho(caminho),
       get: () => {
+        this.conferirMascara(caminho, null);
         this.leituras.push(caminho);
+        this.leiturasDetalhadas.push({ caminho, via: 'get', mascara: null });
         const falha = this.falhasDeLeitura.get(caminho);
         if (falha) return Promise.reject(falha);
-        return Promise.resolve(this.snapshot(caminho, this.carimboDeLeitura()));
+        return Promise.resolve(this.snapshot(caminho, this.carimboDeLeitura(), null));
       },
       create: async (data: DocData) => {
         recusarIndefinido(data, caminho);
@@ -732,12 +899,7 @@ export class FakeDb {
   }
 
   collection(colecao: string) {
-    const raiz = this.consulta(colecao, false, {
-      filtros: [],
-      ordens: [],
-      limite: null,
-      apos: null,
-    });
+    const raiz = this.consulta(colecao, false, CONSULTA_INICIAL);
     return {
       ...raiz,
       doc: (id?: string) => {
@@ -754,27 +916,44 @@ export class FakeDb {
     if (idColecao === '' || idColecao.includes('/')) {
       throw new Error('FakeDb: collectionGroup() precisa de um id de coleção, sem barra');
     }
-    return this.consulta(idColecao, true, { filtros: [], ordens: [], limite: null, apos: null });
+    return this.consulta(idColecao, true, CONSULTA_INICIAL);
   }
 
   /**
    * One consistent read of several documents (module header): every snapshot
-   * shares ONE `readTime`, each in the order asked. A trailing read option (a
-   * field mask) is not modelled and throws; so does a ref this fake did not build.
+   * shares ONE `readTime`, each in the order asked. A trailing
+   * `{ fieldMask: [...] }` projects every snapshot to those fields; any other
+   * read option, an option anywhere but last, and a ref this fake did not build
+   * throw, synchronously.
    */
-  getAll(...refs: unknown[]) {
+  getAll(...args: unknown[]) {
+    const ultimo = args.at(-1);
+    const comOpcoes = ehOpcoesDeLeitura(ultimo);
+    const refs = comOpcoes ? args.slice(0, -1) : args;
     if (refs.length === 0) throw new Error('FakeDb: getAll() sem referências não é modelado');
+    const mascara = comOpcoes ? mascaraDasOpcoes(ultimo) : null;
     const caminhos = refs.map((ref) => {
-      if (typeof ref === 'object' && ref !== null && !('path' in ref)) {
-        throw new Error('FakeDb: getAll() com opções de leitura não é modelado');
+      if (ehOpcoesDeLeitura(ref)) {
+        throw new Error('FakeDb: getAll() com opções de leitura fora da última posição');
       }
       return caminhoDoRef(ref);
     });
-    for (const caminho of caminhos) this.leituras.push(caminho);
+    for (const caminho of caminhos) this.conferirMascara(caminho, mascara);
+    this.chamadasGetAll += 1;
+    const chamada = this.chamadasGetAll;
+    for (const caminho of caminhos) {
+      this.leituras.push(caminho);
+      this.leiturasDetalhadas.push({
+        caminho,
+        via: 'getAll',
+        chamada,
+        mascara: mascara === null ? null : [...mascara],
+      });
+    }
     const falha = caminhos.map((c) => this.falhasDeLeitura.get(c)).find((e) => e !== undefined);
     if (falha !== undefined) return Promise.reject(falha);
     const readTime = this.carimboDeLeitura();
-    return Promise.resolve(caminhos.map((c) => this.snapshot(c, readTime)));
+    return Promise.resolve(caminhos.map((c) => this.snapshot(c, readTime, mascara)));
   }
 
   /** A batch: all or nothing, each write under its own precondition (module header). */
@@ -882,6 +1061,9 @@ export class FakeDb {
         return derivar({ ordens: [...estado.ordens, { campo, direcao }] });
       },
       limit: (n: number) => derivar({ limite: n }),
+      // The classic projection (module header): `select()` alone = the keys.
+      select: (...campos: unknown[]) =>
+        derivar({ selecao: campos.map((campo) => validarCampo(campo, 'select()')) }),
       startAfter: (doc: { id: string; data: () => DocData | undefined }) => {
         if (grupo) throw new Error('FakeDb: startAfter() numa consulta de grupo não é modelado');
         if (
@@ -907,7 +1089,13 @@ export class FakeDb {
   }
 
   private buscar(colecao: string, grupo: boolean, estado: EstadoConsulta) {
-    const { filtros, ordens, limite, apos } = estado;
+    const { filtros, ordens, limite, apos, selecao } = estado;
+    const idColecao = grupo ? colecao : (colecao.split('/').at(-1) ?? '');
+    if (selecao === null && this.mascarasExigidas.has(idColecao)) {
+      return Promise.reject(
+        new Error(`FakeDb: consulta em '${colecao}' sem select() (exigirMascaraEm)`),
+      );
+    }
     if (!formaIndexada(colecao, grupo, filtros, ordens, limite)) {
       return Promise.reject(
         new Error(
@@ -926,6 +1114,7 @@ export class FakeDb {
       ordens: ordens.map((o) => [o.campo, o.direcao] as [string, 'asc' | 'desc']),
       limite,
       apos: apos === null ? null : apos.id,
+      ...(selecao === null ? {} : { selecao: [...selecao] }),
     });
     const prefixo = `${colecao}/`;
     // A group query: the last collection segment, at any depth. Otherwise the direct children.
@@ -957,7 +1146,8 @@ export class FakeDb {
     const limitados = limite === null ? aPartirDe : aPartirDe.slice(0, limite);
     const readTime = this.carimboDeLeitura();
     const docs = limitados.map(({ caminho, stored }) => {
-      const dados = structuredClone(stored.data);
+      const inteiro = structuredClone(stored.data);
+      const dados = selecao === null ? inteiro : projetar(inteiro, selecao);
       const id = caminho.split('/').at(-1) ?? '';
       return {
         id,

@@ -91,7 +91,8 @@
  *  - (step 15, PR 15-b) `agendamento/` is Next-free, reads no process
  *    environment and never imports the `@/` alias; the write engine has exactly
  *    TWO callers, one per write flow (`nfe/processarNfe.ts`,
- *    `agendamento/executarAgendamento.ts`); the Restricted Data Token mint and
+ *    `agendamento/executarAgendamento.ts`; three since step 12, PR 12-e1:
+ *    `estoque/processarEstoque.ts`); the Restricted Data Token mint and
  *    the Easy Ship bulk are named in production code by ONE module,
  *    `agendamento/easyShipAmazon.ts`, across `lib/`, `app/`, `functions/src` and
  *    `scripts/` (the redactor, the logger's local literal and the sanitizer's
@@ -129,14 +130,24 @@
  *    producer and the payload contract; and under `feeds/` only the lease I/O
  *    and the record's two writers make a Firestore WRITE call;
  *  - (step 12, PR 12-d) `estoque/` is Next-free, reads no process environment
- *    and never imports the `@/` alias; it is PURE and UNWIRED: its files import
- *    by value only their siblings, the shared quantity core, the schemas, the
- *    SP-API package, `zod`, and exactly two named helpers of `@delfrance/data`
- *    (`sha256Hex`, `contaRefForms`) (the order import's resolution and the
- *    write engine's plan as TYPES only; both `@delfrance/data` barrels load
- *    Admin modules transitively, and nothing under `estoque/` calls one), and
- *    no production file outside it imports it; and under it `publicado` is
- *    named by the family projection alone (never a gate).
+ *    and never imports the `@/` alias; its PURE half (the nine modules PR 12-d
+ *    shipped, and every module not in the I/O half below) imports by value only
+ *    its siblings, the shared quantity core, the schemas, the SP-API package,
+ *    `zod`, and exactly two named helpers of `@delfrance/data` (`sha256Hex`,
+ *    `contaRefForms`) (the order import's resolution and the write engine's
+ *    plan as TYPES only; both `@delfrance/data` barrels load Admin modules
+ *    transitively, and no pure module calls one); and under it `publicado` is
+ *    named by the family projection alone (never a gate);
+ *  - (step 12, PR 12-e1) `estoque/`'s I/O half — the resolver, the family
+ *    read, the outcome write-back, the producer and the patch task — loads
+ *    EXACTLY the modules {@link E_S_EM_ESTOQUE} lists, and no pure module
+ *    imports it; `estoque/` is imported by exactly
+ *    {@link IMPORTADORES_DE_ESTOQUE}; under it only the write-back makes a
+ *    Firestore WRITE call (its one precondition update);
+ *    `listings/listingsAmazon.ts` is the ONE caller of the package's three
+ *    listings helpers; the App Hosting union walk reaches none of
+ *    {@link MODULOS_DE_ESTOQUE_FORA_DO_APP_HOSTING}; and the stock root
+ *    (`functions/src/agendadorEstoque.ts`) binds the jobs and the stock queues.
  */
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, posix, relative, sep } from 'node:path';
@@ -655,10 +666,12 @@ const ARQUIVO_RAIZ_DA_FILA_NFE = 'functions/src/agendadorNfe.ts';
 const ARQUIVO_RAIZ_DA_FILA_AGENDAMENTO = 'functions/src/agendadorAgendamento.ts';
 
 /**
- * The functions codebase's composition root of the jobs queue (step 12a, PR
- * 12-c): the FIFTH caller, for the feed handlers' own enqueues. Its own file,
+ * The functions codebase's composition root of the stock flow (step 12a, PR
+ * 12-c: the jobs queue; step 12, PR 12-e1: the stock queue too): the FIFTH
+ * caller, for the feed handlers' own enqueues, the patch task's own and the
+ * feed providers' (`functions/src/filaLotes.ts`'s seam root). Its own file,
  * never a producer added to another root, whose closure would then reach the
- * jobs producer.
+ * feed core or the stock flow.
  */
 const ARQUIVO_RAIZ_DO_AGENDADOR_ESTOQUE = 'functions/src/agendadorEstoque.ts';
 
@@ -670,7 +683,9 @@ const ARQUIVO_RAIZ_DO_AGENDADOR_ESTOQUE = 'functions/src/agendadorEstoque.ts';
  * Hosting root binds THREE queues (since step 14, PR 14-d: the re-drive route's
  * NF-e producer; since step 12a, PR 12-c: the receiver's feed wake-up onto the
  * jobs queue), behind its ONE `getFunctions(` call
- * (`lib/firebase/filaLeitura.test.ts` pins the single call).
+ * (`lib/firebase/filaLeitura.test.ts` pins the single call); the stock root
+ * binds TWO (since step 12, PR 12-e1: the stock queue beside the jobs queue),
+ * behind its own one call (`functions/src/agendadorEstoque.test.ts`).
  */
 const FILAS_DE_CADA_RAIZ: Readonly<Record<string, readonly string[]>> = {
   [ARQUIVO_RAIZ_DA_FILA]: [
@@ -681,7 +696,7 @@ const FILAS_DE_CADA_RAIZ: Readonly<Record<string, readonly string[]>> = {
   [ARQUIVO_RAIZ_DA_FILA_FUNCOES]: ['caminhoDaFilaAmazon'],
   [ARQUIVO_RAIZ_DA_FILA_NFE]: ['caminhoDaFilaNfeAmazon'],
   [ARQUIVO_RAIZ_DA_FILA_AGENDAMENTO]: ['caminhoDaFilaAgendamentoAmazon'],
-  [ARQUIVO_RAIZ_DO_AGENDADOR_ESTOQUE]: ['caminhoDaFilaLotesAmazon'],
+  [ARQUIVO_RAIZ_DO_AGENDADOR_ESTOQUE]: ['caminhoDaFilaEstoqueAmazon', 'caminhoDaFilaLotesAmazon'],
 };
 
 /** The queue-path builders a source CALLS (comments aside), sorted and deduplicated. */
@@ -969,6 +984,21 @@ const MODULOS_DE_FEED_FORA_DO_APP_HOSTING = [
 ];
 
 /**
+ * The stock flow's WIRING (step 12, PR 12-e1), none of which an App Hosting
+ * entry needs: the patch task (it PATCHes through the engine, behind the queue's
+ * concurrency 1 and its own budget) and its three Firestore I/O modules (the
+ * masked link read, the family read, the outcome write-back). A route that
+ * reaches the task could send a PATCH outside the stock queue; the stock
+ * producer and the payload contract stay allowed (a route may ENQUEUE a task).
+ */
+const MODULOS_DE_ESTOQUE_FORA_DO_APP_HOSTING = [
+  'lib/amazon/estoque/processarEstoque.ts',
+  'lib/amazon/estoque/resolverEstoque.ts',
+  'lib/amazon/estoque/familiaEstoqueFirestore.ts',
+  'lib/amazon/estoque/envioEstoqueFirestore.ts',
+];
+
+/**
  * The label route (step 15, PR 15-d), relative to the APP root: the ONE App
  * Hosting entry allowed to reach the write engine (step-15 plan §3 decision 13).
  * {@link entradasDoAppHosting} discovers every file under `app/`, so taking it out
@@ -1012,7 +1042,8 @@ const MOTOR_DE_ESCRITA = 'lib/amazon/core/escrita.ts';
  * and since the receiver's feed wake-up (step 12a, PR 12-c), the feed core's
  * wiring ({@link MODULOS_DE_FEED_FORA_DO_APP_HOSTING}): a bundle that reaches a
  * handler, the lease I/O or the one caller of the feed helpers can submit a feed
- * outside the jobs queue.
+ * outside the jobs queue; and since the stock queue (step 12, PR 12-e1), the
+ * stock flow's wiring ({@link MODULOS_DE_ESTOQUE_FORA_DO_APP_HOSTING}).
  */
 const PROIBIDOS_NO_APP_HOSTING = [
   SEAM_DO_IMPORTADOR,
@@ -1023,6 +1054,7 @@ const PROIBIDOS_NO_APP_HOSTING = [
   'lib/amazon/agendamento/processarAgendamento.ts',
   'lib/amazon/agendamento/tarefaAgendamento.ts',
   ...MODULOS_DE_FEED_FORA_DO_APP_HOSTING,
+  ...MODULOS_DE_ESTOQUE_FORA_DO_APP_HOSTING,
 ];
 
 /**
@@ -1289,9 +1321,14 @@ const ORDER_IDS_DA_NFE = 'lib/amazon/pedidos/orderIds.ts';
 
 /* --------------------- step 15 (PR 15-b): the Easy Ship scheduling --------------------- */
 
-/** The ONLY production callers of the write engine: one per write flow (step-15 plan §3 decision 13). */
+/**
+ * The ONLY production callers of the write engine: one per write flow (step-15
+ * plan §3 decision 13) — the scheduling run, the stock patch task (step 12, PR
+ * 12-e1) and the NF-e task.
+ */
 const CHAMADORES_DO_MOTOR_DE_ESCRITA = [
   'lib/amazon/agendamento/executarAgendamento.ts',
+  'lib/amazon/estoque/processarEstoque.ts',
   'lib/amazon/nfe/processarNfe.ts',
 ];
 
@@ -1307,7 +1344,7 @@ const chamaOMotorDeEscrita = (texto: string) =>
 
 /**
  * The production files that may NAME the write engine at all: its own module
- * (the declaration) and its two callers. The NAME scan fails closed where the
+ * (the declaration) and its three callers. The NAME scan fails closed where the
  * call scan cannot: an aliased import (`executarEscritaAmazon as motor`), a
  * bound reference or a re-export runs the engine under another name, and only
  * the name gives it away.
@@ -1446,6 +1483,47 @@ const ESCRITORES_EM_FEEDS: Readonly<Record<string, number>> = {
   'feeds/resultadoFeed.ts': 1,
 };
 
+/* --------------------- step 12 (PR 12-e1): the listings wire --------------------- */
+
+/**
+ * The ONE module that may call the SP-API package's three listings helpers
+ * (`getListingsItem`, `searchListingsItems` and the availability
+ * `patchListingsItem`): a second caller would spend the listings operations'
+ * small rates outside the stock queue's serial dispatch, and a second PATCH
+ * path would sit behind no budget and no ordering guard. Step 13 imports this
+ * module for its own bodies.
+ */
+const CHAMADOR_DOS_LISTINGS = 'lib/amazon/listings/listingsAmazon.ts';
+
+/**
+ * Production files that NAME a listings operation without calling it, each with
+ * why: the log and fixture redactor keys its allow-list tables by the operation
+ * and its path (its closure is pinned to `zod` and `@delfrance/core/*`, so it
+ * cannot reach a client); and the patch task names the PATCH's operation
+ * constant ONLY to tell the PATCH's own failure (it may have landed) from an
+ * LWA exchange's or the read's, on the error's `operacao` — it calls the
+ * helpers through {@link CHAMADOR_DOS_LISTINGS}. Every other mention — the
+ * valves' and the plan's docblocks, the sanitizer's method rows (a bare object
+ * key, `getListingsItem: ['GET', 'PATCH']`) — is a comment or no call shape.
+ * Tests are exempt by construction (the scan reads no test file): they name the
+ * helpers to drive a scripted fetch.
+ */
+const NOMEIAM_LISTINGS_SEM_CHAMAR = [
+  'lib/amazon/core/redacao.ts',
+  'lib/amazon/estoque/processarEstoque.ts',
+];
+
+/**
+ * A listings call site, in comment-free code: any of the three package helpers,
+ * the three operation-name constants, the path constant, the three answer
+ * schemas, any of the three operation names as a WHOLE string, or a listings
+ * path anywhere in a string.
+ */
+const CHAMADA_DOS_LISTINGS =
+  /\b(?:lerListingAmazon|buscarListingsAmazon|enviarDisponibilidadeAmazon|OPERACAO_LER_LISTING|OPERACAO_BUSCAR_LISTINGS|OPERACAO_ENVIAR_LISTING|CAMINHO_LISTINGS|listingAmazonSchema|buscaListingsAmazonSchema|envioListingAmazonSchema)\b|['"`](?:getListingsItem|searchListingsItems|patchListingsItem)['"`]|\/listings\/2021-08-01\//;
+
+const nomeiaOsListings = (texto: string) => CHAMADA_DOS_LISTINGS.test(semComentarios(texto));
+
 /** The source text of the top-level function `nome` in `texto`, or `null`. */
 function textoDaFuncao(texto: string, nome: string): string | null {
   const fonte = ts.createSourceFile('x.ts', texto, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
@@ -1497,13 +1575,19 @@ describe('lib/amazon layout', () => {
         'core/valvulas.ts',
         'estoque/descobertaEstoque.ts',
         'estoque/envioEstoque.ts',
+        'estoque/envioEstoqueFirestore.ts',
         'estoque/familiaEstoque.ts',
+        'estoque/familiaEstoqueFirestore.ts',
         'estoque/gateListing.ts',
         'estoque/motivosEstoque.ts',
         'estoque/opcoesEstoque.ts',
         'estoque/planoEstoque.ts',
+        'estoque/processarEstoque.ts',
+        'estoque/produtorEstoque.ts',
+        'estoque/resolverEstoque.ts',
         'estoque/tarefaEstoque.ts',
         'estoque/vinculoEstoque.ts',
+        'feeds/destinosLote.ts',
         'feeds/escadaFeed.ts',
         'feeds/provedorLote.ts',
         'feeds/registroFeed.ts',
@@ -1512,6 +1596,7 @@ describe('lib/amazon layout', () => {
         'feeds/vezFeed.ts',
         'frete/estadoFreteAmazon.ts',
         'frete/intFrete.ts',
+        'listings/listingsAmazon.ts',
         'nfe/agendadorNfe.ts',
         'nfe/avisoNfe.ts',
         'nfe/carimboFreteNfe.ts',
@@ -1907,7 +1992,8 @@ describe('the step-3 intake guards', () => {
       // `functions/src/agendador.ts` (3-d, the step-4 poll's), its NF-e root
       // `functions/src/agendadorNfe.ts` (step 14, PR 14-c), its scheduling
       // root `functions/src/agendadorAgendamento.ts` (step 15, PR 15-c) and its
-      // jobs root `functions/src/agendadorEstoque.ts` (step 12a, PR 12-c).
+      // stock root `functions/src/agendadorEstoque.ts` (step 12a, PR 12-c: the
+      // jobs queue; step 12, PR 12-e1: the stock queue).
       // Every file the walk returns (`.ts`, `.tsx`, `.mjs`): a `.tsx` page is app code too.
       const app = arquivosTs(RAIZ_APP).filter((p) => !ehTeste(p));
       expect(app.length).toBeGreaterThan(40);
@@ -2636,7 +2722,7 @@ describe('the step-15 Easy Ship scheduling guards (15-b)', () => {
 
   // An app-wide parse: CI headroom, not a budget.
   it(
-    `★ (2) the write engine is CALLED by exactly two production files, one per write flow, and NAMED by no other: ${CHAMADORES_DO_MOTOR_DE_ESCRITA.join(', ')}`,
+    `★ (2) the write engine is CALLED by exactly three production files, one per write flow, and NAMED by no other: ${CHAMADORES_DO_MOTOR_DE_ESCRITA.join(', ')}`,
     { timeout: 30_000 },
     () => {
       const fontes = fontesDoChamadorDeSearchOrders();
@@ -3170,6 +3256,7 @@ describe('the step-12a feed core guards (12-b, 12-c)', () => {
       // per write flow, and the batch entry is none of them.
       expect(CHAMADORES_DO_MOTOR_DE_ESCRITA).toEqual([
         'lib/amazon/agendamento/executarAgendamento.ts',
+        'lib/amazon/estoque/processarEstoque.ts',
         'lib/amazon/nfe/processarNfe.ts',
       ]);
       // Anti-vacuity: the engine declares the entry and does not call it; the
@@ -3343,16 +3430,16 @@ describe('the step-12a feed core guards (12-b, 12-c)', () => {
     );
   });
 
-  it('(12-c) the jobs root binds the jobs queue only, and only the jobs queue imports it', () => {
+  it('(12-c, 12-e1) the stock root binds the jobs and the stock queues only, and only those two queues import it', () => {
     const raiz = lerDoApp(ARQUIVO_RAIZ_DO_AGENDADOR_ESTOQUE) ?? '';
     expect(chamaGetFunctions(raiz)).toBe(true);
-    expect(filasDaRaiz(raiz)).toEqual(['caminhoDaFilaLotesAmazon']);
+    expect(filasDaRaiz(raiz)).toEqual(['caminhoDaFilaEstoqueAmazon', 'caminhoDaFilaLotesAmazon']);
     const importadores = fontesDasFuncoes()
       .map((p) => [relApp(p), readFileSync(p, 'utf8')] as const)
       .filter(([, texto]) => especificadores(texto).includes('./agendadorEstoque'))
       .map(([arquivo]) => arquivo)
       .sort();
-    expect(importadores).toEqual(['functions/src/filaLotes.ts']);
+    expect(importadores).toEqual(['functions/src/filaEstoque.ts', 'functions/src/filaLotes.ts']);
   });
 
   it('★ (12-c) under feeds/, ONLY the lease I/O and the record’s two writers make a Firestore WRITE call — each its own count; the lease handle is the lease I/O’s alone', () => {
@@ -3445,6 +3532,96 @@ const NOMES_PERMITIDOS_EM_ESTOQUE: Readonly<Record<string, readonly string[]>> =
 /** …and as a TYPE only, on top: the order import's resolution of a SKU, and the write engine's plan. */
 const TIPOS_PERMITIDOS_EM_ESTOQUE = ['../pedidos/vinculoProdutoAmazon', '../core/escrita'];
 
+/**
+ * The I/O half of `estoque/` (step 12, PR 12-e1): each module with EXACTLY the
+ * non-sibling modules it loads AS A VALUE, and why. Every other production file
+ * under `estoque/` is PURE ({@link VALORES_PERMITIDOS_EM_ESTOQUE}), and no pure
+ * file imports one of these, so the 12-d decisions stay Firestore-free and are
+ * proved without a db.
+ *
+ * - `resolverEstoque.ts` — the verdict's Firestore half: the link and produto
+ *   handles (masked reads), the schemas' index-field tuple, and the order
+ *   import's OWN query and dono hop (`pedidos/vinculoProdutoAmazon.ts`: one
+ *   binding, never a second copy of it).
+ * - `familiaEstoqueFirestore.ts` — the family read: the estoque and produto
+ *   handles, the shared quantity core's component rule (the core's own answer to
+ *   "which components"), the schemas' canonical estoque id.
+ * - `envioEstoqueFirestore.ts` — the outcome write-back: the link handle (its
+ *   ONE precondition `update`), the gRPC class readers (a lost precondition is
+ *   9/5), the schemas, and the app's logger (its one WARNING).
+ * - `produtorEstoque.ts` — the stock queue's pure producer: the task-SDK helpers
+ *   (`core/filaTarefas.ts` stays the ONE importer of the SDK under `lib/amazon`).
+ * - `processarEstoque.ts` — the patch task: the region error class (the
+ *   producer's own refusal), the lease handle (ONE masked by-id read), the gRPC
+ *   class reader, the SP-API package (error classes, the dataset and operation
+ *   constants, the path check), the schemas, the avisos seam, the write engine,
+ *   the task-SDK helpers, the logger, the redactor's code grammar, the valves,
+ *   the ONE listings caller and the shared read-failure ladder.
+ */
+const E_S_EM_ESTOQUE: Readonly<Record<string, readonly string[]>> = {
+  'estoque/resolverEstoque.ts': [
+    '../pedidos/vinculoProdutoAmazon',
+    '@delfrance/data/admin/collections',
+    '@delfrance/schemas',
+  ],
+  'estoque/familiaEstoqueFirestore.ts': [
+    '@delfrance/data/admin/collections',
+    '@delfrance/data/admin/estoque',
+    '@delfrance/schemas',
+  ],
+  'estoque/envioEstoqueFirestore.ts': [
+    '../core/log',
+    '@delfrance/data/admin/collections',
+    '@delfrance/data/admin/grpcErrors',
+    '@delfrance/schemas',
+  ],
+  'estoque/produtorEstoque.ts': ['../core/filaTarefas'],
+  'estoque/processarEstoque.ts': [
+    '../avisos/avisos',
+    '../core/escrita',
+    '../core/filaTarefas',
+    '../core/log',
+    '../core/redacao',
+    '../core/valvulas',
+    '../listings/listingsAmazon',
+    '../pedidos/falhaLeituraAmazon',
+    '@delfrance/core/region',
+    '@delfrance/data/admin/collections',
+    '@delfrance/data/admin/grpcErrors',
+    '@delfrance/integrations-amazon-sp-api',
+    '@delfrance/schemas',
+  ],
+};
+
+/**
+ * The ONLY files under `estoque/` that write Firestore, each with its writes
+ * and why: the outcome write-back's ONE `update(…, { lastUpdateTime })` on the
+ * masked link-doc read it decided from (rule 7 tier 1). The patch task writes
+ * through it and through `avisos/avisos.ts`; the readers and the producer write
+ * nothing. The scan is {@link ESCRITA_FIRESTORE_EM_FEEDS}, shape-only.
+ */
+const ESCRITORES_EM_ESTOQUE: Readonly<Record<string, number>> = {
+  'estoque/envioEstoqueFirestore.ts': 1,
+};
+
+/**
+ * Every production file OUTSIDE `estoque/` that imports it (step 12, PR
+ * 12-e1), with the `estoque/` modules it names, and why:
+ *
+ * - `functions/src/agendadorEstoque.ts` — the stock root binds the stock
+ *   producer onto its queue (the payload contract by type);
+ * - `functions/src/filaEstoque.ts` — the stock queue runs the patch task;
+ * - `functions/src/index.ts` — the load-time assertion reads the queue's name;
+ * - `lib/amazon/feeds/destinosLote.ts` — the seam's root names the stock
+ *   producer's TYPE (a provider factory receives it), never a value.
+ */
+const IMPORTADORES_DE_ESTOQUE: Readonly<Record<string, readonly string[]>> = {
+  'functions/src/agendadorEstoque.ts': ['estoque/produtorEstoque', 'estoque/tarefaEstoque'],
+  'functions/src/filaEstoque.ts': ['estoque/processarEstoque'],
+  'functions/src/index.ts': ['estoque/produtorEstoque'],
+  'lib/amazon/feeds/destinosLote.ts': ['estoque/produtorEstoque'],
+};
+
 /** The names an import declaration of `espec` binds (namespace and default imports read as `*`). */
 function nomesImportadosDe(texto: string, espec: string): string[] {
   const fonte = ts.createSourceFile('x.ts', texto, ts.ScriptTarget.Latest, false, ts.ScriptKind.TS);
@@ -3469,15 +3646,23 @@ const IMPORTA_ESTOQUE = /(?:^|\/)amazon\/estoque\/|^\.\.?\/(?:\.\.\/)*estoque\//
 describe('the step-12 stock core guards (12-d)', () => {
   const estoque = arquivosTs(join(RAIZ_LIB, 'estoque')).filter((p) => !ehTeste(p));
 
+  /** The pure half: every production file of `estoque/` not on the I/O roster. */
+  const puros = estoque.filter((p) => !(rel(p) in E_S_EM_ESTOQUE));
+
   it('★ (1) estoque/ is Next-free, reads no process environment and never imports the @/ alias', () => {
     expect(estoque.map(rel).sort()).toEqual([
       'estoque/descobertaEstoque.ts',
       'estoque/envioEstoque.ts',
+      'estoque/envioEstoqueFirestore.ts',
       'estoque/familiaEstoque.ts',
+      'estoque/familiaEstoqueFirestore.ts',
       'estoque/gateListing.ts',
       'estoque/motivosEstoque.ts',
       'estoque/opcoesEstoque.ts',
       'estoque/planoEstoque.ts',
+      'estoque/processarEstoque.ts',
+      'estoque/produtorEstoque.ts',
+      'estoque/resolverEstoque.ts',
       'estoque/tarefaEstoque.ts',
       'estoque/vinculoEstoque.ts',
     ]);
@@ -3492,8 +3677,20 @@ describe('the step-12 stock core guards (12-d)', () => {
     }
   });
 
-  it('★ (2) estoque/ is PURE: by value it imports only its siblings, the quantity core, the schemas, the SP-API package, zod and two named data helpers; the order import’s resolution and the engine’s plan by type only', () => {
-    for (const arquivo of estoque) {
+  it('★ (2) estoque/’s PURE half: by value it imports only its siblings, the quantity core, the schemas, the SP-API package, zod and two named data helpers; the order import’s resolution and the engine’s plan by type only', () => {
+    // Anti-vacuity: the pure half is the nine 12-d modules, not an emptied list.
+    expect(puros.map(rel).sort()).toEqual([
+      'estoque/descobertaEstoque.ts',
+      'estoque/envioEstoque.ts',
+      'estoque/familiaEstoque.ts',
+      'estoque/gateListing.ts',
+      'estoque/motivosEstoque.ts',
+      'estoque/opcoesEstoque.ts',
+      'estoque/planoEstoque.ts',
+      'estoque/tarefaEstoque.ts',
+      'estoque/vinculoEstoque.ts',
+    ]);
+    for (const arquivo of puros) {
       const texto = readFileSync(arquivo, 'utf8');
       const valores = importacoesDeValor(texto).filter((e) => !e.startsWith('./'));
       for (const espec of valores) {
@@ -3545,20 +3742,90 @@ describe('the step-12 stock core guards (12-d)', () => {
     expect(nomesImportadosDe(`import { contaRefForms } from '${e}/x';`, e)).toEqual([]);
   });
 
-  it('★ (3) estoque/ is UNWIRED: no production file outside it imports it — lib, app, functions and scripts', () => {
+  it('★ (2b, 12-e1) estoque/’s I/O half loads EXACTLY its listed modules as values, and no pure module imports it', () => {
+    const es = estoque.filter((p) => rel(p) in E_S_EM_ESTOQUE);
+    expect(es.map(rel).sort()).toEqual(Object.keys(E_S_EM_ESTOQUE).sort());
+    for (const arquivo of es) {
+      const valores = [
+        ...new Set(
+          importacoesDeValor(readFileSync(arquivo, 'utf8')).filter((e) => !e.startsWith('./')),
+        ),
+      ].sort();
+      expect(valores, rel(arquivo)).toEqual([...(E_S_EM_ESTOQUE[rel(arquivo)] ?? [])].sort());
+    }
+    // The pure half never reaches the I/O half, by value or by type.
+    const nomesES = Object.keys(E_S_EM_ESTOQUE).map((a) => `./${a.slice('estoque/'.length, -3)}`);
+    for (const arquivo of puros) {
+      const especs = especificadores(readFileSync(arquivo, 'utf8'));
+      expect(
+        especs.filter((e) => nomesES.includes(e)),
+        rel(arquivo),
+      ).toEqual([]);
+    }
+    // Anti-vacuity: the task does import the I/O siblings it wires.
+    const tarefa = especificadores(
+      readFileSync(join(RAIZ_LIB, 'estoque', 'processarEstoque.ts'), 'utf8'),
+    );
+    expect(tarefa).toEqual(
+      expect.arrayContaining([
+        './resolverEstoque',
+        './familiaEstoqueFirestore',
+        './envioEstoqueFirestore',
+        './produtorEstoque',
+      ]),
+    );
+  });
+
+  it('★ (3, 12-e1) estoque/ is WIRED by EXACTLY the stock root, the stock queue, the functions index and the seam’s root type — lib, app, functions and scripts', () => {
     const fora = [
       ...fontesDoChamadorDeSearchOrders(),
       ...(existsSync(join(RAIZ_APP, 'proxy.ts')) ? [join(RAIZ_APP, 'proxy.ts')] : []),
-    ].filter((p) => !rel(p).startsWith('estoque/'));
-    const chamadores = fora
-      .filter((p) => especificadores(readFileSync(p, 'utf8')).some((e) => IMPORTA_ESTOQUE.test(e)))
-      .map(relApp)
-      .sort();
-    expect(chamadores).toEqual([]);
+    ].filter((p) => !relApp(p).startsWith('lib/amazon/estoque/'));
+    const importadores = Object.fromEntries(
+      fora
+        .map((p) => [relApp(p), especificadores(readFileSync(p, 'utf8'))] as const)
+        .map(
+          ([arquivo, especs]) =>
+            [
+              arquivo,
+              [
+                ...new Set(
+                  especs
+                    .filter((e) => IMPORTA_ESTOQUE.test(e))
+                    .map((e) => (/estoque\/[^/]+$/.exec(e) ?? [e])[0]),
+                ),
+              ].sort(),
+            ] as const,
+        )
+        .filter(([, nomeados]) => nomeados.length > 0),
+    );
+    expect(importadores).toEqual(IMPORTADORES_DE_ESTOQUE);
+    // The seam's root names the stock producer by TYPE only.
+    const seam = readFileSync(join(RAIZ_LIB, 'feeds', 'destinosLote.ts'), 'utf8');
+    expect(importacoesDeValor(seam).filter((e) => IMPORTA_ESTOQUE.test(e))).toEqual([]);
     // Anti-vacuity: the scan read the functions codebase and the scripts.
     expect(fora.map(relApp)).toEqual(
       expect.arrayContaining(['functions/src/index.ts', 'scripts/sanitizar.ts']),
     );
+  });
+
+  it('★ (5, 12-e1) under estoque/, ONLY the outcome write-back makes a Firestore WRITE call — exactly its one precondition update', () => {
+    const escritas = Object.fromEntries(
+      estoque
+        .map((p) => [rel(p), semComentarios(readFileSync(p, 'utf8'))] as const)
+        .map(
+          ([arquivo, codigo]) =>
+            [arquivo, (codigo.match(ESCRITA_FIRESTORE_EM_FEEDS) ?? []).length] as const,
+        )
+        .filter(([, n]) => n !== 0),
+    );
+    expect(escritas).toEqual(ESCRITORES_EM_ESTOQUE);
+    // Anti-vacuity: that one write IS the precondition update the scan counts.
+    const escritor = semComentarios(
+      readFileSync(join(RAIZ_LIB, 'estoque', 'envioEstoqueFirestore.ts'), 'utf8'),
+    );
+    expect(escritor).toMatch(/\.update\(/);
+    expect(escritor).toMatch(/lastUpdateTime/);
   });
 
   it('★ (4) publicado is never a gate: under estoque/ only the family projection names it, and reads it once', () => {
@@ -3592,6 +3859,125 @@ describe('the step-12 stock core guards (12-d)', () => {
     ]) {
       expect(IMPORTA_ESTOQUE.test(espec), espec).toBe(false);
     }
+  });
+});
+
+describe('the step-12 patch path guards (12-e1)', () => {
+  const listings = arquivosTs(join(RAIZ_LIB, 'listings')).filter((p) => !ehTeste(p));
+
+  it('★ listings/ is Next-free, reads no process environment, never imports the @/ alias, and reaches nothing of estoque/', () => {
+    expect(listings.map(rel).sort()).toEqual(['listings/listingsAmazon.ts']);
+    for (const arquivo of listings) {
+      const texto = readFileSync(arquivo, 'utf8');
+      expect(texto, rel(arquivo)).not.toMatch(/process\s*\.\s*env/);
+      expect(/from 'next(\/[^']*)?'/.test(texto), rel(arquivo)).toBe(false);
+      const especs = especificadores(texto);
+      expect(
+        especs.filter((e) => e.startsWith('@/')),
+        rel(arquivo),
+      ).toEqual([]);
+      // A later listings flow (step 13) reuses this module: it carries no stock rule.
+      expect(
+        especs.filter((e) => IMPORTA_ESTOQUE.test(e)),
+        rel(arquivo),
+      ).toEqual([]);
+    }
+  });
+
+  // An app-wide parse: CI headroom, not a budget.
+  it(
+    `★ the three listings helpers have exactly ONE caller module under lib/amazon, app/, functions/src and scripts/: ${CHAMADOR_DOS_LISTINGS}`,
+    { timeout: 30_000 },
+    () => {
+      const fontes = fontesDoChamadorDeSearchOrders();
+      const nomeiam = fontes
+        .filter((p) => nomeiaOsListings(readFileSync(p, 'utf8')))
+        .map(relApp)
+        .sort();
+      expect(nomeiam.filter((p) => !NOMEIAM_LISTINGS_SEM_CHAMAR.includes(p))).toEqual([
+        CHAMADOR_DOS_LISTINGS,
+      ]);
+      // Anti-vacuity: the scan sees every exempt mention, by name; the one caller
+      // really calls all three helpers, and the exempt task calls none of them.
+      expect(nomeiam).toEqual(expect.arrayContaining(NOMEIAM_LISTINGS_SEM_CHAMAR));
+      const chamador = semComentarios(lerDoApp(CHAMADOR_DOS_LISTINGS) ?? '');
+      for (const ajudante of [
+        'lerListingAmazon',
+        'buscarListingsAmazon',
+        'enviarDisponibilidadeAmazon',
+      ]) {
+        expect(chamador, ajudante).toMatch(new RegExp(`\\b${ajudante}\\s*\\(`));
+      }
+      const tarefa = semComentarios(lerDoApp('lib/amazon/estoque/processarEstoque.ts') ?? '');
+      expect(tarefa).not.toMatch(
+        /\b(?:lerListingAmazon|buscarListingsAmazon|enviarDisponibilidadeAmazon)\b/,
+      );
+      expect(tarefa).toMatch(/\bOPERACAO_ENVIAR_LISTING\b/);
+      expect(fontes.map(relApp)).toEqual(
+        expect.arrayContaining(['functions/src/index.ts', 'scripts/sanitizar.ts']),
+      );
+    },
+  );
+
+  it('the listings scan finds every call shape, and nothing alike (near-misses)', () => {
+    for (const fonte of [
+      'await lerListingAmazon(cliente, entrada);',
+      'const r = await buscarListingsAmazon(contexto.cliente, entrada);',
+      'await enviarDisponibilidadeAmazon(escritor, entrada);',
+      'cliente.get({ operacao: OPERACAO_LER_LISTING, caminho: c, schema });',
+      "escritor.patch({ operacao: 'patchListingsItem', caminho: c, corpo });",
+      'const c = `/listings/2021-08-01/items/${sellerId}`;',
+      'const s = envioListingAmazonSchema.parse(x);',
+      "import { lerListingAmazon as ler } from '@delfrance/integrations-amazon-sp-api';",
+    ]) {
+      expect(nomeiaOsListings(fonte), fonte).toBe(true);
+    }
+    for (const fonte of [
+      '// lerListingAmazon(cliente, entrada)',
+      '/** the ONE `patchListingsItem` of a run */ const y = 1;',
+      'await lerListingNaAmazon(contexto, entrada);',
+      'await enviarDisponibilidadeNaAmazon(escritor, entrada);',
+      "const metodos = { getListingsItem: ['GET', 'PATCH'] };",
+      "const nome = 'getListingsItems';",
+      'const l: ListingAmazon = x;',
+      'const v = skuTemCaminhoAmazon(sku);',
+    ]) {
+      expect(nomeiaOsListings(fonte), fonte).toBe(false);
+    }
+  });
+
+  it('★ the App Hosting union walk reaches NOTHING of the stock wiring — no task, no link read, no family read, no write-back; type edges and the @/ alias walked', () => {
+    const fecho = fechoDeImportacoes(
+      entradasDaUniaoDoAppHosting(),
+      lerDoApp,
+      resolverAliasDoApp(lerDoApp),
+    );
+    expect(violacoesDoAppHosting(fecho)).toEqual([]);
+    for (const modulo of MODULOS_DE_ESTOQUE_FORA_DO_APP_HOSTING) {
+      expect(PROIBIDOS_NO_APP_HOSTING, modulo).toContain(modulo);
+      expect(fecho.arquivos, modulo).not.toContain(modulo);
+    }
+    // …and the stock queue's functions root DOES reach every one of them, so the
+    // list is not vacuous: a bundle importing the queue's body would fail.
+    const fila = fechoDeImportacoes(['functions/src/filaEstoque.ts'], lerDoApp);
+    expect(fila.arquivos).toEqual(expect.arrayContaining(MODULOS_DE_ESTOQUE_FORA_DO_APP_HOSTING));
+    expect(violacoesDoAppHosting(fila)).toEqual(
+      expect.arrayContaining(MODULOS_DE_ESTOQUE_FORA_DO_APP_HOSTING.map((m) => `reaches ${m}`)),
+    );
+  });
+
+  it('★ the App Hosting list holds EVERY I/O module of estoque/ but the producer — derived from E_S_EM_ESTOQUE, never from itself', () => {
+    // E_S_EM_ESTOQUE is held to the folder by the purity pins above (a module
+    // missing from it must pass the PURE allow-list, which no I/O module does),
+    // so an entry dropped from the App Hosting list reds HERE, even while no
+    // route reaches it yet. The producer stays reachable on purpose: a route
+    // may ENQUEUE a task (the payload contract is pure).
+    const esperado = Object.keys(E_S_EM_ESTOQUE)
+      .filter((arquivo) => arquivo !== 'estoque/produtorEstoque.ts')
+      .map((arquivo) => `lib/amazon/${arquivo}`)
+      .sort();
+    expect(esperado).toContain('lib/amazon/estoque/processarEstoque.ts');
+    expect([...MODULOS_DE_ESTOQUE_FORA_DO_APP_HOSTING].sort()).toEqual(esperado);
   });
 });
 

@@ -27,6 +27,7 @@ import {
   camposSeguros,
   registrarEventoAmazon,
 } from '../../lib/amazon/core/log';
+import { FILA_ESTOQUE_AMAZON } from '../../lib/amazon/estoque/produtorEstoque';
 import { FILA_LOTES_AMAZON } from '../../lib/amazon/feeds/agendadorLotes';
 import {
   FILA_LEITURA_AMAZON,
@@ -38,6 +39,7 @@ import {
 import { FILA_NFE_AMAZON } from '../../lib/amazon/nfe/tarefaNfe';
 import { SEGREDOS_DE_LEITURA_AMAZON, depsDeLeituraAmazon } from './depsLeitura';
 import * as filaAgendamento from './filaAgendamento';
+import * as filaEstoque from './filaEstoque';
 import * as filaLeitura from './filaLeitura';
 import * as filaLotes from './filaLotes';
 import * as filaNfe from './filaNfe';
@@ -77,6 +79,11 @@ import { getDb } from './lib/admin';
  * handlers through its own composition root (./agendadorEstoque); a feed is
  * submitted only behind the read switch, the fluxo's valve and a canary list of
  * exactly `*`, and the seam that names a fluxo's provider is empty for now.
+ * Step 12 (PR 12-e1) adds the STOCK queue (`processAmazonStockPatch`,
+ * ./filaEstoque), the FIFTH task queue: one SKU's availability PATCH per task,
+ * its quantity computed when the task runs, fed by its own read-back and 429
+ * pause through the same stock root (./agendadorEstoque), which now binds two
+ * queues; a PATCH needs the read switch, the stock valve and a canary hit.
  *
  * ⚠️ ONE logger: every line goes through `LOGGER_STDOUT_AMAZON` /
  * `registrarEventoAmazon` (`lib/amazon/core/log.ts`). This file never imports
@@ -137,6 +144,17 @@ if (!(FILA_LOTES_AMAZON in filaLotes)) {
   );
 }
 
+// The same assertion for the stock queue (step 12, PR 12-e1): every stock
+// task's producer — the task's own read-back and pause, the feed providers'
+// per-SKU hand-offs — targets `FILA_ESTOQUE_AMAZON`.
+if (!(FILA_ESTOQUE_AMAZON in filaEstoque)) {
+  throw new Error(
+    '[amazon] function-name drift: functions/src/filaEstoque.ts must export a ' +
+      `handler named '${FILA_ESTOQUE_AMAZON}' (the enqueue target). ` +
+      'Rename the export and the FILA_ESTOQUE_AMAZON constant together.',
+  );
+}
+
 /** The ONE reads queue (one dispatch at a time, retry with backoff). */
 export { filaLeituraAmazon } from './filaLeitura';
 
@@ -159,6 +177,13 @@ export { processAmazonEasyShipSchedule } from './filaAgendamento';
  * canary; no fluxo has a provider yet.
  */
 export { processAmazonListingsJob } from './filaLotes';
+
+/**
+ * The stock queue (step 12, PR 12-e1): one SKU's availability PATCH per task,
+ * the quantity read when the task runs, behind the read switch, the stock valve
+ * and its canary; one task at a time (the ordering guard between patches).
+ */
+export { processAmazonStockPatch } from './filaEstoque';
 
 /** The 15-minute backstop poll: the reads queue's second producer (./pollPedidos). */
 export { pollAmazonOrders } from './pollPedidos';

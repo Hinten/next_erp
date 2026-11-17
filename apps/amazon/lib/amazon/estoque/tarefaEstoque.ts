@@ -1,7 +1,8 @@
 /**
  * The stock patch task's CONTRACT (step 12, PR 12-d), pure: the payload one
  * per-SKU stock task carries, its NAME, and whether a sent patch earns one
- * read-back. Unwired here: the producer and the task come later.
+ * read-back. The producer is `produtorEstoque.ts` and the task
+ * `processarEstoque.ts` (PR 12-e1).
  *
  * ## The payload: identities only
  *

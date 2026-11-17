@@ -97,7 +97,7 @@ export interface DepsIncertoFeedAmazon {
   readonly increment: (by: number) => unknown;
   /** The jobs queue's producer — built only when an enqueue is due. */
   readonly agendador: () => AgendadorLotesAmazon;
-  /** The fluxo's provider, read from the seam per run; `null` while the row is empty. */
+  /** The fluxo's provider, from the seam's bound rows; `null` while the row is empty. */
   readonly provedor: ProvedorLoteAmazon<FluxoComLoteAmazon, unknown> | null;
   readonly registro: RegistroLoteAmazon;
 }

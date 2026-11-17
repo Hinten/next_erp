@@ -14,12 +14,14 @@
  * way on every retry, and the line names the `tipo` (when it is one of the four)
  * and the top-level FIELDS Zod blamed, never a value.
  *
- * The provider is read from the seam PER RUN (`deps.provedorDe`, the jobs root
- * binds `./destinosLote`): by the payload's fluxo for a send, an uncertain wait
- * and a recovery; by the RECORD's for a result (its payload names no fluxo). A
- * `null` row is each handler's to answer: a send ends `sem-provedor` having
- * taken nothing, a result still advances its record and skips the write-back,
- * an uncertain wait still recovers and releases, a recovery logs and ends.
+ * The provider comes from the BOUND seam (`deps.provedores`: the jobs root
+ * binds `./destinosLote`'s factories ONCE per process, and hands the same
+ * bound rows to every dispatch): by the payload's fluxo for a send, an
+ * uncertain wait and a recovery; by the RECORD's for a result (its payload names
+ * no fluxo). A `null` row is each handler's to answer: a send ends
+ * `sem-provedor` having taken nothing, a result still advances its record and
+ * skips the write-back, an uncertain wait still recovers and releases, a
+ * recovery logs and ends.
  *
  * Every handler writes its OWN one dispatch line; this module writes only P0's.
  * A throw is each handler's, for the queue's retry, already sanitized.
@@ -30,13 +32,13 @@ import { type LoggerAmazon, registrarEventoAmazon } from '../core/log';
 import type { FluxoComLoteAmazon } from '../core/valvulas';
 import type { AmbienteAmazon } from '../env';
 import type { AgendadorLotesAmazon } from './agendadorLotes';
+import type { ProvedoresLoteAmazon } from './destinosLote';
 import { type ResultadoEnvioFeedAmazon, enviarFeedAmazon } from './enviarFeed';
 import {
   type RegistroLoteAmazon,
   type ResultadoIncertoFeedAmazon,
   processarIncertoFeedAmazon,
 } from './incertoFeed';
-import type { ProvedorLoteAmazon } from './provedorLote';
 import {
   type ResultadoRecuperacaoFeedAmazon,
   processarRecuperacaoFeedAmazon,
@@ -60,10 +62,8 @@ export interface DepsProcessarLoteAmazon {
   readonly increment: (by: number) => unknown;
   /** The jobs queue's producer — built only when an enqueue is due. */
   readonly agendador: () => AgendadorLotesAmazon;
-  /** The seam, read per run (`./destinosLote`'s `provedorDoLoteAmazon`). */
-  readonly provedorDe: (
-    fluxo: FluxoComLoteAmazon,
-  ) => ProvedorLoteAmazon<FluxoComLoteAmazon, unknown> | null;
+  /** The seam BOUND by the jobs root (`./destinosLote`'s `vincularDestinosLoteAmazon`). */
+  readonly provedores: ProvedoresLoteAmazon;
   readonly registro: RegistroLoteAmazon;
   /** REQUIRED, never defaulted: the context, the write client and both transfers take it. */
   readonly fetch: typeof globalThis.fetch;
@@ -130,6 +130,7 @@ export async function processarLoteAmazon(
   }
 
   const t = lido.data;
+  const provedorDe = (fluxo: FluxoComLoteAmazon) => deps.provedores[fluxo];
   const base = {
     ambiente: deps.ambiente,
     agora: deps.agora,
@@ -144,24 +145,24 @@ export async function processarLoteAmazon(
     case TIPO_TAREFA_LOTE_AMAZON.enviar:
       return {
         tipo: t.tipo,
-        r: await enviarFeedAmazon(db, t, { ...base, provedor: deps.provedorDe(t.fluxo) }),
+        r: await enviarFeedAmazon(db, t, { ...base, provedor: provedorDe(t.fluxo) }),
       };
     case TIPO_TAREFA_LOTE_AMAZON.resultado:
       return {
         tipo: t.tipo,
-        r: await processarResultadoFeedAmazon(db, t, { ...base, provedorDe: deps.provedorDe }),
+        r: await processarResultadoFeedAmazon(db, t, { ...base, provedorDe }),
       };
     case TIPO_TAREFA_LOTE_AMAZON.incerto:
       return {
         tipo: t.tipo,
-        r: await processarIncertoFeedAmazon(db, t, { ...base, provedor: deps.provedorDe(t.fluxo) }),
+        r: await processarIncertoFeedAmazon(db, t, { ...base, provedor: provedorDe(t.fluxo) }),
       };
     case TIPO_TAREFA_LOTE_AMAZON.recuperar:
       return {
         tipo: t.tipo,
         r: await processarRecuperacaoFeedAmazon(db, t, {
           ...base,
-          provedor: deps.provedorDe(t.fluxo),
+          provedor: provedorDe(t.fluxo),
         }),
       };
   }

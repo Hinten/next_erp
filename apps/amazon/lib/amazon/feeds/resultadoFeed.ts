@@ -794,7 +794,7 @@ async function carregarContexto(e: Execucao): Promise<ContextoAmazon | FalhaLeit
   }
 }
 
-/** The context the provider receives at R7 (no lease read here: no send-side clock). */
+/** The context the provider receives at R7 (no lease read here: no send-side clock, no lease). */
 function contextoDoLote(e: Execucao, contexto: ContextoAmazon): ContextoLoteAmazon {
   const sellerId = contexto.conta.selling_partner_id;
   if (typeof sellerId !== 'string' || sellerId === '') {
@@ -808,6 +808,7 @@ function contextoDoLote(e: Execucao, contexto: ContextoAmazon): ContextoLoteAmaz
     agora: e.deps.agora,
     sellerId,
     relogioVez: null,
+    vez: null,
   };
 }
 

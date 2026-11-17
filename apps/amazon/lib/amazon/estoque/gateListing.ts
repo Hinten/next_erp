@@ -1,7 +1,8 @@
 /**
  * The listing gate of the Amazon stock sync (step 12, PR 12-d), pure: whether
  * Amazon's LIVE listing of a SKU may receive a merchant-fulfilled quantity, and
- * what quantity it shows now. Unwired here: the live read comes later.
+ * what quantity it shows now. The patch task (`processarEstoque.ts`, PR 12-e1)
+ * makes the live read, through `listings/listingsAmazon.ts`.
  *
  * ## The closed refusal list, in the order it is checked
  *

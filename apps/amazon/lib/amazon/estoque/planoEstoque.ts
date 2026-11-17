@@ -1,8 +1,8 @@
 /**
  * The stock plan of the Amazon stock sync (step 12, PR 12-d), pure: whether
  * ONE SKU's ERP quantity is sent, given Amazon's live listing and what this
- * repo last sent; and which form a batch of SKUs takes. Unwired here: the
- * patch task and the feed's build call it later.
+ * repo last sent; and which form a batch of SKUs takes. The patch task
+ * (`processarEstoque.ts`, PR 12-e1) calls it; the feed's build does from PR 12-f.
  *
  * ## The plan ({@link planejarEstoqueAmazon})
  *

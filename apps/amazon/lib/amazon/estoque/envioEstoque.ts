@@ -1,8 +1,8 @@
 /**
  * The stock OUTCOME write-back of the Amazon stock sync (step 12, PR 12-d),
  * pure: the three shapes a link doc's `envioEstoqueAmazon` field takes, and
- * whether a new one replaces the stored one. Unwired here: the reader and the
- * preconditioned `update` come later.
+ * whether a new one replaces the stored one. Its reader and the preconditioned
+ * `update` live in `envioEstoqueFirestore.ts` (PR 12-e1).
  *
  * ## The watermark: `emMs`, strictly newer wins
  *

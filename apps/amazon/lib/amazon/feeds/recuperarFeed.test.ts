@@ -92,6 +92,8 @@ function mundo() {
     log,
     chamadas,
     vendedores: [] as string[],
+    /** What each recovery received in its context: the lease and its clock. */
+    contextos: [] as { readonly vez: unknown; readonly relogioVez: unknown }[],
     respostas: [] as (DesfechoRecuperacaoLoteAmazon | Error)[],
     ambiente: { ...AMBIENTE_LIGADO } as Record<string, string | undefined>,
     provedor: null as ProvedorLoteAmazon<'estoque' | 'preco', unknown> | null,
@@ -114,6 +116,7 @@ function mundo() {
     recuperar: (ctx, r) => {
       chamadas.push(r);
       m.vendedores.push(ctx.sellerId);
+      m.contextos.push({ vez: ctx.vez, relogioVez: ctx.relogioVez });
       const resposta = m.respostas.shift() ?? { nada: true };
       return resposta instanceof Error ? Promise.reject(resposta) : Promise.resolve(resposta);
     },
@@ -310,5 +313,21 @@ describe('when it cannot recover', () => {
       .catch((e: unknown) => e);
     expect(erro).toMatchObject({ name: 'FalhaTarefaAmazonError' });
     expect(String((erro as Error).message)).not.toContain(SPID_A);
+  });
+});
+
+describe('★ the recovery side hands the provider NO lease (`ctx.vez`)', () => {
+  it('★ `vez: null` and no send-side clock — while the conta’s lease document exists, and the lease is never read', async () => {
+    const m = mundo();
+    m.fake.seed(VEZ, {
+      estado: 'livre',
+      ateMs: 0,
+      atualizadoEmMs: AGORA_MS - 60 * MIN,
+      ultimoFeedConcluidoEmMs: AGORA_MS - 30 * MIN,
+    });
+    await m.rodar(recuperar({ desfecho: DESFECHO_RECUPERACAO_FEED_AMAZON.concluido }));
+
+    expect(m.contextos).toEqual([{ vez: null, relogioVez: null }]);
+    expect(m.fake.leituras).not.toContain(VEZ);
   });
 });
