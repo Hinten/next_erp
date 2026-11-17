@@ -105,8 +105,6 @@ export function ActionSidePanel<T>({
       withBorder
       p="sm"
       w={width}
-      // Table content can overflow its flex column on narrow screens. Give the
-      // docked panel its own layer above table controls, below portal overlays.
       style={{ flexShrink: 0, alignSelf: 'stretch', position: 'relative', zIndex: 1 }}
     >
       <Stack gap="xs">

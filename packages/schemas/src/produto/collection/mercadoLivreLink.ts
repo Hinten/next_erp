@@ -547,6 +547,8 @@ export const produtoMercadoLivreLinkSchema = z
     comissao: z.number().nullable().default(null),
 
     isUserProductModel: z.boolean().default(false),
+    /** When UPtin splits a legacy listing, each resulting family republishes its own linked members. */
+    uptinSomenteMembros: z.boolean().nullable().optional(),
     video_id: z.string().nullable().default(null),
     attributes: z.array(mlAttributeWireSchema).nullable().default(null),
 
