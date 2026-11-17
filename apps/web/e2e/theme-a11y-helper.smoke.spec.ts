@@ -560,11 +560,13 @@ test.describe('Theme readability checker rejects rendering defects', () => {
     await page.locator('#col-7').evaluate((el) => {
       // A patch under the first glyphs only: not an ancestor, so the text's
       // background is genuinely non-uniform once it is scrolled into view.
+      // Anchored to the span, not the cell: `<th>` centres its text, so a
+      // patch at the cell's left edge would miss every glyph.
       const cell = el.parentElement!;
       cell.style.position = 'relative';
       el.style.position = 'relative';
       const patch = document.createElement('div');
-      patch.style.cssText = 'position:absolute;left:0;top:0;bottom:0;width:24px;background:#ffd8d8';
+      patch.style.cssText = `position:absolute;left:${el.offsetLeft}px;top:0;bottom:0;width:24px;background:#ffd8d8`;
       cell.prepend(patch);
     });
     const report = await auditThemeReadability(page, options);
