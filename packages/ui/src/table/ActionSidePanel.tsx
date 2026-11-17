@@ -105,6 +105,9 @@ export function ActionSidePanel<T>({
       withBorder
       p="sm"
       w={width}
+      // The table itself scrolls inside its column (TableView), but the
+      // column's toolbar can still overflow it on a narrow screen. Give the
+      // docked panel its own layer above that, below portal overlays.
       style={{ flexShrink: 0, alignSelf: 'stretch', position: 'relative', zIndex: 1 }}
     >
       <Stack gap="xs">

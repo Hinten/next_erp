@@ -102,6 +102,15 @@ function shadowTargets(page: Page) {
   };
 }
 
+function axeDeferred(
+  report: Awaited<ReturnType<typeof auditThemeReadability>>,
+  messageKey: string,
+): boolean {
+  return report.axe.incomplete.some((rule) =>
+    rule.nodes.some((node) => node.any.some((check) => check.data?.messageKey === messageKey)),
+  );
+}
+
 async function chartFixture(page: Page): Promise<void> {
   await page.setContent(`<!doctype html><html data-mantine-color-scheme="light"><style>
     body {margin:24px;background:white;color:black;font:16px Arial}
@@ -540,6 +549,38 @@ test.describe('Theme readability checker rejects rendering defects', () => {
       expect.arrayContaining([
         expect.objectContaining({
           code: 'glyph-contrast',
+          target: expect.stringContaining('#col-7'),
+        }),
+      ]),
+    );
+  });
+
+  test('rejects a real partial background behind an offscreen table header', async ({ page }) => {
+    const options = await scrollTableFixture(page);
+    await page.locator('#col-7').evaluate((el) => {
+      // A patch under the first glyphs only: not an ancestor, so the text's
+      // background is genuinely non-uniform once it is scrolled into view.
+      // Anchored to the span, not the cell: `<th>` centres its text, so a
+      // patch at the cell's left edge would miss every glyph.
+      if (!(el instanceof HTMLElement)) throw new TypeError('#col-7 must be an HTML span');
+      const cell = el.parentElement!;
+      cell.style.position = 'relative';
+      el.style.position = 'relative';
+      const patch = document.createElement('div');
+      patch.style.cssText = `position:absolute;left:${el.offsetLeft}px;top:0;bottom:0;width:24px;background:#ffd8d8`;
+      cell.prepend(patch);
+    });
+    const report = await auditThemeReadability(page, options);
+    // Same deferral as the readable case above, so this pins that the
+    // scroll-box resolution still measures instead of accepting the reason.
+    expect(axeDeferred(report, 'elmPartiallyObscured')).toBe(true);
+    expect(report.resolvedTextTargets).not.toContainEqual(
+      expect.objectContaining({ target: '#col-7' }),
+    );
+    expect(report.issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: 'unreachable-glyph',
           target: expect.stringContaining('#col-7'),
         }),
       ]),
