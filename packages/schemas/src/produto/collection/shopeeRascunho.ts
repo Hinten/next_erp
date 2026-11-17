@@ -243,6 +243,11 @@ export const CODIGO_RASCUNHO_SHOPEE = {
   produtoInvalido: 'SHOPEE_RASCUNHO_PRODUTO_INVALIDO',
   /** 404 — the named draft does not exist on this produto, or belongs to another conta. */
   inexistente: 'SHOPEE_RASCUNHO_INEXISTENTE',
+  /**
+   * 409 — the named link is not an editable published listing (a draft, removed,
+   * superseded, native-kit or never-published link). Nothing was written.
+   */
+  anuncioNaoEditavel: 'SHOPEE_ANUNCIO_NAO_EDITAVEL',
 } as const satisfies Record<string, string>;
 export type CodigoRascunhoShopee =
   (typeof CODIGO_RASCUNHO_SHOPEE)[keyof typeof CODIGO_RASCUNHO_SHOPEE];
@@ -1663,6 +1668,35 @@ export const corpoDescartarRascunhoShopeeSchema = z.strictObject({
   confirmarCriacaoIncerta: z.boolean().nullable().optional(),
 });
 export type CorpoDescartarRascunhoShopee = z.output<typeof corpoDescartarRascunhoShopeeSchema>;
+
+/**
+ * The body of `POST /api/marketplace/shopee/anuncio/descartar-edicoes`: throw away
+ * the pending ERP edit of ONE published listing and reload Shopee's current
+ * content. `revisao` is the `edicaoErpRevisao` the operator SAW — a stored
+ * revision that moved on is a 409 `conflito`, never a silent discard of a newer
+ * edit. Strict: an unknown key is a client bug, not something to drop.
+ */
+export const corpoDescartarEdicoesAnuncioShopeeSchema = z.strictObject({
+  integracaoId: idDeDocumentoSchema,
+  produtoId: idDeDocumentoSchema,
+  linkDocId: idDeDocumentoSchema,
+  revisao: z.number().int().positive(),
+});
+export type CorpoDescartarEdicoesAnuncioShopee = z.infer<
+  typeof corpoDescartarEdicoesAnuncioShopeeSchema
+>;
+
+/**
+ * The discard's 2xx: `descartado: false` when nothing was pending (no Shopee read,
+ * no write), `true` when the stored content was reloaded and the flag cleared.
+ */
+export const respostaDescartarEdicoesAnuncioShopeeSchema = z.object({
+  linkDocId: z.string(),
+  descartado: z.boolean(),
+});
+export type RespostaDescartarEdicoesAnuncioShopee = z.infer<
+  typeof respostaDescartarEdicoesAnuncioShopeeSchema
+>;
 
 /* -------------------------------------------------------------------------- */
 /*                        The draft route's answers                            */

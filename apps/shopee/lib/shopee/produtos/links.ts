@@ -99,26 +99,79 @@
  * the `add` returned. A forgotten stamp is LOUD, not silent: the field is a
  * required non-nullable `outerRefSchema`, so the write throws.
  *
+ * ## ⚠️ The GUARDED merge (`merge-guardado`) — an ERP edit is never silently discarded
+ *
+ * An operator can EDIT a PUBLISHED listing in the ERP; the edit is saved on the
+ * `prodshopee` link only and a later «Republicar» sends it (the edit route
+ * stamps `edicaoErpRevisao` + `edicaoErpPendenteEm`). From that moment every
+ * OTHER writer of the link's CONTENT fields (`CAMPOS_DE_EDICAO_ERP_SHOPEE`) is a
+ * potential silent overwrite of the edit, so the three of them — the product
+ * import's parent-link write and publish write-backs #1 and #2 — go through
+ * {@link aplicarLinkDaListagemComGuarda}. Rule 7 tier 1: each attempt reads the
+ * link FRESH, RE-DECIDES from that read and writes with
+ * `update(patch, { lastUpdateTime })`; the decision is never a value captured
+ * before an await. The three guards decide whether the content keys go in:
+ *
+ *  - `importacao` — content only while NO edit is pending (the import reads
+ *    Shopee's copy, which is older than a pending edit);
+ *  - `write-back-1` — content only while the revision still equals the one the
+ *    publish body was built from. Otherwise the edit survives and the pending
+ *    flag is SET (`nowMs`); when the body does carry the edit the flag is
+ *    CLEARED (`null`) — this publish just sent it;
+ *  - `write-back-2` — content only while the revision still equals AND nothing
+ *    is pending (the read-back reports what was sent, never a newer edit).
+ *
+ * Non-content keys (status, timestamps…) are always written. `seAusentes`
+ * (first-time-only keys) fill only a key the fresh read holds as absent or
+ * `null` — so a legacy non-numeric `publicadoEm` / `dataCadastro` is now left
+ * as stored where write-back #1 used to re-stamp it (accepted: it only ever
+ * meant "first seen"). A lost precondition re-reads; after
+ * {@link TENTATIVAS_DA_ESCRITA_GUARDADA} losses the IMPORT rethrows (its own
+ * retry ladder takes over, like the adoption arm), while a WRITE-BACK falls
+ * back to a plain handle merge of the NON-content keys — it never rethrows,
+ * because a publish that already reached Shopee must still record its status.
+ * Write-back #1's fallback SETS the pending flag only when there is an edit to
+ * protect (a revision on the body it sent or on the last read), never on a
+ * link nobody edited. ⚠️ `update()`
+ * REPLACES nested maps (`description_info`, `pre_order`, `tax_info`) where the
+ * old set-merge deep-merged them — accepted: Shopee's read is the whole truth.
+ *
  * Next-free, clock-free: every stamp arrived on the plan.
  */
 import type { Firestore } from 'firebase-admin/firestore';
-import { toOuterRef } from '@delfrance/schemas';
+import {
+  edicaoErpPendenteShopee,
+  revisaoDeEdicaoErpShopee,
+  semCamposDeEdicaoErpShopee,
+  toOuterRef,
+} from '@delfrance/schemas';
 import {
   produtoShopeeLinkCollection,
   variacaoShopeeLinkCollection,
 } from '@delfrance/data/admin/collections';
-import { isFailedPrecondition } from '@delfrance/data/admin/grpcErrors';
+import { isFailedPrecondition, isNotFound } from '@delfrance/data/admin/grpcErrors';
 
 import { caminhoDoLinkDaListagem } from './mapeamento';
 import type {
   EscritaDeAdocaoDeRascunho,
   EscritaDeLink,
   EscritaDeLinkDaListagem,
+  EscritaDeLinkGuardada,
 } from './planoImportacao';
 import { veredictoDeAdocaoShopee } from './resolveProduto';
 
 /** How many fresh reads an adoption makes before a lost precondition is rethrown. */
 export const TENTATIVAS_DA_ADOCAO = 3;
+
+/** How many fresh reads a guarded write makes before it falls back (D-B). */
+export const TENTATIVAS_DA_ESCRITA_GUARDADA = 3;
+
+/** What a listing-link write answered: the document id, and whether an ERP edit held its content. */
+export interface ResultadoDaEscritaDeLink {
+  readonly docId: string;
+  /** `true` when the content keys were withheld to keep a pending/newer ERP edit. */
+  readonly edicaoErpPreservada: boolean;
+}
 
 /**
  * Write the listing link and answer the document id it now lives at — the id
@@ -129,13 +182,124 @@ export async function aplicarLinkDaListagem(
   produtoId: string,
   escrita: EscritaDeLinkDaListagem,
 ): Promise<string> {
-  if (escrita.acao === 'adotar') return await adotarRascunho(db, produtoId, escrita);
+  return (await aplicarLinkDaListagemComGuarda(db, produtoId, escrita)).docId;
+}
+
+/**
+ * {@link aplicarLinkDaListagem} that also reports whether an ERP edit held the
+ * content back. The non-guarded arms behave exactly as before
+ * (`edicaoErpPreservada: false`).
+ */
+export async function aplicarLinkDaListagemComGuarda(
+  db: Firestore,
+  produtoId: string,
+  escrita: EscritaDeLinkDaListagem,
+): Promise<ResultadoDaEscritaDeLink> {
+  if (escrita.acao === 'adotar') {
+    return { docId: await adotarRascunho(db, produtoId, escrita), edicaoErpPreservada: false };
+  }
+  if (escrita.acao === 'merge-guardado') return await mergeGuardado(db, produtoId, escrita);
   if (escrita.acao === 'merge' && escrita.docId !== null) {
     await produtoShopeeLinkCollection.merge(db, { produtoId }, escrita.docId, escrita.dados);
-    return escrita.docId;
+    return { docId: escrita.docId, edicaoErpPreservada: false };
   }
   const ref = await produtoShopeeLinkCollection.add(db, { produtoId }, escrita.dados);
-  return ref.id;
+  return { docId: ref.id, edicaoErpPreservada: false };
+}
+
+/**
+ * The GUARDED arm — see the header. Every pass decides from its OWN fresh read
+ * and asserts that read's stamp, so a decision is never re-applied over a link
+ * an operator edited in between (rule 7 tier 1).
+ */
+async function mergeGuardado(
+  db: Firestore,
+  produtoId: string,
+  escrita: EscritaDeLinkGuardada,
+): Promise<ResultadoDaEscritaDeLink> {
+  const { guarda } = escrita;
+  const ref = produtoShopeeLinkCollection.docRef(db, { produtoId }, escrita.docId);
+  // The last fresh read — what the D-B fallback decides from. `null` = absent.
+  let ultimoRaw: Record<string, unknown> | null = null;
+
+  for (let tentativa = 1; tentativa <= TENTATIVAS_DA_ESCRITA_GUARDADA; tentativa += 1) {
+    const snap = await ref.get();
+    if (!snap.exists) {
+      ultimoRaw = null;
+      // No document ⇒ nothing to protect: the merge creates it, as before.
+      await produtoShopeeLinkCollection.merge(db, { produtoId }, escrita.docId, {
+        ...escrita.dados,
+        ...escrita.seAusentes,
+      });
+      return { docId: escrita.docId, edicaoErpPreservada: false };
+    }
+    const raw = (snap.data() ?? {}) as Record<string, unknown>;
+    ultimoRaw = raw;
+
+    // Re-derived from THIS read on every attempt.
+    const levaConteudo =
+      guarda.tipo === 'importacao'
+        ? !edicaoErpPendenteShopee(raw)
+        : guarda.tipo === 'write-back-1'
+          ? revisaoDeEdicaoErpShopee(raw) === guarda.revisao
+          : revisaoDeEdicaoErpShopee(raw) === guarda.revisao && !edicaoErpPendenteShopee(raw);
+
+    const patch = produtoShopeeLinkCollection.parseMerge({
+      ...(levaConteudo ? escrita.dados : semCamposDeEdicaoErpShopee(escrita.dados)),
+      ...Object.fromEntries(
+        Object.entries(escrita.seAusentes).filter(
+          ([chave]) => raw[chave] === undefined || raw[chave] === null,
+        ),
+      ),
+      ...(guarda.tipo === 'write-back-1'
+        ? { edicaoErpPendenteEm: levaConteudo ? null : guarda.nowMs }
+        : {}),
+    });
+    try {
+      await ref.update(patch as Record<string, unknown>, { lastUpdateTime: snap.updateTime });
+      return { docId: escrita.docId, edicaoErpPreservada: !levaConteudo };
+    } catch (err) {
+      if (!isFailedPrecondition(err) && !isNotFound(err)) throw err;
+      // The IMPORT has a retry ladder of its own (the queue, the next run):
+      // a third loss rethrows, like the adoption arm — never a content-less
+      // write that would leave Shopee's newer read behind for no edit at all.
+      if (guarda.tipo === 'importacao' && tentativa >= TENTATIVAS_DA_ESCRITA_GUARDADA) throw err;
+    }
+  }
+
+  // D-B, the WRITE-BACKS only: contention won every pass. A publish that
+  // already reached Shopee must still record its status, so this never
+  // rethrows. The content keys are NOT written (an edit may be there), and
+  // write-back #1 SETS the pending flag only when there is an edit to protect —
+  // a revision on the body it sent or on the last read. A never-edited link
+  // never gets a flag nothing but a republish could clear.
+  const haEdicao =
+    (guarda.tipo !== 'importacao' && guarda.revisao !== null) ||
+    revisaoDeEdicaoErpShopee(ultimoRaw) !== null;
+  console.warn(
+    '[shopee/links] escrita guardada perdeu a precondição em todas as tentativas; gravando só o que não é conteúdo',
+    { produtoId, linkDocId: escrita.docId, guarda: guarda.tipo, haEdicao },
+  );
+  const primeiraVez =
+    ultimoRaw === null
+      ? escrita.seAusentes
+      : Object.fromEntries(
+          Object.entries(escrita.seAusentes).filter(
+            ([chave]) => ultimoRaw?.[chave] === undefined || ultimoRaw[chave] === null,
+          ),
+        );
+  await produtoShopeeLinkCollection.merge(db, { produtoId }, escrita.docId, {
+    // The link vanished on the last pass ⇒ nothing to protect: the whole patch.
+    ...(ultimoRaw === null ? escrita.dados : semCamposDeEdicaoErpShopee(escrita.dados)),
+    ...primeiraVez,
+    ...(guarda.tipo === 'write-back-1' && haEdicao && ultimoRaw !== null
+      ? { edicaoErpPendenteEm: guarda.nowMs }
+      : {}),
+  });
+  return {
+    docId: escrita.docId,
+    edicaoErpPreservada: ultimoRaw !== null && (haEdicao || edicaoErpPendenteShopee(ultimoRaw)),
+  };
 }
 
 /**

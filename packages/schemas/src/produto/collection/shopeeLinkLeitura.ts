@@ -61,7 +61,7 @@
  * set below is a different question, answered by its own fingerprint).
  */
 import { contaIdFromRef } from '../../shared/outerRef';
-import { ESTADO_ANUNCIO_SHOPEE } from './shopeeLink';
+import { ESTADO_ANUNCIO_SHOPEE, ehVinculoSubstituido } from './shopeeLink';
 
 /* -------------------------------------------------------------------------- */
 /*                         The refusal reader (register 177)                   */
@@ -300,6 +300,98 @@ export function anuncioShopeeVivo(link: Record<string, unknown> | null): boolean
   const itemId = link.item_id;
   if (typeof itemId !== 'number' || !Number.isFinite(itemId) || itemId <= 0) return false;
   return link.estadoAnuncio !== ESTADO_ANUNCIO_SHOPEE.removido;
+}
+
+/* -------------------------------------------------------------------------- */
+/*              ERP edits of a PUBLISHED listing (pending-edit guard)          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The link keys an operator's ERP edit owns: the content the product import and
+ * the publish write-backs would otherwise rewrite from Shopee's read or from the
+ * publish body. While an edit is pending (`edicaoErpPendenteEm`) these are
+ * written only by the edit itself or by the discard. ⚠️ `logisticaGravadaEm` is
+ * listed because it rides the SAME patch as `logistic_info` (#2015) — dropping
+ * one without the other would vouch for a list this app did not write. `apps/shopee`
+ * must go through this constant (and the two helpers below), never spell that
+ * stamp: its writer-site backstop pins the literal.
+ */
+export const CAMPOS_DE_EDICAO_ERP_SHOPEE = [
+  'item_name',
+  'description',
+  'description_type',
+  'description_info',
+  'category_id',
+  'attributes',
+  'brand_id',
+  'original_brand_name',
+  'logistic_info',
+  'logisticaGravadaEm',
+] as const;
+export type CampoDeEdicaoErpShopee = (typeof CAMPOS_DE_EDICAO_ERP_SHOPEE)[number];
+
+/**
+ * The stored edit revision, or `null` when the link was never edited: a safe
+ * positive integer only. `0`, negatives, fractions, `2**53`, strings and `null`
+ * all read "never edited" — the stamp is a counter this app writes, so anything
+ * else is not evidence of an edit.
+ */
+export function revisaoDeEdicaoErpShopee(link: Record<string, unknown> | null): number | null {
+  if (link === null) return null;
+  const v = link.edicaoErpRevisao;
+  return typeof v === 'number' && Number.isSafeInteger(v) && v > 0 ? v : null;
+}
+
+/**
+ * Whether an ERP edit is saved and not yet sent: `edicaoErpPendenteEm` is a
+ * finite number > 0 (a ms stamp). `0`, negatives, `NaN`, `Infinity`, strings and
+ * `null` are "nothing pending".
+ *
+ * ⚠️ Looser on purpose than {@link revisaoDeEdicaoErpShopee}: a malformed stamp
+ * that is still a positive finite number counts as PENDING, because a false
+ * "pending" costs one skipped content refresh while a false "none" silently
+ * discards an operator's edit.
+ */
+export function edicaoErpPendenteShopee(link: Record<string, unknown> | null): boolean {
+  if (link === null) return false;
+  const v = link.edicaoErpPendenteEm;
+  return typeof v === 'number' && Number.isFinite(v) && v > 0;
+}
+
+/**
+ * Whether the link is a PUBLISHED listing an operator may edit in the ERP: a
+ * positive safe-integer `item_id` (stricter than {@link anuncioShopeeVivo}, which
+ * lets `1.5` through), alive, not superseded (L8), and not a native kit — a kit's
+ * content is owned by its own arms.
+ */
+export function anuncioShopeeEditavel(link: Record<string, unknown> | null): boolean {
+  if (link === null) return false;
+  const itemId = link.item_id;
+  return (
+    typeof itemId === 'number' &&
+    Number.isSafeInteger(itemId) &&
+    itemId > 0 &&
+    anuncioShopeeVivo(link) &&
+    !ehVinculoSubstituido(link) &&
+    link.kitNativo !== true
+  );
+}
+
+/** A shallow copy of `dados` WITHOUT the {@link CAMPOS_DE_EDICAO_ERP_SHOPEE} keys. */
+export function semCamposDeEdicaoErpShopee(
+  dados: Record<string, unknown>,
+): Record<string, unknown> {
+  const fora = new Set<string>(CAMPOS_DE_EDICAO_ERP_SHOPEE);
+  return Object.fromEntries(Object.entries(dados).filter(([k]) => !fora.has(k)));
+}
+
+/**
+ * A shallow copy of `dados` holding ONLY the {@link CAMPOS_DE_EDICAO_ERP_SHOPEE}
+ * keys it OWNS — an absent key stays absent (never invented as `undefined`/`null`).
+ */
+export function soCamposDeEdicaoErpShopee(dados: Record<string, unknown>): Record<string, unknown> {
+  const dentro = new Set<string>(CAMPOS_DE_EDICAO_ERP_SHOPEE);
+  return Object.fromEntries(Object.entries(dados).filter(([k]) => dentro.has(k)));
 }
 
 /* -------------------------------------------------------------------------- */

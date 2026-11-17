@@ -363,6 +363,14 @@ export interface ResultadoImportacaoShopee {
     readonly ignoradas: number;
     readonly falhas: number;
   };
+  /**
+   * `true` when the parent link's CONTENT fields were NOT overwritten because an
+   * ERP edit of the published listing was still pending (PR1 guard). Internal
+   * seam for the mass job's `edicoesPreservadas` counter — no route or CLI
+   * response carries it (they build their bodies by name). Optional: an absent
+   * value reads as `false`, and the job's injected importer doubles predate it.
+   */
+  readonly edicaoErpPreservada?: boolean;
   /** Present only when the item was a kit AND the kit arm ran. */
   readonly kit?: {
     readonly componentes: number;

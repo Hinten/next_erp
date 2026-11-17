@@ -1262,6 +1262,49 @@ export async function lerCarimbosContados(
 }
 
 /**
+ * The shared planner emits a GUARDED field-wise write for a resolved listing link
+ * (PR1, edit-a-published-listing); the kit arm keeps the plain spread MERGE it
+ * always had. Two reasons, both load-bearing: {@link vinculoDaListagemAtivo} and
+ * {@link lerCarimbosContados} judge the link from the planned `dados`, which must
+ * therefore still carry the STORED keys (`substituidoPorLinkDocId`,
+ * `estadoAnuncio`…) the spread brought along; and a native-kit link is never an
+ * editable listing (D-D), so there is no pending ERP edit for the guard to
+ * protect. Rebuilds exactly what `dadosLinkListagem(entrada, raw, …)` returned
+ * (`dataCadastro` keeps the stored value, else the planned one). Any other arm
+ * (`add`, `adotar`) passes through untouched.
+ *
+ * ⚠️ The two ERP-edit stamps are left OUT of the spread: this plain merge has
+ * no precondition, so carrying the preparation read's `edicaoErpRevisao` /
+ * `edicaoErpPendenteEm` forward could roll back an edit stamped since — and a
+ * reused revision number would let a stale publish's write-back #1 match it.
+ * A merge that never names them leaves whatever is stored alone.
+ */
+function linkDoKitSemGuarda(
+  plano: PlanoImportacaoShopee,
+  armazenado: Record<string, unknown> | null,
+): PlanoImportacaoShopee {
+  const link = plano.linkPai;
+  if (link.acao !== 'merge-guardado') return plano;
+  const {
+    edicaoErpRevisao: _revisao,
+    edicaoErpPendenteEm: _pendente,
+    ...semCarimbosDeEdicao
+  } = armazenado ?? {};
+  return {
+    ...plano,
+    linkPai: {
+      acao: 'merge',
+      docId: link.docId,
+      dados: {
+        ...semCarimbosDeEdicao,
+        ...link.dados,
+        dataCadastro: armazenado?.dataCadastro ?? link.seAusentes.dataCadastro,
+      },
+    },
+  };
+}
+
+/**
  * Everything the kit's plan needs, READ.
  *
  * The listing importer's own reader is not reused because it REFUSES a kit
@@ -1384,7 +1427,10 @@ export async function prepararImportacaoKitShopee(
 
   const anuncio = anuncioDerivadoDoKit(entrada, kit);
   const lido = await lerPreparoDoKit(deps, anuncio);
-  const planoDaListagem = planejarImportacaoShopee(lido);
+  const planoDaListagem = linkDoKitSemGuarda(
+    planejarImportacaoShopee(lido),
+    lido.linkPai?.raw ?? null,
+  );
   const filhosExistentes = lido.filhos.map((filho) => filho.existente);
   const carimbosContados = await lerCarimbosContados(
     deps.db,

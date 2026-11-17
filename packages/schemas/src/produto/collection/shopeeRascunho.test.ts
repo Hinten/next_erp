@@ -31,6 +31,7 @@ import {
   conteudoRascunhoShopeeSchema,
   corpoAtualizarRascunhoShopeeSchema,
   corpoCriarRascunhoShopeeSchema,
+  corpoDescartarEdicoesAnuncioShopeeSchema,
   corpoDescartarRascunhoShopeeSchema,
   criadoNaJanelaShopee,
   estadoPublicacaoRascunhoShopee,
@@ -61,6 +62,7 @@ import {
   rascunhoSemMarcaShopee,
   respostaAtualizarRascunhoShopeeSchema,
   respostaCriarRascunhoShopeeSchema,
+  respostaDescartarEdicoesAnuncioShopeeSchema,
   respostaDescartarRascunhoShopeeSchema,
   respostaItemIncertoShopeeSchema,
   TETO_ROTA_SHOPEE_MS,
@@ -154,7 +156,7 @@ describe('as constantes da trava (#1911, K1-2)', () => {
 /* -------------------------------------------------------------------------- */
 
 describe('CODIGO_RASCUNHO_SHOPEE — os códigos do P3 e do P4', () => {
-  it('os onze códigos, com os valores congelados no §2.1 (seis do P3, cinco do P4)', () => {
+  it('os doze códigos, com os valores congelados no §2.1 (seis do P3, cinco do P4, um da edição de anúncio publicado)', () => {
     expect(CODIGO_RASCUNHO_SHOPEE).toEqual({
       publicacaoEmAndamento: 'SHOPEE_PUBLICACAO_EM_ANDAMENTO',
       jaPublicado: 'SHOPEE_RASCUNHO_JA_PUBLICADO',
@@ -167,6 +169,7 @@ describe('CODIGO_RASCUNHO_SHOPEE — os códigos do P3 e do P4', () => {
       categoriaTravada: 'SHOPEE_RASCUNHO_CATEGORIA_TRAVADA',
       produtoInvalido: 'SHOPEE_RASCUNHO_PRODUTO_INVALIDO',
       inexistente: 'SHOPEE_RASCUNHO_INEXISTENTE',
+      anuncioNaoEditavel: 'SHOPEE_ANUNCIO_NAO_EDITAVEL',
     });
   });
 
@@ -3995,5 +3998,41 @@ describe('pendenciasDoRascunhoShopee — o texto do arquivo (#1369: composta, nu
     ]) {
       expect(corpo, proibido).not.toContain(proibido);
     }
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                 descartar edições de um anúncio publicado                   */
+/* -------------------------------------------------------------------------- */
+
+describe('corpoDescartarEdicoesAnuncioShopeeSchema', () => {
+  const OK = { integracaoId: 'i1', produtoId: 'p1', linkDocId: 'l1', revisao: 3 };
+
+  it('aceita o corpo completo', () => {
+    expect(corpoDescartarEdicoesAnuncioShopeeSchema.safeParse(OK).success).toBe(true);
+  });
+
+  it('⛔ estrito: chave desconhecida falha', () => {
+    expect(corpoDescartarEdicoesAnuncioShopeeSchema.safeParse({ ...OK, extra: 1 }).success).toBe(
+      false,
+    );
+  });
+
+  it.each([0, -1, 1.5, '3', null, undefined])('revisao %s falha', (revisao) => {
+    expect(corpoDescartarEdicoesAnuncioShopeeSchema.safeParse({ ...OK, revisao }).success).toBe(
+      false,
+    );
+  });
+
+  it.each(['integracaoId', 'produtoId', 'linkDocId'] as const)('sem %s falha', (k) => {
+    const resto: Record<string, unknown> = { ...OK };
+    delete resto[k];
+    expect(corpoDescartarEdicoesAnuncioShopeeSchema.safeParse(resto).success).toBe(false);
+  });
+
+  it('a resposta declara linkDocId + descartado', () => {
+    expect(
+      respostaDescartarEdicoesAnuncioShopeeSchema.parse({ linkDocId: 'l1', descartado: false }),
+    ).toEqual({ linkDocId: 'l1', descartado: false });
   });
 });
