@@ -343,12 +343,18 @@ function log(message: string): void {
  * body, flush pending writes, and print a summary. Dry-run unless `--apply`.
  * The body receives a `MigrationContext` and returns how many docs it scanned
  * / changed.
+ *
+ * `argv` defaults to the process's own arguments. A script with flags of its
+ * own strips them first and passes the rest here, so the shared contract
+ * (`--project` required, unknown flags rejected) still parses what remains and
+ * the `out/` naming stays the same for every script.
  */
 export async function runMigration(
   name: string,
   body: (ctx: MigrationContext) => Promise<MigrationSummary>,
+  argv: readonly string[] = process.argv.slice(2),
 ): Promise<void> {
-  const args = parseArgs(process.argv.slice(2));
+  const args = parseArgs(argv);
   const db = migrationDb(args.projectId, args.serviceAccountPath);
 
   const outDir = resolve(process.cwd(), 'out');
