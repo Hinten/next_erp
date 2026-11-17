@@ -1142,7 +1142,18 @@ export {
   type RespostaVariacoesShopee,
   type RecomendacaoDto,
   type RespostaRecomendacaoCategoriaShopee,
+  categoriaEncontradaDtoSchema,
+  respostaBuscaCategoriasShopeeSchema,
+  type CategoriaEncontradaDto,
+  type RespostaBuscaCategoriasShopee,
 } from './taxonomiaShopeeDto';
+
+// The Shopee pickers' ONE text-search fold (category search + brand filter).
+export {
+  dobrarTextoBuscaShopee,
+  termosDaBuscaShopee,
+  correspondeABuscaShopee,
+} from './buscaTextoShopee';
 
 // The Shopee CHANNELS route envelope (#1911, P15), declared once like the
 // taxonomy ones above: `apps/shopee`'s `canais` route builds its 200 against it

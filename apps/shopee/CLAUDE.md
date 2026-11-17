@@ -43,7 +43,10 @@ a page of the 3-day queue irreversibly.
 - `app/api/marketplace/shopee/conta/route.ts` — `PERM.integracao.read`. Reports
   the **two clocks** separately (see below).
 - `app/api/marketplace/shopee/taxonomia/{categorias,atributos,marcas,limites,limites/kit,variacoes,recomendacao-categoria}/route.ts`
-  — the seven taxonomy reads, `PERM.integracao.read`, `integracaoId`-scoped.
+  — the seven taxonomy reads, `PERM.integracao.read`, `integracaoId`-scoped,
+  plus `categorias/busca` — the picker's text search, answered from the SAME
+  cached tree index (`buscarCategorias`, folded by `@delfrance/schemas`'
+  `correspondeABuscaShopee`; only the hits cross the wire).
   See **Taxonomy reads** below.
 - `lib/shopee/taxonomia/` — the layer behind those routes: `cache.ts` (seven
   `createReadCache`s + `taxonomiaCtx`), `categorias.ts` (the tree index and the
