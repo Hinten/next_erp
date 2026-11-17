@@ -1360,6 +1360,38 @@ describe('a kit its components bound', () => {
     expect(c.custo()).toEqual({ erp: 9, credencial: 4, chamadas: 3, escritas: 0, enfileiradas: 0 });
   });
 
+  it('⚠️ a LEGACY component record the join finds never hides the CANONICAL one stored with no parentId: the PUT follows the canonical 0, not the legacy 20', async () => {
+    const c = cenario({
+      produto: KIT,
+      estoques: [
+        ['c1', 'legado', { depositoOuterRef: CANONICA, quantidade: 20, parentId: 'c1' }],
+        ['c1', C1, { depositoOuterRef: NUA, quantidade: 0 }],
+        ['c2', C2, { depositoOuterRef: CANONICA, quantidade: 6, parentId: 'c2' }],
+      ],
+      linha: { quantidade: 5, quantidade_reservada: 1 },
+    });
+    expect((await c.rodar()).kind).toBe('escrito');
+    // S = min(⌊0 / 2⌋, ⌊6 / 1⌋) = 0, so the PUT carries the reservation alone. Read through the
+    // legacy record alone it would be min(⌊20 / 2⌋, 6) = 6 ⇒ 7: stock the store does not have.
+    expect(c.p.puts()[0]?.corpo).toMatchObject({ quantidade: 1 });
+    expect(c.db.consultas.filter((q) => q.colecao === 'produtos/c1/estoques')).toHaveLength(1);
+    expect(c.db.consultas.filter((q) => q.colecao === 'produtos/c2/estoques')).toHaveLength(0);
+  });
+
+  it('⚠️ two LEGACY component records, only one carrying parentId ⇒ estoque-ambiguo, zero credential reads', async () => {
+    const c = cenario({
+      produto: KIT,
+      estoques: [
+        ['c1', 'a', { depositoOuterRef: CANONICA, quantidade: 9, parentId: 'c1' }],
+        ['c1', 'b', { depositoOuterRef: CANONICA, quantidade: 1 }],
+        ['c2', C2, { depositoOuterRef: CANONICA, quantidade: 6, parentId: 'c2' }],
+      ],
+    });
+    expect(await c.rodar()).toEqual({ kind: 'pulado', motivo: 'estoque-ambiguo' });
+    expect(c.custo().credencial).toBe(0);
+    expect(c.custo().chamadas).toBe(0);
+  });
+
   it('⚠️ a component with TWO non-canonical records ⇒ estoque-ambiguo, zero credential reads', async () => {
     const c = cenario({
       produto: KIT,

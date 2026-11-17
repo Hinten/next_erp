@@ -899,9 +899,12 @@ lands with the rest of step 12; this is the send run and its queue.
   or kit PUT (`estoque-produto-lote`) 7/3/2, no read-back. A kit its components bound reads no
   record of its own but its k bounding components': with the payload's canonical ids ONE
   `getAll` (k reads), a PUT 6 + k under `on`; without them two group queries per 30 components,
-  then one own-collection query per component still unresolved — a component with no record at
-  the depósito pays it on EVERY run (k = 2, one unresolved: a PUT 9/4/3). **No Firestore write
-  on success**, at most ONE PUT per run.
+  then one own-collection query per component whose CANONICAL record is still unread — none
+  found, or only legacy ones (a record with no `parentId`, the canonical one included, is
+  invisible to the join, so a legacy hit never stands for the whole answer: it could hide the
+  record that wins, or a second legacy one that makes it ambiguous). A component with no record at
+  the depósito, or with legacy records only, pays it on EVERY run (k = 2, one unresolved: a PUT
+  9/4/3). **No Firestore write on success**, at most ONE PUT per run.
 - **The drift rule** after a read-back: written leaves read back differently, the store's
   reservation moved so model A now targets another quantity, or the read-back could not be made
   (fail open) ⇒ ONE `deriva` follow-up (generation 1) from a generation-0 run; a generation-1

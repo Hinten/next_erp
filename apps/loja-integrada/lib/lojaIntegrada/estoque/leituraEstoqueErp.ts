@@ -14,7 +14,7 @@
  * | its own record, otherwise | `depositoOuterRef in [both forms]`, `limit 3` | COLLECTION `estoques (depositoOuterRef, ultimaModificacao)`, prefix |
  * | a kit's components, by the payload's ids | ONE `getAll` of the canonical ids | point reads |
  * | the components still missing | GROUP `parentId in [≤30]`, `depositoOuterRef == form`, per form | COLLECTION_GROUP `estoques (parentId, depositoOuterRef, ultimaModificacao)`, prefix |
- * | the components STILL missing (rows without `parentId`) | the own-record query, per component | as the own record |
+ * | the components whose CANONICAL record is still unread (none found, or only legacy ones: a row without `parentId` is invisible to the join) | the own-record query, per component | as the own record |
  * | "any record at any depósito?" | where-less listing, `limit 1` | the produto's own partition, no index |
  * | the duplicate-link probe | GROUP `contaLojaIntegrada == form`, `id in [n, 'n']`, per form | COLLECTION_GROUP `produtolojaintegrada (contaLojaIntegrada, id)` |
  *
@@ -232,9 +232,11 @@ function emFatias<T>(valores: readonly T[]): T[][] {
  * EVERY record of the kit's bounding components found at the conta's depósito, so the plan can
  * see a component with two (module header): the payload's ids first, read by ONE `getAll` when
  * they name the canonical record (`estoqueIds`: component → record id, or `null`); then the group
- * join for those still missing, per stored form; then, for each one STILL missing (a record with
- * no `parentId`), the own-record query on its own collection. No read at all for a produto with
- * no bounding component.
+ * join for those still missing, per stored form; then, for each one whose CANONICAL record is still
+ * unread — none found, or only legacy ones, since a record with no `parentId` (the canonical one
+ * included) is invisible to the join — the own-record query on its own collection, so a legacy hit
+ * never hides the record that wins or a second legacy one. No read at all for a produto with no
+ * bounding component.
  */
 export async function lerComponentesNoDepositoLi(
   db: Firestore,
@@ -289,8 +291,18 @@ export async function lerComponentesNoDepositoLi(
     }
   }
 
-  // 3. A component the join still did not answer for: its own collection.
-  for (const componente of semRegistro()) {
+  // 3. A component whose CANONICAL record is still unread: its own collection. A join hit is not
+  //    a complete answer — a record with no `parentId` (the canonical one included) is invisible
+  //    to the join, so a component the join found only through legacy records may hide the record
+  //    that wins, or a second legacy one that makes it ambiguous. The canonical record alone needs
+  //    nothing more: it wins whatever sits beside it (`estoqueNoDepositoLi`).
+  const temCanonico = (componente: string): boolean => {
+    const canonico = makeEstoqueUid(componente, depositoId);
+    return [...(porDono.get(componente)?.values() ?? [])].some(
+      (doc) => caminhoEstoqueLi(doc.caminho)?.estoqueId === canonico,
+    );
+  };
+  for (const componente of componentes.filter((c) => !temCanonico(c))) {
     const registros = await lerEstoqueNoDepositoPorConsultaLi(db, componente, formas);
     for (const registro of registros) guardar(registro, new Set([componente]));
   }

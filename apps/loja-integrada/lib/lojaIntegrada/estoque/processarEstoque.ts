@@ -61,9 +61,12 @@
  * A kit its components bound reads no record of its own, but its k bounding components' (every
  * document of a `getAll` is one read): ONE `getAll` of the canonical ids the payload carries, then
  * two group queries per 30 components still missing, then one own-collection query per component
- * STILL missing — so a bounding component with no record at the depósito pays that query on EVERY
- * run. A send with every id in the payload pays 3 + k + 2 (the probe) ERP operations; one with
- * none, 3 + 2·⌈k/30⌉ + (components still unresolved) + 2; each plus the aviso pre-read under `on`.
+ * whose CANONICAL record is still unread (none found, or only legacy ones: a record with no
+ * `parentId` is invisible to the join, so a legacy hit is never taken as the whole answer) — so a
+ * bounding component with no record at the depósito, or with legacy records only, pays that query
+ * on EVERY run. A send with every id in the payload pays 3 + k + 2 (the probe) ERP operations; one
+ * with none, 3 + 2·⌈k/30⌉ + (components without their canonical record read) + 2; each plus the
+ * aviso pre-read under `on`.
  *
  * ## Errors (deterministic outcomes RETURN, transient failures THROW — every retry re-derives
  * everything from a fresh read, and the quantity sent is absolute, never a delta)

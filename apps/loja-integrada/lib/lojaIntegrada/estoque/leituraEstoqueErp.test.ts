@@ -352,7 +352,7 @@ describe('the kit components', () => {
     expect(db.consultas).toEqual([]);
   });
 
-  it('a payload id at ANOTHER depósito ⇒ the group join; a record with no parentId ⇒ its own collection', async () => {
+  it('a payload id at ANOTHER depósito ⇒ the group join; a component the join found only through a LEGACY record, and one with no parentId ⇒ each its own collection', async () => {
     const db = new FakeDb();
     seedEstoque(db, 'c1', `est-c1-${DEP}`, {
       depositoOuterRef: OUTRO_DEP,
@@ -368,11 +368,56 @@ describe('the kit components', () => {
       'produtos/c1/estoques/legado-c1',
       'produtos/c2/estoques/sem-dono',
     ]);
+    // c1's join hit is a legacy record: its canonical one may sit beside it with no parentId.
     expect(db.consultas.map((c) => c.colecao)).toEqual([
       GRUPO_ESTOQUE_LI,
       GRUPO_ESTOQUE_LI,
+      'produtos/c1/estoques',
       'produtos/c2/estoques',
     ]);
+  });
+
+  it('⚠️ a LEGACY record the join finds never hides the CANONICAL one stored with no parentId: the canonical wins', async () => {
+    const db = new FakeDb();
+    seedEstoque(db, 'c1', 'legado', { depositoOuterRef: CANONICA, quantidade: 20, parentId: 'c1' });
+    seedEstoque(db, 'c1', `est-c1-${DEP}`, { depositoOuterRef: NUA, quantidade: 0 });
+    const registros = await lerComponentesNoDepositoLi(asDb(db), kit({ c1: 1 }), DEP, null);
+    expect(registros.map((r) => r.caminho).sort()).toEqual([
+      `produtos/c1/estoques/est-c1-${DEP}`,
+      'produtos/c1/estoques/legado',
+    ]);
+    // …so the plan reads the canonical 0, never the legacy 20.
+    expect(estoqueNoDepositoLi({ produtoId: 'c1', depositoId: DEP, registros })).toEqual({
+      tipo: 'um',
+      registro: expect.objectContaining({ caminho: `produtos/c1/estoques/est-c1-${DEP}` }),
+    });
+  });
+
+  it('⚠️ two LEGACY records, only one carrying parentId ⇒ both come back, and the plan reads `ambiguo`', async () => {
+    const db = new FakeDb();
+    seedEstoque(db, 'c1', 'a', { depositoOuterRef: CANONICA, quantidade: 9, parentId: 'c1' });
+    seedEstoque(db, 'c1', 'b', { depositoOuterRef: CANONICA, quantidade: 1 });
+    const registros = await lerComponentesNoDepositoLi(asDb(db), kit({ c1: 1 }), DEP, null);
+    expect(registros.map((r) => r.caminho).sort()).toEqual([
+      'produtos/c1/estoques/a',
+      'produtos/c1/estoques/b',
+    ]);
+    expect(estoqueNoDepositoLi({ produtoId: 'c1', depositoId: DEP, registros })).toEqual({
+      tipo: 'ambiguo',
+    });
+  });
+
+  it('NEAR-MISS (cost): the join finds the CANONICAL record ⇒ no own-collection query for that component', async () => {
+    const db = new FakeDb();
+    seedEstoque(db, 'c1', `est-c1-${DEP}`, {
+      depositoOuterRef: CANONICA,
+      quantidade: 5,
+      parentId: 'c1',
+    });
+    seedEstoque(db, 'c1', 'legado', { depositoOuterRef: NUA, quantidade: 20, parentId: 'c1' });
+    const registros = await lerComponentesNoDepositoLi(asDb(db), kit({ c1: 1 }), DEP, null);
+    expect(registros).toHaveLength(2);
+    expect(db.consultas.map((c) => c.colecao)).toEqual([GRUPO_ESTOQUE_LI, GRUPO_ESTOQUE_LI]);
   });
 
   it('⚠️ every record of a component comes back, so the plan can see two legacy ones', async () => {
