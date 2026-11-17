@@ -127,7 +127,16 @@
  *    by ONE module, `feeds/feedsAmazon.ts` (the redactor aside); the App
  *    Hosting union walk reaches no feed handler — of `feeds/`, only the jobs
  *    producer and the payload contract; and under `feeds/` only the lease I/O
- *    and the record's two writers make a Firestore WRITE call.
+ *    and the record's two writers make a Firestore WRITE call;
+ *  - (step 12, PR 12-d) `estoque/` is Next-free, reads no process environment
+ *    and never imports the `@/` alias; it is PURE and UNWIRED: its files import
+ *    by value only their siblings, the shared quantity core, the schemas, the
+ *    SP-API package, `zod`, and exactly two named helpers of `@delfrance/data`
+ *    (`sha256Hex`, `contaRefForms`) (the order import's resolution and the
+ *    write engine's plan as TYPES only; both `@delfrance/data` barrels load
+ *    Admin modules transitively, and nothing under `estoque/` calls one), and
+ *    no production file outside it imports it; and under it `publicado` is
+ *    named by the family projection alone (never a gate).
  */
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, posix, relative, sep } from 'node:path';
@@ -1486,6 +1495,15 @@ describe('lib/amazon layout', () => {
         'core/renovacaoUnica.ts',
         'core/respond.ts',
         'core/valvulas.ts',
+        'estoque/descobertaEstoque.ts',
+        'estoque/envioEstoque.ts',
+        'estoque/familiaEstoque.ts',
+        'estoque/gateListing.ts',
+        'estoque/motivosEstoque.ts',
+        'estoque/opcoesEstoque.ts',
+        'estoque/planoEstoque.ts',
+        'estoque/tarefaEstoque.ts',
+        'estoque/vinculoEstoque.ts',
         'feeds/escadaFeed.ts',
         'feeds/provedorLote.ts',
         'feeds/registroFeed.ts',
@@ -3391,6 +3409,188 @@ describe('the step-12a feed core guards (12-b, 12-c)', () => {
       'await vezFeedAmazonCollection.ref(db, {}).doc;',
     ]) {
       expect(leitura.match(ESCRITA_FIRESTORE_EM_FEEDS), leitura).toBeNull();
+    }
+  });
+});
+
+/* ------------------------- step 12 (PR 12-d): the stock core ------------------------- */
+
+/**
+ * What a production file under `estoque/` may load AS A VALUE: its siblings,
+ * the shared quantity core, the schemas, the SP-API package (constants and
+ * schemas, no client), `zod` (the task payload) and two `@delfrance/data`
+ * barrels, each for ONE named pure helper ({@link NOMES_PERMITIDOS_EM_ESTOQUE}).
+ * No Firestore handle, no context, no logger, no producer: the stock decisions
+ * stay pure until a reader is wired around them.
+ */
+const VALORES_PERMITIDOS_EM_ESTOQUE = [
+  '@delfrance/data/admin/estoque',
+  '@delfrance/schemas',
+  '@delfrance/integrations-amazon-sp-api',
+  'zod',
+  '@delfrance/data/admin',
+  '@delfrance/data/admin/produtos',
+];
+
+/**
+ * The two `@delfrance/data` barrels above export Firestore readers too, so from
+ * each only the named pure helper may be imported: the task names' digest, and
+ * the conta's two stored ref forms (the order import's own pair).
+ */
+const NOMES_PERMITIDOS_EM_ESTOQUE: Readonly<Record<string, readonly string[]>> = {
+  '@delfrance/data/admin': ['sha256Hex'],
+  '@delfrance/data/admin/produtos': ['contaRefForms'],
+};
+
+/** …and as a TYPE only, on top: the order import's resolution of a SKU, and the write engine's plan. */
+const TIPOS_PERMITIDOS_EM_ESTOQUE = ['../pedidos/vinculoProdutoAmazon', '../core/escrita'];
+
+/** The names an import declaration of `espec` binds (namespace and default imports read as `*`). */
+function nomesImportadosDe(texto: string, espec: string): string[] {
+  const fonte = ts.createSourceFile('x.ts', texto, ts.ScriptTarget.Latest, false, ts.ScriptKind.TS);
+  const saida: string[] = [];
+  for (const no of fonte.statements) {
+    if (!ts.isImportDeclaration(no) || !ts.isStringLiteral(no.moduleSpecifier)) continue;
+    if (no.moduleSpecifier.text !== espec) continue;
+    const clausula = no.importClause;
+    if (clausula?.name !== undefined) saida.push('*');
+    const nomeados = clausula?.namedBindings;
+    if (nomeados !== undefined && ts.isNamespaceImport(nomeados)) saida.push('*');
+    if (nomeados !== undefined && ts.isNamedImports(nomeados)) {
+      for (const e of nomeados.elements) saida.push((e.propertyName ?? e.name).text);
+    }
+  }
+  return saida;
+}
+
+/** A specifier that lands under `lib/amazon/estoque/`, by any relative path or the `@/` alias. */
+const IMPORTA_ESTOQUE = /(?:^|\/)amazon\/estoque\/|^\.\.?\/(?:\.\.\/)*estoque\//;
+
+describe('the step-12 stock core guards (12-d)', () => {
+  const estoque = arquivosTs(join(RAIZ_LIB, 'estoque')).filter((p) => !ehTeste(p));
+
+  it('★ (1) estoque/ is Next-free, reads no process environment and never imports the @/ alias', () => {
+    expect(estoque.map(rel).sort()).toEqual([
+      'estoque/descobertaEstoque.ts',
+      'estoque/envioEstoque.ts',
+      'estoque/familiaEstoque.ts',
+      'estoque/gateListing.ts',
+      'estoque/motivosEstoque.ts',
+      'estoque/opcoesEstoque.ts',
+      'estoque/planoEstoque.ts',
+      'estoque/tarefaEstoque.ts',
+      'estoque/vinculoEstoque.ts',
+    ]);
+    for (const arquivo of estoque) {
+      const texto = readFileSync(arquivo, 'utf8');
+      expect(texto, rel(arquivo)).not.toMatch(/process\s*\.\s*env/);
+      expect(/from 'next(\/[^']*)?'/.test(texto), rel(arquivo)).toBe(false);
+      expect(
+        especificadores(texto).filter((e) => e.startsWith('@/')),
+        rel(arquivo),
+      ).toEqual([]);
+    }
+  });
+
+  it('★ (2) estoque/ is PURE: by value it imports only its siblings, the quantity core, the schemas, the SP-API package, zod and two named data helpers; the order import’s resolution and the engine’s plan by type only', () => {
+    for (const arquivo of estoque) {
+      const texto = readFileSync(arquivo, 'utf8');
+      const valores = importacoesDeValor(texto).filter((e) => !e.startsWith('./'));
+      for (const espec of valores) {
+        expect(VALORES_PERMITIDOS_EM_ESTOQUE, `${rel(arquivo)} → ${espec}`).toContain(espec);
+      }
+      for (const [espec, permitidos] of Object.entries(NOMES_PERMITIDOS_EM_ESTOQUE)) {
+        for (const nome of nomesImportadosDe(texto, espec)) {
+          expect(permitidos, `${rel(arquivo)} → ${espec} { ${nome} }`).toContain(nome);
+        }
+      }
+      const todos = especificadores(texto).filter((e) => !e.startsWith('./'));
+      for (const espec of todos) {
+        expect(
+          [...VALORES_PERMITIDOS_EM_ESTOQUE, ...TIPOS_PERMITIDOS_EM_ESTOQUE],
+          `${rel(arquivo)} → ${espec}`,
+        ).toContain(espec);
+      }
+    }
+    // Anti-vacuity: the verdict does read the resolution's type, and only as a type.
+    const veredicto = readFileSync(join(RAIZ_LIB, 'estoque', 'vinculoEstoque.ts'), 'utf8');
+    expect(especificadores(veredicto)).toContain('../pedidos/vinculoProdutoAmazon');
+    expect(importacoesDeValor(veredicto)).not.toContain('../pedidos/vinculoProdutoAmazon');
+    // …the plan does read the engine's plan type, and only as a type…
+    const plano = readFileSync(join(RAIZ_LIB, 'estoque', 'planoEstoque.ts'), 'utf8');
+    expect(especificadores(plano)).toContain('../core/escrita');
+    expect(importacoesDeValor(plano)).not.toContain('../core/escrita');
+    // …and each data helper is imported, alone, by the file that needs it.
+    const tarefa = readFileSync(join(RAIZ_LIB, 'estoque', 'tarefaEstoque.ts'), 'utf8');
+    expect(nomesImportadosDe(tarefa, '@delfrance/data/admin')).toEqual(['sha256Hex']);
+    const descoberta = readFileSync(join(RAIZ_LIB, 'estoque', 'descobertaEstoque.ts'), 'utf8');
+    expect(nomesImportadosDe(descoberta, '@delfrance/data/admin/produtos')).toEqual([
+      'contaRefForms',
+    ]);
+  });
+
+  it('the named-helper scan reads every binding form (near-misses)', () => {
+    const e = '@delfrance/data/admin/produtos';
+    expect(nomesImportadosDe(`import { contaRefForms } from '${e}';`, e)).toEqual([
+      'contaRefForms',
+    ]);
+    expect(nomesImportadosDe(`import { resolverProdutoPorSku as r } from '${e}';`, e)).toEqual([
+      'resolverProdutoPorSku',
+    ]);
+    expect(nomesImportadosDe(`import * as dados from '${e}';`, e)).toEqual(['*']);
+    expect(nomesImportadosDe(`import dados, { contaRefForms } from '${e}';`, e)).toEqual([
+      '*',
+      'contaRefForms',
+    ]);
+    expect(nomesImportadosDe(`import { contaRefForms } from '${e}/x';`, e)).toEqual([]);
+  });
+
+  it('★ (3) estoque/ is UNWIRED: no production file outside it imports it — lib, app, functions and scripts', () => {
+    const fora = [
+      ...fontesDoChamadorDeSearchOrders(),
+      ...(existsSync(join(RAIZ_APP, 'proxy.ts')) ? [join(RAIZ_APP, 'proxy.ts')] : []),
+    ].filter((p) => !rel(p).startsWith('estoque/'));
+    const chamadores = fora
+      .filter((p) => especificadores(readFileSync(p, 'utf8')).some((e) => IMPORTA_ESTOQUE.test(e)))
+      .map(relApp)
+      .sort();
+    expect(chamadores).toEqual([]);
+    // Anti-vacuity: the scan read the functions codebase and the scripts.
+    expect(fora.map(relApp)).toEqual(
+      expect.arrayContaining(['functions/src/index.ts', 'scripts/sanitizar.ts']),
+    );
+  });
+
+  it('★ (4) publicado is never a gate: under estoque/ only the family projection names it, and reads it once', () => {
+    const nomeiam = estoque
+      .filter((p) => /\bpublicado\b/.test(semComentarios(readFileSync(p, 'utf8'))))
+      .map(rel);
+    expect(nomeiam).toEqual(['estoque/familiaEstoque.ts']);
+    const familia = semComentarios(
+      readFileSync(join(RAIZ_LIB, 'estoque', 'familiaEstoque.ts'), 'utf8'),
+    );
+    expect(familia.match(/\.publicado\b/g) ?? []).toHaveLength(1);
+    expect(familia).toMatch(/publicado:\s*raw\.publicado === true/);
+  });
+
+  it('the estoque import scan flags what it exists for, and nothing alike (near-misses)', () => {
+    for (const espec of [
+      '../estoque/familiaEstoque',
+      './estoque/familiaEstoque',
+      '../../lib/amazon/estoque/vinculoEstoque',
+      '@/lib/amazon/estoque/gateListing',
+      '../../../estoque/x',
+    ]) {
+      expect(IMPORTA_ESTOQUE.test(espec), espec).toBe(true);
+    }
+    for (const espec of [
+      '@delfrance/data/admin/estoque',
+      '../feeds/provedorLote',
+      './estoqueAmazon',
+      '../pedidos/estoqueX',
+      '@delfrance/schemas',
+    ]) {
+      expect(IMPORTA_ESTOQUE.test(espec), espec).toBe(false);
     }
   });
 });

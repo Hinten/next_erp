@@ -1925,3 +1925,44 @@ export {
   type TipoLoteFeedAmazon,
   type VezFeedAmazon,
 } from './feedAmazon';
+
+export {
+  // Admin-only / default-deny (NOT in ALL_DOMAINS) — the Amazon stock sync (step
+  // 12, PR 12-d): the tick's per-conta state `sincronizacaoEstoqueAmazon`, the
+  // daily reconcile run `reconciliacaoEstoqueAmazon` with its drift blocks
+  // `divergenciasEstoqueAmazon`, the request doc
+  // `pedidoReconciliacaoEstoqueAmazon`, the batch numbers and the index-field
+  // tuples. Bare: no Meta, never a combined `{ schema, meta }`, so rules-gen
+  // emits nothing for any of them.
+  CAMINHO_VINCULO_ESTOQUE_AMAZON_REGEX,
+  CAMPOS_INDICE_JANELA_ESTOQUE_AMAZON,
+  CAMPOS_INDICE_VARREDURA_VINCULOS_AMAZON,
+  CHAVE_CONTAGEM_ESTOQUE_AMAZON_REGEX,
+  FASE_RECONCILIACAO_ESTOQUE_AMAZON,
+  LIMIAR_FEED_ESTOQUE_AMAZON,
+  LIMIAR_ZERO_SEM_LINHA_ESTOQUE_AMAZON,
+  MAX_ITENS_DIVERGENCIA_ESTOQUE_AMAZON,
+  MAX_SKUS_FEED_DELTA_ESTOQUE_AMAZON,
+  REF_DEPOSITO_ESTOQUE_AMAZON_REGEX,
+  contagensReconciliacaoEstoqueAmazonSchema,
+  cursorVarreduraEstoqueAmazonSchema,
+  cursoresVarreduraEstoqueAmazonSchema,
+  divergenciaEstoqueAmazonSchema,
+  faseReconciliacaoEstoqueAmazonSchema,
+  idDivergenciaEstoqueAmazon,
+  itemDivergenciaEstoqueAmazonSchema,
+  pedidoReconciliacaoEstoqueAmazonSchema,
+  reconciliacaoEstoqueAmazonSchema,
+  sincronizacaoEstoqueAmazonSchema,
+  vezSincronizacaoEstoqueAmazonSchema,
+  type ContagensReconciliacaoEstoqueAmazon,
+  type CursorVarreduraEstoqueAmazon,
+  type CursoresVarreduraEstoqueAmazon,
+  type DivergenciaEstoqueAmazon,
+  type FaseReconciliacaoEstoqueAmazon,
+  type ItemDivergenciaEstoqueAmazon,
+  type PedidoReconciliacaoEstoqueAmazon,
+  type ReconciliacaoEstoqueAmazon,
+  type SincronizacaoEstoqueAmazon,
+  type VezSincronizacaoEstoqueAmazon,
+} from './estoqueAmazon';

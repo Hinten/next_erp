@@ -169,7 +169,7 @@ describe('the keys', () => {
     expect([...chavesContaPrecisaAtencao(ID)].sort()).toEqual(
       motivoContaAmazonSchema.options.map((m) => chaveContaPrecisaAtencao(ID, m)).sort(),
     );
-    expect(chavesContaPrecisaAtencao(ID)).toHaveLength(2);
+    expect(chavesContaPrecisaAtencao(ID)).toHaveLength(7);
     // NEAR-MISS: another conta's keys are other documents.
     expect(chavesContaPrecisaAtencao('conta-2')).not.toContain(
       chaveContaPrecisaAtencao(ID, MOTIVO_CONTA_AMAZON.contaSemOperacao),
