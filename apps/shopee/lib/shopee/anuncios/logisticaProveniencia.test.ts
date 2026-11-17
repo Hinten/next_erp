@@ -665,8 +665,8 @@ describe('o pin MORDE — sobre uma CÓPIA do universo, nada muda no disco', () 
       // arm) split in two — the list stays in the arm, the stamp moves into the
       // caller's `parseMerge({ ...escrita, … })`, which holds no list of its own.
       const real = fonteReal(RASCUNHO);
-      const doBraco = `return { ${LISTA}: patch.${LISTA} ?? null, ${CAMPO}: nowMs };`;
-      const doSpread = '...escrita,\n      ultimaModificacao: deps.nowMs,';
+      const doBraco = `\n        ${CAMPO}: nowMs,\n      };`;
+      const doSpread = '      ...escrita,\n';
       for (const de of [doBraco, doSpread]) {
         expect(real.split(de), `o trecho do mutante existe uma vez: ${de}`).toHaveLength(2);
       }
@@ -675,11 +675,8 @@ describe('o pin MORDE — sobre uma CÓPIA do universo, nada muda no disco', () 
         [
           RASCUNHO,
           real
-            .replace(doBraco, `return { ${LISTA}: patch.${LISTA} ?? null };`)
-            .replace(
-              doSpread,
-              `...escrita,\n      ${CAMPO}: deps.nowMs,\n      ultimaModificacao: deps.nowMs,`,
-            ),
+            .replace(doBraco, '\n      };')
+            .replace(doSpread, `      ...escrita,\n      ${CAMPO}: deps.nowMs,\n`),
         ],
       ]);
       const a = analisar(mutante);
@@ -829,12 +826,9 @@ describe('a outra direção: todo literal com a LISTA tem o carimbo, ou é leitu
       // #1911 P15: the draft edit writes the operator's list (or `null`) with no
       // stamp — an older stamp would then vouch for a list it never saw.
       const real = fonteReal(RASCUNHO);
-      const de = `return { ${LISTA}: patch.${LISTA} ?? null, ${CAMPO}: nowMs };`;
+      const de = `\n        ${CAMPO}: nowMs,\n      };`;
       expect(real.split(de), 'o trecho do mutante existe uma vez').toHaveLength(2);
-      const mutante = new Map([
-        ...FONTES,
-        [RASCUNHO, real.replace(de, `return { ${LISTA}: patch.${LISTA} ?? null };`)],
-      ]);
+      const mutante = new Map([...FONTES, [RASCUNHO, real.replace(de, '\n      };')]]);
       expect(listasSemCarimbo(mutante)).toEqual({ ...LISTAS_SEM_CARIMBO, [RASCUNHO]: 1 });
       // …and, from the other direction, the file is no writer any more.
       expect(analisar(mutante).escritas).toEqual(

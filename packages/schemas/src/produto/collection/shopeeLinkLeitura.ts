@@ -589,6 +589,128 @@ export function lerLogisticaArmazenadaShopee(
 }
 
 /**
+ * The stored `logistic_info` of a link, but ONLY when the ERP wrote it: the
+ * array when `link.logistic_info` is one AND {@link logisticaGravadaPeloErpShopee}
+ * trusts the link, else `null`. It applies the ONE predicate the publisher
+ * (`publicarAnuncio.ts`, `kits/planoKit.ts`) and
+ * {@link mesclarLogisticaGravadaShopee} also call, so a list the publisher
+ * withholds (#2015: a legacy list is never re-sent without an import) is never
+ * read as trusted by the canais verdict either.
+ *
+ * Pure, total over `unknown`, no clock.
+ */
+export function logisticaArmazenadaConfiavelShopee(
+  link: Record<string, unknown> | null,
+): readonly unknown[] | null {
+  if (link === null || !logisticaGravadaPeloErpShopee(link)) return null;
+  const lista = link.logistic_info;
+  return Array.isArray(lista) ? (lista as readonly unknown[]) : null;
+}
+
+/**
+ * Whether the logistics of a PUBLISHED link may be EDITED in the ERP: only
+ * while its stored list is one the ERP wrote ({@link logisticaGravadaPeloErpShopee}).
+ *
+ * ⚠️ An edit is saved WITH the provenance stamp, and since the publisher sends a
+ * trusted list's offs on an update, an edit made over a DISTRUSTED (legacy, or
+ * absent) list would vouch for offs nobody chose — the channel editor, with no
+ * trusted size or fee to show, pre-fills every SIZE_SELECTION / CUSTOM_PRICE
+ * channel OFF, and «Republicar» would switch those live channels off at Shopee.
+ * Importing the listing first records what Shopee holds, stamped, and the edit
+ * then starts from it. The edit route refuses the rest (422).
+ *
+ * Pure, total over `unknown`, no clock.
+ */
+export function logisticaDoAnuncioEditavelShopee(link: Record<string, unknown> | null): boolean {
+  return link !== null && logisticaGravadaPeloErpShopee(link);
+}
+
+/**
+ * The operator's channel choice for a link's `logistic_info`, MERGED with what
+ * the link already stores (edit of a PUBLISHED listing). The write whitelist
+ * carries only `{logistic_id, enabled, is_free}` (strict — the draft chooses
+ * channels), but a published listing's stored entry may also hold the
+ * `size_id` / `shipping_fee` a Seller-Centre-configured channel needs; writing
+ * the bare choice back would drop them and the next «Republicar» would refuse
+ * that channel. So each new entry inherits those two keys, VERBATIM, from the
+ * FIRST stored entry that reads (through {@link paraInteiroWire}) as the SAME
+ * `logistic_id` — **only when the link's list is TRUSTED**
+ * ({@link logisticaGravadaPeloErpShopee}). ⚠️ The caller stamps
+ * `logisticaGravadaEm` on the same write, so carrying a DISTRUSTED legacy list's
+ * size/fee would launder it into a trusted one and the publisher would send
+ * values the ERP never chose (#2015). A distrusted or absent list ⇒ bare
+ * triples, nothing appended.
+ *
+ * - `null` ⇒ `null` («Automática» — nothing to merge).
+ * - Output order is `novos` order; each entry is `{logistic_id, enabled,
+ *   is_free}` (`is_free` verbatim, `null` included) plus the inherited keys. A
+ *   key is carried only when present and neither `null` nor `undefined` in the
+ *   stored entry; never invented.
+ * - `desligarOmitidos` (a published edit): EVERY trusted stored entry whose id
+ *   is not among `novos` is appended, in stored order, once per id, as
+ *   `{logistic_id, enabled: false, is_free: <its isFree ?? false>}` — an ON one
+ *   because the edit dropped the channel and Shopee must be told (the publisher
+ *   sends an off only from a stored `enabled: false`), an OFF one because it
+ *   may be an earlier edit's off not yet sent, and dropping it would leave the
+ *   channel ON at Shopee. Re-sending an off Shopee already applied is
+ *   idempotent.
+ * - **EQUAL (same channel):** `7` ≡ `'7'` ≡ `'07'` (the reader's digits-only
+ *   rule). **DISTINCT:** another id inherits nothing; `' 7'`, `'7.0'` and `0`
+ *   are not ids at all, so they match nothing.
+ * - Duplicate stored ids take the first.
+ *
+ * Pure, total over `unknown`, no clock.
+ */
+export function mesclarLogisticaGravadaShopee(
+  novos:
+    | readonly {
+        readonly logistic_id: number;
+        readonly enabled: boolean;
+        readonly is_free: boolean | null;
+      }[]
+    | null,
+  link: Record<string, unknown> | null,
+  opcoes: { readonly desligarOmitidos: boolean },
+): readonly Record<string, unknown>[] | null {
+  if (novos === null) return null;
+  const confiavel = link !== null && logisticaGravadaPeloErpShopee(link);
+  const bruto = confiavel ? link?.logistic_info : null;
+  const guardadas: { readonly id: number; readonly entrada: unknown }[] = [];
+  if (Array.isArray(bruto)) {
+    for (const entrada of bruto as readonly unknown[]) {
+      const id = paraInteiroWire(campo(entrada, 'logistic_id'));
+      if (id !== null) guardadas.push({ id, entrada });
+    }
+  }
+  const saidas = novos.map((novo) => {
+    const saida: Record<string, unknown> = {
+      logistic_id: novo.logistic_id,
+      enabled: novo.enabled,
+      is_free: novo.is_free,
+    };
+    const guardada = guardadas.find((g) => g.id === paraInteiroWire(novo.logistic_id));
+    if (guardada === undefined) return saida;
+    for (const chave of ['size_id', 'shipping_fee'] as const) {
+      const valor = campo(guardada.entrada, chave);
+      if (valor !== null && valor !== undefined) saida[chave] = valor;
+    }
+    return saida;
+  });
+  if (!confiavel || !opcoes.desligarOmitidos) return saidas;
+  const vistos = new Set<number>();
+  for (const novo of novos) {
+    const id = paraInteiroWire(novo.logistic_id);
+    if (id !== null) vistos.add(id);
+  }
+  for (const lida of lerLogisticaArmazenadaShopee(bruto) ?? []) {
+    if (vistos.has(lida.logisticId)) continue;
+    vistos.add(lida.logisticId);
+    saidas.push({ logistic_id: lida.logisticId, enabled: false, is_free: lida.isFree ?? false });
+  }
+  return saidas;
+}
+
+/**
  * A wire integer that is safe to send as an `int32` id, or `null`.
  *
  * ⚠️ `Number()` is reached ONLY behind a digits-only test, and that is the whole

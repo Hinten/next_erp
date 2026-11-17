@@ -561,6 +561,9 @@ export function planejarPublicacao(
     pesoKg: pesoParaPublicar(produto),
     dimensaoCm: dimensaoParaPublicar(produto),
     ofereceFreteGratis: produto.ofereceFreteGratis,
+    // E-4: only an UPDATE of a live listing sends a stored off as
+    // `enabled: false`; a create never switches a channel off.
+    enviarDesligados: contexto.ehAtualizacao,
   });
 
   const { taxInfo, omitido } = montarTaxInfo(contexto.imposto.imposto);

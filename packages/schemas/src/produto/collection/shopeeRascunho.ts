@@ -248,6 +248,12 @@ export const CODIGO_RASCUNHO_SHOPEE = {
    * superseded, native-kit or never-published link). Nothing was written.
    */
   anuncioNaoEditavel: 'SHOPEE_ANUNCIO_NAO_EDITAVEL',
+  /**
+   * 422 — an edit a PUBLISHED listing cannot take: a null brand, an empty
+   * attribute list over a stored one, «Automática» logistics. Nothing was
+   * written.
+   */
+  anuncioEdicaoInvalida: 'SHOPEE_ANUNCIO_EDICAO_INVALIDA',
 } as const satisfies Record<string, string>;
 export type CodigoRascunhoShopee =
   (typeof CODIGO_RASCUNHO_SHOPEE)[keyof typeof CODIGO_RASCUNHO_SHOPEE];
@@ -1577,7 +1583,20 @@ function mesmosCampos(
 }
 
 /**
- * `POST /api/marketplace/shopee/rascunho/atualizar` — edit a draft. `patch` is
+ * What an edit request targets: a DRAFT (the default, so a web build that sends
+ * no `alvo` is a draft edit) or a PUBLISHED listing's link — saved to the link
+ * only, sent to Shopee by the next «Republicar».
+ */
+export const alvoEdicaoShopeeSchema = z.enum(['rascunho', 'anuncio']);
+export type AlvoEdicaoShopee = z.infer<typeof alvoEdicaoShopeeSchema>;
+export const ALVO_EDICAO_SHOPEE = {
+  rascunho: 'rascunho',
+  anuncio: 'anuncio',
+} as const satisfies Record<string, AlvoEdicaoShopee>;
+
+/**
+ * `POST /api/marketplace/shopee/rascunho/atualizar` — edit a draft (or, with
+ * `alvo: 'anuncio'`, a published listing's link). `patch` is
  * the write ({@link conteudoRascunhoShopeeSchema}, normalised); `base` is what
  * the operator saw for EXACTLY the fields {@link camposDaBaseDoRascunhoShopee}
  * names ({@link baseRascunhoShopeeSchema}, verbatim) — the route compares it
@@ -1599,6 +1618,7 @@ export const corpoAtualizarRascunhoShopeeSchema = z
     integracaoId: idDeDocumentoSchema,
     produtoId: idDeDocumentoSchema,
     linkDocId: idDeDocumentoSchema,
+    alvo: alvoEdicaoShopeeSchema.default('rascunho'),
     base: baseRascunhoShopeeSchema,
     patch: conteudoRascunhoShopeeSchema,
   })
