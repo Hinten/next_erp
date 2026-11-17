@@ -290,7 +290,10 @@ describe('o universo: o app inteiro, lido do disco', () => {
 });
 
 describe('UMA cópia: cada agulha casa no código só na casa e nas isenções nomeadas', () => {
-  it.each(AGULHAS.map((a) => [a.id, a] as const))('%s', (_id, a) => {
+  // The first case parses the whole universe into the `LINHAS_DE_CODIGO` memo (3.6 s in a
+  // full-suite run on a dev box, against vitest's 5 s default); every later check reuses it.
+  // `{ timeout: 30_000 }` is CI headroom, not a budget.
+  it.each(AGULHAS.map((a) => [a.id, a] as const))('%s', { timeout: 30_000 }, (_id, a) => {
     const { copias, mortos } = violacoesDa(a, FONTES);
     expect(copias, `${a.id}: uma segunda cópia — importe de faseEtiqueta.ts`).toEqual([]);
     expect(mortos, `${a.id}: casa ou isenção que não casa mais — tire-a`).toEqual([]);
