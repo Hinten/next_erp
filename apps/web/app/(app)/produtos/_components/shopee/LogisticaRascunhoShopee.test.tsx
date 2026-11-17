@@ -982,7 +982,7 @@ describe('LogisticaRascunhoShopee — acessibilidade, teclado e o id do campo', 
     }
   });
 
-  it('o id do campo: no contêiner das linhas quando há linhas ⟷ na raiz da seção quando não há', async () => {
+  it('o id do campo: no contêiner das linhas quando há linhas que se movem ⟷ na raiz da seção quando não há linhas', async () => {
     const id = idDoCampoRascunhoShopee(LINK, CAMPO_RASCUNHO_SHOPEE.logisticInfo);
     const lida = adiada<RespostaCanaisShopee>();
     h.canais.mockReturnValueOnce(lida.promise);
@@ -1008,22 +1008,168 @@ describe('LogisticaRascunhoShopee — acessibilidade, teclado e o id do campo', 
     expect(document.getElementById(id)).toBe(secao());
   });
 
-  it('o primeiro controle HABILITADO das linhas, na ordem da DTO: uma primeira linha desligada e indisponível (switch travado) dá o «Frete grátis…» DELA, nunca o «Ligado» da linha seguinte ⟷ QUASE-PAR: uma primeira linha disponível dá o seu «Ligado»', async () => {
+  it('⭐ o primeiro controle HABILITADO das linhas, na ordem da DTO: uma primeira linha desligada e indisponível (os DOIS controles travados, Q-F1 b) dá o «Ligado» da linha SEGUINTE, nunca o «Frete grátis…» dela ⟷ QUASE-PAR: uma primeira linha disponível dá o seu «Ligado»; o mesmo D LIGADO dá o seu «Ligado»', async () => {
     const id = idDoCampoRascunhoShopee(LINK, CAMPO_RASCUNHO_SHOPEE.logisticInfo);
     const indisponivel = canal(D, { indisponivel: NAO_CABE, automatica: null });
     const primeiroHabilitado = () =>
       document.getElementById(id)?.querySelector('input:not([disabled])');
     h.canais.mockResolvedValue(resposta([indisponivel, canal(A)]));
-    const { unmount } = show({ valor: [on(A)] });
+    const morta = show({ valor: [on(A)] });
     await screen.findByTestId(idDaLinha(D));
     expect(interruptor(D).disabled).toBe(true);
-    expect(primeiroHabilitado()).toBe(freteGratis(D));
-    unmount();
+    expect(freteGratis(D).disabled).toBe(true);
+    expect(document.getElementById(id)).not.toBe(secao());
+    expect(primeiroHabilitado()).toBe(interruptor(A));
+    expect(primeiroHabilitado()).not.toBe(freteGratis(D));
+    morta.unmount();
 
+    // QUASE-PAR: the same unavailable D, stored ON — it can be switched off: its own «Ligado».
+    const ligada = show({ valor: [on(A), on(D)] });
+    await screen.findByTestId(idDaLinha(D));
+    expect(primeiroHabilitado()).toBe(interruptor(D));
+    ligada.unmount();
+
+    // QUASE-PAR: an available first row gives its own «Ligado».
     h.canais.mockResolvedValue(resposta([canal(A), indisponivel]));
     show({ valor: [on(A)] });
     await screen.findByTestId(idDaLinha(D));
     expect(primeiroHabilitado()).toBe(interruptor(A));
+  });
+
+  it('⭐ Q-F1 (b): o «Frete grátis…» de uma linha DESLIGADA e indisponível fica DESABILITADO — ainda renderizado, mostrando o valor guardado — e o clique não chama `onMudar` ⟷ ⛔ QUASE: o mesmo D LIGADO, habilitado; um desligado DISPONÍVEL (B), habilitado', async () => {
+    const loja = resposta([
+      canal(B),
+      canal(A),
+      canal(D, { indisponivel: NAO_CABE, automatica: null }),
+    ]);
+    h.canais.mockResolvedValue(loja);
+    const marcado = show({ valor: [on(A), off(B), off(D, true)] });
+    await screen.findByTestId(idDaLinha(D));
+    await assentar();
+    expect(freteGratis(D).disabled).toBe(true);
+    expect(freteGratis(D).checked).toBe(true);
+    fireEvent.click(freteGratis(D));
+    // jsdom still hands a click on a DISABLED checkbox to React's `onChange`
+    // (measured), so this pins `comCanalShopee`'s refusal through the section;
+    // in a browser the `disabled` above is the guard.
+    expect(marcado.onMudar).not.toHaveBeenCalled();
+    // No new copy: the switch's own reason speaks; the blocked sentence is F's alone.
+    expect(linhaDo(D).textContent).toContain(FRASE_INDISPONIVEL_CANAL_SHOPEE[NAO_CABE]);
+    expect(linhaDo(D).textContent).not.toContain(FRASE_FRETE_GRATIS_BLOQUEADO_SHOPEE);
+    // ⛔ QUASE: an OFF but AVAILABLE row's checkbox is enabled, and a click sends.
+    expect(freteGratis(B).disabled).toBe(false);
+    fireEvent.click(freteGratis(B));
+    expect(marcado.onMudar).toHaveBeenCalledTimes(1);
+    expect(marcado.onMudar).toHaveBeenLastCalledWith(
+      comCanalShopee([on(A), off(B), off(D, true)], loja, B, { freteGratis: true }),
+    );
+    marcado.unmount();
+
+    // Unticked in the value: shown unticked, still disabled.
+    const desmarcado = show({ valor: [on(A), off(D)] });
+    await screen.findByTestId(idDaLinha(D));
+    expect(freteGratis(D).checked).toBe(false);
+    expect(freteGratis(D).disabled).toBe(true);
+    desmarcado.unmount();
+
+    // ⛔ QUASE: the same D stored ON («Ligado, mas não vai na publicação») — enabled, a click sends.
+    const valor = [on(D)];
+    const ligado = show({ valor });
+    await screen.findByTestId(idDaLinha(D));
+    expect(linhaDo(D).textContent).toContain(PREFIXO_LIGADO_INDISPONIVEL_SHOPEE);
+    expect(freteGratis(D).disabled).toBe(false);
+    fireEvent.click(freteGratis(D));
+    expect(ligado.onMudar).toHaveBeenCalledTimes(1);
+    expect(ligado.onMudar).toHaveBeenLastCalledWith(
+      comCanalShopee(valor, loja, D, { freteGratis: true }),
+    );
+  });
+
+  it('⭐ o id do campo vai para a RAIZ quando NENHUMA linha tem um controle que se move — todas desligadas e indisponíveis, ou um obrigatório ligado de frete bloqueado com uma indisponível desligada — e o primeiro habilitado é o rádio «Automática» (a saída) ⟷ QUASE-PAR: uma linha com um controle habilitado ⇒ no contêiner das linhas, também com `editavel: false`', async () => {
+    const id = idDoCampoRascunhoShopee(LINK, CAMPO_RASCUNHO_SHOPEE.logisticInfo);
+    const indisponivel = canal(D, { indisponivel: NAO_CABE, automatica: null });
+    const comId = () => document.querySelectorAll(`[id="${id}"]`);
+    const primeiroHabilitado = () =>
+      document.getElementById(id)?.querySelector('input:not([disabled])');
+
+    // Every row OFF and unavailable (the zero-ON refusal routes here).
+    h.canais.mockResolvedValue(resposta([indisponivel]));
+    const so = show({
+      valor: [off(D)],
+      logisticaInvalida: MOTIVO_DA_LOGISTICA_INVALIDA_SHOPEE.semCanalLigado,
+    });
+    await screen.findByTestId(idDaLinha(D));
+    expect(document.getElementById(id)).toBe(secao());
+    expect(comId()).toHaveLength(1);
+    expect(primeiroHabilitado()).toBe(radio(ROTULO_LOGISTICA_AUTOMATICA_SHOPEE));
+    so.unmount();
+
+    // The mix: compulsory ON with its free shipping blocked, then an OFF unavailable row.
+    h.canais.mockResolvedValue(
+      resposta([
+        canal(E, { obrigatorio: true, bloqueiaFreteGratisDoVendedor: true }),
+        indisponivel,
+      ]),
+    );
+    const misto = show({ valor: [on(E)] });
+    await screen.findByTestId(idDaLinha(D));
+    for (const c of [interruptor(E), freteGratis(E), interruptor(D), freteGratis(D)]) {
+      expect(c.disabled).toBe(true);
+    }
+    expect(document.getElementById(id)).toBe(secao());
+    expect(comId()).toHaveLength(1);
+    expect(primeiroHabilitado()).toBe(radio(ROTULO_LOGISTICA_AUTOMATICA_SHOPEE));
+    misto.unmount();
+
+    // QUASE-PAR: the same mix, the compulsory's free shipping NOT blocked — the
+    // rows' container, and the focus takes that checkbox (its switch is locked ON).
+    h.canais.mockResolvedValue(resposta([canal(E, { obrigatorio: true }), indisponivel]));
+    const livre = show({ valor: [on(E)] });
+    await screen.findByTestId(idDaLinha(D));
+    expect(document.getElementById(id)).not.toBe(secao());
+    expect(document.getElementById(id)?.contains(linhaDo(E))).toBe(true);
+    expect(comId()).toHaveLength(1);
+    expect(primeiroHabilitado()).toBe(freteGratis(E));
+    livre.unmount();
+
+    // QUASE-PAR, the other half: an OFF available row whose free shipping is
+    // blocked (F) — only its switch moves, and that is enough for the rows.
+    h.canais.mockResolvedValue(
+      resposta([canal(F, { bloqueiaFreteGratisDoVendedor: true }), indisponivel]),
+    );
+    const soInterruptor = show({ valor: [off(F)] });
+    await screen.findByTestId(idDaLinha(D));
+    expect(freteGratis(F).disabled).toBe(true);
+    expect(document.getElementById(id)).not.toBe(secao());
+    expect(comId()).toHaveLength(1);
+    expect(primeiroHabilitado()).toBe(interruptor(F));
+    soInterruptor.unmount();
+
+    // QUASE-PAR: the all-dead row plus ONE OFF available row — the rows' container, its «Ligado».
+    h.canais.mockResolvedValue(resposta([indisponivel, canal(A)]));
+    const { rerenderCom } = show({ valor: [off(D), off(A)] });
+    await screen.findByTestId(idDaLinha(A));
+    expect(document.getElementById(id)).not.toBe(secao());
+    expect(comId()).toHaveLength(1);
+    expect(primeiroHabilitado()).toBe(interruptor(A));
+    // `editavel: false` disables every control but never moves the id.
+    rerenderCom({ valor: [off(D), off(A)], editavel: false });
+    expect(interruptor(A).disabled).toBe(true);
+    expect(document.getElementById(id)).not.toBe(secao());
+    expect(document.getElementById(id)?.contains(linhaDo(A))).toBe(true);
+    expect(comId()).toHaveLength(1);
+  });
+
+  it('⛔ QUASE-PAR do `editavel: false` acima: com TODAS as linhas mortas, `editavel: false` deixa o id na RAIZ, como no editável — a colocação lê só as duas travas, nunca `editavel`', async () => {
+    const id = idDoCampoRascunhoShopee(LINK, CAMPO_RASCUNHO_SHOPEE.logisticInfo);
+    h.canais.mockResolvedValue(resposta([canal(D, { indisponivel: NAO_CABE, automatica: null })]));
+    const { rerenderCom } = show({ valor: [off(D)] });
+    await screen.findByTestId(idDaLinha(D));
+    expect(document.getElementById(id)).toBe(secao());
+    rerenderCom({ valor: [off(D)], editavel: false });
+    expect(interruptor(D).disabled).toBe(true);
+    expect(document.getElementById(id)).toBe(secao());
+    expect(document.querySelectorAll(`[id="${id}"]`)).toHaveLength(1);
   });
 });
 

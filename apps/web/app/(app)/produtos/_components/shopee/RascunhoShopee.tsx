@@ -371,8 +371,8 @@ function descricaoDoCampo(
  * inputs, the category's and the brand's on this form's wrappers, and the
  * attributes' and the logistics' stamped by each section itself (the
  * attributes' on its own root; the logistics' on its rows' container while
- * rows render, else on its root), never a second wrapper here: one id, one
- * element.
+ * one of its rows has a control that can move, else on its root), never a
+ * second wrapper here: one id, one element.
  */
 export function RascunhoShopee({
   db,

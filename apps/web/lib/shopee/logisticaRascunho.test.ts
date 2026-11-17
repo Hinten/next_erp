@@ -22,6 +22,8 @@ import {
   comCanalShopee,
   escolhaAoEscolherCanaisShopee,
   escolhaInicialShopee,
+  freteGratisTravadoShopee,
+  interruptorTravadoShopee,
   linhasDaLogisticaShopee,
   logisticaEscolhidaNoRascunhoShopee,
   modoDaLogisticaShopee,
@@ -286,6 +288,29 @@ describe('linhasDaLogisticaShopee — as linhas da seção', () => {
     expect(linha(linhas, A)).toMatchObject({ freteGratis: true, bloqueiaFreteGratis: false });
   });
 
+  it('⭐ as duas travas da linha: o «Ligado» trava no obrigatório ligado (E, G) e no indisponível desligado (D); o frete grátis no bloqueado (F) e no indisponível DESLIGADO (D, Q-F1 b) ⟷ ⛔ QUASE: o mesmo D LIGADO não trava nenhum; G (obrigatório indisponível, ligado) trava só o «Ligado»; um comum desligado (B) nenhum', () => {
+    const travas = (valor: readonly Canal[]) =>
+      linhasDaLogisticaShopee(valor, LOJA).map((l) => [
+        l.logisticId,
+        interruptorTravadoShopee(l),
+        freteGratisTravadoShopee(l),
+      ]);
+
+    // [id, «Ligado» travado, frete grátis travado] — DTO order.
+    expect(travas([on(A)])).toEqual([
+      [B, false, false],
+      [A, false, false],
+      [D, true, true],
+      [E, true, false],
+      [F, false, true],
+      [G, true, false],
+    ]);
+    // QUASE: the same unavailable D, stored ON — it can be switched off, and keeps its free shipping.
+    expect(travas([on(A), on(D, true)])[2]).toEqual([D, false, false]);
+    // A stored tick on the OFF unavailable D does not unlock it either.
+    expect(travas([on(A), off(D, true)])[2]).toEqual([D, true, true]);
+  });
+
   it('um id repetido: a PRIMEIRA entrada do valor fala; a DTO repetida dá UMA linha (a primeira)', () => {
     expect(linha(linhasDaLogisticaShopee([on(A, true), off(A)], LOJA), A)).toMatchObject({
       ligado: true,
@@ -391,6 +416,107 @@ describe('comCanalShopee — uma interação reconstrói a lista inteira', () =>
     expect(comCanalShopee(comD, LOJA, D, { ligado: false })).toEqual([
       on(A),
       off(B),
+      off(D),
+      on(E),
+      off(F),
+      on(G),
+    ]);
+  });
+
+  it('⭐ Q-F1 (b): frete grátis — marcado OU desmarcado — numa linha DESLIGADA e indisponível (D) devolve O PRÓPRIO valor ⟷ ⛔ QUASE: a mesma mudança no D LIGADO grava o `is_free` dele; num desligado DISPONÍVEL (B) e no obrigatório indisponível ligado (G), também', () => {
+    const valor: readonly Canal[] = [on(A), off(B), off(D), on(E), off(F), on(G)];
+
+    expect(comCanalShopee(valor, LOJA, D, { freteGratis: true })).toBe(valor);
+    expect(comCanalShopee(valor, LOJA, D, { freteGratis: false })).toBe(valor);
+    // A tick the value already holds on the OFF unavailable D is never unticked either.
+    const dMarcado: readonly Canal[] = [on(A), off(D, true)];
+    expect(comCanalShopee(dMarcado, LOJA, D, { freteGratis: false })).toBe(dMarcado);
+    expect(comCanalShopee(dMarcado, LOJA, D, { freteGratis: true })).toBe(dMarcado);
+
+    // ⛔ QUASE: the same D stored ON (unavailable, but ON) — each way flips D's is_free.
+    const dLigado: readonly Canal[] = [on(A), on(D)];
+    expect(comCanalShopee(dLigado, LOJA, D, { freteGratis: true })).toEqual([
+      on(A),
+      off(B),
+      on(D, true),
+      on(E),
+      off(F),
+      on(G),
+    ]);
+    const dLigadoMarcado: readonly Canal[] = [on(A), on(D, true)];
+    expect(comCanalShopee(dLigadoMarcado, LOJA, D, { freteGratis: false })).toEqual([
+      on(A),
+      off(B),
+      on(D, false),
+      on(E),
+      off(F),
+      on(G),
+    ]);
+    // ⛔ QUASE: an OFF but AVAILABLE row (B) takes it, OFF.
+    expect(comCanalShopee(valor, LOJA, B, { freteGratis: true })).toEqual([
+      on(A),
+      off(B, true),
+      off(D),
+      on(E),
+      off(F),
+      on(G),
+    ]);
+    expect(comCanalShopee(valor, LOJA, B, { freteGratis: false })).not.toBe(valor);
+    // ⛔ QUASE: compulsory AND unavailable, but ON (G) — its free shipping moves.
+    expect(comCanalShopee(valor, LOJA, G, { freteGratis: true })).toEqual([
+      on(A),
+      off(B),
+      off(D),
+      on(E),
+      off(F),
+      on(G, true),
+    ]);
+  });
+
+  it('⛔ QUASE-PAR da recusa Q-F1 (b): ela é só do FRETE GRÁTIS — `{ ligado: false }` num D desligado e indisponível (nenhum movimento) responde um valor novo, e toda reconstrução (por D ou por outra linha) leva o `is_free` guardado de D como está', () => {
+    const dMarcado: readonly Canal[] = [on(A), off(D, true)];
+
+    const novo = comCanalShopee(dMarcado, LOJA, D, { ligado: false });
+    expect(novo).not.toBe(dMarcado);
+    expect(novo).toEqual([on(A), off(B), off(D, true), on(E), off(F), on(G)]);
+    // A rebuild driven by ANOTHER row carries D's held tick verbatim (inert: D is OFF).
+    expect(comCanalShopee(dMarcado, LOJA, A, { freteGratis: true })).toEqual([
+      on(A, true),
+      off(B),
+      off(D, true),
+      on(E),
+      off(F),
+      on(G),
+    ]);
+  });
+
+  it('⭐ Q-F1 (b), até onde a recusa vai: num desligado indisponível de frete TAMBÉM bloqueado, desmarcar um `is_free` velho devolve O PRÓPRIO valor; `ligado` e `freteGratis` juntos num D desligado são recusados inteiros ⟷ ⛔ QUASE: o mesmo desmarcar num bloqueado DISPONÍVEL (F) e a mesma dupla num desligado disponível (B) respondem um valor novo', () => {
+    /** Selectable, the package does not fit, AND the shop blocks seller-paid free shipping. */
+    const H = 90017;
+    const loja = resposta([
+      canal(A),
+      canal(H, { indisponivel: NAO_CABE, automatica: null, bloqueiaFreteGratisDoVendedor: true }),
+    ]);
+    const hVelho: readonly Canal[] = [on(A), off(H, true)];
+
+    expect(comCanalShopee(hVelho, loja, H, { freteGratis: false })).toBe(hVelho);
+    expect(comCanalShopee(hVelho, loja, H, { freteGratis: true })).toBe(hVelho);
+    const valor: readonly Canal[] = [on(A), off(B), off(D), on(E), off(F), on(G)];
+    expect(comCanalShopee(valor, LOJA, D, { ligado: false, freteGratis: true })).toBe(valor);
+
+    // ⛔ QUASE: a blocked but AVAILABLE row (F) drops its stale tick.
+    expect(comCanalShopee([on(A), off(F, true)], LOJA, F, { freteGratis: false })).toEqual([
+      on(A),
+      off(B),
+      off(D),
+      on(E),
+      off(F),
+      on(G),
+    ]);
+    // ⛔ QUASE: the same pair on an OFF but available row (B) is a new value.
+    expect(comCanalShopee(valor, LOJA, B, { ligado: true, freteGratis: true })).toEqual([
+      on(A),
+      on(B, true),
       off(D),
       on(E),
       off(F),

@@ -35,6 +35,8 @@ import {
   chaveCanaisShopee,
   comCanalShopee,
   escolhaAoEscolherCanaisShopee,
+  freteGratisTravadoShopee,
+  interruptorTravadoShopee,
   linhasDaLogisticaShopee,
   modoDaLogisticaShopee,
   type CanalForaDaLojaShopee,
@@ -279,17 +281,27 @@ interface Atual {
  *   so the tab comes back on «Automática», never on a loader nothing ends.
  * - **Disabled, never removed** (D16-12): while `!editavel` every control
  *   stays on screen, disabled.
+ * - **No free-shipping change on a channel the row cannot switch on** (Lucas
+ *   2026-11-16, Q-F1 (b)): an OFF unavailable row's «Frete grátis…» is
+ *   disabled like its «Ligado», still showing the value it holds (carried as
+ *   it is — inert while OFF, movable again once the channel fits); Q-F1 (b)
+ *   adds no lock to an ON unavailable row. The two locks are
+ *   `interruptorTravadoShopee` and `freteGratisTravadoShopee`;
+ *   `comCanalShopee` refuses the same moves, by direction (its docblock).
  * - **Enter** in the switch, the checkbox or the mode picker never submits the
  *   produto's form ({@link semEnviarOFormularioDoProduto}).
  *
  * Contract: the root `data-testid="shopee-rascunho-logistica-<linkDocId>"`;
  * each row `data-testid="shopee-logistica-<linkDocId>-<logisticId>"`; the
  * field id `idDoCampoRascunhoShopee(linkDocId, 'logistic_info')` — the refusal
- * row's focus target — on the rows' container while rows render, else on the
- * root (D16-13). One element at a time. The focus takes the container's
- * first ENABLED control in DTO order: a row's «Ligado», or, where that switch
- * is locked, the row's «Frete grátis…» — so an unavailable OFF first row
- * gives its free-shipping checkbox, never a later row's switch.
+ * row's focus target — on the rows' container while some row has a control
+ * that can move (read through the SAME two locks that disable the controls,
+ * `editavel` aside), else on the root (D16-13). One element at a time. The
+ * focus takes that element's first ENABLED control. In the rows, in DTO
+ * order: a row's «Ligado», or, where that switch is locked ON (compulsory),
+ * the row's «Frete grátis…»; an unavailable OFF row has neither, so the focus
+ * goes on to the next row — never to a dead row's checkbox. On the root (no
+ * row can move): the «Automática» radio, the way out of such a list.
  */
 export function LogisticaRascunhoShopee({
   linkDocId,
@@ -510,6 +522,12 @@ export function LogisticaRascunhoShopee({
   const resposta = falhou ? undefined : consulta.data;
   const linhas = resposta === undefined ? [] : linhasDaLogisticaShopee(valor, resposta);
   const fora = resposta === undefined ? [] : canaisGravadosForaDaLojaShopee(valor, resposta);
+  // The field id goes on the rows only when some row has a control that can
+  // move (the controls' own two locks, `editavel` aside); else on the root,
+  // whose first enabled control is «Automática».
+  const idNasLinhas = linhas.some(
+    (linha) => !interruptorTravadoShopee(linha) || !freteGratisTravadoShopee(linha),
+  );
   const mudar = (logisticId: number, mudanca: MudancaDoCanalShopee) => {
     if (resposta === undefined) return;
     const proximo = comCanalShopee(valor, resposta, logisticId, mudanca);
@@ -518,7 +536,7 @@ export function LogisticaRascunhoShopee({
   };
 
   return (
-    <Stack gap="xs" id={linhas.length > 0 ? undefined : idDoCampo} data-testid={raiz}>
+    <Stack gap="xs" id={idNasLinhas ? undefined : idDoCampo} data-testid={raiz}>
       {titulo}
       {seletor}
       <Text size="sm" c="dimmed">
@@ -537,7 +555,7 @@ export function LogisticaRascunhoShopee({
         </Text>
       )}
       {linhas.length > 0 && (
-        <Stack gap="sm" id={idDoCampo}>
+        <Stack gap="sm" id={idNasLinhas ? idDoCampo : undefined}>
           {linhas.map((linha) => (
             <LinhaDoCanal
               key={linha.logisticId}
@@ -601,7 +619,6 @@ function LinhaDoCanal({
 }) {
   const idDoRotulo = useId();
   const frases = frasesDoInterruptor(linha);
-  const travado = linha.ligado ? !linha.podeDesligar : !linha.podeLigar;
   return (
     <Stack
       gap={4}
@@ -620,7 +637,7 @@ function LinhaDoCanal({
       <Switch
         label={ROTULO_CANAL_LIGADO_SHOPEE}
         checked={linha.ligado}
-        disabled={!editavel || travado}
+        disabled={!editavel || interruptorTravadoShopee(linha)}
         description={
           frases.length > 0 ? (
             <>
@@ -638,7 +655,8 @@ function LinhaDoCanal({
       <Checkbox
         label={ROTULO_FRETE_GRATIS_CANAL_SHOPEE}
         checked={linha.freteGratis}
-        disabled={!editavel || linha.bloqueiaFreteGratis}
+        // Blocked by the shop, or a channel this row cannot send (Q-F1 (b)).
+        disabled={!editavel || freteGratisTravadoShopee(linha)}
         description={linha.bloqueiaFreteGratis ? FRASE_FRETE_GRATIS_BLOQUEADO_SHOPEE : undefined}
         onKeyDown={semEnviarOFormularioDoProduto}
         onChange={(e) => onMudar(linha.logisticId, { freteGratis: e.currentTarget.checked })}

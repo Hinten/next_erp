@@ -1123,6 +1123,8 @@ describe('DesfechoAcaoShopee — «Corrigir no rascunho: Atributos» (#1911 P13)
 /* #1911 P16 — channel fixtures (ids as the designs number them; invented names). */
 const CANAL_A = 90003;
 const CANAL_B = 90005;
+/** A channel the package does not fit (`indisponivel: 'nao-cabe'`). */
+const CANAL_D = 90009;
 
 /** One selectable, available channel with an automatic entry (no lock, no block). */
 const canalDaLoja = (logisticsChannelId: number, nome: string) => ({
@@ -1147,13 +1149,27 @@ const ESCOLHIDA: readonly CanalLogisticaRascunhoShopee[] = [
   { logistic_id: CANAL_B, enabled: true, is_free: false },
 ];
 
+/** The same unavailable channel (D) listed FIRST, then A — a dead row before a live one. */
+const CANAIS_COM_D_PRIMEIRO: RespostaCanaisShopee = respostaCanaisShopeeSchema.parse({
+  medidasCompletas: true,
+  canais: [
+    { ...canalDaLoja(CANAL_D, 'Entrega D'), indisponivel: 'nao-cabe', automatica: null },
+    canalDaLoja(CANAL_A, 'Entrega A'),
+  ],
+});
+
 /**
  * The REAL «Logística» section of a draft whose channels were chosen, editable,
- * its read answered: `raiz` is the section, `primeira` the FIRST row (DTO
- * order: B's). It stamps the field id itself (D16-13).
+ * its read answered (`canais`, by default B then A, both ON): `raiz` is the
+ * section, `primeira` the FIRST row (`primeiroCanal`, by default B's). It
+ * stamps the field id itself (D16-13).
  */
-async function secaoDeLogistica() {
-  h.canais.mockResolvedValue(CANAIS_DA_LOJA);
+async function secaoDeLogistica(
+  canais: RespostaCanaisShopee = CANAIS_DA_LOJA,
+  valor: readonly CanalLogisticaRascunhoShopee[] = ESCOLHIDA,
+  primeiroCanal: number = CANAL_B,
+) {
+  h.canais.mockResolvedValue(canais);
   render(
     <MantineTestProvider>
       <QueryClientProvider client={new QueryClient({ defaultOptions: QUERY_DEFAULT_OPTIONS })}>
@@ -1162,8 +1178,8 @@ async function secaoDeLogistica() {
           contaId={CONTA}
           produtoId={PRODUTO}
           revisaoDoProduto={1}
-          valor={ESCOLHIDA}
-          guardada={ESCOLHIDA}
+          valor={valor}
+          guardada={valor}
           novo={false}
           logisticaDoSistemaAnterior={false}
           logisticaInvalida={null}
@@ -1173,7 +1189,7 @@ async function secaoDeLogistica() {
       </QueryClientProvider>
     </MantineTestProvider>,
   );
-  const primeira = await screen.findByTestId(`shopee-logistica-${LINK}-${String(CANAL_B)}`);
+  const primeira = await screen.findByTestId(`shopee-logistica-${LINK}-${String(primeiroCanal)}`);
   return { raiz: screen.getByTestId(`shopee-rascunho-logistica-${LINK}`), primeira };
 }
 
@@ -1202,7 +1218,8 @@ describe('DesfechoAcaoShopee — «Corrigir no rascunho: Logística» (#1911 P16
     const alvo = document.getElementById(
       idDoCampoRascunhoShopee(LINK, CAMPO_RASCUNHO_SHOPEE.logisticInfo),
     );
-    // The field id sits on the rows' container, never on the section's root (D16-13).
+    // The field id sits on the rows' container — never on the section's root
+    // while a row can move (D16-13).
     expect(alvo).not.toBe(raiz);
     expect(alvo?.contains(primeira)).toBe(true);
 
@@ -1227,7 +1244,7 @@ describe('DesfechoAcaoShopee — «Corrigir no rascunho: Logística» (#1911 P16
     expect(within(painel()).queryByRole('button', LOGISTICA)).toBeNull();
   });
 
-  it('QUASE-PAR: o mesmo id na RAIZ da seção levaria o foco ao rádio «Automática» (onde Espaço trocaria o modo) — por isso ele fica no contêiner das linhas', async () => {
+  it('QUASE-PAR: o mesmo id na RAIZ da seção levaria o foco ao rádio «Automática» (onde Espaço trocaria o modo) — por isso ele fica no contêiner das linhas enquanto uma linha se move', async () => {
     const { raiz, primeira } = await secaoDeLogistica();
     const id = idDoCampoRascunhoShopee(LINK, CAMPO_RASCUNHO_SHOPEE.logisticInfo);
     // Moved by hand to the root: what a section stamping it there would offer the button.
@@ -1240,6 +1257,55 @@ describe('DesfechoAcaoShopee — «Corrigir no rascunho: Logística» (#1911 P16
     fireEvent.click(within(painel()).getByRole('button', LOGISTICA));
     expect(document.activeElement).toBe(within(raiz).getByRole('radio', { name: 'Automática' }));
     expect(document.activeElement).not.toBe(within(primeira).getByRole('switch'));
+  });
+
+  it('⭐ Q-F1 (b): a PRIMEIRA linha desligada e indisponível (os dois controles travados) ⇒ «Corrigir no rascunho: Logística» FOCA o «Ligado» da linha SEGUINTE — nunca o «Frete grátis…» da linha morta, nunca «Automática»', async () => {
+    const { raiz, primeira } = await secaoDeLogistica(
+      CANAIS_COM_D_PRIMEIRO,
+      [
+        { logistic_id: CANAL_A, enabled: false, is_free: false },
+        { logistic_id: CANAL_D, enabled: false, is_free: false },
+      ],
+      CANAL_D,
+    );
+    const morta = within(primeira).getByRole('checkbox') as HTMLInputElement;
+    expect(morta.disabled).toBe(true);
+
+    show({
+      desfecho: recusado([semCanal()]),
+      rascunho: doRascunho({ logisticaEscolhida: true }),
+    });
+    fireEvent.click(within(painel()).getByRole('button', LOGISTICA));
+    expect(document.activeElement).toBe(
+      within(screen.getByTestId(`shopee-logistica-${LINK}-${String(CANAL_A)}`)).getByRole('switch'),
+    );
+    expect(document.activeElement).not.toBe(morta);
+    expect(document.activeElement).not.toBe(
+      within(raiz).getByRole('radio', { name: 'Automática' }),
+    );
+  });
+
+  it('⭐ Q-F1 (b): NENHUMA linha com um controle que se move ⇒ o id fica na RAIZ, e «Corrigir no rascunho: Logística» FOCA o rádio «Automática» — a saída de uma lista sem nada a ligar ⟷ QUASE-PAR: com uma linha viva o foco fica nas linhas (os dois testes acima)', async () => {
+    const soD: RespostaCanaisShopee = respostaCanaisShopeeSchema.parse({
+      medidasCompletas: true,
+      canais: [CANAIS_COM_D_PRIMEIRO.canais[0]],
+    });
+    const { raiz, primeira } = await secaoDeLogistica(
+      soD,
+      [{ logistic_id: CANAL_D, enabled: false, is_free: false }],
+      CANAL_D,
+    );
+    expect(
+      document.getElementById(idDoCampoRascunhoShopee(LINK, CAMPO_RASCUNHO_SHOPEE.logisticInfo)),
+    ).toBe(raiz);
+
+    show({
+      desfecho: recusado([semCanal()]),
+      rascunho: doRascunho({ logisticaEscolhida: true }),
+    });
+    fireEvent.click(within(painel()).getByRole('button', LOGISTICA));
+    expect(document.activeElement).toBe(within(raiz).getByRole('radio', { name: 'Automática' }));
+    expect(within(primeira).getByRole('switch')).not.toBe(document.activeElement);
   });
 
   it('um anúncio (`rascunho: null`) ⇒ o peso — a lista de um anúncio publicado nunca é seção de rascunho', () => {

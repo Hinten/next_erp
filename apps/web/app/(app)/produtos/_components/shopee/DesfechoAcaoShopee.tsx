@@ -54,13 +54,16 @@ import type { AcoesShopee, ArmaKitShopee } from './AcoesAnuncioShopee';
  * description are the inputs themselves; the category and the brand are
  * their pickers' wrappers, the attributes (#1911 P13) the «Atributos»
  * section's own root, stamped by `AtributosRascunhoShopee`, and the logistics
- * (#1911 P16) the «Logística» section's rows' container while its rows render
- * (else the section's root), stamped by `LogisticaRascunhoShopee` — in each,
- * the first enabled control takes the focus (in the rows, in DTO order: a
- * row's «Ligado» switch, or its free-shipping checkbox where the switch is
- * locked — an unavailable OFF first row; never the mode picker's
- * «Automática»). It lives HERE, beside its one reader, so the form imports it
- * from the panel and never the reverse.
+ * (#1911 P16) the «Logística» section's rows' container while one of its rows
+ * has a control that can move (else the section's root), stamped by
+ * `LogisticaRascunhoShopee` — in each, the first enabled control takes the
+ * focus (in the rows, in DTO order: a row's «Ligado» switch, or its
+ * free-shipping checkbox where the switch is locked ON — a compulsory row; an
+ * unavailable OFF row has both disabled (Q-F1 (b)), so the focus goes on to
+ * the next row, and never to the mode picker's «Automática» while a row can
+ * move; on the root, «Automática», the way out of a list where none can). It
+ * lives HERE, beside its one reader, so the form imports it from the panel
+ * and never the reverse.
  */
 export function idDoCampoRascunhoShopee(
   linkDocId: string,
@@ -71,7 +74,9 @@ export function idDoCampoRascunhoShopee(
 
 /**
  * What can take the focus inside a picker's wrapper or a section (the
- * attributes; the logistics rows, whose switch is an `input`): a FIELD first — its first enabled input or textarea; a button only
+ * attributes; the logistics rows, whose switch is an `input`, or — when no
+ * row can move — that section's root, whose «Automática» radio is one): a
+ * FIELD first — its first enabled input or textarea; a button only
  * when the wrapper has no enabled field (the category picker). Never a hidden
  * input (Mantine's `Select` / `MultiSelect` carry one beside the visible field,
  * and `focus()` on it is silently a no-op), and never a control kept out of

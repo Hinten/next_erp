@@ -5,8 +5,10 @@
  * which stored channels the shop no longer offers
  * ({@link canaisGravadosForaDaLojaShopee}), what «Escolher canais» puts in the
  * form ({@link escolhaAoEscolherCanaisShopee}, {@link escolhaInicialShopee}),
- * what one switch or checkbox does to the value ({@link comCanalShopee}), and
- * why a value cannot be saved ({@link motivoDaLogisticaInvalidaShopee}).
+ * which of a row's two controls cannot move ({@link interruptorTravadoShopee},
+ * {@link freteGratisTravadoShopee}), what one switch or checkbox does to the
+ * value ({@link comCanalShopee}), and why a value cannot be saved
+ * ({@link motivoDaLogisticaInvalidaShopee}).
  * `./rascunho.ts` keeps `logistic_info` as a generic form field; the tab's
  * `LogisticaRascunhoShopee.tsx` renders the rows and owns every sentence — this
  * module answers DATA only (a row carries its verdicts, never their text).
@@ -25,8 +27,9 @@
  * - `obrigatorio` — the row is ON and cannot be switched off;
  * - `bloqueiaFreteGratisDoVendedor` — free shipping is `false` and cannot be
  *   ticked;
- * - `indisponivel` — an OFF row cannot be switched on (an ON one can be
- *   switched off);
+ * - `indisponivel` — an OFF row cannot be switched on, nor its free shipping
+ *   ticked or unticked (an ON one can be switched off, and its free shipping
+ *   still moves);
  * - `automatica` — the entry «Automática» would send, the prefill of
  *   «Escolher canais».
  *
@@ -57,8 +60,13 @@
  *
  * A REFUSED change answers the value ITSELF (the same reference), so a caller
  * can tell "nothing to do" from "a new value": switching off an `obrigatorio`
- * row, switching on an `indisponivel` OFF row, an id with no row, and free
- * shipping on a blocked row.
+ * row, switching on an `indisponivel` OFF row, an id with no row, free
+ * shipping on a blocked row, and free shipping — ticked OR unticked — on an
+ * `indisponivel` OFF row: the editor never CHANGES free shipping on a channel
+ * it cannot switch on (Lucas 2026-11-16, Q-F1 (b)). A tick the value already
+ * holds there is carried as it is by every rebuild — inert, since `enabled:
+ * false` never reaches the wire (`apps/shopee`'s `logisticaPublicacao.ts`),
+ * and movable again once the channel fits.
  *
  * ## What decides "the same" here (fold scope)
  *
@@ -217,6 +225,32 @@ export function linhasDaLogisticaShopee(
   );
 }
 
+/** OFF and cannot be switched on (an `indisponivel` row): neither of its controls moves. */
+function desligadaIndisponivel(linha: LinhaLogisticaShopee): boolean {
+  return !linha.ligado && !linha.podeLigar;
+}
+
+/**
+ * The row's «Ligado» cannot move: ON and `obrigatorio`, or OFF and
+ * `indisponivel`. The section disables the switch on it and
+ * {@link comCanalShopee} refuses that move.
+ */
+export function interruptorTravadoShopee(linha: LinhaLogisticaShopee): boolean {
+  return (linha.ligado && !linha.podeDesligar) || desligadaIndisponivel(linha);
+}
+
+/**
+ * The row's free shipping cannot move: the shop blocks it, or the row is OFF
+ * and `indisponivel` — the editor never changes free shipping on a channel it
+ * cannot switch on (Lucas 2026-11-16, Q-F1 (b)); a held tick there is carried
+ * as it is. Q-F1 (b) adds no lock to an ON `indisponivel` row. The section
+ * disables the checkbox on it and {@link comCanalShopee} refuses that move
+ * (on a blocked row, the tick; on an OFF `indisponivel` one, either way).
+ */
+export function freteGratisTravadoShopee(linha: LinhaLogisticaShopee): boolean {
+  return linha.bloqueiaFreteGratis || desligadaIndisponivel(linha);
+}
+
 /** A stored channel with no row: the shop does not offer it (selectable) any more. */
 export interface CanalForaDaLojaShopee {
   readonly logisticId: number;
@@ -325,8 +359,10 @@ export interface MudancaDoCanalShopee {
  *
  * A REFUSED change answers `valor` itself (the same reference): `ligado:
  * false` on an `obrigatorio` row, `ligado: true` on an OFF `indisponivel` row,
- * an id with no row, `freteGratis: true` on a blocked row. A change with one
- * refused part is refused whole.
+ * an id with no row, `freteGratis: true` on a blocked row, and ANY
+ * `freteGratis` on an OFF `indisponivel` row (Q-F1 (b): the section disables
+ * that checkbox, {@link freteGratisTravadoShopee}). A change with one refused
+ * part is refused whole.
  */
 export function comCanalShopee(
   valor: readonly Canal[],
@@ -339,9 +375,10 @@ export function comCanalShopee(
   if (alvo === undefined) return valor;
   const entradas = entradasPorCanal(valor);
   const atual = linhaDoCanal(alvo, entradas.get(logisticId));
-  if (mudanca.ligado === true && !atual.ligado && !atual.podeLigar) return valor;
+  if (mudanca.ligado === true && desligadaIndisponivel(atual)) return valor;
   if (mudanca.ligado === false && atual.ligado && !atual.podeDesligar) return valor;
   if (mudanca.freteGratis === true && atual.bloqueiaFreteGratis) return valor;
+  if (mudanca.freteGratis !== undefined && desligadaIndisponivel(atual)) return valor;
 
   return ordenadosPorCanalLogisticaShopee(
     canais.map((canal): Canal => {
