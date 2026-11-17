@@ -38,6 +38,7 @@ import {
   type MlItemPrices,
   type MlListingPrices,
   type MlMigrationLiveListing,
+  type MlUptinEligibility,
   type MlMissedFeeds,
   type MlModeration,
   type MlOrder,
@@ -81,6 +82,7 @@ import {
   itemsMultigetSchema,
   listingPricesSchema,
   migrationLiveListingSchema,
+  uptinEligibilitySchema,
   mlBillingInfoSchema,
   mlClaimMessagesSchema,
   mlClaimAttachmentUploadSchema,
@@ -148,6 +150,7 @@ interface RequestOpts {
   readonly query?: Record<string, string | number | undefined>;
   readonly headers?: Record<string, string>;
   readonly body?: unknown;
+  readonly retryNetwork?: false;
 }
 
 /** Image bytes for `uploadPicture` (the server fetches them from Storage). */
@@ -434,6 +437,8 @@ export interface MercadoLivreApi {
    * #441).
    */
   getMigrationLiveListing(itemId: string): Promise<MlMigrationLiveListing>;
+  validateUptin(itemId: string): Promise<MlUptinEligibility>;
+  startUptin(itemId: string): Promise<void>;
   /**
    * `GET /users/{sellerId}/items/search?search_type=scan[&scroll_id=]` — one
    * page of the seller's full listing set (mass import scan, #621). Pass the
@@ -806,13 +811,14 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
     url: string,
     init: RequestInit,
     networkMessage: string,
+    retries = maxRetries,
   ): Promise<Response> {
     let attempt = 0;
     for (;;) {
       try {
         return await fetchImpl(url, init);
       } catch (err) {
-        if (attempt < maxRetries) {
+        if (attempt < retries) {
           attempt += 1;
           await sleep(backoff(attempt));
           continue;
@@ -857,6 +863,7 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
         body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
       },
       'Falha de rede ao contatar o Mercado Livre',
+      opts.retryNetwork === false ? 0 : maxRetries,
     );
 
     // 2xx (incl. 206 Partial Content, valid for orders) → parse + validate.
@@ -1273,6 +1280,14 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
     },
     getMigrationLiveListing: (itemId) =>
       request('GET', `/items/${itemId}/migration_live_listing`, migrationLiveListingSchema),
+    validateUptin: (itemId) =>
+      request('GET', `/items/${itemId}/user_product_listings/validate`, uptinEligibilitySchema),
+    startUptin: async (itemId) => {
+      await request('POST', '/sites/MLB/items/user_product_listings', z.unknown(), {
+        body: { item_id: itemId },
+        retryNetwork: false,
+      });
+    },
     scanSellerItems: (sellerId, scrollId) =>
       request('GET', `/users/${sellerId}/items/search`, sellerItemsScanSchema, {
         query: { search_type: 'scan', ...(scrollId ? { scroll_id: scrollId } : {}) },
@@ -1545,7 +1560,27 @@ async function parseOk<T>(res: Response, schema: z.ZodType<T>): Promise<T> {
   let parsed: unknown = null;
   if (text.length > 0) {
     try {
-      parsed = JSON.parse(text);
+      // A Mercado Livre family ID can be larger than Number.MAX_SAFE_INTEGER.
+      // Keep the wire digits for item responses before using the ID as a key.
+      const preserveFamilyIds =
+        Object.is(schema, itemSchema) || Object.is(schema, itemsMultigetSchema);
+      parsed = JSON.parse(
+        text,
+        preserveFamilyIds
+          ? (key, value: unknown, context?: { source?: string }) => {
+              if (
+                key === 'family_id' &&
+                typeof value === 'number' &&
+                !Number.isSafeInteger(value) &&
+                context?.source &&
+                /^\d+$/.test(context.source)
+              ) {
+                return context.source;
+              }
+              return value;
+            }
+          : undefined,
+      );
     } catch (err) {
       if (err instanceof SyntaxError) {
         throw new MercadoLivreValidationError('Resposta não-JSON do Mercado Livre.', text);

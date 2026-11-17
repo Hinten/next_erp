@@ -110,6 +110,7 @@ import {
   STOCK_LOCATION_TYPE,
   createMercadoLivreApi,
   estadoFromMlStatus,
+  UPTIN_PENDING_TAG,
   isVersionConflict,
 } from '@delfrance/integrations-mercado-livre';
 import {
@@ -139,6 +140,7 @@ import {
   applyMemberStatusAndFold,
 } from '../anuncios/itemsStatusSync';
 import { familyMemberQuery } from '../anuncios/upMemberLink';
+import { updateListingUnlessMigrating } from '../anuncios/updateListingDuringUptin';
 import {
   SUB_STATUS_VARIACAO_REMOVIDA,
   idsDasVariacoesVivas,
@@ -518,6 +520,17 @@ async function prepararCorpoDeVariacoes(
   | { ok: false; result: StockSendResult }
 > {
   const vivo = await api.getItem(payload.itemId);
+  if (vivo.tags?.includes(UPTIN_PENDING_TAG)) {
+    return { ok: false, result: { outcome: 'skipped', reason: 'aguardando-migracao' } };
+  }
+  const source = (
+    await produtoMercadoLivreLinkCollection
+      .docRef(db, { produtoId: payload.produtoId }, payload.linkDocId)
+      .get()
+  ).data();
+  if (source?.estado === ESTADO_PUBLICACAO_ML.aguardandoMigracao) {
+    return { ok: false, result: { outcome: 'skipped', reason: 'aguardando-migracao' } };
+  }
   const reconciliado = reconciliarVariations(patch, vivo);
   if (!reconciliado.ok) {
     return { ok: false, result: recusaDeReconciliacao(payload, reconciliado.reason) };
@@ -986,59 +999,63 @@ async function gravarSucessoItem(
   // through those three — the safe direction, since it sends. Recorded next to
   // the other residual in `apps/mercado-livre/CLAUDE.md`.
   const ehMembro = payload.variacaoProdutoId != null;
-  const applied = await produtoMercadoLivreLinkCollection.mergeIfExists(
-    db,
-    { produtoId: payload.produtoId },
-    payload.linkDocId,
-    {
-      ...(ehMembro
-        ? {}
-        : {
-            estado: estadoFromMlStatus(resp.status, resp.sub_status ?? null),
-            status: resp.status ?? null,
-            sub_status: resp.sub_status ?? [],
-            // ⚠️ #1252, and read the paragraph below before touching it: the
-            // authority for this clear is ML's `resp`, NEVER the fact that the
-            // send succeeded.
-            //
-            // `clearFalha()` still covers `errors`/`causas` and deliberately
-            // NOT `moderacoes` (#1087), because a successful stock update says
-            // nothing about ML's policy verdict — a `poor_quality_thumbnail`
-            // listing is `active` and takes stock updates WHILE moderated, so
-            // clearing on the send's authority would erase a live reason and
-            // show a clean listing that is still penalised.
-            //
-            // What makes a GATED clear safe is that the gate answers from
-            // `resp` alone, and `poor_quality_thumbnail` is one of the
-            // sub_statuses it matches — so on exactly the listing that
-            // paragraph is about, `precisaConsultarModeracao` returns TRUE, the
-            // key is omitted, and the reason survives untouched. Only a
-            // response reporting no moderation at all clears, which is ML
-            // telling us the reason is gone. No `/moderations` call: the
-            // predicate is pure.
-            //
-            // ⚠️ Inside the `ehMembro` guard, not beside it. On the member arm
-            // this path writes no status at all (see above), so there is
-            // nothing for `moderacoes` to ride — and one member's verdict must
-            // not clear the FAMILY's reason.
-            ...(precisaConsultarModeracao(resp.status, resp.sub_status) ? {} : { moderacoes: [] }),
-          }),
-      ultimaModificacao: nowMs,
-      // A send that lands clears whatever diagnosis the last failure left
-      // behind — otherwise the produto tab keeps showing a red alert for a
-      // fault that has since healed (#781).
-      //
-      // ⚠️ Unless part of the intent was DROPPED (#831 review). When the
-      // completion filtered a stale id out of the array, ML accepted a body
-      // that carried less than we meant to send — so this is not the healed
-      // listing #781 is talking about, and clearing here would erase the
-      // diagnosis on the very write that failed to apply. It is a temporary
-      // suppression, not a latch: the prune has just marked those members
-      // `closed`, so the next sweep builds a clean payload and THAT send
-      // clears.
-      ...(fantasmas.length > 0 ? {} : clearFalha()),
-    },
-  );
+  const patch = {
+    ...(ehMembro
+      ? {}
+      : {
+          estado: estadoFromMlStatus(resp.status, resp.sub_status ?? null),
+          status: resp.status ?? null,
+          sub_status: resp.sub_status ?? [],
+          // ⚠️ #1252, and read the paragraph below before touching it: the
+          // authority for this clear is ML's `resp`, NEVER the fact that the
+          // send succeeded.
+          //
+          // `clearFalha()` still covers `errors`/`causas` and deliberately
+          // NOT `moderacoes` (#1087), because a successful stock update says
+          // nothing about ML's policy verdict — a `poor_quality_thumbnail`
+          // listing is `active` and takes stock updates WHILE moderated, so
+          // clearing on the send's authority would erase a live reason and
+          // show a clean listing that is still penalised.
+          //
+          // What makes a GATED clear safe is that the gate answers from
+          // `resp` alone, and `poor_quality_thumbnail` is one of the
+          // sub_statuses it matches — so on exactly the listing that
+          // paragraph is about, `precisaConsultarModeracao` returns TRUE, the
+          // key is omitted, and the reason survives untouched. Only a
+          // response reporting no moderation at all clears, which is ML
+          // telling us the reason is gone. No `/moderations` call: the
+          // predicate is pure.
+          //
+          // ⚠️ Inside the `ehMembro` guard, not beside it. On the member arm
+          // this path writes no status at all (see above), so there is
+          // nothing for `moderacoes` to ride — and one member's verdict must
+          // not clear the FAMILY's reason.
+          ...(precisaConsultarModeracao(resp.status, resp.sub_status) ? {} : { moderacoes: [] }),
+        }),
+    ultimaModificacao: nowMs,
+    // A send that lands clears whatever diagnosis the last failure left
+    // behind — otherwise the produto tab keeps showing a red alert for a
+    // fault that has since healed (#781).
+    //
+    // ⚠️ Unless part of the intent was DROPPED (#831 review). When the
+    // completion filtered a stale id out of the array, ML accepted a body
+    // that carried less than we meant to send — so this is not the healed
+    // listing #781 is talking about, and clearing here would erase the
+    // diagnosis on the very write that failed to apply. It is a temporary
+    // suppression, not a latch: the prune has just marked those members
+    // `closed`, so the next sweep builds a clean payload and THAT send
+    // clears.
+    ...(fantasmas.length > 0 ? {} : clearFalha()),
+  };
+  const applied =
+    payload.variations != null && !ehMembro
+      ? await updateListingUnlessMigrating(db, payload, patch)
+      : await produtoMercadoLivreLinkCollection.mergeIfExists(
+          db,
+          { produtoId: payload.produtoId },
+          payload.linkDocId,
+          patch,
+        );
   if (!applied) {
     console.warn('[mercado-livre] stock-send: link removido durante o envio — writeback ignorado', {
       integracaoId: payload.integracaoId,
@@ -1497,7 +1514,13 @@ async function registrarRejeicaoFinal(
           itemId: payload.itemId,
         },
       );
-      return await pararComErro(db, target, diagnostico, nowMs, 'membro-nao-encontrado');
+      return await pararComErro(
+        db,
+        { produtoId: target.produtoId, linkDocId: target.linkDocId },
+        diagnostico,
+        nowMs,
+        'membro-nao-encontrado',
+      );
     }
   }
 
@@ -1747,6 +1770,20 @@ async function podarVariacoesFantasma(
   const query = familyMemberQuery(db, parentLinkOuterRef(payload));
 
   const podados = await db.runTransaction(async (tx) => {
+    const parent = (
+      await tx.get(
+        produtoMercadoLivreLinkCollection.docRef(
+          db,
+          { produtoId: payload.produtoId },
+          payload.linkDocId,
+        ),
+      )
+    ).data();
+    if (
+      parent?.estado === ESTADO_PUBLICACAO_ML.aguardandoMigracao ||
+      item.tags?.includes(UPTIN_PENDING_TAG)
+    )
+      return [];
     const snap = await tx.get(query);
     const membros: MembroFamilia[] = snap.docs.map((d) => ({
       docId: d.id,
@@ -1884,12 +1921,11 @@ async function pararComErro(
 ): Promise<StockSendResult> {
   // `mergeIfExists`: a link deleted mid-flight needs no diagnosis, and an
   // upsert here would recreate it as a ghost the sweep can never clean up.
-  const applied = await produtoMercadoLivreLinkCollection.mergeIfExists(
-    db,
-    { produtoId: target.produtoId },
-    target.linkDocId,
-    { estado: ESTADO_PUBLICACAO_ML.erro, ...diagnostico, ultimaModificacao: nowMs },
-  );
+  const applied = await updateListingUnlessMigrating(db, target, {
+    estado: ESTADO_PUBLICACAO_ML.erro,
+    ...diagnostico,
+    ultimaModificacao: nowMs,
+  });
   if (!applied) {
     console.warn('[mercado-livre] stock-send: link removido — erro não registrado no anúncio', {
       produtoId: target.produtoId,

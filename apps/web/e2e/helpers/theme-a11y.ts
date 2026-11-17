@@ -30,7 +30,10 @@ export interface ThemeReadabilityReport {
   axe: Awaited<ReturnType<AxeBuilder['analyze']>>;
   /** Monochrome status glyphs/counts that axe deferred and solid paint measured. */
   resolvedGlyphTargets: string[];
-  resolvedTextTargets: Array<{ target: string; reason: 'elmPartiallyObscuring' }>;
+  resolvedTextTargets: Array<{
+    target: string;
+    reason: 'elmPartiallyObscuring' | 'elmPartiallyObscured';
+  }>;
   resolvedSvgTextTargets: Array<{
     target: string;
     reason: 'imgNode' | 'bgOverlap' | 'shortTextContent' | 'elmPartiallyObscuring';
@@ -1165,6 +1168,7 @@ async function auditPass(
           (checkData.messageKey === 'nonBmp' ||
             checkData.messageKey === 'shortTextContent' ||
             checkData.messageKey === 'elmPartiallyObscuring' ||
+            checkData.messageKey === 'elmPartiallyObscured' ||
             checkData.messageKey === 'imgNode' ||
             checkData.messageKey === 'bgOverlap') &&
           node.target.length === 1
@@ -1190,26 +1194,41 @@ async function auditPass(
             issues.push(...markReplaced([replaced]));
             continue;
           }
-          let svgText: boolean;
+          const reason = checkData.messageKey;
+          let paintTarget: { svgText: boolean; horizontalScroll: boolean };
           try {
-            svgText =
-              checkData.messageKey !== 'nonBmp' &&
-              (await glyph.evaluate(
-                (element) =>
-                  element instanceof SVGTextContentElement && element.matches('text, tspan'),
-                undefined,
-                { timeout: 5_000 },
-              ));
+            paintTarget = await glyph.evaluate(
+              (element, needsScroll) => {
+                const svgText =
+                  element instanceof SVGTextContentElement && element.matches('text, tspan');
+                let horizontalScroll = false;
+                if (needsScroll) {
+                  for (let parent = element.parentElement; parent; parent = parent.parentElement) {
+                    if (
+                      parent.scrollWidth > parent.clientWidth &&
+                      ['auto', 'scroll'].includes(getComputedStyle(parent).overflowX)
+                    ) {
+                      horizontalScroll = true;
+                      break;
+                    }
+                  }
+                }
+                return { svgText, horizontalScroll };
+              },
+              reason === 'elmPartiallyObscured',
+              { timeout: 5_000 },
+            );
           } catch (err) {
             if (!(err instanceof errors.TimeoutError)) throw err;
             issues.push(...markReplaced([replaced]));
             continue;
           }
-          // Image-node and background-overlap reviews are resolved only for
-          // SVG text with independently verified glyph/background geometry.
+          const svgText = reason !== 'nonBmp' && paintTarget.svgText;
+          // Axe checks the starting viewport. For text in a horizontal scroll
+          // area, inspectTarget brings it into view before measuring its paint.
           if (
-            !svgText &&
-            (checkData.messageKey === 'imgNode' || checkData.messageKey === 'bgOverlap')
+            (reason === 'elmPartiallyObscured' && (svgText || !paintTarget.horizontalScroll)) ||
+            (!svgText && (reason === 'imgNode' || reason === 'bgOverlap'))
           ) {
             issues.push({
               code,
@@ -1238,15 +1257,15 @@ async function auditPass(
             glyphIssues.push({ ...replaced, target: glyph.toString() });
           markReplaced(glyphIssues);
           if (glyphIssues.length === 0) {
-            if (svgText && checkData.messageKey !== 'nonBmp')
+            if (svgText && reason !== 'elmPartiallyObscured')
               resolvedSvgTextTargets.push({
                 target: typeof selector === 'string' ? selector : JSON.stringify(selector),
-                reason: checkData.messageKey,
+                reason,
               });
-            else if (checkData.messageKey === 'elmPartiallyObscuring')
+            else if (reason === 'elmPartiallyObscuring' || reason === 'elmPartiallyObscured')
               resolvedTextTargets.push({
                 target: typeof selector === 'string' ? selector : JSON.stringify(selector),
-                reason: 'elmPartiallyObscuring',
+                reason,
               });
             else
               resolvedGlyphTargets.push(

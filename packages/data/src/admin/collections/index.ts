@@ -70,6 +70,7 @@ export { grupoDeVariacoesCollection } from './grupoDeVariacoesCollection';
 export { produtoExtraDataCollection } from './produtoExtraDataCollection';
 export { notificacaoMercadoLivreCollection } from './notificacaoMercadoLivreCollection';
 export { importacaoMercadoLivreCollection } from './importacaoMercadoLivreCollection';
+export { migracaoUptinMercadoLivreCollection } from './migracaoUptinMercadoLivreCollection';
 export { importacaoShopeeCollection } from './importacaoShopeeCollection';
 export {
   detalheImportacaoLiCollection,
