@@ -7,6 +7,7 @@ import {
   CAMPOS_DO_ESTOQUE,
   CAMPOS_DO_PRODUTO,
   CAMPOS_DO_VINCULO,
+  CONCORRENCIA,
   ContagemNaoAvaliada,
   criarContagem,
   parseArgsDaContagem,
@@ -404,13 +405,23 @@ describe('the walk — read-only, and the shape of every read', () => {
     });
   });
 
-  it('reads the ledger ONLY of records at the Loja Integrada depósito, in an exact form, touched in the window', async () => {
+  it('reads the ledger ONLY of records at the Loja Integrada depósito, in an exact form, touched in the window or unstamped', async () => {
     const leituras: Leitura[] = [];
-    await contagem()(ctx({ docs: corpus(), leituras }));
+    const docs = {
+      ...corpus(),
+      'produtos/PU/estoques/est-PU-D1': {
+        depositoOuterRef: 'documents/depositos/D1',
+        ultimaModificacao: 'texto',
+      },
+    };
+    await contagem()(ctx({ docs, leituras }));
     const razao = leituras.filter((l) => l.alvo.endsWith('/historicoEstoque'));
-    // PA's record is in the window; PB's is older; PC's ref is a fold (not exact); PZ's is at
-    // another depósito.
-    expect(razao.map((l) => l.alvo)).toEqual(['produtos/PA/estoques/est-PA-D1/historicoEstoque']);
+    // PA's record is in the window and PU's has no numeric stamp; PB's is older; PC's ref is a
+    // fold (not exact); PZ's is at another depósito.
+    expect(razao.map((l) => l.alvo)).toEqual([
+      'produtos/PA/estoques/est-PA-D1/historicoEstoque',
+      'produtos/PU/estoques/est-PU-D1/historicoEstoque',
+    ]);
     expect(razao[0]).toMatchObject({
       tipo: 'colecao',
       where: [['timestamp', '>=', INICIO_3_DIAS]],
@@ -457,6 +468,68 @@ describe('the walk — read-only, and the shape of every read', () => {
     expect(linhas).toEqual([]);
     expect(resumos).toHaveLength(1);
   });
+
+  it('pages the window and the ledger queries too, to the same answer as one page', async () => {
+    const docs = {
+      ...corpus(),
+      'produtos/PD': { ultimaModificacao: meioDia(17) },
+      'produtos/PE': { ultimaModificacao: meioDia(15) },
+      'produtos/PA/estoques/est-PA-D1/historicoEstoque/h2': { timestamp: meioDia(17) },
+      'produtos/PA/estoques/est-PA-D1/historicoEstoque/h3': { timestamp: meioDia(15) },
+    };
+    const leituras: Leitura[] = [];
+    await contagem({ janela: 2 })(ctx({ docs, leituras }));
+    await contagem()(ctx({ docs }));
+    const [paginado, inteiro] = resumos;
+
+    for (const alvo of ['produtos', 'produtos/PA/estoques/est-PA-D1/historicoEstoque']) {
+      const paginas = leituras.filter((l) => l.tipo === 'colecao' && l.alvo === alvo);
+      // Three matches at two a page: a full page, then a short one that ends the walk.
+      expect(paginas, alvo).toHaveLength(2);
+      expect(paginas.every((l) => l.limit === 2)).toBe(true);
+      expect(paginas[0]!.startAfter).toBeNull();
+      expect(paginas[1]!.startAfter).not.toBeNull();
+    }
+    expect((paginado!.produtosTocados as { total: number }).total).toBe(3);
+    expect(paginado!.produtosTocados).toEqual(inteiro!.produtosTocados);
+    expect(paginado!.escritasPorDia).toEqual(inteiro!.escritasPorDia);
+    const dias = (
+      paginado!.escritasPorDia as {
+        depositos: Record<string, { dias: Record<string, { linhasDaRazao: number }> }>;
+      }
+    ).depositos['dep-1']!.dias;
+    expect(Object.values(dias).reduce((n, d) => n + d.linhasDaRazao, 0)).toBe(3);
+  });
+
+  it('tallies every read it is billed for: an empty last page, and a getAll ref with no document', async () => {
+    const docs = {
+      ...corpus(),
+      // A link to a produto that does not exist: its point read is billed all the same.
+      'produtos/PX/produtolojaintegrada/a': {
+        contaLojaIntegrada: 'integracao/LI-1',
+        id: 918273604,
+        paiProdutoIntegradaId: 900,
+      },
+    };
+    const resultado = await contagem({ chave: 2 })(ctx({ docs }));
+    const leituras = resumos[0]!.leituras as {
+      porPerna: Record<string, unknown>;
+      estimativaDeLeiturasCobradas: number;
+    };
+    expect(leituras.porPerna).toEqual({
+      contas: { documentos: 2, consultas: 1, consultasVazias: 0 },
+      // operacao/O2 does not exist and is still one billed read.
+      operacoes: { documentos: 2, consultas: 1, consultasVazias: 0 },
+      // Four links at two a page: 2, 2, then an empty page that is billed one read.
+      vinculos: { documentos: 4, consultas: 3, consultasVazias: 1 },
+      produtos: { documentos: 4, consultas: 1, consultasVazias: 0 },
+      estoques: { documentos: 4, consultas: 3, consultasVazias: 1 },
+      produtosTocados: { documentos: 1, consultas: 1, consultasVazias: 0 },
+      razao: { documentos: 1, consultas: 1, consultasVazias: 0 },
+    });
+    expect(leituras.estimativaDeLeiturasCobradas).toBe(18 + 2);
+    expect(resultado.docsScanned).toBe(18);
+  });
 });
 
 describe('the ledger leg — a missing index is reported, anything else is not swallowed', () => {
@@ -467,6 +540,25 @@ describe('the ledger leg — a missing index is reported, anything else is not s
       false,
     );
     expect(saida.join('\n')).toContain('AVISO');
+  });
+
+  it('after the first refusal no further ledger query is sent: only the ones already in flight', async () => {
+    const leituras: Leitura[] = [];
+    const docs: Docs = { ...corpus() };
+    // Ten records to read, more than the pool runs at once.
+    for (let i = 1; i <= CONCORRENCIA + 1; i += 1) {
+      docs[`produtos/REG-${String(i)}/estoques/est-REG-${String(i)}-D1`] = {
+        depositoOuterRef: 'depositos/D1',
+        ultimaModificacao: meioDia(17),
+      };
+    }
+    const semIndice = Object.assign(new Error('needs an index'), { code: 9 });
+    await contagem()(ctx({ docs, leituras, falhaNaRazao: semIndice }));
+    const razao = leituras.filter((l) => l.alvo.endsWith('/historicoEstoque'));
+    expect(razao).toHaveLength(CONCORRENCIA);
+    expect((resumos[0]!.escritasPorDia as { razaoDisponivel: boolean }).razaoDisponivel).toBe(
+      false,
+    );
   });
 
   it('⚠️ NEAR-MISS: any other failure (code 14) is rethrown, and no summary is written', async () => {

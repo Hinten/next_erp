@@ -28,16 +28,16 @@ Per Loja Integrada conta unless noted. Contas and depósitos appear only as
 pseudonyms (`loja-1`, `loja-2`, … by number of linked children; `dep-1`, … with the
 Loja Integrada depósitos first).
 
-| #   | Count                                                                                                                                                                                      | Summary section                             |
-| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------- |
-| 1   | Linked children that are kits (`ehKit`, `ehKitVirtual`, both), constrained or not; the **F** histogram of linked kits per constraining component, its top 10 values, how many exceed 30    | `kits`                                      |
-| 2   | Stock writes per day at each Loja Integrada depósito: distinct records by their last `ultimaModificacao`, and ledger (`historicoEstoque`) rows per day — both LOWER bounds                 | `escritasPorDia`                            |
-| 3   | Whether both Loja Integrada contas, the Mercado Livre contas and the Shopee contas stock from one depósito (compared by the bare depósito id, either stored ref form)                      | `contas`                                    |
-| 4   | Each conta's operação `movimentaIndisponivelEstoque` (and `movimentaEstoque`), outbound and returns, as stored                                                                             | `contas.lojas.*.operacao*`                  |
-| 5   | Produtos touched per day by `ultimaModificacao`, and how many of them are linked children or parents                                                                                       | `produtosTocados`                           |
-| 6   | Linked children with no stock record at the conta's depósito — with records elsewhere, or with none at all — and their share against the >5% gate; constrained kits missing a component    | `semRegistro`                               |
-| 7   | Duplicate stock records of one produto at one depósito (with and without the canonical `est-<produto>-<depósito>` id), and records without `parentId`                                      | `duplicados`, `semParentId`                 |
-| —   | Links per conta: documents, counting links, children / parents / simple roots, text ids, stored conta-ref forms, trashed, store ids linked from two produtos; every skipped shape by count | `vinculos`, `ignorados`, `formasDoDeposito` |
+| #   | Count                                                                                                                                                                                                                | Summary section                             |
+| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
+| 1   | Linked children that are kits (`ehKit`, `ehKitVirtual`, both), constrained or not; the **F** histogram of linked kits per constraining component, its top 10 values, how many exceed 30, per conta and combined      | `kits`                                      |
+| 2   | Stock writes per day at each Loja Integrada depósito: distinct records by their last `ultimaModificacao`, and ledger (`historicoEstoque`) rows per day — both LOWER bounds                                           | `escritasPorDia`                            |
+| 3   | Whether both Loja Integrada contas, the Mercado Livre contas and the Shopee contas stock from one depósito (compared by the bare depósito id, either stored ref form), over all contas and over active ones          | `contas`                                    |
+| 4   | Each conta's operação `movimentaIndisponivelEstoque` (and `movimentaEstoque`), outbound and returns, as stored                                                                                                       | `contas.lojas.*.operacao*`                  |
+| 5   | Produtos touched per day by `ultimaModificacao`, and how many of them are linked children or parents                                                                                                                 | `produtosTocados`                           |
+| 6   | Linked children with no stock record at the conta's depósito — only in a folded form there, with records elsewhere, or with none at all — and their share against the >5% gate; constrained kits missing a component | `semRegistro`                               |
+| 7   | Duplicate stock records of one produto at one depósito (with and without the canonical `est-<produto>-<depósito>` id), and records without `parentId`                                                                | `duplicados`, `semParentId`                 |
+| —   | Links per conta: documents, counting links, children / parents / simple roots, text ids, stored conta-ref forms, trashed, store ids linked from two produtos; every skipped shape by count                           | `vinculos`, `ignorados`, `formasDoDeposito` |
 
 Every decision is the stock run's own reader, imported from `@delfrance/schemas`
 (`vinculoDaContaLi`, `depositoDaContaLi`, `formasDoDepositoLi`,
@@ -51,6 +51,13 @@ apart, since their quantity comes from their components.
 A depósito ref that folds to the depósito but matches neither exact stored form
 (`documents/depositos/<id>`, `depositos/<id>`) — a leading slash, a doubled slash —
 is counted apart as `dobrada`: the run's queries do not see it.
+
+Count 6 splits the children with no record the run reads at the depósito into
+three disjoint cases, in this order: a record there only in a `dobrada` form (the
+depósito mapping is right, the ref is not — `soNaFormaDobrada`), a record at
+another depósito or with no readable depósito (what a wrong mapping looks like —
+`semRegistroComRegistrosEmOutroLugar`), and no record at all
+(`semNenhumRegistro`). All three count against the >5% gate.
 
 ## When
 
@@ -89,46 +96,58 @@ Remove-Item Env:FIREBASE_DATABASE_ID
 - `--report-only` writes the summary only, no per-document JSONL rows.
 - `--apply` and `--target` are REJECTED, before any credential is read.
 
-**Check the first line it prints:** `database=(default)`. On the wrong project or
-database every count reads zero, so the script refuses instead of reporting:
+**Check the database line.** The runner prints its own
+`[li-estoque-contagens] project=… mode=DRY-RUN → …` line first; the line right
+after it, `[li-estoque-contagens] database=… janela=…`, must read
+`database=(default)`. The reads start right after it.
 
-- `NAO-AVALIADO sem-contas-li` — no `integracao` doc of the Loja Integrada tipo;
-- `NAO-AVALIADO sem-vinculos-que-contam` — no counting link names one of them.
+- A wrong project is refused before any read: `src/admin.ts` matches `--project`
+  against the service account.
+- An unset or wrong `FIREBASE_DATABASE_ID` falls back to `default`, a database the
+  legacy Standard project does not have: the first read fails with
+  **`5 NOT_FOUND`**. That error means "set `FIREBASE_DATABASE_ID='(default)'`".
+- A database that exists but holds no Loja Integrada data would count zero
+  everywhere, so the script refuses instead of reporting:
+  - `NAO-AVALIADO sem-contas-li` — no `integracao` doc of the Loja Integrada tipo;
+  - `NAO-AVALIADO sem-vinculos-que-contam` — no counting link names one of them.
 
-Both exit 1 having written nothing.
+Every one of these exits 1 having written nothing.
 
 A staging rehearsal is optional and also the owner's to run (there,
 `FIREBASE_DATABASE_ID` is `default`); its numbers mean nothing for step 12.
 
 ## What it reads, and what it costs
 
-| Leg              | Read                                                                                                     | Index on Standard                        |
-| ---------------- | -------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
-| contas           | `integracao`, masked                                                                                     | none (where-less)                        |
-| operações        | one `getAll` of the Loja Integrada contas' operações                                                     | none (point reads)                       |
-| links            | every `produtolojaintegrada` doc, collection group, by document key                                      | none (native key order)                  |
-| produtos         | `getAll` of every produto a link names, masked                                                           | none (point reads)                       |
-| stock records    | every `estoques` doc, collection group, by document key                                                  | none (native key order)                  |
-| produtos touched | `produtos where ultimaModificacao >= <window start> order by ultimaModificacao desc`                     | automatic single-field, collection scope |
-| ledger           | per record at a Loja Integrada depósito touched in the window: its `historicoEstoque where timestamp >=` | automatic single-field, collection scope |
+| Leg              | Read                                                                                                                                  | Index on Standard                        |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
+| contas           | `integracao`, masked                                                                                                                  | none (where-less)                        |
+| operações        | one `getAll` of the Loja Integrada contas' operações                                                                                  | none (point reads)                       |
+| links            | every `produtolojaintegrada` doc, collection group, by document key                                                                   | none (native key order)                  |
+| produtos         | `getAll` of every produto a link names, masked                                                                                        | none (point reads)                       |
+| stock records    | every `estoques` doc, collection group, by document key                                                                               | none (native key order)                  |
+| produtos touched | `produtos where ultimaModificacao >= <window start> order by ultimaModificacao desc`                                                  | automatic single-field, collection scope |
+| ledger           | per record at a Loja Integrada depósito touched in the window **or with no numeric stamp**: its `historicoEstoque where timestamp >=` | automatic single-field, collection scope |
 
 **Expected cost: about 40–90 thousand document reads** (an estimate; the corpus's
 stock-record count is the big unknown). On Standard that is a few cents. Zero
 writes. The ledger leg dominates when writes per day are high; `--dias 7` roughly
-halves it. The summary prints the measured reads per leg
-(`leituras.porPerna`) and the billed estimate.
+halves it. Each record the ledger leg reads costs at least one read even with no
+row (an empty query is billed), so the records at the depósito with no numeric
+stamp (`registrosSemCarimboNumerico`) add about one read each. The summary prints
+the measured reads per leg (`leituras.porPerna`) and the billed estimate.
 
 If the legacy project refuses the ledger query for a missing index (gRPC 9), the
-script says so (`AVISO`), reports `razaoDisponivel: false` and keeps the
-walk-based figures; any other error stops the run.
+script says so (`AVISO`), sends no further ledger query, reports
+`razaoDisponivel: false` and keeps the walk-based figures; any other error stops
+the run.
 
 ## Reading the output
 
 Two files under `tools/migrations/out/` (gitignored, local only):
 
 - `<stamp>-li-estoque-contagens-resumo.json` — **the summary: counts, booleans,
-  civil dates and pseudonyms only.** The same JSON is printed as the last `RESUMO`
-  line of stdout.
+  civil dates and pseudonyms only.** The same JSON is printed on stdout as the line
+  starting `RESUMO ` (the runner's own `done:` line follows it).
 - `<stamp>-li-estoque-contagens-dryrun.jsonl` — the runner's log, **with ids**:
   the pseudonym map (`pseudonimo-conta`, `pseudonimo-deposito`), one row per
   finding (`kit-vinculado`, `componente-acima-do-limite-em-linha`,
@@ -139,7 +158,15 @@ Two files under `tools/migrations/out/` (gitignored, local only):
 Every per-day figure is a lower bound: a record or produto counts once, on the day
 of its LAST stamp, and a stamp that is not a number is invisible to the range
 (counted apart). `linhasDaRazao` — ledger rows — is the closer measure of stock
-writes; `registros` is its floor.
+writes; `registros` is its floor. The ledger is read only for records whose own
+stamp is in the window or is not a number (the rows of the latter are also totalled
+apart, `linhasDaRazaoDeRegistrosSemCarimbo`). A write that adds a ledger row
+without moving a numeric stamp from before the window is therefore in **neither**
+measure; read both as floors, never as the exact E.
+
+The window's last day (`janela.ate`) is today, a partial day: it keeps its own row
+in `dias` and `porDia`, and `mediaDiaria` averages the `janela.diasCompletos` days
+before it (`null` with `--dias 1`). `maximoDiario` includes today.
 
 ## What to paste back
 

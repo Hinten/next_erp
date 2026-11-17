@@ -54,8 +54,11 @@ import {
  * Every per-day figure is a LOWER bound. A record or produto is bucketed by its LAST
  * `ultimaModificacao`, so one touched on several days counts once, on its last; a stamp that is
  * absent or not a safe integer is invisible to a numeric range and counted apart. The ledger
- * (`historicoEstoque`) rows per day are the closer measure of writes, and still miss a writer that
- * appends no row.
+ * (`historicoEstoque`) rows per day are the closer measure of writes, but the ledger is read only
+ * for a record whose own stamp is in the window or not a number: a write that appends a ledger row
+ * WITHOUT moving a numeric stamp from before the window is invisible to both measures, and a writer
+ * that appends no row is invisible to the ledger. The daily means average the COMPLETE days only;
+ * today is partial and shows in its own row.
  *
  * ## Privacy
  *
@@ -225,7 +228,8 @@ export interface Resumo {
   readonly geradoEm: string;
   readonly fuso: string;
   readonly dias: number;
-  readonly janela: { readonly de: string; readonly ate: string };
+  /** `ate` is today, a partial day; the means average the `diasCompletos` before it. */
+  readonly janela: { readonly de: string; readonly ate: string; readonly diasCompletos: number };
   readonly medida: string;
   readonly contas: unknown;
   readonly vinculos: unknown;
@@ -375,8 +379,9 @@ export function recusaSemContasLi(contas: readonly ContaLida[]): MotivoDeRecusa 
 }
 
 /**
- * The second refusal, after the link walk: no counting link names a Loja Integrada conta. On the
- * wrong project or database every count reads zero, and zeros must never read as a measurement.
+ * The second refusal, after the link walk: no counting link names a Loja Integrada conta. A
+ * database without this data would count zero everywhere, and zeros must never read as a
+ * measurement.
  */
 export function recusaSemVinculos(
   contas: readonly ContaLida[],
@@ -443,8 +448,10 @@ export function baldeDoCarimbo(valor: unknown, janela: Janela): Balde {
 }
 
 /**
- * The records the ledger leg reads: at a Loja Integrada depósito in an EXACT form, with a numeric
- * `ultimaModificacao` at or after the window's start. Sorted, unique.
+ * The records the ledger leg reads: at a Loja Integrada depósito in an EXACT form, whose
+ * `ultimaModificacao` is at or after the window's start OR is not a number at all (the range
+ * cannot place such a record, so its ledger is the only evidence it was written). A record whose
+ * numeric stamp is before the window is not read. Sorted, unique.
  */
 export function registrosParaRazao(
   estoques: readonly EstoqueLido[],
@@ -457,7 +464,7 @@ export function registrosParaRazao(
     const { forma, depositoId } = formaDaRefDoDeposito(proprio(e.dados, 'depositoOuterRef'));
     if (!exata(forma) || depositoId === null || !depositosLi.has(depositoId)) continue;
     const balde = baldeDoCarimbo(proprio(e.dados, 'ultimaModificacao'), janela);
-    if (balde.tipo === 'dia' || balde.tipo === 'futuro') caminhos.add(e.caminho);
+    if (balde.tipo !== 'antes') caminhos.add(e.caminho);
   }
   return [...caminhos].sort(comparar);
 }
@@ -478,6 +485,12 @@ interface ProdutoAnalisado {
   readonly componentesIlegiveis: boolean;
   readonly descartados: number;
   readonly idsInvalidos: number;
+  /**
+   * Components whose `quantidade` is not a finite number (text, absent, `null`): the shared fold
+   * reads them as not constraining, exactly as the sync does, so they reach neither F — counted
+   * here instead of vanishing.
+   */
+  readonly quantidadesIlegiveis: number;
 }
 
 /**
@@ -499,6 +512,7 @@ export function analisarProduto(dados: Readonly<Record<string, unknown>>): Produ
       componentesIlegiveis: false,
       descartados: 0,
       idsInvalidos: 0,
+      quantidadesIlegiveis: 0,
     };
   }
   const ehMapa = typeof bruto === 'object' && bruto !== null && !Array.isArray(bruto);
@@ -529,6 +543,7 @@ export function analisarProduto(dados: Readonly<Record<string, unknown>>): Produ
     componentesIlegiveis: bruto !== undefined && bruto !== null && !ehMapa,
     descartados,
     idsInvalidos: idsInvalidos.size,
+    quantidadesIlegiveis: entradas.filter(([, kit]) => !Number.isFinite(kit.quantidade)).length,
   };
 }
 
@@ -920,6 +935,14 @@ export function contar(entrada: EntradaDaContagem): ResultadoDaContagem {
       if (resultado.idsInvalidos > 0) {
         ignorar(caminho, 'componentesKit', resultado.idsInvalidos, 'kit-componente-id-invalido');
       }
+      if (resultado.quantidadesIlegiveis > 0) {
+        ignorar(
+          caminho,
+          'componentesKit',
+          resultado.quantidadesIlegiveis,
+          'kit-componente-quantidade-ilegivel',
+        );
+      }
     }
     analise.set(produtoId, resultado);
     return resultado;
@@ -953,6 +976,7 @@ export function contar(entrada: EntradaDaContagem): ResultadoDaContagem {
       componentesKitIlegiveis: 0,
       comComponentesDescartados: 0,
       comComponenteIdInvalido: 0,
+      comComponenteQuantidadeIlegivel: 0,
     };
     for (const [produtoId] of [...v.vinculados].sort((a, b) => comparar(a[0], b[0]))) {
       const p = analisar(produtoId);
@@ -968,6 +992,7 @@ export function contar(entrada: EntradaDaContagem): ResultadoDaContagem {
       if (p.componentesIlegiveis) k.componentesKitIlegiveis += 1;
       if (p.descartados > 0) k.comComponentesDescartados += 1;
       if (p.idsInvalidos > 0) k.comComponenteIdInvalido += 1;
+      if (p.quantidadesIlegiveis > 0) k.comComponenteQuantidadeIlegivel += 1;
       if (p.restritivos.length > 0) {
         k.restritos += 1;
         adicionarAoMapa(f, p.restritivos, produtoId);
@@ -1079,17 +1104,20 @@ export function contar(entrada: EntradaDaContagem): ResultadoDaContagem {
       c.tipo === INTEGRACAO_TIPO.mercadoLivre ||
       c.tipo === INTEGRACAO_TIPO.shopee,
   );
-  const depositosDosTresCanais = contasDosTresCanais.map((c) => depositoDaContaLi(c));
+  /** One BARE depósito id for every conta (either stored form), none unreadable. */
+  const umSoDeposito = (depositos: readonly (string | null)[]): boolean =>
+    depositos.length > 0 && depositos.every((d) => d !== null && d === depositos[0]);
   const contasResumo = {
     lojas: lojasContas,
-    contasLiNoMesmoDeposito:
-      depositosLiDasContas.length > 0 &&
-      depositosLiDasContas.every((d) => d !== null && d === depositosLiDasContas[0]),
+    contasLiNoMesmoDeposito: umSoDeposito(depositosLiDasContas),
     mercadoLivre: canal(INTEGRACAO_TIPO.mercadoLivre),
     shopee: canal(INTEGRACAO_TIPO.shopee),
-    todasNoMesmoDeposito:
-      depositosDosTresCanais.length > 0 &&
-      depositosDosTresCanais.every((d) => d !== null && d === depositosDosTresCanais[0]),
+    todasNoMesmoDeposito: umSoDeposito(contasDosTresCanais.map((c) => depositoDaContaLi(c))),
+    // A deactivated conta with a stale depósito must not hide the answer for the live ones
+    // (active as `canal` counts it: `ativo` not `false`).
+    todasAtivasNoMesmoDeposito: umSoDeposito(
+      contasDosTresCanais.filter((c) => c.ativo !== false).map((c) => depositoDaContaLi(c)),
+    ),
     outrasContas: entrada.contas.length - contasDosTresCanais.length,
   };
 
@@ -1225,24 +1253,25 @@ export function contar(entrada: EntradaDaContagem): ResultadoDaContagem {
           valor: { conta: lojaDe(conta.id), deposito: depDe(d) },
         });
       } else {
-        const dobrada = dobradoEm(produtoId, d);
-        if (dobrada) soDobrada += 1;
-        const temOutros = (registrosPorProduto.get(produtoId)?.length ?? 0) > 0;
-        if (temOutros) comOutros += 1;
+        // Three disjoint cases, in this order. A record AT the depósito in a folded form: the
+        // mapping is right and the ref is not. Else a record elsewhere (another depósito, or no
+        // readable one): what a wrong mapping looks like. Else no record at all.
+        const caso = dobradoEm(produtoId, d)
+          ? 'so-na-forma-dobrada'
+          : (registrosPorProduto.get(produtoId) ?? []).some((r) => r.depositoId !== d)
+            ? 'registros-em-outro-lugar'
+            : 'nenhum-registro';
+        if (caso === 'so-na-forma-dobrada') soDobrada += 1;
+        else if (caso === 'registros-em-outro-lugar') comOutros += 1;
         else semNenhum += 1;
         achados.push({
           caminho: `produtos/${produtoId}`,
           classe: 'sem-registro-no-deposito',
-          valor: {
-            conta: lojaDe(conta.id),
-            deposito: depDe(d),
-            registrosEmOutroLugar: temOutros,
-            soNaFormaDobrada: dobrada,
-          },
+          valor: { conta: lojaDe(conta.id), deposito: depDe(d), caso },
         });
       }
     }
-    const semRegistroNoDeposito = comOutros + semNenhum;
+    const semRegistroNoDeposito = soDobrada + comOutros + semNenhum;
     const share = d === null ? null : fracao(semRegistroNoDeposito, base);
     semRegistroResumo[lojaDe(conta.id)] = {
       deposito: depDe(d),
@@ -1403,6 +1432,11 @@ export function contar(entrada: EntradaDaContagem): ResultadoDaContagem {
   /* -- (2) writes per day at each Loja Integrada depósito ----------------- */
   const escritasResumo: Record<string, unknown> = {};
   const razao = entrada.razao;
+  // Today is a partial civil day: it keeps its own row, and the means average the days before it.
+  const hoje = janela.dias[janela.dias.length - 1]!;
+  const diasCompletos = janela.dias.length - 1;
+  const media = (soma: number): number | null =>
+    diasCompletos === 0 ? null : soma / diasCompletos;
   for (const d of depositosLi) {
     const porDia = new Map<
       string,
@@ -1418,6 +1452,23 @@ export function contar(entrada: EntradaDaContagem): ResultadoDaContagem {
     let semLinha = 0;
     let linhasFuturo = 0;
     let linhasInvalidas = 0;
+    let linhasSemCarimbo = 0;
+    /** One record's ledger rows into the day rows; how many fell on a day of the window. */
+    const somarLinhas = (caminho: string, linhas: readonly unknown[]): number => {
+      let noDia = 0;
+      for (const ts of linhas) {
+        const b = baldeDoCarimbo(ts, janela);
+        if (b.tipo === 'dia') {
+          porDia.get(b.dia)!.linhasDaRazao += 1;
+          noDia += 1;
+        } else if (b.tipo === 'futuro') linhasFuturo += 1;
+        else if (b.tipo === 'invalido') {
+          linhasInvalidas += 1;
+          ignorar(caminho, 'historicoEstoque.timestamp', ts, 'razao-carimbo-invalido');
+        }
+      }
+      return noDia;
+    };
     for (const produtoId of [...registrosPorProduto.keys()].sort(comparar)) {
       for (const r of registrosPorProduto.get(produtoId)!) {
         if (r.depositoId !== d) continue;
@@ -1428,6 +1479,10 @@ export function contar(entrada: EntradaDaContagem): ResultadoDaContagem {
         }
         if (balde.tipo === 'invalido') {
           semCarimbo += 1;
+          // No range places this record; its ledger rows are the only sign it was written.
+          if (razao !== null) {
+            linhasSemCarimbo += somarLinhas(r.caminho, razao.get(r.caminho) ?? []);
+          }
           continue;
         }
         if (balde.tipo === 'antes') continue;
@@ -1442,15 +1497,7 @@ export function contar(entrada: EntradaDaContagem): ResultadoDaContagem {
         if (razao === null) continue;
         const linhas = razao.get(r.caminho) ?? [];
         if (linhas.length === 0) semLinha += 1;
-        for (const ts of linhas) {
-          const b = baldeDoCarimbo(ts, janela);
-          if (b.tipo === 'dia') porDia.get(b.dia)!.linhasDaRazao += 1;
-          else if (b.tipo === 'futuro') linhasFuturo += 1;
-          else if (b.tipo === 'invalido') {
-            linhasInvalidas += 1;
-            ignorar(r.caminho, 'historicoEstoque.timestamp', ts, 'razao-carimbo-invalido');
-          }
-        }
+        somarLinhas(r.caminho, linhas);
       }
     }
     const dias: Record<string, unknown> = {};
@@ -1460,8 +1507,11 @@ export function contar(entrada: EntradaDaContagem): ResultadoDaContagem {
     let somaLinhas = 0;
     for (const [dia, l] of porDia) {
       const total = l.vinculado + l.componente + l.outro;
-      somaRegistros += total;
-      somaLinhas += l.linhasDaRazao;
+      if (dia !== hoje) {
+        somaRegistros += total;
+        somaLinhas += l.linhasDaRazao;
+      }
+      // A partial day can only understate itself, so the maximum keeps today.
       maxRegistros = Math.max(maxRegistros, total);
       maxLinhas = Math.max(maxLinhas, l.linhasDaRazao);
       dias[dia] = {
@@ -1479,11 +1529,12 @@ export function contar(entrada: EntradaDaContagem): ResultadoDaContagem {
       registrosSemCarimboNumerico: semCarimbo,
       registrosDobradosNaJanela: dobradosNaJanela,
       registrosSemLinhaNaRazao: razao === null ? null : semLinha,
+      linhasDaRazaoDeRegistrosSemCarimbo: razao === null ? null : linhasSemCarimbo,
       linhasDaRazaoNoFuturo: razao === null ? null : linhasFuturo,
       linhasDaRazaoInvalidas: razao === null ? null : linhasInvalidas,
       mediaDiaria: {
-        registros: somaRegistros / janela.dias.length,
-        linhasDaRazao: razao === null ? null : somaLinhas / janela.dias.length,
+        registros: media(somaRegistros),
+        linhasDaRazao: razao === null ? null : media(somaLinhas),
       },
       maximoDiario: { registros: maxRegistros, linhasDaRazao: razao === null ? null : maxLinhas },
     };
@@ -1565,7 +1616,9 @@ export function contar(entrada: EntradaDaContagem): ResultadoDaContagem {
     vinculadosLi: tocadosVinculados,
     paisLi: tocadosPais,
     fracaoVinculadosLi: fracao(tocadosVinculados, tocadosTotal),
-    mediaDiaria: tocadosTotal / janela.dias.length,
+    mediaDiaria: media(
+      [...tocadosPorDia].reduce((n, [dia, l]) => (dia === hoje ? n : n + l.total), 0),
+    ),
     porDia: Object.fromEntries(tocadosPorDia),
     lojas: Object.fromEntries(
       contasOrdenadas.map((c) => [lojaDe(c.id), tocadosPorLoja.get(c.id)!] as const),
@@ -1590,11 +1643,15 @@ export function contar(entrada: EntradaDaContagem): ResultadoDaContagem {
     geradoEm: new Date(entrada.agoraMs).toISOString(),
     fuso: FUSO_FISCAL,
     dias: entrada.dias,
-    janela: { de: janela.dias[0]!, ate: janela.dias[janela.dias.length - 1]! },
+    janela: { de: janela.dias[0]!, ate: hoje, diasCompletos },
     medida:
       'Every per-day figure is a LOWER bound: a record or produto counts once, on the civil day ' +
-      'of its LAST ultimaModificacao; a non-numeric stamp is invisible (counted apart). ' +
-      'linhasDaRazao (ledger rows) is the closer measure of stock writes.',
+      'of its LAST ultimaModificacao; a non-numeric stamp is invisible to the range (counted ' +
+      'apart). linhasDaRazao (ledger rows) is the closer measure of stock writes, but the ledger ' +
+      'is read only for records whose own stamp is in the window or not a number: a write that ' +
+      'adds a ledger row without moving a numeric stamp from before the window is in neither ' +
+      'measure. The last day (ate) is today, partial; mediaDiaria averages the diasCompletos ' +
+      'before it (null when there are none), maximoDiario includes today.',
     contas: contasResumo,
     vinculos: { lojas: vinculosResumo, ...globais },
     kits: {

@@ -66,10 +66,11 @@ import {
  *    duplicate, parentId, no-record and per-day counts in one pass.
  * 6. `produtos` with `ultimaModificacao >= <window start>`, newest first, masked: Standard's
  *    automatic collection-scope single-field index.
- * 7. For each record at a Loja Integrada depósito touched in the window: its own
- *    `historicoEstoque` rows with `timestamp >= <window start>` (the automatic collection-scope
- *    index), {@link CONCORRENCIA} records at a time. If the project refuses that query for a
- *    missing index (gRPC 9), the ledger is reported unavailable and the walk-based bound stands.
+ * 7. For each record at a Loja Integrada depósito touched in the window, or with no numeric stamp:
+ *    its own `historicoEstoque` rows with `timestamp >= <window start>` (the automatic
+ *    collection-scope index), {@link CONCORRENCIA} records at a time. If the project refuses that
+ *    query for a missing index (gRPC 9), the ledger is reported unavailable, no further ledger
+ *    query is sent, and the walk-based bound stands.
  *
  * On Enterprise (a staging rehearsal) the two key walks ride the declared `__name__` collection
  * group indexes (`key-walks.json`) and reads 6 and 7 the declared single-field indexes.
@@ -187,8 +188,9 @@ export class ContagemNaoAvaliada extends Error {
   constructor(readonly motivo: MotivoDeRecusa) {
     super(
       `${NOME_DA_CONTAGEM}: NAO-AVALIADO ${motivo}. Nothing was counted. Check --project and ` +
-        'FIREBASE_DATABASE_ID (the legacy project is "(default)") — on the wrong project or ' +
-        'database every count reads zero (runbook: li-estoque-contagens.README.md).',
+        'FIREBASE_DATABASE_ID (the legacy project is "(default)") — this database holds no ' +
+        'Loja Integrada data to count, and zeros are not a measurement (runbook: ' +
+        'li-estoque-contagens.README.md).',
     );
     this.name = 'ContagemNaoAvaliada';
   }
