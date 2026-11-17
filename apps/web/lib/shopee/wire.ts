@@ -21,8 +21,9 @@
  * (the category tree, the item bands whole and cut to the size-chart slice,
  * Shopee's category suggestion, a category's page of brands, its attribute
  * tree and its variation tree — #1911), the
- * listing-draft route's answers and error items, and the publish's 202 for a
- * draft's uncertain first create (#1911).
+ * listing-draft route's answers and error items, the publish's 202 for a
+ * draft's uncertain first create (#1911), and the shop's logistics channels
+ * for one produto (#1911 P16).
  *
  * ⚠️ This header must not describe what the OTHER copy does beyond naming it.
  * A comment asserting the behaviour of a file the compiler cannot see is the
@@ -578,6 +579,34 @@ export {
   type VariacaoDto,
   type VariacaoGrupoDto,
   type VariacaoOpcaoDto,
+} from '@delfrance/schemas';
+
+/**
+ * The shop's logistics channels for ONE produto —
+ * `GET …/canais?integracaoId=&produtoId=` (#1911 P15), for a listing draft's
+ * «Logística» section (P16). One row per channel of Shopee's
+ * `get_channel_list`, in that list's order, and the envelope.
+ *
+ * - ⚠️ Join a row to a draft's channel by `logisticsChannelId`, never by
+ *   position: the rows keep the shop's order, a draft's list is sorted by id.
+ * - `selecionavel`, `obrigatorio`, `bloqueiaFreteGratisDoVendedor`,
+ *   `indisponivel` and `automatica` are VERDICTS: render them, never re-derive
+ *   one (#1369). `automatica.isFree` is already masked by
+ *   `bloqueiaFreteGratisDoVendedor`.
+ * - `nome: null` ⇒ name the channel by its id.
+ * - `medidasCompletas: false` ⇒ the STORED produto lacks its weight or one of
+ *   the three dimensions.
+ * - Every key is required: a missing `medidasCompletas` or `selecionavel` is a
+ *   `ShopeeClientRespostaInvalidaError`, never read as `false`.
+ */
+export {
+  canalDaLojaShopeeDtoSchema,
+  MOTIVO_INDISPONIVEL_CANAL_SHOPEE,
+  motivoIndisponivelCanalShopeeSchema,
+  respostaCanaisShopeeSchema,
+  type CanalDaLojaShopeeDto,
+  type MotivoIndisponivelCanalShopee,
+  type RespostaCanaisShopee,
 } from '@delfrance/schemas';
 
 /**

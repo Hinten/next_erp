@@ -1446,7 +1446,7 @@ The first WRITER of a listing. Reasoning: `anuncios/README.md`.
   `livre` at once. ENSURE and the first-create walk stop before the request
   deadline: 409 `PUBLICACAO_EXPIRADA`, nothing sent (the CLI has the lock's
   time). Follow-ups #2064 (narrow the walk), #2061 (ENSURE's fallback).
-  Registers 307–319: `anuncios/README.md`.
+  Registers 307–320: `anuncios/README.md`.
 
 ## Stock sync (`lib/shopee/estoque/`, step 12)
 

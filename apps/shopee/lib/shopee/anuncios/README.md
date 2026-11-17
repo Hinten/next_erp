@@ -1014,11 +1014,13 @@ entries, unique ids, at least ONE `enabled: true`) and returns it sorted, or
   list equal to the stored projection (the same channels stored in another
   order included) writes neither. In `incerta` a logistics-only patch is
   written: only `category_id` locks.
-- **discard** — tier 3 + 1: the baseline compare over the five form fields,
-  plus `logistic_info` when the `base` names it — optional for the P15 → P16
-  deploy gap (#1911 P15, D-LOG-10: a web deployed before P16 sends five keys) —
-  then `delete({lastUpdateTime})`, ≤ 3 re-derives. 404 · 409 `JA_PUBLICADO` ·
-  409 `EM_ANDAMENTO` · 409 `CONFLITO` (stored ≠ `base`, K1-13: an edit made
+- **discard** — tier 3 + 1: the baseline compare over the six form fields;
+  an ABSENT `base.logistic_info` reads as `null` — «Automática», what every
+  screen before the logistics editor showed (#1911 P16, D-LOG-10) — so a stale
+  tab's five-key base is a 409 `CONFLITO` over a draft whose channels were
+  chosen meanwhile, never a silent delete, and still discards an «Automática»
+  one — then `delete({lastUpdateTime})`, ≤ 3 re-derives. 404 · 409
+  `JA_PUBLICADO` · 409 `EM_ANDAMENTO` · 409 `CONFLITO` (stored ≠ `base`, K1-13: an edit made
   meanwhile is never discarded unseen) · 409 `CRIACAO_INCERTA` (`incerta`
   without `confirmarCriacaoIncerta: true`, K1-6: the draft is the only record
   of that attempt). Its sentence gives the three Seller-Centre cases the tab's
@@ -1050,8 +1052,8 @@ Six rules a change must keep:
   patch, the `category_id` the list was chosen in, which is compared and never
   written (#1911 P13 Q1, below); a field someone else edited that this request
   does not touch is not a conflict. On a discard it is over every field the
-  `base` names (the five form fields, and `logistic_info` when named), because
-  a discard throws all of them away.
+  `base` names (the six form fields, an absent `logistic_info` read as
+  `null`), because a discard throws all of them away.
 - **`marca` is ONE field over two stored keys**: written whole (`brand_id` +
   `original_brand_name`; `null` ⇒ both `null`; `0` ⇒ the name `null`), compared
   by `brand_id` only for a CONFLICT (a `base`), and as the PAIR for a WRITE (the
@@ -2558,6 +2560,7 @@ a regression.
 | 317 | Shopee's answer to a `variation_option_name` beside a non-zero `variation_option_id` on `update_tier_variation`, when the name is the live option's own (#1911 P14a, R2)                                                       | ⏳ BR shop: the first republish of a listing with a standard option. A refusal arrives after `update_item`, in the model leg, as a provider failure naming no cause                                                                                                                                                                                                                                                                                                       |
 | 318 | Shopee's answer to a variante's ERP name as `variation_option_name` beside a non-zero `variation_option_id` (`init_tier_variation` / `update_tier_variation`) for a STANDARD row stored blank (#1911 P14b, P14a open point 7)  | ⏳ BR shop: the first publish that authors an option from a standard binding row stored blank. Before P14b the blank itself went beside the id, unrefused and just as unmeasured. A refusal arrives as a Shopee rejection at the tier call: after `add_item` on a create (the listing then linked, UNLIST and model-less), after `update_item` on an update                                                                                                               |
 | 319 | the read-back of a channel switched off in Seller Centre on a LIVE listing: listed `enabled: false` (shape A) or omitted (shape B) (#1911 P15)                                                                                 | ⏳ open, non-gating. BR shop: switch one channel off on a live listing, then one `get_item_base_info`. Shape B ⇒ the residual stands (an omitted off cannot be told from "never decided", and the fallback can send it once every stored ON channel stops validating); shape A ⇒ a trusted list carries the off and P15 honours it. The committed SG deleted-kit bodies already list every channel `enabled: false`: shape A exists, at least on deleted listings         |
+| 320 | the read-back of `is_free: true` sent on a channel the editor ticked, and of an explicit `enabled: false` the editor wrote, after a draft's first publish (#1911 P16)                                                          | ⏳ open, non-gating. BR shop: publish one draft whose channels were chosen — one ticked «Frete grátis…», one switched off — then read write-back #2. The off one is never sent (`desligado-no-vinculo`); write-back #2 stores the read-back, stamped, so a ticked channel read back `is_free: false` is what a republish's stored pass sends, and whether the off one comes back listed `enabled: false` or omitted is register 319's shape question                      |
 
 Also unmeasured, and not a register line: nothing in this folder has met a BR
 shop. The `esperar` of 5 000 ms, the re-list door order, the daily-quota reset

@@ -54,6 +54,7 @@ import {
   MSG_LOGISTICA_CANAL_REPETIDO_RASCUNHO_SHOPEE,
   MSG_LOGISTICA_SEM_CANAL_LIGADO_RASCUNHO_SHOPEE,
   MSG_PATCH_VAZIO_RASCUNHO_SHOPEE,
+  ordenadosPorCanalLogisticaShopee,
   PADRAO_ID_RASCUNHO_SHOPEE,
   pendenciasDoRascunhoShopee,
   PUBLICACAO_EM_CURSO_SHOPEE_TTL_MS,
@@ -2598,7 +2599,11 @@ describe('corpoDescartarRascunhoShopeeSchema — POST rascunho/descartar (K1-13,
   const corpo = { ...IDS, linkDocId: ID_RASCUNHO, base: BASE_COMPLETA };
 
   it('PAR: a base COMPLETA, com e sem a atestação', () => {
-    expect(corpoDescartarRascunhoShopeeSchema.parse(corpo)).toEqual(corpo);
+    // #1911 P16 (D-LOG-10): the five-key base comes back with `logistic_info: null`.
+    expect(corpoDescartarRascunhoShopeeSchema.parse(corpo)).toEqual({
+      ...corpo,
+      base: { ...BASE_COMPLETA, logistic_info: null },
+    });
     for (const atesta of [true, false, null]) {
       expect(
         corpoDescartarRascunhoShopeeSchema.parse({ ...corpo, confirmarCriacaoIncerta: atesta })
@@ -2608,7 +2613,9 @@ describe('corpoDescartarRascunhoShopeeSchema — POST rascunho/descartar (K1-13,
   });
 
   // #1911 P15 — antes: «⛔ a base precisa trazer TODO campo projetado — faltar um é 400».
-  it('⛔ a base precisa trazer os CINCO campos do formulário — faltar um é 400 (logistic_info é opcional, D-LOG-10)', () => {
+  // #1911 P16 — antes: «⛔ a base precisa trazer os CINCO campos do formulário — faltar
+  // um é 400 (logistic_info é opcional, D-LOG-10)».
+  it('⛔ a base precisa trazer os CINCO campos obrigatórios do formulário — faltar um é 400 (logistic_info ausente é lido como null, D-LOG-10)', () => {
     expect(Object.keys(BASE_COMPLETA)).toHaveLength(5);
     for (const campo of Object.keys(BASE_COMPLETA)) {
       const { [campo]: _fora, ...incompleta } = BASE_COMPLETA as Record<string, unknown>;
@@ -2979,6 +2986,41 @@ describe('logistic_info no rascunho (#1911 P15) — a projeção, a comparação
     ).toEqual([false, true]);
   });
 
+  // --- the ONE ordering, exported (#1911 P16, D16-1) ----------------------
+
+  it('ordenadosPorCanalLogisticaShopee (#1911 P16) — PAR: ids iguais mantêm a ordem de entrada (estável) ⟷ ⛔ QUASE: a entrada nunca é reordenada (cópia)', () => {
+    // Generic over any `{logistic_id}`; the extra key only tags each entry.
+    const b1 = { logistic_id: 90005, rotulo: 'b1' };
+    const a = { logistic_id: 90003, rotulo: 'a' };
+    const b2 = { logistic_id: 90005, rotulo: 'b2' };
+    const c = { logistic_id: 90004, rotulo: 'c' };
+    const entrada = [b1, a, b2, c];
+    const ordenados = ordenadosPorCanalLogisticaShopee(entrada);
+    expect(ordenados.map((x) => x.logistic_id)).toEqual([90003, 90004, 90005, 90005]);
+    // PAR (stable): the two 90005 keep the order they came in — both ways round
+    expect(ordenados.map((x) => x.rotulo)).toEqual(['a', 'c', 'b1', 'b2']);
+    expect(ordenadosPorCanalLogisticaShopee([b2, a, b1]).map((x) => x.rotulo)).toEqual([
+      'a',
+      'b2',
+      'b1',
+    ]);
+    // the entries themselves, never rebuilt
+    expect(ordenados[0]).toBe(a);
+    // ⛔ QUASE (a copy): the input keeps its order, and an input already in
+    // order still comes back as a NEW array — never the input itself
+    expect(entrada.map((x) => x.rotulo)).toEqual(['b1', 'a', 'b2', 'c']);
+    const jaOrdenada = [a, c, b1];
+    const deNovo = ordenadosPorCanalLogisticaShopee(jaOrdenada);
+    expect(deNovo).toEqual(jaOrdenada);
+    expect(deNovo).not.toBe(jaOrdenada);
+    // the ONE ordering: the projection and the write whitelist answer in it
+    const esperada = ordenadosPorCanalLogisticaShopee([CANAL_B, CANAL_A]);
+    expect(carimbada([CANAL_B, CANAL_A])).toStrictEqual(esperada);
+    expect(
+      conteudoRascunhoShopeeSchema.parse({ logistic_info: [CANAL_B, CANAL_A] }).logistic_info,
+    ).toStrictEqual(esperada);
+  });
+
   // --- the compare -------------------------------------------------------
 
   it('PAR: undefined ≡ null; as mesmas entradas com as chaves em outra ordem', () => {
@@ -3244,11 +3286,20 @@ describe('logistic_info no rascunho (#1911 P15) — a projeção, a comparação
     expect(comCategoria.patch).toEqual(patch);
   });
 
-  it('a base de descarte com os cinco campos e SEM logistic_info passa (a janela P15 → P16) ⟷ com logistic_info null ou uma lista, passa VERBATIM (sem ordenar)', () => {
+  // #1911 P16 (D-LOG-10) — antes: «a base de descarte com os cinco campos e SEM
+  // logistic_info passa (a janela P15 → P16) ⟷ com logistic_info null ou uma lista,
+  // passa VERBATIM (sem ordenar)»: the five-key base then came back WITHOUT the key, so
+  // the route never compared it.
+  it('PAR: a base de CINCO chaves é lida com `logistic_info: null` ⟷ com `null` ou uma lista explícita passa VERBATIM (sem ordenar) ⟷ ⛔ QUASE: uma chave desconhecida na base continua 400', () => {
     const corpo = { ...IDS, linkDocId: ID_RASCUNHO, base: BASE_COMPLETA };
+    // ÂNCORA: the stale tab's base really is five keys, none of them logistic_info.
+    expect(Object.keys(BASE_COMPLETA)).toHaveLength(5);
+    expect(BASE_COMPLETA).not.toHaveProperty('logistic_info');
     const cinco = corpoDescartarRascunhoShopeeSchema.parse(corpo);
-    expect(cinco.base).toEqual(BASE_COMPLETA);
-    expect(cinco.base).not.toHaveProperty('logistic_info');
+    // «Automática» — what every screen before the editor showed; never `[]`, never absent.
+    expect(cinco.base).toStrictEqual({ ...BASE_COMPLETA, logistic_info: null });
+    // …and a `null` is a field the base NAMES: the route compares all six.
+    expect(camposPresentesDoRascunhoShopee(cinco.base)).toEqual(campoRascunhoShopeeSchema.options);
     const vistas: unknown[] = [
       null,
       [],
@@ -3268,6 +3319,21 @@ describe('logistic_info no rascunho (#1911 P15) — a projeção, a comparação
       expect(baseRascunhoShopeeSchema.parse({ logistic_info }).logistic_info).toStrictEqual(
         logistic_info,
       );
+    }
+    // ⛔ QUASE: the absence is the ONE tolerance — the base stays strict, and a present
+    // value goes through the base's own list schema.
+    for (const base of [
+      { ...BASE_COMPLETA, foo: 1 },
+      { ...BASE_COMPLETA, logisticaGravadaEm: 1 },
+      { ...BASE_COMPLETA, logistic_info: null, logisticaGravadaEm: 1 },
+      { ...BASE_COMPLETA, logistic_info: [{ ...CANAL_A, logistic_name: 'Entrega A' }] },
+      { ...BASE_COMPLETA, logistic_info: [{ logistic_id: 90003, enabled: true }] },
+      { ...BASE_COMPLETA, logistic_info: 'automatica' },
+    ]) {
+      expect(
+        corpoDescartarRascunhoShopeeSchema.safeParse({ ...corpo, base }).success,
+        JSON.stringify(base),
+      ).toBe(false);
     }
   });
 
@@ -3428,6 +3494,7 @@ const CAMPOS_OK: CamposRascunhoShopee = {
   category_id: 100087,
   marca: { brand_id: 0, original_brand_name: null },
   attributes: null,
+  logistic_info: null,
 };
 
 function pend(
@@ -3533,6 +3600,7 @@ describe('pendenciasDoRascunhoShopee — o rascunho inteiro (P10, K2-7)', () => 
       category_id: null,
       marca: null,
       attributes: null,
+      logistic_info: null,
     };
     expect(pendenciasDoRascunhoShopee(novo, ARGS_PEND)).toEqual([
       { tipo: 'categoria-ausente' },
@@ -3542,7 +3610,14 @@ describe('pendenciasDoRascunhoShopee — o rascunho inteiro (P10, K2-7)', () => 
 
   it('a ORDEM é a do montador: título, descrição, categoria, atributos, marca', () => {
     const todas = pendenciasDoRascunhoShopee(
-      { item_name: null, description: null, category_id: null, marca: null, attributes: null },
+      {
+        item_name: null,
+        description: null,
+        category_id: null,
+        marca: null,
+        attributes: null,
+        logistic_info: null,
+      },
       { nomeProduto: '  ', descricaoProduto: null, limites: null, arvore: ARVORE_PEND },
     );
     expect(tiposDe(todas)).toEqual([

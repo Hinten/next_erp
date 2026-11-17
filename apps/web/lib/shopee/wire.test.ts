@@ -11,14 +11,17 @@ import {
   atributoDtoSchema as atributoCompartilhadoSchema,
   atributoInfoDtoSchema as infoDeAtributoCompartilhadaSchema,
   atributoValorDtoSchema as valorDeAtributoCompartilhadoSchema,
+  canalDaLojaShopeeDtoSchema as canalDaLojaCompartilhadoSchema,
   categoriaNoDtoSchema as noCompartilhadoSchema,
   categoriaResumoDtoSchema as resumoCompartilhadoSchema,
   detalheTabelaMedidasDtoSchema as detalheCompartilhadoSchema,
   listaTabelasMedidasDtoSchema as listaCompartilhadaSchema,
   marcaDtoSchema as marcaCompartilhadaSchema,
+  motivoIndisponivelCanalShopeeSchema as motivoIndisponivelCompartilhadoSchema,
   projetarTabelaShopee,
   respostaAtributosShopeeSchema as atributosCompartilhadaSchema,
   respostaAtualizarRascunhoShopeeSchema as atualizarCompartilhadoSchema,
+  respostaCanaisShopeeSchema as canaisCompartilhadaSchema,
   respostaCategoriasShopeeSchema as categoriasCompartilhadaSchema,
   respostaCriarRascunhoShopeeSchema as criarCompartilhadoSchema,
   respostaDescartarRascunhoShopeeSchema as descartarCompartilhadoSchema,
@@ -47,6 +50,7 @@ import {
   atributoInfoDtoSchema,
   atributoValorDtoSchema,
   anuncioStatusShopeeSchema,
+  canalDaLojaShopeeDtoSchema,
   canceladoShopeeSchema,
   categoriaNoDtoSchema,
   categoriaResumoDtoSchema,
@@ -58,6 +62,7 @@ import {
   listaTabelasMedidasDtoSchema,
   marcaDtoSchema,
   massImportStatusShopeeSchema,
+  motivoIndisponivelCanalShopeeSchema,
   oauthStartResponseSchema,
   priceSyncHistoricoShopeeSchema,
   priceSyncRelatorioPaginaShopeeSchema,
@@ -65,6 +70,7 @@ import {
   problemaShopeeSchema,
   respostaAtributosShopeeSchema,
   respostaAtualizarRascunhoShopeeSchema,
+  respostaCanaisShopeeSchema,
   respostaCategoriasShopeeSchema,
   respostaCriarRascunhoShopeeSchema,
   respostaDescartarRascunhoShopeeSchema,
@@ -2123,6 +2129,20 @@ describe('#1911 — every taxonomy and draft answer here IS the shared schema ob
       'respostaItemIncertoShopeeSchema (P11)',
       respostaItemIncertoShopeeSchema,
       itemIncertoCompartilhadoSchema,
+    ],
+    // The draft's «Logística» read (#1911 P16): the ONLY killer of a browser
+    // copy of the channels envelope — a copy parses every body the shared one
+    // does, so no parse test can tell them apart.
+    ['respostaCanaisShopeeSchema (P16)', respostaCanaisShopeeSchema, canaisCompartilhadaSchema],
+    [
+      'canalDaLojaShopeeDtoSchema (P16)',
+      canalDaLojaShopeeDtoSchema,
+      canalDaLojaCompartilhadoSchema,
+    ],
+    [
+      'motivoIndisponivelCanalShopeeSchema (P16)',
+      motivoIndisponivelCanalShopeeSchema,
+      motivoIndisponivelCompartilhadoSchema,
     ],
   ] as const)('%s', (_nome, daqui, compartilhado) => {
     expect(daqui).toBe(compartilhado);

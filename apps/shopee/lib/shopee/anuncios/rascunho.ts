@@ -45,8 +45,11 @@
  *    the baseline compares it through the projection, so an unstamped legacy
  *    list reads `null`, and an edit that does not name it writes neither key.
  *  - **discard** ({@link descartarRascunhoShopee}) — tier **3 + 1**: the same
- *    baseline over the five form fields, plus `logistic_info` when the base
- *    names it (K1-13; D-LOG-10), then `delete({lastUpdateTime})`
+ *    baseline over the six form fields (K1-13) — the body reads an ABSENT
+ *    `logistic_info` as `null` («Automática», what every screen before the
+ *    logistics editor showed; #1911 P16, D-LOG-10), so a stale tab's five-key
+ *    discard over channels chosen meanwhile is a 409 `CONFLITO`, never a
+ *    silent delete — then `delete({lastUpdateTime})`
  *    with the same re-derive. The FIRST deleter of `prodshopee` — the one named
  *    exception to the import's "resolve, then write, never delete"
  *    (`produtos/links.ts`). A draft has no `variashopee` rows (they are minted
@@ -812,12 +815,13 @@ export async function atualizarRascunhoShopee(
  *  1. absent / other conta ⇒ 404 `INEXISTENTE`; not a draft ⇒ 409
  *     `JA_PUBLICADO`;
  *  2. `em-andamento` (its grace included) ⇒ 409 `EM_ANDAMENTO` `{aguardarMs}`;
- *  3. the BASELINE over the fields the `base` names (K1-13): the five form
- *     fields (`attributes` too since P6), plus `logistic_info` when the base
- *     names it — optional for the P15 → P16 deploy gap (D-LOG-10: a web
- *     deployed before P16 sends five keys) — the stored draft is not what the
- *     operator saw ⇒ 409 `CONFLITO`: an edit made meanwhile is never discarded
- *     unseen;
+ *  3. the BASELINE over the fields the `base` names (K1-13) — all six: the
+ *     five form fields (`attributes` too since P6) and `logistic_info`, which
+ *     the body reads as `null` when absent (#1911 P16; D-LOG-10: a tab from
+ *     before the logistics editor sends five keys, and it SAW «Automática»),
+ *     so {@link camposPresentesDoRascunhoShopee} names it — the stored draft
+ *     is not what the operator saw ⇒ 409 `CONFLITO`: an edit made meanwhile,
+ *     a channel choice included, is never discarded unseen;
  *  4. `incerta` without `confirmarCriacaoIncerta === true` ⇒ 409
  *     `CRIACAO_INCERTA` (K1-6) — the draft is the only record that a create
  *     may have reached Shopee; a `livre` draft needs no attestation;
