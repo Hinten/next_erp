@@ -2150,22 +2150,30 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
             </Stack>
           )}
 
-          {/* ⚠️ The table scrolls INSIDE its column and must never overflow it.
-              A table's minimum width is the sum of its columns' longest
-              UNBREAKABLE tokens — set by the data, not by this code — while the
-              column beside a docked `actionsPanel` is the page minus the rail
+          {/* ⚠️ Beside a docked `actionsPanel` the table scrolls INSIDE its
+              column and must never overflow it. A table's minimum width is the
+              sum of its columns' longest UNBREAKABLE tokens — set by the data,
+              not by this code — while the column is the page minus the rail
               (932px on a 1280px window beside /produtos' 300px rail). Without
               this box an outgrown table overflowed the `minWidth: 0` column
               and its LAST columns painted under the rail, which sits a layer up
               (`ActionSidePanel`'s `zIndex: 1`): one long SKU and an operator
               could no longer read "Última modificação" at all, with no
-              scrollbar to reach it. Native overflow on purpose — a ScrollArea's
-              overlay scrollbar would itself sit on top of the last row. It has
-              no height, so it never scrolls vertically: the window stays the
-              vertical scroller (see the scroll-memory effect). Pinned in a real
-              browser by `apps/web/e2e/table-view-wide-table.emulator.e2e.spec.ts`. */}
+              scrollbar to reach it. A focusable, labelled region so the
+              keyboard can scroll it too. Native overflow on purpose — a
+              ScrollArea's overlay scrollbar would itself sit on top of the last
+              row. It has no height, so it never scrolls vertically: the window
+              stays the vertical scroller (see the scroll-memory effect). Pinned
+              in a real browser by
+              `apps/web/e2e/table-view-wide-table.emulator.e2e.spec.ts` and
+              `produtos-lista.cadastros.e2e.spec.ts`. */}
           {!showSkeleton && rows && (
-            <Box style={{ overflowX: 'auto' }}>
+            <Box
+              role={panelEnabled ? 'region' : undefined}
+              aria-label={panelEnabled ? 'Tabela de registros' : undefined}
+              tabIndex={panelEnabled ? 0 : undefined}
+              style={panelEnabled ? { overflowX: 'auto' } : undefined}
+            >
               <Table striped highlightOnHover>
                 <Table.Thead>
                   <Table.Tr>

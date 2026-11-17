@@ -63,6 +63,25 @@ function popupTargets(page: Page) {
   return { scheme: 'light' as const, scope: '#popup', required: [page.locator('#message')] };
 }
 
+async function scrollTableFixture(page: Page) {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const headers = Array.from(
+    { length: 8 },
+    (_, index) => `<th><span id="col-${index}">Header ${index}</span></th>`,
+  ).join('');
+  await page.setContent(`<!doctype html><html data-mantine-color-scheme="light"><style>
+    body { margin: 16px; background: #fff; color: #111; font: 14px Arial; }
+    #results { width: 310px; overflow-x: auto; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { min-width: 117px; padding: 4px; border-bottom: 1px solid #ccc; }
+    tbody tr { background: #f6f6f6; }
+  </style><body><h1>Catalog</h1><div id="results" tabindex="0"><table>
+    <thead><tr>${headers}</tr></thead>
+    <tbody><tr><td>One</td><td>Two</td><td>Three</td><td>Four</td><td>Five</td><td>Six</td><td>Seven</td><td>Eight</td></tr></tbody>
+  </table></div></body></html>`);
+  return { scheme: 'light' as const, required: [page.getByRole('heading')] };
+}
+
 async function shadowPopupFixture(page: Page): Promise<void> {
   await opaquePopupFixture(page);
   await page.locator('#popup .scroll-root').evaluate((outer) => {
@@ -81,26 +100,6 @@ function shadowTargets(page: Page) {
     scope: '#popup',
     required: [page.locator('shadow-fixture').locator('#message')],
   };
-}
-
-/**
- * A table wider than its 300px horizontal scroll box on a 390px viewport: the
- * last header sits scrolled out PAST the viewport's edge. This is what
- * TableView renders on a phone once a row outgrows its column.
- */
-async function scrolledTableFixture(page: Page): Promise<void> {
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page.setContent(`<!doctype html><html data-mantine-color-scheme="light"><style>
-    * { box-sizing: border-box; } body { margin: 16px; background: white; color: black; font: 14px/1.4 Arial; }
-    #column { width: 300px; overflow-x: auto; } table { border-collapse: collapse; }
-    th { padding: 8px; white-space: nowrap; text-align: left; font-weight: 600; }
-    </style><body><h1>Scrolled table</h1><div id="column"><table><thead><tr>
-    <th><span id="first">Nome</span></th><th style="min-width: 420px"><span>Sku</span></th>
-    <th><span id="far">Última modificação</span></th></tr></thead></table></div></body></html>`);
-}
-
-function scrolledTableTargets(page: Page) {
-  return { scheme: 'light' as const, required: [page.locator('#first')] };
 }
 
 function axeDeferred(
@@ -526,6 +525,65 @@ test.describe('Theme readability checker rejects rendering defects', () => {
     expect(report.resolvedTextTargets).toEqual([]);
   });
 
+  test('checks contrast after scrolling an offscreen table header into view', async ({ page }) => {
+    const options = await scrollTableFixture(page);
+    const report = await auditThemeReadability(page, options);
+    expect(report.resolvedTextTargets).toContainEqual({
+      target: '#col-7',
+      reason: 'elmPartiallyObscured',
+    });
+    expect(report.issues).toEqual([]);
+  });
+
+  test('rejects low-contrast text in an offscreen table header', async ({ page }) => {
+    const options = await scrollTableFixture(page);
+    await page.locator('#col-7').evaluate((el) => {
+      el.style.color = '#eee';
+    });
+    const report = await auditThemeReadability(page, options);
+    expect(report.resolvedTextTargets).not.toContainEqual({
+      target: '#col-7',
+      reason: 'elmPartiallyObscured',
+    });
+    expect(report.issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: 'glyph-contrast',
+          target: expect.stringContaining('#col-7'),
+        }),
+      ]),
+    );
+  });
+
+  test('rejects a real partial background behind an offscreen table header', async ({ page }) => {
+    const options = await scrollTableFixture(page);
+    await page.locator('#col-7').evaluate((el) => {
+      // A patch under the first glyphs only: not an ancestor, so the text's
+      // background is genuinely non-uniform once it is scrolled into view.
+      const cell = el.parentElement!;
+      cell.style.position = 'relative';
+      el.style.position = 'relative';
+      const patch = document.createElement('div');
+      patch.style.cssText = 'position:absolute;left:0;top:0;bottom:0;width:24px;background:#ffd8d8';
+      cell.prepend(patch);
+    });
+    const report = await auditThemeReadability(page, options);
+    // Same deferral as the readable case above, so this pins that the
+    // scroll-box resolution still measures instead of accepting the reason.
+    expect(axeDeferred(report, 'elmPartiallyObscured')).toBe(true);
+    expect(report.resolvedTextTargets).not.toContainEqual(
+      expect.objectContaining({ target: '#col-7' }),
+    );
+    expect(report.issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: 'unreachable-glyph',
+          target: expect.stringContaining('#col-7'),
+        }),
+      ]),
+    );
+  });
+
   test('rejects a real foreground occluder over popup text', async ({ page }) => {
     await opaquePopupFixture(page);
     await page.locator('#message').evaluate((el) => {
@@ -623,52 +681,6 @@ test.describe('Theme readability checker rejects rendering defects', () => {
     const report = await auditThemeReadability(page, shadowTargets(page));
     expect(report.issues.some((issue) => issue.code === 'unreachable-glyph')).toBe(true);
     expect(report.resolvedTextTargets).toEqual([]);
-  });
-
-  test('measures text scrolled out of a horizontal scroll box past the viewport', async ({
-    page,
-  }) => {
-    await scrolledTableFixture(page);
-    const report = await auditThemeReadability(page, scrolledTableTargets(page));
-    // The fixture must exercise the deferral it exists for.
-    expect(axeDeferred(report, 'elmPartiallyObscured')).toBe(true);
-    expect(report.resolvedTextTargets).toContainEqual({
-      target: '#far',
-      reason: 'elmPartiallyObscured',
-    });
-    expect(report.issues).toEqual([]);
-  });
-
-  test('rejects a real partial background behind scrolled-out text', async ({ page }) => {
-    await scrolledTableFixture(page);
-    await page.locator('#far').evaluate((el) => {
-      // A patch under the first glyphs only: not an ancestor, so the text's
-      // background is genuinely non-uniform once it is scrolled into view.
-      const cell = el.parentElement!;
-      cell.style.position = 'relative';
-      el.style.position = 'relative';
-      const patch = document.createElement('div');
-      patch.style.cssText = 'position:absolute;left:0;top:0;bottom:0;width:24px;background:#ffd8d8';
-      cell.prepend(patch);
-    });
-    const report = await auditThemeReadability(page, scrolledTableTargets(page));
-    expect(axeDeferred(report, 'elmPartiallyObscured')).toBe(true);
-    expect(report.issues.some((issue) => issue.code === 'unreachable-glyph')).toBe(true);
-    expect(report.resolvedTextTargets).not.toContainEqual(
-      expect.objectContaining({ target: '#far' }),
-    );
-  });
-
-  test('rejects low-contrast text scrolled out of a horizontal scroll box', async ({ page }) => {
-    await scrolledTableFixture(page);
-    await page.locator('#far').evaluate((el) => {
-      el.style.color = '#eeeeee';
-    });
-    const report = await auditThemeReadability(page, scrolledTableTargets(page));
-    expect(report.issues.some((issue) => issue.code === 'glyph-contrast')).toBe(true);
-    expect(report.resolvedTextTargets).not.toContainEqual(
-      expect.objectContaining({ target: '#far' }),
-    );
   });
 
   test('ignores a pseudo-element with zero opacity while measuring actual icon paint', async ({

@@ -91,7 +91,11 @@ import {
   importOrderMessageMercadoLivre,
 } from '../chat/orderMessageImport';
 import { resolveContaAtivaPorUserId } from '../core/contaCache';
-import { handleUptinMigration } from '../importacao/importMigration';
+import {
+  handleUptinMigration,
+  isCurrentUptinCheck,
+  UPTIN_CHECK_TOPIC,
+} from '../importacao/importMigration';
 import { lastSegment, parseItemIdFromResource } from '../core/linkRefs';
 import { loadMercadoLivreContext } from '../core/mercadoLivre';
 import { type OrderImportResult, importPedidoMercadoLivre } from '../pedidos/orderImport';
@@ -627,6 +631,7 @@ export function parseNotificationBody(raw: unknown): MlNotificationPayload | nul
     }
     return null;
   }
+  if (parsed.data.topic === UPTIN_CHECK_TOPIC) return null;
   warnOnLossyCoercion(o, parsed.data);
   return parsed.data;
 }
@@ -676,39 +681,34 @@ export function userIdResolvivel(doc: Record<string, unknown> | null): number | 
   return typeof doc.user_id === 'number' ? doc.user_id : null;
 }
 
-function asStringOrNull(v: unknown): string | null {
-  return typeof v === 'string' && v.length > 0 ? v : null;
-}
 function asNumberOrNull(v: unknown): number | null {
   return typeof v === 'number' && Number.isFinite(v) ? v : null;
 }
 
 /**
  * The production #441 migration runner: loads the account's live ML API (same
- * seller-token path as `resolveItemsApiFromContext`) plus the price-table /
- * deposit refs the import needs (mirrors the `/importar` route's narrowing),
+ * seller-token path as `resolveItemsApiFromContext`),
  * then runs the UP-migration takeover. Wired as `processNotificationPayload`'s
  * default so an ordinary `items` notification needs no caller change; tests
  * inject their own runner.
  */
-const runUptinMigration: MigrationRunner = async (db, integracaoId, itemId, sourceLink) => {
+const runUptinMigration: MigrationRunner = async (db, integracaoId, itemId, sourceLink, item) => {
   const ctx = await loadMercadoLivreContext(db, integracaoId);
   const channelCtx = await ctx.resolveChannelContext();
   const api = createMercadoLivreApi({
     getAccessToken: channelCtx.getAccessToken,
     onAccessTokenRejected: channelCtx.invalidateAccessToken,
   });
-  await handleUptinMigration(
+  return handleUptinMigration(
     {
       db,
       api,
       integracaoId,
       sellerUserId: asNumberOrNull(ctx.conta.user_id),
-      tabelaNormalOuterRef: asStringOrNull(ctx.conta.tabelaNormalOuterRef),
-      depositoOuterRef: asStringOrNull(ctx.conta.depositoOuterRef),
     },
     itemId,
     sourceLink,
+    item,
   );
 };
 
@@ -1287,7 +1287,8 @@ export async function processNotificationPayload(
       ? null
       : await resolveContaAtivaPorUserId(db, userId, () => resolveIntegracaoByUserId(db, userId));
   if (!integracaoId) return { kind: 'no-account' };
-  if (!isKnownTopic(payload.topic)) return { kind: 'unknown-topic', integracaoId };
+  const isUptinCheck = payload.topic === UPTIN_CHECK_TOPIC;
+  if (!isUptinCheck && !isKnownTopic(payload.topic)) return { kind: 'unknown-topic', integracaoId };
 
   // `items` — status-sync of an already-linked listing (#440), including the
   // #441 UP-migration takeover for a closed `variations_migration_source`
@@ -1295,9 +1296,12 @@ export async function processNotificationPayload(
   // idempotent, keyed by the item id. A malformed resource (no id segment) is
   // deterministic → drop it, logged explicitly (matches the behavior of other
   // topics below).
-  if (payload.topic === 'items') {
+  if (payload.topic === 'items' || isUptinCheck) {
     const itemId = parseItemIdFromResource(payload.resource);
     if (!itemId) return { kind: 'malformed-resource', integracaoId };
+    if (isUptinCheck && !(await isCurrentUptinCheck(db, integracaoId, itemId, payload.id))) {
+      return { kind: 'done', integracaoId };
+    }
     // The resolver is threaded (not a pre-built API) so syncItemStatus can go
     // link-first and skip the ML call entirely for an unlinked item.
     // The `ItemsSyncOutcome` rides out on `detail`. Discarding it made every
@@ -1614,7 +1618,7 @@ function pipelineFor(runners: NotificationRunners = {}) {
     // ML's own event id when it sent one; otherwise a deterministic composite so
     // the id-less producers still dedup on ALREADY_EXISTS — see `derivedDocId`.
     docIdOf: (p) => p.id ?? derivedDocId(p),
-    dedupKeyOf: (p) => p.resource,
+    dedupKeyOf: (p) => (p.topic === UPTIN_CHECK_TOPIC ? p.id : p.resource),
     // The whole payload, re-normalized: this channel's schema is
     // `.passthrough()`, so a field ML adds without telling us rides along onto
     // the failure doc — true since #810, when the receiver stopped hand-building
@@ -1730,6 +1734,10 @@ function pipelineFor(runners: NotificationRunners = {}) {
       // Deliberately narrow: every OTHER `done` keeps its bare `resolve`, so no
       // existing operator counter gets renamed.
       const detalhe = outcome.kind === 'done' ? outcome.detail : undefined;
+      if (payload.topic === UPTIN_CHECK_TOPIC && detalhe === 'deferred-migration-source') {
+        // Keep one durable check per attempt in the existing bounded hourly sweep.
+        return { kind: 'fail', reason: 'Aguardando a conclusão da migração UPtin.' };
+      }
       if (detalhe != null && PAYMENT_OUTCOMES_DROP.has(detalhe as PaymentImportOutcome)) {
         return { kind: 'drop', label: detalhe };
       }
