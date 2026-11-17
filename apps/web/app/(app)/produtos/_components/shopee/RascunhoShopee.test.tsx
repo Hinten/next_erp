@@ -17,7 +17,6 @@ import {
   FRASE_ATESTACAO_QUE_VARRE_SHOPEE,
   FRASE_ATESTACAO_SEM_BUSCA_SHOPEE,
   FRASE_CATEGORIA_TRAVADA_SHOPEE,
-  FRASE_LOGISTICA_RASCUNHO_SHOPEE,
   FRASE_MARCA_NAO_ESCOLHIDA_SHOPEE,
   FRASE_PENDENCIA_CATEGORIA_AUSENTE_SHOPEE,
   FRASE_PENDENCIA_SEM_DESCRICAO_SHOPEE,
@@ -45,6 +44,7 @@ import {
   textoDoSegundoAnuncioNaPublicacaoShopee,
   tituloDoSegundoAnuncioNaPublicacaoShopee,
 } from '@/lib/shopee/anuncioProduto';
+import { MOTIVO_DA_LOGISTICA_INVALIDA_SHOPEE } from '@/lib/shopee/logisticaRascunho';
 import {
   comAtributoRascunhoShopee,
   comCampoRascunhoShopee,
@@ -61,6 +61,7 @@ import {
 import type { AtributosRascunhoShopeeProps } from './AtributosRascunhoShopee';
 import type { CategoriaRascunhoShopeeProps } from './CategoriaRascunhoShopee';
 import { idDoCampoRascunhoShopee } from './DesfechoAcaoShopee';
+import type { LogisticaRascunhoShopeeProps } from './LogisticaRascunhoShopee';
 import type { MarcaRascunhoShopeeProps } from './MarcaRascunhoShopee';
 import type {
   AtributosDoRascunhoShopee,
@@ -72,9 +73,11 @@ import type {
  * The draft form, over the REAL block decision (`estadoDoBlocoRascunhoShopee`
  * from REAL stored-draft fixtures) and — unless a test hands its own — the
  * REAL Publicar decision (`publicacaoDoRascunhoShopee`, whose `pendencias`
- * the form shows). Doubled: the two pickers and (#1911 P13) the «Atributos»
- * section (their own suites), captured so the props this form hands them — and
- * what it does with their picks — are pinned here.
+ * the form shows). Doubled: the two pickers, (#1911 P13) the «Atributos»
+ * section and (#1911 P16) the «Logística» section (their own suites — the
+ * real Logística section reads the shop's channels, so it needs a query
+ * client this suite has no reason to own), captured so the props this form
+ * hands them — and what it does with their picks — are pinned here.
  */
 
 const h = vi.hoisted(() => ({
@@ -83,6 +86,9 @@ const h = vi.hoisted(() => ({
   atributos: null as AtributosRascunhoShopeeProps | null,
   /** How many times the «Atributos» double was MOUNTED (its key changed). */
   montagensDosAtributos: 0,
+  logistica: null as LogisticaRascunhoShopeeProps | null,
+  /** How many times the «Logística» double was MOUNTED (its key changed). */
+  montagensDaLogistica: 0,
 }));
 
 vi.mock('./CategoriaRascunhoShopee', () => ({
@@ -106,6 +112,21 @@ vi.mock('./AtributosRascunhoShopee', async () => {
     },
   };
 });
+// Same: the double stamps nothing — the REAL section stamps the logistics' field id itself.
+vi.mock('./LogisticaRascunhoShopee', async () => {
+  const { useState } = await import('react');
+  return {
+    LogisticaRascunhoShopee: (props: LogisticaRascunhoShopeeProps) => {
+      // Counted once per MOUNT: a remount (a new key) counts again.
+      useState(() => {
+        h.montagensDaLogistica += 1;
+        return null;
+      });
+      h.logistica = props;
+      return <div data-testid="stub-logistica" />;
+    },
+  };
+});
 vi.mock('./MarcaRascunhoShopee', async (importOriginal) => ({
   // The REAL display rule (`rotuloDaMarcaRascunhoShopee`): a conta-less block reads it.
   ...(await importOriginal<typeof import('./MarcaRascunhoShopee')>()),
@@ -124,6 +145,9 @@ const {
 } = await import('./RascunhoShopee');
 
 const CONTA = 'int-1';
+const PRODUTO = 'prod-1';
+/** The stored produto's `ultimaModificacao` (MILLISECONDS) the tab hands over — a fixture. */
+const REVISAO_DO_PRODUTO = 1_700_000_000_000;
 const LINK = 'rasc00000000000000001';
 const RAIZ = `shopee-rascunho-${LINK}`;
 /** MILLISECONDS — the instant every reading below is taken at (a fixture, never the clock). */
@@ -279,6 +303,8 @@ function elemento(
       contaId={CONTA}
       contaNome="Loja Principal"
       linkDocId={LINK}
+      produtoId={PRODUTO}
+      revisaoDoProduto={REVISAO_DO_PRODUTO}
       marcaGuardada={null}
       divergencias={[]}
       somenteDescartar={false}
@@ -346,10 +372,13 @@ beforeEach(() => {
   h.categoria = null;
   h.marca = null;
   h.atributos = null;
+  h.logistica = null;
 });
 
 describe('RascunhoShopee — the form of a stored draft', () => {
-  it('renders the four fields from `bloco.valores`, the logistics line, and its three buttons', () => {
+  // Was: 'renders the four fields from `bloco.valores`, the logistics line, and its three buttons'
+  // (#1911 P16: the read-only line became the «Logística» section).
+  it('renders the four fields from `bloco.valores`, the «Logística» section, and its three buttons', () => {
     const link = rascunho({ description: 'Algodão', category_id: 100087, brand_id: 0 });
     show({ bloco: bloco({ link }) });
     expect(raiz()).toBeTruthy();
@@ -358,7 +387,9 @@ describe('RascunhoShopee — the form of a stored draft', () => {
     expect(h.categoria?.categoryId).toBe(100087);
     expect(h.categoria?.titulo).toBe('Camiseta');
     expect(h.marca?.marca).toEqual({ brand_id: 0, original_brand_name: null });
-    expect(screen.getByText(FRASE_LOGISTICA_RASCUNHO_SHOPEE)).toBeTruthy();
+    expect(within(raiz()).getByTestId('stub-logistica')).toBeTruthy();
+    // An Automática draft: the section gets the form's `null`.
+    expect(h.logistica?.valor).toBeNull();
     expect(nomesDosBotoes()).toEqual([
       'Salvar rascunho',
       'Desfazer alterações',
@@ -1216,12 +1247,13 @@ describe('RascunhoShopee — a seção «Atributos» (#1911 P13)', () => {
   const antes = (a: Element, b: Element) =>
     (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
 
-  it('fica depois da Marca e antes da linha da logística', () => {
+  // Was: 'fica depois da Marca e antes da linha da logística' (#1911 P16: the line became a section).
+  it('fica depois da Marca e antes da seção de logística', () => {
     show();
     const categoria = screen.getByTestId('stub-categoria');
     const marca = screen.getByTestId('stub-marca');
     const atributos = screen.getByTestId('stub-atributos');
-    const logistica = screen.getByText(FRASE_LOGISTICA_RASCUNHO_SHOPEE);
+    const logistica = screen.getByTestId('stub-logistica');
     expect(antes(categoria, marca)).toBe(true);
     expect(antes(marca, atributos)).toBe(true);
     expect(antes(atributos, logistica)).toBe(true);
@@ -1334,6 +1366,121 @@ describe('RascunhoShopee — a seção «Atributos» (#1911 P13)', () => {
     expect(h.montagensDosAtributos).toBe(1);
     r.rerender({ bloco: bloco({ link }), revisaoDoDesfazer: 1 });
     expect(h.montagensDosAtributos).toBe(2);
+  });
+});
+
+describe('RascunhoShopee — a seção «Logística» (#1911 P16)', () => {
+  /* Channel ids as the designs number them (fixtures, no real channel). */
+  const A = 90003;
+  const B = 90005;
+  /** The provenance stamp the draft edit writes beside a list (P15): the projection reads a list only with it. */
+  const CARIMBO = 1_700_000_000_000;
+  const ligado = (logistic_id: number) => ({ logistic_id, enabled: true, is_free: false });
+  const desligado = (logistic_id: number) => ({ logistic_id, enabled: false, is_free: false });
+  /** A stored draft whose channels the ERP chose (stamped) — B stored BEFORE A. */
+  const escolhido = (extra: Record<string, unknown> = {}) =>
+    rascunho({ logistic_info: [ligado(B), ligado(A)], logisticaGravadaEm: CARIMBO, ...extra });
+
+  it("⭐ recebe VERBATIM: `valor` = `bloco.valores.logistic_info`, `guardada` = `bloco.logisticaGravada`, `novo`, `logisticaDoSistemaAnterior`, `logisticaInvalida`, `editavel` = `bloco.logisticaEditavel`, `produtoId`, `revisaoDoProduto`, `contaId`, `linkDocId`; `onMudar` cai em `onCampo('logistic_info', …)`", () => {
+    const link = escolhido();
+    // The form turned every channel off — the plan refuses that value (zero ON).
+    const edicao = comCampoRascunhoShopee(entrada(link), CAMPO_RASCUNHO_SHOPEE.logisticInfo, [
+      desligado(A),
+      desligado(B),
+    ]);
+    const b = bloco({ link, edicao });
+    // Positive first: the form's value, the held list and the verdict all DIFFER,
+    // so a crossed wire cannot pass.
+    expect(b.valores.logistic_info).toStrictEqual([desligado(A), desligado(B)]);
+    expect(b.logisticaGravada).toStrictEqual([ligado(A), ligado(B)]);
+    expect(b.logisticaInvalida).toBe(MOTIVO_DA_LOGISTICA_INVALIDA_SHOPEE.semCanalLigado);
+    expect(b.logisticaEditavel).toBe(true);
+
+    const cb = show({ bloco: b, produtoId: 'prod-9', revisaoDoProduto: 1_700_000_000_123 });
+    const p = h.logistica;
+    expect(p?.valor).toBe(b.valores.logistic_info);
+    expect(p?.guardada).toBe(b.logisticaGravada);
+    expect(p?.novo).toBe(false);
+    expect(p?.logisticaDoSistemaAnterior).toBe(false);
+    expect(p?.logisticaInvalida).toBe(b.logisticaInvalida);
+    expect(p?.editavel).toBe(true);
+    expect(p?.produtoId).toBe('prod-9');
+    expect(p?.revisaoDoProduto).toBe(1_700_000_000_123);
+    expect(p?.contaId).toBe(CONTA);
+    expect(p?.linkDocId).toBe(LINK);
+
+    // The generic field path: the list by REFERENCE, `null` for «Automática».
+    const lista = [ligado(A), desligado(B)];
+    p?.onMudar(lista);
+    expect(cb.onCampo).toHaveBeenLastCalledWith(CAMPO_RASCUNHO_SHOPEE.logisticInfo, lista);
+    expect(cb.onCampo.mock.calls.at(-1)?.[1]).toBe(lista);
+    p?.onMudar(null);
+    expect(cb.onCampo).toHaveBeenLastCalledWith(CAMPO_RASCUNHO_SHOPEE.logisticInfo, null);
+    expect(cb.onAtributo).not.toHaveBeenCalled();
+
+    // A tab with no conta that can answer hands the section none (it then reads nothing).
+    cb.rerender({ bloco: b, contaId: null });
+    expect(h.logistica?.contaId).toBeNull();
+  });
+
+  it('QUASE-PAR: um rascunho NOVO aceita digitação (`camposEditaveis`) mas não canais — `editavel` é `bloco.logisticaEditavel`, nunca `camposEditaveis` ⟷ um guardado com lista legada (sem carimbo): `logisticaDoSistemaAnterior`, `guardada` e `valor` null ⟷ uma publicação em andamento: nada editável', () => {
+    const nova = novaEdicaoRascunhoShopee({ linkDocId: LINK, contaId: CONTA, nomeProduto: 'X' });
+    const b = bloco({ link: null, edicao: nova });
+    // Positive first: the title IS editable on it.
+    expect(b.camposEditaveis).toBe(true);
+    expect(b.logisticaEditavel).toBe(false);
+    const r = show({ bloco: b });
+    expect(titulo().disabled).toBe(false);
+    expect(h.logistica?.novo).toBe(true);
+    expect(h.logistica?.editavel).toBe(false);
+
+    r.rerender({ bloco: bloco({ link: rascunho({ logistic_info: [ligado(A)] }) }) });
+    expect(h.logistica?.novo).toBe(false);
+    expect(h.logistica?.editavel).toBe(true);
+    expect(h.logistica?.logisticaDoSistemaAnterior).toBe(true);
+    expect(h.logistica?.guardada).toBeNull();
+    expect(h.logistica?.valor).toBeNull();
+
+    r.rerender({
+      bloco: bloco({ link: escolhido(travaCarimbada(AGORA - 10_000, AGORA + 60_000)) }),
+    });
+    expect(h.logistica?.editavel).toBe(false);
+    // Still the stored list: disabled, never removed (the section's own rule).
+    expect(h.logistica?.valor).toStrictEqual([ligado(A), ligado(B)]);
+  });
+
+  it('«Desfazer alterações» REMONTA a seção (`revisaoDoDesfazer` é a chave) ⟷ QUASE-PAR: outra renderização (uma edição comum) não a remonta', () => {
+    h.montagensDaLogistica = 0;
+    const link = escolhido();
+    const r = show({ bloco: bloco({ link }) });
+    expect(h.montagensDaLogistica).toBe(1);
+    const editada = comCampoRascunhoShopee(entrada(link), CAMPO_RASCUNHO_SHOPEE.logisticInfo, [
+      ligado(A),
+      desligado(B),
+    ]);
+    r.rerender({ bloco: bloco({ link, edicao: editada }), revisaoDoDesfazer: 0 });
+    expect(h.montagensDaLogistica).toBe(1);
+    r.rerender({ bloco: bloco({ link }), revisaoDoDesfazer: 1 });
+    expect(h.montagensDaLogistica).toBe(2);
+  });
+
+  it('um kit virtual não tem a seção ⟷ QUASE-PAR: um produto comum a tem', () => {
+    const r = show({ bloco: bloco({ kitVirtual: true }) });
+    expect(screen.queryByTestId('stub-logistica')).toBeNull();
+    expect(h.logistica).toBeNull();
+    r.rerender({ bloco: bloco({ kitVirtual: false }) });
+    expect(screen.getByTestId('stub-logistica')).toBeTruthy();
+  });
+
+  it('o FORMULÁRIO não carimba o id do campo `logistic_info` — a seção o carimba ela mesma (um id, um elemento)', () => {
+    show({ bloco: bloco({ link: escolhido() }) });
+    expect(
+      document.getElementById(idDoCampoRascunhoShopee(LINK, CAMPO_RASCUNHO_SHOPEE.logisticInfo)),
+    ).toBeNull();
+    // NEAR-MISS: the pickers' wrappers ARE the form's.
+    expect(
+      document.getElementById(idDoCampoRascunhoShopee(LINK, CAMPO_RASCUNHO_SHOPEE.categoryId)),
+    ).not.toBeNull();
   });
 });
 

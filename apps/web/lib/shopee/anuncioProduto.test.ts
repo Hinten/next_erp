@@ -74,11 +74,13 @@ import {
   FRASE_PUBLICAR_SEM_ATRIBUTOS_SHOPEE,
   FRASE_PUBLICAR_SEM_FAIXAS_SHOPEE,
   FRASE_RASCUNHO_INEXISTENTE_NA_PUBLICACAO_SHOPEE,
+  FRASE_LOGISTICA_RASCUNHO_SHOPEE,
   FRASE_TROCA_DE_CATEGORIA_APAGA_ATRIBUTOS_SHOPEE,
   FRASE_VOLTAR_A_CATEGORIA_GRAVADA_TRAZ_ATRIBUTOS_SHOPEE,
   FRASE_VOLTAR_CATEGORIA_APAGA_ATRIBUTOS_SHOPEE,
   FRASE_VOLTAR_CATEGORIA_GRAVADA_SHOPEE,
   fraseDosAtributosNaoLidosShopee,
+  linhaDoCanalSomenteLeituraShopee,
   saidaPeloSellerCentreDoRascunhoShopee,
   MOTIVO_ANUNCIO_SHOPEE,
   ROTULO_CRIAR_PAUSADO_SHOPEE,
@@ -3673,5 +3675,38 @@ describe('#1911 P13 — trocar a categoria apaga os atributos PREENCHIDOS', () =
     ]) {
       expect(t).not.toMatch(TEXTO_DE_TERMINAL);
     }
+  });
+});
+
+describe('#1911 P16 — a frase da logística «Automática» do rascunho', () => {
+  it('`FRASE_LOGISTICA_RASCUNHO_SHOPEE` é a frase do LOG, byte a byte', () => {
+    expect(FRASE_LOGISTICA_RASCUNHO_SHOPEE).toBe(
+      'Automática: a publicação liga todos os canais ativos da loja em que o pacote cabe, com o ' +
+        'frete grátis definido no produto («Oferece frete grátis»).',
+    );
+    // NEAR-MISS: never the P10 line it replaces — the section's title already says «Logística».
+    expect(FRASE_LOGISTICA_RASCUNHO_SHOPEE).not.toMatch(/^Logística/);
+    expect(FRASE_LOGISTICA_RASCUNHO_SHOPEE).not.toMatch(/escolhida automaticamente/);
+    expect(FRASE_LOGISTICA_RASCUNHO_SHOPEE).not.toMatch(TEXTO_DE_TERMINAL);
+  });
+
+  it('`linhaDoCanalSomenteLeituraShopee`: a linha do LOG por canal, pelo id — «ligado»/«desligado» e «, frete grátis» só com `is_free: true` ⟷ QUASE-PAR: `is_free: null` não é frete grátis', () => {
+    expect(
+      linhaDoCanalSomenteLeituraShopee({ logistic_id: 90003, enabled: true, is_free: true }),
+    ).toBe('Canal 90003: ligado, frete grátis');
+    expect(
+      linhaDoCanalSomenteLeituraShopee({ logistic_id: 90005, enabled: false, is_free: false }),
+    ).toBe('Canal 90005: desligado');
+    expect(
+      linhaDoCanalSomenteLeituraShopee({ logistic_id: 90003, enabled: true, is_free: false }),
+    ).toBe('Canal 90003: ligado');
+    // The LOG line names free shipping by the flag alone, ON or OFF.
+    expect(
+      linhaDoCanalSomenteLeituraShopee({ logistic_id: 90005, enabled: false, is_free: true }),
+    ).toBe('Canal 90005: desligado, frete grátis');
+    // QUASE-PAR: a stored `null` reads unticked — never «frete grátis».
+    expect(
+      linhaDoCanalSomenteLeituraShopee({ logistic_id: 90003, enabled: true, is_free: null }),
+    ).toBe('Canal 90003: ligado');
   });
 });
