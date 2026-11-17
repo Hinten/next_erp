@@ -816,9 +816,22 @@ export type ShopeeVariationsResponse = z.infer<typeof shopeeVariationsSchema>;
  * ⚠️ `category_id` is an ARRAY despite the singular name. Whether it is a ranked
  * list of candidates or a root-to-leaf path is undocumented; nothing here
  * decides, and the reader surfaces the position each id arrived in.
+ *
+ * ⚠️ An ABSENT or `null` `category_id` is Shopee's "no suggestion" for a name
+ * it cannot place (a 200 success envelope, seen on "Produto teste shopee 001"),
+ * and folds to `[]` — the reader's own "nothing suggested" answer, never a 502.
+ * The fold stops there: a scalar, an object or an array holding a non-id is
+ * still a `ShopeeSchemaError`, because coercing a shape nothing documents
+ * would be inventing a suggestion.
  */
 export const shopeeCategoryRecommendPayloadSchema = z
-  .object({ category_id: z.array(wireInt()) })
+  .object({
+    category_id: z
+      .array(wireInt())
+      .nullable()
+      .optional()
+      .transform((ids) => ids ?? []),
+  })
   .passthrough();
 export type ShopeeCategoryRecommend = z.infer<typeof shopeeCategoryRecommendPayloadSchema>;
 

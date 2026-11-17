@@ -611,6 +611,35 @@ describe('o invólucro de cada operação de taxonomia', () => {
   });
 });
 
+describe('category_recommend — "sem sugestão"', () => {
+  const ler = (response: unknown) =>
+    shopeeCategoryRecommendSchema.safeParse({ error: '', message: '', response });
+
+  it.each([
+    ['ausente', {}],
+    ['null', { category_id: null }],
+  ])('category_id %s vira [] — a Shopee não achou categoria para o nome', (_rotulo, payload) => {
+    const lido = ler(payload);
+    expect(lido.success).toBe(true);
+    expect(lido.data?.response.category_id).toEqual([]);
+  });
+
+  it('uma lista continua lida como lista, ids em texto inclusive', () => {
+    expect(ler({ category_id: [1, 2] }).data?.response.category_id).toEqual([1, 2]);
+    expect(ler({ category_id: ['1000734'] }).data?.response.category_id).toEqual([1000734]);
+    expect(ler({ category_id: [] }).data?.response.category_id).toEqual([]);
+  });
+
+  it.each([
+    ['um escalar', 1000734],
+    ['um objeto', {}],
+    ['um id nulo DENTRO da lista', [null]],
+    ['um id que não é número', ['abc']],
+  ])('NEAR-MISS: %s continua erro de schema, nunca vira []', (_rotulo, categoryId) => {
+    expect(ler({ category_id: categoryId }).success).toBe(false);
+  });
+});
+
 /* -------------------------------------------------------------------------- */
 /*                     As páginas de push perdido (passo 4)                    */
 /* -------------------------------------------------------------------------- */

@@ -993,6 +993,16 @@ describe('o que cada leitura devolve', () => {
     }
   });
 
+  it('categoryRecommend sem `category_id` (nome sem sugestão) devolve [] e não lança', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({ error: '', message: '', request_id: 'r', response: {} }),
+    );
+    const sugestao = await createShopeeClient(shopConfig(fetchMock)).categoryRecommend({
+      itemName: 'Produto teste shopee 001',
+    });
+    expect(sugestao.category_id).toEqual([]);
+  });
+
   it('getCategory entrega a lista com `has_children` intacto', async () => {
     const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(CATEGORY_BODY));
     const lista = await createShopeeClient(shopConfig(fetchMock)).getCategory();
