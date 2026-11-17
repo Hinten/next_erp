@@ -7,7 +7,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { FakeDb, asDb, type DocData } from '../testing/fakeDb';
 import {
@@ -176,7 +176,12 @@ describe('the produto and its links', () => {
       componentesKitKeys: ['x'],
       statusProdutosMarketplace: { a: 1 },
     });
+    // The MASK itself is pinned on the call: the reader projects the same four fields in code,
+    // so its result alone would read the same with an unmasked (dearer) read.
+    const getAll = vi.spyOn(db, 'getAll');
     const produto = await lerProdutoEstoqueLi(asDb(db), 'p1');
+    expect(getAll).toHaveBeenCalledTimes(1);
+    expect(getAll.mock.calls[0]?.at(-1)).toEqual({ fieldMask: [...CAMPOS_PRODUTO_ESTOQUE_LI] });
     expect(produto).toEqual({
       ehKit: false,
       ehKitVirtual: undefined,

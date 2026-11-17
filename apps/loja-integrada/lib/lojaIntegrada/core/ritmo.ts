@@ -61,10 +61,14 @@ export const RITMO_LEITURA_LI_MS = 2_000;
  * and PUT (4 s for 2) — again at most 30 calls a minute. With the reads queue,
  * the poller and the inline reads sweep at 30 each, the theoretical worst per
  * store is 150 a minute against Loja Integrada's 100; reaching it needs a read
- * backlog, a write backlog and a stock backlog on one store in the same minute,
- * and a 429 loses nothing in any flow (the write either never landed, or its
- * read-back is contained; a stock run that meets one throws and its retry
- * re-derives everything from a fresh read).
+ * backlog, a write backlog and a stock backlog on one store in the same minute.
+ * On the reads and writes queues a 429 loses nothing (the write either never
+ * landed, or its read-back is contained, and their failure stores keep what a
+ * run could not finish). A stock run that meets one throws and its retry
+ * re-derives everything from a fresh read — but the stock queue keeps NO
+ * failure store, so a stock task whose every attempt meets a 429 or a 5xx is
+ * dropped, and only the next event of the produto or the daily reconcile
+ * re-covers it.
  */
 export const RITMO_ESCRITA_LI_MS = 2_000;
 

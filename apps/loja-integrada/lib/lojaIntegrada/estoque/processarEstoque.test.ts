@@ -18,6 +18,7 @@ import { TASK_MAX_ATTEMPTS } from '@delfrance/data/admin/notifications';
 import {
   LiAuthError,
   LiHttpError,
+  LiNetworkError,
   LiThrottleError,
   PRAZO_LI_MS,
 } from '@delfrance/integrations-loja-integrada';
@@ -32,6 +33,7 @@ import {
 } from '@delfrance/schemas';
 
 import { __setRelogioDoCacheParaTestes } from '../core/contaCache';
+import { docCredencial } from '../core/credentialStore';
 import { PRAZO_ULTIMA_ESCRITA_MS, PrazoDeEscritaEsgotadoLiError } from '../core/escrita';
 import { LiCredencialTrocadaError } from '../core/erros';
 import { RITMO_ESCRITA_LI_MS } from '../core/ritmo';
@@ -165,8 +167,13 @@ interface OpcoesCenario {
   readonly inicioDaTarefaMs?: number;
   /** What the producer answers. Default: it records and resolves. */
   readonly enfileirar?: () => Promise<void>;
-  /** Runs after each store call is answered (`n`: its 0-based index). */
-  readonly aoResponder?: (metodo: string, caminho: string, n: number, c: Cenario) => void;
+  /** Runs (and is awaited) after each store call is answered (`n`: its 0-based index). */
+  readonly aoResponder?: (
+    metodo: string,
+    caminho: string,
+    n: number,
+    c: Cenario,
+  ) => void | Promise<void>;
 }
 
 interface Cenario {
@@ -187,8 +194,10 @@ interface Cenario {
     escritas: number;
     enfileiradas: number;
   };
-  /** The run's own lines (`[loja-integrada/estoque] <motivo>`), by motivo. */
-  motivos(): string[];
+  /** The run's own WARNING lines (`[loja-integrada/estoque] <motivo>`), by motivo. */
+  motivosAviso(): string[];
+  /** The run's own ERROR lines, by motivo. */
+  motivosErro(): string[];
 }
 
 function ambiente(o: OpcoesCenario): AmbienteLi {
@@ -257,15 +266,16 @@ function cenario(o: OpcoesCenario = {}): Cenario {
       escritas: db.escritas.length,
       enfileiradas: enfileiradas.length,
     }),
-    motivos: () =>
-      [...avisos, ...erros].map((args) => String((args[1] as { motivo?: unknown }).motivo)),
+    motivosAviso: () => avisos.map((args) => String((args[1] as { motivo?: unknown }).motivo)),
+    motivosErro: () => erros.map((args) => String((args[1] as { motivo?: unknown }).motivo)),
   };
   const fetch: typeof globalThis.fetch = async (input, init) => {
     instantes.push(relogio.ms);
     const resposta = await p.fetch(input, init);
     if (cronometrado) relogio.ms += PRAZO_DE_UMA_CHAMADA_MS;
-    o.aoResponder?.(init?.method ?? 'GET', new URL(String(input)).pathname, n, c);
+    const indice = n;
     n += 1;
+    await o.aoResponder?.(init?.method ?? 'GET', new URL(String(input)).pathname, indice, c);
     return resposta;
   };
   const deps: DepsEstoqueLi = {
@@ -360,8 +370,8 @@ describe('before anything is read: the payload, the valve, the cap', () => {
       const c = cenario({ teto });
       expect(await c.rodar()).toEqual({ kind: 'teto-invalido' });
       expect(c.custo()).toEqual(SEM_CUSTO);
-      expect(c.erros).toHaveLength(1);
-      expect(c.motivos()).toEqual(['teto-invalido']);
+      expect(c.motivosErro()).toEqual(['teto-invalido']);
+      expect(c.motivosAviso()).toEqual([]);
     },
   );
 
@@ -473,7 +483,8 @@ describe('every skip costs ZERO credential reads and ZERO store calls', () => {
     c.db.seed('produtos/outro/produtolojaintegrada/l9', link({ id: ID_LI }));
     expect(await c.rodar()).toEqual({ kind: 'pulado', motivo: 'vinculo-duplicado' });
     expect(c.custo()).toEqual(custoDeSkip(6));
-    expect(c.motivos()).toEqual(['vinculo-duplicado']);
+    expect(c.motivosAviso()).toEqual(['vinculo-duplicado']);
+    expect(c.motivosErro()).toEqual([]);
   });
 
   it('⚠️ NEAR-MISS: a TRASHED link on another produto is no duplicate — the run sends', async () => {
@@ -482,12 +493,19 @@ describe('every skip costs ZERO credential reads and ZERO store calls', () => {
     expect((await c.rodar()).kind).toBe('escrito');
   });
 
-  it('the held and the ambiguous are WARNING lines (their per-conta avisos are the reconcile’s)', async () => {
-    const retido = cenario({ estoques: [] });
-    await retido.rodar();
-    expect(retido.motivos()).toEqual(['retido']);
-    expect(retido.custo().escritas).toBe(0);
-  });
+  it.each<[string, OpcoesCenario, string]>([
+    ['held', { estoques: [] }, 'retido'],
+    ['ambiguous', { estoques: doisAutoIds }, 'estoque-ambiguo'],
+  ])(
+    'the %s produto is ONE WARNING line, never an ERROR, and no aviso written (its per-conta aviso is the reconcile’s)',
+    async (_r, o, motivo) => {
+      const c = cenario(o);
+      expect(await c.rodar()).toEqual({ kind: 'pulado', motivo });
+      expect(c.motivosAviso()).toEqual([motivo]);
+      expect(c.motivosErro()).toEqual([]);
+      expect(c.custo().escritas).toBe(0);
+    },
+  );
 
   it('the read switch off ⇒ dropped at the context: the ERP reads paid (6), ZERO credential reads, zero calls', async () => {
     const c = cenario({ chamadas: false });
@@ -563,6 +581,16 @@ describe('the own record: the hint, the canonical record, the never-had-stock ho
     ).toHaveLength(1);
   });
 
+  it('⚠️ a DELETE’s canonical hint names the record deleted: NO point read of it, exactly ONE estoques query', async () => {
+    const c = cenario({ estoques: [], linha: { quantidade: 4, quantidade_reservada: 2 } });
+    expect((await c.rodar(tarefa({ apagado: true, estoqueId: CANONICO }))).kind).toBe('escrito');
+    expect(c.db.leituras).not.toContain(`produtos/${PRODUTO}/estoques/${CANONICO}`);
+    expect(c.db.consultas.filter((q) => q.colecao === `produtos/${PRODUTO}/estoques`)).toHaveLength(
+      1,
+    );
+    expect(c.custo()).toEqual({ erp: 7, credencial: 4, chamadas: 3, escritas: 0, enfileiradas: 0 });
+  });
+
   it('a DELETE’s task with no record left ⇒ 0 + R is pushed, and the listing is NOT read', async () => {
     const c = cenario({ estoques: [], linha: { quantidade: 4, quantidade_reservada: 2 } });
     expect((await c.rodar(tarefa({ apagado: true }))).kind).toBe('escrito');
@@ -632,14 +660,16 @@ describe('model A on the deciding GET', () => {
     expect(await c.rodar()).toEqual({ kind: 'descartado', motivo: 'linha-divergente' });
     expect(c.p.puts()).toEqual([]);
     expect(doEvento(c, 'diff')).toEqual([]);
-    expect(c.motivos()).toEqual(['linha-divergente']);
+    expect(c.motivosErro()).toEqual(['linha-divergente']);
+    expect(c.motivosAviso()).toEqual([]);
   });
 
   it('the deciding GET answers 404 ⇒ ausente, one WARNING, ONE call', async () => {
     const c = cenario({ linha: null });
     expect(await c.rodar()).toEqual({ kind: 'descartado', motivo: 'ausente' });
     expect(c.custo()).toEqual({ erp: 6, credencial: 2, chamadas: 1, escritas: 0, enfileiradas: 0 });
-    expect(c.motivos()).toEqual(['ausente']);
+    expect(c.motivosAviso()).toEqual(['ausente']);
+    expect(c.motivosErro()).toEqual([]);
   });
 });
 
@@ -774,7 +804,7 @@ describe('the read-back and the ONE deriva follow-up', () => {
       `estoque-${sha(`estoque:deriva:${CONTA}:${PRODUTO}:w:${String(janela)}`)}`,
     );
     expect(enfileirada?.opcoes.id).toBe(idDaTarefaEstoqueLi(tarefaEstoqueLiSchema.parse(esperada)));
-    expect(c.motivos()).toContain('reserva-moveu');
+    expect(c.motivosAviso()).toContain('reserva-moveu');
   });
 
   it('the follow-up copies a delete flag and the component ids', async () => {
@@ -793,7 +823,7 @@ describe('the read-back and the ONE deriva follow-up', () => {
     const r = await c.rodar(tarefa({ origem: ORIGEM_TAREFA_ESTOQUE_LI.deriva, geracao: 1 }));
     expect(r).toEqual({ kind: 'escrito', seguimento: 'sem-seguimento' });
     expect(c.enfileiradas).toEqual([]);
-    expect(c.motivos()).toContain('deriva-sem-seguimento');
+    expect(c.motivosAviso()).toContain('deriva-sem-seguimento');
   });
 
   it('EQUAL pair of the drift fold: R read 0 and read back −3 — model A targets the same quantity ⇒ no follow-up', async () => {
@@ -842,7 +872,7 @@ describe('the read-back and the ONE deriva follow-up', () => {
       }),
     });
     expect(await c.rodar()).toEqual({ kind: 'escrito', seguimento: 'enfileirado' });
-    expect(c.motivos()).toContain('sem-conferencia');
+    expect(c.motivosAviso()).toContain('sem-conferencia');
   });
 
   it('a read-back refused with 401 parks the conta, and the follow-up is still enqueued', async () => {
@@ -863,7 +893,7 @@ describe('the read-back and the ONE deriva follow-up', () => {
     pedidoSaiDuranteOEnvio(c.p, 2);
     expect(await c.rodar()).toEqual({ kind: 'escrito', seguimento: 'tarefas-desligadas' });
     // ONE line for the closed queue (beside the drift's own), never an ERROR, never a throw.
-    expect(c.motivos().filter((m) => m === 'deriva-tarefas-desligadas')).toHaveLength(1);
+    expect(c.motivosAviso().filter((m) => m === 'deriva-tarefas-desligadas')).toHaveLength(1);
     expect(c.erros).toEqual([]);
     expect(c.enfileiradas).toHaveLength(1);
   });
@@ -888,35 +918,58 @@ describe('the read-back and the ONE deriva follow-up', () => {
 /* -------------------------------------------------------------------------- */
 
 describe('a PUT answered 429 or 5xx may have landed: it throws, and the retry re-derives', () => {
-  it('429 ⇒ LiThrottleError, two calls, no read-back, no aviso; the retry PUTs S + the CURRENT R', async () => {
-    const c = cenario({ linha: { quantidade: 1, quantidade_reservada: 2 } });
-    c.p.fila.push(naProxima(CAMINHO_ESTOQUE_PRODUTO_LI, 'PUT', () => respostaJson(429, {})));
-    await expect(c.rodar()).rejects.toBeInstanceOf(LiThrottleError);
-    expect(c.custo()).toEqual({ erp: 6, credencial: 3, chamadas: 2, escritas: 0, enfileiradas: 0 });
+  it.each([0, TASK_MAX_ATTEMPTS - 1])(
+    'attempt %i: 429 ⇒ LiThrottleError, two calls, no read-back, no aviso, nothing written',
+    async (tentativa) => {
+      const c = cenario({ tentativa, linha: { quantidade: 1, quantidade_reservada: 2 } });
+      c.p.fila.push(naProxima(CAMINHO_ESTOQUE_PRODUTO_LI, 'PUT', () => respostaJson(429, {})));
+      await expect(c.rodar()).rejects.toBeInstanceOf(LiThrottleError);
+      expect(c.custo()).toEqual({
+        erp: 6,
+        credencial: 3,
+        chamadas: 2,
+        escritas: 0,
+        enfileiradas: 0,
+      });
+      expect(c.erros).toEqual([]);
+    },
+  );
 
-    // The reservation moves between the attempts; the retry is a FRESH run on the same state.
-    const linha = c.p.estado.estoque.get(ID_PRODUTO_LI);
-    if (linha === undefined) throw new TypeError('sem linha');
-    linha.quantidade_reservada = 3;
-    __resetAllReadCaches();
-    const retry = cenario({ linha: { quantidade: 1, quantidade_reservada: 3 }, tentativa: 1 });
-    expect(await retry.rodar()).toMatchObject({ kind: 'escrito' });
-    expect(retry.p.puts()[0]?.corpo).toMatchObject({ quantidade: 8 });
+  it('a later attempt is a run like any other: S 5 + the R ITS OWN deciding GET reads (3) ⇒ PUT 8', async () => {
+    const c = cenario({ linha: { quantidade: 1, quantidade_reservada: 3 }, tentativa: 1 });
+    expect(await c.rodar()).toEqual({ kind: 'escrito', seguimento: 'nenhum' });
+    expect(c.p.puts()[0]?.corpo).toMatchObject({ quantidade: 8 });
   });
 
-  it.each([500, 503])(
-    '%i ⇒ thrown, no read-back, no aviso, nothing else written',
-    async (status) => {
-      const c = cenario();
+  it.each([
+    [500, 0],
+    [503, 0],
+    [500, TASK_MAX_ATTEMPTS - 1],
+    [503, TASK_MAX_ATTEMPTS - 1],
+  ])(
+    '%i at attempt %i ⇒ thrown — never `recusado`, even on the LAST attempt: no read-back, no aviso, no ERROR line',
+    async (status, tentativa) => {
+      const c = cenario({ tentativa });
       c.p.fila.push(naProxima(CAMINHO_ESTOQUE_PRODUTO_LI, 'PUT', () => respostaJson(status, {})));
       await expect(c.rodar()).rejects.toBeInstanceOf(LiHttpError);
       expect(c.p.chamadas()).toEqual([GET, PUT]);
       expect(c.custo().escritas).toBe(0);
+      expect(c.db.ler(AVISO_RECUSADO)).toBeUndefined();
+      expect(c.erros).toEqual([]);
     },
   );
+
+  it('a PUT whose connection fails (network) ⇒ LiNetworkError rethrown: no read-back, no aviso, nothing written', async () => {
+    const c = cenario({ tentativa: TASK_MAX_ATTEMPTS - 1 });
+    c.p.fila.push(naProxima(CAMINHO_ESTOQUE_PRODUTO_LI, 'PUT', () => new TypeError('rede')));
+    await expect(c.rodar()).rejects.toBeInstanceOf(LiNetworkError);
+    expect(c.p.chamadas()).toEqual([GET, PUT]);
+    expect(c.custo().escritas).toBe(0);
+    expect(c.erros).toEqual([]);
+  });
 });
 
-describe('a PUT refused with 400: rethrown until the LAST attempt, then recusado and the aviso', () => {
+describe('a PUT refused with a 3xx/4xx (not 401/403/429): rethrown until the LAST attempt, then recusado and the aviso', () => {
   it.each([0, 1])('attempt %i ⇒ rethrown, no aviso', async (tentativa) => {
     const c = cenario({ tentativa });
     c.p.fila.push(naProxima(CAMINHO_ESTOQUE_PRODUTO_LI, 'PUT', () => respostaJson(400, {})));
@@ -924,21 +977,40 @@ describe('a PUT refused with 400: rethrown until the LAST attempt, then recusado
     expect(c.custo().escritas).toBe(0);
   });
 
-  it('the LAST attempt ⇒ recusado 400, ONE ERROR line, the aviso with its params and the run’s clock', async () => {
+  it('the LAST attempt ⇒ recusado 400, ONE ERROR line, the aviso with its params, clocked by the DISPATCH START (not now)', async () => {
     expect(TASK_MAX_ATTEMPTS - 1).toBe(2);
-    const c = cenario({ tentativa: TASK_MAX_ATTEMPTS - 1 });
+    const inicioDaTarefaMs = AGORA_MS - 5_000;
+    const c = cenario({ tentativa: TASK_MAX_ATTEMPTS - 1, inicioDaTarefaMs });
     c.p.fila.push(naProxima(CAMINHO_ESTOQUE_PRODUTO_LI, 'PUT', () => respostaJson(400, {})));
     expect(await c.rodar()).toEqual({ kind: 'recusado', status: 400 });
-    expect(c.erros).toHaveLength(1);
-    expect(c.motivos()).toEqual(['recusado']);
+    expect(c.motivosErro()).toEqual(['recusado']);
+    expect(c.motivosAviso()).toEqual([]);
     expect(c.custo()).toEqual({ erp: 6, credencial: 3, chamadas: 2, escritas: 1, enfileiradas: 0 });
     expect(c.db.ler(AVISO_RECUSADO)).toMatchObject({
       tipo: TIPO_AVISO.lojaIntegradaEstoqueRecusado,
       severidade: SEVERIDADE_AVISO.atencao,
       params: { loja: 'Loja E', produto: PRODUTO, idLi: ID_LI, status: 400 },
-      relogioEvento: AGORA_MS * 1000,
+      relogioEvento: inicioDaTarefaMs * 1000,
       resolvidoEm: null,
     });
+  });
+
+  it.each([0, 1])(
+    'a PUT answered 302 (a 3xx) at attempt %i ⇒ rethrown, no aviso',
+    async (tentativa) => {
+      const c = cenario({ tentativa });
+      c.p.fila.push(naProxima(CAMINHO_ESTOQUE_PRODUTO_LI, 'PUT', () => respostaJson(302, {})));
+      await expect(c.rodar()).rejects.toBeInstanceOf(LiHttpError);
+      expect(c.custo().escritas).toBe(0);
+    },
+  );
+
+  it('a PUT answered 302 (a 3xx: redirects are never followed, nothing landed) on the LAST attempt ⇒ recusado 302 and the aviso', async () => {
+    const c = cenario({ tentativa: TASK_MAX_ATTEMPTS - 1 });
+    c.p.fila.push(naProxima(CAMINHO_ESTOQUE_PRODUTO_LI, 'PUT', () => respostaJson(302, {})));
+    expect(await c.rodar()).toEqual({ kind: 'recusado', status: 302 });
+    expect(c.motivosErro()).toEqual(['recusado']);
+    expect(c.db.ler(AVISO_RECUSADO)).toMatchObject({ params: { status: 302 }, resolvidoEm: null });
   });
 
   it('⚠️ under dry-run nothing is ever sent, so nothing is ever refused', async () => {
@@ -1017,6 +1089,15 @@ describe('the refusal aviso is resolved only when OPEN, under `on`', () => {
     expect(c.db.ler(AVISO_RECUSADO)?.resolvidoEm).toBeNull();
   });
 
+  it('⚠️ the clock is the run’s DISPATCH START, not now: a row raised after this run STARTED stays open', async () => {
+    // Started 120 s ago; the row was raised 60 s ago by a run that started later. Clocked by
+    // `now` this run would close it.
+    const c = cenario({ inicioDaTarefaMs: AGORA_MS - 120_000 });
+    abrir(c, (AGORA_MS - 60_000) * 1000);
+    expect((await c.rodar()).kind).toBe('escrito');
+    expect(c.db.ler(AVISO_RECUSADO)?.resolvidoEm).toBeNull();
+  });
+
   it('under dry-run: not even the pre-read', async () => {
     const c = cenario({ modo: MODO_LI.dryRun });
     abrir(c, (AGORA_MS - 3_600_000) * 1000);
@@ -1024,6 +1105,21 @@ describe('the refusal aviso is resolved only when OPEN, under `on`', () => {
     expect(c.db.leituras).not.toContain(AVISO_RECUSADO);
     expect(c.db.ler(AVISO_RECUSADO)?.resolvidoEm).toBeNull();
   });
+
+  it.each<[string, OpcoesCenario]>([
+    ['under dry-run', { modo: MODO_LI.dryRun }],
+    ['outside the canary', { canario: `${CONTA}:9` }],
+  ])(
+    '⚠️ a row ALREADY reflected %s ⇒ refletido, and the open aviso is neither read nor closed',
+    async (_r, o) => {
+      const c = cenario({ ...o, linha: { quantidade: 5, quantidade_reservada: 0 } });
+      abrir(c, (AGORA_MS - 3_600_000) * 1000);
+      expect(await c.rodar()).toEqual({ kind: 'refletido' });
+      expect(c.db.leituras).not.toContain(AVISO_RECUSADO);
+      expect(c.db.ler(AVISO_RECUSADO)?.resolvidoEm).toBeNull();
+      expect(c.custo().escritas).toBe(0);
+    },
+  );
 
   it('no Firestore write on ANY success with no open aviso', async () => {
     for (const o of [
@@ -1056,6 +1152,49 @@ describe('401/403', () => {
       expect(c.db.escritasEm(CREDENCIAL)).toHaveLength(1);
     },
   );
+
+  it('⚠️ a 401 for an OLDER token (re-saved while the GET was in flight) ⇒ nothing parked, the LiAuthError rethrown: the retry reads with the new token', async () => {
+    const c = cenario({
+      tentativa: TASK_MAX_ATTEMPTS - 1,
+      aoResponder: (metodo, _caminho, n, cen) => {
+        if (metodo === 'GET' && n === 0) {
+          seedCredencial(cen.db, CONTA, { tokenAtualizadoEmMs: AGORA_MS - 1000 });
+        }
+      },
+    });
+    c.p.fila.push(naProxima(CAMINHO_ESTOQUE_PRODUTO_LI, 'GET', () => respostaJson(401, {})));
+    await expect(c.rodar()).rejects.toBeInstanceOf(LiAuthError);
+    expect(c.p.puts()).toEqual([]);
+    expect(c.db.ler(CREDENCIAL)?.reconexaoPendente).toBeNull();
+    expect(c.db.escritasEm(CREDENCIAL)).toEqual([]);
+    expect(c.custo().escritas).toBe(0);
+  });
+
+  it('a 401 on the deciding GET, the credential DELETED meanwhile ⇒ dropped credencial-ausente, nothing parked', async () => {
+    const c = cenario({
+      aoResponder: async (metodo, _caminho, n, cen) => {
+        if (metodo === 'GET' && n === 0) await docCredencial(asDb(cen.db), CONTA).delete();
+      },
+    });
+    c.p.fila.push(naProxima(CAMINHO_ESTOQUE_PRODUTO_LI, 'GET', () => respostaJson(401, {})));
+    expect(await c.rodar()).toEqual({ kind: 'descartado', motivo: 'credencial-ausente' });
+    expect(c.p.puts()).toEqual([]);
+    expect(c.db.ler(CREDENCIAL)).toBeUndefined();
+    // The test's own delete is the only write.
+    expect(c.db.escritas.map((e) => e.verbo)).toEqual(['delete']);
+  });
+
+  it('a 401 on the deciding GET, the credential CORRUPT meanwhile ⇒ dropped credencial-invalida, nothing parked', async () => {
+    const c = cenario({
+      aoResponder: (metodo, _caminho, n, cen) => {
+        if (metodo === 'GET' && n === 0) cen.db.seed(CREDENCIAL, { personalToken: 7 });
+      },
+    });
+    c.p.fila.push(naProxima(CAMINHO_ESTOQUE_PRODUTO_LI, 'GET', () => respostaJson(401, {})));
+    expect(await c.rodar()).toEqual({ kind: 'descartado', motivo: 'credencial-invalida' });
+    expect(c.p.puts()).toEqual([]);
+    expect(c.custo().escritas).toBe(0);
+  });
 
   it('401 on the PUT, refused again by the confirming deciding read ⇒ parked, dropped', async () => {
     const c = cenario();
@@ -1099,7 +1238,8 @@ describe('the deciding read refused otherwise', () => {
       ),
     );
     expect(await c.rodar()).toEqual({ kind: 'descartado', motivo: 'leitura-ilegivel' });
-    expect(c.motivos()).toEqual(['leitura-ilegivel']);
+    expect(c.motivosErro()).toEqual(['leitura-ilegivel']);
+    expect(c.motivosAviso()).toEqual([]);
   });
 
   it('⚠️ an EMPTY 200 is the transport’s: rethrown for the retry', async () => {
@@ -1125,6 +1265,26 @@ describe('the deciding read refused otherwise', () => {
     const c = cenario({ tentativa: 2 });
     c.p.fila.push(naProxima(CAMINHO_ESTOQUE_PRODUTO_LI, 'GET', () => respostaJson(429, {})));
     await expect(c.rodar()).rejects.toBeInstanceOf(LiThrottleError);
+  });
+
+  it.each([500, 503])(
+    '⚠️ a %i on the deciding read is thrown even on the LAST attempt — never dropped as leitura-recusada',
+    async (status) => {
+      const c = cenario({ tentativa: TASK_MAX_ATTEMPTS - 1 });
+      c.p.fila.push(naProxima(CAMINHO_ESTOQUE_PRODUTO_LI, 'GET', () => respostaJson(status, {})));
+      await expect(c.rodar()).rejects.toBeInstanceOf(LiHttpError);
+      expect(c.p.chamadas()).toEqual([GET]);
+      expect(c.erros).toEqual([]);
+    },
+  );
+
+  it('a deciding read whose connection fails (network) ⇒ LiNetworkError rethrown on the LAST attempt, nothing sent', async () => {
+    const c = cenario({ tentativa: TASK_MAX_ATTEMPTS - 1 });
+    c.p.fila.push(naProxima(CAMINHO_ESTOQUE_PRODUTO_LI, 'GET', () => new TypeError('rede')));
+    await expect(c.rodar()).rejects.toBeInstanceOf(LiNetworkError);
+    expect(c.p.chamadas()).toEqual([GET]);
+    expect(c.erros).toEqual([]);
+    expect(c.custo().escritas).toBe(0);
   });
 });
 
@@ -1180,6 +1340,24 @@ describe('a kit its components bound', () => {
     expect(c.db.leituras.some((l) => l.startsWith(`produtos/${PRODUTO}/estoques/`))).toBe(false);
     expect(c.db.consultas.some((q) => q.colecao === `produtos/${PRODUTO}/estoques`)).toBe(false);
     expect(c.db.consultas.some((q) => q.colecao === 'estoques')).toBe(false);
+    // 3 + k (2) + the probe (2), + the aviso pre-read under `on`.
+    expect(c.custo()).toEqual({ erp: 8, credencial: 4, chamadas: 3, escritas: 0, enfileiradas: 0 });
+  });
+
+  it('COST without the payload’s ids, one bounding component with NO record at the depósito: 3 + 2 group queries + 1 own-collection query + the probe (2) + the aviso pre-read = 9', async () => {
+    const c = cenario({
+      produto: KIT,
+      estoques: [['c1', C1, { depositoOuterRef: CANONICA, quantidade: 9, parentId: 'c1' }]],
+      linha: { quantidade: 5, quantidade_reservada: 1 },
+    });
+    expect((await c.rodar()).kind).toBe('escrito');
+    // c2 has no record: it counts 0, so S = 0 and the PUT carries the reservation alone.
+    expect(c.p.puts()[0]?.corpo).toMatchObject({ quantidade: 1 });
+    expect(c.db.consultas.filter((q) => q.grupo === true && q.colecao === 'estoques')).toHaveLength(
+      2,
+    );
+    expect(c.db.consultas.filter((q) => q.colecao === 'produtos/c2/estoques')).toHaveLength(1);
+    expect(c.custo()).toEqual({ erp: 9, credencial: 4, chamadas: 3, escritas: 0, enfileiradas: 0 });
   });
 
   it('⚠️ a component with TWO non-canonical records ⇒ estoque-ambiguo, zero credential reads', async () => {
@@ -1204,7 +1382,7 @@ describe('a kit its components bound', () => {
     });
     expect((await c.rodar()).kind).toBe('escrito');
     expect(c.p.puts()[0]?.corpo).toMatchObject({ quantidade: 1 });
-    expect(c.motivos()).toContain('kit-nao-verificavel');
+    expect(c.motivosAviso()).toContain('kit-nao-verificavel');
   });
 });
 

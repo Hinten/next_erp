@@ -289,12 +289,16 @@ at a time on one instance narrows two runs of the same produto overlapping; it
 does not eliminate them. The same two residuals remain — an abandoned dispatch
 still running when the next starts, and a rare duplicate delivery — and both are
 bounded: every run writes an ABSOLUTE quantity decided by its own fresh read of
-the store's row, never a delta, so the later run's read wins, and the next event
-of the produto or the daily reconcile re-covers anything left behind. The two
-write queues together make at most two writes in flight per store, each paced by
-the engine (`lib/lojaIntegrada/core/ritmo.ts`: the theoretical worst per store
-is 150 calls a minute against Loja Integrada's 100; a 429 throws and the retry
-re-derives).
+the store's row, never a delta, so whichever PUT lands LAST stands — which can
+be the one built on the OLDER read (a PUT may be in flight for up to its 20 s
+deadline while the other run reads and writes) — and the next event of the
+produto or the daily reconcile re-covers it. The two write queues together make
+at most two writes in flight per store, each paced by the engine
+(`lib/lojaIntegrada/core/ritmo.ts`: the theoretical worst per store is 150
+calls a minute against Loja Integrada's 100; a 429 throws and the retry
+re-derives). The stock queue keeps NO failure store: a task whose every attempt
+meets a 429 or a 5xx is dropped (the platform's error log is its only trace),
+and the next event of the produto or the daily reconcile re-covers it.
 
 **Undoing a stock send.** Every deciding read writes a `restauracao` line with
 the store's whole stock row as it stood before the PUT. To undo one, re-send that
@@ -485,8 +489,9 @@ the wipe. Create `apps/loja-integrada/functions/.env.deploy` (gitignored):
 # or `*`, such a conta would WRITE to a real store while the legacy app is still
 # its only writer. So: NO Loja Integrada token is saved or renewed in staging, or
 # locally, before the window (D17), and these lines stay commented out. Set them
-# ALIKE here and in the App Hosting console (the rastreio pair: here only), and
-# only in the window.
+# ALIKE here and in the App Hosting console (the rastreio pair, and the estoque
+# pair until PR 12-h gives App Hosting a reader: here only), and only in the
+# window.
 # LOJA_INTEGRADA_MODO_ESTOQUE=
 # LOJA_INTEGRADA_MODO_PRECO=
 # LOJA_INTEGRADA_MODO_ANUNCIO=

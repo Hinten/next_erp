@@ -26,7 +26,8 @@
  * legacy record does not: a canonical record may sit beside it, and reading the legacy one would
  * send another S than the reconcile, which resolves by the same rule, and the two would undo each
  * other. Such a hint is not read at all; the query decides. A kit component's id from the payload
- * follows the same rule.
+ * follows the same rule. A DELETE's task passes no hint (`processarEstoque.ts`): its hint names the
+ * record that was deleted, so a point read of it would only ever miss.
  *
  * ## Both stored forms of a ref
  *

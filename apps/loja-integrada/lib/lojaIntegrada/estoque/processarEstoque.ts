@@ -21,14 +21,15 @@
  *  6. The links alone (`planoDosVinculosEstoqueLi`): no counting child link, a parent's, a root
  *     with no grades, two store products, or the parity switch ⇒ skipped WITHOUT reading a stock
  *     record.
- *  7. Its records: the produto's own at the depósito (a canonical hint by id, else the query) —
- *     not for a kit its components bound, whose own record never feeds S — and the bounding
- *     components'; then the plan. `consultar-estoques` ⇒ ONE listing of any record at any
- *     depósito, then the plan again (the never-had-stock hold, read literally: only a produto
- *     with no record ANYWHERE is held). Only an `enviar` pays the duplicate-link probe, and a hit
- *     plans again (`vinculo-duplicado`). `retido`, `estoque-ambiguo` and `vinculo-duplicado` are
- *     one WARNING line each; their per-conta avisos are the daily reconcile's (a send run raising
- *     them would overwrite the reconcile's full count with one).
+ *  7. Its records: the produto's own at the depósito (a canonical hint by id — never a delete's,
+ *     whose hint names the record deleted — else the query) — not for a kit its components bound,
+ *     whose own record never feeds S — and the bounding components'; then the plan.
+ *     `consultar-estoques` ⇒ ONE listing of any record at any depósito, then the plan again (the
+ *     never-had-stock hold, read literally: only a produto with no record ANYWHERE is held). Only
+ *     an `enviar` pays the duplicate-link probe, and a hit plans again (`vinculo-duplicado`).
+ *     `retido`, `estoque-ambiguo` and `vinculo-duplicado` are one WARNING line each; their
+ *     per-conta avisos are the daily reconcile's (a send run raising them would overwrite the
+ *     reconcile's full count with one).
  *  8. The target `<conta>:<store id>` and its decision (`decidirAlvo`: `on`, or why not).
  *  9. Only NOW the write context (the read switch first, then the conta, one credential read):
  *     its refusals DROP, with the class — there is no failure store; the reconcile re-covers.
@@ -51,11 +52,18 @@
  * ## What a run costs (Firestore operations / credential reads / store calls)
  *
  * Every skip costs ZERO credential reads and ZERO store calls: the write context comes after
- * every skip decision. A link skip reads the conta, the produto and its links (3); a record skip
- * one more (4); a hold its listing (5); a duplicate the two probe queries (6). A send pays those 6
- * ERP operations, the context's credential read, one credential re-read per store call, and — only
- * under `on` — one read of the refusal aviso (written only when it is OPEN). No Firestore write on
- * success, ever.
+ * every skip decision. For a produto that is not a kit its components bound: a link skip reads the
+ * conta, the produto and its links (3); a record skip one more (4); a hold its listing (5); a
+ * duplicate the two probe queries (6). A send pays those 6 ERP operations, the context's
+ * credential read, one credential re-read per store call, and — only under `on` — one read of the
+ * refusal aviso (written only when it is OPEN). No Firestore write on success, ever.
+ *
+ * A kit its components bound reads no record of its own, but its k bounding components' (every
+ * document of a `getAll` is one read): ONE `getAll` of the canonical ids the payload carries, then
+ * two group queries per 30 components still missing, then one own-collection query per component
+ * STILL missing — so a bounding component with no record at the depósito pays that query on EVERY
+ * run. A send with every id in the payload pays 3 + k + 2 (the probe) ERP operations; one with
+ * none, 3 + 2·⌈k/30⌉ + (components still unresolved) + 2; each plus the aviso pre-read under `on`.
  *
  * ## Errors (deterministic outcomes RETURN, transient failures THROW — every retry re-derives
  * everything from a fresh read, and the quantity sent is absolute, never a delta)
@@ -367,10 +375,11 @@ async function planejar(
   links: readonly unknown[],
 ): Promise<PlanoEstoqueLi> {
   const restrito = kitRestritoLi(produto);
+  // A delete's hint names the record that was DELETED: reading it buys nothing (a record
+  // re-created since is found by the query anyway), so a delete's task goes straight to it.
+  const hint = tarefa.apagado ? null : tarefa.estoqueId;
   const [registros, componentes] = await Promise.all([
-    restrito
-      ? Promise.resolve([])
-      : lerEstoqueProprioLi(db, tarefa.produtoId, depositoId, tarefa.estoqueId),
+    restrito ? Promise.resolve([]) : lerEstoqueProprioLi(db, tarefa.produtoId, depositoId, hint),
     lerComponentesNoDepositoLi(db, produto, depositoId, tarefa.estoqueIds),
   ]);
   let entrada: EntradaPlanoEstoqueLi = {
@@ -802,6 +811,8 @@ async function conferirDepoisDaEscrita(
     deriva = conferido === 'deriva' || reservaMoveu;
   } else {
     // A read-back refused with 401/403 parks the conta (a permitted throw after a landed write).
+    // The follow-up below is enqueued all the same: a park lifted (or a token swapped) before it
+    // dispatches lets it run; otherwise it drops at the conta's park, at no store call.
     if (volta.erro instanceof LiAuthError) {
       await tratarFalhaDeAutenticacao(
         e.db,
@@ -831,8 +842,10 @@ async function conferirDepoisDaEscrita(
     });
     return 'enfileirado';
   } catch (err) {
-    // The sweep-only valve: the daily reconcile re-covers. A transient failure rethrows, and the
-    // retry re-derives everything from a fresh read (a permitted throw after a landed write).
+    // The sweep-only valve: the daily reconcile re-covers. ANY other rejection rethrows — a
+    // transient Cloud Tasks failure, a broken deploy, the root's region guard, the strict parse —
+    // and the retry re-derives everything from a fresh read (a permitted throw after a landed
+    // write: `core/escrita.ts`, requirement 6 (i)).
     if (err instanceof LiTarefasDesligadasError) {
       e.linhas.aviso('deriva-tarefas-desligadas', { idLi: e.idLi });
       return 'tarefas-desligadas';

@@ -19,7 +19,7 @@ import { getAdminApp } from './lib/admin';
  * Admin SDK's task queue.
  *
  * The region and the sweep-only valve are read through the READS root's own
- * readers (`./agendador`): ONE region for both queues — the queue is created
+ * readers (`./agendador`): ONE region for every queue — each queue is created
  * with its function, by the same deploy, in `FUNCTIONS_REGION` — and one reader
  * whose static environment-read shape the bundle-inlining proof already covers.
  * A second copy here would be a second shape `define` must inline, and a second

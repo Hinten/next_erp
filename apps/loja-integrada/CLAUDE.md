@@ -884,8 +884,9 @@ lands with the rest of step 12; this is the send run and its queue.
   integer; anything else refuses every run, zero reads), the conta and its depósito, the masked
   produto + its where-less links, the link-only plan (`planoDosVinculosEstoqueLi`: a link skip
   reads no stock record), the records (a canonical `estoqueId` hint by id only when it IS
-  `makeEstoqueUid(produto, depósito)` at the depósito, else the `in` query over both ref forms,
-  limit 3; a kit's bounding components; a constrained kit's own record is not read), the
+  `makeEstoqueUid(produto, depósito)` at the depósito — never a delete's, whose hint names the
+  record deleted — else the `in` query over both ref forms, limit 3; a kit's bounding
+  components; a constrained kit's own record is not read), the
   never-had-stock listing only on `consultar-estoques`, the duplicate probe only on `enviar`,
   then `decidirAlvo` on `<conta>:<store id>` (only an exact `*` widens), the write context, the
   deciding GET, the row-identity check (`produtoIdDoEstoqueLi`), model A
@@ -895,13 +896,21 @@ lands with the rest of step 12; this is the send run and its queue.
   skip 4/0/0; held 5/0/0; duplicate 6/0/0; read switch off 6/0/0; 404 or a row of another produto
   6/2/1; reflected 7/2/1 under `on` (the aviso pre-read); dry-run 6/2/1 (one restore line, one
   diff line); an event, manual, publish or `deriva` PUT 7/4/3 (GET, PUT, read-back); a reconcile
-  or kit PUT (`estoque-produto-lote`) 7/3/2, no read-back. **No Firestore write on success**, at
-  most ONE PUT per run.
+  or kit PUT (`estoque-produto-lote`) 7/3/2, no read-back. A kit its components bound reads no
+  record of its own but its k bounding components': with the payload's canonical ids ONE
+  `getAll` (k reads), a PUT 6 + k under `on`; without them two group queries per 30 components,
+  then one own-collection query per component still unresolved — a component with no record at
+  the depósito pays it on EVERY run (k = 2, one unresolved: a PUT 9/4/3). **No Firestore write
+  on success**, at most ONE PUT per run.
 - **The drift rule** after a read-back: written leaves read back differently, the store's
   reservation moved so model A now targets another quantity, or the read-back could not be made
   (fail open) ⇒ ONE `deriva` follow-up (generation 1) from a generation-0 run; a generation-1
-  run only logs `deriva-sem-seguimento`. The closed valve ⇒ one WARNING and the write stands; a
-  transient enqueue failure rethrows (the retry's fresh GET decides).
+  run only logs `deriva-sem-seguimento`. The closed valve ⇒ one WARNING and the write stands;
+  any other enqueue rejection (a transient Cloud Tasks failure, a deploy or region
+  misconfiguration, the strict parse) rethrows — a permitted post-write throw, `escrita.ts`
+  requirement 6 (i) — and the retry's fresh GET decides. A read-back refused with 401/403
+  parks the conta and still enqueues the follow-up (it drops at the park unless the token is
+  fixed before it runs).
 - **Errors.** 429 and 5xx THROW (a PUT answered either may have landed: the run closes, the
   retry re-GETs); another 3xx/4xx on the PUT rethrows until the LAST attempt, then `recusado`,
   one ERROR and, under `on`, `lojaIntegradaEstoqueRecusado` (per produto, clocked by the
@@ -1068,7 +1077,7 @@ lands with the rest of step 12; this is the send run and its queue.
 - A re-import keeps the `externalOptionData` keys Loja Integrada does not own (`agency`).
 - `pedidos/importarPedido.firestore.test.ts` (emulator, CI below) pins the batch.
 
-## CI (steps 3, 5, 7, 9 and 20)
+## CI (steps 3, 5, 7, 9, 12 and 20)
 
 - Two homes, disjoint by filename suffix. `vitest.config.ts` (`pnpm test`, in `CI test`
   of `ci.yml`, unfiltered) EXCLUDES `*.firestore.test.ts` and `*.tasks.test.ts`;

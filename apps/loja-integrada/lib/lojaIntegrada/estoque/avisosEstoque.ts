@@ -2,7 +2,9 @@
  * The stock send run's ONE aviso tipo, `lojaIntegradaEstoqueRecusado` (master plan step 12, PR
  * 12-e) — raised and resolved by the send run (`estoque/processarEstoque.ts`). Its contract is
  * documented on `tipoAvisoSchema` (`packages/schemas/src/aviso.ts`): Loja Integrada refused a
- * child's stock write with a 4xx other than 429 on the task's LAST attempt.
+ * child's stock write with a 3xx or 4xx other than 429 on the task's LAST attempt (a 401/403
+ * only once the next deciding read on the same credential reads fine; refused too, the conta
+ * parks instead).
  *
  *  - **Key:** one row per child produto of the conta (`entidade: produtoId`).
  *  - **Params:** `loja` (the conta name), `produto` (the ERP produto id), `idLi` (the store
