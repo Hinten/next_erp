@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { FormProvider, useForm } from 'react-hook-form';
 import type { Firestore } from 'firebase/firestore';
 import { varianteFakePath, type ComponentesKit } from '@delfrance/schemas';
+import { AfterSaveBlockedError } from '@delfrance/ui';
 import type { ChildKitEdit } from '@/lib/produtos/kitChildren';
 import { MantineTestProvider } from '@/lib/testing/mantine';
 import type { VariationRow } from './VariationManager';
@@ -15,6 +16,9 @@ const h = vi.hoisted(() => ({
   edits: [] as Array<{ recipes: ChildKitEdit[]; mirrorSoleMember: boolean }>,
   generation: undefined as Promise<void> | undefined,
   resetRevisionRef: { current: 0 },
+  readParent: vi.fn(async (_ref: { id: string }) => ({
+    data: (): { ehKit: boolean } | undefined => ({ ehKit: false }),
+  })),
   toasts: [] as string[],
   rows: [] as unknown[],
   /** Every value the grid reported through `onDirtyChange`, in order (KNOWN #9 round 3). */
@@ -30,6 +34,11 @@ vi.mock('@delfrance/data/hooks', () => ({
   useSnapshot: () => ({ data: h.children, loading: false, error: undefined }),
 }));
 
+vi.mock('firebase/firestore', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('firebase/firestore')>()),
+  getDocFromServer: h.readParent,
+}));
+
 vi.mock('@/lib/produtos/kitChildren', () => ({
   commitChildKitEdits: async (
     _db: unknown,
@@ -43,7 +52,10 @@ vi.mock('@/lib/produtos/kitChildren', () => ({
 }));
 
 vi.mock('@/lib/data/produtoCollection', () => ({
-  produtoCollection: { ref: () => ({ __ref: 'produtos' }) },
+  produtoCollection: {
+    ref: () => ({ __ref: 'produtos' }),
+    docRef: (_db: unknown, _context: unknown, id: string) => ({ id }),
+  },
 }));
 
 vi.mock('@/lib/produtos/clientPort', () => ({
@@ -169,6 +181,7 @@ beforeEach(() => {
   h.edits.length = 0;
   h.generation = undefined;
   h.resetRevisionRef.current = 0;
+  h.readParent.mockReset();
   h.toasts.length = 0;
   h.children = [{ id: 'c1', data: { componentesKit: null } }];
   h.rows.length = 0;
@@ -180,6 +193,39 @@ afterEach(() => {
 });
 
 describe('KitVariacoesManager', () => {
+  it('confirms a non-kit on a pristine save, discards its draft, and skips reads on later saves', async () => {
+    const { flushRef } = renderManager();
+    fireEvent.click(screen.getByTestId('stage-kit'));
+
+    await act(async () => {
+      await flushRef.current!('p1', {}, 'confirm-non-kit');
+    });
+    expect(h.readParent).toHaveBeenCalledExactlyOnceWith({ id: 'p1' });
+    expect(h.saves).toEqual([]);
+    expect(ultimoRelato()).toBe(false);
+
+    await act(async () => {
+      await flushRef.current!('p1', {}, 'confirm-non-kit');
+    });
+    expect(h.readParent).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['is a kit', { ehKit: true }],
+    ['no longer exists', undefined],
+  ])('keeps a pristine save’s recipe draft when the stored parent %s', async (_label, parent) => {
+    h.readParent.mockResolvedValueOnce({ data: () => parent });
+    const { flushRef } = renderManager();
+    fireEvent.click(screen.getByTestId('stage-kit'));
+
+    await expect(flushRef.current!('p1', {}, 'confirm-non-kit')).rejects.toBeInstanceOf(
+      AfterSaveBlockedError,
+    );
+    expect(h.saves).toEqual([]);
+    expect(ultimoRelato()).toBe(true);
+    expect(screen.getByTestId('stage-kit').getAttribute('data-recipe')).toBe('comp-1');
+  });
+
   it('does not rewrite a child kit map on a later save once it has been flushed', async () => {
     const { flushRef } = renderManager();
 
@@ -435,7 +481,7 @@ describe('KitVariacoesManager — reports its staged compositions to the page (K
     toggle();
 
     await act(async () => {
-      await flushRef.current!('p1', {}, true);
+      await flushRef.current!('p1', {}, 'discard');
     });
     expect(h.saves).toEqual([]);
     expect(ultimoRelato()).toBe(false);
@@ -506,7 +552,7 @@ describe('Recomeçar cadastro do kit', () => {
     const { flushRef } = renderManager();
     fireEvent.click(screen.getByRole('button', { name: 'Gerar Variações' }));
     await act(async () => {
-      await flushRef.current!('p1', {}, true);
+      await flushRef.current!('p1', {}, 'discard');
       finish();
       await h.generation;
     });

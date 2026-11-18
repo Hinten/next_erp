@@ -765,7 +765,7 @@ export default function EditarProdutoPage() {
         }
         return issues;
       }}
-      onAfterSave={async (id, _values, committed) => {
+      onAfterSave={async (id, values, committed) => {
         // Precos/custo history + child-precos propagation used to be recorded
         // here (client-side, diffed against `lastSavedPrecos`/`lastSavedCusto`).
         // Both are now server-owned: the `onProdutoPrecoCustoChanged` Cloud
@@ -802,6 +802,7 @@ export default function EditarProdutoPage() {
               }
             : (desteSave ?? pendente);
         const deixouDeSerKit = mudanca?.oldEhKit === true && !mudanca.ehKit;
+        const salvouComoNaoKit = desteSave?.ehKit === false && values.ehKit === false;
         if (mudanca) kitPendente.current = mudanca;
 
         // (The extraData singleton is now written atomically with the produto
@@ -823,7 +824,15 @@ export default function EditarProdutoPage() {
         // (from "Gerar Variações") — the child docs exist by now. The pairing is
         // handed over directly because it CANNOT travel through React state:
         // both awaits run in one microtask, so nothing re-renders in between.
-        await flushKitVariacoesRef.current?.(id, children?.reusedByKey ?? {}, deixouDeSerKit);
+        // A reverted kit draft can leave the parent unchanged. Confirm its
+        // status before discarding the drafts behind an unchecked switch.
+        const recipeAction =
+          deixouDeSerKit || salvouComoNaoKit
+            ? 'discard'
+            : values.ehKit === false
+              ? 'confirm-non-kit'
+              : 'save';
+        await flushKitVariacoesRef.current?.(id, children?.reusedByKey ?? {}, recipeAction);
 
         // Mercado Livre is the last WRITE: its link docs have six writers, so a
         // save here can lose a race and raise `AfterSaveBlockedError` (tier 3).

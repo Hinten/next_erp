@@ -288,6 +288,8 @@ describe('produtos/[id]/editar — «É kit virtual» needs «É kit» (step 19,
   // OFF) and saved with an unrelated edit used to diff that FORM against server
   // truth and un-kit every child while the parent stayed a kit.
   it('a STALE form that never touched «É kit» propagates no flip', async () => {
+    const flushRecipes = vi.fn(async () => {});
+    kitVariacoesManager().flushRef.current = flushRecipes;
     await capturado().onAfterSave!(
       'p1',
       { ehKit: false, ehKitVirtual: false, componentesKit: null, nome: 'x' },
@@ -303,6 +305,7 @@ describe('produtos/[id]/editar — «É kit virtual» needs «É kit» (step 19,
       oldEhKitVirtual: true,
       componentesKit: { c1: { quantidade: 1 } },
     });
+    expect(flushRecipes).toHaveBeenCalledExactlyOnceWith('p1', {}, 'confirm-non-kit');
   });
 
   it('the sole member mirrors the COMMITTED map and pointer, not the form’s', async () => {
@@ -329,6 +332,41 @@ describe('produtos/[id]/editar — «É kit virtual» needs «É kit» (step 19,
     expect(h.propagacoes).toHaveLength(0);
   });
 
+  it('discards drafts when the saved product was and remains a non-kit', async () => {
+    const flushRecipes = vi.fn(async () => {});
+    kitVariacoesManager().flushRef.current = flushRecipes;
+
+    await capturado().onAfterSave!(
+      'p1',
+      { ehKit: false, nome: 'Edited' },
+      { before: { ehKit: false }, patch: { nome: 'Edited' } },
+    );
+
+    expect(flushRecipes).toHaveBeenCalledExactlyOnceWith('p1', {}, 'discard');
+  });
+
+  it('asks for persisted confirmation before discarding drafts on a pristine save', async () => {
+    const flushRecipes = vi.fn(async () => {});
+    kitVariacoesManager().flushRef.current = flushRecipes;
+
+    await capturado().onAfterSave!('p1', { ehKit: false });
+
+    expect(flushRecipes).toHaveBeenCalledExactlyOnceWith('p1', {}, 'confirm-non-kit');
+  });
+
+  it('preserves the conflict check when the kit tab was on and the transaction read a non-kit', async () => {
+    const flushRecipes = vi.fn(async () => {});
+    kitVariacoesManager().flushRef.current = flushRecipes;
+
+    await capturado().onAfterSave!(
+      'p1',
+      { ehKit: true, nome: 'Edited' },
+      { before: { ehKit: false }, patch: { nome: 'Edited' } },
+    );
+
+    expect(flushRecipes).toHaveBeenCalledExactlyOnceWith('p1', {}, 'save');
+  });
+
   it('a FAILED propagation is retried by the next save, even a "nothing changed" one, then cleared', async () => {
     const unkit = {
       before: { ehKit: true, ehKitVirtual: false },
@@ -342,7 +380,7 @@ describe('produtos/[id]/editar — «É kit virtual» needs «É kit» (step 19,
     );
     expect(flushRecipes).not.toHaveBeenCalled();
     await capturado().onAfterSave!('p1', { ehKit: false });
-    expect(flushRecipes).toHaveBeenCalledExactlyOnceWith('p1', {}, true);
+    expect(flushRecipes).toHaveBeenCalledExactlyOnceWith('p1', {}, 'discard');
     expect(h.propagacoes).toHaveLength(2);
     expect(h.propagacoes[1]).toEqual(h.propagacoes[0]);
     expect(h.propagacoes[1]).toMatchObject({ ehKit: false, oldEhKit: true });

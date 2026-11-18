@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState, type RefObject } from 'react';
 import { Button, Divider, Group, Modal, Paper, Stack, Text } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { FirebaseError } from 'firebase/app';
-import type { Firestore } from 'firebase/firestore';
+import { getDocFromServer, type Firestore } from 'firebase/firestore';
 import { useFormContext } from 'react-hook-form';
 import {
   generateKitForVariacoes,
@@ -31,7 +31,7 @@ import type { VariationRow } from './VariationManager';
 export type KitVariacoesFlush = (
   parentId: string,
   reusedByKey: Record<string, string>,
-  discard?: boolean,
+  action?: 'save' | 'discard' | 'confirm-non-kit',
 ) => Promise<void>;
 
 export interface KitVariacoesManagerProps {
@@ -142,8 +142,17 @@ export function KitVariacoesManager({
 
   // Register the flush; re-registers when staged/rows change so the closure is fresh.
   useEffect(() => {
-    flushRef.current = async (parentId, reusedByKey, discard) => {
-      if (discard) {
+    flushRef.current = async (parentId, reusedByKey, action = 'save') => {
+      if (action === 'confirm-non-kit') {
+        if (!pendente && !gerando) return;
+        const parent = (await getDocFromServer(produtoCollection.docRef(db, {}, parentId))).data();
+        if (parent?.ehKit !== false) {
+          throw new AfterSaveBlockedError(
+            'O status do kit mudou. Recarregue o produto antes de salvar.',
+          );
+        }
+      }
+      if (action !== 'save') {
         resetRevisionRef.current += 1;
         setGerando(false);
         setStaged({});
