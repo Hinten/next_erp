@@ -71,6 +71,7 @@ function args(parcial: Partial<ArgsLogistica> = {}): ArgsLogistica {
     pesoKg: 0.5,
     dimensaoCm: DIM_10,
     ofereceFreteGratis: false,
+    enviarDesligados: false,
     ...parcial,
   };
 }
@@ -2509,5 +2510,192 @@ describe('#1911 P15 — avaliarCanaisDaLojaShopee: o veredito por canal é o da 
     const comNulo = [null, canal()] as unknown as readonly ShopeeLogisticsChannel[];
     const avaliadosComNulo = avaliarCanaisDaLojaShopee({ ...PARCELA_GRATIS, canais: comNulo });
     expect(avaliadosComNulo.map((a) => a.canal.logistics_channel_id)).toEqual([CANAL_PADRAO]);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*              (E-4) enviarDesligados — o OFF vai ao fio só no update          */
+/* -------------------------------------------------------------------------- */
+
+describe('E-4 — enviarDesligados manda enabled:false depois dos ligados', () => {
+  const OUTRO = 90011;
+  const tres = [
+    canal(),
+    canal({ logistics_channel_id: CANAL_IRMAO }),
+    canal({ logistics_channel_id: OUTRO }),
+  ];
+
+  it('o off vai DEPOIS dos ON, só com logistic_id e enabled, na ordem armazenada', () => {
+    const r = construirLogistica(
+      args({
+        canais: tres,
+        enviarDesligados: true,
+        armazenado: [
+          { logistic_id: OUTRO, enabled: false },
+          { logistic_id: CANAL_PADRAO, enabled: true },
+          { logistic_id: CANAL_IRMAO, enabled: false },
+        ],
+      }),
+    );
+    expect(r.logistic_info).toEqual([
+      expect.objectContaining({ logistic_id: CANAL_PADRAO, enabled: true }),
+      { logistic_id: OUTRO, enabled: false },
+      { logistic_id: CANAL_IRMAO, enabled: false },
+    ]);
+    // never counted as enabled
+    expect(r.canaisHabilitados).toEqual([CANAL_PADRAO]);
+    expect(r.problemas).toEqual([]);
+  });
+
+  it('de-duplica o mesmo off armazenado duas vezes', () => {
+    const r = construirLogistica(
+      args({
+        canais: A_E_B,
+        enviarDesligados: true,
+        armazenado: [
+          { logistic_id: CANAL_PADRAO, enabled: true },
+          { logistic_id: CANAL_IRMAO, enabled: false },
+          { logistic_id: CANAL_IRMAO, enabled: false },
+        ],
+      }),
+    );
+    expect(r.logistic_info.filter((e) => e.logistic_id === CANAL_IRMAO)).toEqual([
+      { logistic_id: CANAL_IRMAO, enabled: false },
+    ]);
+  });
+
+  it('nunca desliga um id que também vai LIGADO (off e on armazenados para o mesmo id)', () => {
+    const r = construirLogistica(
+      args({
+        canais: A_E_B,
+        enviarDesligados: true,
+        armazenado: [
+          { logistic_id: CANAL_IRMAO, enabled: false },
+          { logistic_id: CANAL_IRMAO, enabled: true },
+          { logistic_id: CANAL_PADRAO, enabled: true },
+        ],
+      }),
+    );
+    expect(r.logistic_info.filter((e) => e.enabled === false)).toEqual([]);
+  });
+
+  it('force_enable nunca é desligado', () => {
+    const r = construirLogistica(
+      args({
+        canais: [canal(), canal({ logistics_channel_id: CANAL_IRMAO, force_enable: true })],
+        enviarDesligados: true,
+        armazenado: [
+          { logistic_id: CANAL_PADRAO, enabled: true },
+          { logistic_id: CANAL_IRMAO, enabled: false },
+        ],
+      }),
+    );
+    expect(r.logistic_info.some((e) => e.enabled === false)).toBe(false);
+  });
+
+  it('um canal que sumiu da lista viva nunca é mandado desligado', () => {
+    const r = construirLogistica(
+      args({
+        canais: [canal()],
+        enviarDesligados: true,
+        armazenado: [
+          { logistic_id: CANAL_PADRAO, enabled: true },
+          { logistic_id: CANAL_IRMAO, enabled: false },
+        ],
+      }),
+    );
+    expect(idsNoFio(r)).toEqual([CANAL_PADRAO]);
+  });
+
+  it('uma lista NÃO confiável não manda off nenhum', () => {
+    const r = construirLogistica(
+      desconfiada({
+        canais: A_E_B,
+        enviarDesligados: true,
+        armazenado: B_DESLIGADO,
+      }),
+    );
+    expect(r.logistic_info.some((e) => e.enabled === false)).toBe(false);
+  });
+
+  it('só offs válidos e nenhum ON ⇒ a recusa de lista vazia continua (conta só os ON)', () => {
+    const r = construirLogistica(
+      args({
+        canais: [canal({ logistics_channel_id: CANAL_IRMAO })],
+        enviarDesligados: true,
+        armazenado: [{ logistic_id: CANAL_IRMAO, enabled: false }],
+      }),
+    );
+    expect(r.problemas.map((p) => p.campo)).toEqual(['logistic_info']);
+    expect(r.canaisHabilitados).toEqual([]);
+  });
+
+  it('enviarDesligados:false é byte-idêntico ao que já era (tabela sobre as entradas existentes)', () => {
+    const entradas: Partial<ArgsLogistica>[] = [
+      { canais: A_E_B, armazenado: B_DESLIGADO },
+      { canais: A_E_B, armazenado: null },
+      {
+        canais: [canal({ logistics_channel_id: CANAL_IRMAO, ...PESADO_DEMAIS }), canal()],
+        armazenado: B_DESLIGADO,
+      },
+      { canais: A_E_B, armazenado: [{ logistic_id: CANAL_PADRAO }], armazenadoConfiavel: false },
+    ];
+    for (const e of entradas) {
+      const falso = construirLogistica(args({ ...e, enviarDesligados: false }));
+      expect(falso.logistic_info.every((x) => x.enabled === true)).toBe(true);
+      // the ON part of a `true` run is the whole of a `false` run
+      const verdadeiro = construirLogistica(args({ ...e, enviarDesligados: true }));
+      expect(verdadeiro.logistic_info.filter((x) => x.enabled)).toEqual(falso.logistic_info);
+      expect(verdadeiro.canaisHabilitados).toEqual(falso.canaisHabilitados);
+      expect(verdadeiro.problemas).toEqual(falso.problemas);
+      expect(verdadeiro.pulados).toEqual(falso.pulados);
+    }
+  });
+});
+
+describe('E-4 — avaliarCanaisDaLojaShopee com a lista guardada do anúncio', () => {
+  const SIZE = canal({ fee_type: SHOPEE_LOGISTICS_FEE_TYPE.sizeSelection });
+
+  it('sem armazenado: o canal SIZE_SELECTION continua pedindo o Seller Centre', () => {
+    const [a] = avaliarCanaisDaLojaShopee({ ...PARCELA_GRATIS, canais: [SIZE] });
+    expect(a?.motivo).toBe('size-selection-sem-size-id');
+  });
+
+  it('com o size_id guardado do MESMO id: fica selecionável e a entrada carrega o size', () => {
+    const [a] = avaliarCanaisDaLojaShopee({
+      ...PARCELA_GRATIS,
+      canais: [SIZE],
+      armazenado: [{ logistic_id: CANAL_PADRAO, enabled: true, size_id: 7 }],
+    });
+    expect(a?.motivo).toBeNull();
+    expect(a?.entrada?.size_id).toBe(7);
+  });
+
+  it('o valor de OUTRO id nunca é usado', () => {
+    const [a] = avaliarCanaisDaLojaShopee({
+      ...PARCELA_GRATIS,
+      canais: [SIZE],
+      armazenado: [{ logistic_id: CANAL_IRMAO, enabled: true, size_id: 7 }],
+    });
+    expect(a?.motivo).toBe('size-selection-sem-size-id');
+  });
+
+  it('um size_id ilegível guardado não conta', () => {
+    const [a] = avaliarCanaisDaLojaShopee({
+      ...PARCELA_GRATIS,
+      canais: [SIZE],
+      armazenado: [{ logistic_id: CANAL_PADRAO, enabled: true, size_id: '12.5' }],
+    });
+    expect(a?.motivo).toBe('size-selection-sem-size-id');
+  });
+
+  it('CUSTOM_PRICE com a tarifa guardada fica selecionável', () => {
+    const [a] = avaliarCanaisDaLojaShopee({
+      ...PARCELA_GRATIS,
+      canais: [canal({ fee_type: SHOPEE_LOGISTICS_FEE_TYPE.customPrice })],
+      armazenado: [{ logistic_id: CANAL_PADRAO, enabled: true, shipping_fee: 12.5 }],
+    });
+    expect(a?.motivo).toBeNull();
+    expect(a?.entrada?.shipping_fee).toBe(12.5);
   });
 });

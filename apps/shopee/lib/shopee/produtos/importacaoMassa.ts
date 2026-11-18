@@ -452,6 +452,7 @@ export async function iniciarImportacaoShopee(
     created: 0,
     skipped: 0,
     kits: 0,
+    edicoesPreservadas: 0,
     failureCount: 0,
     failures: [],
     options: args.options,
@@ -692,6 +693,7 @@ export async function processarImportacaoShopee(
   let kits = job.kits;
   let imported = job.imported;
   let created = job.created;
+  let edicoesPreservadas = job.edicoesPreservadas;
   let failureCount = job.failureCount;
   let failures: ShopeeImportacaoFalha[] = [...job.failures];
 
@@ -705,6 +707,7 @@ export async function processarImportacaoShopee(
     imported,
     created,
     kits,
+    edicoesPreservadas,
     failureCount,
     failures,
     updatedAt: nowMs,
@@ -939,6 +942,9 @@ export async function processarImportacaoShopee(
               const res = await importarAnuncio(depsDoImportador, item);
               imported += 1;
               if (res.criado) created += 1;
+              // A listing whose pending ERP edit the import left alone: counted
+              // in the report, never a failure (the item itself imported).
+              if (res.edicaoErpPreservada === true) edicoesPreservadas += 1;
             }
           } catch (err) {
             const falha = classificarFalhaDeItem(err);

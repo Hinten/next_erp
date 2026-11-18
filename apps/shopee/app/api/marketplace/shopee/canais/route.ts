@@ -1,5 +1,5 @@
 /**
- * `GET /api/marketplace/shopee/canais?integracaoId=&produtoId=` (#1911 P15) —
+ * `GET /api/marketplace/shopee/canais?integracaoId=&produtoId=[&linkDocId=]` (#1911 P15) —
  * the shop's logistics channels for ONE produto, each with the PUBLISHER's own
  * verdict (`avaliarCanaisDaLojaShopee`, `lib/shopee/anuncios/logisticaPublicacao.ts`),
  * for the draft editor's Logística section (P16). Depth:
@@ -26,6 +26,13 @@
  * rows in `get_channel_list` order. The fit is judged against the STORED
  * produto (`anuncios/canaisDoRascunho.ts`), exactly what a publish would read.
  *
+ * `linkDocId` is OPTIONAL (a PUBLISHED listing's editor): when present (not
+ * blank) it must be a document id (400), and after the produto read that
+ * produto's `prodshopee` link is read — absent or another conta's ⇒ 404 with
+ * OUR sentence, still ZERO Shopee calls. The listing's stored size/fee then
+ * feed each channel's verdict (see `anuncios/canaisDoRascunho.ts`). Without it
+ * the answer is the draft editor's, byte for byte; the envelope is unchanged.
+ *
  * ⚠️ `integracaoId` is not doc-id-checked, as on the seven taxonomy routes —
  * a residual of the shared reader, not widened here.
  *
@@ -43,7 +50,11 @@ import { lerCanaisDoRascunhoShopee } from '@/lib/shopee/anuncios/canaisDoRascunh
 import { MSG_PRODUTO_ID_INVALIDO, naoDocId } from '@/lib/shopee/anuncios/corpoPublicacao';
 import { isShopeeError, shopeeErrorResponse } from '@/lib/shopee/core/respond';
 import { loadShopeeContext } from '@/lib/shopee/core/shopee';
-import { lerIntegracaoId, lerTextoObrigatorio } from '@/lib/shopee/taxonomia/params';
+import {
+  lerIntegracaoId,
+  lerTextoObrigatorio,
+  lerTextoOpcional,
+} from '@/lib/shopee/taxonomia/params';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -61,13 +72,37 @@ async function responder(req: Request): Promise<NextResponse> {
     return NextResponse.json({ error: MSG_PRODUTO_ID_INVALIDO }, { status: 400 });
   }
 
+  const linkDocId = lerTextoOpcional(params, 'linkDocId');
+  if (!linkDocId.ok) return NextResponse.json({ error: linkDocId.erro }, { status: 400 });
+  if (linkDocId.valor !== null && naoDocId(linkDocId.valor)) {
+    return NextResponse.json(
+      { error: 'linkDocId deve ser um id de documento (sem "/" nem "..").' },
+      { status: 400 },
+    );
+  }
+
   try {
     const db = getAdminFirestore();
     const client = (await loadShopeeContext(db, integracaoId.valor)).createShopClient();
-    const lido = await lerCanaisDoRascunhoShopee({ db, client }, { produtoId: produtoId.valor });
+    const lido = await lerCanaisDoRascunhoShopee(
+      { db, client },
+      linkDocId.valor === null
+        ? { produtoId: produtoId.valor }
+        : {
+            produtoId: produtoId.valor,
+            linkDocId: linkDocId.valor,
+            integracaoId: integracaoId.valor,
+          },
+    );
     if (lido.tipo === 'produto-inexistente') {
       return NextResponse.json(
         { error: `Produto ${produtoId.valor} não encontrado.` },
+        { status: 404 },
+      );
+    }
+    if (lido.tipo === 'vinculo-inexistente') {
+      return NextResponse.json(
+        { error: `Vínculo ${linkDocId.valor ?? ''} não encontrado neste produto.` },
         { status: 404 },
       );
     }

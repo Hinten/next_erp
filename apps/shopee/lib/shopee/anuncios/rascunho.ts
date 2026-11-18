@@ -24,7 +24,12 @@
  *    (`vinculosQueExigemConfirmacaoShopee`, the SAME set the publish
  *    reservation and the web's confirmation decide with) without
  *    `confirmarSegundoAnuncio: true` ⇒ 409 `CONTA_JA_TEM_ANUNCIO`.
- *  - **edit** ({@link atualizarRascunhoShopee}) — tier **3 + 1**: the baseline
+ *  - **edit** ({@link atualizarRascunhoShopee}) — edits a DRAFT (`alvo:
+ *    'rascunho'`, the default) or a PUBLISHED listing (`alvo: 'anuncio'`; Lucas
+ *    2026-11-17: save ONLY to the link, «Republicar» sends). The published arm
+ *    writes the same six fields plus the two edit stamps (`edicaoErpRevisao` +1,
+ *    `edicaoErpPendenteEm`) that `produtos/links.ts`'s guarded arm reads, so
+ *    nothing silently discards the unsent edit. Tier **3 + 1**: the baseline
  *    compare (the operator's `base` against THE projection of what is stored,
  *    over the fields `camposDaBaseDoRascunhoShopee` names: the PATCH's, plus
  *    the stored `attributes` a category change clears — K1-12 — or the stored
@@ -82,6 +87,7 @@
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import {
+  ALVO_EDICAO_SHOPEE,
   CAMPO_RASCUNHO_SHOPEE,
   CODIGO_RASCUNHO_SHOPEE,
   INTEGRACAO_TIPO,
@@ -89,16 +95,21 @@ import {
   campoRascunhoShopeeSchema,
   camposDaBaseDoRascunhoShopee,
   camposDoRascunhoShopee,
+  anuncioShopeeEditavel,
   camposPresentesDoRascunhoShopee,
   ehKitVirtualEfetivo,
   ehRascunhoShopee,
   estadoPublicacaoRascunhoShopee,
+  logisticaDoAnuncioEditavelShopee,
+  mesclarLogisticaGravadaShopee,
   mesmoValorDoRascunhoShopee,
   mesmoValorGravadoDoRascunhoShopee,
+  revisaoDeEdicaoErpShopee,
   textoUtilizavelShopee,
   toOuterRef,
   vinculoShopeeEhDaConta,
   vinculosQueExigemConfirmacaoShopee,
+  type AlvoEdicaoShopee,
   type CampoRascunhoShopee,
   type CamposRascunhoShopee,
   type CodigoRascunhoShopee,
@@ -366,6 +377,55 @@ function rascunhoDaConta(
   return raw;
 }
 
+/** 409 `ANUNCIO_NAO_EDITAVEL`: the link is not a published listing the ERP edits. */
+function anuncioNaoEditavel(linkDocId: string): RecusaDeRascunhoShopeeError {
+  return new RecusaDeRascunhoShopeeError({
+    status: 409,
+    code: CODIGO_RASCUNHO_SHOPEE.anuncioNaoEditavel,
+    linkDocId,
+    mensagem:
+      `o vínculo ${linkDocId} não é um anúncio publicado editável: ele é um rascunho, um kit ` +
+      'nativo, ou um anúncio removido ou substituído. Recarregue a aba. Nada foi gravado.',
+  });
+}
+
+/** 422 `ANUNCIO_EDICAO_INVALIDA`: an edit a PUBLISHED listing cannot take. */
+function edicaoInvalidaDoAnuncio(linkDocId: string, mensagem: string): RecusaDeRascunhoShopeeError {
+  return new RecusaDeRascunhoShopeeError({
+    status: 422,
+    code: CODIGO_RASCUNHO_SHOPEE.anuncioEdicaoInvalida,
+    linkDocId,
+    mensagem: `${mensagem} Nada foi gravado.`,
+  });
+}
+
+/**
+ * The stored link the EDIT addresses, by mode: absent / another conta's ⇒ 404;
+ * `alvo` rascunho on a non-draft ⇒ 409 `JA_PUBLICADO`; `alvo` anuncio on a link
+ * that is not an editable published listing ⇒ 409 `ANUNCIO_NAO_EDITAVEL`.
+ */
+function vinculoDaEdicao(
+  snap: { readonly exists: boolean; data(): unknown },
+  integracaoId: string,
+  linkDocId: string,
+  alvo: AlvoEdicaoShopee,
+): Record<string, unknown> {
+  if (!snap.exists) throw inexistente(linkDocId);
+  const raw = (snap.data() ?? {}) as Record<string, unknown>;
+  if (!vinculoShopeeEhDaConta(raw, integracaoId)) throw inexistente(linkDocId);
+  if (alvo === ALVO_EDICAO_SHOPEE.rascunho) {
+    if (!ehRascunhoShopee(raw)) throw jaPublicado(linkDocId);
+  } else if (!anuncioShopeeEditavel(raw)) {
+    throw anuncioNaoEditavel(linkDocId);
+  }
+  return raw;
+}
+
+/** Whether `bruto` is a stored list holding at least one entry. */
+function listaNaoVazia(bruto: unknown): boolean {
+  return Array.isArray(bruto) && bruto.length > 0;
+}
+
 /**
  * One of `@delfrance/schemas`' two field comparisons — the CONFLICT one
  * (`mesmoValorDoRascunhoShopee`: a brand by `brand_id`) or the WRITE one
@@ -610,7 +670,16 @@ export async function criarRascunhoShopee(
  * the caller's ({@link limpaAtributosNaTrocaDeCategoria}), never this
  * function's.
  *
- * `logistic_info` (#1911 P15) is written as the whitelist parsed it — sorted by
+ * `logistic_info` (#1911 P15) is written as the whitelist parsed it, MERGED with
+ * the stored raw list (`mesclarLogisticaGravadaShopee`): ONLY a TRUSTED stored
+ * list (the publisher's one provenance predicate, applied inside schemas) carries
+ * its `size_id` / `shipping_fee` over to a channel it still holds — the form
+ * never sends them and a republish needs them. A draft's list was written by
+ * this very route with neither, and a legacy draft's DISTRUSTED list (#2015)
+ * carries nothing: the stamp below must not launder a value nobody confirmed.
+ * On a PUBLISHED edit (`desligarOmitidos`) a channel the trusted stored list
+ * holds ON and the edit omits is recorded `enabled: false`, so the republish
+ * turns it off at Shopee instead of leaving it ON while the ERP lost it. Sorted by
  * `logistic_id`, each channel `{logistic_id, enabled, is_free}`, or `null`
  * («Automática», which the operator CHOSE, so it is stamped too) — with
  * `logisticaGravadaEm: nowMs` in the SAME object literal. This arm runs only
@@ -625,6 +694,8 @@ function escritaDoCampo(
   campo: CampoRascunhoShopee,
   patch: Partial<CamposRascunhoShopee>,
   nowMs: number,
+  raw: Record<string, unknown>,
+  publicado: boolean,
 ): Record<string, unknown> {
   switch (campo) {
     case CAMPO_RASCUNHO_SHOPEE.itemName:
@@ -638,7 +709,12 @@ function escritaDoCampo(
     case CAMPO_RASCUNHO_SHOPEE.attributes:
       return { attributes: patch.attributes ?? null };
     case CAMPO_RASCUNHO_SHOPEE.logisticInfo:
-      return { logistic_info: patch.logistic_info ?? null, logisticaGravadaEm: nowMs };
+      return {
+        logistic_info: mesclarLogisticaGravadaShopee(patch.logistic_info ?? null, raw, {
+          desligarOmitidos: publicado,
+        }),
+        logisticaGravadaEm: nowMs,
+      };
   }
 }
 
@@ -672,9 +748,20 @@ function limpaAtributosNaTrocaDeCategoria(
  * Edit a draft (D4) — see the module docblock. Loop ≤
  * {@link TENTATIVAS_DO_RASCUNHO}, each attempt re-deciding from a FRESH read:
  *
- *  1. absent / other conta ⇒ 404 `INEXISTENTE`; not a draft ⇒ 409
- *     `JA_PUBLICADO` (D8: a published listing's content is not edited here);
- *  2. the lock reads `em-andamento` (its grace included) ⇒ 409 `EM_ANDAMENTO`
+ *  1. absent / other conta ⇒ 404 `INEXISTENTE`; `alvo` rascunho on a non-draft ⇒
+ *     409 `JA_PUBLICADO`; `alvo` anuncio on anything but an editable published
+ *     listing (`anuncioShopeeEditavel`: a draft, a native kit, removed or
+ *     superseded) ⇒ 409 `ANUNCIO_NAO_EDITAVEL`. Lucas 2026-11-17 reversed D8: a
+ *     published listing's six form fields ARE edited here, SAVE-ONLY — the write
+ *     stamps `edicaoErpRevisao` (+1) and `edicaoErpPendenteEm`, PR1's guards keep
+ *     the import and the write-backs from discarding it, and «Republicar» sends
+ *     and clears it. A published edit refuses (422 `ANUNCIO_EDICAO_INVALIDA`) a
+ *     null brand, «Automática» logistics, a logistics edit over a list the ERP
+ *     never wrote (`logisticaDoAnuncioEditavelShopee`: import first), and
+ *     emptying a stored attribute list (explicitly, or by a category change
+ *     that names none). A no-op stamps nothing; a draft edit never stamps;
+ *  2. (drafts only — a republish takes no lock) the lock reads `em-andamento`
+ *     (its grace included) ⇒ 409 `EM_ANDAMENTO`
  *     `{aguardarMs}`; `incerta` and the patch NAMES `category_id` ⇒ 409
  *     `CATEGORIA_TRAVADA` — even when it re-sends the stored value, and with
  *     nothing else of the patch written (DA-4; a patch WITHOUT `category_id`
@@ -718,7 +805,8 @@ export async function atualizarRascunhoShopee(
   deps: DepsDoRascunhoShopee,
   corpo: CorpoAtualizarRascunhoShopee,
 ): Promise<RespostaAtualizarRascunhoShopee> {
-  const { integracaoId, produtoId, linkDocId } = corpo;
+  const { integracaoId, produtoId, linkDocId, alvo } = corpo;
+  const publicado = alvo === ALVO_EDICAO_SHOPEE.anuncio;
   const base: Partial<CamposRascunhoShopee> = corpo.base;
   const patch: Partial<CamposRascunhoShopee> = corpo.patch;
   const alterados = camposPresentesDoRascunhoShopee(corpo.patch);
@@ -734,13 +822,19 @@ export async function atualizarRascunhoShopee(
 
   for (let tentativa = 1; tentativa <= TENTATIVAS_DO_RASCUNHO; tentativa += 1) {
     const snap = await ref.get();
-    const raw = rascunhoDaConta(snap, integracaoId, linkDocId);
+    const raw = vinculoDaEdicao(snap, integracaoId, linkDocId, alvo);
 
+    // E-3: the publish lock is a DRAFT concern — a republish of a live listing
+    // takes none, so these two checks never run on the published arm.
     const estado = estadoPublicacaoRascunhoShopee(raw, deps.nowMs);
-    if (estado.tipo === 'em-andamento') {
+    if (!publicado && estado.tipo === 'em-andamento') {
       throw emAndamento(linkDocId, estado.aguardarMs, estado.posExpiracao);
     }
-    if (estado.tipo === 'incerta' && alterados.includes(CAMPO_RASCUNHO_SHOPEE.categoryId)) {
+    if (
+      !publicado &&
+      estado.tipo === 'incerta' &&
+      alterados.includes(CAMPO_RASCUNHO_SHOPEE.categoryId)
+    ) {
       // The exit after the import (#1911 batch-B review, round 3): the import
       // adopts this draft only with a readable window, one adoptable draft, a
       // known `create_time` and one parent produto (`produtos/resolveProduto.ts`)
@@ -761,6 +855,53 @@ export async function atualizarRascunhoShopee(
       });
     }
 
+    if (publicado) {
+      // Refusals only a PUBLISHED listing has, decided from THIS attempt's
+      // fresh read and before anything is written.
+      if (alterados.includes(CAMPO_RASCUNHO_SHOPEE.marca) && (patch.marca ?? null) === null) {
+        throw edicaoInvalidaDoAnuncio(
+          linkDocId,
+          'a marca (marca) de um anúncio publicado não pode ficar vazia: escolha uma marca ' +
+            'ou «Sem marca».',
+        );
+      }
+      if (
+        alterados.includes(CAMPO_RASCUNHO_SHOPEE.logisticInfo) &&
+        (patch.logistic_info ?? null) === null
+      ) {
+        throw edicaoInvalidaDoAnuncio(
+          linkDocId,
+          'a logística (logistic_info) «Automática» só existe em rascunho: um anúncio publicado ' +
+            'precisa de canais escolhidos.',
+        );
+      }
+      // The save stamps the list as the ERP's, and «Republicar» then sends its
+      // offs: over a list the ERP never wrote (legacy, or none) that would
+      // vouch for offs nobody chose (`logisticaDoAnuncioEditavelShopee`).
+      if (
+        alterados.includes(CAMPO_RASCUNHO_SHOPEE.logisticInfo) &&
+        !logisticaDoAnuncioEditavelShopee(raw)
+      ) {
+        throw edicaoInvalidaDoAnuncio(
+          linkDocId,
+          'a logística (logistic_info) deste anúncio ainda não foi gravada pelo ERP: importe o ' +
+            'anúncio (sem alterações pendentes) para gravar os canais atuais da Shopee e então ' +
+            'edite-os.',
+        );
+      }
+      if (
+        alterados.includes(CAMPO_RASCUNHO_SHOPEE.attributes) &&
+        (patch.attributes ?? []).length === 0 &&
+        listaNaoVazia(raw.attributes)
+      ) {
+        throw edicaoInvalidaDoAnuncio(
+          linkDocId,
+          'os atributos (attributes) de um anúncio publicado não podem ser esvaziados de uma vez: ' +
+            'remova só os que não se aplicam.',
+        );
+      }
+    }
+
     const projecao = camposDoRascunhoShopee(raw);
     const conflitos = divergencias(vistos, projecao, base, mesmoValorDoRascunhoShopee);
     if (conflitos.length > 0) throw conflito(linkDocId, conflitos);
@@ -774,8 +915,19 @@ export async function atualizarRascunhoShopee(
 
     const escrita: Record<string, unknown> = {};
     const gravados = new Set<CampoRascunhoShopee>(aGravar);
-    for (const campo of aGravar) Object.assign(escrita, escritaDoCampo(campo, patch, deps.nowMs));
+    for (const campo of aGravar) {
+      Object.assign(escrita, escritaDoCampo(campo, patch, deps.nowMs, raw, publicado));
+    }
     if (limpaAtributosNaTrocaDeCategoria(alterados, gravados, raw)) {
+      if (publicado && listaNaoVazia(raw.attributes)) {
+        // E-2: a republish omits an empty attribute list, so Shopee would keep
+        // the OLD category's attributes — the new ones go in the same save.
+        throw edicaoInvalidaDoAnuncio(
+          linkDocId,
+          'trocar a categoria de um anúncio publicado exige enviar, no mesmo salvamento, os ' +
+            'atributos (attributes) da nova categoria.',
+        );
+      }
       // The stored attributes belong to the OLD category — and the baseline
       // above proved they are the ones the operator saw.
       escrita.attributes = null;
@@ -783,6 +935,14 @@ export async function atualizarRascunhoShopee(
     }
     const dados = produtoShopeeLinkCollection.parseMerge({
       ...escrita,
+      // E-1: a published listing's edit is UNSENT until «Republicar»; the stamps
+      // ride the same update, computed from THIS attempt's snapshot (rule 7).
+      ...(publicado
+        ? {
+            edicaoErpRevisao: (revisaoDeEdicaoErpShopee(raw) ?? 0) + 1,
+            edicaoErpPendenteEm: deps.nowMs,
+          }
+        : {}),
       ultimaModificacao: deps.nowMs,
     });
     try {

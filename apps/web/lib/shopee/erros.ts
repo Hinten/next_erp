@@ -121,6 +121,18 @@ export const CODIGO_FALHA_SHOPEE = {
    * knows which route it called.
    */
   rascunhoInexistente: CODIGO_RASCUNHO_SHOPEE.inexistente,
+  /**
+   * 409 — the named link is not an editable PUBLISHED listing (a draft, a
+   * native kit, a removed or superseded link): the per-listing «Descartar
+   * alterações não enviadas» refuses it.
+   */
+  anuncioNaoEditavel: CODIGO_RASCUNHO_SHOPEE.anuncioNaoEditavel,
+  /**
+   * 422 — an edit a PUBLISHED listing cannot take (a null brand, an empty
+   * attribute list over a stored one, «Automática» logistics): nothing was
+   * written.
+   */
+  anuncioEdicaoInvalida: CODIGO_RASCUNHO_SHOPEE.anuncioEdicaoInvalida,
   // ---- #1912: the native-kit create LEASE (every code: this request sent nothing). ----
   /**
    * 409 — another run (tab, operator, the CLI) is creating this kit on this

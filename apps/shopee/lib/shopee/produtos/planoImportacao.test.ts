@@ -271,13 +271,25 @@ describe('planejarImportacaoShopee — criar vs atualizar', () => {
     expect(plano.linkPaiRefPendente).toBe(true);
   });
 
-  it('`merge`ia sobre o vínculo resolvido quando ele já existe', () => {
+  it('o vínculo resolvido vira um `merge-guardado` (guarda `importacao`), campo a campo, sem spread', () => {
+    // ⚠️ D-A: o writer faz `update()`, que SUBSTITUI os mapas aninhados
+    // (`description_info`, `pre_order`, `tax_info`) onde o antigo merge com spread
+    // os mesclava — a leitura da Shopee vence inteira. A prova do lado do writer
+    // está em `links.test.ts`.
     const plano = planejarImportacaoShopee(
-      preparo({ linkPai: { id: 'link-1', raw: { dataCadastro: 111 } } }),
+      preparo({
+        linkPai: { id: 'link-1', raw: { dataCadastro: 111, chaveSoArmazenada: 'x' } },
+      }),
     );
-    expect(plano.linkPai.acao).toBe('merge');
+    if (plano.linkPai.acao !== 'merge-guardado') throw new Error('esperava um merge-guardado');
     expect(plano.linkPai.docId).toBe('link-1');
-    expect(plano.linkPai.dados.dataCadastro).toBe(111);
+    expect(plano.linkPai.guarda).toEqual({ tipo: 'importacao' });
+    // `dataCadastro` é de primeira vez: fora de `dados`, em `seAusentes`.
+    expect(plano.linkPai.dados).not.toHaveProperty('dataCadastro');
+    expect(plano.linkPai.seAusentes).toEqual({ dataCadastro: AGORA });
+    // Nada do armazenado atravessa: um `update` deixa em paz o que não nomeia.
+    expect(plano.linkPai.dados).not.toHaveProperty('chaveSoArmazenada');
+    expect(plano.linkPai.dados).toHaveProperty('item_name');
     expect(plano.linkPaiRefPendente).toBe(false);
   });
 
@@ -657,7 +669,7 @@ describe('planejarImportacaoShopee — a adoção de um rascunho (#1911)', () =>
     expect(plano.linkPai.adocao.createTimeS).toBeNull();
   });
 
-  it('⛔ NEAR-MISS: o MESMO documento sem a marca ⇒ o `merge` de hoje, com o spread', () => {
+  it('⛔ NEAR-MISS: o MESMO documento sem a marca ⇒ o `merge-guardado` (sem spread), nunca a adoção', () => {
     for (const marca of [undefined, false]) {
       const plano = planejarImportacaoShopee(
         preparo({
@@ -668,8 +680,12 @@ describe('planejarImportacaoShopee — a adoção de um rascunho (#1911)', () =>
           },
         }),
       );
-      expect(plano.linkPai.acao).toBe('merge');
-      expect(plano.linkPai.dados).toMatchObject({ chaveDoLegado: 'fica', dataCadastro: 111 });
+      expect(plano.linkPai.acao).toBe('merge-guardado');
+      if (plano.linkPai.acao !== 'merge-guardado') throw new Error('esperava um merge-guardado');
+      // A chave do legado "fica" por o `update` não a nomear — não por um spread.
+      expect(plano.linkPai.dados).not.toHaveProperty('chaveDoLegado');
+      expect(plano.linkPai.seAusentes).toEqual({ dataCadastro: AGORA });
+      expect(plano.linkPai.guarda).toEqual({ tipo: 'importacao' });
     }
   });
 
@@ -745,9 +761,9 @@ describe('planejarImportacaoShopee — `logisticaGravadaEm` no vínculo do pai (
     expect(Object.keys(CAMPOS_LIMPOS_NA_ADOCAO_SHOPEE)).not.toContain('logistic_info');
   });
 
-  it('PAR: o MESMO documento sem a marca de adoção (o `merge` com spread) e o `add` também saem carimbados', () => {
+  it('PAR: o MESMO documento sem a marca de adoção (o `merge-guardado`) e o `add` também saem carimbados', () => {
     const merge = plano({ id: 'rasc-1', raw: RASCUNHO_LEGADO });
-    expect(merge.linkPai.acao).toBe('merge');
+    expect(merge.linkPai.acao).toBe('merge-guardado');
     expect(merge.linkPai.dados).toMatchObject({
       logisticaGravadaEm: AGORA,
       logistic_info: [expect.objectContaining({ logistic_id: 1 })],

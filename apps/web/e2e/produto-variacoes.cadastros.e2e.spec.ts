@@ -1,9 +1,14 @@
 import { expect, test, type Page } from '@playwright/test';
 import {
   cleanupByNamePrefix,
+  cleanupProdutoSubcollection,
   docExistsByName,
   e2ePrefix,
   getProdutoData,
+  getProdutoEstoque,
+  getProdutoIdBySku,
+  seedDepositoAtivo,
+  seedEstoqueDoc,
   seedGruposDeVariacao,
 } from './_helpers/seed-data';
 import { clickSave, fillField } from './helpers/object-view';
@@ -13,14 +18,14 @@ import { warmRoutes } from './helpers/warmup';
 /**
  * End-to-end coverage for the product Variações tab: seed two variation
  * groups, create a parent produto, select groups + variants, generate the
- * Cartesian children, save (children flush in one batch after the parent
- * save) and staged-delete one child. Guards the `VariationManager` +
- * `deriveOnSave`/`onAfterSave` wiring and the Flutter wire shapes.
+ * Cartesian children, save the first conversion atomically and staged-delete
+ * one child. Guards the VariationManager and the Firestore wire shapes.
  */
 test.describe.serial('Produtos variações e2e — Variações tab', () => {
   const prefix = e2ePrefix('prod-var');
   const nome = `${prefix}-001`;
   const sku = prefix.toUpperCase().replace(/-/g, '_');
+  let originalMemberId: string | undefined;
 
   test.beforeAll(async ({ browser }) => {
     test.setTimeout(240_000);
@@ -31,8 +36,10 @@ test.describe.serial('Produtos variações e2e — Variações tab', () => {
   });
 
   test.afterAll(async () => {
+    if (originalMemberId) await cleanupProdutoSubcollection(originalMemberId, 'estoques');
     await cleanupByNamePrefix('produtos', prefix);
     await cleanupByNamePrefix('grupoDeVariacoes', prefix);
+    await cleanupByNamePrefix('depositos', prefix);
   });
 
   /**
@@ -65,12 +72,13 @@ test.describe.serial('Produtos variações e2e — Variações tab', () => {
     });
   });
 
-  test('generates Cartesian children and persists them on save', async ({ page }) => {
-    // Create the parent WITHOUT a SKU — it is typed later in the editor and
-    // must feed Gerar while still unsaved (regression: children used to get
-    // empty SKUs because the generator read only the persisted doc).
+  test('reuses the simple product’s sellable record when generating and rebuilding variants', async ({
+    page,
+  }) => {
+    const originalSku = `SHOPEE-${sku}`;
     await page.goto('/produtos/novo');
     await fillField(page, 'Nome', nome);
+    await fillField(page, 'SKU', originalSku);
     await clickSave(page, 'Criar');
     // Lands on the produto route (detail today, editor once the direct-editor
     // PR merges) — extract the id and open the editor explicitly.
@@ -85,12 +93,26 @@ test.describe.serial('Produtos variações e2e — Variações tab', () => {
     // Create-default parity: a fresh produto persists as a DRAFT
     // (`publicado=false`), matching the Flutter constructor (`models.dart:1333`).
     expect((await getProdutoData(id))?.publicado).toBe(false);
+    const member = (await getProdutoData(id))?.filhoUnicoId;
+    expect(typeof member).toBe('string');
+    if (typeof member !== 'string')
+      throw new Error('Expected the simple product’s sellable record');
+    originalMemberId = member;
+    expect((await getProdutoData(member))?.sku).toBe(`${originalSku}-UN`);
+    const deposito = await seedDepositoAtivo(prefix);
+    await seedEstoqueDoc(member, deposito.id, 12, 2);
 
-    await page.goto(`/produtos/${id}/editar`);
+    await page.goto(`/produtos/${member}/editar`);
+    await page.waitForURL(`**/produtos/${id}/editar`);
     // Type the SKU in the editor but do NOT save yet — Gerar must pick it up
     // from the live form values.
     await fillField(page, 'SKU', sku);
+    await page.getByRole('tab', { name: 'Dimensões e peso' }).click();
+    await fillField(page, 'Altura (cm)', '14');
     await page.getByRole('tab', { name: 'Variações' }).click();
+    await expect(page.getByRole('button', { name: 'Reconstituir variações' })).toBeDisabled();
+    await expect(page.getByRole('button', { name: 'Nova variante' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Remover variação' })).toHaveCount(0);
 
     // Select the Tamanhos group, then two of its variants.
     await pickOption(page, 'Grupos de variação', `${prefix}-Tamanhos`);
@@ -105,6 +127,12 @@ test.describe.serial('Produtos variações e2e — Variações tab', () => {
     await expect.poll(() => hasInputValue(page, `${nome} P`)).toBe(true);
     await expect.poll(() => hasInputValue(page, `${nome} M`)).toBe(true);
     await expect.poll(() => hasInputValue(page, `${sku}P`)).toBe(true);
+    await page.getByRole('button', { name: 'Reconstituir variações' }).click();
+    await expect(page.getByText('Variações reconstituídas — salve para gravar.')).toBeVisible();
+    await expect(
+      page.getByRole('alert').filter({ hasText: 'Variação que receberá o estoque' }),
+    ).toContainText(`${nome} P`);
+    await expect(page.getByRole('textbox', { name: 'SKU' })).toHaveCount(2);
 
     await clickSave(page, 'Salvar alterações');
     await expect
@@ -113,6 +141,18 @@ test.describe.serial('Produtos variações e2e — Variações tab', () => {
     await expect
       .poll(() => docExistsByName('produtos', `${nome} M`), { timeout: 15_000 })
       .toBe(true);
+    expect(await getProdutoIdBySku(`${sku}P`)).toBe(member);
+    expect((await getProdutoData(id))?.filhoUnicoId).toBeNull();
+    expect((await getProdutoData(member))?.alturaCm).toBe(14);
+    expect(await getProdutoEstoque(member, deposito.id)).toMatchObject({
+      quantidade: 12,
+      quantidadeReservada: 2,
+    });
+
+    await page.goto(`/produtos/${member}/editar`);
+    await expect(page.getByRole('link', { name: 'Abrir produto pai' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Excluir', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('textbox', { name: 'SKU', exact: true })).toHaveValue(`${sku}P`);
 
     // Re-generating must dedupe (same combos already exist).
     await page.goto(`/produtos/${id}/editar`);

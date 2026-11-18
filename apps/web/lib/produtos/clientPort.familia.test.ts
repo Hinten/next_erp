@@ -9,7 +9,15 @@ import type { Firestore } from 'firebase/firestore';
  * variations — silently, and forever, since nothing later reconciles a child
  * set. So both directions are asserted, not just the create.
  */
-const { newDocIdMock } = vi.hoisted(() => ({ newDocIdMock: vi.fn(() => 'child-novo') }));
+const { newDocIdMock, runTransactionMock } = vi.hoisted(() => ({
+  newDocIdMock: vi.fn(() => 'child-novo'),
+  runTransactionMock: vi.fn(),
+}));
+
+vi.mock('firebase/firestore', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('firebase/firestore')>()),
+  runTransaction: runTransactionMock,
+}));
 
 vi.mock('./docId', () => ({ newDocId: newDocIdMock }));
 vi.mock('@/lib/firebase/client', () => ({ getFirebaseFunctions: () => ({}) }));
@@ -41,7 +49,7 @@ vi.mock('@/lib/data/impostoProdutoCollection', () => ({
   },
 }));
 
-import { buildProdutoTransactionWrites } from './clientPort';
+import { buildProdutoTransactionWrites, createClientProdutoPort } from './clientPort';
 
 const db = {} as Firestore;
 type Escrita = ReturnType<typeof buildProdutoTransactionWrites>[number];
@@ -59,6 +67,60 @@ const values = { nome: 'Bandeja', sku: 'BAN-1', ehKit: false };
 
 beforeEach(() => {
   newDocIdMock.mockClear();
+});
+
+describe('guarded kit status propagation', () => {
+  const parent = {
+    nome: 'Kit',
+    sku: 'KIT',
+    filhoUnicoId: 'c1',
+    ehKit: true,
+    componentesKit: { comp: { quantidade: 2 } },
+  };
+  const member = { nome: 'Kit', sku: 'KIT-UN', paiId: 'p1' };
+  const change = { ehKit: true, ehKitVirtual: false, oldEhKit: false, oldEhKitVirtual: false };
+
+  function transactionFor(root: Record<string, unknown>, child: Record<string, unknown>) {
+    const update = vi.fn();
+    const get = ({ __path }: { __path: string }) =>
+      Promise.resolve(
+        __path === 'produtos/p1' ? { id: 'p1', data: () => root } : { id: 'c1', data: () => child },
+      );
+    runTransactionMock.mockImplementationOnce(
+      (
+        _db: unknown,
+        execute: (tx: { get: typeof get; update: typeof update }) => Promise<unknown>,
+      ) => execute({ get, update }),
+    );
+    return update;
+  }
+
+  it('copies the latest recipe to an internal member', async () => {
+    const update = transactionFor(parent, member);
+    const port = createClientProdutoPort(db);
+    await expect(port.commitKitStatus('p1', ['c1'], change)).resolves.toEqual(['c1']);
+    expect(update).toHaveBeenCalledWith(
+      docRef('produtos/c1'),
+      expect.objectContaining({
+        componentesKit: parent.componentesKit,
+      }),
+    );
+  });
+
+  it('keeps a genuine single variant’s recipe and drops a superseded kit change', async () => {
+    const port = createClientProdutoPort(db);
+    const variant = { ...member, variacoesUid: ['documents/grupoDeVariacoes/t/variacoes/p'] };
+    const update = transactionFor(parent, variant);
+    await port.commitKitStatus('p1', ['c1'], { ...change, membroUnicoId: 'c1' });
+    expect(update).toHaveBeenCalledWith(docRef('produtos/c1'), {
+      ehKit: true,
+      ehKitVirtual: false,
+    });
+
+    const stale = transactionFor({ ...parent, ehKit: false }, variant);
+    await expect(port.commitKitStatus('p1', ['c1'], change)).resolves.toEqual([]);
+    expect(stale).not.toHaveBeenCalled();
+  });
 });
 
 describe('buildProdutoTransactionWrites — the sole member', () => {

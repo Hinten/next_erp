@@ -1716,6 +1716,117 @@ describe('aplicarPublicacao — o carimbo de proveniência da logística (#2015)
   });
 });
 
+describe('aplicarPublicacao — os write-backs GUARDADOS contra uma edição do ERP (PR1, regra 7)', () => {
+  it('uma republicação cuja revisão confere: grava o conteúdo e LIMPA a bandeira pendente', async () => {
+    const db = new FakeDb();
+    semearCatalogo(db);
+    semearLink(db, { edicaoErpRevisao: 2, edicaoErpPendenteEm: AGORA - 1000 });
+    const fake = clienteFake({
+      updateItem: () => ecoDeItem(),
+      getItemBaseInfo: () => baseInfo([linhaDeLeitura({ has_model: false })]),
+    });
+
+    const { plano } = await planejar(db, fake);
+    expect(plano.revisaoDeEdicaoErp).toBe(2);
+    await aplicarPublicacao(deps(db, fake), plano);
+
+    const dados = db.store[CAMINHO_LINK]?.data ?? {};
+    expect(dados.edicaoErpPendenteEm).toBeNull();
+    expect(dados.edicaoErpRevisao).toBe(2);
+    expect(dados.logistic_info).toEqual([expect.objectContaining({ logistic_id: CANAL })]);
+  });
+
+  it('⛔ uma edição estampada ENTRE o preparar e o write-back #1 sobrevive com o conteúdo, e a bandeira fica posta', async () => {
+    const db = new FakeDb();
+    semearCatalogo(db);
+    semearLink(db, { item_name: 'Camiseta básica branca' });
+    const fake = clienteFake({
+      updateItem: () => {
+        // The operator's edit lands while the update is in flight.
+        semearLink(db, {
+          item_name: 'EDITADO NO ERP',
+          edicaoErpRevisao: 1,
+          edicaoErpPendenteEm: AGORA - 5,
+        });
+        return ecoDeItem();
+      },
+      getItemBaseInfo: () => baseInfo([linhaDeLeitura({ has_model: false })]),
+    });
+
+    const { plano } = await planejar(db, fake);
+    expect(plano.revisaoDeEdicaoErp).toBeNull();
+    await aplicarPublicacao(deps(db, fake), plano);
+
+    const dados = db.store[CAMINHO_LINK]?.data ?? {};
+    expect(dados.item_name).toBe('EDITADO NO ERP');
+    expect(dados.edicaoErpPendenteEm).toBe(AGORA);
+    // Status keys still landed.
+    expect(dados.estadoAnuncio).toBeDefined();
+    expect(dados.falhaPublicacao).toBeNull();
+  });
+
+  it('o write-back #2 não escreve logistic_info/attributes enquanto há edição pendente', async () => {
+    const db = new FakeDb();
+    semearCatalogo(db);
+    const listaDoErp = [{ logistic_id: 999, enabled: true, is_free: false }];
+    const atributosDoErp = [
+      { attribute_id: 77, attribute_value_list: [{ value_id: 0, original_value_name: 'do ERP' }] },
+    ];
+    semearLink(db, {});
+    const fake = clienteFake({
+      updateItem: () => {
+        semearLink(db, {
+          logistic_info: listaDoErp,
+          logisticaGravadaEm: AGORA - 9,
+          attributes: atributosDoErp,
+          edicaoErpRevisao: 1,
+          edicaoErpPendenteEm: AGORA - 5,
+        });
+        return ecoDeItem();
+      },
+      getItemBaseInfo: () =>
+        baseInfo([
+          linhaDeLeitura({
+            has_model: false,
+            attribute_list: [
+              {
+                attribute_id: 5,
+                attribute_value_list: [{ value_id: 51, original_value_name: 'X' }],
+              },
+            ],
+          }),
+        ]),
+    });
+
+    const { plano } = await planejar(db, fake);
+    await aplicarPublicacao(deps(db, fake), plano);
+
+    const dados = db.store[CAMINHO_LINK]?.data ?? {};
+    expect(dados.logistic_info).toEqual(listaDoErp);
+    expect(dados.logisticaGravadaEm).toBe(AGORA - 9);
+    expect(dados.attributes).toEqual(atributosDoErp);
+  });
+
+  it('NEAR-MISS: sem edição, o write-back #2 grava os atributos da LEITURA (o que a Shopee guardou), não os do corpo', async () => {
+    const db = new FakeDb();
+    semearCatalogo(db);
+    semearLink(db, {});
+    const lidos = [
+      { attribute_id: 5, attribute_value_list: [{ value_id: 51, original_value_name: 'X' }] },
+    ];
+    const fake = clienteFake({
+      updateItem: () => ecoDeItem(),
+      getItemBaseInfo: () =>
+        baseInfo([linhaDeLeitura({ has_model: false, attribute_list: lidos })]),
+    });
+
+    const { plano } = await planejar(db, fake);
+    await aplicarPublicacao(deps(db, fake), plano);
+
+    expect(db.store[CAMINHO_LINK]?.data.attributes).toEqual(lidos);
+  });
+});
+
 describe('dadosDoWriteBack1 — o carimbo vai na MESMA condição da lista (#2015)', () => {
   type Corpo = Parameters<typeof dadosDoWriteBack1>[1]['corpo'];
   const D = { integracaoId: INTEGRACAO, nowMs: AGORA };

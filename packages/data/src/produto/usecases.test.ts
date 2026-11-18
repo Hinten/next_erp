@@ -50,6 +50,15 @@ function memoryPort(opts: MemoryOpts = {}) {
     newId: () => `id${++n}`,
     now: () => 1000,
     getChildren: async () => opts.children ?? [],
+    commitKitStatus: async (_parentId, ids, change) => {
+      committed.push(
+        buildKitStatusChildOps(
+          change,
+          ids.map((id) => ({ id })),
+        ),
+      );
+      return ids;
+    },
     getKitReferences: async (id) => opts.refs?.[id]?.kits ?? [],
     getKitFlags: async (ids) => {
       kitFlagCalls.push(ids);

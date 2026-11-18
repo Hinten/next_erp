@@ -299,8 +299,46 @@ export interface EscritaDeAdocaoDeRascunho {
   };
 }
 
-/** The parent link's write: an ordinary link write, or a draft's adoption. */
-export type EscritaDeLinkDaListagem = EscritaDeLink | EscritaDeAdocaoDeRascunho;
+/**
+ * Which writer a guarded link write belongs to — it decides WHEN the ERP-edit
+ * content fields (`CAMPOS_DE_EDICAO_ERP_SHOPEE`) may be written (rule 7 tier 1,
+ * applied by `links.ts` on a fresh read per attempt):
+ * - `importacao` — Shopee's read of the listing: content only while no ERP edit
+ *   is pending;
+ * - `write-back-1` — the publish's first write-back: content only while the
+ *   revision the body was built from is still the stored one; a lost one
+ *   stamps the pending flag at `nowMs` instead;
+ * - `write-back-2` — the publish's read-back: content only while the revision is
+ *   unchanged AND nothing is pending.
+ */
+export type GuardaDeEdicaoErpShopee =
+  | { readonly tipo: 'importacao' }
+  | { readonly tipo: 'write-back-1'; readonly revisao: number | null; readonly nowMs: number }
+  | { readonly tipo: 'write-back-2'; readonly revisao: number | null };
+
+/**
+ * A field-wise guarded `update()` of an EXISTING link (PR1, edit-a-published-
+ * listing). ⚠️ Never a `...existente` spread: an `update` leaves every unnamed key
+ * alone, so the patch is valid against ANY fresh read, and the writer decides per
+ * attempt whether the content keys ride along. Accepted deviation: `update()`
+ * REPLACES nested maps (`description_info`, `pre_order`, `tax_info`) where the old
+ * set-merge deep-merged them — Shopee's read wins whole.
+ */
+export interface EscritaDeLinkGuardada {
+  readonly acao: 'merge-guardado';
+  readonly docId: string;
+  /** The full patch; the writer drops the CAMPOS_DE_EDICAO_ERP_SHOPEE keys when the guard says so. Never a ...existente spread. */
+  readonly dados: Record<string, unknown>;
+  /** First-time-only keys: written only when the fresh read holds undefined/null for that key. */
+  readonly seAusentes: Record<string, unknown>;
+  readonly guarda: GuardaDeEdicaoErpShopee;
+}
+
+/** The parent link's write: an ordinary link write, a guarded one, or a draft's adoption. */
+export type EscritaDeLinkDaListagem =
+  | EscritaDeLink
+  | EscritaDeAdocaoDeRascunho
+  | EscritaDeLinkGuardada;
 
 /**
  * The guarded dotted-path price patch: on the UPDATE path, and on the
@@ -699,11 +737,16 @@ export function planejarImportacaoShopee(preparo: PreparoImportacaoShopee): Plan
   const linkPai: EscritaDeLinkDaListagem =
     preparo.linkPai !== null && preparo.linkPai.rascunhoAdotado === true
       ? escritaDeAdocao(entrada, preparo.linkPai.id, integracaoId, nowMs)
-      : {
-          acao: preparo.linkPai !== null ? 'merge' : 'add',
-          docId: preparo.linkPai?.id ?? null,
-          dados: dadosLinkListagem(entrada, preparo.linkPai?.raw ?? null, integracaoId, nowMs),
-        };
+      : preparo.linkPai !== null
+        ? // ⚠️ A RESOLVED link is a guarded field-wise write, never the spread
+          // merge: the spread re-applied the stored content over a pending ERP
+          // edit's fields (PR1). Nested maps are REPLACED (D-A).
+          escritaGuardadaDaImportacao(entrada, preparo.linkPai.id, integracaoId, nowMs)
+        : {
+            acao: 'add',
+            docId: null,
+            dados: dadosLinkListagem(entrada, null, integracaoId, nowMs),
+          };
 
   // ---- 8. the children -----------------------------------------------------
   // ⚠️ A child inherits the parent's EFFECTIVE value — what the parent document
@@ -862,6 +905,28 @@ function escritaDeAdocao(
       itemId: entrada.itemId,
       createTimeS: entrada.base.create_time ?? null,
     },
+  };
+}
+
+/**
+ * The parent link of a RESOLVED (non-draft) listing — see
+ * {@link EscritaDeLinkGuardada}. Same field set as an adoption's (the shared
+ * `dadosLinkListagem` over NO stored document, `dataCadastro` first-time-only),
+ * guarded as the import's own writer.
+ */
+function escritaGuardadaDaImportacao(
+  entrada: ItemLido,
+  docId: string,
+  integracaoId: string,
+  nowMs: number,
+): EscritaDeLinkGuardada {
+  const { dataCadastro, ...dados } = dadosLinkListagem(entrada, null, integracaoId, nowMs);
+  return {
+    acao: 'merge-guardado',
+    docId,
+    dados,
+    seAusentes: { dataCadastro },
+    guarda: { tipo: 'importacao' },
   };
 }
 
