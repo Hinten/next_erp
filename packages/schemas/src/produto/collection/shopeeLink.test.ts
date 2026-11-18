@@ -1605,3 +1605,18 @@ describe('logisticaGravadaEm — a procedência de logistic_info (#2015)', () =>
     expect(fonte).not.toMatch(/names[\s*]+the four sites/);
   });
 });
+
+describe('edicaoErpRevisao / edicaoErpPendenteEm — carimbos do servidor', () => {
+  it('ausentes e null passam, números inteiros passam, o resto falha', () => {
+    const base = produtoShopeeLinkSchema.partial();
+    expect(base.safeParse({}).success).toBe(true);
+    expect(base.safeParse({ edicaoErpRevisao: null, edicaoErpPendenteEm: null }).success).toBe(
+      true,
+    );
+    expect(
+      base.safeParse({ edicaoErpRevisao: 2, edicaoErpPendenteEm: 1_757_000_000_000 }).success,
+    ).toBe(true);
+    expect(base.safeParse({ edicaoErpRevisao: 1.5 }).success).toBe(false);
+    expect(base.safeParse({ edicaoErpPendenteEm: '1' }).success).toBe(false);
+  });
+});

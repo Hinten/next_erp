@@ -12,6 +12,7 @@ import { millisToMicros, nowMicros, parseIsoToMillis } from '@delfrance/core/dat
 import {
   camposEspelhadosQueMudaram,
   planejarSincronizacaoDoMembroUnico,
+  ehMembroUnicoImplicito,
   produtoMeta,
   reapontarComponentesKit,
   type ComponentesKit,
@@ -233,7 +234,8 @@ export async function sincronizarMembroUnico(
   // newer. Read only after the pure gate above said something moved, so an
   // ordinary produto save still costs nothing.
   const paiSnap = await produtoCollection.ref(db, {}).doc(parentId).get();
-  const paiAgora = (paiSnap.data() ?? after) as DocumentData;
+  const paiAgora = paiSnap.data();
+  if (!paiAgora || paiAgora.paiId != null || paiAgora.filhoUnicoId !== membroId) return null;
 
   const ref = produtoCollection.ref(db, {}).doc(membroId);
   const snap = await ref.get();
@@ -248,7 +250,17 @@ export async function sincronizarMembroUnico(
     return null;
   }
 
-  const patch = planejarSincronizacaoDoMembroUnico(before, paiAgora, snap.data() ?? {});
+  const membro = snap.data();
+  if (!membro) return null;
+  const raiz = { ...paiAgora, id: parentId };
+  const filho = { ...membro, id: membroId, paiId: membro.paiId ?? null };
+  if (
+    !ehMembroUnicoImplicito(raiz, filho, null) &&
+    !ehMembroUnicoImplicito({ ...raiz, nome: before?.nome, sku: before?.sku }, filho, null)
+  ) {
+    return null;
+  }
+  const patch = planejarSincronizacaoDoMembroUnico(before, paiAgora, membro);
   if (patch === null) return null;
 
   try {

@@ -209,7 +209,7 @@ a page of the 3-day queue irreversibly.
   create's outcome is unknown, 400 for a bad body, 404
   `SHOPEE_ANUNCIO_NAO_ENCONTRADO`, 409 for a draft; it is the composition root
   for the clock, the wait and the partner client, because `anuncios/` builds none.
-- `app/api/marketplace/shopee/{rascunho/**,canais}` — #1911's draft + channel routes (**Publish**).
+- `app/api/marketplace/shopee/{rascunho/**,canais,anuncio/**}` — draft, channel and unsent-edit routes (**Publish**).
 - `app/api/marketplace/shopee/enviar-estoque/route.ts` — step 12's manual stock
   push (`PERM.integracao.write`): **200 even when every listing failed** (a
   per-listing refusal is DATA), 409 `SHOPEE_CONTA_PAUSADA` before any provider
@@ -449,11 +449,10 @@ a page of the 3-day queue irreversibly.
   `avisos/autorizacao.ts`, which stays the one module on the AVISOS path that
   knows the unit (the three pedido seams above are the others).
 - `lib/shopee/testing/fakeDb.ts` — the shared in-memory Firestore double
-  **124** suites in this app name (122 drive it), and since step 8 it has a
+  **126** suites in this app name (124 drive it), and since step 8 it has a
   suite of its OWN. ⚠️ Re-derive the number, never increment it:
   `git grep -l "testing/fakeDb" -- "apps/shopee/**/*.test.ts" | wc -l` (after
-  step 8: 20, 9: 34, 12: 57, 13: 73, 14: 81, 15: 84, 15b: 87, 17: 93, 18: 95,
-  19: 108, 20: 111, 21: 114, #1911: 123, #1912: 124 — the two `*.tasks.test.ts` suites it
+  step 8: 20, 21: 114, #1911: 123, #2164: 125, #1912: 126 — the two `*.tasks.test.ts` suites it
   counts name the double in a docblock only).
   Step 9 extended the double ADDITIVELY: an
   `__arrayUnion` sentinel applied on write, **dotted-path** expansion on
@@ -1447,6 +1446,7 @@ The first WRITER of a listing. Reasoning: `anuncios/README.md`.
   deadline: 409 `PUBLICACAO_EXPIRADA`, nothing sent (the CLI has the lock's
   time). Follow-ups #2064 (narrow the walk), #2061 (ENSURE's fallback).
   Registers 307–320: `anuncios/README.md`.
+- **Unsent edits of a PUBLISHED listing**: `anuncios/README.md`, «Unsent ERP edits».
 
 ## Stock sync (`lib/shopee/estoque/`, step 12)
 
@@ -1631,51 +1631,37 @@ the pick (see **Publish**). Depth and register rows 248–269:
 
 ## Native kits (`lib/shopee/kits/`, step 19)
 
-- Same `publicar` route/CLI; `escolherArmaDePublicacao` picks item vs kit from
-  the conta's links. A first publish is a kit only when `ehKitVirtualEfetivo`;
-  `ehKitVirtual` without `ehKit` is REFUSED. Once live-linked, the LINK decides
-  (never a draft).
-- ONE recipe module: `receitaKitShopee.ts` in `@delfrance/schemas` (the
-  default-model rule, the fold, the fingerprint). Never a second copy here, in
-  `apps/functions` or in `apps/web`.
-- A plain component reads back a HIDDEN non-zero `component_model_id`: the
-  item's `has_model` (`lerTemModelosDosComponentes`) decides; `0`/absent never
-  means "no model".
-- `add_kit_item` is NOT idempotent and NOTHING stores create progress: every kit
-  command is an ENSURE re-derived from Shopee reads + the links. Same-SKU kit
-  scan first, create arms only (any hit refuses: import it); ONE call;
-  `incerto` ⇒ 202, nothing written but the kept lease. The kit link id derives
-  from (conta, `item_id`) and step 9's import uses the same id.
-- **Every create arm runs under the single-flight LEASE** (#1912,
-  `kits/criacaoKitEmCurso.ts`; reading + codes in `@delfrance/schemas`
-  `kitCriacaoShopee.ts`): taken BEFORE any link is read, fenced and stamped right
-  before `add_kit_item`, released once the run knows (a refusal, `nao-criado`,
-  the link write), KEPT after `incerto` or a throw past the send. A second run of
-  the same (conta, kit produto) answers 409 `SHOPEE_KIT_CRIACAO_EM_ANDAMENTO`
-  with zero Shopee calls. It needs `deps.aoVivo` (no fallback to `nowMs`), it is
-  tier 1 (no transaction), Admin-only and outside `ALL_DOMAINS` (no rules).
-  `kit-atualizar` takes none. Residuals: registers 330–333.
-- One main per KIT (`--principal`); 1 tier, ≤ 9 models (a family = one model per
-  child). Every component is sent (`limitarEstoque` is deprecated).
-- The composition is frozen and a quantity change is a SILENT 200: never read an
-  `update_kit_item` ack as "applied" — read back. A republish never blocks
-  (`receita-divergente`); `--recriar` ensures the new kit, then deletes the old
-  only once the new kit is live, matches the ERP (composition and principal)
-  and is newer; `--converter-em-kit` supersedes an ordinary listing, which
-  keeps stock and price until deleted in Seller Centre and re-verified
-  (`reverificar:anuncio`).
-- A produto can hold TWO listings' `variashopee` rows (converter, recriar): the
-  model sync and every binding filter rows by
+Depth, registers 270–306 and 330–333: `kits/README.md`.
+
+- `escolherArmaDePublicacao` picks item vs kit from the conta's links (shared
+  classes: `classeDoVinculoShopee`). A first publish is a kit only when
+  `ehKitVirtualEfetivo` (`ehKitVirtual` alone is REFUSED); once live-linked,
+  the LINK decides.
+- ONE recipe module, `receitaKitShopee.ts` in `@delfrance/schemas` — never a
+  copy here, in `apps/functions` or `apps/web`. A plain component reads back a
+  HIDDEN `component_model_id`: `has_model` decides; `0` never means "no model".
+- `add_kit_item` is NOT idempotent and no create progress is stored: every kit
+  command is an ENSURE from Shopee reads + the links. Same-SKU scan on create
+  arms only (a hit refuses: import it); ONE call; `incerto` ⇒ 202. Link id from
+  (conta, `item_id`), as step 9's import.
+- **Every create arm holds the single-flight lease** (#1912,
+  `criacaoKitEmCurso.ts`, README §2.1): taken before any link read, stamped
+  right before the send, KEPT after `incerto`; a second run gets 409
+  `SHOPEE_KIT_CRIACAO_EM_ANDAMENTO`. Needs `deps.aoVivo`; no transaction.
+- One main per KIT (`--principal`); 1 tier, ≤ 9 models; every component sent.
+- The composition is frozen and a quantity change is a SILENT 200: verify by
+  read-back, never by the ack. A republish never blocks
+  (`receita-divergente`); `--recriar` deletes the old kit only once the new one
+  is live, equal to the ERP and newer; `--converter-em-kit` supersedes an
+  ordinary listing (it keeps stock and price until deleted + re-verified).
+- Two listings' `variashopee` rows can share a produto: filter by
   `idDoRef(produtoShopeeOuterRef) === linkDocId`, never by produto.
-- Kit refusals are read by SENTENCE in `recusaKit.ts`, never by `KIND_BY_CODE`.
-- Stock: never (step 12 `kit-derivado`). Price: step 13 sends
-  `update_kit_item`. A recipe edit opens `shopeeKitReceitaDivergente` (the
-  `apps/functions` trigger vs `receitaKitConferida`). Depth + register rows
-  270–306 and 330–333: `kits/README.md`.
-- A refusal that names a CLI flag also carries `acao` (`@delfrance/schemas`
-  `shopeeAcaoSugerida.ts`) and the 202 carries `aguardarMs` (the kept lease's
-  remaining hold): the web tab keys on those, never on a sentence
-  (`exigirAcaoSeHaComando` pins it).
+- Kit refusals are read by SENTENCE (`recusaKit.ts`). Stock: never
+  (`kit-derivado`); price: `update_kit_item`; a recipe edit opens
+  `shopeeKitReceitaDivergente` (vs `receitaKitConferida`).
+- A refusal naming a CLI flag carries `acao` and the 202 `aguardarMs` (the
+  lease's hold): the web keys on those, never on a sentence
+  (`exigirAcaoSeHaComando`).
 
 ## Rules specific to this app
 

@@ -122,14 +122,21 @@
  *    `int32`; `Number()` would turn `''` into `0` and `'12.5'` into `12.5`, and
  *    `0` is a size the seller never picked.
  *
- * ## What we never send
+ * ## What we send as OFF (and when we never do)
  *
- * **`enabled: false` never reaches the wire.** Only entries we want ON are sent.
- * Two consequences, both deliberate: `related_dependent_block_channels` cannot
- * fire (it triggers on DISABLING), and this ERP cannot turn a channel off —
- * closing a channel is a Seller Centre action. An off recorded in a TRUSTED
- * vínculo (#1911 P15) is honoured by NOT sending the channel; the ERP still
- * never disables a channel on a live listing.
+ * **`enabled: false` reaches the wire ONLY on an UPDATE of a live listing**
+ * ({@link ArgsLogistica.enviarDesligados}, Lucas 2026-11-17): the operator
+ * switched a channel off on the published listing's vínculo, and a republish
+ * that merely omitted it would leave it ON at Shopee. Only a channel a TRUSTED
+ * stored list marks off qualifies, and only while it is in the live channel
+ * list and not `force_enable` — exactly the `desligados` set of the stored
+ * pass. Each goes AFTER the ON entries as `{ logistic_id, enabled: false }` (no
+ * other key), once per id, never for an id also sent ON, and it never counts as
+ * an enabled channel nor toward the empty-list refusal. A create, a kit and a
+ * distrusted list send no off. ⚠️ `related_dependent_block_channels` triggers
+ * on DISABLING, so Shopee may refuse an off whose channel others depend on; its
+ * exact answer is unmeasured. Without `enviarDesligados`, an off recorded in a
+ * TRUSTED vínculo (#1911 P15) is honoured by NOT sending the channel.
  *
  * ⚠️ There is no `preferred` field on `get_channel_list`. The legacy DTO carried
  * one; a port that copies it inherits a phantom nothing answers.
@@ -239,7 +246,11 @@ export interface CanalPulado {
 
 /** What {@link construirLogistica} answers. */
 export interface ResultadoLogistica {
-  /** The block that goes on the wire. Every entry is `enabled: true`. */
+  /**
+   * The block that goes on the wire. Every entry is `enabled: true`, except the
+   * trailing `{ logistic_id, enabled: false }` ones that
+   * {@link ArgsLogistica.enviarDesligados} appends on an update.
+   */
   readonly logistic_info: readonly ShopeeLogisticInfoRequest[];
   /**
    * Which channel ids will be ON after Shopee applies this request — the ones we
@@ -287,6 +298,17 @@ export interface ArgsLogistica {
   /** The WIRE triple, already in centimetres. Never the produto fields. */
   readonly dimensaoCm: ShopeeDimensionRequest | null;
   readonly ofereceFreteGratis: boolean;
+  /**
+   * Send `{ logistic_id, enabled: false }` for every channel a TRUSTED stored
+   * list switched off (E-4): `true` only when the plan is an UPDATE of a live
+   * listing. The offs go AFTER the ON entries, in stored order, once per id,
+   * only for a channel still in the live list that is not `force_enable` (the
+   * stored pass's `desligados`), and never for an id also sent ON.
+   *
+   * ⚠️ REQUIRED, so every caller decides: a create or a kit must not switch
+   * anything off by omission.
+   */
+  readonly enviarDesligados: boolean;
 }
 
 /**
@@ -820,6 +842,8 @@ export function construirLogistica(args: ArgsLogistica): ResultadoLogistica {
     for (const relacionado of relacionadosHabilitados(canal)) empurrar(relacionado);
   }
 
+  const idsLigados = new Set<number>(passagem.entradas.map((e) => e.logistic_id));
+
   const problemas: ProblemaDeBloqueio[] = [];
   let pelaImportacao = 0;
   for (const logisticId of passagem.inescapaveisPerdidos) {
@@ -918,8 +942,20 @@ export function construirLogistica(args: ArgsLogistica): ResultadoLogistica {
     );
   }
 
+  // E-4: the offs ride AFTER the ONs and only on an update, from the TRUSTED
+  // stored pass alone (a distrusted list hands over an empty set). They never
+  // reach `canaisHabilitados`, `enviouInescapavel` or the empty-list refusal
+  // above, which all read the ON entries.
+  const desligadosNoFio: ShopeeLogisticInfoRequest[] = [];
+  if (args.enviarDesligados) {
+    for (const id of armazenada.desligados) {
+      if (idsLigados.has(id)) continue;
+      desligadosNoFio.push({ logistic_id: id, enabled: false });
+    }
+  }
+
   return {
-    logistic_info: passagem.entradas,
+    logistic_info: [...passagem.entradas, ...desligadosNoFio],
     canaisHabilitados,
     pulados: passagem.pulados,
     problemas,
@@ -956,7 +992,8 @@ export interface CanalAvaliadoShopee {
  * Per channel, {@link construirEntrada} with no stored value — exactly what
  * {@link passagemCompleta} calls with no offs — in `get_channel_list` order,
  * unreadable (`null`) rows dropped as {@link construirLogistica} drops them. It
- * takes the parcel alone ({@link ParcelaLogistica}): there is no stored list
+ * takes the parcel alone ({@link ParcelaLogistica}) plus, optionally, a
+ * published listing's stored size/fee per channel id: there is no stored OFF
  * here, so there is no trust to decide.
  *
  * ⚠️ A verdict, never a decision: publish re-reads `get_channel_list` uncached
@@ -964,11 +1001,33 @@ export interface CanalAvaliadoShopee {
  * never a send.
  */
 export function avaliarCanaisDaLojaShopee(
-  entrada: ParcelaLogistica & { readonly canais: readonly ShopeeLogisticsChannel[] },
+  entrada: ParcelaLogistica & {
+    readonly canais: readonly ShopeeLogisticsChannel[];
+    /**
+     * A PUBLISHED listing's stored `logistic_info`, unvalidated (the `canais`
+     * route's `linkDocId` read). Absent or `null` ⇒ the verdict is the full
+     * pass's, byte for byte. When given, a channel's `size_id` / `shipping_fee`
+     * come from the FIRST stored entry of THAT `logistic_id` (through
+     * `lerLogisticaArmazenadaShopee`, the stored pass's own reader), so a
+     * `SIZE_SELECTION` / `CUSTOM_PRICE` channel whose value the listing already
+     * holds reads as sendable. Never another id's value; `is_free` stays the
+     * full pass's. Trust is not decided here: the verdict is advice and a
+     * publish decides again.
+     */
+    readonly armazenado?: readonly unknown[] | null;
+  },
 ): readonly CanalAvaliadoShopee[] {
   const canais = entrada.canais.filter((c): c is ShopeeLogisticsChannel => c != null);
+  const lidas = lerLogisticaArmazenadaShopee(entrada.armazenado ?? null) ?? [];
   return canais.map((canal) => {
-    const tentativa = construirEntrada(canal, entrada, SEM_ARMAZENADO);
+    const guardada = lidas.find((l) => l.logisticId === canal.logistics_channel_id);
+    const tentativa = construirEntrada(
+      canal,
+      entrada,
+      guardada === undefined
+        ? SEM_ARMAZENADO
+        : { sizeId: guardada.sizeId, shippingFee: guardada.shippingFee, isFree: null },
+    );
     return {
       canal,
       selecionavel: canalSelecionavel(canal),

@@ -1501,6 +1501,8 @@ export function planejarKit(ctx: ContextoKit, fotos: FotosResolvidas | null): Pl
     pesoKg: peso,
     dimensaoCm: dimensao,
     ofereceFreteGratis: medidas.ofereceFreteGratis,
+    // E-4: the kit arm never sends an off; its republish is unchanged.
+    enviarDesligados: false,
   });
   conteudo.push(...logistica.problemas);
 

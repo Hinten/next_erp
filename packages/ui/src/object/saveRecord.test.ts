@@ -211,6 +211,36 @@ describe('saveRecord — siblingWrites (atomic same-transaction writes)', () => 
     data: { x: 1 },
   };
 
+  it('rejects the entire update if a structural sibling precondition fails', async () => {
+    const main = { nome: 'Produto', filhoUnicoId: 'other' };
+    const child = { nome: 'Variante existente' };
+    firestoreMock.txMock.get.mockImplementation(async (ref) => ({
+      exists: () => true,
+      data: () => (ref.id === 'sibling' ? child : main),
+    }));
+    const conflict = new Error('A família mudou');
+    const assertCurrent = vi.fn(() => {
+      throw conflict;
+    });
+
+    await expect(
+      saveRecord({
+        db: {} as never,
+        collection: fakeCollection(),
+        pathContext: {},
+        recordId: 'EXISTING_ID',
+        values: { nome: 'Novo nome' },
+        dirtyFields: { nome: true },
+        currentUserUid: 'u1',
+        siblingWrites: () => [{ ...sibling, guard: { ...sibling.guard!, assertCurrent } }],
+      }),
+    ).rejects.toBe(conflict);
+
+    expect(assertCurrent).toHaveBeenCalledWith(child, main);
+    expect(firestoreMock.txMock.set).not.toHaveBeenCalled();
+    expect(firestoreMock.txMock.update).not.toHaveBeenCalled();
+  });
+
   it('on create, writes the main doc AND the siblings in the same transaction', async () => {
     const result = await saveRecord({
       db: {} as never,
