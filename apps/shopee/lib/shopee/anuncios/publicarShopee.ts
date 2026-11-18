@@ -39,7 +39,12 @@
 import { produtoCollection } from '@delfrance/data/admin/collections';
 import { marcarProdutoPublicado } from '@delfrance/data/admin/produtos';
 
-import { escolherArmaDePublicacao, type ResultadoDoDespacho } from '../kits/armaDePublicacao';
+import {
+  escolherArmaDePublicacao,
+  vinculosMudaramParaAPrimeiraCriacao,
+  type ResultadoDoDespacho,
+} from '../kits/armaDePublicacao';
+import { conflitoKitVinculosMudaram } from '../kits/criacaoKitEmCurso';
 import type { ArmaDeKit, EntradaDeKit } from '../kits/prepararKit';
 import { ensaiarKitShopee, publicarKitShopee, type EnsaioDeKit } from '../kits/publicarKit';
 import type { ArmaDePublicacao, KitDeps, ResultadoPublicacaoKit } from '../kits/resultadoKit';
@@ -78,6 +83,15 @@ export type EntradaDePublicacaoShopee = EntradaDePublicacao & {
   readonly recriar: boolean;
   /** L8: turn the produto's ordinary listing into a native kit. */
   readonly converterEmKit: boolean;
+  /**
+   * #1912: the request is a native kit's FIRST create (the web's «Publicar como
+   * kit nativo»). When the dispatcher picks any other ARM — a listing appeared
+   * since the page was loaded — the publish refuses 409
+   * `SHOPEE_KIT_CRIACAO_VINCULOS_MUDARAM` before the arm runs, nothing sent.
+   * A dispatcher REFUSAL (about the produto) is answered as it is. Absent ⇒ no
+   * such intent (the CLI's).
+   */
+  readonly criarKitNativo?: boolean;
 };
 
 /**
@@ -264,7 +278,9 @@ function entradaDoKit(entrada: EntradaDePublicacaoShopee): EntradaDeKit {
  *   before the arm runs (§I4, round 5). A kit create whose outcome
  *   is uncertain is NOT a throw:
  *   it is a `ResultadoPublicacaoKit` with `desfecho: 'incerto'` (the route's
- *   202), because nothing was written and the operator must re-run. Neither is
+ *   202), because nothing was written but the kept create lease (#1912) and
+ *   the operator must re-run after its `aguardarMs`. The lease's own refusals
+ *   are `ConflitoDeCriacaoDeKitShopeeError` (the 409), nothing sent. Neither is
  *   an ordinary listing's (#1911): the item arm's `CriacaoDeAnuncioIncertaError`
  *   — thrown only AFTER the draft recorded the attempt — is narrowed BY CLASS
  *   into `tipo: 'item-incerto'` here, the one place that reads it.
@@ -283,6 +299,12 @@ export async function publicarShopee(
 ): Promise<ResultadoPublicacaoShopee | null> {
   const despacho = await escolherArmaShopee(deps, entrada);
   if (despacho === null) return null;
+  // #1912: a click on «Publicar como kit nativo» never runs another arm —
+  // decided BEFORE the dispatcher's own refusal, so a link that appeared since
+  // the page loaded reads as what it is (never «opções de kit em anúncio comum»).
+  if (entrada.criarKitNativo === true && vinculosMudaramParaAPrimeiraCriacao(despacho)) {
+    throw conflitoKitVinculosMudaram();
+  }
   const arma = armaOuRecusa(entrada, despacho);
   // §I4 on the kit arms (round 5): BEFORE the arm — no Shopee call, no upload,
   // no write. The item arm's equivalent is its reservation's 409 `JA_PUBLICADO`,

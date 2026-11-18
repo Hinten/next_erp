@@ -77,11 +77,15 @@
  * looks for the listing by SKU before any new `add_item` ·
  * 200 with the publish summary, built BY NAME — step 11's for the item arm, the
  * kit summary for a kit arm · **202** for a kit create whose outcome Shopee left
- * UNCERTAIN (`desfecho: 'incerto'`): NOTHING was written, and the body carries
- * Shopee's refusal (`recusa`), the sentence `MENSAGEM_KIT_INCERTO`, the exact
- * command to re-run (`comando`, the CLI's) and — since step 21 (#1529) — the
- * wait in MILLISECONDS (`aguardarMs`, the schemas' `AGUARDAR_KIT_INCERTO_SHOPEE_MS`)
- * the produto's Shopee tab holds its identical re-send for · 400 for a bad body
+ * UNCERTAIN (`desfecho: 'incerto'`): nothing was written but the KEPT create
+ * lease (#1912), and the body carries Shopee's refusal (`recusa`), the sentence
+ * `mensagemKitIncerto(aguardarMs)`, the exact command to re-run (`comando`, the
+ * CLI's) and the wait in MILLISECONDS (`aguardarMs`: the lease's remaining
+ * hold) the produto's Shopee tab holds its identical re-send for · **409**
+ * `ConflitoDeCriacaoDeKitShopeeError` (#1912) — a kit create the single-flight
+ * lease refused, nothing sent: `code` is one of `CODIGO_CRIACAO_KIT_SHOPEE`'s
+ * four, plus `aguardarMs` on `EM_ANDAMENTO`; an app class, mapped BEFORE
+ * `isShopeeError` · 400 for a bad body
  * (both kit actions at once, or `recriar` or `criacaoIncertaAdota` with no
  * `linkDocId`, included — refused at parse, before the conta context loads and
  * before any write) · 404
@@ -116,10 +120,11 @@ import {
   corpoDaRecusaDeRascunhoShopee,
 } from '@/lib/shopee/anuncios/rascunho';
 import { ConflitoDeRascunhoShopeeError } from '@/lib/shopee/anuncios/reservaRascunho';
+import { ConflitoDeCriacaoDeKitShopeeError } from '@/lib/shopee/kits/criacaoKitEmCurso';
 import { isShopeeError, shopeeErrorResponse } from '@/lib/shopee/core/respond';
 import { loadShopeeContext } from '@/lib/shopee/core/shopee';
 import {
-  MENSAGEM_KIT_INCERTO,
+  mensagemKitIncerto,
   type KitDeps,
   type ResultadoPublicacaoKit,
 } from '@/lib/shopee/kits/resultadoKit';
@@ -259,8 +264,9 @@ export async function POST(req: Request): Promise<NextResponse> {
   if (!corpo.ok) return NextResponse.json(corpoDeErro(corpo), { status: 400 });
   const { integracaoId, produtoId, linkDocId, status, categoryId, principal, recriar } =
     corpo.valor;
-  const { converterEmKit, confirmarSegundoAnuncio, confirmarCriacaoIncerta, criacaoIncertaAdota } =
+  const { converterEmKit, criarKitNativo, confirmarSegundoAnuncio, confirmarCriacaoIncerta } =
     corpo.valor;
+  const { criacaoIncertaAdota } = corpo.valor;
 
   try {
     const db = getAdminFirestore();
@@ -332,6 +338,7 @@ export async function POST(req: Request): Promise<NextResponse> {
       principal,
       recriar,
       converterEmKit,
+      criarKitNativo,
     });
 
     if (res === null) {
@@ -357,12 +364,15 @@ export async function POST(req: Request): Promise<NextResponse> {
     const kit = corpoDoKit(res.resultado);
     if (res.resultado.desfecho === 'incerto') {
       // Accepted, not done: Shopee may or may not have created the kit, and
-      // NOTHING was written. The operator waits and re-runs EXACTLY `comando`
-      // (S1F-03) — a plain publish would be a different arm after a recriar or
-      // a converter. `aguardarMs` is that wait for the web, which re-sends the
-      // identical body; it is the ONE copy the sentence interpolates (#1369).
+      // nothing was written but the KEPT create lease (#1912). The operator
+      // waits and re-runs EXACTLY `comando` (S1F-03) — a plain publish would be
+      // a different arm after a recriar or a converter. `aguardarMs` is the
+      // lease's remaining hold (a re-send before it ends is refused with
+      // nothing sent); the web waits it out and re-sends the identical body,
+      // and it is the ONE value the sentence interpolates (#1369).
+      const aguardarMs = res.resultado.aguardarMs ?? AGUARDAR_KIT_INCERTO_SHOPEE_MS;
       return NextResponse.json(
-        { ...kit, mensagem: MENSAGEM_KIT_INCERTO, aguardarMs: AGUARDAR_KIT_INCERTO_SHOPEE_MS },
+        { ...kit, mensagem: mensagemKitIncerto(aguardarMs), aguardarMs },
         { status: 202 },
       );
     }
@@ -374,6 +384,11 @@ export async function POST(req: Request): Promise<NextResponse> {
     if (err instanceof ConflitoDeRascunhoShopeeError) {
       return NextResponse.json(corpoDoConflito(err), { status: 409 });
     }
+    // A native kit create the single-flight LEASE refused (#1912): OUR answer,
+    // never Shopee's, and every code means this request sent nothing.
+    if (err instanceof ConflitoDeCriacaoDeKitShopeeError) {
+      return NextResponse.json(corpoDoConflitoDeCriacaoDeKit(err), { status: 409 });
+    }
     // The no-link create's MINT is the draft route's own create (#1911, K1-5):
     // its refusal is answered exactly as that route answers it. Also OURS,
     // never Shopee's — so before `isShopeeError` too.
@@ -383,6 +398,23 @@ export async function POST(req: Request): Promise<NextResponse> {
     if (isShopeeError(err)) return shopeeErrorResponse(err);
     throw err;
   }
+}
+
+/**
+ * The 409 body of a kit create lease refusal (#1912), built BY NAME.
+ * `aguardarMs` rides only on `SHOPEE_KIT_CRIACAO_EM_ANDAMENTO` — ABSENT is "not
+ * applicable", never a `0` wait.
+ */
+function corpoDoConflitoDeCriacaoDeKit(err: ConflitoDeCriacaoDeKitShopeeError): {
+  error: string;
+  code: string;
+  aguardarMs?: number;
+} {
+  return {
+    error: err.message,
+    code: err.code,
+    ...(err.aguardarMs === null ? {} : { aguardarMs: err.aguardarMs }),
+  };
 }
 
 /**

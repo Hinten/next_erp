@@ -141,6 +141,7 @@ async function buscar(
     integracaoId: INTEGRACAO,
     sku: over.sku ?? SKU,
     excluirItemIds: new Set(over.excluir ?? []),
+    podeContinuar: () => true,
   });
 }
 
@@ -939,20 +940,22 @@ describe('the deadline checkpoint `podeContinuar` (#1911 batch-A review, 2026-10
     expect(clienteDaBuscaNoPrazo(client, () => true)).not.toBe(client);
   });
 
-  it('the KIT arm takes NO predicate: its walk is unchanged (a 100-page shop walks to the end)', async () => {
+  it('(#1912) the KIT arm asks the predicate of the create lease: `false` stops BEFORE the first page; near-miss: `true` walks a 100-page shop to the end', async () => {
+    const parado = cliente({ paginas: paginas(MAX_PAGINAS_BUSCA_KIT) });
+    await expect(
+      localizarKitsPorSku(parado.client, asDb(new FakeDb()), {
+        integracaoId: INTEGRACAO,
+        sku: SKU,
+        excluirItemIds: new Set<number>(),
+        podeContinuar: () => false,
+      }),
+    ).rejects.toBeInstanceOf(BuscaForaDoPrazoShopeeError);
+    expect(parado.getItemList).not.toHaveBeenCalled();
+
     const { client, getItemList } = cliente({ paginas: paginas(MAX_PAGINAS_BUSCA_KIT) });
-
     const r = await buscar(client);
-
     expect(r.completo).toBe(true);
     expect(getItemList).toHaveBeenCalledTimes(MAX_PAGINAS_BUSCA_KIT);
-    await localizarKitsPorSku(client, asDb(new FakeDb()), {
-      integracaoId: INTEGRACAO,
-      sku: SKU,
-      excluirItemIds: new Set<number>(),
-      // @ts-expect-error — the kit arm has no deadline checkpoint (#1911 batch-A review).
-      podeContinuar: () => false,
-    });
   });
 
   it('BuscaForaDoPrazoShopeeError is an APP class, never a Shopee error', () => {

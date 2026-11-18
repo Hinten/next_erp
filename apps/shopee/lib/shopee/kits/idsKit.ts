@@ -79,3 +79,16 @@ export function idDaVariacaoDeKit(linkDocId: string, modelId: number): string {
   exigirIdShopee(modelId, 'model_id');
   return sha256Hex(`${linkDocId}|${String(modelId)}`);
 }
+
+/**
+ * The `kitCriacaoShopee` doc id of a kit produto's create LEASE (#1912):
+ * hex `sha256(utf8("shopee-kit-criacao|<integracaoId>|<produtoId>"))`. Keyed on
+ * the ROOT kit produto, not on a link: before `add_kit_item` answers there is no
+ * `item_id` to key on, and every create arm (criar, recriar, converter) of one
+ * produto on one conta must serialize on the SAME document.
+ */
+export function idDaCriacaoDeKit(integracaoId: string, produtoId: string): string {
+  exigirTexto(integracaoId, 'integracaoId');
+  exigirTexto(produtoId, 'produtoId');
+  return sha256Hex(`shopee-kit-criacao|${integracaoId}|${produtoId}`);
+}

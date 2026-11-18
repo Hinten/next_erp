@@ -41,7 +41,9 @@
  * plain `merge` of what was just READ; the superseded pointer a flat `merge`
  * of two scalars that a re-run re-writes identically. `delete_item` is sent
  * only to an old kit that READS live, and its ack is never trusted — only a
- * re-read decides. The accepted residual is R-w (register 303).
+ * re-read decides. Every create runs under the single-flight create lease
+ * (#1912, `criacaoKitEmCurso.ts`), handed in as `reserva`: register 303 is
+ * closed for concurrent runs; the residuals are 330–333.
  *
  * Next-free and clock-free: `deps.nowMs` is the one clock; the aviso's µs comes
  * from `avisos/autorizacao.ts`'s `agoraUsDe`.
@@ -83,6 +85,7 @@ import {
   type GarantiaCumprida,
 } from './aplicarKit';
 import { STATUS_KIT_VIVO } from './constantesKit';
+import type { ReservaDeCriacaoDeKit } from './criacaoKitEmCurso';
 import {
   kitVivoAusenteRecente,
   kitVivoRemovido,
@@ -664,6 +667,7 @@ function resultadoIncerto(
     avisosResolvidos: 0,
     chamadasShopee: (ctx.busca?.chamadas ?? 0) + garantia.chamadasShopee,
     recusa: garantia.recusa,
+    aguardarMs: garantia.aguardarMs,
     comando: comandoDeRetomada(arma, {
       integracaoId: ctx.integracaoId,
       produtoId: ctx.produto.id,
@@ -722,6 +726,7 @@ export async function recriarKit(
   deps: KitDeps,
   ctx: ContextoKit,
   plano: PlanoKit,
+  reserva: ReservaDeCriacaoDeKit,
 ): Promise<ResultadoPublicacaoKit> {
   const alvo = alvoDoBraco(ctx, 'kit-recriar');
   const kitId = ctx.produto.id;
@@ -759,7 +764,7 @@ export async function recriarKit(
     // `garantirKitNovo` throws the aggregated refusal (after the one fact a
     // create-arm run may write first, S2C-02) — the same answer `kit-criar`
     // gives, so an unlinked twin is named here and never hidden by step 0.
-    await garantirKitNovo(deps, ctx, plano);
+    await garantirKitNovo(deps, ctx, plano, reserva);
     throw new Error('[shopee/kits] garantirKitNovo não recusou um kitNovo recusar');
   }
 
@@ -783,7 +788,7 @@ export async function recriarKit(
   }
 
   /* ---- 1. ensure the NEW kit exists --------------------------------------- */
-  const garantia = await garantirKitNovo(deps, ctx, plano);
+  const garantia = await garantirKitNovo(deps, ctx, plano, reserva);
   if (garantia.desfecho === 'incerto') {
     const resultado = resultadoIncerto(ctx, 'kit-recriar', alvo.linkDocId, garantia);
     registrar(resultado);
@@ -832,6 +837,7 @@ export async function recriarKit(
     chamadasShopee,
     recusa: null,
     comando: null,
+    aguardarMs: null,
   };
   registrar(resultado);
   return resultado;
@@ -857,12 +863,13 @@ export async function converterEmKit(
   deps: KitDeps,
   ctx: ContextoKit,
   plano: PlanoKit,
+  reserva: ReservaDeCriacaoDeKit,
 ): Promise<ResultadoPublicacaoKit> {
   const alvo = alvoDoBraco(ctx, 'kit-converter');
   const kitId = ctx.produto.id;
 
   /* ---- 1. ensure the NEW kit exists --------------------------------------- */
-  const garantia = await garantirKitNovo(deps, ctx, plano);
+  const garantia = await garantirKitNovo(deps, ctx, plano, reserva);
   if (garantia.desfecho === 'incerto') {
     // The antecessor is always printed: re-running against the SAME ordinary
     // listing is what makes the re-run literally the same command (S1F-03).
@@ -919,6 +926,7 @@ export async function converterEmKit(
     chamadasShopee: (ctx.busca?.chamadas ?? 0) + garantia.chamadasShopee,
     recusa: null,
     comando: null,
+    aguardarMs: null,
   };
   registrar(resultado);
   return resultado;

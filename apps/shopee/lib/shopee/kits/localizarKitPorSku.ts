@@ -110,7 +110,10 @@
  * publish turns into its send gate's own 409 `PUBLICACAO_EXPIRADA` (nothing
  * sent, the lock handed back). The predicate is a CLOSURE built where the
  * clock is (`anuncios/reservaRascunho.ts`, `buscaNoPrazoDoEnvio`): this module
- * reads no clock. The KIT arm passes none — its walk is unchanged.
+ * reads no clock. Since #1912 the KIT arm passes one too — the create lease's
+ * (`kits/criacaoKitEmCurso.ts`, `podeContinuarNaReserva`), against the lease's
+ * `ateMs` and the request's ceiling — and its cut is 409
+ * `SHOPEE_KIT_CRIACAO_EXPIRADA`, the lease handed back, nothing sent.
  *
  * Reads only. `chamadas` (the pages plus the base-info calls actually made — an
  * incomplete-by-`base-info` answer counts its batch too) and `paginas` are
@@ -473,14 +476,21 @@ export async function localizarKitsPorSku(
     readonly integracaoId: string;
     readonly sku: string;
     readonly excluirItemIds: ReadonlySet<number>;
+    /**
+     * The create lease's deadline checkpoint (#1912): asked before every page
+     * and base-info chunk, exactly as the draft's look-ups ask theirs. REQUIRED,
+     * never optional: every kit scan runs under a create lease.
+     */
+    readonly podeContinuar: () => boolean;
   },
 ): Promise<BuscaDeKitPorSku> {
-  // Field by field, never `...a`: the kit arm has NO deadline checkpoint
-  // (#1911 batch-A review), and a spread would carry one through at run time.
+  // Field by field, never `...a` — what reaches the shared walk is exactly
+  // these keys.
   return localizarItensPorSku(client, db, {
     integracaoId: a.integracaoId,
     sku: a.sku,
     excluirItemIds: a.excluirItemIds,
     kit: true,
+    podeContinuar: a.podeContinuar,
   });
 }

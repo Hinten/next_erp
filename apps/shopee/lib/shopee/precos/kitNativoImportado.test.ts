@@ -66,6 +66,7 @@ import { MOTIVO_PRECO_SHOPEE } from './errosPreco';
 import { criarLeitorDeBaseEmLote } from './leitorDeBase';
 import { montarItensDePreco, precificarItem, precosDaFamilia } from './planoPreco';
 import type { ContextoContaPreco } from './regiaoPreco';
+import { aoVivoDeTeste } from '../kits/testing/reservaDeTeste';
 
 /* ---------------------------------- fixtures ------------------------------ */
 
@@ -763,6 +764,7 @@ function rt6DepsDoKit(db: FakeDb, loja: Rt6Loja): KitDeps {
     depositoOuterRef: 'documents/depositos/dep-1',
     operacaoOuterRef: null,
     nowMs: AGORA,
+    aoVivo: aoVivoDeTeste(AGORA),
     esperar: () => Promise.resolve(),
     taxonomia: {
       integracaoId: INTEGRACAO,

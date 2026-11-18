@@ -107,11 +107,15 @@ import {
   type ShopeeItemStatusWritable,
   type ShopeeLogisticsChannel,
 } from '@delfrance/integrations-shopee';
-import { CODIGO_RASCUNHO_SHOPEE } from '@delfrance/schemas';
+import {
+  AGUARDAR_KIT_INCERTO_SHOPEE_MS,
+  CODIGO_CRIACAO_KIT_SHOPEE,
+  CODIGO_RASCUNHO_SHOPEE,
+} from '@delfrance/schemas';
 
 import type { EnsaioDeKit } from '../kits/publicarKit';
 import {
-  MENSAGEM_KIT_INCERTO,
+  mensagemKitIncerto,
   type ArmaKit,
   type CodigoAvisoKit,
   type DesfechoKit,
@@ -2053,7 +2057,7 @@ export interface ResumoResultadoKit {
     readonly fraseShopee: string | null;
     readonly motivo: string | null;
   } | null;
-  /** `MENSAGEM_KIT_INCERTO` on `incerto`, else `null`. */
+  /** `mensagemKitIncerto(aguardarMs)` on `incerto` (the kept lease's wait), else `null`. */
   readonly mensagemIncerto: string | null;
   /**
    * The EXACT command to re-run on `incerto` (S1F-03): the result's
@@ -2113,7 +2117,9 @@ export function resumoDoResultadoKit(
             fraseShopee: res.recusa.fraseShopee,
             motivo: res.recusa.motivo,
           },
-    mensagemIncerto: incerto ? MENSAGEM_KIT_INCERTO : null,
+    mensagemIncerto: incerto
+      ? mensagemKitIncerto(res.aguardarMs ?? AGUARDAR_KIT_INCERTO_SHOPEE_MS)
+      : null,
     comandoDeRetomada:
       incerto && res.comando !== null
         ? `${PREFIXO_PNPM} ${comProjeto(res.comando, opcoes.projectId)} --live`
@@ -2477,6 +2483,9 @@ export function descreverErroPublicacao(err: unknown): string[] {
     // through the draft route's create, whose refusal carries the same codes.
     return [`❌ ${err.name} (${err.code})`, ...descreverConflitoDeRascunho(err)];
   }
+  if (ehConflitoDeCriacaoDeKit(err)) {
+    return [`❌ ${err.name} (${err.code})`, ...descreverConflitoDeCriacaoDeKit(err)];
+  }
   if (err instanceof ShopeePublishBlockedError) {
     return [`❌ ShopeePublishBlockedError (${err.motivo})`, ...descreverBloqueioPublicacao(err)];
   }
@@ -2484,6 +2493,52 @@ export function descreverErroPublicacao(err: unknown): string[] {
     return [`❌ ShopeePublishRejectedError (${err.etapa})`, ...descreverRecusaPublicacao(err)];
   }
   return descreverErro(err);
+}
+
+/* -------------------------------------------------------------------------- */
+/*              a native kit create the LEASE refused (#1912, 409s)            */
+/* -------------------------------------------------------------------------- */
+
+const CODIGOS_DA_CRIACAO_DE_KIT: ReadonlySet<unknown> = new Set<unknown>(
+  Object.values(CODIGO_CRIACAO_KIT_SHOPEE),
+);
+
+/** The fields of the lease refusal this module prints (no value import of its class). */
+interface ConflitoDeCriacaoDeKitLido {
+  readonly name: string;
+  readonly code: string;
+  readonly aguardarMs: number | null;
+  readonly message: string;
+}
+
+/**
+ * Is this the create LEASE's refusal (`ConflitoDeCriacaoDeKitShopeeError`)?
+ * Recognised by its `code` — one of `CODIGO_CRIACAO_KIT_SHOPEE`'s, which no
+ * Shopee error and no draft refusal carries.
+ */
+export function ehConflitoDeCriacaoDeKit(err: unknown): err is ConflitoDeCriacaoDeKitLido {
+  if (typeof err !== 'object' || err === null) return false;
+  const { name, code, aguardarMs, message } = err as Record<string, unknown>;
+  return (
+    CODIGOS_DA_CRIACAO_DE_KIT.has(code) &&
+    typeof name === 'string' &&
+    typeof message === 'string' &&
+    (aguardarMs === null || typeof aguardarMs === 'number')
+  );
+}
+
+/**
+ * The lease refusal, for a terminal. Every one of its four codes is decided
+ * BEFORE `add_kit_item`, so the closing line always says nothing was sent —
+ * unlike the generic describer, which cannot know.
+ */
+export function descreverConflitoDeCriacaoDeKit(err: ConflitoDeCriacaoDeKitLido): string[] {
+  const linhas = [`  código .................. ${err.code}`];
+  if (err.aguardarMs !== null) {
+    linhas.push(`  aguardar ................ ${String(Math.ceil(err.aguardarMs / 1000))} s`);
+  }
+  linhas.push('', `  ${err.message}`, '', '  Nada foi enviado à Shopee nesta execução.');
+  return linhas;
 }
 
 /* -------------------------------------------------------------------------- */

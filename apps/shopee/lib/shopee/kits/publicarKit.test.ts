@@ -14,6 +14,7 @@ import {
   SHOPEE_GET_VARIATIONS_PATH,
   SHOPEE_LOGISTICS_FEE_TYPE,
   SHOPEE_SURFACE,
+  ShopeeConfigError,
   ShopeeNetworkError,
   assertUpdateKitItemRequest,
   shopeeErrorFromEnvelope,
@@ -28,6 +29,9 @@ import {
   type ShopeeUpdateKitItemRequest,
 } from '@delfrance/integrations-shopee';
 import {
+  CODIGO_CRIACAO_KIT_SHOPEE,
+  ESPERA_MAXIMA_CRIACAO_KIT_SHOPEE_MS,
+  MARGEM_ENVIO_SHOPEE_MS,
   TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE,
   chaveAvisoReceitaKitShopee,
   chaveReceitaKitErp,
@@ -35,7 +39,11 @@ import {
   toOuterRef,
   varianteFakePath,
 } from '@delfrance/schemas';
-import { avisoCollection, integracaoCollection } from '@delfrance/data/admin/collections';
+import {
+  avisoCollection,
+  integracaoCollection,
+  produtoShopeeLinkCollection,
+} from '@delfrance/data/admin/collections';
 
 import {
   MOTIVO_PUBLICACAO_BLOQUEADA,
@@ -50,11 +58,13 @@ import type { ImportarKitShopeeDeps } from '../produtos/itemLido';
 import { importarKitShopee } from '../produtos/kitShopee';
 import { lerAnuncioShopee } from '../produtos/lerAnuncio';
 import { limparTaxonomiaShopee } from '../taxonomia/cache';
-import { FakeDb, asDb, increment } from '../testing/fakeDb';
+import { FakeDb, asDb, grpc, increment } from '../testing/fakeDb';
 import { idDaVariacaoDeKit, idDoVinculoDeKit } from './idsKit';
+import { ConflitoDeCriacaoDeKitShopeeError } from './criacaoKitEmCurso';
 import { ensaiarKitShopee, publicarKitShopee } from './publicarKit';
 import type { ArmaDeKit, EntradaDeKit } from './prepararKit';
 import type { KitDeps } from './resultadoKit';
+import { aoVivoDeTeste, semEscritasDaReserva } from './testing/reservaDeTeste';
 
 /* -------------------------------------------------------------------------- */
 /*  Fixtures — role ids only (s19-ctx). Never a real partner, shop or item.     */
@@ -472,6 +482,7 @@ function deps(db: FakeDb, loja: Loja, nowMs = AGORA): KitDeps {
     depositoOuterRef: 'documents/depositos/dep-1',
     operacaoOuterRef: null,
     nowMs,
+    aoVivo: aoVivoDeTeste(nowMs),
     esperar: () => Promise.resolve(),
     taxonomia: {
       integracaoId: INTEGRACAO,
@@ -508,9 +519,17 @@ function entrada(over: Partial<EntradaDeKit> = {}): EntradaDeKit {
 
 const CRIAR: ArmaDeKit = { arma: 'kit-criar' };
 
-async function criarKit(db: FakeDb, loja: Loja, ent: Partial<EntradaDeKit> = {}) {
-  return await publicarKitShopee(deps(db, loja), entrada(ent), CRIAR);
+async function criarKit(
+  db: FakeDb,
+  loja: Loja,
+  ent: Partial<EntradaDeKit> = {},
+  nowMs: number = AGORA,
+) {
+  return await publicarKitShopee(deps(db, loja, nowMs), entrada(ent), CRIAR);
 }
+
+/** An instant past ANY create lease taken at AGORA (#1912): its hold, grace included, is over. */
+const DEPOIS_DA_RESERVA = AGORA + ESPERA_MAXIMA_CRIACAO_KIT_SHOPEE_MS;
 
 /** Step 9's import of the kit, reading it through the REAL single-item read. */
 async function importar(db: FakeDb, loja: Loja) {
@@ -632,7 +651,7 @@ describe('publicarKitShopee — kit-criar de ponta a ponta', () => {
     expect(ensaio.contexto.busca?.completo).toBe(true);
     expect(loja.ops).not.toContain('add_kit_item');
     expect(loja.ops).toContain('get_item_list');
-    expect(db.writes).toEqual([]);
+    expect(semEscritasDaReserva(db.writes)).toEqual([]);
   });
 
   it('(M85) limites NÃO servidos ⇒ a criação segue; servidos com máximo 1 componente por modelo ⇒ recusa LOCAL, zero add_kit_item', async () => {
@@ -649,7 +668,7 @@ describe('publicarKitShopee — kit-criar de ponta a ponta', () => {
       MOTIVO_PUBLICACAO_BLOQUEADA.componentesForaDaFaixa,
     );
     expect(servidos.ops).not.toContain('add_kit_item');
-    expect(db.writes).toEqual([]);
+    expect(semEscritasDaReserva(db.writes)).toEqual([]);
 
     // The SAME kit on a host that does not serve the band is created. (The band
     // is cached per (conta, category) for the TTL: a fresh window first.)
@@ -685,7 +704,7 @@ describe('publicarKitShopee — kit-criar de ponta a ponta', () => {
     ]);
     expect(loja.ops).not.toContain('add_kit_item');
     expect(loja.corposDoAdd).toEqual([]);
-    expect(db.writes).toEqual([]);
+    expect(semEscritasDaReserva(db.writes)).toEqual([]);
     // The dry run plans the same refusal and builds no body.
     const ensaio = await ensaiarKitShopee(deps(db, loja), entrada(), CRIAR, resolvedorFake(loja));
     expect(ensaio.plano.problemas.map((p) => p.motivo)).toEqual([
@@ -711,7 +730,7 @@ describe('publicarKitShopee — kit-criar de ponta a ponta', () => {
     expect(erro.problemas[0]?.campo).toBe('tier_variation_list');
     expect(loja.ops).not.toContain('add_kit_item');
     expect(loja.corposDoAdd).toEqual([]);
-    expect(db.writes).toEqual([]);
+    expect(semEscritasDaReserva(db.writes)).toEqual([]);
   });
 
   it("⚠️ QUASE-PAR (#1911 batch-A): o grupo ' Cor ' cria o kit, e o nome do tier vai ao fio APARADO", async () => {
@@ -804,7 +823,7 @@ describe('publicarKitShopee — kit-criar de ponta a ponta', () => {
     ]);
     expect(loja.ops).not.toContain('add_kit_item');
     expect(loja.ops).not.toContain('get_item_list');
-    expect(db.writes).toEqual([]);
+    expect(semEscritasDaReserva(db.writes)).toEqual([]);
 
     // ⛔ QUASE-PAR: o MESMO kit sem --principal é criado com o principal padrão.
     const db2 = new FakeDb();
@@ -1097,7 +1116,7 @@ describe('(#1911 batch-A) o L6 de uma criação: um candidato LISTADO cuja base 
     expect(erro.problemas[0]?.mensagem).toContain('tente de novo');
     expect(loja.ops).toContain('get_item_list');
     expect(loja.ops.filter((o) => o === 'add_kit_item')).toHaveLength(0);
-    expect(db.writes).toEqual([]);
+    expect(semEscritasDaReserva(db.writes)).toEqual([]);
   });
 
   it('⛔ quase-par: a base devolvida diz que NÃO é kit ⇒ não é achado, e a criação segue (UM add_kit_item)', async () => {
@@ -1142,16 +1161,32 @@ describe('RT7 — a recuperação L9: um kit criado e NÃO vinculado é importad
     expect(incerto.comando).toBe(
       `publicar:anuncio --integracao ${INTEGRACAO} --produto ${K} --principal comp-a-filho`,
     );
-    expect(db.writes).toEqual([]);
+    expect(semEscritasDaReserva(db.writes)).toEqual([]);
 
-    // 2 — the re-run of the SAME command: the scan finds it ⇒ "importe-o".
-    const erro = await recusaDe(criarKit(db, loja));
+    // #1912: the create lease is KEPT after an `incerto` — the SAME command
+    // re-run inside its hold is refused with ZERO Shopee calls (no scan, no
+    // add_kit_item): a second create during Shopee's listing lag is impossible.
+    const chamadasAntes = loja.ops.length;
+    const cedo = await criarKit(db, loja, {}, AGORA + 60_000).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(cedo).toBeInstanceOf(ConflitoDeCriacaoDeKitShopeeError);
+    expect(cedo).toMatchObject({
+      code: CODIGO_CRIACAO_KIT_SHOPEE.emAndamento,
+      aguardarMs: ESPERA_MAXIMA_CRIACAO_KIT_SHOPEE_MS - 60_000,
+    });
+    expect(loja.ops.length).toBe(chamadasAntes);
+
+    // 2 — the re-run of the SAME command once the hold is over: the scan finds
+    // it ⇒ "importe-o".
+    const erro = await recusaDe(criarKit(db, loja, {}, DEPOIS_DA_RESERVA));
     expect(erro.problemas.map((p) => p.motivo)).toEqual([
       MOTIVO_PUBLICACAO_BLOQUEADA.kitJaExisteNaShopee,
     ]);
     expect(erro.problemas[0]?.mensagem).toContain(String(KIT_ITEM));
     expect(loja.ops.filter((o) => o === 'add_kit_item')).toHaveLength(1);
-    expect(db.writes).toEqual([]);
+    expect(semEscritasDaReserva(db.writes)).toEqual([]);
 
     // 3 — step 9's import, through the real single-item read.
     const res = await importar(db, loja);
@@ -1173,7 +1208,8 @@ describe('RT7 — a recuperação L9: um kit criado e NÃO vinculado é importad
     const loja = lojaComKits();
     loja.falhaAposCriar = muitasConexoes();
     expect((await criarKit(db, loja)).desfecho).toBe('incerto');
-    await recusaDe(criarKit(db, loja));
+    // The re-run once the kept create lease (#1912) is over.
+    await recusaDe(criarKit(db, loja, {}, DEPOIS_DA_RESERVA));
     await importar(db, loja);
     const linhasDoImport = linhasDoVinculo(db, VINCULO);
     const docsDeLinha = Object.keys(db.store)
@@ -1219,7 +1255,7 @@ describe('RT7 — a recuperação L9: um kit criado e NÃO vinculado é importad
       MOTIVO_PUBLICACAO_BLOQUEADA.kitSkuRepetido,
     ]);
     expect(loja.ops).toEqual([]);
-    expect(db.writes).toEqual([]);
+    expect(semEscritasDaReserva(db.writes)).toEqual([]);
   });
 
   it('(S2C-01) os filhos já carregam as linhas de um anúncio REMOVIDO ⇒ o import ainda liga cada filho original, as linhas velhas byte a byte, nenhum produto cunhado', async () => {
@@ -1263,5 +1299,142 @@ describe('RT7 — a recuperação L9: um kit criado e NÃO vinculado é importad
       expect(db.store[caminho]?.data).toEqual(dados);
     }
     expect(doc(db, `produtos/${K}`)?.filhoUnicoId ?? null).toBeNull();
+  });
+});
+
+/* ========================================================================== */
+/*  #1912 — the create lease's life cycle, through the REAL wrapper            */
+/* ========================================================================== */
+
+describe('#1912 — a reserva da criação: liberada quando a execução SABE que nada foi enviado, mantida quando não sabe', () => {
+  const reservas = (db: FakeDb) => db.idsEm('kitCriacaoShopee');
+
+  function familia(): FakeDb {
+    const db = new FakeDb();
+    semearComponentes(db);
+    semearFamilia(db);
+    return db;
+  }
+
+  it('criado ⇒ liberada logo após o vínculo; a execução seguinte nunca espera', async () => {
+    const db = familia();
+    const loja = lojaComKits();
+    expect((await criarKit(db, loja)).desfecho).toBe('criado');
+    expect(reservas(db)).toEqual([]);
+  });
+
+  it('uma recusa da FASE A (sem-peso, antes de qualquer leitura da Shopee) ⇒ liberada', async () => {
+    const db = familia();
+    db.seed(`produtos/${K}`, { ...db.store[`produtos/${K}`]?.data, pesoBrutoKg: null });
+    await recusaDe(criarKit(db, lojaComKits()));
+    expect(reservas(db)).toEqual([]);
+  });
+
+  it('nao-criado (a própria trava do pacote) ⇒ liberada; ⚠️ quase-par: incerto ⇒ MANTIDA, carimbada', async () => {
+    const db = familia();
+    const loja = lojaComKits();
+    loja.falhaAposCriar = new ShopeeConfigError('fixture: corpo recusado antes do envio');
+    await expect(criarKit(db, loja)).rejects.toBeInstanceOf(ShopeeConfigError);
+    expect(reservas(db)).toEqual([]);
+
+    const db2 = familia();
+    const loja2 = lojaComKits();
+    loja2.falhaAposCriar = muitasConexoes();
+    expect((await criarKit(db2, loja2)).desfecho).toBe('incerto');
+    const [id] = reservas(db2);
+    expect(db2.store[`kitCriacaoShopee/${String(id)}`]?.data).toMatchObject({
+      enviadoEmMs: AGORA,
+      sku: expect.any(String),
+    });
+  });
+
+  it('uma queda DEPOIS do add_kit_item e ANTES do vínculo (o kit existe, sem vínculo) ⇒ MANTIDA: o reenvio dentro da espera é recusado sem NENHUMA chamada à Shopee — nunca o gêmeo', async () => {
+    const db = familia();
+    const loja = lojaComKits();
+    // The ONE link write after the create fails (Firestore unavailable).
+    vi.spyOn(produtoShopeeLinkCollection, 'merge').mockRejectedValueOnce(grpc(14, 'UNAVAILABLE'));
+    await expect(criarKit(db, loja)).rejects.toMatchObject({ code: 14 });
+    expect(loja.ops.filter((o) => o === 'add_kit_item')).toHaveLength(1);
+    expect(reservas(db)).toHaveLength(1);
+
+    const ops = loja.ops.length;
+    const cedo = await criarKit(db, loja, {}, AGORA + 10_000).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(cedo).toMatchObject({ code: CODIGO_CRIACAO_KIT_SHOPEE.emAndamento });
+    expect(loja.ops.length).toBe(ops);
+
+    // After the hold, the scan finds the unlinked kit ⇒ "importe-o", never a second create.
+    const depois = await recusaDe(criarKit(db, loja, {}, DEPOIS_DA_RESERVA));
+    expect(depois.problemas.map((p) => p.motivo)).toEqual([
+      MOTIVO_PUBLICACAO_BLOQUEADA.kitJaExisteNaShopee,
+    ]);
+    expect(loja.ops.filter((o) => o === 'add_kit_item')).toHaveLength(1);
+  });
+
+  it('a busca de SKU que não cabe no prazo da requisição ⇒ 409 expirada, ZERO add_kit_item, liberada', async () => {
+    const db = familia();
+    const loja = lojaComKits();
+    const semTempo: KitDeps = {
+      ...deps(db, loja),
+      aoVivo: { ...aoVivoDeTeste(AGORA), prazoDaRequisicao: AGORA + MARGEM_ENVIO_SHOPEE_MS },
+    };
+    const erro = await publicarKitShopee(semTempo, entrada(), CRIAR).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(erro).toBeInstanceOf(ConflitoDeCriacaoDeKitShopeeError);
+    expect(erro).toMatchObject({ code: CODIGO_CRIACAO_KIT_SHOPEE.expirada });
+    expect(loja.ops).not.toContain('add_kit_item');
+    expect(loja.ops).not.toContain('get_item_list');
+    expect(reservas(db)).toEqual([]);
+  });
+
+  it('⛔ um braço de CRIAÇÃO sem o relógio ao vivo é defeito do ponto de composição — recusado antes de qualquer escrita', async () => {
+    const db = familia();
+    const loja = lojaComKits();
+    const { aoVivo: _semRelogio, ...semAoVivo } = deps(db, loja);
+    void _semRelogio;
+    await expect(publicarKitShopee(semAoVivo, entrada(), CRIAR)).rejects.toThrow(/aoVivo/);
+    expect(db.writes).toEqual([]);
+    expect(loja.ops).toEqual([]);
+  });
+
+  it('(A4) sob a reserva, um anúncio COMUM vivo que apareceu depois do despacho ⇒ 409 vinculosMudaram, ZERO chamadas à Shopee, liberada; ⚠️ quase-par: um comum REMOVIDO não impede', async () => {
+    const db = familia();
+    const loja = lojaComKits();
+    const comum = {
+      contaProdutoShopeeOuterRef: toOuterRef(integracaoCollection.docPath({}, INTEGRACAO)),
+      item_id: 2_500_139_999,
+      kitNativo: false,
+      estadoAnuncio: 'ativo',
+    };
+    db.seed(`produtos/${K}/prodshopee/comum-1`, comum);
+
+    const erro = await criarKit(db, loja).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(erro).toMatchObject({ code: CODIGO_CRIACAO_KIT_SHOPEE.vinculosMudaram });
+    expect(loja.ops).toEqual([]);
+    expect(reservas(db)).toEqual([]);
+
+    db.seed(`produtos/${K}/prodshopee/comum-1`, { ...comum, estadoAnuncio: 'removido' });
+    expect((await criarKit(db, loja)).desfecho).toBe('criado');
+  });
+
+  it('kit-atualizar nunca toma reserva (nunca envia add_kit_item)', async () => {
+    const db = familia();
+    const loja = lojaComKits();
+    await criarKit(db, loja);
+    await publicarKitShopee(deps(db, loja, AGORA + 1_000), entrada(), {
+      arma: 'kit-atualizar',
+      linkDocId: VINCULO,
+    });
+    expect(db.writes.some((w) => w.path.startsWith('kitCriacaoShopee/'))).toBe(true);
+    const escritasDaReserva = db.writes.filter((w) => w.path.startsWith('kitCriacaoShopee/'));
+    // Exactly the create's two (the lease and its stamp) — none from the republish.
+    expect(escritasDaReserva).toHaveLength(2);
   });
 });

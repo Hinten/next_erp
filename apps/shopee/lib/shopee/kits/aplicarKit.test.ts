@@ -14,6 +14,7 @@ import {
   type ShopeeClient,
 } from '@delfrance/integrations-shopee';
 import {
+  ESPERA_MAXIMA_CRIACAO_KIT_SHOPEE_MS,
   chaveAvisoReceitaKitShopee,
   chaveReceitaKitErp,
   componentesShopeeDoKit,
@@ -45,9 +46,10 @@ import {
   ligarModelosDoKit,
   linhasLidasDoModeloKit,
 } from './aplicarKit';
-import { idDaVariacaoDeKit, idDoVinculoDeKit } from './idsKit';
+import { idDaCriacaoDeKit, idDaVariacaoDeKit, idDoVinculoDeKit } from './idsKit';
 import { planejarKit, type ModeloDoPlanoKit, type PlanoKit } from './planoKit';
 import type { ContextoKit, FilhoDoKit, KitDeps, LeituraDeKitNosso } from './resultadoKit';
+import { aoVivoDeTeste, reservaDeTeste, semEscritasDaReserva } from './testing/reservaDeTeste';
 
 /* -------------------------------------------------------------------------- */
 /*  Fixture ids by ROLE only (s19-ctx / reconcile §0): kit 2500139870 with     */
@@ -409,7 +411,18 @@ function depsDe(db: FakeDb, client: ShopeeClient): KitDeps {
     taxonomia: {} as KitDeps['taxonomia'],
     categorias: {} as KitDeps['categorias'],
     increment,
+    aoVivo: aoVivoDeTeste(AGORA),
   };
+}
+
+/** `criarKit` under a REAL create lease on the same fake db (#1912). */
+async function criar(deps: KitDeps, ctx: ContextoKit, plano: PlanoKit) {
+  return await criarKit(deps, ctx, plano, await reservaDeTeste(deps, ctx.produto.id));
+}
+
+/** `garantirKitNovo` under a REAL create lease on the same fake db (#1912). */
+async function garantir(deps: KitDeps, ctx: ContextoKit, plano: PlanoKit) {
+  return await garantirKitNovo(deps, ctx, plano, await reservaDeTeste(deps, ctx.produto.id));
 }
 
 /** The rows the fake db holds under a child, as `prepararKit` would hand them back. */
@@ -441,7 +454,7 @@ describe('criarKit — add_kit_item → the ONE link write → the read-back com
     );
     vi.spyOn(console, 'info').mockImplementation(() => undefined);
 
-    const r = await criarKit(depsDe(db, shopee.client), ctx, planoDeCriacao(ctx));
+    const r = await criar(depsDe(db, shopee.client), ctx, planoDeCriacao(ctx));
 
     expect(r).toMatchObject({
       arma: 'kit-criar',
@@ -489,11 +502,9 @@ describe('criarKit — add_kit_item → the ONE link write → the read-back com
     });
   });
 
-  it('(B1, #2065) the link publicadoEm is the LIVE reading after add_kit_item, never nowMs; near-miss: no live clock falls back to nowMs', async () => {
+  it('(B1, #2065) the link publicadoEm is the LIVE reading after add_kit_item — never an instant read before it', async () => {
     vi.spyOn(console, 'info').mockImplementation(() => undefined);
     const criado = AGORA + 260_000;
-    const leituras: string[] = [];
-
     const db = new FakeDb();
     const ctx = contexto();
     semear(db, ctx);
@@ -502,38 +513,22 @@ describe('criarKit — add_kit_item → the ONE link write → the read-back com
       () => kitDaFamilia(),
       () => listaDaFamilia({}),
     );
-    const comRelogio: KitDeps = {
+    // The live clock reads AGORA until add_kit_item answered, then `criado`:
+    // the lease, the gate and the stamp all read the EARLIER instant.
+    const deps: KitDeps = {
       ...depsDe(db, shopee.client),
-      aoVivo: {
-        // The clock is read only AFTER add_kit_item answered.
-        agora: () => {
-          leituras.push(`agora após ${String(shopee.quantas(SHOPEE_ADD_KIT_ITEM_PATH))} add`);
-          return criado;
-        },
-        prazoDaRequisicao: null,
-        aquecerCredencial: () => Promise.resolve(),
-        confirmarSegundoAnuncio: false,
-        confirmarCriacaoIncerta: false,
-      },
+      aoVivo: aoVivoDeTeste(() =>
+        shopee.quantas(SHOPEE_ADD_KIT_ITEM_PATH) === 0 ? AGORA : criado,
+      ),
     };
-    await criarKit(comRelogio, ctx, planoDeCriacao(ctx));
-    expect(leituras).toEqual(['agora após 1 add']);
+    await criar(deps, ctx, planoDeCriacao(ctx));
     expect(db.store[`produtos/${K}/prodshopee/${LINK}`]?.data).toMatchObject({
+      // NEAR-MISS: AGORA (the run start, and every pre-send reading) is not it.
       publicadoEm: criado,
       // Every other stamp keeps the run's one clock.
       ultimaModificacao: AGORA,
       dataCadastro: AGORA,
     });
-
-    const db2 = new FakeDb();
-    semear(db2, ctx);
-    const shopee2 = shopeeDaFamilia(
-      {},
-      () => kitDaFamilia(),
-      () => listaDaFamilia({}),
-    );
-    await criarKit(depsDe(db2, shopee2.client), ctx, planoDeCriacao(ctx));
-    expect(db2.store[`produtos/${K}/prodshopee/${LINK}`]?.data?.publicadoEm).toBe(AGORA);
   });
 
   it('(M91) EQUAL pair stamped — the hidden B id folds equal to "no model" — and a QUANTITY near-miss is NOT stamped', async () => {
@@ -544,7 +539,7 @@ describe('criarKit — add_kit_item → the ONE link write → the read-back com
     const shopee = shopeeDaFamilia({}, () => kitDaFamilia(4));
     vi.spyOn(console, 'info').mockImplementation(() => undefined);
 
-    const r = await criarKit(depsDe(db, shopee.client), ctx, planoDeCriacao(ctx));
+    const r = await criar(depsDe(db, shopee.client), ctx, planoDeCriacao(ctx));
 
     expect(linhaDe(db, 'filho-a', M0)?.receitaKitConferida).toBe(
       chaveReceitaKitErp(FILHO_A.componentesKit),
@@ -596,7 +591,7 @@ describe('criarKit — add_kit_item → the ONE link write → the read-back com
     const shopee = shopeeDaFamilia();
     vi.spyOn(console, 'info').mockImplementation(() => undefined);
 
-    const r = await criarKit(depsDe(db, shopee.client), ctx, planoDeCriacao(ctx));
+    const r = await criar(depsDe(db, shopee.client), ctx, planoDeCriacao(ctx));
 
     expect(r.avisosResolvidos).toBe(1);
     expect(db.store[`avisos/${chaveAvisoReceitaKitShopee('int-1', K)}`]?.data).toMatchObject({
@@ -615,9 +610,9 @@ describe('criarKit — add_kit_item → the ONE link write → the read-back com
       [SHOPEE_GET_ITEM_BASE_INFO_PATH]: (ids) =>
         ids.includes(KIT) ? new TypeError('conexão caiu') : { corpo: baseDosComponentes(ids) },
     });
-    await expect(
-      criarKit(depsDe(db, caiu.client), ctx, planoDeCriacao(ctx)),
-    ).rejects.toBeInstanceOf(ShopeeNetworkError);
+    await expect(criar(depsDe(db, caiu.client), ctx, planoDeCriacao(ctx))).rejects.toBeInstanceOf(
+      ShopeeNetworkError,
+    );
     // M76: the link exists with the LITERAL kitNativo, and no row was written yet.
     expect(db.idsEm('produtos/filho-a/variashopee')).toEqual([]);
 
@@ -674,7 +669,7 @@ describe('criarKit — add_kit_item → the ONE link write → the read-back com
       [SHOPEE_GET_ITEM_BASE_INFO_PATH]: (ids) =>
         ids.includes(KIT) ? new TypeError('conexão caiu') : { corpo: baseDosComponentes(ids) },
     });
-    await expect(criarKit(depsDe(db, shopee.client), ctx, planoDeCriacao(ctx))).rejects.toThrow();
+    await expect(criar(depsDe(db, shopee.client), ctx, planoDeCriacao(ctx))).rejects.toThrow();
     const link = db.store[`produtos/${K}/prodshopee/${LINK}`]?.data ?? {};
     expect(link.kitNativo).toBe(true);
     expect(podeEnviarEstoqueShopee(link, { ehKitVirtual: true }, { nowMs: AGORA })).toEqual({
@@ -700,11 +695,16 @@ describe('a failed add_kit_item — nao-criado vs incerto (recusaKit.ts decides)
     const aviso = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     vi.spyOn(console, 'info').mockImplementation(() => undefined);
 
-    const r = await criarKit(depsDe(db, shopee.client), ctx, planoDeCriacao(ctx));
+    const r = await criar(depsDe(db, shopee.client), ctx, planoDeCriacao(ctx));
 
     expect(shopee.quantas(SHOPEE_ADD_KIT_ITEM_PATH)).toBe(1);
     expect(shopee.quantas(SHOPEE_GET_ITEM_BASE_INFO_PATH)).toBe(0);
-    expect(db.writes).toEqual([]);
+    expect(semEscritasDaReserva(db.writes)).toEqual([]);
+    // #1912: the create lease is KEPT, stamped — and the 202's wait is its
+    // remaining hold (a constant clock ⇒ the whole TTL + the post-send grace).
+    const lease = db.store[`kitCriacaoShopee/${idDaCriacaoDeKit('int-1', K)}`]?.data;
+    expect(lease).toMatchObject({ enviadoEmMs: AGORA, token: expect.any(String) });
+    expect(r.aguardarMs).toBe(ESPERA_MAXIMA_CRIACAO_KIT_SHOPEE_MS);
     const frase = String(objeto(lerFixture(FIXTURE_ADD_KIT_ITEM_SG_TOO_MANY_CONNECTIONS)).message);
     expect(r).toMatchObject({
       desfecho: 'incerto',
@@ -731,11 +731,11 @@ describe('a failed add_kit_item — nao-criado vs incerto (recusaKit.ts decides)
       const shopee = shopeeDaFamilia({ [SHOPEE_ADD_KIT_ITEM_PATH]: resposta });
       vi.spyOn(console, 'warn').mockImplementation(() => undefined);
       vi.spyOn(console, 'info').mockImplementation(() => undefined);
-      const r = await criarKit(depsDe(db, shopee.client), contexto(), planoDeCriacao(contexto()));
+      const r = await criar(depsDe(db, shopee.client), contexto(), planoDeCriacao(contexto()));
       expect(r.desfecho).toBe('incerto');
       expect(r.recusa?.motivo).toBeNull();
       expect(shopee.quantas(SHOPEE_ADD_KIT_ITEM_PATH)).toBe(1);
-      expect(db.writes).toEqual([]);
+      expect(semEscritasDaReserva(db.writes)).toEqual([]);
     }
   });
 
@@ -749,7 +749,7 @@ describe('a failed add_kit_item — nao-criado vs incerto (recusaKit.ts decides)
     vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     vi.spyOn(console, 'info').mockImplementation(() => undefined);
     const ctx = contexto({ principalPedido: { itemId: A, modelId: MA } });
-    const r = await criarKit(depsDe(db, shopee.client), ctx, planoDeCriacao(ctx));
+    const r = await criar(depsDe(db, shopee.client), ctx, planoDeCriacao(ctx));
     expect(r.comando).toBe(
       'publicar:anuncio --integracao int-1 --produto kit-k --principal comp-a',
     );
@@ -762,7 +762,7 @@ describe('a failed add_kit_item — nao-criado vs incerto (recusaKit.ts decides)
         corpo: lerFixture(FIXTURE_ADD_KIT_ITEM_SG_DOIS_PRINCIPAIS),
       }),
     });
-    const erro = await criarKit(
+    const erro = await criar(
       depsDe(db, shopee.client),
       contexto(),
       planoDeCriacao(contexto()),
@@ -777,7 +777,7 @@ describe('a failed add_kit_item — nao-criado vs incerto (recusaKit.ts decides)
       MOTIVO_PROBLEMA_PUBLICACAO.kitPrincipalDuplicado,
     ]);
     expect(shopee.quantas(SHOPEE_ADD_KIT_ITEM_PATH)).toBe(1);
-    expect(db.writes).toEqual([]);
+    expect(semEscritasDaReserva(db.writes)).toEqual([]);
   });
 
   it('nao-criado by our own package guard keeps its class (ShopeeConfigError) and sends nothing', async () => {
@@ -790,10 +790,10 @@ describe('a failed add_kit_item — nao-criado vs incerto (recusaKit.ts decides)
       item_setting: { ...plano.corpo!.item_setting, images: { image_id_list: [] } },
     };
     await expect(
-      criarKit(depsDe(db, shopee.client), ctx, { ...plano, corpo: semFoto }),
+      criar(depsDe(db, shopee.client), ctx, { ...plano, corpo: semFoto }),
     ).rejects.toBeInstanceOf(ShopeeConfigError);
     expect(shopee.chamadas).toEqual([]);
-    expect(db.writes).toEqual([]);
+    expect(semEscritasDaReserva(db.writes)).toEqual([]);
   });
 });
 
@@ -845,7 +845,7 @@ describe('garantirKitNovo — L9 "ensure the new kit exists"', () => {
     expect(plano.kitNovo).toEqual({ acao: 'completar', linkDocId: LINK, itemId: KIT });
     const shopee = shopeeDaFamilia();
 
-    const g = await garantirKitNovo(depsDe(db, shopee.client), ctx, plano);
+    const g = await garantir(depsDe(db, shopee.client), ctx, plano);
 
     expect(g.desfecho).toBe('retomado');
     expect(g.linkDocId).toBe(LINK);
@@ -868,7 +868,7 @@ describe('garantirKitNovo — L9 "ensure the new kit exists"', () => {
       const shopee = shopeeDaFamilia();
       vi.spyOn(console, 'info').mockImplementation(() => undefined);
 
-      const g = await garantirKitNovo(depsDe(db, shopee.client), ctx, planoDeCriacao(ctx));
+      const g = await garantir(depsDe(db, shopee.client), ctx, planoDeCriacao(ctx));
 
       expect(g.desfecho).toBe('criado');
       expect(shopee.quantas(SHOPEE_ADD_KIT_ITEM_PATH)).toBe(1);
@@ -893,7 +893,7 @@ describe('garantirKitNovo — L9 "ensure the new kit exists"', () => {
     expect(plano.kitNovo?.acao).toBe('recusar');
     const shopee = shopeeDaFamilia();
 
-    const erro = await garantirKitNovo(depsDe(db, shopee.client), ctx, plano).then(
+    const erro = await garantir(depsDe(db, shopee.client), ctx, plano).then(
       () => null,
       (e: unknown) => e,
     );
@@ -904,7 +904,7 @@ describe('garantirKitNovo — L9 "ensure the new kit exists"', () => {
     );
     expect(duvida?.mensagem).toContain('o kit criado há pouco ainda não aparece na Shopee');
     expect(shopee.chamadas).toEqual([]);
-    expect(db.writes).toEqual([]);
+    expect(semEscritasDaReserva(db.writes)).toEqual([]);
     expect(db.store[`produtos/${K}/prodshopee/${novo}`]?.data.estadoAnuncio).toBe('ativo');
   });
 
@@ -921,7 +921,7 @@ describe('garantirKitNovo — L9 "ensure the new kit exists"', () => {
     const shopee = shopeeDaFamilia();
     vi.spyOn(console, 'info').mockImplementation(() => undefined);
 
-    const g = await garantirKitNovo(depsDe(db, shopee.client), ctx, planoDeCriacao(ctx));
+    const g = await garantir(depsDe(db, shopee.client), ctx, planoDeCriacao(ctx));
 
     expect(g.desfecho).toBe('criado');
     expect(shopee.quantas(SHOPEE_ADD_KIT_ITEM_PATH)).toBe(1);
@@ -939,7 +939,7 @@ describe('garantirKitNovo — L9 "ensure the new kit exists"', () => {
     expect(plano.kitNovo).toEqual({ acao: 'completar', linkDocId: LINK, itemId: KIT });
     const shopee = shopeeDaFamilia();
 
-    const g = await garantirKitNovo(depsDe(db, shopee.client), ctx, plano);
+    const g = await garantir(depsDe(db, shopee.client), ctx, plano);
 
     expect(g.desfecho).toBe('retomado');
     expect(shopee.quantas(SHOPEE_ADD_KIT_ITEM_PATH)).toBe(0);
@@ -960,7 +960,7 @@ describe('garantirKitNovo — L9 "ensure the new kit exists"', () => {
     });
     const plano = planejarKit(ctx, null);
     const shopee = shopeeDaFamilia();
-    const erro = await garantirKitNovo(depsDe(db, shopee.client), ctx, plano).then(
+    const erro = await garantir(depsDe(db, shopee.client), ctx, plano).then(
       () => null,
       (e: unknown) => e,
     );
@@ -970,7 +970,7 @@ describe('garantirKitNovo — L9 "ensure the new kit exists"', () => {
     // Each miss once, even though the plan already aggregates the scan's.
     expect(new Set(motivos).size).toBe(motivos.length);
     expect(shopee.chamadas).toEqual([]);
-    expect(db.writes).toEqual([]);
+    expect(semEscritasDaReserva(db.writes)).toEqual([]);
   });
 
   it('(M170) a completar never evaluates principal-*: a 2-item resume with no --principal proceeds', async () => {
@@ -985,7 +985,7 @@ describe('garantirKitNovo — L9 "ensure the new kit exists"', () => {
     const plano = planejarKit(ctx, null);
     expect(plano.problemas).toEqual([]);
     const shopee = shopeeDaFamilia();
-    const g = await garantirKitNovo(depsDe(db, shopee.client), ctx, plano);
+    const g = await garantir(depsDe(db, shopee.client), ctx, plano);
     expect(g.desfecho).toBe('retomado');
   });
 
@@ -994,7 +994,7 @@ describe('garantirKitNovo — L9 "ensure the new kit exists"', () => {
     const ctx = contexto({ principal: null, principalPedido: null });
     const plano = planejarKit(ctx, null);
     const shopee = shopeeDaFamilia();
-    const erro = await garantirKitNovo(depsDe(db, shopee.client), ctx, plano).then(
+    const erro = await garantir(depsDe(db, shopee.client), ctx, plano).then(
       () => null,
       (e: unknown) => e,
     );
@@ -1003,7 +1003,7 @@ describe('garantirKitNovo — L9 "ensure the new kit exists"', () => {
       'principal-obrigatorio',
     );
     expect(shopee.chamadas).toEqual([]);
-    expect(db.writes).toEqual([]);
+    expect(semEscritasDaReserva(db.writes)).toEqual([]);
   });
 
   it('(M181) a completar neither refuses nor warns on a CONTENT row; a RECIPE row is receita-nao-publicavel, unstamped', async () => {
@@ -1021,7 +1021,7 @@ describe('garantirKitNovo — L9 "ensure the new kit exists"', () => {
     expect(plano.problemas).toEqual([]);
     const shopee = shopeeDaFamilia();
 
-    const g = await garantirKitNovo(depsDe(db, shopee.client), ctx, plano);
+    const g = await garantir(depsDe(db, shopee.client), ctx, plano);
 
     const codigos = g.avisos.map((a) => a.codigo);
     expect(codigos).toContain('receita-nao-publicavel');
@@ -1446,7 +1446,7 @@ describe('completarKit — the binding and the stamp read what was SENT and what
     const shopee = shopeeDaFamilia();
     vi.spyOn(console, 'info').mockImplementation(() => undefined);
 
-    const r = await criarKit(depsDe(db, shopee.client), ctx, planoDeCriacao(ctx));
+    const r = await criar(depsDe(db, shopee.client), ctx, planoDeCriacao(ctx));
 
     // The fold scope the near-miss pins: the two inputs DO fingerprint apart…
     expect(chaveReceitaKitErp(armazenado)).not.toBe(chaveReceitaKitErp(FILHO_A.componentesKit));
@@ -1472,19 +1472,11 @@ describe('the incerto command — the SAME flags again (OP-8 / OP-9)', () => {
     vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     vi.spyOn(console, 'info').mockImplementation(() => undefined);
     const pausado = contexto({ statusPedido: 'UNLIST' });
-    const r = await criarKit(
-      depsDe(new FakeDb(), incerto().client),
-      pausado,
-      planoDeCriacao(pausado),
-    );
+    const r = await criar(depsDe(new FakeDb(), incerto().client), pausado, planoDeCriacao(pausado));
     expect(r.comando).toBe('publicar:anuncio --integracao int-1 --produto kit-k --status UNLIST');
 
     const normal = contexto({ statusPedido: 'NORMAL' });
-    const n = await criarKit(
-      depsDe(new FakeDb(), incerto().client),
-      normal,
-      planoDeCriacao(normal),
-    );
+    const n = await criar(depsDe(new FakeDb(), incerto().client), normal, planoDeCriacao(normal));
     expect(n.comando).toBe('publicar:anuncio --integracao int-1 --produto kit-k');
   });
 
@@ -1500,7 +1492,7 @@ describe('the incerto command — the SAME flags again (OP-8 / OP-9)', () => {
       principalPedido: { itemId: A, modelId: MA },
       principalSolicitado: 'comp-a-alias',
     });
-    const r = await criarKit(depsDe(new FakeDb(), incerto().client), ctx, planoDeCriacao(ctx));
+    const r = await criar(depsDe(new FakeDb(), incerto().client), ctx, planoDeCriacao(ctx));
     expect(r.comando).toBe(
       'publicar:anuncio --integracao int-1 --produto kit-k --principal comp-a-alias',
     );
