@@ -338,7 +338,12 @@ function run(execucaoId: string, p: Plataforma, over: Partial<DepsPollLi> = {}):
   };
 }
 
-const CONTA: ContaLojaIntegradaResumo = { integracaoId: ID, nome: NOME, ativo: true };
+const CONTA: ContaLojaIntegradaResumo = {
+  integracaoId: ID,
+  nome: NOME,
+  ativo: true,
+  depositoId: null,
+};
 
 function executar(alvo: Firestore, r: Run): Promise<ResultadoContaPollLi> {
   return executarContaPollLi(alvo, CONTA, ORCAMENTO_CONTA_MS, r.deps);

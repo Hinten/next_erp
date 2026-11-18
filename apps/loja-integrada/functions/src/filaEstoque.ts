@@ -6,10 +6,14 @@ import { TIPO_TAREFA_ESTOQUE_LI } from '@delfrance/schemas';
 
 import { FILA_ESTOQUE_LI } from '../../lib/lojaIntegrada/estoque/agendadorEstoque';
 import {
+  type ResultadoKitsEstoqueLi,
+  processarTarefaEstoqueKitsLi,
+} from '../../lib/lojaIntegrada/estoque/processarKitsEstoque';
+import {
   type ResultadoEstoqueLi,
   processarTarefaEstoqueLi,
 } from '../../lib/lojaIntegrada/estoque/processarEstoque';
-import { depsDeEstoqueLi } from './depsEscrita';
+import { depsDeEstoqueLi, depsDeKitsEstoqueLi } from './depsEscrita';
 import { getDb } from './lib/admin';
 import { tasksInvokerOptions } from './tasksInvoker';
 
@@ -18,13 +22,6 @@ import { tasksInvokerOptions } from './tasksInvoker';
  * its only trace (nothing could ever process it, so it must not spend retries).
  */
 export const DETALHE_TIPO_DESCONHECIDO_ESTOQUE_LI = 'tipo-desconhecido';
-
-/**
- * The `detail` of a kit fan-out task (`estoque-kits`): the queue's payload union already carries
- * the tipo, and its consumer ships with its producer (master plan step 12, PR 12-f). Until then
- * nothing enqueues one, and one that arrives is dropped with its line.
- */
-export const DETALHE_SEM_CONSUMIDOR_ESTOQUE_LI = 'sem-consumidor';
 
 /** The queue's ONE line per dispatch (header of {@link filaEstoqueLojaIntegrada}). */
 const LINHA_DA_TAREFA = '[loja-integrada] tarefa da fila de estoque';
@@ -75,6 +72,38 @@ function detalheDoResultado(r: ResultadoEstoqueLi): string | number | null {
   }
 }
 
+/** A fan-out's one detail for the line: the motivo of a skip, else `null`. */
+function detalheDoResultadoKits(r: ResultadoKitsEstoqueLi): string | null {
+  switch (r.kind) {
+    case 'pulado':
+      return r.motivo;
+    case 'payload-invalido':
+    case 'desligado':
+    case 'teto-invalido':
+    case 'nenhum':
+    case 'enfileirado':
+    case 'tarefas-desligadas':
+    case 'slot-esgotado':
+      return null;
+  }
+}
+
+/** A fan-out's counts for the line (the reserved horizon among them), or `null` before the map. */
+function contagensDoResultadoKits(r: ResultadoKitsEstoqueLi): Record<string, unknown> | null {
+  switch (r.kind) {
+    case 'nenhum':
+    case 'enfileirado':
+    case 'tarefas-desligadas':
+    case 'slot-esgotado':
+      return { ...r.contagens };
+    case 'pulado':
+    case 'payload-invalido':
+    case 'desligado':
+    case 'teto-invalido':
+      return null;
+  }
+}
+
 /**
  * One dispatch, by `tipo`. `inicioDaTarefaMs` is the dispatch's own start, stamped before anything
  * else. The ids on the line are read off the RAW data, one by one, as short strings or `null` —
@@ -93,6 +122,7 @@ async function despachar(
     tipo: campoBruto(dados, 'tipo'),
     contaId: campoBruto(dados, 'contaId'),
     produtoId: campoBruto(dados, 'produtoId'),
+    componenteId: campoBruto(dados, 'componenteId'),
     origem: campoBruto(dados, 'origem'),
     geracao: geracaoBruta(dados),
     tentativa,
@@ -108,11 +138,26 @@ async function despachar(
     return;
   }
 
-  const detail =
-    tipo === TIPO_TAREFA_ESTOQUE_LI.estoqueKits
-      ? DETALHE_SEM_CONSUMIDOR_ESTOQUE_LI
-      : DETALHE_TIPO_DESCONHECIDO_ESTOQUE_LI;
-  logger.info(LINHA_DA_TAREFA, { ...comum, kind: 'dropped', detail });
+  if (tipo === TIPO_TAREFA_ESTOQUE_LI.estoqueKits) {
+    const r = await processarTarefaEstoqueKitsLi(
+      getDb(),
+      dados,
+      depsDeKitsEstoqueLi({ tentativa, idTarefa }, inicioDaTarefaMs),
+    );
+    logger.info(LINHA_DA_TAREFA, {
+      ...comum,
+      kind: r.kind,
+      detail: detalheDoResultadoKits(r),
+      kits: contagensDoResultadoKits(r),
+    });
+    return;
+  }
+
+  logger.info(LINHA_DA_TAREFA, {
+    ...comum,
+    kind: 'dropped',
+    detail: DETALHE_TIPO_DESCONHECIDO_ESTOQUE_LI,
+  });
 }
 
 /**
@@ -122,11 +167,17 @@ async function despachar(
  *
  *  - `estoque`: ONE send run of one child produto of one conta
  *    (`lib/lojaIntegrada/estoque/processarEstoque.ts`): the payload is ids only, parsed strict by
- *    the run, and the quantity is derived when the task RUNS, never carried. Its producers: the
- *    run's own `deriva` follow-up (through `./agendadorEstoque`) today; the stock trigger, the
- *    reconcile and the manual push later.
- *  - `estoque-kits`: dropped with `sem-consumidor` until its consumer and producer ship together
- *    (PR 12-f).
+ *    the run, and the quantity is derived when the task RUNS, never carried. Its producers, all
+ *    through `./agendadorEstoque`: the stock trigger (`./onEstoqueLojaIntegrada`: a linked child's
+ *    move, an eager kit), the `estoque-kits` fan-out below (one per kit at 0), and the run's own
+ *    `deriva` follow-up; the reconcile and the manual push later.
+ *  - `estoque-kits`: the fan-out of ONE component with more store kits than the eager ceiling
+ *    (`lib/lojaIntegrada/estoque/processarKitsEstoque.ts`), enqueued by the stock trigger: it
+ *    reads the component's stock, its kits map, and enqueues an `estoque` task per kit the
+ *    component holds at 0, paced on the ONE global stagger slot — whose `proximoSlotMs`
+ *    (`reconcileEstoqueLojaIntegrada/atual`) is its only Firestore write. It calls no Loja
+ *    Integrada endpoint. Its line adds the counts (`kits`: F, the kits read, at 0, enqueued,
+ *    refused, and the reserved horizon in ms).
  *  - anything else: dropped, with one line.
  *
  * Why a queue of its own, and not an arm of the writes queue (`./filaEscrita`): a full stock pass
@@ -157,15 +208,16 @@ async function despachar(
  *   (20 s) ends before the platform cuts the attempt.
  * - NO `secrets:`. The token lives per conta in Firestore.
  * - `...tasksInvokerOptions()`: `roles/run.invoker` on this service and `roles/cloudtasks.enqueuer`
- *   on its queue, applied at deploy time from `TASKS_INVOKER_SA` (#1133). Its enqueuer today is
- *   the functions runtime SA (the `deriva` follow-up). Absent when unset.
+ *   on its queue, applied at deploy time from `TASKS_INVOKER_SA` (#1133). Its enqueuers are all
+ *   the functions runtime SA: the stock trigger, the fan-out and the `deriva` follow-up. Absent
+ *   when unset.
  *
- * No Firestore write on success, and no failure store: a run that cannot finish either THROWS
- * (the queue retries, every attempt re-deriving from a fresh read) or DROPS with a line, and the
- * daily reconcile re-covers the produto. Until the window a run makes NO Loja Integrada call: the
- * stock valve is unset (`off`: the run returns `desligado` before any read), and at `dry-run` or
- * `on` the read switch — also unset — stops the run at its write context, before any client exists
- * (no call to the store before the cutover).
+ * No Firestore write on a send run's success, and no failure store: a run that cannot finish
+ * either THROWS (the queue retries, every attempt re-deriving from a fresh read) or DROPS with a
+ * line, and the daily reconcile re-covers the produto. The fan-out's one write is the slot. Until
+ * the window a run makes NO Loja Integrada call: the stock valve is unset (`off`: the run returns
+ * `desligado` before any read), and at `dry-run` or `on` the read switch — also unset — stops the
+ * run at its write context, before any client exists (no call to the store before the cutover).
  */
 // ⚠️ No type argument on the call: `tasks-invoker-inventory.test.js` discovers
 // task functions by the call text. `req.data` is narrowed to `unknown` instead.

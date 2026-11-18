@@ -160,7 +160,6 @@ import {
 import { tratarFalhaDeAutenticacao } from '../core/estacionamento';
 import {
   type AlvoLi,
-  type AmbienteLi,
   FLUXO_LI,
   MODO_LI,
   type MotivoDryRunLi,
@@ -178,6 +177,7 @@ import {
   avisarEstoqueRecusadoLi,
   resolverEstoqueRecusadoLi,
 } from './avisosEstoque';
+import { TETO_ESTOQUE_ENV_LI, lerTetoEstoqueLi } from './configEstoqueLi';
 import {
   depositoDaContaLi,
   lerComponentesNoDepositoLi,
@@ -215,24 +215,11 @@ import { type CorpoEstoqueLi, type ProdutoEstoqueLi, alvoEstoqueLi } from './qua
  */
 export const PIOR_EXECUCAO_ESTOQUE_LI_MS = 68_000;
 
-/** The upper cap on what one row advertises (module header, step 3). */
-export const TETO_ESTOQUE_ENV_LI = 'LOJA_INTEGRADA_ESTOQUE_MAX';
-
-/** A positive integer in canonical decimal: no sign, no leading zero, no space, no fraction. */
-const TETO_CANONICO = /^[1-9][0-9]*$/;
-
 /**
- * The cap, as the run applies it: `+∞` when unset or blank (exactly `''`, nothing trimmed); the
- * number when the value is a positive safe integer in canonical decimal; `null` — the run refuses
- * — for anything else (`0`, `-1`, `1.5`, ` 3`, `03`, `abc`).
+ * The cap (module header, step 3) and its reader live in the leaf `configEstoqueLi.ts`, which the
+ * stock trigger reads too without reaching this module; re-exported here, so no importer changed.
  */
-export function lerTetoEstoqueLi(ambiente: AmbienteLi): number | null {
-  const valor = ambiente[TETO_ESTOQUE_ENV_LI];
-  if (valor === undefined || valor === '') return Number.POSITIVE_INFINITY;
-  if (!TETO_CANONICO.test(valor)) return null;
-  const teto = Number(valor);
-  return Number.isSafeInteger(teto) ? teto : null;
-}
+export { TETO_ESTOQUE_ENV_LI, lerTetoEstoqueLi };
 
 /**
  * The write kind of each origin (module header, step 12). Exhaustive: an origin added later does

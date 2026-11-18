@@ -85,8 +85,29 @@ import { defineConfig } from 'vitest/config';
 // `estoques` records and link docs — so it keeps the THIRD trigger's rules above (its own
 // produtos, the anchor's add awaited before the run, the links deleted and the conta's
 // leaving awaited before the produtos go) — and one case enqueues a `deriva` follow-up
-// through the real producer root. That dispatched task stops at the stock valve, which the
-// lane leaves unset: it reads and writes nothing, so it cannot spill into another file.
+// through the real producer root. Since PR 12-f the lane sets the stock valve to `dry-run`,
+// so that dispatched task runs its ERP reads and stops at its write context (the read switch
+// is off): it writes nothing, so it cannot spill into another file.
+//
+// ⚠️ Since step 12 (PR 12-f) a FIFTH trigger loads, the stock trigger `onEstoqueLojaIntegrada`,
+// on every write of `produtos/*/estoques/*` — every suite's stock records, today
+// `processarEstoque.tasks.test.ts` and the trigger's own suite,
+// `lib/lojaIntegrada/estoque/gatilhoEstoque.tasks.test.ts`. At the lane's `dry-run` valve it
+// reads its cached depósito map (one `integracao` query per 15 minutes per emulator worker),
+// the produto's links and the kits header, and may enqueue send runs (which stop at their
+// write context and write nothing) and, for a component with a seeded kits header, ONE
+// `estoque-kits` fan-out — whose only write is the global stagger slot
+// `reconcileEstoqueLojaIntegrada/atual`. So a suite that writes stock records:
+//   - uses produtos (and a conta and a depósito) no other suite seeds;
+//   - never seeds a kits header for a component whose records another suite moves, and never
+//     moves a record from positive to 0 under an existing sharded or over-ceiling header (that
+//     is a fan-out the deployed trigger enqueues on its own timing);
+//   - deletes `sincEstoqueLojaIntegrada/{conta}` (headers and shards) BEFORE any of its stock
+//     records, then the slot document, the produtos and the conta — and if it lets the
+//     DEPLOYED fan-out write the slot, awaits that write before the next case wipes it;
+//   - asserts only what its own run decides: the deployed trigger's map may be warm from an
+//     earlier file without this suite's conta, so the trigger's work is driven IN PROCESS
+//     (the cache reset per case), and only the dispatched fan-out is observed in the emulator.
 //
 // Each file's `beforeEach` deletes what it reads, because the files
 // share one emulator and run one at a time (`fileParallelism: false`).

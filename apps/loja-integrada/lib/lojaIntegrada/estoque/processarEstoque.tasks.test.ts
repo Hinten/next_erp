@@ -20,11 +20,16 @@
  * ⚠️ The valve, the canary and the read switch are ON in THIS process only, passed as a PARAMETER
  * (`ambiente`): `process.env` is never touched — the setup refuses to start with any of them on
  * there, because the functions emulator inherits this shell's environment. So the DISPATCHED
- * follow-up stops at the stock valve, which the lane leaves unset: it reads nothing, writes
- * nothing and logs one line in the emulator's process. That hop is unobservable here BY DESIGN
- * (no failure store, no write on success); the queue's options and its dispatch are pinned
- * offline (`functions/src/index.test.ts`, `functions/src/filaEstoque.test.ts`). The emulator
- * ignores the task's schedule (firebase-tools#8254), so nothing here asserts it.
+ * follow-up passes the stock valve (`dry-run` in the lane, since PR 12-f) and stops at its write
+ * context on the read switch: it runs its ERP reads, writes nothing and logs its lines in the
+ * emulator's process. That hop is unobservable here BY DESIGN (no failure store, no write on
+ * success); the queue's options and its dispatch are pinned offline
+ * (`functions/src/index.test.ts`, `functions/src/filaEstoque.test.ts`). The emulator ignores the
+ * task's schedule (firebase-tools#8254), so nothing here asserts it.
+ *
+ * ⚠️ Every record this suite writes also fires the DEPLOYED stock trigger (PR 12-f): at the lane's
+ * `dry-run` valve it may enqueue a send run for a linked produto here, which stops at its write
+ * context and writes nothing. No kits header is seeded, so it never fans out (no slot write).
  *
  * What this proves that the offline suite cannot: each query shape the run builds is accepted by
  * a real Firestore and finds what it must — a record stored under the BARE depósito ref, a record

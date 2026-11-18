@@ -389,7 +389,7 @@ describe('the gates: ZERO reads before them', () => {
 
     const r = await executarContaPollLi(
       asDb(h.fake),
-      { integracaoId: ID, nome: `Loja ${ID}`, ativo: true },
+      { integracaoId: ID, nome: `Loja ${ID}`, ativo: true, depositoId: null },
       ORCAMENTO_CONTA_MS,
       h.deps({ ambiente: {} }),
     );

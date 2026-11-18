@@ -6,6 +6,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vites
 
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
 import {
+  estoqueCollection,
   historicoFreteInicialCollection,
   importacaoLojaIntegradaCollection,
   integracaoCollection,
@@ -110,6 +111,7 @@ const {
   filaEscritaLojaIntegrada,
   filaEstoqueLojaIntegrada,
   filaLeituraLojaIntegrada,
+  onEstoqueLojaIntegrada,
   onHistoricoFreteLojaIntegrada,
   onImportacaoLojaIntegradaCriada,
   onIntegracaoLojaIntegradaChanged,
@@ -174,7 +176,9 @@ const FILAS = {
  * fires, with nothing anywhere to say so. Master plan step 20 added the first
  * (`onIntegracaoLojaIntegradaChanged`), step 7 the second, and step 9 the third
  * and fourth (`onProdutoLojaIntegradaLinkChanged`, the anchor, and
- * `onImportacaoLojaIntegradaCriada`, the import's job-creation trigger); the
+ * `onImportacaoLojaIntegradaCriada`, the import's job-creation trigger), step 12
+ * the fifth (`onEstoqueLojaIntegrada`, the stock trigger, on every ERP stock
+ * record — the same path `apps/functions`' storage codebase listens on); the
  * `every GATILHO…` tests below walk the MAP, never a named trigger, so each one
  * lands covered.
  */
@@ -183,6 +187,7 @@ const GATILHOS = {
   onHistoricoFreteLojaIntegrada,
   onProdutoLojaIntegradaLinkChanged,
   onImportacaoLojaIntegradaCriada,
+  onEstoqueLojaIntegrada,
 } as const;
 
 /**
@@ -211,6 +216,11 @@ const CAMINHOS_DOS_GATILHOS = {
     colecao: importacaoLojaIntegradaCollection.resolvePath({}),
     ancora: 'importacoesLojaIntegrada',
     folha: '{jobId}',
+  },
+  onEstoqueLojaIntegrada: {
+    colecao: estoqueCollection.resolvePath({ produtoId: '{produtoId}' }),
+    ancora: 'produtos/{produtoId}/estoques',
+    folha: '{estoqueId}',
   },
 } as const satisfies Record<
   keyof typeof GATILHOS,
@@ -893,8 +903,10 @@ describe('the Firestore triggers (GATILHOS)', () => {
     // At-least-once redelivery for transient Firestore failures; without it the
     // event is dropped on the first one. A redelivery replays the ORIGINAL
     // before/after, and every arm but one is safe under that: the conta reconcile
-    // reads neither (it re-reads the conta itself), the history trigger enqueues a
-    // NAMED task, and the anchor's remove re-derives from a guarded re-read of the
+    // reads neither (it re-reads the conta itself), the history trigger and the
+    // stock trigger enqueue NAMED tasks (the stock one keeps no state and writes
+    // nothing; its tasks re-read the stock when they run), and the anchor's
+    // remove re-derives from a guarded re-read of the
     // links stored now. ⚠️ The anchor's ADD is the exception: a blind `arrayUnion`
     // handled after its link's close (Eventarc gives no order, and a retried create
     // can land late) leaves a conta listed with no counting link, which nothing
@@ -971,12 +983,13 @@ describe('every trigger of the codebase', () => {
     ]);
   });
 
-  it('every event-trigger export is in GATILHOS — exactly {onHistoricoFreteLojaIntegrada, onImportacaoLojaIntegradaCriada, onIntegracaoLojaIntegradaChanged, onProdutoLojaIntegradaLinkChanged}', () => {
+  it('every event-trigger export is in GATILHOS — exactly {onEstoqueLojaIntegrada, onHistoricoFreteLojaIntegrada, onImportacaoLojaIntegradaCriada, onIntegracaoLojaIntegradaChanged, onProdutoLojaIntegradaLinkChanged}', () => {
     // The third exhaustiveness twin: the two above filter on `scheduleTrigger`
     // and `taskQueueTrigger`, so an `onDocument*` export would otherwise have its
     // `database`, region, secrets and `retry` read by nothing.
     expect(exportadosCom('eventTrigger')).toEqual(Object.keys(GATILHOS).sort());
     expect(exportadosCom('eventTrigger')).toEqual([
+      'onEstoqueLojaIntegrada',
       'onHistoricoFreteLojaIntegrada',
       'onImportacaoLojaIntegradaCriada',
       'onIntegracaoLojaIntegradaChanged',
