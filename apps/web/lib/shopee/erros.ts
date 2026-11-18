@@ -120,6 +120,12 @@ export const CODIGO_FALHA_SHOPEE = {
    * knows which route it called.
    */
   rascunhoInexistente: CODIGO_RASCUNHO_SHOPEE.inexistente,
+  /**
+   * 409 — the named link is not an editable PUBLISHED listing (a draft, a
+   * native kit, a removed or superseded link): the per-listing «Descartar
+   * alterações não enviadas» refuses it.
+   */
+  anuncioNaoEditavel: CODIGO_RASCUNHO_SHOPEE.anuncioNaoEditavel,
 } as const satisfies Record<string, string>;
 
 /** Shopee's two rate-limit classes, as the backend's 502 body names them in `kind`. */

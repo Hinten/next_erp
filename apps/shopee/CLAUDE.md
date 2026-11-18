@@ -209,7 +209,7 @@ a page of the 3-day queue irreversibly.
   create's outcome is unknown, 400 for a bad body, 404
   `SHOPEE_ANUNCIO_NAO_ENCONTRADO`, 409 for a draft; it is the composition root
   for the clock, the wait and the partner client, because `anuncios/` builds none.
-- `app/api/marketplace/shopee/{rascunho/**,canais}` — #1911's draft + channel routes (**Publish**).
+- `app/api/marketplace/shopee/{rascunho/**,canais,anuncio/**}` — draft, channel and unsent-edit routes (**Publish**).
 - `app/api/marketplace/shopee/enviar-estoque/route.ts` — step 12's manual stock
   push (`PERM.integracao.write`): **200 even when every listing failed** (a
   per-listing refusal is DATA), 409 `SHOPEE_CONTA_PAUSADA` before any provider
@@ -449,11 +449,10 @@ a page of the 3-day queue irreversibly.
   `avisos/autorizacao.ts`, which stays the one module on the AVISOS path that
   knows the unit (the three pedido seams above are the others).
 - `lib/shopee/testing/fakeDb.ts` — the shared in-memory Firestore double
-  **123** suites in this app name (121 drive it), and since step 8 it has a
+  **125** suites in this app name (123 drive it), and since step 8 it has a
   suite of its OWN. ⚠️ Re-derive the number, never increment it:
   `git grep -l "testing/fakeDb" -- "apps/shopee/**/*.test.ts" | wc -l` (after
-  step 8: 20, 9: 34, 12: 57, 13: 73, 14: 81, 15: 84, 15b: 87, 17: 93, 18: 95,
-  19: 108, 20: 111, 21: 114, #1911: 123 — the two `*.tasks.test.ts` suites it
+  step 8: 20, 21: 114, #1911: 123, #2164: 125 — the two `*.tasks.test.ts` suites it
   counts name the double in a docblock only).
   Step 9 extended the double ADDITIVELY: an
   `__arrayUnion` sentinel applied on write, **dotted-path** expansion on
@@ -1447,6 +1446,7 @@ The first WRITER of a listing. Reasoning: `anuncios/README.md`.
   deadline: 409 `PUBLICACAO_EXPIRADA`, nothing sent (the CLI has the lock's
   time). Follow-ups #2064 (narrow the walk), #2061 (ENSURE's fallback).
   Registers 307–320: `anuncios/README.md`.
+- **Unsent edits of a PUBLISHED listing**: `anuncios/README.md`, «Unsent ERP edits».
 
 ## Stock sync (`lib/shopee/estoque/`, step 12)
 

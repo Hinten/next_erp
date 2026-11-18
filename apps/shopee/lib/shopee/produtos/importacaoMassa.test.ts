@@ -263,6 +263,7 @@ describe('iniciarImportacaoShopee', () => {
       created: 0,
       skipped: 0,
       kits: 0,
+      edicoesPreservadas: 0,
       failureCount: 0,
       failures: [],
       startedAt: AGORA_MS,
@@ -769,6 +770,39 @@ describe('processarImportacaoShopee — dreno', () => {
 
     expect(job(db).imported).toBe(2);
     expect(job(db).created).toBe(1);
+  });
+
+  it('30b — edicoesPreservadas só incrementa quando o resultado diz edicaoErpPreservada: true', async () => {
+    const cliente = clienteFalso({ getItemBaseInfo: vi.fn(async (p) => corpoDe(p)) });
+    // Near-miss: `false` e ausente NÃO contam — só o `true` do item 2.
+    const importarAnuncio = vi.fn(async (_d: unknown, entrada: ItemLido) =>
+      resultado(
+        entrada.itemId === 2
+          ? { edicaoErpPreservada: true }
+          : entrada.itemId === 3
+            ? { edicaoErpPreservada: false }
+            : {},
+      ),
+    );
+    const { db, deps } = montar({ cliente, deps: { importarAnuncio } });
+    semearJob(db, { fila: [1, 2, 3] });
+
+    await processarImportacaoShopee(deps, PAYLOAD, 0);
+
+    expect(job(db).imported).toBe(3);
+    expect(job(db).edicoesPreservadas).toBe(1);
+    expect(job(db).failureCount).toBe(0);
+  });
+
+  it('30c — um job gravado ANTES do contador (sem o campo) ainda drena e o contador parte de 0', async () => {
+    const cliente = clienteFalso({ getItemBaseInfo: vi.fn(async (p) => corpoDe(p)) });
+    const { db, deps } = montar({ cliente });
+    semearJob(db, { fila: [1] });
+
+    await processarImportacaoShopee(deps, PAYLOAD, 0);
+
+    expect(job(db).imported).toBe(1);
+    expect(job(db).edicoesPreservadas).toBe(0);
   });
 
   it('31 — passa o ItemLido já lido — o importador não relê nada', async () => {

@@ -240,6 +240,39 @@ exception (OP-27, PR #1869): `lerVinculosDaConta` matches the conta by
 republishes onto that listing where step 11 created a second one. The pick's
 ORDER did not change; the `item_id` lookups still compare exactly.
 
+### Unsent ERP edits of a PUBLISHED listing (#2164)
+
+Lucas, 2026-11-17: a published listing is edited in the ERP the legacy way —
+the edit is SAVED to its `prodshopee` link only, and the next «Republicar»
+sends it (`montagemAnuncio.ts` lets the link's content win over the produto).
+An edit stamps `edicaoErpRevisao` (+1) and `edicaoErpPendenteEm` (ms) on the
+link; read them ONLY through `revisaoDeEdicaoErpShopee` /
+`edicaoErpPendenteShopee` (`@delfrance/schemas`), and the editable predicate
+through `anuncioShopeeEditavel` (a positive safe-integer `item_id`, live, not
+superseded, not a native kit).
+
+The content keys are `CAMPOS_DE_EDICAO_ERP_SHOPEE`. Every OTHER writer of them
+goes through `../produtos/links.ts`'s GUARDED arm (`merge-guardado`, rule 7
+tier 1 — a fresh read, a re-decision, `update(…, {lastUpdateTime})`):
+
+- the product import writes them only while nothing is pending (and counts
+  `edicoesPreservadas` in the mass job);
+- write-back #1 only while the revision equals the one its body was built from
+  — then it clears the flag, this publish sent the edit; otherwise the edit
+  survives and the flag is set;
+- write-back #2 only while the revision equals AND nothing is pending (it also
+  stores the read-back's `attribute_list`).
+
+After three lost preconditions a write-back falls back to a non-content merge
+(flagging only a link that HAS an edit); the import rethrows. The kit arm keeps
+its plain merge but never re-spreads the two stamps.
+
+`POST …/anuncio/descartar-edicoes` (`descartarEdicoes.ts`) reloads Shopee's
+content into the link and clears the flag — it never bumps the revision, and
+its Shopee read sits after the gate's snapshot, so a write-back landing during
+that read makes the write lose and re-read. The edit route that stamps an edit
+is the next change of the stack.
+
 ### A draft is never live (#1911, P1, D3)
 
 A **draft** is a `prodshopee` document the ERP intends to publish and Shopee

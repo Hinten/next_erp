@@ -506,7 +506,9 @@ export function resumoDoPlano(
       aCriar: plano.categorias.length,
     },
     links: {
-      pai: plano.linkPai.acao,
+      // The guarded write is still a MERGE onto the resolved link as far as the
+      // rehearsal's reader is concerned (the guard is the writer's concern).
+      pai: plano.linkPai.acao === 'merge-guardado' ? 'merge' : plano.linkPai.acao,
       paiRefPendente: plano.linkPaiRefPendente,
       filhosAdd: filhos.filter((f) => f.link === 'add').length,
       filhosMerge: filhos.filter((f) => f.link === 'merge').length,
@@ -557,7 +559,11 @@ function lista(v: readonly string[]): string {
   return v.length === 0 ? '(nenhum)' : v.join(', ');
 }
 
-/** Exhaustive by construction: a fourth parent-link action stops compiling here. */
+/**
+ * Exhaustive over the SUMMARY's three labels: a fourth label stops compiling
+ * here. The plan's guarded arm (`merge-guardado`) is deliberately folded into
+ * `merge` upstream — to the operator it is the same "update this link".
+ */
 const ROTULO_DO_LINK_PAI: Record<ResumoImportacaoShopee['links']['pai'], string> = {
   add: 'CRIAR',
   merge: 'MERGE',

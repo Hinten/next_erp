@@ -6,6 +6,12 @@ import {
   type ProdutoShopeeLink,
 } from './shopeeLink';
 import {
+  anuncioShopeeEditavel,
+  CAMPOS_DE_EDICAO_ERP_SHOPEE,
+  edicaoErpPendenteShopee,
+  revisaoDeEdicaoErpShopee,
+  semCamposDeEdicaoErpShopee,
+  soCamposDeEdicaoErpShopee,
   anuncioShopeeVivo,
   contaDoLinkShopee,
   ehRascunhoShopee,
@@ -990,5 +996,148 @@ describe('lerLogisticaArmazenadaShopee — o leitor ÚNICO da lista armazenada (
     expect(
       ler([{ logistic_id: B, size_id: '' }, { logistic_id: B, size_id: '7' }, { logistic_id: A }]),
     ).toEqual([lida({ logisticId: B }), lida({ logisticId: B, sizeId: 7 }), lida()]);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*              ERP edits of a published listing — readers and helpers         */
+/* -------------------------------------------------------------------------- */
+
+describe('revisaoDeEdicaoErpShopee', () => {
+  it.each([
+    [1, 1],
+    [7, 7],
+    [Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER],
+    [0, null],
+    [-1, null],
+    [1.5, null],
+    [2 ** 53, null],
+    ['3', null],
+    [null, null],
+    [undefined, null],
+  ])('edicaoErpRevisao %s lê %s', (v, esperado) => {
+    expect(revisaoDeEdicaoErpShopee({ edicaoErpRevisao: v })).toBe(esperado);
+  });
+
+  it('link nulo ou sem a chave lê null', () => {
+    expect(revisaoDeEdicaoErpShopee(null)).toBeNull();
+    expect(revisaoDeEdicaoErpShopee({})).toBeNull();
+  });
+});
+
+describe('edicaoErpPendenteShopee', () => {
+  it.each([
+    [1, true],
+    [1_757_000_000_000, true],
+    [0, false],
+    [-5, false],
+    [Number.NaN, false],
+    [Number.POSITIVE_INFINITY, false],
+    ['1', false],
+    [null, false],
+    [undefined, false],
+  ])('edicaoErpPendenteEm %s lê %s', (v, esperado) => {
+    expect(edicaoErpPendenteShopee({ edicaoErpPendenteEm: v })).toBe(esperado);
+  });
+
+  it('link nulo ou sem a chave não tem pendência', () => {
+    expect(edicaoErpPendenteShopee(null)).toBe(false);
+    expect(edicaoErpPendenteShopee({})).toBe(false);
+  });
+});
+
+describe('anuncioShopeeEditavel', () => {
+  const VIVO = { item_id: 7 };
+
+  it('um anúncio vivo, publicado e comum é editável', () => {
+    expect(anuncioShopeeEditavel(VIVO)).toBe(true);
+    expect(anuncioShopeeEditavel({ ...VIVO, estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo })).toBe(
+      true,
+    );
+  });
+
+  it('link nulo não é editável', () => {
+    expect(anuncioShopeeEditavel(null)).toBe(false);
+  });
+
+  it.each([1.5, 2 ** 53, '7', null, 0, -3, undefined])('⛔ item_id %s não é editável', (id) => {
+    expect(anuncioShopeeEditavel({ item_id: id })).toBe(false);
+  });
+
+  it('removido não é editável', () => {
+    expect(anuncioShopeeEditavel({ ...VIVO, estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.removido })).toBe(
+      false,
+    );
+  });
+
+  it('PAR: substituído por um id não vazio não edita; `""`, null e ausente editam', () => {
+    expect(anuncioShopeeEditavel({ ...VIVO, substituidoPorLinkDocId: 'x' })).toBe(false);
+    expect(anuncioShopeeEditavel({ ...VIVO, substituidoPorLinkDocId: '' })).toBe(true);
+    expect(anuncioShopeeEditavel({ ...VIVO, substituidoPorLinkDocId: null })).toBe(true);
+  });
+
+  it('PAR: só `kitNativo === true` exclui; false, null e ausente editam', () => {
+    expect(anuncioShopeeEditavel({ ...VIVO, kitNativo: true })).toBe(false);
+    expect(anuncioShopeeEditavel({ ...VIVO, kitNativo: false })).toBe(true);
+    expect(anuncioShopeeEditavel({ ...VIVO, kitNativo: null })).toBe(true);
+  });
+});
+
+describe('semCamposDeEdicaoErpShopee / soCamposDeEdicaoErpShopee', () => {
+  const CHAVES = [...CAMPOS_DE_EDICAO_ERP_SHOPEE] as string[];
+  const FORA = { item_status: 'NORMAL', ultimaModificacao: 5, kitNativo: false, extra: null };
+  const COMPLETO: Record<string, unknown> = {
+    ...Object.fromEntries(CHAVES.map((k, i) => [k, i])),
+    ...FORA,
+  };
+
+  it('a lista tem exatamente as dez chaves do contrato', () => {
+    expect([...CAMPOS_DE_EDICAO_ERP_SHOPEE].sort()).toEqual(
+      [
+        'attributes',
+        'brand_id',
+        'category_id',
+        'description',
+        'description_info',
+        'description_type',
+        'item_name',
+        'logisticaGravadaEm',
+        'logistic_info',
+        'original_brand_name',
+      ].sort(),
+    );
+  });
+
+  it('sem: descarta exatamente as dez e preserva o resto', () => {
+    expect(semCamposDeEdicaoErpShopee(COMPLETO)).toEqual(FORA);
+  });
+
+  it('so: mantém exatamente as dez e descarta o resto', () => {
+    const so = soCamposDeEdicaoErpShopee(COMPLETO);
+    expect(Object.keys(so).sort()).toEqual([...CHAVES].sort());
+    expect(so).not.toHaveProperty('item_status');
+  });
+
+  it('⛔ so nunca inventa uma chave ausente; uma chave presente com null ou undefined fica', () => {
+    expect(soCamposDeEdicaoErpShopee({ item_name: 'a', item_status: 'x' })).toEqual({
+      item_name: 'a',
+    });
+    const so = soCamposDeEdicaoErpShopee({ brand_id: null, description: undefined });
+    expect(Object.keys(so).sort()).toEqual(['brand_id', 'description']);
+    expect(soCamposDeEdicaoErpShopee({})).toEqual({});
+  });
+
+  it('as duas devolvem cópias rasas e não mutam a entrada', () => {
+    const entrada = { item_name: 'a', item_status: 'x' };
+    const sem = semCamposDeEdicaoErpShopee(entrada);
+    expect(sem).not.toBe(entrada);
+    expect(entrada).toEqual({ item_name: 'a', item_status: 'x' });
+  });
+
+  it('sem e so particionam: a união reconstrói o original', () => {
+    expect({
+      ...semCamposDeEdicaoErpShopee(COMPLETO),
+      ...soCamposDeEdicaoErpShopee(COMPLETO),
+    }).toEqual(COMPLETO);
   });
 });
