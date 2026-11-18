@@ -17,6 +17,7 @@
  * | the components whose CANONICAL record is still unread (none found, or only legacy ones: a row without `parentId` is invisible to the join) | the own-record query, per component | as the own record |
  * | "any record at any depósito?" | where-less listing, `limit 1` | the produto's own partition, no index |
  * | the duplicate-link probe | GROUP `contaLojaIntegrada == form`, `id in [n, 'n']`, per form | COLLECTION_GROUP `produtolojaintegrada (contaLojaIntegrada, id)` |
+ * | the daily reconcile's lookup of unknown store rows (`reconcile/faseLi.ts`) | the same builder, `id in` up to 15 numbers + their 15 texts, per form | the same index |
  *
  * ## A hint is used only when it IS the canonical record
  *
@@ -43,7 +44,7 @@
  * it stores: a record whose stored owner disagrees with its path is attributed to its path, and a
  * component it does not then answer for is looked up again by its own collection.
  */
-import type { DocumentSnapshot, Firestore } from 'firebase-admin/firestore';
+import type { DocumentSnapshot, Firestore, Query } from 'firebase-admin/firestore';
 import {
   estoqueCollection,
   produtoCollection,
@@ -426,6 +427,46 @@ export async function temEstoqueEmQualquerDepositoLi(
 }
 
 /**
+ * The most store ids ONE {@link consultaVinculosDaContaPorIdsLi} names: each id is asked as its
+ * number AND its canonical text (a link stores either), so 15 ids are the `in` operator's 30 values
+ * ({@link MAX_VALORES_IN_ESTOQUE_LI}).
+ */
+export const MAX_IDS_POR_CONSULTA_VINCULO_LI = MAX_VALORES_IN_ESTOQUE_LI / 2;
+
+/**
+ * The ONE builder of the query that finds a conta's links by store id, shared by the send run's
+ * duplicate probe ({@link sondarVinculoDuplicadoLi}) and the daily reconcile's lookup of a stock
+ * row no snapshot entry names (`estoque/reconcile/faseLi.ts`), so the two can never drift apart:
+ * the collection group `produtolojaintegrada`, `contaLojaIntegrada == forma` (ONE stored form of
+ * the conta ref; the caller asks each form) and `id in [<number>, '<text>', …]` for every id —
+ * an equality and an `in`, served by the declared COLLECTION_GROUP
+ * `produtolojaintegrada (contaLojaIntegrada, id)` (its pin: `leituraEstoqueErp.test.ts`). No
+ * limit: each caller sets its own. The conta, the counting predicate and the owner are the
+ * caller's to check in code (`contaDoLinkLi`, `vinculoLiConta`, the PATH).
+ *
+ * Every id is the canonical decimal text of a positive safe integer (a snapshot key, a stock
+ * row's produto). Throws `RangeError` for no id or more than {@link MAX_IDS_POR_CONSULTA_VINCULO_LI}.
+ */
+export function consultaVinculosDaContaPorIdsLi(
+  db: Firestore,
+  forma: string,
+  idsLi: readonly string[],
+): Query {
+  if (idsLi.length === 0 || idsLi.length > MAX_IDS_POR_CONSULTA_VINCULO_LI) {
+    throw new RangeError('consultaVinculosDaContaPorIdsLi: de 1 a 15 ids por consulta');
+  }
+  const [campoConta, campoId] = CAMPOS_INDICE_VINCULO_LI;
+  return produtoLojaIntegradaLinkCollection
+    .groupQuery(db)
+    .where(campoConta, '==', forma)
+    .where(
+      campoId,
+      'in',
+      idsLi.flatMap((idLi) => [Number(idLi), idLi]),
+    );
+}
+
+/**
  * Whether ANOTHER produto holds a counting link of this conta to store product `idLi` — the
  * duplicate a run must never send through. One group query per stored form of the conta ref:
  * `contaLojaIntegrada == form` and `id in [<number>, '<text>']` (a link may store the id either
@@ -439,15 +480,9 @@ export async function sondarVinculoDuplicadoLi(
   idLi: string,
   produtoId: string,
 ): Promise<boolean> {
-  const [campoConta, campoId] = CAMPOS_INDICE_VINCULO_LI;
   const snaps = await Promise.all(
     contaRefForms(contaId).map((forma) =>
-      produtoLojaIntegradaLinkCollection
-        .groupQuery(db)
-        .where(campoConta, '==', forma)
-        .where(campoId, 'in', [Number(idLi), idLi])
-        .limit(LIMITE_VINCULOS_LI)
-        .get(),
+      consultaVinculosDaContaPorIdsLi(db, forma, [idLi]).limit(LIMITE_VINCULOS_LI).get(),
     ),
   );
   return snaps.some((snap) =>

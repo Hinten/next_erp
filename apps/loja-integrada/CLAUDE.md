@@ -1006,10 +1006,10 @@ The full stock-sync section lands with the rest of step 12; these are the facts 
   context loader, park, pacer, write engine or send run reached, no client named, no `fetch`, the
   package loaded only by `pedidos/vinculoProdutoLi.ts` (constants).
 
-## Stock reconcile (step 12, PR 12-g — the ERP side so far)
+## Stock reconcile (step 12, PR 12-g — the ERP side and the store's list so far)
 
-The store's list walk, the queue phase, the avisos and the depósito-change arm land with the rest
-of PR 12-g; these are the facts already in the tree.
+The queue phase, the avisos, the safety gate's decision and the depósito-change arm land with the
+rest of PR 12-g; these are the facts already in the tree.
 
 - **Files** (`estoque/reconcile/`): `agendamentoReconcile.ts` (the nightly start),
   `agendadorReconcile.ts` (the reads-queue producer, tasks `li-<execucaoId>-<seq>`),
@@ -1017,7 +1017,8 @@ of PR 12-g; these are the facts already in the tree.
   take, every batch), `orcamentoReconcile.ts` (the import's 70 + 30 s budget, one rule:
   `cabeNoOrcamentoMsLi`), `caminhadaVinculos.ts` (one page of the link walk), `faseErp.ts` (one page
   evaluated for every conta), `snapshotReconcile.ts` (a slice's per-conta state, the entry
-  precedence), `mapaKitsReconcile.ts` (the kits map writer). In `functions/src/`:
+  precedence), `mapaKitsReconcile.ts` (the kits map writer), `faseLi.ts` (the store phase, one unit
+  at a time), `candidatosReconcile.ts` (the run's candidate list). In `functions/src/`:
   `reconciliarEstoque.ts` (`onSchedule('23 4 * * *')`, America/Sao_Paulo, `retryCount: 3`),
   `depsReconcileEstoque.ts`, the `estoque-reconcile` arm of `filaLeitura.ts` and the producer root in
   `agendador.ts`.
@@ -1052,11 +1053,42 @@ of PR 12-g; these are the facts already in the tree.
   batch per unit with each component's header AND shards (the 12-f reader's `completa` holds when
   it lands), then the sweep of every header and shard of another run (listings projected to
   `execucaoId`), then one INFO line with the kits-per-component histogram.
+- **The store phase** (`li`), per conta in `contas` order, Loja Integrada ONLY through the context
+  loader (`estrutura.test.ts` walks the task path): the read switch FIRST (off ⇒ one
+  `chamada-bloqueada` line, zero reads, the conta skipped and counted `c<idx>ChamadasDesligadas`,
+  the chain goes on); the conta's refusals skip it the same way (one WARNING). The stock list is
+  read one page per call (`lerPaginaEstoqueLi`), `limit` = `LOJA_INTEGRADA_ESTOQUE_LIMITE_PAGINA`
+  (default 100, clamped to the schema's 100; unreadable ⇒ 100 and ONE WARNING per run), read when a
+  conta's walk starts and kept in its cursor (the root's `reconcile`): a cursor started at or after
+  the run resumes at its offset, any other restarts at 0. Per row: a parent's id ⇒ counted only;
+  otherwise SEEN (`execucao.vistos`) and diffed by the plan's one rule (`diffLinhaEstoqueLi`, the
+  cap applied there): out of step on a `v` entry ⇒ a candidate `{c, i, p, d}` and ONE INFO line
+  (ids and the row's numbers) in every valve mode. A row no entry names ⇒ the page's lookups (their
+  own budget unit; no room ⇒ the page dropped whole and read again):
+  `consultaVinculosDaContaPorIdsLi` (15 ids = 30 values per stored conta form, the builder the send
+  run's duplicate probe uses, on the declared `(contaLojaIntegrada, id)` index), the produtos found
+  evaluated by the ERP phase's evaluator, none ⇒ `x` (the steady state looks nothing up); more
+  counting links found than max(50, 2% of the rows read) ⇒ the conta BLOCKED
+  (`c<idx>BloqueioForaDoSnapshot`), ONE ERROR. An unreadable row is never "no row": with a produto
+  it is seen; without one (or a readable row naming none) the conta's unseen check and `x` sweep are
+  skipped this run. After the walk, each linked entry never seen gets ONE detail GET (≤ 200 per
+  conta; 404 ⇒ `sem-linha-na-loja`, counted and sampled; a row of that product ⇒ diffed), then the
+  unseen `x` entries are dropped. 429 ⇒ a pause (checkpoint, next slice at 60 s; past
+  `MAX_PAUSAS_429_LI` the conta is skipped); 401/403 ⇒ the shared mapper parks the conta, skipped;
+  5xx, the deadline, the network, a malformed envelope, a paging stop, Firestore ⇒ a progress
+  checkpoint at the SAME seq, then the original error rethrown (the retry resumes at the failed
+  page) — on the queue's last attempt that conta is ended instead (one ERROR) and the chain goes
+  on; a 404 on the list and anything else stay loud. The candidates live in the run document under a
+  600 000-byte budget (one per conta and store id; when full, the lowest `d` goes first). Nothing is
+  enqueued yet: the queue phase is the next part.
 - **Last attempt**: a retryable failure (Firestore, Cloud Tasks, the concurrency error) releases the
   lease with ONE ERROR `tentativas-esgotadas`, or hands off when the run is already one seq ahead
   (with our delay when the stored document holds OUR end patch); coding bugs stay loud.
 - **Amendments to the 12-a contracts** (in `packages/schemas`): the root's `execucao`, a kit entry's
-  `q`/`e`, the walk's `concluida`. Bare schemas: both rulesets regenerate with a zero diff.
+  `q`/`e`, the walk's `concluida`. Bare schemas: both rulesets regenerate with a zero diff. The
+  store phase needs no further field: whether a conta's list is complete, the confirmations made
+  and the pauses taken are the run document's per-conta counters (`c<idx>ListaCompleta`, …), which
+  the take resets with the run.
 
 ## Notification pipeline (step 3)
 

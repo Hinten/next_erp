@@ -23,12 +23,16 @@
  *       at once (`faseErp.ts`) into the per-conta state (`snapshotReconcile.ts`); then, per conta
  *       (`idxConta`), the kits map (`mapaKitsReconcile.ts`) — its batches commit as they go, each
  *       with the lease's precondition;
- *     - `li` and `fila` pass straight through for now: the store's stock list walk and the queue
- *       phase land with the rest of PR 12-g;
+ *     - `li`: per conta (`idxConta`), the store's stock list walk (`faseLi.ts`): the context
+ *       FIRST (its read switch), one page — and the page's lookups — or one confirmation of an
+ *       unseen linked child per unit; the rows out of step join the run's `candidatos`
+ *       (`candidatosReconcile.ts`); a conta skipped or done moves `idxConta` on;
+ *     - `fila` passes straight through for now: the queue phase lands with the rest of PR 12-g;
  *     - `fim` releases the lease.
  *  6. ONE end-of-slice checkpoint: the run document (`seq + 1`, the lease extended, or released at
  *     `fim`) and every per-conta document the slice changed, in ONE batch; then the NAMED
- *     continuation `(execucaoId, seq + 1)`, 2 s later.
+ *     continuation `(execucaoId, seq + 1)`, 2 s later — 60 s after a 429 PAUSE of the store
+ *     phase.
  *
  * ## Failures (root rule 6) — each narrowed to its class
  *
@@ -36,6 +40,11 @@
  *    nothing written, no throw.
  *  - The sweep-only valve closed at the hand-off (`LiTarefasDesligadasError`) ⇒ the lease is
  *    released with ONE WARNING: a run is never left holding it with nothing queued.
+ *  - The store phase answers its own failures (`faseLi.ts`, "Failures"): a 429 pauses, a 401/403
+ *    parks and skips the conta, the conta's refusals skip it. A failure a retry may change is
+ *    rethrown AFTER a progress checkpoint at the SAME `seq` (the lease extended, everything the
+ *    slice completed written), so the retry resumes at the page that failed; on the queue's last
+ *    attempt the store phase ends that conta instead and the chain goes on.
  *  - Everything else is rethrown and the queue retries the SAME task: before its end checkpoint it
  *    resumes from the last one; after it, the continuation check re-enqueues the successor. On the
  *    queue's LAST attempt a failure a retry could have changed — Firestore's, Cloud Tasks', another
@@ -77,6 +86,7 @@ import {
   ATRASO_CONTINUACAO_IMPORTACAO_LI_S,
   ATRASO_PAUSA_429_IMPORTACAO_LI_S,
 } from '../../importacao/agendadorImportacao';
+import type { EscritorLogLi } from '../../core/log';
 import { TETO_ESTOQUE_ENV_LI, lerTetoEstoqueLi } from '../configEstoqueLi';
 import {
   type AgendadorReconcileEstoqueLi,
@@ -84,6 +94,7 @@ import {
   LiTarefasTransitoriasError,
 } from './agendadorReconcile';
 import { TAMANHO_PAGINA_CAMINHADA_LI, lerPaginaCaminhadaLi } from './caminhadaVinculos';
+import { ListaCandidatosReconcileLi } from './candidatosReconcile';
 import {
   type EstadoEscritaReconcileLi,
   LEASE_RECONCILE_ESTOQUE_LI_MS,
@@ -98,6 +109,7 @@ import {
   lerRunReconcileLi,
 } from './execucaoReconcile';
 import { avaliarPaginaErpLi } from './faseErp';
+import { FaseLiReconcileLi } from './faseLi';
 import {
   type MapaKitsMontadoLi,
   histogramaDeKitsLi,
@@ -106,7 +118,11 @@ import {
   proximoLoteDeVarreduraDoMapaLi,
 } from './mapaKitsReconcile';
 import { UNIDADE_RECONCILE_LI, abrirOrcamentoReconcileLi } from './orcamentoReconcile';
-import { type EstadoContaReconcileLi, carregarEstadosReconcileLi } from './snapshotReconcile';
+import {
+  type EstadoContaReconcileLi,
+  carregarEstadosReconcileLi,
+  nomeDoContadorDaContaLi,
+} from './snapshotReconcile';
 
 const TAG = '[loja-integrada/estoque] reconcile';
 
@@ -115,7 +131,10 @@ const MAX_TENTATIVAS_ASSUMIR_LI = 3;
 
 /** What one slice needs — injected; the functions codebase binds it once. */
 export interface DepsReconcileEstoqueLi {
-  /** The process environment: the valve and the cap are read from it. */
+  /**
+   * The process environment: the valve, the cap, the read switch (the context's) and the store
+   * list's page size are read from it.
+   */
   readonly ambiente: AmbienteLi;
   /** The one clock, in ms. */
   readonly agoraMs: () => number;
@@ -123,6 +142,12 @@ export interface DepsReconcileEstoqueLi {
   readonly inicioMs: number;
   /** The Cloud Tasks attempt, 0-based. */
   readonly tentativa: number;
+  /** The Cloud Tasks task id, for the store calls' lines; `null` when the request carried none. */
+  readonly idTarefa: string | null;
+  /** The pacer's sleep (2 000 ms before every Loja Integrada call). */
+  readonly esperar: (ms: number) => Promise<void>;
+  /** A tier-0 `FieldValue.increment`, for the park's reconexão aviso. */
+  readonly increment: (by: number) => unknown;
   /** The producer ROOT, built only when an enqueue is due. */
   readonly agendador: () => AgendadorReconcileEstoqueLi;
   readonly logger: {
@@ -132,6 +157,11 @@ export interface DepsReconcileEstoqueLi {
   };
   /** Links per walk page (default {@link TAMANHO_PAGINA_CAMINHADA_LI}); a test shrinks it. */
   readonly tamanhoPaginaCaminhada?: number;
+  /** The candidate list's byte budget (default: the module's); a test shrinks it. */
+  readonly orcamentoBytesCandidatos?: number;
+  /** Test seams, forwarded to the store phase's context as-is. */
+  readonly fetch?: typeof globalThis.fetch;
+  readonly escrever?: EscritorLogLi;
 }
 
 /** Every outcome of one slice. */
@@ -159,11 +189,6 @@ export type ResultadoReconcileLi =
   | { readonly kind: 'tarefas-desligadas' }
   /** The queue's last attempt failed: the lease was released. */
   | { readonly kind: 'tentativas-esgotadas' };
-
-/** A counter's stored name: the conta's index, then the name (`c0Validos`). */
-export function nomeDoContadorDaContaLi(idx: number, nome: string): string {
-  return `c${String(idx)}${nome.charAt(0).toUpperCase()}${nome.slice(1)}`;
-}
 
 /** Whether a retry could have changed this failure (module header, "Failures"). */
 function retentavel(err: unknown): boolean {
@@ -215,6 +240,8 @@ async function contasDoRunLi(
 interface RastroDoSliceLi {
   /** The end-of-slice patch, set right BEFORE it is written. */
   patchDoFim: Readonly<Record<string, unknown>> | null;
+  /** The hand-off's delay that patch was written for (2 s, or 60 s after a 429 pause). */
+  atrasoDoFim: number;
 }
 
 /**
@@ -313,7 +340,10 @@ export async function despacharReconcileEstoqueLi(
     }
   }
 
-  const rastro: RastroDoSliceLi = { patchDoFim: null };
+  const rastro: RastroDoSliceLi = {
+    patchDoFim: null,
+    atrasoDoFim: ATRASO_CONTINUACAO_IMPORTACAO_LI_S,
+  };
   try {
     return await executarSliceLi(db, tarefa, estado, deps, rastro);
   } catch (err) {
@@ -348,16 +378,20 @@ async function executarSliceLi(
   const contar = (nome: string, n = 1): void => {
     if (n !== 0) contadores[nome] = (contadores[nome] ?? 0) + n;
   };
+  const candidatos = new ListaCandidatosReconcileLi(run.candidatos, deps.orcamentoBytesCandidatos);
 
-  let estados: Map<string, EstadoContaReconcileLi> | null = null;
+  // Every per-conta state the slice loads, ONE copy per conta whichever phase loaded it: the
+  // ERP phase loads them all at once, the store phase one conta at a time.
+  const estados = new Map<string, EstadoContaReconcileLi>();
   if (fase === FASE_RECONCILE_ESTOQUE_LI.erp) {
-    estados = await carregarEstadosReconcileLi(db, tarefa.execucaoId, run.contas);
-    if (estados === null) {
+    const todos = await carregarEstadosReconcileLi(db, tarefa.execucaoId, run.contas);
+    if (todos === null) {
       deps.logger.warn(`${TAG} estado de conta de outra execução — o slice para`, ids);
       return { kind: 'parado' };
     }
+    for (const [contaId, e] of todos) estados.set(contaId, e);
   }
-  const contas = [...(estados?.values() ?? [])].map((e) => e.conta);
+  const contas = [...estados.values()].map((e) => e.conta);
   const mapas = new Map<string, MapaKitsMontadoLi>();
   const mapaDe = (e: EstadoContaReconcileLi): MapaKitsMontadoLi => {
     const memo = mapas.get(e.conta.contaId);
@@ -366,11 +400,50 @@ async function executarSliceLi(
     mapas.set(e.conta.contaId, montado);
     return montado;
   };
+  // The store phase, built when the slice reaches it.
+  let faseLi: FaseLiReconcileLi | null = null;
+  const faseLiDoSlice = (): FaseLiReconcileLi => {
+    faseLi ??= new FaseLiReconcileLi({
+      db,
+      deps,
+      execucaoId: tarefa.execucaoId,
+      runIniciadoEmMs: run.iniciadoEmMs ?? 0,
+      // Read and checked at step 3: never null here.
+      teto: lerTetoEstoqueLi(deps.ambiente) ?? 0,
+      orcamento,
+      candidatos,
+      contar,
+      contador: (nome) => contadores[nome] ?? 0,
+      estadoDe: async (conta) => {
+        const carregado = estados.get(conta.contaId);
+        if (carregado !== undefined) return carregado;
+        const lidos = await carregarEstadosReconcileLi(
+          db,
+          tarefa.execucaoId,
+          [conta.contaId],
+          conta.idx,
+        );
+        const lido = lidos?.get(conta.contaId) ?? null;
+        if (lido !== null) estados.set(conta.contaId, lido);
+        return lido;
+      },
+    });
+    return faseLi;
+  };
+
+  /** The run document's fields as the slice leaves them, but `seq` and the lease. */
+  const progresso = (): Record<string, unknown> => ({
+    fase,
+    walk,
+    idxConta,
+    contadores,
+    ...(candidatos.sujo ? { candidatos: candidatos.lista() } : {}),
+  });
 
   let final = false;
-  for (;;) {
+  let atraso = ATRASO_CONTINUACAO_IMPORTACAO_LI_S;
+  maquina: for (;;) {
     if (fase === FASE_RECONCILE_ESTOQUE_LI.erp) {
-      if (estados === null) throw new TypeError('reconcile: fase erp sem estado carregado');
       if (walk === null || !walk.concluida) {
         if (!orcamento.cabe(UNIDADE_RECONCILE_LI.erp)) break;
         const pagina = await lerPaginaCaminhadaLi(
@@ -415,11 +488,42 @@ async function executarSliceLi(
       idxConta = 0;
       continue;
     }
-    // The store's stock list walk and the queue phase land with the rest of PR 12-g.
     if (fase === FASE_RECONCILE_ESTOQUE_LI.li) {
-      fase = FASE_RECONCILE_ESTOQUE_LI.fila;
-      continue;
+      const contaId = run.contas[idxConta];
+      if (contaId === undefined) {
+        fase = FASE_RECONCILE_ESTOQUE_LI.fila;
+        continue;
+      }
+      const passo = await faseLiDoSlice().unidade({ idx: idxConta, contaId });
+      switch (passo.tipo) {
+        case 'unidade':
+          continue maquina;
+        case 'conta-encerrada':
+          idxConta += 1;
+          continue maquina;
+        case 'sem-orcamento':
+          break maquina;
+        case 'pausa':
+          atraso = ATRASO_PAUSA_429_IMPORTACAO_LI_S;
+          break maquina;
+        case 'parado':
+          deps.logger.warn(`${TAG} estado de conta de outra execução — o slice para`, ids);
+          return { kind: 'parado' };
+        case 'falha': {
+          // What the slice completed is kept, at the SAME seq; then the ORIGINAL error.
+          const parado = await gravarProgressoAntesDaFalhaLi(
+            db,
+            estado,
+            progresso(),
+            estados,
+            deps.agoraMs,
+          );
+          if (parado) return { kind: 'parado' };
+          throw passo.erro;
+        }
+      }
     }
+    // The queue phase lands with the rest of PR 12-g.
     if (fase === FASE_RECONCILE_ESTOQUE_LI.fila) {
       fase = FASE_RECONCILE_ESTOQUE_LI.fim;
       continue;
@@ -429,7 +533,7 @@ async function executarSliceLi(
   }
 
   // 6. The end-of-slice checkpoint: per-conta documents first when they exceed one batch.
-  const escritas = [...(estados?.values() ?? [])].flatMap((e) => e.escritas());
+  const escritas = [...estados.values()].flatMap((e) => e.escritas());
   while (escritas.length > MAX_ESCRITAS_LOTE_RECONCILE_LI) {
     const parte = escritas.splice(0, MAX_ESCRITAS_LOTE_RECONCILE_LI);
     const r = await gravarLoteReconcileLi(
@@ -439,19 +543,17 @@ async function executarSliceLi(
       parte,
     );
     if (r.tipo === 'parar') return { kind: 'parado' };
-    for (const e of estados?.values() ?? []) e.gravado(r.versoes);
+    for (const e of estados.values()) e.gravado(r.versoes);
   }
   const patchDoFim: Record<string, unknown> = {
-    fase,
-    walk,
-    idxConta,
-    contadores,
+    ...progresso(),
     seq: tarefa.seq + 1,
     ...(final
       ? { emExecucaoAteMs: 0, candidatos: [] }
       : { emExecucaoAteMs: proximoLease(estado, deps.agoraMs()) }),
   };
   rastro.patchDoFim = patchDoFim;
+  rastro.atrasoDoFim = atraso;
   const r = await gravarLoteReconcileLi(db, estado, patchDoFim, escritas);
   if (r.tipo === 'parar') return { kind: 'parado' };
 
@@ -459,15 +561,47 @@ async function executarSliceLi(
     deps.logger.info(`${TAG} execução encerrada`, { ...ids, ...contadores });
     return { kind: 'encerrado' };
   }
-  return passarAdiante(
-    db,
-    tarefa,
-    estado,
-    tarefa.seq + 1,
-    ATRASO_CONTINUACAO_IMPORTACAO_LI_S,
-    deps,
-    fase,
-  );
+  return passarAdiante(db, tarefa, estado, tarefa.seq + 1, atraso, deps, fase);
+}
+
+/**
+ * The progress checkpoint of a store-phase failure a retry may change (module header,
+ * "Failures"): the run document at the SAME `seq` and every per-conta document the slice changed.
+ * `true` when the lease is no longer this slice's (it stops). A failure of this write itself —
+ * Firestore's, or another dispatch of the slice — is left to the retry: the caller rethrows the
+ * ORIGINAL error, and the retry resumes from the last checkpoint that landed.
+ */
+async function gravarProgressoAntesDaFalhaLi(
+  db: Firestore,
+  estado: EstadoEscritaReconcileLi,
+  patch: Readonly<Record<string, unknown>>,
+  estados: ReadonlyMap<string, EstadoContaReconcileLi>,
+  agoraMs: () => number,
+): Promise<boolean> {
+  const escritas = [...estados.values()].flatMap((e) => e.escritas());
+  try {
+    while (escritas.length > MAX_ESCRITAS_LOTE_RECONCILE_LI) {
+      const parte = escritas.splice(0, MAX_ESCRITAS_LOTE_RECONCILE_LI);
+      const r = await gravarLoteReconcileLi(
+        db,
+        estado,
+        { emExecucaoAteMs: proximoLease(estado, agoraMs()) },
+        parte,
+      );
+      if (r.tipo === 'parar') return true;
+      for (const e of estados.values()) e.gravado(r.versoes);
+    }
+    const r = await gravarLoteReconcileLi(
+      db,
+      estado,
+      { ...patch, emExecucaoAteMs: proximoLease(estado, agoraMs()) },
+      escritas,
+    );
+    return r.tipo === 'parar';
+  } catch (err) {
+    if (isGrpcStatusError(err) || err instanceof LiReconcileEstoqueConcorrenteError) return false;
+    throw err;
+  }
 }
 
 /** One unit of a conta's kits map (`mapaKitsReconcile.ts`). */
@@ -653,7 +787,7 @@ async function encerrarNaUltimaTentativaLi(
   if (run.seq !== tarefa.seq + 1) return { kind: 'parado' };
   // ONE seq ahead: ours (our end patch landed behind the error) with our delay, else a courtesy.
   const nosso = rastro.patchDoFim !== null && guardaOPatchLi(relido.dados, rastro.patchDoFim);
-  const atraso = nosso ? ATRASO_CONTINUACAO_IMPORTACAO_LI_S : ATRASO_PAUSA_429_IMPORTACAO_LI_S;
+  const atraso = nosso ? rastro.atrasoDoFim : ATRASO_PAUSA_429_IMPORTACAO_LI_S;
   try {
     return await passarAdiante(
       db,

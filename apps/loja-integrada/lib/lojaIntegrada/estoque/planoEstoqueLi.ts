@@ -894,23 +894,34 @@ export function diffLinhaEstoqueLi(args: {
   };
 }
 
-/** Canonical store ids in numeric order: shorter text first, then by text. */
-function compararIdLi(a: string, b: string): number {
+/**
+ * Canonical store ids in numeric order: shorter text first, then by text (exact for canonical
+ * decimal text, which has no leading zero). The ONE spelling: the candidates' order, and the
+ * reconcile's sorted `vistos` and confirmations (`reconcile/snapshotReconcile.ts`, `faseLi.ts`).
+ */
+export function compararIdLi(a: string, b: string): number {
   if (a.length !== b.length) return a.length - b.length;
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
 /**
- * The order the queue phase enqueues the run's candidates in: `d` DESCENDING, so the worst
- * over-advertising goes first (an unmanaged row, {@link DELTA_SEM_LIMITE_LI}, before any bounded
- * one) and under-advertising last; ties by conta index, then store id, then produto — a total,
- * deterministic order. Returns a new array.
+ * The candidates' ONE order (negative ⇒ `a` first): `d` DESCENDING, so the worst over-advertising
+ * goes first (an unmanaged row, {@link DELTA_SEM_LIMITE_LI}, before any bounded one) and
+ * under-advertising last; ties by conta index, then store id, then produto — total and
+ * deterministic. The queue phase enqueues in it ({@link ordenarCandidatosEstoqueLi}), and the list
+ * phase, when the stored list is full, drops its LAST member first
+ * (`reconcile/candidatosReconcile.ts`).
  */
+export function compararCandidatosEstoqueLi(
+  a: CandidatoReconcileEstoqueLi,
+  b: CandidatoReconcileEstoqueLi,
+): number {
+  return b.d - a.d || a.c - b.c || compararIdLi(a.i, b.i) || (a.p < b.p ? -1 : a.p > b.p ? 1 : 0);
+}
+
+/** The candidates in {@link compararCandidatosEstoqueLi}'s order. Returns a new array. */
 export function ordenarCandidatosEstoqueLi(
   candidatos: readonly CandidatoReconcileEstoqueLi[],
 ): CandidatoReconcileEstoqueLi[] {
-  return [...candidatos].sort(
-    (a, b) =>
-      b.d - a.d || a.c - b.c || compararIdLi(a.i, b.i) || (a.p < b.p ? -1 : a.p > b.p ? 1 : 0),
-  );
+  return [...candidatos].sort(compararCandidatosEstoqueLi);
 }

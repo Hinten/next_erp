@@ -1,17 +1,20 @@
 /**
- * `configEstoqueLi.ts` (master plan step 12, PR 12-f): the stock sync's two numeric settings —
- * the cap (its reader moved here unchanged; `processarEstoque.test.ts` still pins it through the
- * re-export) and the eager ceiling of the kit fan-out. Every refusal has a near-miss beside the
- * value it is refused next to.
+ * `configEstoqueLi.ts` (master plan step 12, PRs 12-f and 12-g): the stock sync's numeric
+ * settings — the cap (its reader moved here unchanged; `processarEstoque.test.ts` still pins it
+ * through the re-export), the eager ceiling of the kit fan-out and the daily reconcile's page size
+ * for the store's stock list. Every refusal has a near-miss beside the value it is refused next to.
  */
 import { describe, expect, it } from 'vitest';
-import { MAX_KITS_EM_LINHA_ESTOQUE_LI } from '@delfrance/schemas';
+import { MAX_KITS_EM_LINHA_ESTOQUE_LI, MAX_LIMITE_PAGINA_ESTOQUE_LI } from '@delfrance/schemas';
 
 import {
+  LIMITE_PAGINA_ESTOQUE_ENV_LI,
+  LIMITE_PAGINA_ESTOQUE_PADRAO_LI,
   TETO_ESTOQUE_ENV_LI,
   TETO_KITS_IMEDIATOS_ENV_LI,
   TETO_KITS_IMEDIATOS_INVALIDO_LI,
   TETO_KITS_IMEDIATOS_PADRAO_LI,
+  lerLimitePaginaEstoqueLi,
   lerTetoEstoqueLi,
   lerTetoKitsImediatosLi,
 } from './configEstoqueLi';
@@ -93,6 +96,64 @@ describe('the cap reader moved to the leaf', () => {
     expect(lerTetoEstoqueLi({ [TETO_ESTOQUE_ENV_LI]: '5' })).toBe(5);
     for (const v of ['0', '05', ' 5', '-5', '5.0', 'x']) {
       expect(lerTetoEstoqueLi({ [TETO_ESTOQUE_ENV_LI]: v })).toBeNull();
+    }
+  });
+});
+
+describe('the reconcile page size (LOJA_INTEGRADA_ESTOQUE_LIMITE_PAGINA)', () => {
+  const comLimite = (v: string | undefined) => ({ [LIMITE_PAGINA_ESTOQUE_ENV_LI]: v });
+
+  it('the variable name; the default is the measured 100, never above the schema bound', () => {
+    expect(LIMITE_PAGINA_ESTOQUE_ENV_LI).toBe('LOJA_INTEGRADA_ESTOQUE_LIMITE_PAGINA');
+    expect(LIMITE_PAGINA_ESTOQUE_PADRAO_LI).toBe(100);
+    expect(LIMITE_PAGINA_ESTOQUE_PADRAO_LI).toBeLessThanOrEqual(MAX_LIMITE_PAGINA_ESTOQUE_LI);
+  });
+
+  it('unset and exactly blank ⇒ 100, valid', () => {
+    expect(lerLimitePaginaEstoqueLi({})).toEqual({ limite: 100, valido: true });
+    expect(lerLimitePaginaEstoqueLi(comLimite(undefined))).toEqual({ limite: 100, valido: true });
+    expect(lerLimitePaginaEstoqueLi(comLimite(''))).toEqual({ limite: 100, valido: true });
+  });
+
+  it.each([
+    ['1', 1],
+    ['50', 50],
+    ['99', 99],
+    ['100', 100],
+  ])('%j ⇒ %d, valid', (valor, limite) => {
+    expect(lerLimitePaginaEstoqueLi(comLimite(valor))).toEqual({ limite, valido: true });
+  });
+
+  it.each(['101', '200', '100000', '9999999999999999999999'])(
+    '%j ⇒ CLAMPED to the schema bound, NOT valid (one WARNING)',
+    (valor) => {
+      expect(lerLimitePaginaEstoqueLi(comLimite(valor))).toEqual({
+        limite: MAX_LIMITE_PAGINA_ESTOQUE_LI,
+        valido: false,
+      });
+    },
+  );
+
+  it('⚠️ NEAR-MISS at the bound: 100 is valid as is, 101 is clamped', () => {
+    expect(lerLimitePaginaEstoqueLi(comLimite(String(MAX_LIMITE_PAGINA_ESTOQUE_LI)))).toEqual({
+      limite: MAX_LIMITE_PAGINA_ESTOQUE_LI,
+      valido: true,
+    });
+    expect(
+      lerLimitePaginaEstoqueLi(comLimite(String(MAX_LIMITE_PAGINA_ESTOQUE_LI + 1))).valido,
+    ).toBe(false);
+  });
+
+  it.each(['0', '00', '03', ' 5', '5 ', '-1', '+5', '1.5', '1e2', '0x10', 'abc', ' '])(
+    '%j ⇒ the default 100, NOT valid (one WARNING) — never trimmed, never folded',
+    (valor) => {
+      expect(lerLimitePaginaEstoqueLi(comLimite(valor))).toEqual({ limite: 100, valido: false });
+    },
+  );
+
+  it('never throws, whatever the environment holds', () => {
+    for (const v of ['', 'x', '-', '∞', 'NaN', 'Infinity', '\n5']) {
+      expect(() => lerLimitePaginaEstoqueLi(comLimite(v))).not.toThrow();
     }
   });
 });

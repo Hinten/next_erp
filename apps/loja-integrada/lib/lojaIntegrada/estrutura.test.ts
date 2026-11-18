@@ -475,6 +475,21 @@ const CAMINHO_DA_TAREFA_DA_IMPORTACAO = [
   DESPACHO_DA_IMPORTACAO,
 ] as const;
 
+/**
+ * The daily stock reconcile's TASK path (step 12, PR 12-g): the reads queue's handler (an entry of
+ * its own, as for the import), the one binding of a slice's deps, and the slice. Its store phase
+ * (`faseLi.ts`) is the reconcile's only reach into Loja Integrada, walked with the read routes'
+ * rules: through the context loader only, whose first act is the read switch.
+ */
+const CAMINHO_DA_TAREFA_DO_RECONCILE = [
+  FILA_DE_LEITURA,
+  'functions/src/depsReconcileEstoque.ts',
+  'lib/lojaIntegrada/estoque/reconcile/despachoReconcile.ts',
+] as const;
+
+/** The reconcile's store phase: the one module of that path that calls Loja Integrada. */
+const FASE_LI_DO_RECONCILE = 'lib/lojaIntegrada/estoque/reconcile/faseLi.ts';
+
 /** The complete step's photos (step 9, PR 9-d): the dispatch's ONE path to the CDN. */
 const MODULO_DAS_FOTOS = 'lib/lojaIntegrada/importacao/fotos.ts';
 
@@ -1111,6 +1126,42 @@ describe('lib/lojaIntegrada layout', () => {
       const fotos = lerDoApp(MODULO_DAS_FOTOS) ?? '';
       expect(fotos.split('.baixarImagemLi(')).toHaveLength(2);
       expect(fotos).toContain('deps.cdn.baixarImagemLi(');
+    },
+  );
+
+  it(
+    'the stock reconcile task path (step 12, PR 12-g: the queue handler, deps, slice) reaches Loja Integrada only through the context loader: no fetch, and no client, validating GET or CDN reader of its own',
+    { timeout: 30_000 },
+    () => {
+      for (const entrada of CAMINHO_DA_TAREFA_DO_RECONCILE) {
+        expect(lerDoApp(entrada), entrada).not.toBeNull();
+      }
+      expect(violacoesDaRotaDeLeitura(CAMINHO_DA_TAREFA_DO_RECONCILE, lerDoApp)).toEqual([]);
+      // Anti-vacuity: the walk entered the store phase and the context loader it reads through.
+      const ler: LeitorDeFonte = (c) => {
+        const texto = lerDoApp(c);
+        return texto === null ? null : semImportacoesDeTipo(texto);
+      };
+      const fecho = fechoDeImportacoes(
+        CAMINHO_DA_TAREFA_DO_RECONCILE,
+        ler,
+        resolverAliasDoApp(ler),
+      );
+      expect(fecho.arquivos).toEqual(
+        expect.arrayContaining([
+          ...CAMINHO_DA_TAREFA_DO_RECONCILE,
+          FASE_LI_DO_RECONCILE,
+          CONSTRUTOR_DO_CLIENTE,
+          'lib/lojaIntegrada/estoque/reconcile/faseErp.ts',
+          'lib/lojaIntegrada/core/falhaDeLeituraLi.ts',
+        ]),
+      );
+      expect(fecho.externos).toContain('@delfrance/integrations-loja-integrada');
+      // The store phase loads the context ONCE, and names no package client of its own.
+      const faseLi = lerDoApp(FASE_LI_DO_RECONCILE) ?? '';
+      expect(faseLi.split('loadLojaIntegradaContext(')).toHaveLength(2);
+      expect(faseLi).toContain('lerPaginaEstoqueLi(contexto.cliente');
+      expect(faseLi).toContain('buscarEstoqueProdutoLi(contexto.cliente');
     },
   );
 

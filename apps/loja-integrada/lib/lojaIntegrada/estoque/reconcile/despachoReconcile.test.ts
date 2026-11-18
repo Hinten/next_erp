@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { TASK_MAX_ATTEMPTS } from '@delfrance/data/admin/notifications';
 import { FLAG_ENTRADA_ESTOQUE_LI, TIPO_TAREFA_RECONCILE_ESTOQUE_LI } from '@delfrance/schemas';
 
-import { FakeDb, asDb, grpc } from '../../testing/fakeDb';
+import { FakeDb, asDb, grpc, increment } from '../../testing/fakeDb';
 import {
   AGORA_RECONCILE_MS,
   RUN_A,
@@ -58,6 +58,10 @@ function mundo(over: Partial<DepsReconcileEstoqueLi> = {}, falha?: () => unknown
     tentativa: 0,
     agendador: () => fila.agendador,
     logger: log.logger,
+    idTarefa: null,
+    esperar: () => Promise.resolve(),
+    increment,
+    escrever: () => undefined,
     tamanhoPaginaCaminhada: 2,
     ...over,
     ...extra,

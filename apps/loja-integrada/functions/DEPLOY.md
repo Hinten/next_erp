@@ -571,6 +571,17 @@ the wipe. Create `apps/loja-integrada/functions/.env.deploy` (gitignored):
 # reaches a kits header, and the trigger acts as 0. The value is a window decision,
 # made from the ERP's kit counts.
 # LOJA_INTEGRADA_ESTOQUE_KITS_IMEDIATO_MAX=
+
+# The PAGE SIZE of the daily stock reconcile's walk of a store's stock list
+# (step 12, PR 12-g): rows per `GET /v1/produto_estoque` call. Read when a
+# conta's walk STARTS and kept in its cursor, so a run never changes it
+# mid-list. Unset or blank = 100 (the owner's read-only stock captures saw
+# 20, 50 and 100 honoured exactly and 200 refused with a 400). Otherwise a
+# whole number 1..100 in plain decimal (no sign, no leading zero, no space).
+# Above 100 is CLAMPED to 100 and anything unreadable falls back to 100 — ONE
+# WARNING per run either way, never a refused run. A smaller page only costs
+# more calls; there is no reason to set it before the window.
+# LOJA_INTEGRADA_ESTOQUE_LIMITE_PAGINA=
 ```
 
 ⚠️ The scheduled functions are deployed either way — a variable only decides

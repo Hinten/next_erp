@@ -7,6 +7,7 @@ import { ORCAMENTO_DESPACHO_IMPORTACAO_LI_MS } from '@delfrance/schemas';
 
 import {
   DURACAO_MAXIMA_DESPACHO_IMPORTACAO_LI_MS,
+  PIOR_CASO_UNIDADE_IMPORTACAO_LI_MS,
   cabeNoOrcamentoLi,
   cabeNoOrcamentoMsLi,
 } from '../../importacao/orcamento';
@@ -37,6 +38,20 @@ describe('the reconcile’s budget is the import’s', () => {
     expect(abrirOrcamentoReconcileLi(() => 50_000, 0).cabe('erp')).toBe(true);
     expect(abrirOrcamentoReconcileLi(() => 50_001, 0).cabe('erp')).toBe(false);
     expect(abrirOrcamentoReconcileLi(() => 50_001, 0).cabe('mapa')).toBe(false);
+  });
+
+  it('a store call is the import’s own row (the SAME constant, 22 s): it starts at 48 000 ms, not at 48 001', () => {
+    expect(PIOR_CASO_UNIDADE_RECONCILE_LI_MS.chamada).toBe(
+      PIOR_CASO_UNIDADE_IMPORTACAO_LI_MS.chamada,
+    );
+    expect(PIOR_CASO_UNIDADE_RECONCILE_LI_MS.chamada).toBe(22_000);
+    expect(abrirOrcamentoReconcileLi(() => 48_000, 0).cabe('chamada')).toBe(true);
+    expect(abrirOrcamentoReconcileLi(() => 48_001, 0).cabe('chamada')).toBe(false);
+  });
+
+  it('⚠️ NEAR-MISS: a page’s lookups (20 s) start at 50 000 ms, and not at 50 001', () => {
+    expect(abrirOrcamentoReconcileLi(() => 50_000, 0).cabe('consulta')).toBe(true);
+    expect(abrirOrcamentoReconcileLi(() => 50_001, 0).cabe('consulta')).toBe(false);
   });
 
   it('reads the clock on every question; a clock behind the start is 0 elapsed; a broken clock fits nothing', () => {

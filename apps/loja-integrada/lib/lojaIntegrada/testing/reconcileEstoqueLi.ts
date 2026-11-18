@@ -4,7 +4,12 @@
  * produtos, their links and stock records in a {@link FakeDb}, a recording reads-queue producer
  * and a recording logger. Every id here is synthetic.
  */
-import { INTEGRACAO_TIPO, makeEstoqueUid } from '@delfrance/schemas';
+import {
+  type EntradaSnapshotEstoqueLi,
+  INTEGRACAO_TIPO,
+  baldeSnapshotEstoqueLi,
+  makeEstoqueUid,
+} from '@delfrance/schemas';
 
 import type { AgendadorReconcileEstoqueLi } from '../estoque/reconcile/agendadorReconcile';
 import type { DocData, FakeDb } from './fakeDb';
@@ -136,4 +141,75 @@ export function loggerGravador(): {
       linhas.push({ nivel, msg, meta });
     };
   return { linhas, logger: { info: gravar('info'), warn: gravar('warn'), error: gravar('error') } };
+}
+
+/** The run document's path. */
+export const CAMINHO_RUN_RECONCILE_LI = 'reconcileEstoqueLojaIntegrada/atual';
+
+/** When the fixtures' runs started: ten minutes before the fixtures' clock. */
+export const INICIO_RUN_RECONCILE_MS = AGORA_RECONCILE_MS - 600_000;
+
+/** One conta of a run seeded at the store phase: its snapshot, as the ERP phase would leave it. */
+export interface ContaNaFaseLiSemeada {
+  readonly contaId: string;
+  readonly depositoId: string;
+  /** The snapshot's entries, by store id. */
+  readonly entradas?: Readonly<Record<string, EntradaSnapshotEstoqueLi>>;
+  /** The parents' store ids. */
+  readonly pais?: readonly string[];
+  /** The root's other fields (a cursor, `vistos`…), merged over the defaults. */
+  readonly raiz?: Readonly<DocData>;
+}
+
+/**
+ * A run of `RUN_A` at the STORE phase (`li`), the lease held, at `seq`: the run document and, per
+ * conta, its root (`execucao` of this run, the map done), its 32 buckets and its `pais`, all of
+ * this run — exactly what the ERP phase leaves. `run` merges over the run document's fields.
+ */
+export function seedRunNaFaseLi(
+  db: FakeDb,
+  contas: readonly ContaNaFaseLiSemeada[],
+  run: Readonly<DocData> = {},
+): void {
+  db.seed(CAMINHO_RUN_RECONCILE_LI, {
+    execucaoId: RUN_A,
+    iniciadoEmMs: INICIO_RUN_RECONCILE_MS,
+    emExecucaoAteMs: AGORA_RECONCILE_MS + 3_600_000,
+    seq: 5,
+    fase: 'li',
+    contas: contas.map((c) => c.contaId),
+    idxConta: 0,
+    walk: { ultimoDocPath: 'produtos/x/produtolojaintegrada/l1', concluida: true },
+    candidatos: [],
+    contadores: {},
+    ...run,
+  });
+  for (const conta of contas) {
+    const base = `sincEstoqueLojaIntegrada/${conta.contaId}`;
+    const { execucao: execucaoExtra, ...raizExtra } = (conta.raiz ?? {}) as DocData;
+    db.seed(base, {
+      reconcile: null,
+      ultimoReconcile: null,
+      execucao: {
+        execucaoId: RUN_A,
+        depositoId: conta.depositoId,
+        vistos: [],
+        amostras: {},
+        mapa: { etapa: 'feito', ultimoComponenteId: null },
+        ...((execucaoExtra ?? {}) as DocData),
+      },
+      ...raizExtra,
+    });
+    const porBalde = new Map<string, DocData>();
+    for (const [idLi, entrada] of Object.entries(conta.entradas ?? {})) {
+      const balde = baldeSnapshotEstoqueLi(idLi);
+      if (balde === null) throw new TypeError(`seedRunNaFaseLi: id ${idLi} sem balde`);
+      porBalde.set(balde, { ...(porBalde.get(balde) ?? {}), [idLi]: entrada });
+    }
+    for (let n = 0; n < 32; n += 1) {
+      const balde = String(n).padStart(2, '0');
+      db.seed(`${base}/snapshot/${balde}`, { execucaoId: RUN_A, e: porBalde.get(balde) ?? {} });
+    }
+    db.seed(`${base}/snapshot/pais`, { execucaoId: RUN_A, ids: [...(conta.pais ?? [])] });
+  }
 }

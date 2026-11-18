@@ -95,7 +95,7 @@ async function despachar(
     const r = await despacharReconcileEstoqueLi(
       getDb(),
       dados,
-      depsDeReconcileEstoqueLi({ tentativa: retryCount, inicioMs }),
+      depsDeReconcileEstoqueLi({ tentativa: retryCount, idTarefa, inicioMs }),
     );
     return camposDoRegistroDoReconcileLi(r, dados);
   }

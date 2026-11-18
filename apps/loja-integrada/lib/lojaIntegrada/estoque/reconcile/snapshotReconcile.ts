@@ -28,6 +28,13 @@
  * Equal (one produto): `v` then `v` of the same `p`. Distinct: `v` of `p1` then `v` of `p2` ⇒
  * `dup`; `amb` of `p1` then `v` of `p2` ⇒ `dup`; but `x` then `v` of `p1` ⇒ `v`.
  *
+ * ## What the store's list walk adds (the `li` phase, `faseLi.ts`)
+ *
+ * The same state carries the conta's list walk: its cursor (the root's `reconcile`, written only
+ * when the walk moved it), the store ids the walk has seen (the root's `execucao.vistos`, held as
+ * a set and written sorted by numeric value), and the removal of a stale `x` entry once the whole
+ * list was read without its row ({@link EstadoContaReconcileLi.removerSemVinculo}).
+ *
  * Next-free, `db` a parameter, every access through a `@delfrance/data/admin/collections` handle.
  */
 import type { DocumentReference, Firestore, Timestamp } from 'firebase-admin/firestore';
@@ -44,13 +51,16 @@ import {
   ID_PAIS_SNAPSHOT_ESTOQUE_LI,
   MAX_AMOSTRA_AVISO_ESTOQUE_LI,
   type MotivoAmostraEstoqueLi,
+  type ReconcileContaEstoqueLi,
   baldeSnapshotEstoqueLi,
   entradaSnapshotEstoqueLiSchema,
   execucaoContaEstoqueLiSchema,
   paisSnapshotEstoqueLiSchema,
+  reconcileContaEstoqueLiSchema,
   snapshotEstoqueLiSchema,
 } from '@delfrance/schemas';
 
+import { compararIdLi } from '../planoEstoqueLi';
 import type { EscritaSincLi } from './execucaoReconcile';
 
 /** One conta of the run: its index in `contas`, its id and the depósito the run fixed. */
@@ -58,6 +68,14 @@ export interface ContaDoRunLi {
   readonly idx: number;
   readonly contaId: string;
   readonly depositoId: string;
+}
+
+/**
+ * A per-conta counter's stored name in the run document's `contadores`: the conta's index, then
+ * the name (`c0Validos`).
+ */
+export function nomeDoContadorDaContaLi(idx: number, nome: string): string {
+  return `c${String(idx)}${nome.charAt(0).toUpperCase()}${nome.slice(1)}`;
 }
 
 /** Every bucket id, `'00'` to `'31'`. */
@@ -112,9 +130,14 @@ interface PaisLi extends DocLidoLi {
   readonly ids: Set<string>;
 }
 
-/** The root in memory: only its `execucao` is ever written by the reconcile's ERP side. */
+/**
+ * The root in memory: its `execucao` (the ERP side and the list walk) and its `reconcile` cursor
+ * (the list walk only, written only when `cursorSujo`).
+ */
 interface RaizLi extends DocLidoLi {
   execucao: ExecucaoContaEstoqueLi;
+  reconcile: ReconcileContaEstoqueLi | null;
+  cursorSujo: boolean;
 }
 
 /** Only the `x` entries of a bucket of another run (module header). */
@@ -145,6 +168,8 @@ export class EstadoContaReconcileLi {
   readonly baldes: ReadonlyMap<string, BaldeLi>;
   readonly pais: PaisLi;
   private readonly execucaoId: string;
+  /** `raiz.execucao.vistos` as a set: the one copy from load to write. */
+  private readonly vistos: Set<string>;
 
   constructor(args: {
     conta: ContaDoRunLi;
@@ -158,6 +183,7 @@ export class EstadoContaReconcileLi {
     this.raiz = args.raiz;
     this.baldes = args.baldes;
     this.pais = args.pais;
+    this.vistos = new Set(args.raiz.execucao.vistos);
   }
 
   /** The entry of `idLi`, or `undefined`. Throws `RangeError` on a non-canonical id (a bug). */
@@ -181,6 +207,51 @@ export class EstadoContaReconcileLi {
     balde.sujo = true;
     if (duplicados.length > 0) this.amostrar('duplicado', duplicados);
     return duplicados;
+  }
+
+  /** Whether `idLi` is a parent's store id of this conta (its row is never sent). */
+  ehPai(idLi: string): boolean {
+    return this.pais.ids.has(idLi);
+  }
+
+  /** Removes an `x` entry (and only an `x` entry); whether one was removed. */
+  removerSemVinculo(idLi: string): boolean {
+    const balde = this.balde(idLi);
+    if (balde.e.get(idLi)?.f !== FLAG_ENTRADA_ESTOQUE_LI.semVinculo) return false;
+    balde.e.delete(idLi);
+    balde.sujo = true;
+    return true;
+  }
+
+  /** The list walk's cursor as stored (another run's included: the caller judges it). */
+  cursor(): ReconcileContaEstoqueLi | null {
+    return this.raiz.reconcile;
+  }
+
+  /** Replaces the list walk's cursor, parsed. */
+  definirCursor(cursor: ReconcileContaEstoqueLi): void {
+    this.raiz.reconcile = reconcileContaEstoqueLiSchema.parse(cursor);
+    this.raiz.cursorSujo = true;
+    this.raiz.sujo = true;
+  }
+
+  /** Whether the list walk of this run has seen or settled `idLi`. */
+  visto(idLi: string): boolean {
+    return this.vistos.has(idLi);
+  }
+
+  /** Records that the list walk saw or settled `idLi`. */
+  marcarVisto(idLi: string): void {
+    if (this.vistos.has(idLi)) return;
+    this.vistos.add(idLi);
+    this.raiz.sujo = true;
+  }
+
+  /** Forgets every store id seen: a list walk that starts over. */
+  reiniciarVistos(): void {
+    if (this.vistos.size === 0) return;
+    this.vistos.clear();
+    this.raiz.sujo = true;
   }
 
   /** A parent's store id. */
@@ -220,11 +291,14 @@ export class EstadoContaReconcileLi {
   escritas(): EscritaSincLi[] {
     const saida: EscritaSincLi[] = [];
     if (this.raiz.sujo) {
+      const execucao = { ...this.raiz.execucao, vistos: [...this.vistos].sort(compararIdLi) };
       saida.push({
         tipo: 'gravar',
         ref: this.raiz.ref,
         versao: this.raiz.versao,
-        dados: sincEstoqueLojaIntegradaCollection.parseMerge({ execucao: this.raiz.execucao }),
+        dados: sincEstoqueLojaIntegradaCollection.parseMerge(
+          this.raiz.cursorSujo ? { execucao, reconcile: this.raiz.reconcile } : { execucao },
+        ),
       });
     }
     for (const balde of this.baldes.values()) {
@@ -261,19 +335,22 @@ export class EstadoContaReconcileLi {
       if (versao !== undefined) doc.versao = versao;
       doc.sujo = false;
     }
+    this.raiz.cursorSujo = false;
   }
 }
 
 /**
  * The root, the 32 buckets and `pais` of every conta of the run (`contaIds`, the run document's
- * `contas` in order), in ONE `getAll` (module header); each conta's depósito is the one its root's
- * `execucao` fixed. A root whose `execucao` is not THIS run's is a lease this slice does not hold:
- * `null`, and the caller stops.
+ * `contas` in order from index `primeiroIdx` — the list walk loads one conta at a time), in ONE
+ * `getAll` (module header); each conta's depósito is the one its root's `execucao` fixed. A root
+ * whose `execucao` is not THIS run's is a lease this slice does not hold: `null`, and the caller
+ * stops.
  */
 export async function carregarEstadosReconcileLi(
   db: Firestore,
   execucaoId: string,
   contaIds: readonly string[],
+  primeiroIdx = 0,
 ): Promise<Map<string, EstadoContaReconcileLi> | null> {
   const estados = new Map<string, EstadoContaReconcileLi>();
   if (contaIds.length === 0) return estados;
@@ -301,7 +378,12 @@ export async function carregarEstadosReconcileLi(
     );
     const execucao = execucaoContaEstoqueLiSchema.safeParse(raizLida.execucao);
     if (!execucao.success || execucao.data.execucaoId !== execucaoId) return null;
-    const conta: ContaDoRunLi = { idx: n, contaId, depositoId: execucao.data.depositoId };
+    const conta: ContaDoRunLi = {
+      idx: primeiroIdx + n,
+      contaId,
+      depositoId: execucao.data.depositoId,
+    };
+    const cursor = reconcileContaEstoqueLiSchema.safeParse(raizLida.reconcile);
 
     const baldes = new Map<string, BaldeLi>();
     resto.forEach((snap, b) => {
@@ -335,6 +417,8 @@ export async function carregarEstadosReconcileLi(
           versao: snapRaiz.exists ? (snapRaiz.updateTime ?? null) : null,
           sujo: false,
           execucao: execucao.data,
+          reconcile: cursor.success ? cursor.data : null,
+          cursorSujo: false,
         },
         baldes,
         pais: {

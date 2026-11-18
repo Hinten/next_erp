@@ -19,7 +19,10 @@ import {
   GRUPO_VINCULO_LI,
   LIMITE_ESTOQUE_PROPRIO_LI,
   LIMITE_VINCULOS_LI,
+  MAX_IDS_POR_CONSULTA_VINCULO_LI,
+  MAX_VALORES_IN_ESTOQUE_LI,
   componentesQueLimitamLi,
+  consultaVinculosDaContaPorIdsLi,
   depositoDaContaLi,
   formasDoDepositoLi,
   lerComponentesNoDepositoLi,
@@ -144,6 +147,30 @@ describe('the indexes the run’s queries ride are declared (Enterprise full-sca
         limite: LIMITE_VINCULOS_LI,
         apos: null,
       })),
+    );
+  });
+
+  it('the ONE builder the probe and the reconcile lookup share: up to 15 ids, each as its number AND its text (30 values, the `in` cap); 0 or 16 ids refused', async () => {
+    expect(MAX_IDS_POR_CONSULTA_VINCULO_LI * 2).toBe(MAX_VALORES_IN_ESTOQUE_LI);
+    const db = new FakeDb();
+    const ids = Array.from({ length: MAX_IDS_POR_CONSULTA_VINCULO_LI }, (_, n) => String(10 + n));
+    await consultaVinculosDaContaPorIdsLi(asDb(db), `integracao/${CONTA}`, ids).get();
+    expect(db.consultas).toEqual([
+      {
+        colecao: GRUPO_VINCULO_LI,
+        grupo: true,
+        filtros: [
+          [CAMPOS_INDICE_VINCULO_LI[0], '==', `integracao/${CONTA}`],
+          [CAMPOS_INDICE_VINCULO_LI[1], 'in', ids.flatMap((id) => [Number(id), id])],
+        ],
+        ordens: [],
+        limite: null,
+        apos: null,
+      },
+    ]);
+    expect(() => consultaVinculosDaContaPorIdsLi(asDb(db), 'x', [])).toThrow(RangeError);
+    expect(() => consultaVinculosDaContaPorIdsLi(asDb(db), 'x', [...ids, '99'])).toThrow(
+      RangeError,
     );
   });
 });
