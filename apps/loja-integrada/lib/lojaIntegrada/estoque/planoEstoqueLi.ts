@@ -62,13 +62,12 @@ import {
   type EntradaSnapshotEstoqueLi,
   FLAG_ENTRADA_ESTOQUE_LI,
   type FlagEntradaEstoqueLi,
+  type EstoqueNoDepositoLi,
   type KitsComponenteEstoqueLi,
-  contaDoLinkLi,
   estoqueDisponivel,
-  inteiroPositivoCanonicoLi,
+  estoqueNoDepositoLi,
   kitEstoqueDisponivel,
-  makeEstoqueUid,
-  vinculoLiConta,
+  vinculoDaContaLi,
 } from '@delfrance/schemas';
 import { componentesNaoResolvidos, kitNaoVerificavel } from '@delfrance/data/admin/estoque';
 
@@ -268,49 +267,14 @@ export function relevanciaEventoEstoqueLi(args: {
 /*                              3. The run's plan                              */
 /* -------------------------------------------------------------------------- */
 
-/** The produto's own stock records at the conta's depósito, resolved to at most one. */
-export type EstoqueNoDepositoLi =
-  | { readonly tipo: 'nenhum' }
-  | { readonly tipo: 'um'; readonly registro: DocEstoqueLi }
-  /** Two or more, none of them the canonical id: which one to read is not ours to guess. */
-  | { readonly tipo: 'ambiguo' };
-
 /**
- * One produto's records at the conta's depósito (the caller's query already filtered the
- * depósito) → the one to read: none; the only one; the canonical `est-<produto>-<depósito>`
- * (`makeEstoqueUid`) among several, since a legacy auto-id record may sit beside it; else
- * `ambiguo`. The same path read twice counts once.
- *
- * `depositoId` is the depósito's BARE document id, never its ref (`documents/depositos/<id>` or
- * `depositos/<id>`): a ref would build a canonical id no document can have, and every pair of a
- * canonical and a legacy record would read `ambiguo` — the produto held for good.
- *
- * Throws `RangeError` on a path that does not parse, a record of another produto, or a
- * `produtoId` / `depositoId` that is not one path segment (all three are bugs).
+ * The canonical-wins resolution of a produto's records at the conta's depósito
+ * (`estoqueNoDepositoLi`) and the conta's link verdict on one produto (`vinculoDaContaLi`) live
+ * in `@delfrance/schemas` (`estoqueErpLojaIntegrada.ts`), so a `tools/migrations` audit reads the
+ * identical answers; re-exported here, so no importer changed.
  */
-export function estoqueNoDepositoLi(args: {
-  readonly produtoId: string;
-  readonly depositoId: string;
-  readonly registros: readonly DocEstoqueLi[];
-}): EstoqueNoDepositoLi {
-  if (!segmentoDeCaminhoLi(args.produtoId) || !segmentoDeCaminhoLi(args.depositoId)) {
-    throw new RangeError('estoqueNoDepositoLi: produto e depósito são ids, nunca refs');
-  }
-  const porId = new Map<string, DocEstoqueLi>();
-  for (const registro of args.registros) {
-    const partes = caminhoEstoqueLi(registro.caminho);
-    if (partes === null || partes.produtoId !== args.produtoId) {
-      throw new RangeError('estoqueNoDepositoLi: registro de outro produto ou caminho inválido');
-    }
-    porId.set(partes.estoqueId, registro);
-  }
-  const unicos = [...porId.values()];
-  const [primeiro] = unicos;
-  if (primeiro === undefined) return { tipo: 'nenhum' };
-  if (unicos.length === 1) return { tipo: 'um', registro: primeiro };
-  const canonico = porId.get(makeEstoqueUid(args.produtoId, args.depositoId));
-  return canonico === undefined ? { tipo: 'ambiguo' } : { tipo: 'um', registro: canonico };
-}
+export { estoqueNoDepositoLi };
+export type { EstoqueNoDepositoLi };
 
 /**
  * A kit whose quantity comes from its components: `ehKit` or `ehKitVirtual` (the core's own
@@ -398,44 +362,6 @@ export type PlanoEstoqueLi =
       readonly S: number;
       readonly kitNaoVerificavel: boolean;
     };
-
-/** A parent link: a root whose `grades` is a non-empty list. */
-function ehLinkPai(link: Readonly<Record<string, unknown>>): boolean {
-  const grades = proprio(link, 'grades');
-  return Array.isArray(grades) && grades.length > 0;
-}
-
-/** What the conta's links on one produto say, before anything else is read. */
-type VinculoDaContaLi =
-  | { readonly tipo: 'sem-vinculo' }
-  | { readonly tipo: 'pai' }
-  | { readonly tipo: 'nao-suportado' }
-  | { readonly tipo: 'vinculo-ambiguo' }
-  /** Exactly one store product of the conta, linked as a child. */
-  | { readonly tipo: 'vinculado'; readonly idLi: string };
-
-/** Steps 1–3 of {@link planoEstoqueLi}: the links alone, in that order. */
-function vinculoDaContaLi(contaId: string, links: readonly unknown[]): VinculoDaContaLi {
-  const daConta = links
-    .filter(ehObjeto)
-    .filter((link) => contaDoLinkLi(link) === contaId && vinculoLiConta(link));
-  if (daConta.length === 0) return { tipo: 'sem-vinculo' };
-
-  const ids = new Set<string>();
-  for (const link of daConta) {
-    const id = inteiroPositivoCanonicoLi(proprio(link, 'id'));
-    if (id !== null) ids.add(id);
-  }
-  if (ids.size > 1) return { tipo: 'vinculo-ambiguo' };
-  const [idLi] = ids;
-  // Unreachable: `vinculoLiConta` counts a link only when the same reader reads its id.
-  if (idLi === undefined) return { tipo: 'sem-vinculo' };
-
-  if (!daConta.some((link) => proprio(link, 'paiProdutoIntegradaId') != null)) {
-    return daConta.every(ehLinkPai) ? { tipo: 'pai' } : { tipo: 'nao-suportado' };
-  }
-  return { tipo: 'vinculado', idLi };
-}
 
 /** {@link planoDosVinculosEstoqueLi}'s answer: a link-shaped skip, or the store id to go on with. */
 export type PlanoDosVinculosEstoqueLi =
