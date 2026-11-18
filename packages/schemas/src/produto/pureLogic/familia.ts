@@ -228,6 +228,33 @@ export interface MembroDeFamilia {
   readonly grupoDeVariacoesUid?: readonly string[] | null;
 }
 
+interface IdentidadeDaVariacao {
+  readonly nome?: string | null;
+  readonly sku?: string | null;
+  readonly grupoDeVariacoesUid?: readonly string[] | null;
+  readonly variacoesUid?: readonly string[] | null;
+}
+
+/** A sellable mirror of a simple product, including legacy verbatim-SKU mirrors. */
+export function ehMembroUnicoImplicito(
+  raiz: ProdutoDeFamilia & IdentidadeDaVariacao,
+  membro: MembroDeFamilia & IdentidadeDaVariacao & { ordem?: number | null },
+  contagemDeFilhos: number | null,
+): boolean {
+  if (formaDaRaizErp({ raiz, membro, contagemDeFilhos }) !== FORMA_RAIZ_ERP.familiaDeUm) {
+    return false;
+  }
+  const sku = membro.sku ?? null;
+  const espelho =
+    membro.nome === raiz.nome && (sku === skuDoMembroUnico(raiz.sku) || sku === (raiz.sku ?? null));
+  return (
+    espelho ||
+    (membro.ordem == null &&
+      !temTaxonomia(raiz.variacoesUid) &&
+      !temTaxonomia(raiz.grupoDeVariacoesUid))
+  );
+}
+
 /** A taxonomy list holding at least one id; `null`, absent and `[]` hold none. */
 function temTaxonomia(lista: readonly string[] | null | undefined): boolean {
   return Array.isArray(lista) && lista.length > 0;

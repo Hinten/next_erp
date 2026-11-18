@@ -281,6 +281,24 @@ describe('reconstructFromSkuSuffix (mode B — legacy children)', () => {
     // P+Verde [0,1] sorts before M+Azul [1,0].
     expect(compareSortKeys(a.sortKey, b.sortKey)).toBeLessThan(0);
   });
+
+  it('consumes the whole suffix and declines ambiguous decompositions', () => {
+    const grupos = fixtures();
+    const [cores, tamanhos] = grupos;
+    cores!.data.variacoes!.push({ id: 'z', nome: 'Z', codigo: 'Z' });
+    const input = { childSku: 'CAMPAZ', parentNome: 'Camiseta', parentSku: 'CAM', grupos };
+
+    expect(reconstructFromSkuSuffix(input)).toMatchObject({
+      ok: true,
+      variacoesUid: [varianteFakePath('TAM', 'p'), varianteFakePath('CORES', 'az')],
+    });
+    expect(reconstructFromSkuSuffix({ ...input, childSku: 'CAM-XPAZ' }).ok).toBe(false);
+    tamanhos!.data.variacoes!.push({ id: 'pa', nome: 'PA', codigo: 'PA' });
+    expect(reconstructFromSkuSuffix(input)).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('mais de uma combinação'),
+    });
+  });
 });
 
 describe('skuPaiPorSufixo (#1400 — recover a parent sku from a child)', () => {

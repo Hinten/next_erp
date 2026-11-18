@@ -286,6 +286,15 @@ export const importacaoShopeeSchema = z.object({
   skipped: z.number().int().default(0),
   /** Kit items imported as ERP kit produtos. */
   kits: z.number().int().default(0),
+  /**
+   * Listings whose import LEFT an operator's pending ERP edit alone — the link's
+   * content fields (title, description, category, attributes, brand, logistics)
+   * were not overwritten with Shopee's read because an edit saved in the ERP had
+   * not been sent yet. Counted, never failed: the rest of the item still imported.
+   * ⚠️ `.default(0)` so a job document (or report) written before this counter
+   * existed still parses.
+   */
+  edicoesPreservadas: z.number().int().default(0),
   /** Total per-item failures — UNCAPPED, so it may exceed `failures.length`. */
   failureCount: z.number().int().default(0),
   /**

@@ -317,6 +317,8 @@ const CODIGOS_DO_RASCUNHO = [
   ['rascunhoCategoriaTravada', 'categoriaTravada'],
   ['rascunhoProdutoInvalido', 'produtoInvalido'],
   ['rascunhoInexistente', 'inexistente'],
+  ['anuncioNaoEditavel', 'anuncioNaoEditavel'],
+  ['anuncioEdicaoInvalida', 'anuncioEdicaoInvalida'],
 ] as const satisfies readonly (readonly [
   keyof typeof CODIGO_FALHA_SHOPEE,
   keyof typeof CODIGO_RASCUNHO_SHOPEE,
@@ -352,7 +354,7 @@ describe('CODIGO_FALHA_SHOPEE — the #1911 vocabulary, spelled through the shar
     );
   });
 
-  it('⭐ pela CONSTANTE: `erros.ts` spells every #1911 value through `CODIGO_RASCUNHO_SHOPEE.` — none of the eleven between quotes', () => {
+  it('⭐ pela CONSTANTE: `erros.ts` spells every #1911 value through `CODIGO_RASCUNHO_SHOPEE.` — none of the thirteen between quotes', () => {
     // A retyped literal of the SAME string passes every value test above; only
     // the source text can tell the two spellings apart. The first raw-text pin
     // under `apps/web/lib/shopee` (the `apps/shopee` pattern:
@@ -377,7 +379,7 @@ describe('CODIGO_FALHA_SHOPEE — the #1911 vocabulary, spelled through the shar
     expect(valoresDoRascunhoEntreAspas(adulterada)).toEqual([CODIGO_RASCUNHO_SHOPEE.conflito]);
   });
 
-  it('NEAR-MISS: the quoted `SHOPEE_PUBLISH_*` literals stay ALLOWED — the pin names eleven exact values, never a prefix', () => {
+  it('NEAR-MISS: the quoted `SHOPEE_PUBLISH_*` literals stay ALLOWED — the pin names thirteen exact values, never a prefix', () => {
     for (const literal of [
       CODIGO_FALHA_SHOPEE.publicacaoBloqueada,
       CODIGO_FALHA_SHOPEE.publicacaoRecusada,
@@ -385,7 +387,7 @@ describe('CODIGO_FALHA_SHOPEE — the #1911 vocabulary, spelled through the shar
     ]) {
       expect(FONTE_DE_ERROS).toContain(`'${literal}'`);
     }
-    expect(Object.values(CODIGO_RASCUNHO_SHOPEE)).toHaveLength(11);
+    expect(Object.values(CODIGO_RASCUNHO_SHOPEE)).toHaveLength(13);
     expect(valoresDoRascunhoEntreAspas(FONTE_DE_ERROS)).toEqual([]);
   });
 
