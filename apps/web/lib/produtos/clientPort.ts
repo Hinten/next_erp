@@ -19,10 +19,11 @@ import {
   type ProdutoSnapshot,
   type ProdutoWriteOp,
 } from '@delfrance/data/produto';
-import type {
-  TransactionWrite,
-  TransactionWriteContext,
-  TransactionDocumentGuard,
+import {
+  AfterSaveBlockedError,
+  type TransactionWrite,
+  type TransactionWriteContext,
+  type TransactionDocumentGuard,
 } from '@delfrance/ui';
 import {
   impostoProdutoSchema,
@@ -296,7 +297,9 @@ export function createClientProdutoPort(db: Firestore): ProdutoDataPort {
             (parent.ehKit === true) !== change.ehKit ||
             ehKitVirtualEfetivo(parent) !== change.ehKitVirtual
           ) {
-            return [];
+            throw new AfterSaveBlockedError(
+              'O status do kit mudou. Recarregue o produto antes de salvar.',
+            );
           }
           const snapshots = await Promise.all(childRefs.map((ref) => tx.get(ref)));
           const children = snapshots.flatMap((snap) => {

@@ -41,6 +41,7 @@ interface Capturado {
   canDelete?: boolean;
   extraDirty?: boolean;
   fields?: Record<string, FieldConfig>;
+  transactionWrites?: (id: string, values: Record<string, unknown>) => unknown[];
   deriveOnSave?: (values: Record<string, unknown>) => Record<string, unknown>;
   deriveTransactionPatch?: (
     current: Record<string, unknown> | null,
@@ -135,9 +136,9 @@ vi.mock('@delfrance/data/produto', async (importOriginal) => ({
   propagateKitStatusToChildren: async (
     _port: unknown,
     _id: string,
-    change: Record<string, unknown>,
+    status: Record<string, unknown>,
   ) => {
-    h.propagacoes.push(change);
+    h.propagacoes.push(status);
     if (h.falhasDePropagacao > 0) {
       h.falhasDePropagacao -= 1;
       throw new Error('rede caiu no meio da propagação');
@@ -175,8 +176,11 @@ const consultaDosFilhos = () =>
 import EditarProdutoPage from './page';
 import { produtoCollection } from '@/lib/data/produtoCollection';
 import { SECTION_SHOPEE } from '../../_components/produtoFields';
-import type { VariationRow } from '../../_components/VariationManager';
-import { KitVariacoesManager } from '../../_components/KitVariacoesManager';
+import type { VariationConversion, VariationRow } from '../../_components/VariationManager';
+import {
+  KitVariacoesManager,
+  type KitVariacoesManagerProps,
+} from '../../_components/KitVariacoesManager';
 
 /** Mounts the page; the returned function re-renders it (a new `h.filhos` emission reaches it). */
 function montar(): () => void {
@@ -329,6 +333,8 @@ describe('produtos/[id]/editar — «É kit virtual» needs «É kit» (step 19,
   // OFF) and saved with an unrelated edit used to diff that FORM against server
   // truth and un-kit every child while the parent stayed a kit.
   it('a STALE form that never touched «É kit» propagates no flip', async () => {
+    const flushRecipes = vi.fn(async () => {});
+    kitVariacoesManager().flushRef.current = flushRecipes;
     await capturado().onAfterSave!(
       'p1',
       { ehKit: false, ehKitVirtual: false, componentesKit: null, nome: 'x' },
@@ -344,6 +350,7 @@ describe('produtos/[id]/editar — «É kit virtual» needs «É kit» (step 19,
       oldEhKitVirtual: true,
       componentesKit: { c1: { quantidade: 1 } },
     });
+    expect(flushRecipes).toHaveBeenCalledExactlyOnceWith('p1', {}, 'confirm-non-kit');
   });
 
   it('the sole member mirrors the COMMITTED map and pointer, not the form’s', async () => {
@@ -370,16 +377,55 @@ describe('produtos/[id]/editar — «É kit virtual» needs «É kit» (step 19,
     expect(h.propagacoes).toHaveLength(0);
   });
 
+  it('discards drafts when the saved product was and remains a non-kit', async () => {
+    const flushRecipes = vi.fn(async () => {});
+    kitVariacoesManager().flushRef.current = flushRecipes;
+
+    await capturado().onAfterSave!(
+      'p1',
+      { ehKit: false, nome: 'Edited' },
+      { before: { ehKit: false }, patch: { nome: 'Edited' } },
+    );
+
+    expect(flushRecipes).toHaveBeenCalledExactlyOnceWith('p1', {}, 'discard');
+  });
+
+  it('asks for persisted confirmation before discarding drafts on a pristine save', async () => {
+    const flushRecipes = vi.fn(async () => {});
+    kitVariacoesManager().flushRef.current = flushRecipes;
+
+    await capturado().onAfterSave!('p1', { ehKit: false });
+
+    expect(flushRecipes).toHaveBeenCalledExactlyOnceWith('p1', {}, 'confirm-non-kit');
+  });
+
+  it('preserves the conflict check when the kit tab was on and the transaction read a non-kit', async () => {
+    const flushRecipes = vi.fn(async () => {});
+    kitVariacoesManager().flushRef.current = flushRecipes;
+
+    await capturado().onAfterSave!(
+      'p1',
+      { ehKit: true, nome: 'Edited' },
+      { before: { ehKit: false }, patch: { nome: 'Edited' } },
+    );
+
+    expect(flushRecipes).toHaveBeenCalledExactlyOnceWith('p1', {}, 'save');
+  });
+
   it('a FAILED propagation is retried by the next save, even a "nothing changed" one, then cleared', async () => {
     const unkit = {
       before: { ehKit: true, ehKitVirtual: false },
       patch: { ehKit: false, componentesKit: null, componentesKitKeys: null },
     };
+    const flushRecipes = vi.fn(async () => {});
+    kitVariacoesManager().flushRef.current = flushRecipes;
     h.falhasDePropagacao = 1;
     await expect(capturado().onAfterSave!('p1', { ehKit: false }, unkit)).rejects.toThrow(
       'rede caiu',
     );
+    expect(flushRecipes).not.toHaveBeenCalled();
     await capturado().onAfterSave!('p1', { ehKit: false });
+    expect(flushRecipes).toHaveBeenCalledExactlyOnceWith('p1', {}, 'discard');
     expect(h.propagacoes).toHaveLength(2);
     expect(h.propagacoes[1]).toEqual(h.propagacoes[0]);
     expect(h.propagacoes[1]).toMatchObject({ ehKit: false, oldEhKit: true });
@@ -664,6 +710,7 @@ describe('produtos/[id]/editar — the Shopee drafts leave-guard (#1911 P10, DC 
 
 /** The VariationManager element the page's «Variações» input builds — its callbacks, never rendered. */
 function variationManager(): {
+  conversionRef?: MutableRefObject<VariationConversion | null>;
   onPriceDirtyChange: (dirty: boolean) => void;
   onRowsChange: (rows: VariationRow[]) => void;
 } {
@@ -677,6 +724,7 @@ function variationManager(): {
     onBlur: vi.fn(),
     descriptor: {} as FieldRenderProps['descriptor'],
   }) as ReactElement<{
+    conversionRef?: MutableRefObject<VariationConversion | null>;
     onPriceDirtyChange: (dirty: boolean) => void;
     onRowsChange: (rows: VariationRow[]) => void;
   }>;
@@ -688,7 +736,7 @@ function variationManager(): {
  * (the second child of its `Stack`, beside the parent's `KitManager`) — its
  * props, never rendered.
  */
-function kitVariacoesManager(): { onDirtyChange?: (dirty: boolean) => void } {
+function kitVariacoesManager(): KitVariacoesManagerProps {
   const renderInput = capturado().fields?.componentesKit?.renderInput;
   if (!renderInput) throw new Error('the page gives «Componentes do kit» no input');
   const pilha = renderInput({
@@ -700,12 +748,36 @@ function kitVariacoesManager(): { onDirtyChange?: (dirty: boolean) => void } {
     descriptor: {} as FieldRenderProps['descriptor'],
   }) as ReactElement<{ children: ReactNode }>;
   const grade = Children.toArray(pilha.props.children).find(
-    (c): c is ReactElement<{ onDirtyChange?: (dirty: boolean) => void }> =>
+    (c): c is ReactElement<KitVariacoesManagerProps> =>
       isValidElement(c) && c.type === KitVariacoesManager,
   );
   if (!grade) throw new Error('the Kit tab renders no KitVariacoesManager');
   return grade.props;
 }
+
+it('keeps the converted variation’s reused ID through a failed recipe flush and retry', async () => {
+  const pairing = { draft: 'original-member' };
+  const complete = vi.fn(() => ({ reusedByKey: pairing }));
+  const conversion = variationManager().conversionRef!;
+  conversion.current = { filhoUnicoId: null, prepare: () => ({ writes: [], complete }) };
+
+  const flushRecipes = vi.fn(async () => {});
+  flushRecipes.mockRejectedValueOnce(new AfterSaveBlockedError('Receita pendente'));
+  kitVariacoesManager().flushRef.current = flushRecipes;
+  const values = { ehKit: true };
+  capturado().transactionWrites!('p1', values);
+  await expect(
+    capturado().onAfterSave!('p1', values, { before: values, patch: {} }),
+  ).rejects.toThrow('Receita pendente');
+
+  await capturado().onAfterSave!('p1', values);
+  expect(complete).toHaveBeenCalledTimes(1);
+  expect(flushRecipes).toHaveBeenNthCalledWith(1, 'p1', pairing, 'save');
+  expect(flushRecipes).toHaveBeenNthCalledWith(2, 'p1', pairing, 'save');
+
+  await capturado().onAfterSave!('p1', values);
+  expect(flushRecipes).toHaveBeenNthCalledWith(3, 'p1', {}, 'save');
+});
 
 /** What the grid does when a composition is staged / flushed: report, outside any render. */
 function reportarKitVariacoes(dirty: boolean): void {
