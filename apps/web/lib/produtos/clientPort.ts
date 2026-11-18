@@ -3,6 +3,7 @@ import {
   type Firestore,
   getDocFromServer,
   getDocsFromServer,
+  runTransaction,
   writeBatch,
 } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
@@ -10,6 +11,7 @@ import { buildQuery, limit, whereArrayContains, whereEqual } from '@delfrance/da
 import {
   buildExtraDataWriteOps,
   buildImpostoWriteOps,
+  buildKitStatusChildOps,
   buildMembroUnicoWriteOps,
   type EstoqueComando,
   type MovimentacaoInput,
@@ -17,13 +19,16 @@ import {
   type ProdutoSnapshot,
   type ProdutoWriteOp,
 } from '@delfrance/data/produto';
-import type {
-  TransactionWrite,
-  TransactionWriteContext,
-  TransactionDocumentGuard,
+import {
+  AfterSaveBlockedError,
+  type TransactionWrite,
+  type TransactionWriteContext,
+  type TransactionDocumentGuard,
 } from '@delfrance/ui';
 import {
   impostoProdutoSchema,
+  ehKitVirtualEfetivo,
+  ehMembroUnicoImplicito,
   produtoExtraDataSchema,
   operacaoIdFromImpostoRef,
   type ImpostoProduto,
@@ -276,6 +281,48 @@ export function createClientProdutoPort(db: Firestore): ProdutoDataPort {
         buildQuery(produtoCollection.ref(db, {}), [whereEqual('paiId', parentId)]),
       );
       return snap.docs.map((d) => toSnapshot(d.id, d.data()));
+    },
+
+    async commitKitStatus(parentId, childIds, change) {
+      const parentRef = produtoCollection.docRef(db, {}, parentId);
+      const updated: string[] = [];
+      for (let i = 0; i < childIds.length; i += BATCH_LIMIT) {
+        const childRefs = childIds
+          .slice(i, i + BATCH_LIMIT)
+          .map((id) => produtoCollection.docRef(db, {}, id));
+        const ids = await runTransaction(db, async (tx) => {
+          const parent = (await tx.get(parentRef)).data();
+          if (
+            !parent ||
+            (parent.ehKit === true) !== change.ehKit ||
+            ehKitVirtualEfetivo(parent) !== change.ehKitVirtual
+          ) {
+            throw new AfterSaveBlockedError(
+              'O status do kit mudou. Recarregue o produto antes de salvar.',
+            );
+          }
+          const snapshots = await Promise.all(childRefs.map((ref) => tx.get(ref)));
+          const children = snapshots.flatMap((snap) => {
+            const child = snap.data();
+            return child?.paiId === parentId ? [{ ...child, id: snap.id }] : [];
+          });
+          const member = children.find((child) =>
+            ehMembroUnicoImplicito({ ...parent, id: parentId }, child, childIds.length),
+          );
+          const ops = buildKitStatusChildOps(
+            { ...change, membroUnicoId: member?.id ?? null, componentesKit: parent.componentesKit },
+            children,
+          );
+          for (const op of ops) {
+            if (op.type === 'update') {
+              tx.update(refForPath(db, op.path), op.data);
+            }
+          }
+          return children.map((child) => child.id);
+        });
+        updated.push(...ids);
+      }
+      return updated;
     },
 
     async getKitReferences(produtoId, max) {

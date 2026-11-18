@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Firestore } from 'firebase/firestore';
+import { AfterSaveBlockedError } from '@delfrance/ui';
 
 /**
  * Which produtos a save writes (#1398).
@@ -9,7 +10,15 @@ import type { Firestore } from 'firebase/firestore';
  * variations — silently, and forever, since nothing later reconciles a child
  * set. So both directions are asserted, not just the create.
  */
-const { newDocIdMock } = vi.hoisted(() => ({ newDocIdMock: vi.fn(() => 'child-novo') }));
+const { newDocIdMock, runTransactionMock } = vi.hoisted(() => ({
+  newDocIdMock: vi.fn(() => 'child-novo'),
+  runTransactionMock: vi.fn(),
+}));
+
+vi.mock('firebase/firestore', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('firebase/firestore')>()),
+  runTransaction: runTransactionMock,
+}));
 
 vi.mock('./docId', () => ({ newDocId: newDocIdMock }));
 vi.mock('@/lib/firebase/client', () => ({ getFirebaseFunctions: () => ({}) }));
@@ -41,7 +50,7 @@ vi.mock('@/lib/data/impostoProdutoCollection', () => ({
   },
 }));
 
-import { buildProdutoTransactionWrites } from './clientPort';
+import { buildProdutoTransactionWrites, createClientProdutoPort } from './clientPort';
 
 const db = {} as Firestore;
 type Escrita = ReturnType<typeof buildProdutoTransactionWrites>[number];
@@ -59,6 +68,91 @@ const values = { nome: 'Bandeja', sku: 'BAN-1', ehKit: false };
 
 beforeEach(() => {
   newDocIdMock.mockClear();
+});
+
+describe('guarded kit status propagation', () => {
+  const parent = {
+    nome: 'Kit',
+    sku: 'KIT',
+    filhoUnicoId: 'c1',
+    ehKit: true,
+    componentesKit: { comp: { quantidade: 2 } },
+  };
+  const member = { nome: 'Kit', sku: 'KIT-UN', paiId: 'p1' };
+  const change = { ehKit: true, ehKitVirtual: false, oldEhKit: false, oldEhKitVirtual: false };
+
+  function transactionFor(
+    root: Record<string, unknown>,
+    children: Record<string, Record<string, unknown>>,
+  ) {
+    const update = vi.fn();
+    const get = ({ __path }: { __path: string }) => {
+      const id = __path.split('/').at(-1)!;
+      return Promise.resolve({ id, data: () => (id === 'p1' ? root : children[id]) });
+    };
+    runTransactionMock.mockImplementationOnce(
+      (
+        _db: unknown,
+        execute: (tx: { get: typeof get; update: typeof update }) => Promise<unknown>,
+      ) => execute({ get, update }),
+    );
+    return update;
+  }
+
+  it('copies the latest recipe to an internal member', async () => {
+    const update = transactionFor(parent, { c1: member });
+    const port = createClientProdutoPort(db);
+    await expect(port.commitKitStatus('p1', ['c1'], change)).resolves.toEqual(['c1']);
+    expect(update).toHaveBeenCalledWith(
+      docRef('produtos/c1'),
+      expect.objectContaining({
+        componentesKit: parent.componentesKit,
+      }),
+    );
+  });
+
+  it('keeps a genuine single variant’s recipe and reports a superseded kit change', async () => {
+    const port = createClientProdutoPort(db);
+    const variant = { ...member, variacoesUid: ['documents/grupoDeVariacoes/t/variacoes/p'] };
+    const update = transactionFor(parent, { c1: variant });
+    await port.commitKitStatus('p1', ['c1'], { ...change, membroUnicoId: 'c1' });
+    expect(update).toHaveBeenCalledWith(docRef('produtos/c1'), {
+      ehKit: true,
+      ehKitVirtual: false,
+    });
+
+    const stale = transactionFor({ ...parent, ehKit: false }, { c1: variant });
+    await expect(port.commitKitStatus('p1', ['c1'], change)).rejects.toBeInstanceOf(
+      AfterSaveBlockedError,
+    );
+    expect(stale).not.toHaveBeenCalled();
+  });
+
+  it('clears the recipes of both current children and skips a child that moved families', async () => {
+    const update = transactionFor(
+      { ...parent, ehKit: false, filhoUnicoId: null },
+      { c1: member, c2: member, moved: { ...member, paiId: 'other-parent' } },
+    );
+    const port = createClientProdutoPort(db);
+    await expect(
+      port.commitKitStatus('p1', ['c1', 'c2', 'moved'], {
+        ...change,
+        oldEhKit: true,
+        ehKit: false,
+      }),
+    ).resolves.toEqual(['c1', 'c2']);
+
+    const cleared = {
+      ehKit: false,
+      ehKitVirtual: false,
+      componentesKit: null,
+      componentesKitKeys: null,
+    };
+    expect(update.mock.calls).toEqual([
+      [docRef('produtos/c1'), cleared],
+      [docRef('produtos/c2'), cleared],
+    ]);
+  });
 });
 
 describe('buildProdutoTransactionWrites — the sole member', () => {

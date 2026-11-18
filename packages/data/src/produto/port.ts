@@ -1,4 +1,5 @@
 import type { PrecosMap } from '@delfrance/schemas';
+import type { KitStatusChange } from './usecases';
 
 /**
  * The produto data-access **port** — the surface the produto use-cases
@@ -46,6 +47,8 @@ export interface ProdutoDataPort {
   now(): number;
   /** Variation children of a parent (`paiId == parentId`). */
   getChildren(parentId: string): Promise<ProdutoSnapshot[]>;
+  /** Apply kit status against the latest parent and child documents. */
+  commitKitStatus(parentId: string, childIds: string[], change: KitStatusChange): Promise<string[]>;
   /** Up to `max` kits whose `componentesKitKeys` array contains `produtoId`. */
   getKitReferences(produtoId: string, max: number): Promise<ProdutoSnapshot[]>;
   /**

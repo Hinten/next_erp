@@ -971,6 +971,24 @@ export const produtoShopeeLinkSchema = z
      * a Firestore `where` on it would full-scan and bill on Enterprise.
      */
     logisticaGravadaEm: z.number().int().nullable().optional(),
+    /**
+     * Counter bumped by EACH ERP edit of a PUBLISHED link (the edit route). Absent
+     * or `null` = never edited. Server-stamped: the client never writes it.
+     *
+     * ⚠️ A publish records the revision its body was built from and only clears
+     * the pending flag when the stored revision still equals it (rule 7) — an
+     * edit saved while that publish was in flight survives. Read only through
+     * `revisaoDeEdicaoErpShopee` (`./shopeeLinkLeitura.ts`).
+     */
+    edicaoErpRevisao: z.number().int().nullable().optional(),
+    /**
+     * MILLISECONDS — an ERP edit was saved and no successful «Republicar» has sent
+     * it yet. `null`/absent = nothing pending. While set, the product import and
+     * the publish write-backs must NOT overwrite the edited content keys
+     * (`CAMPOS_DE_EDICAO_ERP_SHOPEE`). Read only through
+     * `edicaoErpPendenteShopee`. Server-stamped.
+     */
+    edicaoErpPendenteEm: z.number().int().nullable().optional(),
   })
   .passthrough();
 export type ProdutoShopeeLink = z.infer<typeof produtoShopeeLinkSchema>;

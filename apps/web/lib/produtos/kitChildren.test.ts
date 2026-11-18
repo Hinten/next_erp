@@ -28,12 +28,6 @@ vi.mock('@/lib/data/produtoCollection', () => ({
   },
 }));
 
-vi.mock('./clientPort', () => ({
-  getVariationChildrenByParent: async () => ({
-    p1: ['c1', 'c2', 'moved'].map((id) => ({ id })),
-  }),
-}));
-
 const entry = { quantidade: 2, limitarEstoque: true, timestamp: null };
 const oldRecipe = { old: entry };
 const replacement = { replacement: entry };
@@ -61,23 +55,6 @@ beforeEach(() => {
 });
 
 describe('commitChildKitEdits', () => {
-  it('clears both children of a non-kit and skips a candidate that moved families', async () => {
-    seed('p1', { ehKit: false, ehKitVirtual: false });
-    seed('moved', { paiId: 'other-parent', ehKit: true, componentesKit: oldRecipe });
-    await commitChildKitEdits(db, 'p1', {
-      status: { oldEhKit: true, oldEhKitVirtual: true, ehKit: false, ehKitVirtual: false },
-    });
-    for (const id of ['c1', 'c2']) {
-      expect(saved(id)).toMatchObject({
-        ehKit: false,
-        ehKitVirtual: false,
-        componentesKit: null,
-        componentesKitKeys: null,
-      });
-    }
-    expect(saved('moved')).toMatchObject({ ehKit: true, componentesKit: oldRecipe });
-  });
-
   it('blocks recipe saves if the parent stopped being a kit', async () => {
     seed('p1', { ehKit: false, ehKitVirtual: false });
     await expect(
@@ -139,5 +116,16 @@ describe('commitChildKitEdits', () => {
       componentesKit: replacement,
       componentesKitKeys: ['replacement'],
     });
+  });
+
+  it('keeps the rebuilt recipe of a single explicit variation on reset', async () => {
+    seed('p1', { ...saved('p1'), filhoUnicoId: 'c1' });
+    seed('c1', { ...saved('c1'), variacoesUid: ['documents/grupoDeVariacoes/t/variacoes/p'] });
+    const rebuilt = { sizeP: entry };
+    await commitChildKitEdits(db, 'p1', {
+      recipes: [{ id: 'c1', baseline: oldRecipe, componentesKit: rebuilt }],
+      mirrorSoleMember: true,
+    });
+    expect(saved('c1')).toMatchObject({ componentesKit: rebuilt, componentesKitKeys: ['sizeP'] });
   });
 });

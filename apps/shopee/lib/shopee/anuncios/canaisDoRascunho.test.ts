@@ -442,6 +442,122 @@ describe('#1911 P15 — BR: get_channel_list.br.json pela rota canais', () => {
 });
 
 /* -------------------------------------------------------------------------- */
+/*          (7b) linkDocId — a PUBLISHED listing's stored size / fee           */
+/* -------------------------------------------------------------------------- */
+
+describe('#1911 P15/PR2 — lerCanaisDoRascunhoShopee com linkDocId (o editor do anúncio publicado)', () => {
+  const LINK = 'link-1';
+  const CONTA = 'int-1';
+  const REF_CONTA = `documents/integracao/${CONTA}`;
+  const CAMINHO_LINK = `produtos/${PRODUTO}/prodshopee/${LINK}`;
+  /** Any stamp the predicate accepts: a non-negative safe integer. */
+  const CARIMBO = 1_700_000_000_000;
+  const SIZE_ID_GRAVADO = 12;
+
+  const SELECAO = linha(CANAL_A, { fee_type: SHOPEE_LOGISTICS_FEE_TYPE.sizeSelection });
+  const ENTRADAS = [
+    { logistic_id: CANAL_A, enabled: true, size_id: SIZE_ID_GRAVADO },
+    // Another id's size must never feed CANAL_A's verdict.
+    { logistic_id: CANAL_B, enabled: true, size_id: 99 },
+  ];
+
+  function semearLink(extra: DocData = {}): void {
+    db.seed(CAMINHO_LINK, {
+      contaProdutoShopeeOuterRef: REF_CONTA,
+      item_id: 4242,
+      logistic_info: ENTRADAS,
+      ...extra,
+    });
+  }
+
+  async function lerDoLink(
+    linhas: readonly Record<string, unknown>[],
+    linkDocId: string = LINK,
+    integracaoId: string = CONTA,
+  ) {
+    db.seed(`produtos/${PRODUTO}`, PRODUTO_PADRAO);
+    servir(linhas);
+    return lerCanaisDoRascunhoShopee(
+      { db: asDb(db), client },
+      { produtoId: PRODUTO, linkDocId, integracaoId },
+    );
+  }
+
+  const EXIGE = {
+    indisponivel: MOTIVO_INDISPONIVEL_CANAL_SHOPEE.exigeValorDoSellerCentre,
+    automatica: null,
+  };
+
+  it('sem linkDocId: o MESMO corpo e o mesmo log de operações de antes (nenhum acesso a prodshopee)', async () => {
+    semearLink({ logisticaGravadaEm: CARIMBO });
+    const resposta = await ler([SELECAO]);
+
+    expect(resposta.canais).toEqual([esperada(CANAL_A, EXIGE)]);
+    expect(db.opLog.some((op) => op.path.includes('prodshopee'))).toBe(false);
+  });
+
+  it('vínculo ausente ⇒ vinculo-inexistente, getChannelList 0 vezes e nenhuma escrita', async () => {
+    const lido = await lerDoLink([SELECAO]);
+
+    expect(lido).toEqual({ tipo: 'vinculo-inexistente' });
+    expect(getChannelList).not.toHaveBeenCalled();
+    expect(db.writes).toEqual([]);
+  });
+
+  it('vínculo de OUTRA conta ⇒ vinculo-inexistente, getChannelList 0 vezes ⟷ PAR: o da conta ⇒ ok', async () => {
+    semearLink({
+      contaProdutoShopeeOuterRef: 'documents/integracao/int-2',
+      logisticaGravadaEm: CARIMBO,
+    });
+    expect(await lerDoLink([SELECAO])).toEqual({ tipo: 'vinculo-inexistente' });
+    expect(getChannelList).not.toHaveBeenCalled();
+
+    semearLink({ logisticaGravadaEm: CARIMBO });
+    expect((await lerDoLink([SELECAO])).tipo).toBe('ok');
+    expect(getChannelList).toHaveBeenCalledTimes(1);
+  });
+
+  it('SIZE_SELECTION: selecionável só quando o vínculo CARIMBADO guarda o size_id DESSE canal', async () => {
+    semearLink({ logisticaGravadaEm: CARIMBO });
+    const lido = await lerDoLink([SELECAO]);
+
+    if (lido.tipo !== 'ok') throw new TypeError(`esperava ok, veio ${lido.tipo}`);
+    expect(respostaCanaisShopeeSchema.parse(lido.resposta)).toEqual(lido.resposta);
+    expect(lido.resposta.canais).toEqual([esperada(CANAL_A)]);
+    expect(db.writes).toEqual([]);
+  });
+
+  it('⛔ QUASE-PAR: o MESMO size_id num vínculo SEM carimbo ⇒ não selecionável (o veredito do publicador)', async () => {
+    semearLink();
+    const lido = await lerDoLink([SELECAO]);
+
+    if (lido.tipo !== 'ok') throw new TypeError(`esperava ok, veio ${lido.tipo}`);
+    expect(lido.resposta.canais).toEqual([esperada(CANAL_A, EXIGE)]);
+  });
+
+  it('⛔ QUASE-PAR: carimbo que o predicado recusa (null, texto numérico) ⇒ não selecionável', async () => {
+    for (const carimbo of [null, String(CARIMBO)]) {
+      db = new FakeDb();
+      semearLink({ logisticaGravadaEm: carimbo });
+      const lido = await lerDoLink([SELECAO]);
+      if (lido.tipo !== 'ok') throw new TypeError(`esperava ok, veio ${lido.tipo}`);
+      expect(lido.resposta.canais, String(carimbo)).toEqual([esperada(CANAL_A, EXIGE)]);
+    }
+  });
+
+  it('⛔ QUASE-PAR: o size_id de OUTRO canal nunca é usado — vínculo carimbado que só guarda o do CANAL_B ⇒ CANAL_A não selecionável', async () => {
+    semearLink({
+      logisticaGravadaEm: CARIMBO,
+      logistic_info: [{ logistic_id: CANAL_B, enabled: true, size_id: 99 }],
+    });
+    const lido = await lerDoLink([SELECAO]);
+
+    if (lido.tipo !== 'ok') throw new TypeError(`esperava ok, veio ${lido.tipo}`);
+    expect(lido.resposta.canais).toEqual([esperada(CANAL_A, EXIGE)]);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
 /*                     (8) one copy — the raw source pin                       */
 /* -------------------------------------------------------------------------- */
 

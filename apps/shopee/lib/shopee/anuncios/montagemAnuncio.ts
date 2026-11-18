@@ -38,10 +38,13 @@
  * ## What the STORED link decides, and why
  *
  * `link.item_name`, `link.description`, `link.category_id`, `link.attributes` and
- * `link.brand_id` come from the last read-back of the LIVE listing, so they carry
- * the operator's Seller Centre choices — or, on a DRAFT (#1911), from the draft
- * route that wrote them (`rascunho.ts`; `attributes` in the request shape since
- * P6). They WIN over the ERP produto, blank
+ * `link.brand_id` come from whichever writer touched them last: the product
+ * import (Shopee's read, so the operator's Seller Centre choices), publish
+ * write-back #1 (what was SENT) and #2 (`attributes` as read back), or the ERP
+ * edit of the link — the draft route on a DRAFT (#1911; `attributes` in the
+ * request shape since P6), and an unsent edit of a PUBLISHED listing, which the
+ * import and the write-backs leave alone while it is pending (`links.ts`, the
+ * guarded arm). They WIN over the ERP produto, blank
  * meaning absent — the `linkTitle` rule in Mercado Livre's `assemblePublishInput`
  * (`publishCore.ts`),
  * adopted verbatim and for the same measured reason (#799 bug 4a: without it an
