@@ -1464,6 +1464,27 @@ describe('RascunhoShopee — a seção «Logística» (#1911 P16)', () => {
     expect(h.montagensDaLogistica).toBe(2);
   });
 
+  it('«Atributos» e «Logística» são irmãs com chaves DISTINTAS (nunca duas `0`) ⟷ QUASE-PAR: o desfazer ainda remonta as duas', () => {
+    // Both used to be keyed `revisaoDoDesfazer` alone, so React saw two siblings
+    // keyed `0` ("Encountered two children with the same key") — undefined behaviour.
+    const erro = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      h.montagensDosAtributos = 0;
+      h.montagensDaLogistica = 0;
+      const link = escolhido();
+      const r = show({ bloco: bloco({ link }) });
+      r.rerender({ bloco: bloco({ link }), revisaoDoDesfazer: 1 });
+      const chaveDuplicada = erro.mock.calls.filter((args) =>
+        args.some((a) => typeof a === 'string' && a.includes('same key')),
+      );
+      expect(chaveDuplicada).toEqual([]);
+      expect(h.montagensDosAtributos).toBe(2);
+      expect(h.montagensDaLogistica).toBe(2);
+    } finally {
+      erro.mockRestore();
+    }
+  });
+
   it('um kit virtual não tem a seção ⟷ QUASE-PAR: um produto comum a tem', () => {
     const r = show({ bloco: bloco({ kitVirtual: true }) });
     expect(screen.queryByTestId('stub-logistica')).toBeNull();

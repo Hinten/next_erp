@@ -37,6 +37,7 @@
  * `JA_PUBLICADO` BEFORE the arm runs — see {@link recusarAtestacaoNumBracoDeKit}.
  */
 import { produtoCollection } from '@delfrance/data/admin/collections';
+import { marcarProdutoPublicado } from '@delfrance/data/admin/produtos';
 
 import { escolherArmaDePublicacao, type ResultadoDoDespacho } from '../kits/armaDePublicacao';
 import type { ArmaDeKit, EntradaDeKit } from '../kits/prepararKit';
@@ -266,6 +267,14 @@ function entradaDoKit(entrada: EntradaDePublicacaoShopee): EntradaDeKit {
  *   an ordinary listing's (#1911): the item arm's `CriacaoDeAnuncioIncertaError`
  *   — thrown only AFTER the draft recorded the attempt — is narrowed BY CLASS
  *   into `tipo: 'item-incerto'` here, the one place that reads it.
+ *
+ * ⚠️ A run that reached Shopee and came back DONE — the item arm's result, a
+ * kit arm's `criado` / `retomado` / `atualizado` — ticks the produto's ERP
+ * catalogue flag `publicado` (Lucas, 2026-11-17), paused listings included.
+ * An uncertain outcome (`item-incerto`, a kit's `incerto`) never does: nothing
+ * says a listing exists. One shared helper, `marcarProdutoPublicado`
+ * (`@delfrance/data/admin/produtos`, tier 1): it writes only `publicado` and
+ * loses to a concurrent operator edit.
  */
 export async function publicarShopee(
   deps: KitDeps,
@@ -280,17 +289,22 @@ export async function publicarShopee(
   if (arma.arma !== 'item') recusarAtestacaoNumBracoDeKit(deps, entrada, arma);
 
   if (arma.arma === 'item') {
+    let resultado: ResultadoPublicacao | null;
     try {
-      const resultado = await publicarAnuncioShopee(deps, entradaDoItem(entrada, arma.linkDocId));
-      return resultado === null ? null : { tipo: 'item', resultado };
+      resultado = await publicarAnuncioShopee(deps, entradaDoItem(entrada, arma.linkDocId));
     } catch (err) {
       if (err instanceof CriacaoDeAnuncioIncertaError) {
         return { tipo: 'item-incerto', resultado: err.resultado };
       }
       throw err;
     }
+    if (resultado === null) return null;
+    await marcarProdutoPublicado(deps.db, resultado.produtoId);
+    return { tipo: 'item', resultado };
   }
-  return { tipo: 'kit', resultado: await publicarKitShopee(deps, entradaDoKit(entrada), arma) };
+  const resultado = await publicarKitShopee(deps, entradaDoKit(entrada), arma);
+  if (resultado.desfecho !== 'incerto') await marcarProdutoPublicado(deps.db, resultado.produtoId);
+  return { tipo: 'kit', resultado };
 }
 
 /**

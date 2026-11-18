@@ -768,6 +768,75 @@ describe('aplicarModelos — o republish', () => {
     expect(r.criados).toBe(0);
   });
 
+  it('só a CAPA da variação mudou: update_tier_variation com a imagem nova e o model_list intacto', async () => {
+    // O cenário do sandbox: as fotos foram trocadas, nenhum modelo mudou. Antes,
+    // o leg planejava `nenhuma` e a capa nova nunca saía.
+    const db = new FakeDb();
+    semearFilhos(db, FILHO_A, FILHO_B);
+    semearVinculo(db, FILHO_A, 'v-a', { model_id: MODEL_A, tier_index: [0] });
+    semearVinculo(db, FILHO_B, 'v-b', { model_id: MODEL_B, tier_index: [1] });
+    const fresca = shopeeModelListPayloadSchema.parse({
+      tier_variation: [
+        shopeeTierVariationSchema.parse({
+          name: 'Cor',
+          option_list: [
+            { option: 'Azul', image: { image_id: 'img-azul-velha', image_url: null } },
+            { option: 'Preto', image: { image_id: 'img-preto-velha', image_url: null } },
+          ],
+        }),
+      ],
+      standardise_tier_variation: null,
+      model: [
+        { model_id: MODEL_A, tier_index: [0], model_sku: 'SKU-v-azul' },
+        { model_id: MODEL_B, tier_index: [1], model_sku: 'SKU-v-preto' },
+      ].map((m) => ({ model_status: SHOPEE_MODEL_STATUS.normal, ...m })),
+    });
+    const cliente = clienteFake({ leituras: [fresca] });
+
+    const p = planejarPublicacao(
+      contexto({
+        ehAtualizacao: true,
+        link: LINK,
+        linkDocId: LINK_PAI,
+        grupos: [grupo({ permiteFotos: true })],
+        filhos: [filho(FILHO_A, 'v-azul'), filho(FILHO_B, 'v-preto')],
+        linksDeVariacao: [
+          vinculo(FILHO_A, 'v-a', MODEL_A, [0]),
+          vinculo(FILHO_B, 'v-b', MODEL_B, [1]),
+        ],
+      }),
+      {
+        ...FOTOS,
+        imagensDeOpcao: new Map([
+          [varianteFakePath(GRUPO, 'v-azul'), 'img-azul-nova'],
+          [varianteFakePath(GRUPO, 'v-preto'), 'img-preto-nova'],
+        ]),
+      },
+    );
+    expect(p.problemas).toEqual([]);
+    const r = await aplicarModelos(deps(db, cliente), p, ITEM_ID, LINK_PAI);
+
+    expect(cliente.ops()).toEqual(['getModelList', 'updateTierVariation', 'getModelList']);
+    expect(r.acao).toBe('update');
+    expect(cliente.corpoDe('updateTierVariation')).toEqual({
+      item_id: ITEM_ID,
+      model_list: [
+        { model_id: MODEL_A, tier_index: [0] },
+        { model_id: MODEL_B, tier_index: [1] },
+      ],
+      standardise_tier_variation: [
+        {
+          variation_id: 0,
+          variation_name: 'Cor',
+          variation_option_list: [
+            { variation_option_id: 0, variation_option_name: 'Azul', image_id: 'img-azul-nova' },
+            { variation_option_id: 0, variation_option_name: 'Preto', image_id: 'img-preto-nova' },
+          ],
+        },
+      ],
+    });
+  });
+
   it('uma mudança de PROFUNDIDADE cai no init, não no update', async () => {
     const db = new FakeDb();
     semearFilhos(db, FILHO_A);
