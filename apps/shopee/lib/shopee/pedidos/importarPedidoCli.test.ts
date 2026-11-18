@@ -609,3 +609,75 @@ describe('renderResumoPedido — a seção de pagamentos', () => {
     expect(renderResumoPedido(resumo, []).join('\n')).toContain('### pagamentos (0)');
   });
 });
+
+describe('o int_frete da conta e o endereço de entrega no resumo (2026-11-18)', () => {
+  const REF_CONTA = 'documents/int_frete/shopee-int-1';
+  const ENTREGA = 'documents/clientes/cli-1/enderecos/end-1';
+
+  /** The mapped pedido with the conta's ref stamped on its block, as the importer hands it. */
+  function mapeadoComRef(ref: string | null): ReturnType<typeof mapearPedidoShopee> {
+    const { mapeado } = mapeadoComPii();
+    return {
+      ...mapeado,
+      dados: {
+        ...mapeado.dados,
+        freteInicial: { ...mapeado.dados.freteInicial, integracaoFreteOuterRef: ref },
+      },
+    };
+  }
+
+  it('o resumo MAPEADO lê as duas refs do bloco mapeado — a entrega é a fiscal', () => {
+    const resumo = resumoDoPedidoMapeado('ped-sha256', mapeadoComRef(REF_CONTA));
+    expect(resumo.frete?.integracaoFreteOuterRef).toBe(REF_CONTA);
+    // `mapearPedidoShopee` copies the fiscal ref into the block.
+    expect(resumo.frete?.enderecoFreteOuterReference).toBe(ENTREGA);
+    expect(resumo.enderecoFiscalOuterRef).toBe(ENTREGA);
+  });
+
+  it('o render MAPEADO mostra a linha `int_frete da conta`, e diz quando não há doc ativo', () => {
+    const comRef = renderResumoPedido(
+      resumoDoPedidoMapeado('ped-sha256', mapeadoComRef(REF_CONTA)),
+    );
+    expect(comRef.find((l) => l.includes('int_frete da conta'))).toContain(REF_CONTA);
+    expect(comRef.find((l) => l.includes('int_frete da conta'))).toContain('só um pedido NOVO');
+    expect(comRef.find((l) => l.includes('endereço de entrega'))).toContain(ENTREGA);
+    // The dry-run caveat names the delivery address too: it is the fiscal one,
+    // which a dry run never resolves.
+    expect(comRef).toContain(
+      '     O endereço de entrega do `freteInicial` é o fiscal, então sai nulo também.',
+    );
+
+    // QUASE-ERRO: no active doc reads as a sentence, never as a blank or a guess.
+    const semRef = renderResumoPedido(resumoDoPedidoMapeado('ped-sha256', mapeadoComRef(null)));
+    expect(semRef.find((l) => l.includes('int_frete da conta'))).toContain(
+      'nenhum ativo — o pedido fica sem ref',
+    );
+  });
+
+  it('o resumo ARMAZENADO lê as duas refs do documento, e o render as mostra', () => {
+    const resumo = resumoDoPedidoArmazenado('ped-sha256', {
+      numero: ORDER_SN,
+      freteInicial: {
+        estado: 'iniciado',
+        integracaoFreteOuterRef: REF_CONTA,
+        enderecoFreteOuterReference: ENTREGA,
+      },
+    });
+    expect(resumo.frete?.integracaoFreteOuterRef).toBe(REF_CONTA);
+    expect(resumo.frete?.enderecoFreteOuterReference).toBe(ENTREGA);
+    const texto = renderResumoPedido(resumo);
+    expect(texto.find((l) => l.includes('integracaoFreteOuterRef'))).toContain(REF_CONTA);
+    expect(texto.find((l) => l.includes('endereço de entrega'))).toContain(ENTREGA);
+    // The stored summary never claims what the CONTA has — only what the pedido holds.
+    expect(texto.join('\n')).not.toContain('int_frete da conta');
+    expect(texto.join('\n')).not.toContain('então sai nulo também');
+  });
+
+  it('QUASE-ERRO: uma ref gravada que não é string vira NULA, sem inventar valor', () => {
+    const resumo = resumoDoPedidoArmazenado('ped-sha256', {
+      freteInicial: { integracaoFreteOuterRef: 42, enderecoFreteOuterReference: { id: 'x' } },
+    });
+    expect(resumo.frete?.integracaoFreteOuterRef).toBeNull();
+    expect(resumo.frete?.enderecoFreteOuterReference).toBeNull();
+  });
+});

@@ -66,8 +66,12 @@ import { microsDeSegundosShopee, positivoOuNull, segundosShopeeUtilizaveis } fro
  * step 20 (#1528) keeps that document in step with the conta but mirrors only
  * nome / ativo / filial / dataCadastro, no screen leads to a Shopee doc's
  * `horarioDeCorte` (each `/logistica` slice lists only its own `tipo`), and the
- * legacy never read one here either — so this importer reads no `int_frete`.
- * `ship_by_date` stays the authority; this list is only its fallback.
+ * legacy never read one here either. Step 20's other half — "this importer reads
+ * no `int_frete`" — was REVERSED by Lucas on 2026-11-18: the importer now looks
+ * the conta's active doc up and stamps its ref on the pedido it creates
+ * (`importarPedido.ts`), but it reads that doc for its ID alone, never its
+ * `horarioDeCorte` — so this list is still the cut-off, and `ship_by_date`
+ * still the authority over it.
  */
 export const HORARIO_DE_CORTE_PADRAO_SHOPEE: readonly HorarioDeCorte[] = [1, 2, 3, 4, 5].map(
   (diaDaSemana) => ({
@@ -309,6 +313,10 @@ export function mapearFreteInicialShopee(args: MapearFreteShopeeArgs): FreteMape
  * round. Step 7 owns the field; {@link mapearFreteInicialShopee} still computes
  * it, because the CREATE path writes the whole mapped block and a brand-new
  * pedido must carry a deadline before any package has been observed.
+ *
+ * ⚠️ Nor are `integracaoFreteOuterRef` and `enderecoFreteOuterReference`: a
+ * re-import never takes either from the mapped block — see
+ * {@link mesclarFreteInicialShopee}.
  */
 export const CAMPOS_FRETE_ATUALIZAVEIS_SHOPEE = [
   'externalId',
@@ -336,12 +344,25 @@ export const CAMPOS_FRETE_ATUALIZAVEIS_SHOPEE = [
  * `FREIGHT_TIPO_CAPS.shopee.marketplaceOwned` is `true`), but because
  * `valorCobrado` feeds `derivePedidoFreteTotals`: it has to freeze together with
  * the item money it must stay consistent with.
+ *
+ * ⚠️ **Neither ref the CREATE writes is ever taken from `mapeado` here**, and
+ * neither is in the list above. `integracaoFreteOuterRef` (the
+ * conta's `int_frete` doc, stamped by the importer): only NEW pedidos get it
+ * (Lucas, 2026-11-18), so a stored ref — a legacy one, or this importer's — and
+ * a stored `null` both survive the spread. `enderecoFreteOuterReference` (the
+ * delivery address): `orderPedidoTx.ts` fills it only in the transaction that
+ * FIRST fills `enderecoFiscalOuterRef`, never through this merge. With no
+ * stored block at all (`existente == null` on an EXISTING pedido — this
+ * function only ever runs on the update path) the mapped block becomes the
+ * stored one, and both refs are cleared out of it for the same reasons.
  */
 export function mesclarFreteInicialShopee(
   existente: FreteDoPedido | null,
   mapeado: FreteDoPedido,
 ): FreteDoPedido {
-  if (existente == null) return mapeado;
+  if (existente == null) {
+    return { ...mapeado, integracaoFreteOuterRef: null, enderecoFreteOuterReference: null };
+  }
   // Written out rather than looped over the list above, so each assignment is
   // type-checked against its own field. `orderFreteMapping.test.ts` asserts that
   // the keys this CAN change are exactly `CAMPOS_FRETE_ATUALIZAVEIS_SHOPEE`, so

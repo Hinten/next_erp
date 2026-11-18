@@ -322,7 +322,10 @@ export interface MapearPedidoShopeeArgs {
   readonly itens: readonly ItemDoPedido[];
   /** `mapearItensShopee`'s reconciliation — the item sum and the cross-check. */
   readonly conferencia: ConferenciaDoPedido;
-  /** The already-mapped freight block (`mapearFreteInicialShopee`). */
+  /**
+   * The already-mapped freight block (`mapearFreteInicialShopee`), carrying the
+   * conta's `int_frete` ref the importer stamped on it.
+   */
   readonly frete: FreteDoPedido;
   readonly conta: ContaBagShopee;
   /** The buyer-capture verdict for THIS delivery (`avaliarCapturaComprador`). */
@@ -331,6 +334,7 @@ export interface MapearPedidoShopeeArgs {
   readonly camposRecusadosExtra?: readonly string[];
   /** Resolved BEFORE the transaction; `null` means "nothing to fill". */
   readonly clientePedidoOuterRef: string | null;
+  /** Also the mapped block's `enderecoFreteOuterReference` — see {@link mapearPedidoShopee}. */
   readonly enderecoFiscalOuterRef: string | null;
   /** The order-clock watermark, µs. */
   readonly watermarkUs: number;
@@ -439,7 +443,13 @@ export function mapearPedidoShopee(args: MapearPedidoShopeeArgs): PedidoMapeadoS
       // pins it.
       descontoTotal: 0,
       observacoesInternas: observacoes.length === 0 ? null : observacoes,
-      freteInicial: frete,
+      // The delivery address IS the fiscal one — Mercado Livre's rule
+      // (`orderImport.ts`), from the ONE argument that also fills
+      // `preencherUmaVez.enderecoFiscalOuterRef` below, so the two slots cannot
+      // disagree. Only a CREATE writes it from here (the whole block lands): an
+      // update's merge never takes it, and `orderPedidoTx.ts` fills it only in
+      // the transaction that FIRST fills the fiscal ref.
+      freteInicial: { ...frete, enderecoFreteOuterReference: args.enderecoFiscalOuterRef },
     },
     preencherUmaVez: {
       // `numero` is the `order_sn` VERBATIM, a string. `defaultQuery` orders by

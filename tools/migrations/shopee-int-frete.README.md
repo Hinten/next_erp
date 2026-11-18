@@ -57,7 +57,9 @@ core's `ultimaModificacao` stamp: `mapa`, `faixaCep`, `horarioDeCorte` and
 (`criar`) writes the full schema-parsed doc, with those keys (and `client_id` /
 `client_secret`) at null and `prazoExtra` at 0 — and a `criar` row's JSONL `to`
 lists only the computed fields, not those defaults. Nothing is ever deleted —
-migrated pedidos hold `integracaoFreteOuterRef` pointing at these docs.
+migrated pedidos hold `integracaoFreteOuterRef` pointing at these docs, and so,
+since 2026-11-18, does every pedido the Shopee order import creates while its
+conta has an active doc.
 
 ## ⛔ STOP on duplicates, non-canonical refs and shared docs
 
@@ -158,7 +160,12 @@ dataCadastro), then a re-run.
 1. The second dry run (step 4) reports **0** contas with planned writes.
 2. Spot-check two contas: the doc's `nome`, `ativo` and filial equal the conta's.
 3. A migrated Shopee pedido's Frete tab shows "`<conta>` (Shopee)" in its
-   (disabled) picker, and its print's "Tipo:" line shows the conta name.
+   (disabled) picker, and its print's "Tipo:" line shows the conta name. Once
+   the Shopee functions codebase deploys, so does a pedido its order import
+   CREATES: since 2026-11-18 (Lucas, reversing step 20's "no pedido this app
+   imports points at it") the importer stamps the conta's ACTIVE doc — the one
+   this pass adopted — on every pedido it creates while that doc is active, and
+   never on one that already exists.
 
 ## Cost
 
@@ -168,7 +175,8 @@ is Shopee, masked to `tipo` plus the mirrored fields so no credential is pulled
 into the process, and `int_frete` where `tipo` is `shopee` — plus, on `--apply`,
 one transaction per executable conta (a conta get, the lookup query, and on a
 miss the deterministic-id get). That lookup query is the one that needs #1532's
-new `int_frete` composite.
+new `int_frete` composite — which, since 2026-11-18, also serves the order
+import's per-delivery lookup of the conta's active doc.
 
 ## Staging is a rehearsal
 

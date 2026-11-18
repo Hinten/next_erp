@@ -1071,7 +1071,9 @@ Three gaps to know about:
   plus that collection's `expiraEm` TTL policy, which rides the same indexes
   deploy; and since step 20
   `int_frete (tipo, contaShopeeFreteOuterRef, ativo, dataCadastro DESC)`, the
-  conta-sync lookup that adopts a migrated legacy doc, and
+  conta-sync lookup that adopts a migrated legacy doc — and, since 2026-11-18,
+  the order importer's lookup of the conta's ACTIVE doc (its three equalities are
+  a prefix of it), run on every code-3 delivery — and
   `notificacoesShopee (status, shop_id)`, the #808 re-drive. All nine are
   declared in `firestore.indexes.json`; declaring is not deploying.
 
@@ -1246,7 +1248,14 @@ What it needs is
 ORDER:
 
 - the `int_frete (tipo, contaShopeeFreteOuterRef, ativo, dataCadastro DESC)`
-  index (and `notificacoesShopee (status, shop_id)`) via #1532 is READY first;
+  index (and `notificacoesShopee (status, shop_id)`) via #1532 is READY first —
+  it gates the ORDER IMPORTER too since 2026-11-18 (Lucas reversed step 20's
+  "no pedido this app imports points at it"): every code-3 import now queries
+  `int_frete` for the conta's active doc and stamps its ref on a pedido it
+  CREATES, and without the index each of those queries silently full-scans
+  `int_frete` (Enterprise bills the scan; the collection is small — the channel
+  contas' docs plus the Melhor Envio, motoboy, retirada and fob configs — but it
+  is a scan per delivery);
 - inside the window, after the import, the `int_frete` adoption pass runs
   (#1889, a #1208 Phase 2b step; runbook
   `tools/migrations/shopee-int-frete.README.md`), because an import fires no
@@ -1254,7 +1263,9 @@ ORDER:
   `nao-canonico` (every `bloqueado-nao-canonico` line carries one) and ZERO
   `compartilhado` rows, each resolved by a human, before this codebase deploys: the trigger has no
   tolerant scan, so a conta's first save would otherwise create
-  `shopee-<integracaoId>` beside a legacy doc whose back-ref is not canonical;
+  `shopee-<integracaoId>` beside a legacy doc whose back-ref is not canonical —
+  and the order importer, through the same binding, would find NEITHER doc for a
+  conta whose only one is non-canonical and create its pedidos with a `null` ref;
 - then this codebase. Before the import, run nothing.
 
 ⚠️ **Eventarc cost: `onNfeAprovadaShopee` is the THIRD function on

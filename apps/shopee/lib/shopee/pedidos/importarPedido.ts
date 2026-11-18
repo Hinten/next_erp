@@ -17,7 +17,8 @@
  *  3. `get_escrow_detail`, **CONTAINED**: it refines PRICES, and losing a
  *     refinement must not lose the pedido;
  *  4. produto resolution, memoised per `(item_id, model_id)` across the order;
- *  5. the freight block, then the items (the items' cross-check log needs the
+ *  5. the conta's active `int_frete` doc (one uncached query), the freight block
+ *     stamped with its ref, then the items (the items' cross-check log needs the
  *     freight figure, and only the freight mapper knows a Shopee `0` from an
  *     absence);
  *  6. the buyer — `findOrCreateCliente` owns its identity-index transaction,
@@ -66,6 +67,7 @@ import { ensureEndereco } from '@delfrance/data/admin/enderecos';
 import {
   clienteCollection,
   integracaoCollection,
+  intFreteCollection,
   pedidoCollection,
 } from '@delfrance/data/admin/collections';
 import {
@@ -92,6 +94,7 @@ import {
 import { resolverAvisosDeDespachoSeEncerrado } from '../avisos/despachoAutomatico';
 import { readConta } from '../core/contaCache';
 import { loadShopeeContext } from '../core/shopee';
+import { syncIntFreteShopee } from '../frete/intFrete';
 import { resolverAvisoNfeSeEncerrado } from '../nfe/avisoNfe';
 import {
   avaliarCapturaComprador,
@@ -420,9 +423,10 @@ async function resolverComprador(
  * four writers on the pedido path (`findOrCreateCliente`, `ensureEndereco`,
  * `salvarPedidoShopee`, `registrarLinhasSemProduto`) are all called from
  * {@link importarPedidoShopee} and none of them appears in this body. The
- * `pedidoCollection` read below is a `.get()`; the produto cascade and
- * `readConta` are reads. Keep it that way — a write added here would silently
- * make `--dry-run` write.
+ * `pedidoCollection` read below is a `.get()`; the conta's `int_frete` lookup
+ * (`syncIntFreteShopee.buscarIntFreteDaConta`, with no transaction handle) is a
+ * query `.get()`; the produto cascade and `readConta` are reads. Keep it that
+ * way — a write added here would silently make `--dry-run` write.
  */
 export interface PreparoPedidoShopee {
   /** The reconciled `get_order_detail` row — the authority for every field. */
@@ -436,6 +440,11 @@ export interface PreparoPedidoShopee {
   readonly watermarkUs: number;
   /** The caller's ONE clock read, µs. */
   readonly nowUs: number;
+  /**
+   * The mapped freight block, `integracaoFreteOuterRef` already stamped with the
+   * conta's ACTIVE `int_frete` doc (`null` when it has none) — what a CREATE
+   * writes, and what the rehearsal prints.
+   */
   readonly frete: FreteDoPedido;
   readonly pesosObservados: readonly PesoBrutoObservado[];
   readonly mapeados: ItensMapeadosShopee;
@@ -507,11 +516,41 @@ export async function prepararImportacaoPedidoShopee(
     });
   }
 
-  const { frete, pesosObservados } = mapearFreteInicialShopee({
+  // The conta's ACTIVE `int_frete` doc (Lucas, 2026-11-18 — reversing step 20's
+  // "no pedido this app imports points at it"), through the app's ONE binding:
+  // the same core lookup Mercado Livre, Amazon and Loja Integrada run, UNCACHED
+  // like Amazon's and Loja Integrada's (its answer feeds a write; Mercado Livre
+  // caches its own at a wrapper) — a plain query `.get()` outside any
+  // transaction, so this half stays write-free. None active — no doc yet, a
+  // deactivated one, or a conta the trigger left `incompleto` (no doc at all) —
+  // is `null`, and the pedido's `integracaoFreteOuterRef` is `null` as before
+  // the reversal. Never a derived `shopee-<id>`: a migrated conta's doc keeps
+  // its legacy auto id. The doc's `horarioDeCorte` is NOT read: the cut-off
+  // stays `HORARIO_DE_CORTE_PADRAO_SHOPEE` (`orderFreteMapping.ts`).
+  // Rule 7's accepted residual: the ref is decided HERE, before the pedido
+  // transaction, and re-applied verbatim on an OCC retry, so a doc deactivated
+  // or replaced between this read and the create is still stamped. Harmless —
+  // it is a pointer to a doc that is never deleted (deactivation keeps it), a
+  // concurrent create of the same order runs the same lookup, and no update
+  // ever rewrites it.
+  const intFrete = await syncIntFreteShopee.buscarIntFreteDaConta(db, integracaoId, {
+    apenasAtivo: true,
+  });
+  const { frete: freteMapeado, pesosObservados } = mapearFreteInicialShopee({
     detalhe: linha,
     escrow,
     watermarkUs,
   });
+  // Stamped on the mapped block right after the mapper (whose signature stays
+  // pure over the wire). Only a CREATE writes it — the whole mapped block lands
+  // there; an UPDATE refreshes seven OTHER fields over the stored spread
+  // (`mesclarFreteInicialShopee`), so a stored ref, or a stored null, is kept:
+  // only NEW pedidos get the ref (Lucas, 2026-11-18).
+  const frete: FreteDoPedido = {
+    ...freteMapeado,
+    integracaoFreteOuterRef:
+      intFrete === null ? null : toOuterRef(intFreteCollection.docPath({}, intFrete.id)),
+  };
   const mapeados = mapearItensShopee({
     detalhe: linha,
     escrow,
@@ -760,6 +799,9 @@ export async function importarPedidoShopee(
     valorCobrado: mapeado.dados.valorCobrado,
     freteCobrado: frete.valorCobrado,
     prazoDespachoUs: frete.prazoDespacho,
+    // Whether the conta's ACTIVE `int_frete` doc was found — a boolean, never the
+    // id, so "nenhum ativo" is diagnosable from the logs. Only a CREATE stores it.
+    intFreteAtivo: frete.integracaoFreteOuterRef !== null,
     // ⚠️ `parcel_chargeable_weight`'s unit is undocumented, so the RAW grams ride
     // beside the converted kilos for the first deliveries.
     pesos: pesosObservados,

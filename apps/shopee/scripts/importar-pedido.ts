@@ -21,10 +21,12 @@
  * ## The two modes
  *
  * **`--dry-run` (the DEFAULT)** calls Shopee (`get_order_detail` +
- * `get_escrow_detail`), resolves the produto of every line, runs the mappers and
- * prints what a write WOULD store. It writes nothing, and that is structural
- * rather than a promise: it calls `prepararImportacaoPedidoShopee`, whose body
- * contains no writer at all (see its docblock).
+ * `get_escrow_detail`), resolves the produto of every line, looks up the
+ * conta's active `int_frete` doc, runs the mappers and prints what a write
+ * WOULD store. It writes nothing, and that is structural rather than a promise:
+ * it calls `prepararImportacaoPedidoShopee`, whose body contains no writer at all
+ * (see its docblock). The `int_frete` ref it prints is read off the mapped block
+ * that call returned — there is no second lookup here.
  *
  * **`--live`** calls `importarPedidoShopee` exactly as the code-3 task handler
  * does — same arguments, same default client seam, same clock shape — and then
@@ -226,6 +228,12 @@ async function main(): Promise<void> {
       log(`    estado armazenado ..... ${antes.estadoArmazenado ?? '—'}`);
       log(`    lastMarketplaceUpdate . ${antes.lastMarketplaceUpdateUs ?? '—'}`);
       log(`    watermark desta leitura ${preparo.watermarkUs}`);
+      // ⚠️ Only a CREATE writes the conta's int_frete ref: an update KEEPS this
+      // one, whatever the `int_frete da conta` line below says was found.
+      log(
+        `    int_frete armazenado .. ${antes.frete?.integracaoFreteOuterRef ?? '—'}   (uma atualização o mantém)`,
+      );
+      log(`    entrega armazenada .... ${antes.frete?.enderecoFreteOuterReference ?? '—'}`);
     }
     log(
       `  linhas sem produto ...... ${preparo.mapeados.itens.filter((i) => i.produtoUid == null).length} de ${preparo.mapeados.itens.length}`,
@@ -251,6 +259,8 @@ async function main(): Promise<void> {
     if (resumoAntes !== null) {
       log(`    estado ................ ${resumoAntes.estadoArmazenado ?? '—'}`);
       log(`    lastMarketplaceUpdate . ${resumoAntes.lastMarketplaceUpdateUs ?? '—'}`);
+      log(`    int_frete ............. ${resumoAntes.frete?.integracaoFreteOuterRef ?? '—'}`);
+      log(`    entrega ............... ${resumoAntes.frete?.enderecoFreteOuterReference ?? '—'}`);
     }
     log('');
   }

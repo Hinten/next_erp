@@ -231,6 +231,14 @@ export interface FreteResumoShopee {
   readonly dataPrevisaoEntregaUs: number | null;
   readonly ultimaModificacaoUs: number | null;
   readonly volumes: readonly VolumeResumoShopee[];
+  /**
+   * The conta's `int_frete` doc, as an outer-ref (an id). On `mapeado` it is
+   * what the read-only half found — off the mapped block, never a second lookup
+   * — and only a CREATE writes it; on `armazenado` it is what the pedido holds.
+   */
+  readonly integracaoFreteOuterRef: string | null;
+  /** The delivery address, as an outer-ref (ids) — the fiscal one, filled once. */
+  readonly enderecoFreteOuterReference: string | null;
 }
 
 /** One pedido, reduced to what a rehearsal needs and nothing a buyer authored. */
@@ -409,6 +417,8 @@ export function resumoDoPedidoMapeado(
         numero: v.numero,
         pesoBrutoKg: v.pesoBruto,
       })),
+      integracaoFreteOuterRef: dados.freteInicial.integracaoFreteOuterRef,
+      enderecoFreteOuterReference: dados.freteInicial.enderecoFreteOuterReference,
     },
     itens: dados.itens.map((item) => ({
       ordem: item.ordem,
@@ -576,6 +586,8 @@ export function resumoDoPedidoArmazenado(
               const vol = objeto(v) ?? {};
               return { numero: texto(vol.numero), pesoBrutoKg: numero(vol.pesoBruto) };
             }),
+            integracaoFreteOuterRef: texto(frete.integracaoFreteOuterRef),
+            enderecoFreteOuterReference: texto(frete.enderecoFreteOuterReference),
           },
     itens: linhasDoArmazenado(doc.itens),
   };
@@ -706,6 +718,17 @@ export function renderResumoPedido(
     const f = r.frete;
     linhas.push(`  estado / modalidade ..... ${txt(f.estado)} / ${txt(f.modalidade)}`);
     linhas.push(`  integradora ............. ${txt(f.integradora)}`);
+    // The conta's `int_frete` doc: what the read-only half FOUND (off the mapped
+    // block — no second lookup) on `mapeado`, what the pedido holds on
+    // `armazenado`. Only a CREATE writes it, so the mapped line says so.
+    linhas.push(
+      r.origem === 'mapeado'
+        ? `  int_frete da conta ...... ${f.integracaoFreteOuterRef ?? 'nenhum ativo — o pedido fica sem ref'}   (só um pedido NOVO grava; um existente mantém o seu)`
+        : `  integracaoFreteOuterRef . ${txt(f.integracaoFreteOuterRef)}`,
+    );
+    linhas.push(
+      `  endereço de entrega ..... ${txt(f.enderecoFreteOuterReference)}   (o endereço fiscal, preenchido uma vez)`,
+    );
     linhas.push(`  externalId .............. ${txt(f.externalId)}   (package_number)`);
     linhas.push(`  externalOptionId ........ ${txt(f.externalOptionId)}   (logistics_channel_id)`);
     linhas.push(
@@ -806,6 +829,7 @@ export function renderResumoPedido(
       '     outerRefs acima saem nulos mesmo numa order que a gravação de verdade vincularia.',
     );
     linhas.push('     Quem responde por isso é o veredito `capturaComprador` acima.');
+    linhas.push('     O endereço de entrega do `freteInicial` é o fiscal, então sai nulo também.');
   }
   return linhas;
 }

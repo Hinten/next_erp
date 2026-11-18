@@ -177,10 +177,12 @@ function cloneItens(itens: unknown): unknown {
  * Ownership is read off `externalOptionIntegracao`, the same no-extra-read seam
  * `admin/pedidoReconcile.ts` uses. ⚠️ `FreteTab` locks on the RESOLVED
  * `int_frete.tipo` instead, so the two can disagree (its own comment flags
- * this). The two channels whose duplicates reach that lock are covered, each
+ * this). The three channels whose duplicates reach that lock are covered, each
  * its own way: `orderShipmentImport` always writes
  * `externalOptionIntegracao: 'mercadoLivre'` on an ML-imported pedido, so its
- * refs go here; a Loja Integrada pedido carries a null block tipo and keeps its
+ * refs go here; the Shopee importer writes `externalOptionIntegracao: 'shopee'`
+ * and, on a pedido it creates since 2026-11-18, the conta's `int_frete` ref,
+ * so those refs go here too; a Loja Integrada pedido carries a null block tipo and keeps its
  * ref to the conta's freight doc — a ROUTER, not an owner, whose Frete tab
  * renders a read-only body but leaves the header and the integração picker to
  * the estado lock, so the duplicate (back at `iniciado`) is re-pointed there.

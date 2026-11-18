@@ -403,19 +403,45 @@ describe('mesclarFreteInicialShopee', () => {
     ultimaModificacao: 3,
     codRastreio: 'BR123',
     printLabelId: 'ETQ-1',
+    // A LEGACY int_frete ref (S) and a delivery address already stored — the
+    // two refs only a CREATE writes from the mapped block.
+    integracaoFreteOuterRef: 'documents/int_frete/LegacyAutoId0000001',
+    enderecoFreteOuterReference: 'documents/clientes/cli-0/enderecos/end-0',
   };
+
+  /**
+   * What the importer hands the merge since 2026-11-18: the mapper's block with
+   * the conta's ACTIVE int_frete ref (R) stamped on it, and the delivery address
+   * `mapearPedidoShopee` copies from the fiscal one — both NON-NULL and both
+   * DIFFERENT from the stored ones, so a merge that took either would show it.
+   */
+  const REF_MAPEADA = 'documents/int_frete/shopee-int-1';
+  const ENTREGA_MAPEADA = 'documents/clientes/cli-1/enderecos/end-1';
+  function comRefs(frete: FreteDoPedido): FreteDoPedido {
+    return {
+      ...frete,
+      integracaoFreteOuterRef: REF_MAPEADA,
+      enderecoFreteOuterReference: ENTREGA_MAPEADA,
+    };
+  }
 
   it('40 — atualiza EXATAMENTE os SETE campos declarados — nada mais', () => {
     // Drift anchor: the mapped block below differs in every field, so any key
     // the merge touches shows up here. If an eighth field is ever refreshed,
     // this fails until it is added to `CAMPOS_FRETE_ATUALIZAVEIS_SHOPEE` too.
-    const { frete: mapeado } = mapearFreteInicialShopee({
-      // `edt_to` is patched in because the SG order zero-fills it, and a mapped
-      // `null` cannot show whether the merge would have taken the field.
-      detalhe: linha({ edt_to: 1_789_900_000 }),
-      escrow: escrowCom(9.99),
-      watermarkUs: WATERMARK_US,
-    });
+    const mapeado = comRefs(
+      mapearFreteInicialShopee({
+        // `edt_to` is patched in because the SG order zero-fills it, and a mapped
+        // `null` cannot show whether the merge would have taken the field.
+        detalhe: linha({ edt_to: 1_789_900_000 }),
+        escrow: escrowCom(9.99),
+        watermarkUs: WATERMARK_US,
+      }).frete,
+    );
+    // ÂNCORA: R and S really differ, and so do the two delivery refs —
+    // otherwise the two refs below are absent from `mudaram` for no reason.
+    expect(mapeado.integracaoFreteOuterRef).not.toBe(armazenado.integracaoFreteOuterRef);
+    expect(mapeado.enderecoFreteOuterReference).not.toBe(armazenado.enderecoFreteOuterReference);
     const saida = mesclarFreteInicialShopee(armazenado, mapeado);
     const mudaram = Object.keys(saida).filter(
       (k) =>
@@ -426,6 +452,33 @@ describe('mesclarFreteInicialShopee', () => {
     // The list is SEVEN since step 7 (#1515) and `prazoDespacho` is not in it.
     expect(CAMPOS_FRETE_ATUALIZAVEIS_SHOPEE).toHaveLength(7);
     expect([...CAMPOS_FRETE_ATUALIZAVEIS_SHOPEE]).not.toContain('prazoDespacho');
+    // Only NEW pedidos get the int_frete ref (Lucas, 2026-11-18): the stored S
+    // survives a mapped R, and the stored delivery address survives too.
+    expect([...CAMPOS_FRETE_ATUALIZAVEIS_SHOPEE]).not.toContain('integracaoFreteOuterRef');
+    expect([...CAMPOS_FRETE_ATUALIZAVEIS_SHOPEE]).not.toContain('enderecoFreteOuterReference');
+    expect(saida.integracaoFreteOuterRef).toBe(armazenado.integracaoFreteOuterRef);
+    expect(saida.enderecoFreteOuterReference).toBe(armazenado.enderecoFreteOuterReference);
+  });
+
+  it('40 — QUASE-ERRO: uma ref NULA armazenada também sobrevive a uma R mapeada', () => {
+    // The pedido imported before the reversal stores `null`, and "only new
+    // pedidos get the ref" means it KEEPS it: a FILL-IF-EMPTY merge
+    // (`existente ?? mapeado`) would keep S in the case above and still
+    // backfill R here.
+    const semRefs: FreteDoPedido = {
+      ...armazenado,
+      integracaoFreteOuterRef: null,
+      enderecoFreteOuterReference: null,
+    };
+    const mapeado = comRefs(
+      mapearFreteInicialShopee({ detalhe: detalheSG(), escrow: null, watermarkUs: WATERMARK_US })
+        .frete,
+    );
+    const saida = mesclarFreteInicialShopee(semRefs, mapeado);
+    expect(saida.integracaoFreteOuterRef).toBeNull();
+    expect(saida.enderecoFreteOuterReference).toBeNull();
+    // …while a seven-field neighbour on the same block DOES move.
+    expect(saida.ultimaModificacao).toBe(WATERMARK_US);
   });
 
   it('40 — QUASE-ERRO: um prazoDespacho ARMAZENADO sobrevive a um re-import que mapeia OUTRO', () => {
@@ -487,12 +540,38 @@ describe('mesclarFreteInicialShopee', () => {
     expect(saida.ultimaModificacao).toBe(WATERMARK_US);
   });
 
-  it('sem bloco armazenado, o mapeado passa inteiro', () => {
-    const { frete: mapeado } = mapearFreteInicialShopee({
-      detalhe: detalheSG(),
-      escrow: null,
-      watermarkUs: WATERMARK_US,
+  it('sem bloco armazenado, o mapeado passa inteiro — MENOS as duas refs que só a criação grava', () => {
+    // The merge runs on the UPDATE path only, so `existente == null` is an
+    // EXISTING pedido with no block: it must not receive the int_frete ref
+    // ("only new pedidos"), nor a delivery address outside the fiscal fill.
+    const mapeado = comRefs(
+      mapearFreteInicialShopee({ detalhe: detalheSG(), escrow: null, watermarkUs: WATERMARK_US })
+        .frete,
+    );
+    expect(mesclarFreteInicialShopee(null, mapeado)).toEqual({
+      ...mapeado,
+      integracaoFreteOuterRef: null,
+      enderecoFreteOuterReference: null,
     });
-    expect(mesclarFreteInicialShopee(null, mapeado)).toBe(mapeado);
+  });
+
+  it('QUASE-ERRO: sem bloco armazenado, todo o RESTO do mapeado passa — estado e valores incluídos', () => {
+    const mapeado = comRefs(
+      mapearFreteInicialShopee({
+        detalhe: detalheSG(),
+        escrow: escrowCom(9.99),
+        watermarkUs: WATERMARK_US,
+      }).frete,
+    );
+    const saida = mesclarFreteInicialShopee(null, mapeado);
+    // Not a block cleared wholesale: only the two refs differ from the mapped one.
+    const diferentes = Object.keys(mapeado).filter(
+      (k) =>
+        JSON.stringify((saida as Record<string, unknown>)[k]) !==
+        JSON.stringify((mapeado as Record<string, unknown>)[k]),
+    );
+    expect(diferentes.sort()).toEqual(['enderecoFreteOuterReference', 'integracaoFreteOuterRef']);
+    expect(saida.valorCobrado).toBe(9.99);
+    expect(saida.estado).toBe(ESTADO_FRETE.iniciado);
   });
 });

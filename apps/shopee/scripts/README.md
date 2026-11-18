@@ -74,10 +74,11 @@ pnpm --filter @delfrance/shopee-app importar:pedido --integracao int-1 --order-s
 ```
 
 It calls `get_order_detail` and `get_escrow_detail`, resolves the produto of
-every line, runs the mappers and prints what a write **would** store. It writes
-nothing — the function it calls (`prepararImportacaoPedidoShopee`) contains no
-writer at all, which is why the guarantee is structural rather than a promise in
-a comment.
+every line, looks up the conta's active `int_frete` doc (one Firestore query),
+runs the mappers and prints what a write **would** store. It writes nothing —
+the function it calls (`prepararImportacaoPedidoShopee`) contains no writer at
+all, which is why the guarantee is structural rather than a promise in a
+comment.
 
 ⚠️ A dry run is **not offline**: it spends the same two Shopee calls against the
 same rate limits.
@@ -87,16 +88,21 @@ with the preamble on stderr so the stdout stays parseable.
 
 ### 4. What to read in the output
 
-| line                 | what it tells you                                                                                                                          |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `escrow`             | `lido` or `AUSENTE`. Absent means prices came from the detail alone — expected on an unpaid order, worth a look otherwise.                 |
-| `pedido já existe?`  | whether this run would be a `criado` or an update.                                                                                         |
-| `conferência`        | `Σ itens + frete` against the order's own `total_amount`. A `diferença` of `0` is the healthy answer; `—` means the order is not paid yet. |
-| `estado alvo`        | what the ladder wants (`pago`, `aguardandoConfirmacaoDePagamento`, …), or `(erro)` for a status this ladder does not model.                |
-| `capturaComprador`   | `capturado` / `pendente` / `expirado`, plus the refused field NAMES.                                                                       |
-| `linhas sem produto` | how many lines bound to no produto. On staging, expect **all of them**.                                                                    |
-| `freteInicial`       | `valorCobrado` is what the buyer paid, `custoCalculado` what the shipment costs.                                                           |
-| item rows            | ids, sku, quantity, price, per-unit discount.                                                                                              |
+| line                  | what it tells you                                                                                                                          |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `escrow`              | `lido` or `AUSENTE`. Absent means prices came from the detail alone — expected on an unpaid order, worth a look otherwise.                 |
+| `pedido já existe?`   | whether this run would be a `criado` or an update; an update also prints `int_frete armazenado` (which it keeps) and `entrega armazenada`. |
+| `conferência`         | `Σ itens + frete` against the order's own `total_amount`. A `diferença` of `0` is the healthy answer; `—` means the order is not paid yet. |
+| `estado alvo`         | what the ladder wants (`pago`, `aguardandoConfirmacaoDePagamento`, …), or `(erro)` for a status this ladder does not model.                |
+| `capturaComprador`    | `capturado` / `pendente` / `expirado`, plus the refused field NAMES.                                                                       |
+| `linhas sem produto`  | how many lines bound to no produto. On staging, expect **all of them**.                                                                    |
+| `freteInicial`        | `valorCobrado` is what the buyer paid, `custoCalculado` what the shipment costs.                                                           |
+| `int_frete da conta`  | the conta's ACTIVE doc (`documents/int_frete/<id>`) or `nenhum ativo — o pedido fica sem ref`; only a NEW pedido stores it.                |
+| `endereço de entrega` | the delivery address — the fiscal one, so null in a dry run (the buyer is never resolved there).                                           |
+| item rows             | ids, sku, quantity, price, per-unit discount.                                                                                              |
+
+A STORED summary (the `--live` read-back) prints the ref as `integracaoFreteOuterRef`
+— what the pedido holds — instead of `int_frete da conta`.
 
 ⚠️ **The output carries no buyer data by construction** — no name, document,
 phone, address or e-mail, `observacoesInternas` shows only a character count,
@@ -111,8 +117,8 @@ pnpm --filter @delfrance/shopee-app importar:pedido --integracao int-1 --order-s
 
 This calls `importarPedidoShopee(db, { integracaoId, shopId, orderSn, nowMs })` —
 the same call, the same arguments and the same client seam the task handler
-uses. It prints the stored `estado` / `lastMarketplaceUpdate` **before** the
-import, then the outcome, then the pedido read back:
+uses. It prints the stored `estado` / `lastMarketplaceUpdate` / `int_frete` /
+`entrega` **before** the import, then the outcome, then the pedido read back:
 
 - `criado` — the document did not exist;
 - `atualizado` — it did, and this payload was newer or equal and changed
@@ -137,8 +143,10 @@ the caveat below — the freight `estado` the step-7 backstop folded), and the
 `observacoesInternas` if the buyer wrote one. `/incidentes` carries one
 non-blocking row per unbound line. ⚠️ Since step 7 the Frete tab is **read-only**
 on a Shopee pedido: the block declares `externalOptionIntegracao: 'shopee'`, and
-that alone now locks it even though the importer sets no
-`integracaoFreteOuterRef`.
+that alone locks it. Since 2026-11-18 a pedido this run CREATES also carries
+the conta's `integracaoFreteOuterRef` (Lucas reversed step 20's "stamps no
+pedido"), so its picker shows the conta's freight doc; a pedido that already
+existed keeps whatever it stored.
 
 ### 7. Caveats you should expect to see (none of these is a bug)
 
@@ -153,6 +161,21 @@ contaProdutoShopeeOuterRef)`, which is **#1532**, migration-window work. On
   one-click link: the query silently full-scans and is billed by data scanned.
   Here it scans an EMPTY collection group, so the cost is nil — but do not read
   the absence of an error as the indexes being there.
+- **The `int_frete` composite may not be deployed on staging either** —
+  `int_frete (tipo, contaShopeeFreteOuterRef, ativo, dataCadastro DESC)`, the
+  same **#1532**. Since 2026-11-18 every import (dry run included) queries it for
+  the conta's active doc; without the index the query full-scans `int_frete`, a
+  small collection (the channel contas' docs plus the Melhor Envio, motoboy,
+  retirada and fob configs), and the answer is the same.
+- **`int_frete da conta` reads `nenhum ativo` on a conta saved before step 20
+  reached the environment.** The conta trigger creates `shopee-<integracaoId>` on
+  the conta's next save that moves a mirrored field; until then (or while the
+  conta lacks its filial, nome or dataCadastro — `incompleto`) the pedido is
+  created with a `null` ref, exactly as before 2026-11-18.
+- **An UPDATE never shows the ref it found landing.** Only a CREATE writes
+  `integracaoFreteOuterRef`; a re-run over an existing pedido keeps the stored
+  one (or the stored null) — the dry run prints both, `int_frete armazenado`
+  under `pedido já existe?`.
 - **A non-BR order gets `bloquearEmissaoNFe: true` and
   `capturaComprador: expirado`.** The sandbox order is Singaporean: there is no
   CPF on that wire to unmask, so the capture is not "pending", it is over, and
