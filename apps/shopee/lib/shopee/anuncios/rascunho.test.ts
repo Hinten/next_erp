@@ -3720,7 +3720,7 @@ describe("atualizarRascunhoShopee com alvo 'anuncio' — o anúncio publicado (L
       expect(doc(db)?.logistic_info).toEqual([CANAL_A, nua]);
     });
 
-    it('size_id / shipping_fee do MESMO logistic_id sobrevivem; outro id nunca herda; o omitido é DESLIGADO', async () => {
+    it('size_id / shipping_fee do MESMO logistic_id sobrevivem; outro id nunca herda; o omitido é DESLIGADO e guarda os seus', async () => {
       const db = dbPublicado({ logistic_info: LISTA_CONFIAVEL, logisticaGravadaEm: AGORA - 1000 });
       await atualizarRascunhoShopee(
         deps(db),
@@ -3732,7 +3732,8 @@ describe("atualizarRascunhoShopee com alvo 'anuncio' — o anúncio publicado (L
       expect(doc(db, CAMINHO_VIVO)?.logistic_info).toEqual([
         { logistic_id: 90_003, enabled: true, is_free: true, size_id: 7, shipping_fee: 12.5 },
         { logistic_id: 90_004, enabled: true, is_free: true },
-        { logistic_id: 90_009, enabled: false, is_free: false },
+        // The omitted channel keeps its own size: re-enabling it later still sends it.
+        { logistic_id: 90_009, enabled: false, is_free: false, size_id: 9 },
       ]);
       expect(doc(db, CAMINHO_VIVO)?.logisticaGravadaEm).toBe(AGORA);
     });
