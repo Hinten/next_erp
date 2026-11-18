@@ -617,11 +617,17 @@ export async function garantirKitNovo(
     if (desfechoDeCriacaoDeKit(err) === 'nao-criado') throw recusaDaCriacao(ctx, err);
     return incerto(ctx, plano, err);
   }
+  // The creation instant, read LIVE right after the 200 — the link's
+  // `publicadoEm`, which another run reads as the kit's age (#2065). `nowMs` is
+  // the run's START and can be minutes earlier; it is only the fallback of a
+  // caller that supplies no live clock (a test, an old composition root).
+  const criadoEmMs = deps.aoVivo?.agora() ?? deps.nowMs;
 
   const linkDocId = await escreverVinculoDoKit(deps, {
     produtoId: ctx.produto.id,
     itemId,
     corpo,
+    criadoEmMs,
   });
   const conclusao = await completarKit(deps, ctx, plano, {
     linkDocId,

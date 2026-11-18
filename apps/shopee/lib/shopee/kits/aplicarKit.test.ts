@@ -489,6 +489,53 @@ describe('criarKit — add_kit_item → the ONE link write → the read-back com
     });
   });
 
+  it('(B1, #2065) the link publicadoEm is the LIVE reading after add_kit_item, never nowMs; near-miss: no live clock falls back to nowMs', async () => {
+    vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    const criado = AGORA + 260_000;
+    const leituras: string[] = [];
+
+    const db = new FakeDb();
+    const ctx = contexto();
+    semear(db, ctx);
+    const shopee = shopeeDaFamilia(
+      {},
+      () => kitDaFamilia(),
+      () => listaDaFamilia({}),
+    );
+    const comRelogio: KitDeps = {
+      ...depsDe(db, shopee.client),
+      aoVivo: {
+        // The clock is read only AFTER add_kit_item answered.
+        agora: () => {
+          leituras.push(`agora após ${String(shopee.quantas(SHOPEE_ADD_KIT_ITEM_PATH))} add`);
+          return criado;
+        },
+        prazoDaRequisicao: null,
+        aquecerCredencial: () => Promise.resolve(),
+        confirmarSegundoAnuncio: false,
+        confirmarCriacaoIncerta: false,
+      },
+    };
+    await criarKit(comRelogio, ctx, planoDeCriacao(ctx));
+    expect(leituras).toEqual(['agora após 1 add']);
+    expect(db.store[`produtos/${K}/prodshopee/${LINK}`]?.data).toMatchObject({
+      publicadoEm: criado,
+      // Every other stamp keeps the run's one clock.
+      ultimaModificacao: AGORA,
+      dataCadastro: AGORA,
+    });
+
+    const db2 = new FakeDb();
+    semear(db2, ctx);
+    const shopee2 = shopeeDaFamilia(
+      {},
+      () => kitDaFamilia(),
+      () => listaDaFamilia({}),
+    );
+    await criarKit(depsDe(db2, shopee2.client), ctx, planoDeCriacao(ctx));
+    expect(db2.store[`produtos/${K}/prodshopee/${LINK}`]?.data?.publicadoEm).toBe(AGORA);
+  });
+
   it('(M91) EQUAL pair stamped — the hidden B id folds equal to "no model" — and a QUANTITY near-miss is NOT stamped', async () => {
     const db = new FakeDb();
     const ctx = contexto();

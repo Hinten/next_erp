@@ -83,7 +83,12 @@ import {
   type GarantiaCumprida,
 } from './aplicarKit';
 import { STATUS_KIT_VIVO } from './constantesKit';
-import { kitVivoRemovido, vinculosNativosDoKit, type PlanoKit } from './planoKit';
+import {
+  kitVivoAusenteRecente,
+  kitVivoRemovido,
+  vinculosNativosDoKit,
+  type PlanoKit,
+} from './planoKit';
 import { lerKitVivo } from './prepararKit';
 import { avisoPrincipalDiferente } from './republicarKit';
 import {
@@ -541,8 +546,12 @@ async function garantirAntigoExcluido(
   if (vivo === null) {
     throw new Error('[shopee/kits] passo 3 da recriação sem a leitura do kit antigo');
   }
+  // #2065: an absent row on a target created moments ago is a DOUBT, never
+  // proof — it falls to the superseded branch below (the old kit may still
+  // sell), never to `removido` and never to a `delete_item` (no live status).
+  const rawDoAlvo = ctx.alvo?.raw ?? {};
 
-  if (kitVivoRemovido(vivo, deps.nowMs)) {
+  if (kitVivoRemovido(vivo, deps.nowMs) && !kitVivoAusenteRecente(vivo, rawDoAlvo, deps.nowMs)) {
     await escreverLeituraDoKit(deps, {
       produtoId: kitId,
       linkDocId: alvo.linkDocId,
@@ -574,7 +583,10 @@ async function garantirAntigoExcluido(
     }
     const releitura = await lerKitVivo(deps.client, alvo.itemId);
     chamadasShopee += chamadasDaLeituraDoKit(releitura.item);
-    if (kitVivoRemovido(releitura.vivo, deps.nowMs)) {
+    if (
+      kitVivoRemovido(releitura.vivo, deps.nowMs) &&
+      !kitVivoAusenteRecente(releitura.vivo, rawDoAlvo, deps.nowMs)
+    ) {
       await escreverLeituraDoKit(deps, {
         produtoId: kitId,
         linkDocId: alvo.linkDocId,
@@ -722,8 +734,13 @@ export async function recriarKit(
   const linkRemovido = alvo.raw.estadoAnuncio === ESTADO_ANUNCIO_SHOPEE.removido;
   const vivo = ctx.vivo;
   // The target still EXISTS on Shopee: its link is not `removido` and this
-  // run's read of it is not a deleted status or an absent row (S2C-07).
-  const alvoExiste = !linkRemovido && vivo !== null && !kitVivoRemovido(vivo, deps.nowMs);
+  // run's read of it is not a deleted status or an absent row (S2C-07) — an
+  // absent row on a `recente` link counts as existing (#2065: a doubt is never
+  // proof of a delete), so the gate below runs and step 3 supersedes it.
+  const alvoExiste =
+    !linkRemovido &&
+    vivo !== null &&
+    (!kitVivoRemovido(vivo, deps.nowMs) || kitVivoAusenteRecente(vivo, alvo.raw, deps.nowMs));
   const alvoVivo = alvoExiste && vivo.status !== null && VIVOS.has(vivo.status);
   if (alvoVivo && vivo.kit === null) {
     // A native link over a listing Shopee does not serve as a kit — no writer

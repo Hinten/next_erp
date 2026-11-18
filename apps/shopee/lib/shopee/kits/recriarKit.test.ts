@@ -38,6 +38,7 @@ import {
 import { reavaliarAvisoDeReceitaKit } from '@delfrance/data/admin/avisos';
 import {
   ACAO_STATUS_ANUNCIO,
+  AGUARDAR_KIT_INCERTO_SHOPEE_MS,
   ESTADO_ANUNCIO_SHOPEE,
   MOTIVO_RESOLUCAO_RECEITA_KIT,
   TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE,
@@ -323,8 +324,11 @@ interface Loja {
    * after `depois` such calls went through (0 = the next one).
    */
   falhaNaLeitura: { readonly itemId: number; readonly erro: Error; depois: number } | null;
-  /** What the next `delete_item` does. */
-  exclusao: 'apaga' | 'recusa' | 'apaga-e-falha' | 'quebra';
+  /**
+   * What the next `delete_item` does. `'purga'` deletes and then answers NO
+   * row at all on the next read (a purge, or Shopee's lag on a fresh kit).
+   */
+  exclusao: 'apaga' | 'recusa' | 'apaga-e-falha' | 'quebra' | 'purga';
   /** The `item_status` the NEXT created kit reads back with. */
   statusDoProximo: string;
   /** The `create_time` the NEXT created kit reads back with (`undefined` = the role's). */
@@ -634,6 +638,9 @@ function novaLoja(): Loja {
           return Promise.reject(new ShopeeNetworkError('fixture: timeout depois de apagar'));
         case 'apaga':
           apagar(corpo.item_id);
+          return Promise.resolve({ request_id: 'req-3', error: '', message: '', warning: '' });
+        case 'purga':
+          itens.delete(corpo.item_id);
           return Promise.resolve({ request_id: 'req-3', error: '', message: '', warning: '' });
       }
     },
@@ -1017,6 +1024,38 @@ describe('recriarKit — cria o NOVO primeiro, depois exclui o antigo (L4(4))', 
     const fim = loja.chamadas.findIndex((c, i) => i > inicio && c.op === 'add_kit_item');
     expect(inicio).toBeGreaterThan(-1);
     expect(loja.chamadas.slice(inicio, fim).filter((c) => c.ids.includes(KIT_1))).toEqual([]);
+  });
+
+  it('(B2, #2065) a releitura depois do delete_item SEM linha, num alvo criado há pouco, é DÚVIDA ⇒ o antigo fica SUBSTITUÍDO (+ kit-antigo-nao-excluido), nunca `removido`; ⚠️ near-miss: além da janela ⇒ `removido`', async () => {
+    const db = new FakeDb();
+    const loja = novaLoja();
+    await kitAntigoComReceitaEditada(db, loja);
+    loja.exclusao = 'purga';
+
+    // Same instant as the old kit's create: the old link is `recente`.
+    const r = await recriar(db, loja, VINCULO_1);
+
+    expect(r.antecessor).toMatchObject({
+      linkDocId: VINCULO_1,
+      excluido: false,
+      substituido: true,
+    });
+    expect(codigos(r)).toContain('kit-antigo-nao-excluido');
+    expect(vinculo(db, VINCULO_1)?.estadoAnuncio).not.toBe(ESTADO_ANUNCIO_SHOPEE.removido);
+    expect(vinculo(db, VINCULO_1)?.substituidoPorLinkDocId).toBe(VINCULO_2);
+
+    // NEAR-MISS: the same purge on an OLD target (past the window) is a delete.
+    const db2 = new FakeDb();
+    const loja2 = novaLoja();
+    await kitAntigoComReceitaEditada(db2, loja2);
+    loja2.exclusao = 'purga';
+    const r2 = await publicarKitShopee(
+      deps(db2, loja2, AGORA + AGUARDAR_KIT_INCERTO_SHOPEE_MS),
+      entrada(),
+      { arma: 'kit-recriar', linkDocId: VINCULO_1 },
+    );
+    expect(r2.antecessor).toMatchObject({ excluido: true, substituido: false });
+    expect(vinculo(db2, VINCULO_1)?.estadoAnuncio).toBe(ESTADO_ANUNCIO_SHOPEE.removido);
   });
 
   it('(M114) um add_kit_item RECUSADO (nao-criado) ⇒ ZERO delete_item, o antigo intacto, nada gravado no vínculo antigo', async () => {
@@ -1664,12 +1703,40 @@ describe('passo 3 e as retomadas da recriação (§2.5.4 R0–R5)', () => {
     await kitAntigoComReceitaEditada(db, loja);
     loja.itens.delete(KIT_1);
 
-    const r = await recriar(db, loja, VINCULO_1);
+    // An OLD kit: its link is past the #2065 window (the doubt is pinned below).
+    const r = await publicarKitShopee(
+      deps(db, loja, AGORA + AGUARDAR_KIT_INCERTO_SHOPEE_MS),
+      entrada(),
+      { arma: 'kit-recriar', linkDocId: VINCULO_1 },
+    );
 
     expect(r).toMatchObject({ desfecho: 'criado', antecessor: { excluido: true } });
     expect(loja.ops).not.toContain('delete_item');
     expect(vinculo(db, VINCULO_1)?.estadoAnuncio).toBe(ESTADO_ANUNCIO_SHOPEE.removido);
     expect(avisoAberto(db)).toBe(false);
+  });
+
+  it('(B2, #2065) o MESMO alvo sem linha mas criado há pouco é DÚVIDA: nunca `removido`, nunca delete_item — o antigo pode estar vendendo', async () => {
+    const db = new FakeDb();
+    const loja = novaLoja();
+    await kitAntigoComReceitaEditada(db, loja);
+    loja.itens.delete(KIT_1);
+
+    // Same instant as the old kit's create: well inside the window.
+    const r = await recriar(db, loja, VINCULO_1);
+
+    // The doubt counts as "the target exists", so the delete gate runs: it
+    // cannot compare create times (no row ⇒ no create_time) and STOPS — the
+    // new kit is made, the old one is neither deleted, nor `removido`, nor
+    // superseded.
+    expect(r).toMatchObject({
+      desfecho: 'criado',
+      antecessor: { linkDocId: VINCULO_1, excluido: false, substituido: false },
+    });
+    expect(codigos(r)).toEqual(['kit-alvo-mais-novo']);
+    expect(loja.ops).not.toContain('delete_item');
+    expect(vinculo(db, VINCULO_1)?.estadoAnuncio).not.toBe(ESTADO_ANUNCIO_SHOPEE.removido);
+    expect(vinculo(db, VINCULO_1)?.substituidoPorLinkDocId ?? null).toBeNull();
   });
 
   it('(M177) R2 com as variantes TROCADAS depois da criação ⇒ cada modelo vivo liga pela SUA linha no vínculo novo: nenhuma linha nova sob o outro filho, nenhum recarimbo cruzado; o portão passa e UM delete_item', async () => {

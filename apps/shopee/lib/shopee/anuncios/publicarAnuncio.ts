@@ -297,7 +297,9 @@ export interface PublicarAnuncioDeps {
    * it; a dry run never reaches the lock at all.
    *
    * ⚠️ OPTIONAL on THIS type only because every `KitDeps` builder shares it
-   * and the kit arms never read it — never because it may be skipped: a DRAFT
+   * and the kit arms read only `agora`, once, for the new link's creation
+   * stamp (`aplicarKit.ts`, falling back to `nowMs` without it) — never
+   * because it may be skipped: a DRAFT
    * reached without it is refused before any write, and there is no fallback to
    * {@link PublicarAnuncioDeps.nowMs} anywhere (a constant clock makes the send
    * gate vacuous). Inside the object, `agora` is REQUIRED.
