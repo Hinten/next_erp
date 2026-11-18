@@ -653,7 +653,9 @@ export function logisticaDoAnuncioEditavelShopee(link: Record<string, unknown> |
  *   sends an off only from a stored `enabled: false`), an OFF one because it
  *   may be an earlier edit's off not yet sent, and dropping it would leave the
  *   channel ON at Shopee. Re-sending an off Shopee already applied is
- *   idempotent.
+ *   idempotent. The appended off keeps that entry's `size_id` / `shipping_fee`
+ *   (the same carry as above), so switching the channel back on before a
+ *   republish still finds them.
  * - **EQUAL (same channel):** `7` ≡ `'7'` ≡ `'07'` (the reader's digits-only
  *   rule). **DISTINCT:** another id inherits nothing; `' 7'`, `'7.0'` and `0`
  *   are not ids at all, so they match nothing.
@@ -682,20 +684,23 @@ export function mesclarLogisticaGravadaShopee(
       if (id !== null) guardadas.push({ id, entrada });
     }
   }
-  const saidas = novos.map((novo) => {
-    const saida: Record<string, unknown> = {
-      logistic_id: novo.logistic_id,
-      enabled: novo.enabled,
-      is_free: novo.is_free,
-    };
-    const guardada = guardadas.find((g) => g.id === paraInteiroWire(novo.logistic_id));
-    if (guardada === undefined) return saida;
+  // The stored `size_id` / `shipping_fee` of the FIRST trusted entry with that id.
+  const herdados = (id: number | null): Record<string, unknown> => {
+    const guardada = id === null ? undefined : guardadas.find((g) => g.id === id);
+    if (guardada === undefined) return {};
+    const saida: Record<string, unknown> = {};
     for (const chave of ['size_id', 'shipping_fee'] as const) {
       const valor = campo(guardada.entrada, chave);
       if (valor !== null && valor !== undefined) saida[chave] = valor;
     }
     return saida;
-  });
+  };
+  const saidas = novos.map((novo) => ({
+    logistic_id: novo.logistic_id,
+    enabled: novo.enabled,
+    is_free: novo.is_free,
+    ...herdados(paraInteiroWire(novo.logistic_id)),
+  }));
   if (!confiavel || !opcoes.desligarOmitidos) return saidas;
   const vistos = new Set<number>();
   for (const novo of novos) {
@@ -705,7 +710,16 @@ export function mesclarLogisticaGravadaShopee(
   for (const lida of lerLogisticaArmazenadaShopee(bruto) ?? []) {
     if (vistos.has(lida.logisticId)) continue;
     vistos.add(lida.logisticId);
-    saidas.push({ logistic_id: lida.logisticId, enabled: false, is_free: lida.isFree ?? false });
+    // The off KEEPS its stored size / fee, like an explicit off does: switching
+    // the channel back on before a republish must still find them (the edit
+    // whitelist cannot supply either). The wire's disable request is bare
+    // anyway (`construirLogistica` sends `{logistic_id, enabled: false}`).
+    saidas.push({
+      logistic_id: lida.logisticId,
+      enabled: false,
+      is_free: lida.isFree ?? false,
+      ...herdados(lida.logisticId),
+    });
   }
   return saidas;
 }

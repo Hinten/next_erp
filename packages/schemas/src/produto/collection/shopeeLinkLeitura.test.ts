@@ -1293,6 +1293,33 @@ describe('mesclarLogisticaGravadaShopee — a escolha do operador sobre o que o 
       { logistic_id: 10, enabled: true, is_free: 'x' },
     ]);
 
+    it('o off anexado GUARDA o size_id / shipping_fee do canal (religá-lo antes do «Republicar» ainda os encontra) ⟷ NEAR-MISS um canal guardado sem eles não ganha chave nenhuma', () => {
+      const comValores = confiavel([
+        { logistic_id: 7, enabled: true },
+        { logistic_id: 90_003, enabled: true, size_id: '3', shipping_fee: 12.5 },
+        { logistic_id: 90_004, enabled: true },
+      ]);
+      const desligado = mesclarLogisticaGravadaShopee([novo(7)], comValores, DESLIGAR);
+      expect(desligado).toEqual([
+        { logistic_id: 7, enabled: true, is_free: false },
+        { logistic_id: 90_003, enabled: false, is_free: false, size_id: '3', shipping_fee: 12.5 },
+        { logistic_id: 90_004, enabled: false, is_free: false },
+      ]);
+      // Switched back on in the next edit: the values are still there to carry.
+      const religado = mesclarLogisticaGravadaShopee(
+        [novo(7), novo(90_003)],
+        confiavel(desligado),
+        DESLIGAR,
+      );
+      expect(religado).toContainEqual({
+        logistic_id: 90_003,
+        enabled: true,
+        is_free: false,
+        size_id: '3',
+        shipping_fee: 12.5,
+      });
+    });
+
     it('true: anexa, na ordem guardada e sem repetir, cada omitido como enabled:false', () => {
       expect(mesclarLogisticaGravadaShopee([novo(7)], guardada, DESLIGAR)).toEqual([
         { logistic_id: 7, enabled: true, is_free: false },
