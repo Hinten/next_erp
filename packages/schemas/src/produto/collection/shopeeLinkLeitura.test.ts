@@ -16,6 +16,8 @@ import {
   contaDoLinkShopee,
   ehRascunhoShopee,
   lerLogisticaArmazenadaShopee,
+  logisticaArmazenadaConfiavelShopee,
+  logisticaDoAnuncioEditavelShopee,
   logisticaGravadaPeloErpShopee,
   mecanismosDaRecusaAnterior,
   pularPorRecusaAnterior,
@@ -26,6 +28,7 @@ import {
   recusaShopeeLegivel,
   type EntradaLogisticaArmazenadaShopee,
   type LeituraRecusaEstoqueShopee,
+  mesclarLogisticaGravadaShopee,
 } from './shopeeLinkLeitura';
 
 /* ---------------------------------- fixtures ------------------------------ */
@@ -1139,5 +1142,305 @@ describe('semCamposDeEdicaoErpShopee / soCamposDeEdicaoErpShopee', () => {
       ...semCamposDeEdicaoErpShopee(COMPLETO),
       ...soCamposDeEdicaoErpShopee(COMPLETO),
     }).toEqual(COMPLETO);
+  });
+});
+
+describe('mesclarLogisticaGravadaShopee — a escolha do operador sobre o que o vínculo já guarda', () => {
+  const novo = (logistic_id: number, enabled = true) => ({ logistic_id, enabled, is_free: false });
+  const CARIMBO_ERP = 1_700_000_000_000;
+  /** A link whose list the ERP wrote (stamped). */
+  const confiavel = (logistic_info: unknown) => ({
+    logistic_info,
+    logisticaGravadaEm: CARIMBO_ERP,
+  });
+  const MANTER = { desligarOmitidos: false };
+  const DESLIGAR = { desligarOmitidos: true };
+
+  it('o mesmo canal herda size_id e shipping_fee VERBATIM (número ou string) de lista CONFIÁVEL', () => {
+    expect(
+      mesclarLogisticaGravadaShopee(
+        [novo(7), novo(8)],
+        confiavel([
+          { logistic_id: 7, size_id: 7, shipping_fee: 12.5 },
+          { logistic_id: 8, size_id: '7', shipping_fee: '12.50' },
+        ]),
+        MANTER,
+      ),
+    ).toEqual([
+      { logistic_id: 7, enabled: true, is_free: false, size_id: 7, shipping_fee: 12.5 },
+      { logistic_id: 8, enabled: true, is_free: false, size_id: '7', shipping_fee: '12.50' },
+    ]);
+  });
+
+  it('⛔ lista NÃO confiável (carimbo ausente, nulo, não numérico) não carrega nada (#2015)', () => {
+    const lista = [{ logistic_id: 7, size_id: 7, shipping_fee: 12.5 }];
+    const semCarimbo = [
+      { logistic_info: lista },
+      { logistic_info: lista, logisticaGravadaEm: null },
+      { logistic_info: lista, logisticaGravadaEm: '1700000000000' },
+      { logistic_info: lista, logisticaGravadaEm: -1 },
+      { logistic_info: lista, logisticaGravadaEm: Number.NaN },
+    ];
+    for (const link of semCarimbo) {
+      for (const opcoes of [MANTER, DESLIGAR]) {
+        expect(
+          mesclarLogisticaGravadaShopee([novo(7)], link, opcoes),
+          JSON.stringify(link),
+        ).toEqual([{ logistic_id: 7, enabled: true, is_free: false }]);
+      }
+    }
+    // NEAR-MISS: o mesmo conteúdo, carimbado, carrega
+    expect(mesclarLogisticaGravadaShopee([novo(7)], confiavel(lista), MANTER)).toEqual([
+      { logistic_id: 7, enabled: true, is_free: false, size_id: 7, shipping_fee: 12.5 },
+    ]);
+  });
+
+  it('is_free passa VERBATIM, null incluído', () => {
+    expect(
+      mesclarLogisticaGravadaShopee(
+        [
+          { logistic_id: 7, enabled: true, is_free: null },
+          { logistic_id: 8, enabled: true, is_free: true },
+        ],
+        null,
+        MANTER,
+      ),
+    ).toEqual([
+      { logistic_id: 7, enabled: true, is_free: null },
+      { logistic_id: 8, enabled: true, is_free: true },
+    ]);
+  });
+
+  it('outro id não herda nada; a ordem de `novos` é mantida', () => {
+    expect(
+      mesclarLogisticaGravadaShopee(
+        [novo(9), novo(7, false)],
+        confiavel([{ logistic_id: 7, size_id: 3 }]),
+        MANTER,
+      ),
+    ).toEqual([
+      { logistic_id: 9, enabled: true, is_free: false },
+      { logistic_id: 7, enabled: false, is_free: false, size_id: 3 },
+    ]);
+  });
+
+  it('chave nula ou ausente no guardado não é carregada nem inventada', () => {
+    expect(
+      mesclarLogisticaGravadaShopee(
+        [novo(7)],
+        confiavel([{ logistic_id: 7, size_id: null, shipping_fee: undefined }]),
+        MANTER,
+      ),
+    ).toEqual([{ logistic_id: 7, enabled: true, is_free: false }]);
+  });
+
+  it('ids repetidos no guardado: vale o PRIMEIRO', () => {
+    expect(
+      mesclarLogisticaGravadaShopee(
+        [novo(7)],
+        confiavel([
+          { logistic_id: 7, size_id: 1 },
+          { logistic_id: '7', size_id: 2, shipping_fee: 5 },
+        ]),
+        MANTER,
+      ),
+    ).toEqual([{ logistic_id: 7, enabled: true, is_free: false, size_id: 1 }]);
+  });
+
+  it('lista guardada que não é lista (ou link nulo) não carrega nada; `novos` nulo é nulo', () => {
+    for (const bruto of [null, undefined, {}, 'x', 7]) {
+      for (const opcoes of [MANTER, DESLIGAR]) {
+        expect(mesclarLogisticaGravadaShopee([novo(7)], confiavel(bruto), opcoes)).toEqual([
+          { logistic_id: 7, enabled: true, is_free: false },
+        ]);
+      }
+    }
+    expect(mesclarLogisticaGravadaShopee([novo(7)], null, DESLIGAR)).toEqual([
+      { logistic_id: 7, enabled: true, is_free: false },
+    ]);
+    expect(
+      mesclarLogisticaGravadaShopee(null, confiavel([{ logistic_id: 7, size_id: 1 }]), DESLIGAR),
+    ).toBeNull();
+  });
+
+  it('NEAR-MISS: o que o leitor recusa como id não casa (` 7`, `7.0`, 0)', () => {
+    for (const ruim of [' 7', '7.0', 0, '', null]) {
+      expect(
+        mesclarLogisticaGravadaShopee(
+          [novo(7)],
+          confiavel([{ logistic_id: ruim, size_id: 5 }]),
+          DESLIGAR,
+        ),
+        String(ruim),
+      ).toEqual([{ logistic_id: 7, enabled: true, is_free: false }]);
+    }
+    // EQUAL: o leitor aceita só dígitos — `'07'` é o canal 7
+    expect(
+      mesclarLogisticaGravadaShopee(
+        [novo(7)],
+        confiavel([{ logistic_id: '07', size_id: 5 }]),
+        MANTER,
+      ),
+    ).toEqual([{ logistic_id: 7, enabled: true, is_free: false, size_id: 5 }]);
+  });
+
+  describe('desligarOmitidos — o canal que a edição largou é gravado desligado', () => {
+    const guardada = confiavel([
+      { logistic_id: 7, enabled: true, is_free: true },
+      { logistic_id: 8 },
+      { logistic_id: 9, enabled: false },
+      { logistic_id: '08', enabled: true },
+      { logistic_id: 10, enabled: true, is_free: 'x' },
+    ]);
+
+    it('o off anexado GUARDA o size_id / shipping_fee do canal (religá-lo antes do «Republicar» ainda os encontra) ⟷ NEAR-MISS um canal guardado sem eles não ganha chave nenhuma', () => {
+      const comValores = confiavel([
+        { logistic_id: 7, enabled: true },
+        { logistic_id: 90_003, enabled: true, size_id: '3', shipping_fee: 12.5 },
+        { logistic_id: 90_004, enabled: true },
+      ]);
+      const desligado = mesclarLogisticaGravadaShopee([novo(7)], comValores, DESLIGAR);
+      expect(desligado).toEqual([
+        { logistic_id: 7, enabled: true, is_free: false },
+        { logistic_id: 90_003, enabled: false, is_free: false, size_id: '3', shipping_fee: 12.5 },
+        { logistic_id: 90_004, enabled: false, is_free: false },
+      ]);
+      // Switched back on in the next edit: the values are still there to carry.
+      const religado = mesclarLogisticaGravadaShopee(
+        [novo(7), novo(90_003)],
+        confiavel(desligado),
+        DESLIGAR,
+      );
+      expect(religado).toContainEqual({
+        logistic_id: 90_003,
+        enabled: true,
+        is_free: false,
+        size_id: '3',
+        shipping_fee: 12.5,
+      });
+    });
+
+    it('true: anexa, na ordem guardada e sem repetir, cada omitido como enabled:false', () => {
+      expect(mesclarLogisticaGravadaShopee([novo(7)], guardada, DESLIGAR)).toEqual([
+        { logistic_id: 7, enabled: true, is_free: false },
+        { logistic_id: 8, enabled: false, is_free: false },
+        { logistic_id: 9, enabled: false, is_free: false },
+        { logistic_id: 10, enabled: false, is_free: false },
+      ]);
+    });
+
+    it('o is_free do omitido é o guardado quando é booleano', () => {
+      expect(mesclarLogisticaGravadaShopee([novo(8)], guardada, DESLIGAR)).toContainEqual({
+        logistic_id: 7,
+        enabled: false,
+        is_free: true,
+      });
+    });
+
+    it('um omitido que JÁ estava desligado continua desligado — pode ser o off de uma edição ainda não enviada', () => {
+      expect(mesclarLogisticaGravadaShopee([novo(7)], guardada, DESLIGAR)).toContainEqual({
+        logistic_id: 9,
+        enabled: false,
+        is_free: false,
+      });
+    });
+
+    it('um id presente em `novos` (desligado pelo operador) não é anexado de novo', () => {
+      expect(mesclarLogisticaGravadaShopee([novo(7), novo(8, false)], guardada, DESLIGAR)).toEqual([
+        { logistic_id: 7, enabled: true, is_free: false },
+        { logistic_id: 8, enabled: false, is_free: false },
+        { logistic_id: 9, enabled: false, is_free: false },
+        { logistic_id: 10, enabled: false, is_free: false },
+      ]);
+    });
+
+    it('NEAR-MISS false: a mesma entrada não anexa nada', () => {
+      expect(mesclarLogisticaGravadaShopee([novo(7)], guardada, MANTER)).toEqual([
+        { logistic_id: 7, enabled: true, is_free: false },
+      ]);
+    });
+
+    it('NEAR-MISS lista não confiável: true, mas nada é anexado', () => {
+      expect(
+        mesclarLogisticaGravadaShopee(
+          [novo(7)],
+          { logistic_info: [{ logistic_id: 8, enabled: true }] },
+          DESLIGAR,
+        ),
+      ).toEqual([{ logistic_id: 7, enabled: true, is_free: false }]);
+    });
+
+    it('`novos` vazio desliga todos os ligados guardados', () => {
+      expect(
+        mesclarLogisticaGravadaShopee(
+          [],
+          confiavel([{ logistic_id: 7 }, { logistic_id: 8 }]),
+          DESLIGAR,
+        ),
+      ).toEqual([
+        { logistic_id: 7, enabled: false, is_free: false },
+        { logistic_id: 8, enabled: false, is_free: false },
+      ]);
+    });
+  });
+});
+
+describe('logisticaDoAnuncioEditavelShopee — a logística de um anúncio só é editável sobre uma lista do ERP', () => {
+  it('lista carimbada pelo ERP ⇒ editável (a lista vazia ou nula carimbada também)', () => {
+    expect(
+      logisticaDoAnuncioEditavelShopee({
+        logistic_info: [{ logistic_id: 7 }],
+        logisticaGravadaEm: 1,
+      }),
+    ).toBe(true);
+    expect(logisticaDoAnuncioEditavelShopee({ logistic_info: null, logisticaGravadaEm: 1 })).toBe(
+      true,
+    );
+  });
+
+  it.each([
+    ['sem carimbo', { logistic_info: [{ logistic_id: 7, size_id: 5 }] }],
+    ['carimbo nulo', { logistic_info: [{ logistic_id: 7 }], logisticaGravadaEm: null }],
+    ['carimbo string', { logistic_info: [{ logistic_id: 7 }], logisticaGravadaEm: '1' }],
+    ['sem lista e sem carimbo', { logistic_info: null }],
+  ])('NEAR-MISS %s ⇒ não editável (importe o anúncio antes)', (_nome, link) => {
+    expect(logisticaDoAnuncioEditavelShopee(link)).toBe(false);
+  });
+
+  it('vínculo nulo ⇒ não editável', () => {
+    expect(logisticaDoAnuncioEditavelShopee(null)).toBe(false);
+  });
+});
+
+describe('logisticaArmazenadaConfiavelShopee — a lista guardada só quando o ERP a gravou', () => {
+  const lista = [{ logistic_id: 7 }];
+
+  it('carimbada: devolve a própria lista', () => {
+    expect(
+      logisticaArmazenadaConfiavelShopee({ logistic_info: lista, logisticaGravadaEm: 5 }),
+    ).toBe(lista);
+  });
+
+  it('sem carimbo, carimbo nulo/não numérico, link nulo ou lista que não é array: null', () => {
+    expect(logisticaArmazenadaConfiavelShopee({ logistic_info: lista })).toBeNull();
+    expect(
+      logisticaArmazenadaConfiavelShopee({ logistic_info: lista, logisticaGravadaEm: null }),
+    ).toBeNull();
+    expect(
+      logisticaArmazenadaConfiavelShopee({ logistic_info: lista, logisticaGravadaEm: '5' }),
+    ).toBeNull();
+    expect(logisticaArmazenadaConfiavelShopee(null)).toBeNull();
+    expect(
+      logisticaArmazenadaConfiavelShopee({ logistic_info: null, logisticaGravadaEm: 5 }),
+    ).toBeNull();
+    expect(
+      logisticaArmazenadaConfiavelShopee({ logistic_info: {}, logisticaGravadaEm: 5 }),
+    ).toBeNull();
+  });
+
+  it('carimbada com lista vazia: [] (confiável, mas sem canais)', () => {
+    expect(
+      logisticaArmazenadaConfiavelShopee({ logistic_info: [], logisticaGravadaEm: 0 }),
+    ).toEqual([]);
   });
 });

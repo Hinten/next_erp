@@ -156,7 +156,7 @@ describe('as constantes da trava (#1911, K1-2)', () => {
 /* -------------------------------------------------------------------------- */
 
 describe('CODIGO_RASCUNHO_SHOPEE — os códigos do P3 e do P4', () => {
-  it('os doze códigos, com os valores congelados no §2.1 (seis do P3, cinco do P4, um da edição de anúncio publicado)', () => {
+  it('os treze códigos, com os valores congelados no §2.1 (seis do P3, cinco do P4, dois da edição de anúncio publicado)', () => {
     expect(CODIGO_RASCUNHO_SHOPEE).toEqual({
       publicacaoEmAndamento: 'SHOPEE_PUBLICACAO_EM_ANDAMENTO',
       jaPublicado: 'SHOPEE_RASCUNHO_JA_PUBLICADO',
@@ -170,6 +170,7 @@ describe('CODIGO_RASCUNHO_SHOPEE — os códigos do P3 e do P4', () => {
       produtoInvalido: 'SHOPEE_RASCUNHO_PRODUTO_INVALIDO',
       inexistente: 'SHOPEE_RASCUNHO_INEXISTENTE',
       anuncioNaoEditavel: 'SHOPEE_ANUNCIO_NAO_EDITAVEL',
+      anuncioEdicaoInvalida: 'SHOPEE_ANUNCIO_EDICAO_INVALIDA',
     });
   });
 
@@ -2534,6 +2535,23 @@ describe('corpoAtualizarRascunhoShopeeSchema — POST rascunho/atualizar', () =>
           patch: { item_name: 'B' },
         }).success,
         ruim,
+      ).toBe(false);
+    }
+  });
+
+  it('alvo: ausente lê `rascunho`; `anuncio` e `rascunho` são aceitos; outro valor é 400', () => {
+    const corpo = atualizar({ item_name: 'A' }, { item_name: 'B' }) as Record<string, unknown>;
+    expect(corpoAtualizarRascunhoShopeeSchema.parse(corpo).alvo).toBe('rascunho');
+    expect(corpoAtualizarRascunhoShopeeSchema.parse({ ...corpo, alvo: 'anuncio' }).alvo).toBe(
+      'anuncio',
+    );
+    expect(corpoAtualizarRascunhoShopeeSchema.parse({ ...corpo, alvo: 'rascunho' }).alvo).toBe(
+      'rascunho',
+    );
+    for (const ruim of ['outro', 'Anuncio', '', null, 1]) {
+      expect(
+        corpoAtualizarRascunhoShopeeSchema.safeParse({ ...corpo, alvo: ruim }).success,
+        String(ruim),
       ).toBe(false);
     }
   });

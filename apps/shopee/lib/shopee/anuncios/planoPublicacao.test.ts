@@ -1092,36 +1092,48 @@ describe('planejarPublicacao — a confiança na logística armazenada (#2015)',
 });
 
 /*
- * #1911 P15 (wiring): the item arm reaches the "a trusted off is honoured" rule
+ * #1911 P15 + E-4 (wiring): the item arm reaches the "a trusted off" rule
  * through the ONE builder, `construirLogistica` — no rule of its own. The
- * rule's pairs and near-misses live in `logisticaPublicacao.test.ts`.
+ * rule's pairs and near-misses live in `logisticaPublicacao.test.ts`. On an
+ * UPDATE the trusted off is SENT as `{ logistic_id, enabled: false }`; on a
+ * create it never is.
  */
-describe('planejarPublicacao — #1911 P15: um vínculo CARIMBADO desliga um canal só com enabled: false', () => {
+describe('planejarPublicacao — #1911 P15/E-4: um vínculo CARIMBADO desliga um canal, e só uma ATUALIZAÇÃO manda o enabled: false', () => {
   const CANAL_IRMAO = 90005;
   const LISTA = [
     { logistic_id: CANAL, enabled: true },
     { logistic_id: CANAL_IRMAO, enabled: false },
   ];
 
-  function republicacao(logisticaConfiavel: boolean): ContextoPublicacao {
+  function republicacao(logisticaConfiavel: boolean, ehAtualizacao = true): ContextoPublicacao {
     return contexto({
-      ehAtualizacao: true,
+      ehAtualizacao,
       link: { ...LINK, logistic_info: LISTA, logisticaConfiavel },
       canais: [canal(), canal({ logistics_channel_id: CANAL_IRMAO })],
     });
   }
 
-  it('#1911 P15: o vínculo carimbado [{CANAL, on}, {IRMAO, enabled: false}] ⇒ o corpo manda só CANAL', () => {
+  it('E-4: o vínculo carimbado [{CANAL, on}, {IRMAO, enabled: false}] numa atualização ⇒ o corpo manda CANAL ligado e IRMAO enabled: false', () => {
     const plano = planejarPublicacao(republicacao(true), fotos());
-    expect(plano.logistica.logistic_info).toEqual([
+    const esperado = [
       { logistic_id: CANAL, enabled: true, is_free: false },
-    ]);
-    expect(plano.item.atualizar?.logistic_info).toEqual(plano.logistica.logistic_info);
+      { logistic_id: CANAL_IRMAO, enabled: false },
+    ];
+    expect(plano.logistica.logistic_info).toEqual(esperado);
+    expect(plano.item.atualizar?.logistic_info).toEqual(esperado);
     expect(plano.problemas).toEqual([]);
-    // ⛔ QUASE-PAR: the SAME list on a distrusted link — its off is never
-    // honoured, so the full pass sends IRMAO too.
+  });
+
+  it('⛔ QUASE-PAR: a MESMA lista carimbada numa CRIAÇÃO (ehAtualizacao false) ⇒ nenhum enabled: false no corpo', () => {
+    const plano = planejarPublicacao(republicacao(true, false), fotos());
+    expect(plano.logistica.logistic_info.some((e) => e.enabled === false)).toBe(false);
+    expect(plano.logistica.logistic_info.map((e) => e.logistic_id)).toEqual([CANAL]);
+  });
+
+  it('⛔ QUASE-PAR: a MESMA lista num vínculo NÃO confiável — o off nunca é honrado, a passagem completa manda IRMAO ligado', () => {
     const legado = planejarPublicacao(republicacao(false), fotos());
     expect(legado.logistica.logistic_info.map((e) => e.logistic_id)).toEqual([CANAL, CANAL_IRMAO]);
+    expect(legado.logistica.logistic_info.some((e) => e.enabled === false)).toBe(false);
   });
 });
 

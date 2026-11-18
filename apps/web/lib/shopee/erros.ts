@@ -126,6 +126,12 @@ export const CODIGO_FALHA_SHOPEE = {
    * alterações não enviadas» refuses it.
    */
   anuncioNaoEditavel: CODIGO_RASCUNHO_SHOPEE.anuncioNaoEditavel,
+  /**
+   * 422 — an edit a PUBLISHED listing cannot take (a null brand, an empty
+   * attribute list over a stored one, «Automática» logistics): nothing was
+   * written.
+   */
+  anuncioEdicaoInvalida: CODIGO_RASCUNHO_SHOPEE.anuncioEdicaoInvalida,
 } as const satisfies Record<string, string>;
 
 /** Shopee's two rate-limit classes, as the backend's 502 body names them in `kind`. */
