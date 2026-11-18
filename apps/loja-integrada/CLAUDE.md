@@ -868,9 +868,9 @@ lands with the rest of step 12; this is the send run and its queue.
   with options EQUAL to the writes queue's (`index.test.ts` pins the equality): one dispatch at
   a time, `concurrency: 1`, `maxInstances: 1`, 3 attempts on a flat 300 s backoff, 300 s timeout
   (the worst run, `PIOR_EXECUCAO_ESTOQUE_LI_MS`, is 68 s; the PUT starts ≤ 24 s in). It routes the
-  RAW `tipo`: `estoque` runs; `estoque-kits` is dropped `sem-consumidor` until its consumer and
-  producer ship together; anything else `tipo-desconhecido`. ONE info line per dispatch, raw ids
-  only; a thrown run writes none.
+  RAW `tipo`: `estoque` runs; `estoque-kits` runs the kit fan-out (PR 12-f, below); anything else
+  `tipo-desconhecido`. ONE info line per dispatch, raw ids only (a fan-out's adds its counts and
+  the reserved horizon); a thrown run writes none.
 - **The payload is ids only** (`tarefaEstoqueLiSchema`, strict): the quantity is derived when
   the task runs, never carried. Task id `estoque-` + sha256 of
   `estoque:<origem>:<conta>:<produto>:<d|w>:<janela>`, `janela = ⌊now/60 s⌋` from the clock read
@@ -931,6 +931,80 @@ lands with the rest of step 12; this is the send run and its queue.
   reads the STORE's reservation, only through `alvoEstoqueLi`). No new index: the run reads
   three declared ones (`leituraEstoqueErp.test.ts` pins each query against
   `firestore.indexes.json`).
+
+## Stock trigger and kit fan-out (step 12, PR 12-f)
+
+The full stock-sync section lands with the rest of step 12; these are the facts this PR adds.
+
+- **Files.** `estoque/gatilhoEstoque.ts` (the trigger's work, IO injected; bound by
+  `functions/src/onEstoqueLojaIntegrada.ts`), `estoque/depositosLi.ts` (the depósito map),
+  `estoque/mapaKitsLi.ts` (the kits map's read side and the ONE kit send task both kit producers
+  build, `tarefaDoKitLi`), `estoque/configEstoqueLi.ts` (the cap and the eager ceiling, a leaf so
+  the trigger never reaches `processarEstoque.ts`), `estoque/processarKitsEstoque.ts` (the
+  fan-out) and `estoque/slotEstoqueLi.ts` (the global stagger slot).
+- **The trigger** (`onDocumentWritten` on `produtos/{produtoId}/estoques/{estoqueId}`, database
+  `default`, `retry: true`, no secrets, no `region:`) fires on EVERY ERP stock write. Gates in
+  order: the payload's relevance (`relevanciaEventoEstoqueLi`: zero reads, no line); the valve
+  (`off` ⇒ zero reads; an unrecognised value ONE WARNING per instance; `dry-run` and `on` alike);
+  the depósito map; an unreadable cap is reported only now (ONE ERROR, nothing enqueued); the
+  produto's own links (only when the write can move its own quantity) and the kits header of
+  every concerned conta (ONE `getAll`). The cost, pinned by counting in `gatilhoEstoque.test.ts`:
+  an irrelevant event or the valve off 0 reads; a relevant event at a depósito no conta stocks
+  from, only the cached map (one `integracao (tipo, nome)` query per 15 min per instance); at a
+  Loja Integrada depósito, one links listing (when direct) + one header read per concerned conta
+  + the deduplicated siblings only when the eager filter needs them. It writes NOTHING, calls no
+  Loja Integrada endpoint and names no transaction.
+- **The depósito map** caches `listarContasLojaIntegrada` (TTL `READ_CACHE_TTL.config`, an empty
+  map cached too, inactive contas KEPT: the run skips them at one cached read). A record matches
+  only by one of the two EXACT stored forms (`registroNoDepositoLi`, the send run's own `in`
+  equality); the conta's side folds (`depositoDaContaLi`). A write that changes the depósito
+  concerns both sides' contas; two contas on one depósito are both concerned. A conta created or
+  re-pointed is seen within the TTL per instance; the depósito-change arm of the conta trigger
+  (an immediate full reconcile) is a later PR.
+- **The direct task** goes to a conta whose links make the produto one linked CHILD
+  (`vinculoDaContaLi`); parity stays the send run's (the trigger never reads the produto).
+- **Kits.** Header inline and `F` ≤ `LOJA_INTEGRADA_ESTOQUE_KITS_IMEDIATO_MAX` (unset = 30; 0..30;
+  anything else ONE WARNING per event that reaches a header, and it acts as 0) ⇒ EAGER: the
+  zero-cost skip (only with a finite cap) or the siblings read in ONE `getAll` — a sibling named
+  by a legacy id has its CANONICAL path read beside it, and the records read at the depósito are
+  resolved by the shared `estoqueNoDepositoLi` — then `kitsSinalizadosLi` (tie-inclusive,
+  fail-open), one `estoque` task per flagged kit. Otherwise (more kits, or kits in shards) ⇒ ONE
+  `estoque-kits` fan-out exactly when `disparaKitsZeradosLi` fires — on EVERY decrease while the
+  component sits below `qMax`, so the cost is per firing — with the before-side of the CANONICAL
+  record's create (or move in) read as unknown, since it can displace a positive legacy record;
+  the shards are never read by the trigger. The send tasks go first (at most 8 at a time), the
+  fan-outs LAST, so a failed send task never leaves a fan-out for the retry to enqueue again. A
+  fan-out itself can still be enqueued twice, under two window names: contas sharing a round where
+  one fails after another landed, a landed enqueue whose answer was lost, a duplicate Eventarc
+  delivery (nothing is lost; the cost is one more fan-out). The clock is read inside each enqueue
+  helper, after every read.
+- **The fan-out** (`estoque-kits` on the stock queue): payload strict, the valve, the cap (both
+  zero reads), the conta (`lerContaEmCache`), then in parallel the header and the component's own
+  record (canonical by id, else the two-form query; none, ambiguous or unreadable ⇒ available 0,
+  every kit). Shards in ONE `getAll`; a read that does not account for every kit is ONE WARNING
+  and throws `LiMapaKitsEstoqueIncompletoError` before the queue's last attempt (on the last one
+  the kits read go on). It enqueues every kit this component holds at 0
+  (`kitsZeradosPeloComponenteLi`: ⌊available / q⌋ ≤ 0, quantity ascending), each named by the
+  FAN-OUT's own `janela` (`enfileirarTarefaEstoqueLi`'s `janela` option: every task of that window
+  dispatches after the crossing that caused the fan-out, so meeting one loses nothing, and a retry
+  re-meets its own sends) and scheduled at exactly its reserved slot instant (`naoAntesDeMs`, a
+  floor-preserving bound), 20 at a time. Rejections as the producer's contract; a transient failure
+  lets the batch finish, then rethrows once.
+- **The global slot** `reconcileEstoqueLojaIntegrada/atual.proximoSlotMs` — the fan-out's ONLY
+  write, tier 1 by the 12-a schema's contract: `create` when absent, else `update` with its own
+  read's `lastUpdateTime`, advance-only, a 9 or 6 re-read (a re-read finding exactly the value this
+  attempt wrote is a landed write, never a second advance), at most 3 writes, then
+  `LiSlotEstoqueEmConflitoError`. One interval, `INTERVALO_SLOT_ESTOQUE_LOTE_LI_MS` = 17 s (a bulk
+  run plus an event run: their pacer intervals and 1 s per call, pinned against
+  `RITMO_ESCRITA_LI_MS`), the floor `(⌊now / 60 s⌋ + 3) · 60 s + 30 s`. Every reservation queues
+  BEHIND the stored slot — never double-booked, a retried attempt included (its earlier attempt's
+  unused instants are a stated gap: latency, never load). A stored slot more than 12 h ahead is ONE
+  ERROR line (the backlog signal; no setting relieves it today), and a reservation that would end
+  past 29 days (inside Cloud Tasks' 30-day schedule limit) writes and enqueues nothing:
+  `slot-esgotado`, ONE ERROR. Pacing is the only latency control: Cloud Tasks orders no ready tasks.
+- `estrutura.test.ts` walks the trigger and the fan-out (the stock producer's root a leaf): no
+  context loader, park, pacer, write engine or send run reached, no client named, no `fetch`, the
+  package loaded only by `pedidos/vinculoProdutoLi.ts` (constants).
 
 ## Notification pipeline (step 3)
 
@@ -1097,7 +1171,7 @@ firebase.loja-integrada.tasks.json --only firestore,functions,tasks` (ports 8085
   deploys), then `pnpm test:tasks`. Run it locally the same way (JDK 21) with
   `FUNCTIONS_REGION` = `LOJA_INTEGRADA_TASKS_REGION`, `FIREBASE_PROJECT_ID=demo-erp`,
   `FIREBASE_DATABASE_ID=default`, `REQUIRE_EMULATOR=1`, `LOJA_INTEGRADA_CHAMADAS=off`,
-  `LOJA_INTEGRADA_MODO_RASTREIO=dry-run`.
+  `LOJA_INTEGRADA_MODO_RASTREIO=dry-run`, `LOJA_INTEGRADA_MODO_ESTOQUE=dry-run`.
   A region mismatch is the silent drop of #1108: the poll times out instead of failing.
   On Windows the Firestore JVM can outlive `emulators:exec` and keep 8085: stop it after.
 - D17 holds in the lane through TWO layers. The job env sets `LOJA_INTEGRADA_CHAMADAS: 'off'`
@@ -1168,14 +1242,28 @@ firebase.loja-integrada.tasks.json --only firestore,functions,tasks` (ports 8085
   stock send run IN PROCESS (valve, canary and read switch on as PARAMETERS, a scripted store):
   the real queries (both depósito ref forms, the any-depósito listing, the collection-group
   duplicate probe) and the `deriva` follow-up through the real producer root. It keeps the
-  anchor trigger's rules above. The DISPATCHED follow-up stops at the stock valve, which the
-  lane leaves unset: that hop has no Firestore-observable outcome by design.
+  anchor trigger's rules above. The DISPATCHED follow-up passes the stock valve (`dry-run` in the
+  lane since PR 12-f) and stops at its write context (the read switch off): that hop has no
+  Firestore-observable outcome by design.
+- Since PR 12-f the STOCK trigger (`onEstoqueLojaIntegrada`) fires on EVERY suite's
+  `produtos/*/estoques/*` writes, and at the lane's `dry-run` stock valve it may enqueue send runs
+  (which write nothing) and, for a seeded kits header, a fan-out (whose one write is the slot
+  document). So a suite that writes stock records uses produtos no other suite seeds, never moves a
+  record from positive to 0 under a sharded or over-ceiling header nor creates a CANONICAL record
+  below that header's `qMax` (its before-side is unknown, so it fires), deletes its kits map before
+  its records, and wipes `reconcileEstoqueLojaIntegrada/atual` (awaiting the fan-out's write when it
+  caused one). `lib/lojaIntegrada/estoque/gatilhoEstoque.tasks.test.ts` drives the trigger's work IN
+  PROCESS (the deployed trigger's depósito map is a 15-minute cache in the emulator's worker,
+  warmed by whichever suite writes first) through the real producer root, and observes the
+  DISPATCHED fan-out through its slot write, read back raw and checked exactly.
 - The lane cannot prove: Cloud Scheduler firing (`onSchedule` is ignored),
   `scheduleDelaySeconds` and `scheduleTime` (firebase-tools#8254), index declarations, rules,
   that the emulator honours `maxConcurrentDispatches` or the instance limits, named-task dedup
   (the emulator accepts a named enqueue; a duplicate's answer is not asserted), Eventarc
-  ordering or redelivery, the stock queue's dispatch (above), or a trigger's `database`
-  binding (pinned offline in `functions/src/index.test.ts`).
+  ordering or redelivery, the stock queue's dispatch of a SEND run (above; the fan-out's dispatch
+  is observed), the deployed stock trigger end to end or its gate order and costs (pinned offline,
+  `gatilhoEstoque.test.ts`), or a trigger's `database` binding (pinned offline in
+  `functions/src/index.test.ts`).
 
 ## Config
 

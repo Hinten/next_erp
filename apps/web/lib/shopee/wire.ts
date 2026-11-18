@@ -670,9 +670,11 @@ export {
 export {
   respostaAtualizarRascunhoShopeeSchema,
   respostaCriarRascunhoShopeeSchema,
+  respostaDescartarEdicoesAnuncioShopeeSchema,
   respostaDescartarRascunhoShopeeSchema,
   type RespostaAtualizarRascunhoShopee,
   type RespostaCriarRascunhoShopee,
+  type RespostaDescartarEdicoesAnuncioShopee,
   type RespostaDescartarRascunhoShopee,
 } from '@delfrance/schemas';
 
@@ -1157,7 +1159,9 @@ export const detalhesErroShopeeSchema = z.object({
   /**
    * The link the refusal is about: 409 `SHOPEE_ANUNCIO_NAO_PUBLICADO` (the link
    * that has no listing yet), every refusal of the draft routes and the publish
-   * route's draft-lock 409s (#1911) — the draft named.
+   * route's draft-lock 409s (#1911) — the draft named — and the published-edit
+   * and discard-edits refusals (`anuncioNaoEditavel`, `anuncioEdicaoInvalida`,
+   * the discard's conflito): the listing named.
    */
   linkDocId: z.string().nullable().catch(null),
   /** 409 `…_RUNNING` — the job that is already running, to attach to. */

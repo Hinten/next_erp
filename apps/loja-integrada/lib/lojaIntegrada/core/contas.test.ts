@@ -63,8 +63,8 @@ describe('listarContasLojaIntegrada', () => {
     seedConta(db, 'a', { nome: 'Alfa' });
     seedConta(db, 's', { nome: 'Shopee', tipo: 5 });
     expect((await listarContasLojaIntegrada(asDb(db))).contas).toEqual([
-      { integracaoId: 'a', nome: 'Alfa', ativo: true },
-      { integracaoId: 'b', nome: 'Beta', ativo: false },
+      { integracaoId: 'a', nome: 'Alfa', ativo: true, depositoId: null },
+      { integracaoId: 'b', nome: 'Beta', ativo: false, depositoId: null },
     ]);
     expect(db.consultas).toEqual([
       {
@@ -86,14 +86,30 @@ describe('listarContasLojaIntegrada', () => {
     expect(relogioDoDocumentoUs(depois)).toBeGreaterThan(leituraUs);
   });
 
+  it('carries each conta’s depósito as a BARE id, from either stored form of its ref; null when it names none', async () => {
+    const db = new FakeDb();
+    db.seed(caminhoConta('a'), { tipo: 3, nome: 'A', depositoOuterRef: 'documents/depositos/D1' });
+    db.seed(caminhoConta('b'), { tipo: 3, nome: 'B', depositoOuterRef: 'depositos/D1' });
+    db.seed(caminhoConta('c'), { tipo: 3, nome: 'C', depositoOuterRef: 'documents/filiais/D1' });
+    db.seed(caminhoConta('d'), { tipo: 3, nome: 'D' });
+    expect(
+      (await listarContasLojaIntegrada(asDb(db))).contas.map((c) => [c.integracaoId, c.depositoId]),
+    ).toEqual([
+      ['a', 'D1'],
+      ['b', 'D1'],
+      ['c', null],
+      ['d', null],
+    ]);
+  });
+
   it('⚠️ a tipo-3 conta LACKING nome is not enumerated (orderBy filters for existence); a null nome is, as ""', async () => {
     const db = new FakeDb();
     seedConta(db, 'a', { nome: 'Alfa' });
     db.seed(caminhoConta('sem-nome'), { tipo: 3, ativo: true });
     db.seed(caminhoConta('nome-nulo'), { tipo: 3, nome: null, ativo: true });
     expect((await listarContasLojaIntegrada(asDb(db))).contas).toEqual([
-      { integracaoId: 'nome-nulo', nome: '', ativo: true },
-      { integracaoId: 'a', nome: 'Alfa', ativo: true },
+      { integracaoId: 'nome-nulo', nome: '', ativo: true, depositoId: null },
+      { integracaoId: 'a', nome: 'Alfa', ativo: true, depositoId: null },
     ]);
   });
 });

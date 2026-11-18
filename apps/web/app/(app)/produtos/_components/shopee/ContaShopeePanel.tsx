@@ -6,12 +6,13 @@ import { Alert, Badge, Button, Card, Group, Stack, Text } from '@mantine/core';
 import type { ProdutoShopeeLink } from '@delfrance/schemas';
 
 import { ordenarVinculosShopee } from '@/lib/shopee/anuncioProduto';
-import type { AcoesShopee } from './AcoesAnuncioShopee';
+import type { FormularioDoAnuncioShopee } from '@/lib/shopee/rascunho';
+import type { AcoesShopee, EdicaoDoAnuncioNaTela } from './AcoesAnuncioShopee';
 import { AnuncioShopeeBlock } from './AnuncioShopeeBlock';
 import type { DesfechoDoRascunhoShopee, DestinosDasSuperficiesShopee } from './DesfechoAcaoShopee';
 import { AvisoReceitaKitShopee } from './AvisoReceitaKitShopee';
 import { IncertoDoKit } from './KitAnuncioShopee';
-import { RascunhoShopee, type RascunhoShopeeProps } from './RascunhoShopee';
+import { RascunhoShopee, type PropsDoFormularioShopee } from './RascunhoShopee';
 
 /** One `prodshopee` row as the live snapshot hands it over (possibly the RAW doc — see `campos.ts`). */
 export interface VinculoShopee {
@@ -80,8 +81,24 @@ export interface RascunhosShopee {
   readonly novoAnuncio: (contaId: string) => void;
   /** The conta's LOCAL new drafts (created on this screen, no document yet), in creation order. */
   readonly locaisDe: (contaId: string) => readonly string[];
-  /** The draft form of ONE draft of this conta, or `null` when the link is no draft this tab edits. */
-  readonly propsDe: (conta: ContaShopee, linkDocId: string) => RascunhoShopeeProps | null;
+  /**
+   * The form of ONE link of this conta — a draft's (`modo` absent or `'rascunho'`), or an
+   * EDITABLE PUBLISHED listing's (`modo: 'anuncio'`, PR3) — or `null` when the link has none
+   * this tab edits. The editor branches on the block's `alvo` BEFORE it looks up a publish
+   * decision, which a published block never has.
+   */
+  readonly propsDe: (conta: ContaShopee, linkDocId: string) => PropsDoFormularioShopee | null;
+  /**
+   * What the outcome panel and the field surfaces need of a PUBLISHED listing's edit form:
+   * `{ logisticaConfiavel }` for a link whose block is an anuncio edit, else `null` (a draft,
+   * a link with no form, a link not editable here — its refusal rows keep the Seller Centre).
+   */
+  readonly formularioDoAnuncioDe: (linkDocId: string) => FormularioDoAnuncioShopee | null;
+  /**
+   * The action row's view of that edit (`suja`: the form is dirty, `aguardandoEco`: a save awaits
+   * the snapshot echo), or `null` when the link has no anuncio form.
+   */
+  readonly edicaoDoAnuncioDe: (linkDocId: string) => EdicaoDoAnuncioNaTela | null;
   /** The notice of a draft that became a listing while it held unsaved work — on that listing's block. */
   readonly avisoDe: (linkDocId: string) => string | null;
   /** The notices of drafts of this conta discarded elsewhere while they held unsaved work. */
@@ -92,7 +109,8 @@ export interface RascunhosShopee {
    * The outcome panel's draft inputs (#1911 P11) for a block that is a DRAFT
    * now — its publish reading at the editor's clock, the «Publicar» decision
    * its attestation exits share with the form, and those exits' handler — or
-   * `null` for a live listing (and once a draft stopped being one).
+   * `null` for a live listing (and once a draft stopped being one) — and for an
+   * anuncio block (no attestation exit exists for it).
    */
   readonly desfechoDoRascunhoDe: (linkDocId: string) => DesfechoDoRascunhoShopee | null;
   /**
