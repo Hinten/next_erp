@@ -71,6 +71,15 @@ stops at the context's switch FIRST, ending the job `falhou/chamadas-desligadas`
 with zero calls. A job document written by hand `pendente` would take that path
 too; nothing else creates one.
 
+⚠️ **The stock trigger (master-plan step 12) stops at the stock valve.**
+`onEstoqueLojaIntegrada` makes no Loja Integrada call and writes nothing. With
+`LOJA_INTEGRADA_MODO_ESTOQUE` unset it returns before any read; at `dry-run` or
+`on` it enqueues send tasks (and kit fan-outs) onto `filaEstoqueLojaIntegrada`,
+and each send run then stops at its write context while the read switch is
+unset. A Firestore import fires no trigger either: the migrated stock reaches the
+store only through the stock reconcile's first run (a later step-12 PR), and the
+trigger covers the movements after the switch-over.
+
 ⚠️ **The status write-back (master-plan step 7) has a valve of its own, and it
 stays UNSET too.** `LOJA_INTEGRADA_MODO_RASTREIO` unset (or blank, or `off`)
 means the freight-history trigger returns before any read and enqueues nothing,
@@ -94,9 +103,10 @@ exists — so nothing is ever written to Loja Integrada before the window.
   `integracao/{integracaoId}`, `onHistoricoFreteLojaIntegrada` (master-plan
   step 7) on `pedidos/{pedidoId}/historicoFtIni/{historicoId}` and
   `onProdutoLojaIntegradaLinkChanged` (master-plan step 9) on
-  `produtos/{produtoId}/produtolojaintegrada/{linkId}` and
+  `produtos/{produtoId}/produtolojaintegrada/{linkId}`,
   `onImportacaoLojaIntegradaCriada` (master-plan step 9) on
-  `importacoesLojaIntegrada/{jobId}`, all four in the
+  `importacoesLojaIntegrada/{jobId}` and `onEstoqueLojaIntegrada` (master-plan
+  step 12) on `produtos/{produtoId}/estoques/{estoqueId}`, all five in the
   NAMED `default` database — never the `(default)` sentinel, which deploys fine
   and never fires. `build.mjs` inlines
   `FIREBASE_DATABASE_ID` (unset or blank → `default`) and the preflight prints
@@ -246,9 +256,10 @@ are local builds; neither deploys anything.
 | `filaEscritaLojaIntegrada`            | `onTaskDispatched` (Cloud Tasks queue) | Master-plan step 7 — the writes queue of the channel: every write to Loja Integrada but stock (today the status write-back; later the price and catalogue writes) and its own sweep. The body dispatches on the task's `tipo`: `rastreio` runs one write event through the writes pipeline (a fresh pedido read, the deciding read of the order, at most one write, the read-back), `varredura` runs both lanes of `notificacoesEscritaLojaIntegrada` INSIDE the queue (one row at a time, a 140 s budget), any other `tipo` is logged and dropped. `rateLimits { maxConcurrentDispatches: 1, maxDispatchesPerSecond: 1 }`, **`concurrency: 1` and `maxInstances: 1`** (one instance serving one request), `retryConfig` 3 attempts with a FLAT 300 s backoff (no doubling) — no write starts later than 260 s after a dispatch began, so a retry starts only after an abandoned attempt can no longer write — `timeoutSeconds 300`. **No `secrets:`.** Persists to `notificacoesEscritaLojaIntegrada` only on retry-exhaustion, a landed write whose effect is not confirmed, park or defer.                                                                                                                                                                                           |
 | `onHistoricoFreteLojaIntegrada`       | `onDocumentCreated` (Firestore)        | Master-plan step 7 — the status write-back's producer, on `pedidos/{pedidoId}/historicoFtIni/{historicoId}`. For a created freight history row whose estado is `postado`, `entregue` or `aguardandoRetirada`, with the write valve at `dry-run` or `on`, it reads the pedido ONCE and, for an imported Loja Integrada order, enqueues ONE task named `rastreio-<event digest>` onto `filaEscritaLojaIntegrada` (`task-already-exists` is success). A non-target estado or the valve `off` returns with ZERO reads and no line; an unrecognised valve value logs ONE WARNING. Tasks disabled or a transient Cloud Tasks failure ⇒ the event is persisted `failed` for the varredura. `database` **`default`**, `retry: true`, **no secrets**, no Loja Integrada call.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `varrerEscritasLojaIntegrada`         | `onSchedule('15,45 * * * *')`          | Master-plan step 7 — the writes queue's backstop timer. It only enqueues ONE `varredura` task per tick onto `filaEscritaLojaIntegrada`, named after the tick's schedule time; the sweep runs inside the queue, never here, so a retry can never race a fresh write. It does not read the write valve (the task does). Tasks disabled or a transient failure ⇒ one WARNING and the next tick tries again. `America/Sao_Paulo`, `timeoutSeconds 60`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `filaEstoqueLojaIntegrada`            | `onTaskDispatched` (Cloud Tasks queue) | Master-plan step 12 (PR 12-e) — the STOCK queue: one send run of one child produto of one conta per task (`lib/lojaIntegrada/estoque/processarEstoque.ts`), a queue of its own so the status write-back never waits behind a stock pass. The payload is ids only (parsed strict; the quantity is derived when the task runs). `estoque` runs one send run; `estoque-kits` is dropped `sem-consumidor` until step 12's kit fan-out ships; any other `tipo` is dropped. Options IDENTICAL to `filaEscritaLojaIntegrada`'s (`src/index.test.ts` pins the equality): one dispatch at a time, **`concurrency: 1` and `maxInstances: 1`**, 3 attempts with a FLAT 300 s backoff, `timeoutSeconds 300` (the worst run is 68 s). **No `secrets:`.** No failure store and **no Firestore write on success**; the only aviso it raises is `lojaIntegradaEstoqueRecusado` (a write refused on the last attempt). Its producer today is the run's own `deriva` follow-up (functions runtime SA). No Loja Integrada call until the window: the stock valve is unset (zero reads), then the read switch.                                                                                                                                                                                              |
+| `filaEstoqueLojaIntegrada`            | `onTaskDispatched` (Cloud Tasks queue) | Master-plan step 12 (PR 12-e) — the STOCK queue: one send run of one child produto of one conta per task (`lib/lojaIntegrada/estoque/processarEstoque.ts`), a queue of its own so the status write-back never waits behind a stock pass. The payload is ids only (parsed strict; the quantity is derived when the task runs). `estoque` runs one send run; `estoque-kits` (PR 12-f) runs one component's kit fan-out (`processarKitsEstoque.ts`): one send per kit it holds at 0, paced on the global slot `reconcileEstoqueLojaIntegrada/atual.proximoSlotMs`, its only write; any other `tipo` is dropped. Options IDENTICAL to `filaEscritaLojaIntegrada`'s (`src/index.test.ts` pins the equality): one dispatch at a time, **`concurrency: 1` and `maxInstances: 1`**, 3 attempts with a FLAT 300 s backoff, `timeoutSeconds 300` (the worst run is 68 s). **No `secrets:`.** No failure store and **no Firestore write on success**; the only aviso it raises is `lojaIntegradaEstoqueRecusado` (a write refused on the last attempt). Producers (functions runtime SA): the stock trigger, the fan-out, the `deriva` follow-up. No Loja Integrada call until the window: the stock valve is unset (zero reads), then the read switch.                                            |
 | `onIntegracaoLojaIntegradaChanged`    | `onDocumentWritten` (Firestore)        | Master-plan step 20 — the codebase's FIRST Firestore trigger, on `integracao/{integracaoId}`. Keeps each Loja Integrada conta's `int_frete` doc (tipo `lojaIntegrada`) in step with the conta through the shared core `@delfrance/data/admin/frete`: adopt the migrated doc by `contaLojaIntegradaEnviosOuterRef`, else create `lojaIntegrada-<integracaoId>`; patch only the mirrored fields that moved (`nome`, `ativo`, the filial, `dataCadastro`), never `mapa` or `horarioDeCorte`; deactivate, never delete, once the conta is gone or no longer Loja Integrada. State-driven: the core re-reads the conta itself, so a replayed or out-of-order delivery cannot roll anything back. EVERY channel's conta write reaches it, and it returns with ZERO reads unless the conta is, or was, Loja Integrada and the write moved a mirrored field (or the tipo, or created or deleted the conta). Logs the conta id and the action with field names, never a value. `database` **`default`**, `retry: true`, **no secrets**, no `invoker` (Eventarc invokes it; it enqueues nothing), no Loja Integrada call. No per-function `region:`.                                                                                                                                              |
 | `onProdutoLojaIntegradaLinkChanged`   | `onDocumentWritten` (Firestore)        | Master-plan step 9 — the `integracoesComProduto` anchor, on `produtos/{produtoId}/produtolojaintegrada/{linkId}` (a parent's link under the ERP root and a child's under the ERP child alike). Keeps each produto's `integracoesComProduto` — the pre-filter the stock and price sweeps open with — in step with its Loja Integrada links, through the shared core `@delfrance/data/admin/produtos`: a link COUNTS when its `id` names a store product and it is not in the trash (hidden and blocked links count); a counting link created or pulled back out of the trash adds its conta (`arrayUnion`, tier 0), and a link that stops counting or is deleted makes the core re-read the produto's whole link subcollection inside its guarded write and remove the conta only when no counting link of it survives (tier 1). The decision is taken from the event payload before any read, so an edit that moves no membership (a name, the mirror fields, a publication code) costs ZERO reads. Logs the produto, the link doc and the conta ids with the write's outcome, never a value. `database` **`default`**, `retry: true`, **no secrets**, no `invoker` (Eventarc invokes it; it enqueues nothing), no index of its own, no Loja Integrada call. No per-function `region:`. |
+| `onEstoqueLojaIntegrada`              | `onDocumentWritten` (Firestore)        | Master-plan step 12 (PR 12-f) — the stock TRIGGER, on `produtos/{produtoId}/estoques/{estoqueId}`: EVERY ERP stock write of every depósito and channel. Gates in order: the payload alone (no available quantity moved — a `localizacao` edit, a stamp-only update, the paid → shipped pair ⇒ ZERO reads, no line), the stock valve (`off` ⇒ zero reads), the cached map of the contas' depósitos (one `integracao` query per 15 min per instance), then the produto's own links and the kits header per concerned conta. It enqueues onto `filaEstoqueLojaIntegrada` one send per linked child, one per kit the eager filter flags (at most `LOJA_INTEGRADA_ESTOQUE_KITS_IMEDIATO_MAX` kits per component), or ONE `estoque-kits` fan-out when a component with more kits can have sent one to 0; the clock read after every read, `task-already-exists` is success, a transient failure is rethrown, tasks disabled ⇒ one WARNING. It **writes nothing**. `database` **`default`**, `retry: true`, **no secrets**, no `invoker`, no Loja Integrada call. No per-function `region:`.                                                                                                                                                                                                   |
 | `onImportacaoLojaIntegradaCriada`     | `onDocumentCreated` (Firestore)        | Master-plan step 9 — the product import's first producer, on `importacoesLojaIntegrada/{jobId}`. For a job document CREATED `pendente` (the import's start route creates it) it enqueues ONE task named `li-importacao-<jobId>-0` onto `filaLeituraLojaIntegrada` (`task-already-exists` is success); a document created in any other status returns with ZERO reads and no line. Tasks disabled ⇒ the job is stamped `falhou/tarefas-desligadas` (never left `pendente` with nothing queued); a transient Cloud Tasks failure is rethrown for the retry. `database` **`default`**, `retry: true`, **no secrets**, no Loja Integrada call.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 
 ⚠️ **The export name IS the queue name.** Firebase binds one function per queue
@@ -306,6 +317,20 @@ row's `quantidade` to the same product — through the same strict route, which
 sends only a NON-NEGATIVE quantity under the four fixed leaves (managed, the two
 fixed situações): a prior negative quantity, a prior unmanaged row or a prior
 lead-time setting cannot be restored through it.
+
+⚠️ **The stock trigger shares its path, and sees every stock write.**
+`onEstoqueLojaIntegrada` listens on `produtos/{produtoId}/estoques/{estoqueId}`,
+where `apps/functions`' `onEstoqueDeleted` (the `storage` codebase) also listens,
+for deletes; the two are independent. Every ERP stock write of every depósito
+and channel costs one invocation here, and a write that moves no available
+quantity, or any write with the valve off, returns with ZERO reads. A write at a
+depósito no Loja Integrada conta stocks from costs only the cached conta map (one
+query per 15 minutes per instance), so a conta created or re-pointed to another
+depósito is seen within that time; until then its moves wait for the nightly
+reconcile. The trigger NEEDS `integracao (tipo ASC, nome ASC)` and the fan-out
+`estoques (depositoOuterRef ASC, ultimaModificacao ASC)` READY (both already
+declared in `firestore.indexes.json`): on Enterprise a missing index full-scans
+and bills the scan.
 
 ⚠️ **The conta trigger shares its path.** `onIntegracaoLojaIntegradaChanged` is
 the THIRD `onDocumentWritten` on `integracao/{integracaoId}`, after Mercado
@@ -479,9 +504,12 @@ the wipe. Create `apps/loja-integrada/functions/.env.deploy` (gitignored):
 #     written back. It keeps what was already recorded, but the deploy that opens
 #     operations must already carry `dry-run`.
 # The ESTOQUE pair is READ since step 12 (PR 12-e), by this codebase ONLY (the
-# stock queue's send run; App Hosting has no reader of it yet): `off` (or
-# unset) makes every stock run return before any read; `dry-run` reads, plans
-# and logs one diff line per run with nothing sent.
+# stock queue's send run and, since PR 12-f, the stock trigger and the kit
+# fan-out; App Hosting has no reader of it yet): `off` (or unset) makes every
+# stock run, every trigger event and every fan-out return before any read;
+# `dry-run` makes the trigger and the fan-out enqueue (and pace) exactly as `on`
+# does, and each send run then reads, plans and logs one diff line with nothing
+# sent.
 # The other pairs have no reader yet.
 # ⚠️ STAGING HAZARD. Loja Integrada has no sandbox and the origin is fixed, so a
 # conta holding a token — real or invented — makes our code read LIVE (the
@@ -512,8 +540,23 @@ the wipe. Create `apps/loja-integrada/functions/.env.deploy` (gitignored):
 # no leading zero, no space, never 0 (0 would zero every row). ANY other value
 # REFUSES every stock run (one ERROR line per run, nothing read or sent) rather
 # than guessing a cap; the daily reconcile re-covers once the value is fixed.
-# The value itself is a window decision, made by a person.
+# The value itself is a window decision, made by a person. Since PR 12-f the
+# stock trigger and the kit fan-out read it too: an invalid value is ONE ERROR
+# line per event at a Loja Integrada depósito (nothing enqueued) and per fan-out.
 # LOJA_INTEGRADA_ESTOQUE_MAX=
+
+# The EAGER ceiling of the stock trigger's kit path (step 12, PR 12-f): a
+# component in at most this many store kits of a conta has every kit change
+# checked at once (the tie-inclusive filter, its siblings read); one in more sends
+# ONLY its kits' zero-crossings at once (one fan-out task), and every other kit
+# change waits for the nightly reconcile. Unset or blank = 30. Otherwise a whole
+# number 0..30 in plain decimal (no sign, no leading zero, no space); 0 sends
+# every kit through the zero-crossing path — the lever when eager kit sends
+# crowd the stock queue. Above 30 is REFUSED (the eager path reads only the
+# header's inline kits), and so is anything unreadable: ONE WARNING per event that
+# reaches a kits header, and the trigger acts as 0. The value is a window decision,
+# made from the ERP's kit counts.
+# LOJA_INTEGRADA_ESTOQUE_KITS_IMEDIATO_MAX=
 ```
 
 ⚠️ The scheduled functions are deployed either way — a variable only decides
@@ -571,9 +614,10 @@ grant 1 a second time with the queue `filaEscritaLojaIntegrada` in place of
 queue: one grant covers both queues.
 
 **The stock queue (master-plan step 12) needs the same three, for its own
-queue.** `filaEstoqueLojaIntegrada` is enqueued today only by the stock send run
-itself (its one `deriva` follow-up), running as the functions runtime SA; the
-stock trigger and the reconcile join under the same SA, and the manual push
+queue.** `filaEstoqueLojaIntegrada` is enqueued by the stock trigger
+`onEstoqueLojaIntegrada`, the kit fan-out (an `estoque-kits` task enqueuing one
+send per kit) and the send run's own `deriva` follow-up, all running as the
+functions runtime SA; the reconcile joins under the same SA, and the manual push
 under the App Hosting runtime SA. Run grant 1 with the queue
 `filaEstoqueLojaIntegrada` and grant 3 with the service
 `filaestoquelojaintegrada` (or let `TASKS_INVOKER_SA` apply them); grant 2 is

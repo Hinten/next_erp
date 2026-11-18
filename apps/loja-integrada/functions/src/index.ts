@@ -75,9 +75,17 @@ import { getDb } from './lib/admin';
  * Master plan step 12 (PR 12-e) adds the STOCK queue (`filaEstoqueLojaIntegrada`,
  * ./filaEstoque): one send run of one produto per task, options identical to the
  * writes queue's, a queue of its own so the status write-back never waits behind a
- * stock pass. Its only producer so far is the run's own `deriva` follow-up; the
- * stock trigger and the reconcile come later. Until the window the stock valve is
- * unset, so every run returns before any read.
+ * stock pass. Until the window the stock valve is unset, so every run returns
+ * before any read.
+ *
+ * Master plan step 12 (PR 12-f) adds the stock TRIGGER, `onEstoqueLojaIntegrada`
+ * (./onEstoqueLojaIntegrada), on every ERP stock-record write: zero reads for a
+ * write that moves no available quantity or with the valve off, then the cached
+ * depósito map, the produto's links and the kits header; it enqueues the send
+ * runs and, for a component with more store kits than the eager ceiling, ONE
+ * `estoque-kits` fan-out, which the stock queue now consumes (its only write is
+ * the global stagger slot). Neither calls Loja Integrada. The reconcile comes
+ * later.
  *
  * Every export below is a Cloud Function name, and the names are unique across
  * codebases (`functions-export-names.test.js`): keep the exports explicit and
@@ -164,6 +172,13 @@ export { onProdutoLojaIntegradaLinkChanged } from './onProdutoLojaIntegradaLinkC
  * named task (its first slice) on the reads queue (master plan step 9).
  */
 export { onImportacaoLojaIntegradaCriada } from './onImportacaoLojaIntegradaCriada';
+
+/**
+ * The stock trigger: an ERP stock-record write ⇒ the named send tasks (and at
+ * most one kit fan-out) it may need, on the stock queue (master plan step 12,
+ * ./onEstoqueLojaIntegrada).
+ */
+export { onEstoqueLojaIntegrada } from './onEstoqueLojaIntegrada';
 
 /**
  * Documents examined per lane on each tick of the reprocess sweep. NOT exported:

@@ -3,7 +3,7 @@
  * with which options — and what one event binds: the LIVE environment, the codebase's Firestore
  * handle and the stock producer's root, the last two LAZILY. The gates themselves are pinned by
  * `lib/lojaIntegrada/estoque/gatilhoEstoque.test.ts`; this file drives the exported function
- * through its `run`, with the two roots mocked. D17: the global `fetch` throws.
+ * through its `run`, with the two roots mocked. No call to the store before the cutover: the global `fetch` throws.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';

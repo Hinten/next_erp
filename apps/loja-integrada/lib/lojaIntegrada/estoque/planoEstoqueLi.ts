@@ -24,6 +24,8 @@
  *     exact two-form match the send run's own reads apply.
  *  5. **Kits** beyond 30 ({@link disparaKitsZeradosLi}, {@link cruzaParaZeroLi}): only a kit
  *     going from positive to 0 is sent at once; everything else waits for the nightly reconcile.
+ *     The fan-out task then picks, from the map, every kit this component alone now holds at 0
+ *     ({@link kitsZeradosPeloComponenteLi}), likeliest crossings first.
  *  6. **The reconcile's diff** of one store row against the snapshot ({@link diffLinhaEstoqueLi})
  *     and the order the candidates are enqueued in ({@link ordenarCandidatosEstoqueLi}).
  *
@@ -761,6 +763,49 @@ export function disparaKitsZeradosLi(args: {
   const d = args.depois ?? 0;
   if (!quantidadeDeKit(args.qMax) || !Number.isFinite(a) || !Number.isFinite(d)) return true;
   return a > 0 && d < a && d < args.qMax;
+}
+
+/**
+ * The kits the `estoque-kits` fan-out enqueues for `componenteId`, from the component's available
+ * quantity NOW at the conta's depósito (`disponivel`, RAW): every kit whose bound BY THIS
+ * COMPONENT is 0 — ⌊disponivel / q⌋ ≤ 0, with q the kit's quantity of it. A SUPERSET of the kits
+ * that went from positive to 0 (one already at 0 costs one store read in its send run), and
+ * enough on its own: this component alone holds such a kit at 0, so no sibling needs reading. A
+ * kit that rose since the move — the component restocked before the fan-out ran — is left out,
+ * and its positive → positive change is the nightly reconcile's, as every other change of a
+ * component with more kits than the eager ceiling is.
+ *
+ * Fails open: an available that is not a finite number, or a kit that does not list the
+ * component with a positive finite quantity, is included.
+ *
+ * ORDERED by that quantity ascending, then by kit id: with the available just below a kit's
+ * quantity, that kit is the likeliest to have crossed just now, so when the fan-out is paced over
+ * hours its send goes first; a kit with no readable quantity goes last.
+ *
+ * Included: available 1 for q 2 or q 3 (3 → 1 empties a kit needing 2 while the component still
+ * shows 1); available 0 or below for any q. Left out: available 1 for q 1; 2.5 for q 2; 1 for
+ * q 0.5.
+ */
+export function kitsZeradosPeloComponenteLi(args: {
+  readonly kits: Readonly<Record<string, KitDoMapaLi>>;
+  readonly componenteId: string;
+  readonly disponivel: number;
+}): string[] {
+  const escolhidos: (readonly [string, number])[] = [];
+  for (const [kitId, kit] of Object.entries(args.kits)) {
+    const q = proprio(kit.q, args.componenteId);
+    if (!quantidadeDeKit(q)) {
+      escolhidos.push([kitId, Number.POSITIVE_INFINITY]);
+    } else if (!Number.isFinite(args.disponivel) || Math.floor(args.disponivel / q) <= 0) {
+      escolhidos.push([kitId, q]);
+    }
+  }
+  return escolhidos
+    .sort(([idA, qA], [idB, qB]) => {
+      if (qA !== qB) return qA < qB ? -1 : 1;
+      return idA < idB ? -1 : idA > idB ? 1 : 0;
+    })
+    .map(([kitId]) => kitId);
 }
 
 /* -------------------------------------------------------------------------- */

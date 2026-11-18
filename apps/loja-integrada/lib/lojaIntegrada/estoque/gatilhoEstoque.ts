@@ -99,7 +99,7 @@ import {
 } from './configEstoqueLi';
 import { type ContaDoDepositoLi, contasDoEventoLi, lerMapaDepositosLi } from './depositosLi';
 import { lerVinculosDoProdutoLi } from './leituraEstoqueErp';
-import { lerCabecalhosKitsLi, lerRegistrosPorCaminhoLi } from './mapaKitsLi';
+import { lerCabecalhosKitsLi, lerRegistrosPorCaminhoLi, tarefaDoKitLi } from './mapaKitsLi';
 import {
   type DadosEstoqueLi,
   type DisponivelDoEventoLi,
@@ -412,24 +412,10 @@ export async function tratarEventoEstoqueLi(
       });
       const kits = cabecalho.kits ?? {};
       for (const kitId of sinalizados) {
-        const kit = kits[kitId];
         envios.push({
           tipo: 'estoque',
           papel: 'kit',
-          tarefa: {
-            contaId,
-            produtoId: kitId,
-            origem: ORIGEM_TAREFA_ESTOQUE_LI.kit,
-            estoqueId: null,
-            apagado: false,
-            estoqueIds: Object.fromEntries(
-              Object.keys(kit?.q ?? {}).map((c) => [
-                c,
-                Object.hasOwn(cabecalho.comps, c) ? (cabecalho.comps[c] ?? null) : null,
-              ]),
-            ),
-            geracao: 0,
-          },
+          tarefa: tarefaDoKitLi(contaId, kitId, kits[kitId], cabecalho.comps),
         });
       }
     } else if (p.kits.tipo === 'zerados') {

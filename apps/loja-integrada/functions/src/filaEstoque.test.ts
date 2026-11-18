@@ -22,10 +22,10 @@ import {
 import { ID_PRODUTO_LI } from '../../lib/lojaIntegrada/testing/pedidosLi';
 
 /**
- * The STOCK queue's body (master plan step 12, PR 12-e): the `tipo` dispatch — `estoque` through
- * the send run, `estoque-kits` dropped until its consumer ships (PR 12-f), anything else dropped —
- * the dispatch-start stamp, the ONE log line, and what the root binds (`depsEscrita.ts`'s
- * `depsDeEstoqueLi`).
+ * The STOCK queue's body (master plan step 12, PRs 12-e and 12-f): the `tipo` dispatch — `estoque`
+ * through the send run, `estoque-kits` through the kit fan-out, anything else dropped — the
+ * dispatch-start stamp, the ONE log line, and what the root binds (`depsEscrita.ts`'s
+ * `depsDeEstoqueLi` and `depsDeKitsEstoqueLi`).
  *
  * The send run runs REAL (the valve, the conta, the produto, its links and records, the write
  * context's read switch) against the fake Firestore; `processarTarefaEstoqueLi` is only spied
@@ -54,13 +54,16 @@ vi.mock('../../lib/lojaIntegrada/estoque/processarEstoque', async (importOrigina
     await importOriginal<typeof import('../../lib/lojaIntegrada/estoque/processarEstoque')>();
   return { ...real, processarTarefaEstoqueLi: vi.fn(real.processarTarefaEstoqueLi) };
 });
+vi.mock('../../lib/lojaIntegrada/estoque/processarKitsEstoque', async (importOriginal) => {
+  const real =
+    await importOriginal<typeof import('../../lib/lojaIntegrada/estoque/processarKitsEstoque')>();
+  return { ...real, processarTarefaEstoqueKitsLi: vi.fn(real.processarTarefaEstoqueKitsLi) };
+});
 
-const {
-  DETALHE_SEM_CONSUMIDOR_ESTOQUE_LI,
-  DETALHE_TIPO_DESCONHECIDO_ESTOQUE_LI,
-  filaEstoqueLojaIntegrada,
-} = await import('./filaEstoque');
+const { DETALHE_TIPO_DESCONHECIDO_ESTOQUE_LI, filaEstoqueLojaIntegrada } =
+  await import('./filaEstoque');
 const estoque = await import('../../lib/lojaIntegrada/estoque/processarEstoque');
+const kitsEstoque = await import('../../lib/lojaIntegrada/estoque/processarKitsEstoque');
 
 afterAll(() => {
   if (originalFunctionsRegion === undefined) delete process.env.FUNCTIONS_REGION;
@@ -185,6 +188,7 @@ describe('an `estoque` task', () => {
       tipo: 'estoque',
       contaId: CONTA,
       produtoId: PRODUTO,
+      componenteId: null,
       origem: 'evento',
       geracao: 0,
       tentativa: 0,
@@ -288,30 +292,110 @@ describe('an `estoque` task', () => {
   });
 });
 
-describe('any other `tipo`', () => {
-  it('`estoque-kits` ⇒ DROPPED `sem-consumidor` with one line: no run, nothing read', async () => {
-    await rodar({
-      data: {
-        tipo: TIPO_TAREFA_ESTOQUE_LI.estoqueKits,
-        contaId: CONTA,
-        componenteId: 'c1',
-        janela: 1,
-      },
-      retryCount: 0,
-      id: 't',
-    });
+describe('an `estoque-kits` task (PR 12-f)', () => {
+  const COMPONENTE = 'c-fila-est';
+  const kits = (over: Record<string, unknown> = {}) => ({
+    tipo: TIPO_TAREFA_ESTOQUE_LI.estoqueKits,
+    contaId: CONTA,
+    componenteId: COMPONENTE,
+    janela: Math.floor(AGORA_MS / 60_000),
+    ...over,
+  });
 
+  it('runs the REAL fan-out: with the valve OFF it returns `desligado` with ZERO reads — one line, the counts null', async () => {
+    vi.stubEnv('LOJA_INTEGRADA_MODO_ESTOQUE', undefined);
+
+    await rodar({ data: kits(), retryCount: 1, id: 'estoque-kits-x' });
+
+    expect(vi.mocked(kitsEstoque.processarTarefaEstoqueKitsLi)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(estoque.processarTarefaEstoqueLi)).not.toHaveBeenCalled();
     expect(fake.leituras).toEqual([]);
-    expect(linhaUnica()).toMatchObject({
+    expect(fake.consultas).toEqual([]);
+    expect(linhaUnica()).toEqual({
       fila: 'filaEstoqueLojaIntegrada',
       tipo: 'estoque-kits',
       contaId: CONTA,
-      kind: 'dropped',
-      detail: DETALHE_SEM_CONSUMIDOR_ESTOQUE_LI,
+      produtoId: null,
+      componenteId: COMPONENTE,
+      origem: null,
+      geracao: null,
+      tentativa: 1,
+      kind: 'desligado',
+      detail: null,
+      kits: null,
     });
   });
 
+  it('at dry-run with no conta it is `pulado/conta-inexistente`: only the conta read, nothing written', async () => {
+    await rodar({ data: kits(), retryCount: 0, id: 't' });
+
+    expect(fake.leituras).toEqual([`integracao/${CONTA}`]);
+    expect(fake.escritas).toEqual([]);
+    expect(linhaUnica()).toMatchObject({
+      tipo: 'estoque-kits',
+      componenteId: COMPONENTE,
+      kind: 'pulado',
+      detail: 'conta-inexistente',
+      kits: null,
+    });
+  });
+
+  it('a payload the fan-out refuses (an extra key) is `payload-invalido`: no read', async () => {
+    await rodar({ data: kits({ disponivel: 0 }), retryCount: 0, id: 't' });
+
+    expect(fake.leituras).toEqual([]);
+    expect(linhaUnica()).toMatchObject({ kind: 'payload-invalido', componenteId: COMPONENTE });
+  });
+
+  it('binds the fan-out: the RAW data, the LIVE environment, the attempt, the stock producer, the logger', async () => {
+    const t = kits();
+
+    await rodar({ data: t, retryCount: 2, id: 'estoque-kits-abc' });
+
+    const chamada = vi.mocked(kitsEstoque.processarTarefaEstoqueKitsLi).mock.calls[0];
+    expect(chamada?.[0]).toBe(h.db);
+    expect(chamada?.[1]).toBe(t);
+    const deps = chamada?.[2];
+    expect(deps?.ambiente).toBe(process.env);
+    expect(deps?.tentativa).toBe(2);
+    expect(deps?.logger).toBe(logger);
+    expect(typeof deps?.agendador.enfileirar).toBe('function');
+    expect(deps?.agoraMs()).toBeGreaterThan(0);
+  });
+
+  it('the line carries the counts and the reserved horizon of a fan-out that read its map', async () => {
+    const contagens = {
+      F: 40,
+      kitsLidos: 40,
+      zerados: 3,
+      enfileirados: 3,
+      recusados: 0,
+      horizonteMs: 216_000,
+    };
+    vi.mocked(kitsEstoque.processarTarefaEstoqueKitsLi).mockResolvedValueOnce({
+      kind: 'enfileirado',
+      contagens,
+    });
+
+    await rodar({ data: kits(), retryCount: 0, id: 't' });
+
+    expect(linhaUnica()).toMatchObject({
+      kind: 'enfileirado',
+      detail: null,
+      kits: contagens,
+    });
+  });
+
+  it('a fan-out that THROWS propagates — the queue retries it — and writes no line', async () => {
+    const falha = new Error('transitória');
+    vi.mocked(kitsEstoque.processarTarefaEstoqueKitsLi).mockRejectedValueOnce(falha);
+
+    await expect(rodar({ data: kits(), retryCount: 0, id: 't' })).rejects.toBe(falha);
+    expect(info).not.toHaveBeenCalled();
+  });
+});
+
+describe('any other `tipo`', () => {
   it.each([
     ['an unknown tipo', { tipo: 'conciliacao', contaId: CONTA }],
     ['no tipo at all', { contaId: CONTA }],
@@ -323,6 +407,7 @@ describe('any other `tipo`', () => {
     expect(fake.escritas).toEqual([]);
     expect(fake.leituras).toEqual([]);
     expect(vi.mocked(estoque.processarTarefaEstoqueLi)).not.toHaveBeenCalled();
+    expect(vi.mocked(kitsEstoque.processarTarefaEstoqueKitsLi)).not.toHaveBeenCalled();
     expect(linhaUnica()).toMatchObject({
       fila: 'filaEstoqueLojaIntegrada',
       kind: 'dropped',
@@ -353,6 +438,7 @@ describe('any other `tipo`', () => {
         'fila',
         'geracao',
         'kind',
+        'componenteId',
         'origem',
         'produtoId',
         'tentativa',

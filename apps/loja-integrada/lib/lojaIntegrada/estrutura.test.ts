@@ -49,6 +49,10 @@
  *    so no photo is downloaded but behind the switch;
  *  - none of those routes can reach the WRITE context (`core/contextoEscrita.ts`) or name its
  *    factory, with no exemption;
+ *  - the stock TRIGGER and the kit FAN-OUT (step 12) call nothing outside the ERP: their run-time
+ *    closure (the stock producer's root seen as a leaf) reaches no context loader, park, pacer,
+ *    write engine or send run, names no client, calls no `fetch`, and loads the package only
+ *    where an allow-list says why;
  *  - the write chokepoint (the write engine's requirement 9, step 7), matched by FULL path in
  *    non-test source: only `core/contextoEscrita.ts` builds a write client; only
  *    `core/escrita.ts` names a package write operation or a write-client method; the write
@@ -486,6 +490,102 @@ const MODULOS_DO_COMPLETAR = [
   MODULO_DAS_FOTOS,
   'lib/lojaIntegrada/importacao/revisaoFiscal.ts',
 ] as const;
+
+/**
+ * The stock TRIGGER and the kit FAN-OUT (step 12, PR 12-f): neither calls Loja Integrada, and
+ * neither may reach what a call needs. The trigger's root and work, and the fan-out's work, are
+ * the ENTRIES; the stock queue's handler is not, because it routes the send run too, which does
+ * call (through its write context).
+ */
+const CAMINHO_DO_GATILHO_DE_ESTOQUE = [
+  'functions/src/onEstoqueLojaIntegrada.ts',
+  'lib/lojaIntegrada/estoque/gatilhoEstoque.ts',
+  'lib/lojaIntegrada/estoque/processarKitsEstoque.ts',
+] as const;
+
+/**
+ * What that closure may never reach: both context loaders, the park, the pacer, the write engine
+ * and the send run (whose closure holds all of those).
+ */
+const MODULOS_FORA_DO_GATILHO_DE_ESTOQUE = [
+  'lib/lojaIntegrada/core/contexto.ts',
+  'lib/lojaIntegrada/core/contextoEscrita.ts',
+  'lib/lojaIntegrada/core/estacionamento.ts',
+  'lib/lojaIntegrada/core/ritmo.ts',
+  'lib/lojaIntegrada/core/escrita.ts',
+  'lib/lojaIntegrada/estoque/processarEstoque.ts',
+];
+
+/** What no file of that closure may name: a client, the validating GET, the CDN reader, a context loader. */
+const NOMES_DE_CHAMADA_DO_GATILHO_DE_ESTOQUE =
+  /\b(criarClienteLeituraLi|criarClienteEscritaLi|validarPersonalToken|criarLeitorCdnLi|loadLojaIntegradaContext|loadLojaIntegradaContextoEscrita)\b/;
+
+/**
+ * The ONLY files of that closure that LOAD the package at run time, each for a reason: the link
+ * reader's constants (`pedidos/vinculoProdutoLi.ts`: the index fields and the limit the shared
+ * link readers use). A load, never a call: the closure names no client (above).
+ */
+const CARREGAM_O_PACOTE_NO_GATILHO_DE_ESTOQUE = ['lib/lojaIntegrada/pedidos/vinculoProdutoLi.ts'];
+
+/**
+ * The stock queue's producer ROOT (`functions/src/agendadorEstoque.ts`), a LEAF of this walk: it
+ * binds the Admin SDK's task queue through the reads root's region and valve readers
+ * (`functions/src/agendador.ts`, which loads the reads pipeline and with it the read context), so
+ * walking into it would put every reads-queue module in the trigger's closure. What it may do is
+ * pinned where it lives (`functions/src/agendadorEstoque.test.ts`, `functions/src/index.test.ts`);
+ * here it is seen, and not entered.
+ */
+const RAIZ_DO_PRODUTOR_DE_ESTOQUE = 'functions/src/agendadorEstoque.ts';
+
+/** `ler` without type-only imports, the producer root read as a file that imports nothing. */
+function leitorDoGatilhoDeEstoque(lerBruto: LeitorDeFonte): LeitorDeFonte {
+  return (caminho) => {
+    const texto = lerBruto(caminho);
+    if (texto === null) return null;
+    return caminho === RAIZ_DO_PRODUTOR_DE_ESTOQUE ? '' : semImportacoesDeTipo(texto);
+  };
+}
+
+/**
+ * Why the run-time closure from `entradas` lets the stock trigger or the fan-out reach Loja
+ * Integrada; empty when it does not. A `fetch` call is scanned RAW (a comment that spells one
+ * fails too); a client's or a context loader's NAME with the comments removed (a doc comment
+ * that says what a module is used by is not a call — the walk itself is what proves the reach).
+ */
+function violacoesDoGatilhoDeEstoque(
+  entradas: readonly string[],
+  lerBruto: LeitorDeFonte,
+): string[] {
+  const ler = leitorDoGatilhoDeEstoque(lerBruto);
+  const fecho = fechoDeImportacoes(entradas, ler, resolverAliasDoApp(ler));
+  const violacoes: string[] = [];
+  for (const espec of fecho.externos) {
+    const modulo = espec.replace(/^node:/, '').split('/')[0] ?? '';
+    if (
+      espec.startsWith('?') ||
+      espec.startsWith('@delfrance/integrations-loja-integrada/') ||
+      espec === 'undici' ||
+      MODULOS_DE_REDE_OU_PROCESSO.has(modulo)
+    ) {
+      violacoes.push(`imports ${espec}`);
+    }
+  }
+  for (const arquivo of fecho.arquivos) {
+    if (MODULOS_FORA_DO_GATILHO_DE_ESTOQUE.includes(arquivo)) violacoes.push(`reaches ${arquivo}`);
+    const texto = lerBruto(arquivo) ?? '';
+    if (/\bfetch\s*\(/.test(texto)) violacoes.push(`${arquivo} calls fetch`);
+    if (NOMES_DE_CHAMADA_DO_GATILHO_DE_ESTOQUE.test(semComentarios(texto))) {
+      violacoes.push(`${arquivo} names a Loja Integrada client or context`);
+    }
+    const carrega = especificadores(ler(arquivo) ?? '').includes(
+      '@delfrance/integrations-loja-integrada',
+    );
+    if (carrega && !CARREGAM_O_PACOTE_NO_GATILHO_DE_ESTOQUE.includes(arquivo)) {
+      violacoes.push(`${arquivo} loads the package`);
+    }
+  }
+  return violacoes;
+}
 
 /** The one module of a read route's closure allowed to build a Loja Integrada client. */
 const CONSTRUTOR_DO_CLIENTE = 'lib/lojaIntegrada/core/contexto.ts';
@@ -1011,6 +1111,40 @@ describe('lib/lojaIntegrada layout', () => {
       const fotos = lerDoApp(MODULO_DAS_FOTOS) ?? '';
       expect(fotos.split('.baixarImagemLi(')).toHaveLength(2);
       expect(fotos).toContain('deps.cdn.baixarImagemLi(');
+    },
+  );
+
+  it(
+    'the stock trigger and the kit fan-out (step 12) call NOTHING outside the ERP: no context, park, pacer, write engine or send run, no client named, no fetch, and the package loaded only for constants',
+    { timeout: 30_000 },
+    () => {
+      for (const entrada of CAMINHO_DO_GATILHO_DE_ESTOQUE) {
+        expect(lerDoApp(entrada), entrada).not.toBeNull();
+      }
+      expect(violacoesDoGatilhoDeEstoque(CAMINHO_DO_GATILHO_DE_ESTOQUE, lerDoApp)).toEqual([]);
+      // Anti-vacuity: the walk entered the reads, the map, the slot and the producer, and the one
+      // package load is real.
+      const ler = leitorDoGatilhoDeEstoque(lerDoApp);
+      const fecho = fechoDeImportacoes(CAMINHO_DO_GATILHO_DE_ESTOQUE, ler, resolverAliasDoApp(ler));
+      expect(fecho.arquivos).toEqual(
+        expect.arrayContaining([
+          ...CAMINHO_DO_GATILHO_DE_ESTOQUE,
+          'lib/lojaIntegrada/estoque/leituraEstoqueErp.ts',
+          'lib/lojaIntegrada/estoque/depositosLi.ts',
+          'lib/lojaIntegrada/estoque/mapaKitsLi.ts',
+          'lib/lojaIntegrada/estoque/slotEstoqueLi.ts',
+          'lib/lojaIntegrada/estoque/agendadorEstoque.ts',
+          'lib/lojaIntegrada/core/valvulas.ts',
+          'functions/src/agendadorEstoque.ts',
+          ...CARREGAM_O_PACOTE_NO_GATILHO_DE_ESTOQUE,
+        ]),
+      );
+      expect(fecho.externos).toContain('@delfrance/integrations-loja-integrada');
+      // The rules bite: walked by them, the send run fails on what it reaches.
+      expect(
+        violacoesDoGatilhoDeEstoque(['lib/lojaIntegrada/estoque/processarEstoque.ts'], lerDoApp)
+          .length,
+      ).toBeGreaterThan(0);
     },
   );
 

@@ -4,8 +4,15 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { tarefaEstoqueLiSchema } from '@delfrance/schemas';
+
 import { FakeDb, asDb, type DocData } from '../testing/fakeDb';
-import { lerCabecalhosKitsLi, lerFatiasKitsLi, lerRegistrosPorCaminhoLi } from './mapaKitsLi';
+import {
+  lerCabecalhosKitsLi,
+  lerFatiasKitsLi,
+  lerRegistrosPorCaminhoLi,
+  tarefaDoKitLi,
+} from './mapaKitsLi';
 
 beforeEach(() => {
   vi.stubGlobal('fetch', () => {
@@ -155,5 +162,36 @@ describe('lerFatiasKitsLi', () => {
     const lidas = await lerFatiasKitsLi(asDb(db), 'a', 'p', { execucaoId: EXEC, F: 1, fatias: 0 });
     expect(db.leituras).toEqual([]);
     expect(lidas.completa).toBe(false);
+  });
+});
+
+describe('tarefaDoKitLi: the ONE kit send task both kit producers build', () => {
+  it('origin kit, no record, no delete, generation 0; each of the kit’s components → its comps id, verbatim (a legacy one too), else null', () => {
+    const t = tarefaDoKitLi(
+      'conta-li-a',
+      'kit-1',
+      { i: '5000', q: { blank: 1, print: 2, tinta: 1 } },
+      { blank: 'est-blank-dep', print: 'auto-legado-1', outro: 'est-outro-dep' },
+    );
+    expect(t).toEqual({
+      contaId: 'conta-li-a',
+      produtoId: 'kit-1',
+      origem: 'kit',
+      estoqueId: null,
+      apagado: false,
+      estoqueIds: { blank: 'est-blank-dep', print: 'auto-legado-1', tinta: null },
+      geracao: 0,
+    });
+    // It parses as a send task once a window is added.
+    expect(tarefaEstoqueLiSchema.safeParse({ ...t, tipo: 'estoque', janela: 1 }).success).toBe(
+      true,
+    );
+  });
+
+  it('⚠️ NEAR-MISS: an INHERITED comps key is not the header’s — the component reads null', () => {
+    const comps = Object.create({ blank: 'herdado' }) as Record<string, string | null>;
+    expect(
+      tarefaDoKitLi('conta-li-a', 'kit-1', { i: '1', q: { blank: 1 } }, comps).estoqueIds,
+    ).toEqual({ blank: null });
   });
 });

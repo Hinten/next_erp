@@ -5,7 +5,7 @@
  * logger's stdout) and the writes (none, ever — checked after every test). An emulator cannot
  * prove that a function did nothing, so the absences are pinned here.
  *
- * D17: no call to Loja Integrada is reachable — the global `fetch` throws in every test, and the
+ * No call to Loja Integrada is reachable before the cutover — the global `fetch` throws in every test, and the
  * trigger builds no client. The producer is either a recording double or the REAL pure producer
  * (`criarAgendadorEstoqueLi`) over a fake transport whose failures are the SDK's own classes.
  */
@@ -74,7 +74,7 @@ const reg = (quantidade: unknown, over: DocData = {}): DocData => ({
   depositoOuterRef: DOC,
   quantidade,
   quantidadeReservada: 0,
-  localizacao: 'A1',
+  localizacao: 'corredor-3',
   ...over,
 });
 
@@ -271,7 +271,7 @@ const colecoes = (h: Harness) => h.db.consultas.map((c) => c.colecao);
 
 describe('gate 1 — an irrelevant write costs ZERO reads and logs NOTHING', () => {
   it.each([
-    ['a localizacao-only edit', reg(5), reg(5, { localizacao: 'B9' })],
+    ['a localizacao-only edit', reg(5), reg(5, { localizacao: 'corredor-9' })],
     ['the kit stamp (ultimaModificacao only)', reg(5), reg(5, { ultimaModificacao: 1 })],
     [
       'the paid → shipped pair (quantity and reservation both −2)',

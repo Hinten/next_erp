@@ -1,6 +1,7 @@
 import { FieldValue } from 'firebase-admin/firestore';
 import { logger } from 'firebase-functions/v2';
 
+import type { DepsKitsEstoqueLi } from '../../lib/lojaIntegrada/estoque/processarKitsEstoque';
 import type { DepsEstoqueLi } from '../../lib/lojaIntegrada/estoque/processarEstoque';
 import type {
   DepsEscritaLi,
@@ -64,6 +65,9 @@ export function depsDeEscritaLi(
  *   write (`recusado` and its aviso); every earlier one rethrows so the retry re-derives.
  * - `agendador`: the stock queue's producer, for the run's one `deriva` follow-up, built from the
  *   environment per dispatch (the sweep-only valve read once, the queue resolved per enqueue).
+ *
+ * ⚠️ The stock trigger binds its own deps (`./onEstoqueLojaIntegrada`): an Eventarc event is not
+ * a task, and it builds its handle and producer lazily, after the zero-read gates.
  */
 export function depsDeEstoqueLi(
   registro: { readonly tentativa: number; readonly idTarefa: string | null },
@@ -74,4 +78,19 @@ export function depsDeEstoqueLi(
     tentativa: registro.tentativa,
     agendador: criarAgendadorEstoqueLiDoAmbiente(),
   };
+}
+
+/**
+ * The dependencies of one `estoque-kits` FAN-OUT — a dispatch of the stock queue (master plan
+ * step 12, PR 12-f) — taken from {@link depsDeEstoqueLi}, so the fan-out and the send runs it
+ * enqueues can never disagree about the environment (the stock valve, the cap), the clock, the
+ * attempt or the producer. It makes no Loja Integrada call, so it takes no pacer, no deadline and
+ * no registro; its lines go through `firebase-functions/v2`'s logger, ids and counts only.
+ */
+export function depsDeKitsEstoqueLi(
+  registro: { readonly tentativa: number; readonly idTarefa: string | null },
+  inicioDaTarefaMs: number,
+): DepsKitsEstoqueLi {
+  const { ambiente, agoraMs, tentativa, agendador } = depsDeEstoqueLi(registro, inicioDaTarefaMs);
+  return { ambiente, agoraMs, tentativa, agendador, logger };
 }

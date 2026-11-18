@@ -23,6 +23,7 @@ import {
   kitRestritoLi,
   kitSinalizadoLi,
   kitsSinalizadosLi,
+  kitsZeradosPeloComponenteLi,
   ordenarCandidatosEstoqueLi,
   planoEstoqueLi,
   refletidoLi,
@@ -1400,5 +1401,86 @@ describe('registroNoDepositoLi / disponivelNoDepositoLi — the ONE reading of a
         FORMAS,
       ),
     ).toBeNaN();
+  });
+});
+
+describe('kitsZeradosPeloComponenteLi: the kits the fan-out enqueues — this component alone holds them at 0', () => {
+  const kit = (q: Record<string, number>) => ({ q });
+
+  it('available 1 ⇒ the kits needing 2 and 3 are in, the one needing 1 is not (3 → 1 empties a kit that needs 2)', () => {
+    expect(
+      kitsZeradosPeloComponenteLi({
+        kits: {
+          'k-precisa-1': kit({ c: 1, d: 1 }),
+          'k-precisa-2': kit({ c: 2 }),
+          'k-precisa-3': kit({ c: 3, d: 1 }),
+        },
+        componenteId: 'c',
+        disponivel: 1,
+      }),
+    ).toEqual(['k-precisa-2', 'k-precisa-3']);
+  });
+
+  it('⚠️ NEAR-MISS: the rule is the KIT’s bound, never the component’s own zero — available 1 is not 0, yet the kit needing 2 is in', () => {
+    const kits = { 'k-2': kit({ c: 2 }) };
+    expect(kitsZeradosPeloComponenteLi({ kits, componenteId: 'c', disponivel: 1 })).toEqual([
+      'k-2',
+    ]);
+    // …and a bound of exactly 1 (available = q) stays out.
+    expect(kitsZeradosPeloComponenteLi({ kits, componenteId: 'c', disponivel: 2 })).toEqual([]);
+  });
+
+  it.each([0, -3, -0.5])('available %s (none, or negative) ⇒ EVERY kit', (disponivel) => {
+    expect(
+      kitsZeradosPeloComponenteLi({
+        kits: { a: kit({ c: 1 }), b: kit({ c: 5 }), z: kit({ c: 0.25 }) },
+        componenteId: 'c',
+        disponivel,
+      }),
+    ).toEqual(['z', 'a', 'b']);
+  });
+
+  it('fractional: the RAW available divides unrounded — 0.4 of 0.5 is in, 1 of 0.5 and 2.5 of 2 are out', () => {
+    const kits = { meio: kit({ c: 0.5 }), dois: kit({ c: 2 }) };
+    expect(kitsZeradosPeloComponenteLi({ kits, componenteId: 'c', disponivel: 0.4 })).toEqual([
+      'meio',
+      'dois',
+    ]);
+    expect(kitsZeradosPeloComponenteLi({ kits, componenteId: 'c', disponivel: 1 })).toEqual([
+      'dois',
+    ]);
+    expect(kitsZeradosPeloComponenteLi({ kits, componenteId: 'c', disponivel: 2.5 })).toEqual([]);
+  });
+
+  it('fail open: a kit that does not list the component, or an available that is not a number, is included', () => {
+    expect(
+      kitsZeradosPeloComponenteLi({
+        kits: { sem: kit({ outro: 1 }), com: kit({ c: 1 }) },
+        componenteId: 'c',
+        disponivel: 9,
+      }),
+    ).toEqual(['sem']);
+    expect(
+      kitsZeradosPeloComponenteLi({
+        kits: { a: kit({ c: 1 }), b: kit({ c: 9 }) },
+        componenteId: 'c',
+        disponivel: Number.NaN,
+      }),
+    ).toEqual(['a', 'b']);
+  });
+
+  it('ORDER: the quantity ascending (the likeliest crossings first), then the kit id; an unreadable quantity last', () => {
+    expect(
+      kitsZeradosPeloComponenteLi({
+        kits: {
+          'k-b': kit({ c: 4 }),
+          'k-sem': kit({ x: 1 }),
+          'k-a': kit({ c: 4 }),
+          'k-c': kit({ c: 2 }),
+        },
+        componenteId: 'c',
+        disponivel: 1,
+      }),
+    ).toEqual(['k-c', 'k-a', 'k-b', 'k-sem']);
   });
 });

@@ -10,6 +10,13 @@
  * agree), never the handle's shape-only schema: a header whose invariants do not hold decides
  * nothing (`invalido`). A shard is parsed with its own schema; what a shard read could not
  * account for is COUNTED, never guessed ({@link FatiasKitsLidasLi}).
+ *
+ * The kit send task both kit producers build from a map entry is here too ({@link tarefaDoKitLi}),
+ * so the trigger's eager path and the fan-out can never disagree on its payload.
+ *
+ * ⚠️ The header is the map's COMMIT POINT: its writer (the nightly reconcile) must write a
+ * component's shards before its header, so a header never promises a shard that is not there yet.
+ * A read that finds them inconsistent anyway (a run caught half-way) says so in `completa`.
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import {
@@ -20,13 +27,44 @@ import {
 import {
   type KitDoComponenteEstoqueLi,
   type KitsComponenteEstoqueLi,
+  ORIGEM_TAREFA_ESTOQUE_LI,
   fatiaKitsComponenteEstoqueLiSchema,
   idFatiaKitsEstoqueLi,
   kitsComponenteEstoqueLiSchema,
 } from '@delfrance/schemas';
 
+import type { TarefaEstoqueSemJanelaLi } from './agendadorEstoque';
 import type { DadosEstoqueLi } from './planoEstoqueLi';
 import { caminhoEstoqueLi } from './quantidadeEstoqueLi';
+
+/**
+ * The send task of ONE store kit, as every kit producer builds it (the trigger's eager path and
+ * the `estoque-kits` fan-out): origin `kit`, no event record and no delete, generation 0, and
+ * `estoqueIds` = each of the kit's components → its record id in the header's `comps`, or `null`
+ * when the header names none. The ids go verbatim — a legacy one included — because the send run
+ * point-reads a component's record only when its id IS the canonical one, and queries otherwise.
+ */
+export function tarefaDoKitLi(
+  contaId: string,
+  kitId: string,
+  kit: KitDoComponenteEstoqueLi | undefined,
+  comps: KitsComponenteEstoqueLi['comps'],
+): TarefaEstoqueSemJanelaLi {
+  return {
+    contaId,
+    produtoId: kitId,
+    origem: ORIGEM_TAREFA_ESTOQUE_LI.kit,
+    estoqueId: null,
+    apagado: false,
+    estoqueIds: Object.fromEntries(
+      Object.keys(kit?.q ?? {}).map((c) => [
+        c,
+        Object.hasOwn(comps, c) ? (comps[c] ?? null) : null,
+      ]),
+    ),
+    geracao: 0,
+  };
+}
 
 /** One conta's header for one component, as read. */
 export type CabecalhoLidoLi =
