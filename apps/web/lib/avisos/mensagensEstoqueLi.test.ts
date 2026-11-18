@@ -23,7 +23,7 @@ const TIPOS = [
 /**
  * Each motivo's DISTINCTIVE phrase — the fact that sends the operator to the right fix. A
  * sentence that swapped in another motivo's fix (#1369's drift) would still differ from the
- * other four, so distinctness alone never pins which sentence a motivo renders.
+ * other five, so distinctness alone never pins which sentence a motivo renders.
  */
 const FRASE_DO_MOTIVO = [
   [MOTIVO_ESTOQUE_VINCULO_LI.ambiguo, 'vinculado a dois produtos da loja'],
@@ -31,6 +31,7 @@ const FRASE_DO_MOTIVO = [
   [MOTIVO_ESTOQUE_VINCULO_LI.semLinhaNaLoja, 'não tem estoque para um produto vinculado'],
   [MOTIVO_ESTOQUE_VINCULO_LI.ausente, 'não existe mais'],
   [MOTIVO_ESTOQUE_VINCULO_LI.estoqueAmbiguo, 'dois registros de estoque no depósito'],
+  [MOTIVO_ESTOQUE_VINCULO_LI.depositoSemRegistros, 'não enviou o estoque de nenhum produto'],
 ] as const;
 
 describe('the stock-sync avisos', () => {
@@ -94,7 +95,7 @@ describe('the stock-sync avisos', () => {
   });
 
   it.each(FRASE_DO_MOTIVO)(
-    '⚠️ the link aviso for %s says ITS fact, and none of the other four',
+    '⚠️ the link aviso for %s says ITS fact, and none of the other five',
     (motivo, frase) => {
       const corpo = MENSAGENS_POR_TIPO[TIPO_AVISO.lojaIntegradaEstoqueVinculo].corpo({
         loja: 'Conta A',
@@ -113,7 +114,7 @@ describe('the stock-sync avisos', () => {
     },
   );
 
-  it('the five sentences differ, and an unknown or inherited code falls back', () => {
+  it('the six sentences differ, and an unknown or inherited code falls back', () => {
     const frase = (motivo: string) =>
       MENSAGENS_POR_TIPO[TIPO_AVISO.lojaIntegradaEstoqueVinculo].corpo({
         loja: 'Conta A',

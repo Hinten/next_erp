@@ -1,10 +1,11 @@
 /**
  * The ONE global stagger slot of the stock queue's BULK producers (master plan step 12, PR 12-f):
  * `reconcileEstoqueLojaIntegrada/atual.proximoSlotMs`, the next free instant at which a bulk send
- * may be scheduled. The `estoque-kits` fan-out (`processarKitsEstoque.ts`) takes it today, the
- * nightly reconcile's queue phase later; both enqueue with `naoAntesDeMs` at the instants reserved
- * here (`agendadorEstoque.ts`, "A bulk enqueue"), so a burst of kit sends is spread over time
- * instead of landing on the single-file stock queue at once.
+ * may be scheduled. Two bulk producers take it: the `estoque-kits` fan-out
+ * (`processarKitsEstoque.ts`) and the nightly reconcile's queue phase (PR 12-g,
+ * `reconcile/filaReconcile.ts`); both enqueue with `naoAntesDeMs` at the instants reserved here
+ * (`agendadorEstoque.ts`, "A bulk enqueue"), so a burst of sends is spread over time instead of
+ * landing on the single-file stock queue at once.
  *
  * ## The interval, and what it buys
  *
@@ -60,6 +61,12 @@
  *    but unused: a gap of at most n × the interval on the slot. Later bulk sends wait longer; the
  *    queue never carries more. An attempt that failed BEFORE its reservation (an incomplete map, a
  *    lost slot race, a failed read) leaves no gap.
+ *  - **A horizon cut** (`ateHorizonteMs`, the reconcile's under-advertising rows only): the
+ *    reservation keeps only the instants at or before `now + ateHorizonteMs` — possibly none, and
+ *    then nothing is written. So the reconcile's bulk of sends that only RAISE a store's number
+ *    never pushes the slot past that horizon: what does not fit waits for the next night, which
+ *    re-finds it, and an over-advertising send (or a zero-crossing kit) never queues behind more
+ *    than that horizon of them. The fan-out passes no cut.
  *  - A stored value that is not a non-negative safe integer reads as none: a malformed run
  *    document never blocks the fan-out (fail open).
  *
@@ -67,7 +74,10 @@
  *
  * The schema's contract for this writer (`reconcileEstoqueLojaIntegrada.ts`): it holds NO lease
  * and writes ONLY `proximoSlotMs` — `create` when the document is absent, otherwise `update` with
- * `lastUpdateTime` = its own read's `updateTime`, advance-only. A 9 (a concurrent writer moved
+ * `lastUpdateTime` = its own read's `updateTime`, advance-only. Its read is MASKED to that one field
+ * (`getAll(ref, { fieldMask })`, which still carries the document's `updateTime`): while a
+ * reconcile runs, the same document holds its candidate list, up to 600 KB, which this writer never
+ * needs. A 9 (a concurrent writer moved
  * the document) or a 6 (someone created it first) re-reads and re-derives everything from the new
  * read, the clock read AFTER that read; at most {@link MAX_TENTATIVAS_SLOT_ESTOQUE_LI} attempts,
  * then {@link LiSlotEstoqueEmConflitoError} and the task retries.
@@ -160,17 +170,38 @@ export function reservarSlotsLi(args: {
   readonly quantidade: number;
   readonly intervaloMs?: number;
   readonly horizonteMaxMs?: number;
+  /**
+   * The horizon cut (module header): only the instants at or before `agoraMs + ateHorizonteMs`
+   * are reserved — possibly none. A non-negative safe integer; absent = no cut.
+   */
+  readonly ateHorizonteMs?: number;
 }): ReservaDeSlotsLi {
   const intervalo = args.intervaloMs ?? INTERVALO_SLOT_ESTOQUE_LOTE_LI_MS;
   const horizonteMax = args.horizonteMaxMs ?? HORIZONTE_MAX_SLOT_ESTOQUE_LI_MS;
   if (!Number.isSafeInteger(args.quantidade) || args.quantidade < 1) {
     throw new RangeError('reservarSlotsLi: quantidade precisa ser um inteiro positivo');
   }
+  if (
+    args.ateHorizonteMs !== undefined &&
+    (!Number.isSafeInteger(args.ateHorizonteMs) || args.ateHorizonteMs < 0)
+  ) {
+    throw new RangeError('reservarSlotsLi: ateHorizonteMs precisa ser um inteiro não negativo');
+  }
   const armazenado = instanteValido(args.armazenadoMs);
   const piso = pisoDoSlotEstoqueLi(args.agoraMs);
   const base = armazenado === null ? piso : Math.max(piso, armazenado);
-  const inicios = Array.from({ length: args.quantidade }, (_, i) => base + i * intervalo);
-  const proximoMs = base + args.quantidade * intervalo;
+  const quantidade =
+    args.ateHorizonteMs === undefined
+      ? args.quantidade
+      : Math.max(
+          0,
+          Math.min(
+            args.quantidade,
+            Math.floor((args.agoraMs + args.ateHorizonteMs - base) / intervalo) + 1,
+          ),
+        );
+  const inicios = Array.from({ length: quantidade }, (_, i) => base + i * intervalo);
+  const proximoMs = base + quantidade * intervalo;
   return {
     inicios,
     proximoMs,
@@ -182,7 +213,10 @@ export function reservarSlotsLi(args: {
 
 /** What one reservation of the global slot did. */
 export interface ReservaGravadaLi extends ReservaDeSlotsLi {
-  /** `false` exactly when the reservation exceeds the schedule limit: no write was sent. */
+  /**
+   * `false` exactly when nothing was reserved — the reservation exceeds the schedule limit, or the
+   * horizon cut left no instant (`inicios` empty): no write was sent.
+   */
   readonly escrito: boolean;
   /** The clock read after the deciding read, in ms: the reservation's own now. */
   readonly agoraMs: number;
@@ -201,13 +235,17 @@ export async function reservarSlotGlobalEstoqueLi(
     readonly quantidade: number;
     /** Read AFTER each read of the slot, never before. */
     readonly agoraMs: () => number;
+    /** The horizon cut (module header); absent = none. */
+    readonly ateHorizonteMs?: number;
   },
 ): Promise<ReservaGravadaLi> {
   const ref = reconcileEstoqueLojaIntegradaCollection.docRef(db, {}, ID_RECONCILE_ESTOQUE_LI);
   let tentada: ReservaGravadaLi | null = null;
   // Up to MAX writes; one read before each, and one after the last loss (it may have landed).
   for (let escritas = 0; ; escritas += 1) {
-    const snap = await ref.get();
+    // Masked to the one field: the run document may hold the reconcile's candidates (module header).
+    const [snap] = await db.getAll(ref, { fieldMask: ['proximoSlotMs'] });
+    if (snap === undefined) throw new TypeError('slot: getAll sem resultado');
     const dados: unknown = snap.exists ? snap.data() : undefined;
     const armazenado = instanteValido(
       typeof dados === 'object' && dados !== null && Object.hasOwn(dados, 'proximoSlotMs')
@@ -224,8 +262,11 @@ export async function reservarSlotGlobalEstoqueLi(
       agoraMs,
       armazenadoMs: armazenado,
       quantidade: args.quantidade,
+      ...(args.ateHorizonteMs === undefined ? {} : { ateHorizonteMs: args.ateHorizonteMs }),
     });
-    if (reserva.excedeLimite) return { ...reserva, escrito: false, agoraMs };
+    if (reserva.excedeLimite || reserva.inicios.length === 0) {
+      return { ...reserva, escrito: false, agoraMs };
+    }
     const patch = reconcileEstoqueLojaIntegradaCollection.parseMerge({
       proximoSlotMs: reserva.proximoMs,
     });

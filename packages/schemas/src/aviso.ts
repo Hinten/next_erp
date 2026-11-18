@@ -1398,7 +1398,11 @@ export const TIPO_AVISO_LABELS = {
  *    (`duplicado`), a link whose store product has no row in the store's stock
  *    list (`sem-linha-na-loja`), a link whose ERP produto no longer exists
  *    (`ausente`), two stock records at the conta's depósito neither of which is
- *    the canonical one (`estoque-ambiguo`).
+ *    the canonical one (`estoque-ambiguo`), and the reconcile's safety gate: more
+ *    than 5% of the conta's linked children have a stock record elsewhere but
+ *    none at the conta's depósito, so the run sent NOTHING for that conta
+ *    (`deposito-sem-registros`; the count is those children, the sample their
+ *    produtos).
  *
  *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId, entidade: motivo })`
  *    — one row per (conta, motivo).
@@ -1957,7 +1961,12 @@ export const MOTIVO_CATEGORIA_SEM_VINCULO_LI = {
  *    one product at a time);
  *  - `ausente`: a link whose ERP produto document no longer exists;
  *  - `estoque-ambiguo`: two stock records at the conta's depósito, neither the
- *    canonical one.
+ *    canonical one;
+ *  - `deposito-sem-registros` (PR 12-g): the daily reconcile's safety gate — more
+ *    than 5% of the conta's evaluated children have a stock record at another
+ *    depósito and none at the conta's, the signature of a misconfigured depósito
+ *    (every listing would be pushed 0), so NONE of the conta's sends of that run
+ *    were enqueued.
  *
  * Stored as an aviso PARAM, with the same fallback contract as
  * {@link MOTIVO_PEDIDO_CONTESTADO_LI}.
@@ -1968,6 +1977,7 @@ export const motivoEstoqueVinculoLiSchema = z.enum([
   'sem-linha-na-loja',
   'ausente',
   'estoque-ambiguo',
+  'deposito-sem-registros',
 ]);
 export type MotivoEstoqueVinculoLi = z.infer<typeof motivoEstoqueVinculoLiSchema>;
 
@@ -1978,6 +1988,7 @@ export const MOTIVO_ESTOQUE_VINCULO_LI = {
   semLinhaNaLoja: 'sem-linha-na-loja',
   ausente: 'ausente',
   estoqueAmbiguo: 'estoque-ambiguo',
+  depositoSemRegistros: 'deposito-sem-registros',
 } as const satisfies Record<string, MotivoEstoqueVinculoLi>;
 
 /**

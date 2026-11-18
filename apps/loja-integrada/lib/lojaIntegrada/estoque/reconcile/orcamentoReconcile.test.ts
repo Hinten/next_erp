@@ -54,6 +54,13 @@ describe('the reconcile’s budget is the import’s', () => {
     expect(abrirOrcamentoReconcileLi(() => 50_001, 0).cabe('consulta')).toBe(false);
   });
 
+  it('⚠️ NEAR-MISS: a queue batch (30 s) starts at 40 000 ms, and not at 40 001; a conta’s end (20 s) at 50 000', () => {
+    expect(abrirOrcamentoReconcileLi(() => 40_000, 0).cabe('lote')).toBe(true);
+    expect(abrirOrcamentoReconcileLi(() => 40_001, 0).cabe('lote')).toBe(false);
+    expect(abrirOrcamentoReconcileLi(() => 50_000, 0).cabe('fim')).toBe(true);
+    expect(abrirOrcamentoReconcileLi(() => 50_001, 0).cabe('fim')).toBe(false);
+  });
+
   it('reads the clock on every question; a clock behind the start is 0 elapsed; a broken clock fits nothing', () => {
     let agora = 0;
     const orcamento = abrirOrcamentoReconcileLi(() => agora, 1_000);

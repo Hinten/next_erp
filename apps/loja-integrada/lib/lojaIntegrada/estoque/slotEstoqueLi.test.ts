@@ -229,6 +229,56 @@ describe('reservarSlotsLi (pure)', () => {
       );
     },
   );
+
+  describe('the horizon cut (PR 12-g: the reconcile’s under-advertising rows)', () => {
+    it('keeps only the instants at or before now + the cut; ⚠️ NEAR-MISS: one at now + cut + 1 ms is left out', () => {
+      // The third instant lands EXACTLY at now + cut.
+      const ate = PISO + 2 * I - AGORA_MS;
+      const exato = reservarSlotsLi({
+        agoraMs: AGORA_MS,
+        armazenadoMs: null,
+        quantidade: 5,
+        ateHorizonteMs: ate,
+      });
+      expect(exato.inicios).toEqual([PISO, PISO + I, PISO + 2 * I]);
+      expect(exato.proximoMs).toBe(PISO + 3 * I);
+      const umMsAntes = reservarSlotsLi({
+        agoraMs: AGORA_MS,
+        armazenadoMs: null,
+        quantidade: 5,
+        ateHorizonteMs: ate - 1,
+      });
+      expect(umMsAntes.inicios).toEqual([PISO, PISO + I]);
+    });
+
+    it('a stored slot already past the cut ⇒ NOTHING reserved (empty, and the slot unmoved by the caller)', () => {
+      const armazenado = AGORA_MS + 13 * 60 * 60_000;
+      const r = reservarSlotsLi({
+        agoraMs: AGORA_MS,
+        armazenadoMs: armazenado,
+        quantidade: 3,
+        ateHorizonteMs: HORIZONTE_MAX_SLOT_ESTOQUE_LI_MS,
+      });
+      expect(r.inicios).toEqual([]);
+    });
+
+    it('a cut that admits more than asked reserves exactly what was asked; no cut is the fan-out’s, unchanged', () => {
+      const comCorte = reservarSlotsLi({
+        agoraMs: AGORA_MS,
+        armazenadoMs: null,
+        quantidade: 2,
+        ateHorizonteMs: HORIZONTE_MAX_SLOT_ESTOQUE_LI_MS,
+      });
+      const semCorte = reservarSlotsLi({ agoraMs: AGORA_MS, armazenadoMs: null, quantidade: 2 });
+      expect(comCorte).toEqual(semCorte);
+    });
+
+    it.each([-1, 1.5, Number.NaN])('refuses a cut of %s (RangeError)', (ateHorizonteMs) => {
+      expect(() =>
+        reservarSlotsLi({ agoraMs: AGORA_MS, armazenadoMs: null, quantidade: 1, ateHorizonteMs }),
+      ).toThrow(RangeError);
+    });
+  });
 });
 
 describe('reservarSlotGlobalEstoqueLi: the tier-1 writer of proximoSlotMs alone', () => {
@@ -287,6 +337,37 @@ describe('reservarSlotGlobalEstoqueLi: the tier-1 writer of proximoSlotMs alone'
     expect(r).toMatchObject({ saturado: true, escrito: true, proximoMs: armazenado + 2 * I });
     expect(r.inicios).toEqual([armazenado, armazenado + I]);
     expect(db.ler(SLOT)).toEqual({ proximoSlotMs: armazenado + 2 * I });
+  });
+
+  it('the read is MASKED to proximoSlotMs (PR 12-g: the run document may hold 600 KB of candidates) and still writes under its stamp', async () => {
+    const db = new FakeDb();
+    const armazenado = AGORA_MS + 5 * 60_000;
+    db.seed(SLOT, {
+      proximoSlotMs: armazenado,
+      candidatos: [{ c: 0, i: '5', p: 'p1', d: 3 }],
+    });
+    const getAll = vi.spyOn(db, 'getAll');
+
+    await reservarSlotGlobalEstoqueLi(asDb(db), { quantidade: 1, agoraMs: () => AGORA_MS });
+
+    expect(getAll).toHaveBeenCalledTimes(1);
+    expect(getAll.mock.calls[0]?.[1]).toEqual({ fieldMask: ['proximoSlotMs'] });
+    expect(db.ler(SLOT)).toMatchObject({ proximoSlotMs: armazenado + I });
+  });
+
+  it('a horizon cut that leaves NO instant ⇒ NO write (escrito false, inicios empty)', async () => {
+    const db = new FakeDb();
+    const armazenado = AGORA_MS + HORIZONTE_MAX_SLOT_ESTOQUE_LI_MS + 1;
+    db.seed(SLOT, { proximoSlotMs: armazenado });
+
+    const r = await reservarSlotGlobalEstoqueLi(asDb(db), {
+      quantidade: 4,
+      agoraMs: () => AGORA_MS,
+      ateHorizonteMs: HORIZONTE_MAX_SLOT_ESTOQUE_LI_MS,
+    });
+
+    expect(r).toMatchObject({ escrito: false, excedeLimite: false, inicios: [] });
+    expect(db.escritas).toEqual([]);
   });
 
   it('a reservation past the schedule LIMIT ⇒ NO write (escrito false, excedeLimite): the slot stays where it was', async () => {

@@ -156,6 +156,8 @@ describe('avaliarPaginaErpLi — the verdicts that read', () => {
     expect(r.c1?.entrada('5')).toEqual({ p: 'p1', s: 0, f: FLAG_ENTRADA_ESTOQUE_LI.valido });
     const contadores = Object.fromEntries(r.contadores.get('C1') ?? []);
     expect(contadores).toMatchObject({ avaliados: 1, zeroPorDeposito: 1, validos: 1 });
+    // The safety gate's aviso names it (the queue phase decides the gate).
+    expect(r.c1?.raiz.execucao.amostras).toEqual({ 'deposito-sem-registros': ['p1'] });
   });
 
   it('⚠️ NEAR-MISS: NO record at any depósito ⇒ r (held, sampled) after EXACTLY one where-less limit-1 listing', async () => {

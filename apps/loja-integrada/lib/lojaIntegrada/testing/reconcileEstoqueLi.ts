@@ -7,11 +7,18 @@
 import {
   type EntradaSnapshotEstoqueLi,
   INTEGRACAO_TIPO,
+  type TarefaFilaEstoqueLi,
   baldeSnapshotEstoqueLi,
   makeEstoqueUid,
 } from '@delfrance/schemas';
 
+import {
+  type AgendadorEstoqueLi,
+  type FilaEstoqueLi,
+  criarAgendadorEstoqueLi,
+} from '../estoque/agendadorEstoque';
 import type { AgendadorReconcileEstoqueLi } from '../estoque/reconcile/agendadorReconcile';
+import { falhaDoFunctions } from './falhaDeEnfileiramento';
 import type { DocData, FakeDb } from './fakeDb';
 
 /** The fixtures' clock: 2027-01-15T15:00:00Z. */
@@ -212,4 +219,48 @@ export function seedRunNaFaseLi(
     }
     db.seed(`${base}/snapshot/pais`, { execucaoId: RUN_A, ids: [...(conta.pais ?? [])] });
   }
+}
+
+/** One send task the {@link filaEstoqueGravadora} accepted. */
+export interface EnviadaEstoqueLi {
+  readonly tarefa: TarefaFilaEstoqueLi;
+  readonly id: string;
+  readonly scheduleTime: Date;
+}
+
+/**
+ * The STOCK queue as the real producer reaches it: a transport that records every task, answers a
+ * repeated name with the SDK's own `task-already-exists` (so the producer's success path is the
+ * real one), and fails a task when `falhar` returns an error. `agendador` is the REAL producer over
+ * it (`criarAgendadorEstoqueLi`), the sweep-only valve closed when `desligado`.
+ */
+export function filaEstoqueGravadora(
+  o: {
+    readonly falhar?: (t: TarefaFilaEstoqueLi) => Error | null;
+    readonly desligado?: boolean;
+  } = {},
+): {
+  readonly agendador: AgendadorEstoqueLi;
+  readonly enviadas: EnviadaEstoqueLi[];
+  readonly tentativas: string[];
+} {
+  const nomes = new Set<string>();
+  const enviadas: EnviadaEstoqueLi[] = [];
+  const tentativas: string[] = [];
+  const fila: FilaEstoqueLi = {
+    async enqueue(tarefa, { id, scheduleTime }) {
+      tentativas.push(id);
+      await Promise.resolve();
+      const falha = o.falhar?.(tarefa) ?? null;
+      if (falha !== null) throw falha;
+      if (nomes.has(id)) throw falhaDoFunctions('task-already-exists', 409);
+      nomes.add(id);
+      enviadas.push({ tarefa, id, scheduleTime });
+    },
+  };
+  return {
+    agendador: criarAgendadorEstoqueLi({ fila: () => fila, desligado: o.desligado ?? false }),
+    enviadas,
+    tentativas,
+  };
 }

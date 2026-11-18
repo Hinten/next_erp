@@ -206,6 +206,7 @@ export const MOTIVO_AMOSTRA_ESTOQUE_LI = {
   semLinhaNaLoja: 'sem-linha-na-loja',
   ausente: 'ausente',
   estoqueAmbiguo: 'estoque-ambiguo',
+  depositoSemRegistros: 'deposito-sem-registros',
 } as const satisfies Record<string, MotivoAmostraEstoqueLi>;
 
 /** Where the kits map writer stands for a conta (`estoque/reconcile/mapaKitsReconcile.ts`). */

@@ -462,8 +462,10 @@ describe('the happy path', () => {
       fatiaPath(0),
       fatiaPath(1),
     ]);
-    // The header (one getAll) and the shards (one getAll of two refs).
-    expect(getAll.mock.calls.map((c) => c.length)).toEqual([1, 2]);
+    // The header (one getAll), the shards (one getAll of two refs), then the slot — one ref
+    // masked to `proximoSlotMs` (PR 12-g: the run document may hold the reconcile's candidates).
+    expect(getAll.mock.calls.map((c) => c.length)).toEqual([1, 2, 2]);
+    expect(getAll.mock.calls[2]?.[1]).toEqual({ fieldMask: ['proximoSlotMs'] });
     expect(r).toMatchObject({
       kind: 'enfileirado',
       contagens: { F: 1002, kitsLidos: 1002, zerados: 3 },

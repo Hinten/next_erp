@@ -3,6 +3,7 @@ import { logger } from 'firebase-functions/v2';
 
 import type { DepsReconcileEstoqueLi } from '../../lib/lojaIntegrada/estoque/reconcile/despachoReconcile';
 import { criarAgendadorReconcileEstoqueLiDoAmbiente } from './agendador';
+import { criarAgendadorEstoqueLiDoAmbiente } from './agendadorEstoque';
 
 /**
  * The dependencies of one daily stock reconcile SLICE (master plan step 12, PR 12-g) — a
@@ -19,8 +20,12 @@ import { criarAgendadorReconcileEstoqueLiDoAmbiente } from './agendador';
  * - `esperar`: the pacer's sleep (2 000 ms before every Loja Integrada call of the store phase).
  * - `increment`: a tier-0 `FieldValue`, for the park's reconexão aviso (a 401/403 of the store
  *   phase parks the conta like every reader).
- * - `agendador`: the producer ROOT, built only when an enqueue is due (the sweep-only valve is read
- *   when it is built), never at module load.
+ * - `agendador`: the reads-queue producer ROOT (the chain's hand-offs, and the one depósito re-run
+ *   after a release), built only when an enqueue is due (the sweep-only valve is read when it is
+ *   built), never at module load.
+ * - `agendadorEstoque`: the STOCK-queue producer ROOT (`./agendadorEstoque`, the same root every
+ *   stock producer of this codebase uses) — the queue phase's `estoque` send tasks — built the same
+ *   way.
  * - `logger`: the slice's one sink (`firebase-functions/v2`), ids and counts only.
  * - `tentativa`, `idTarefa`: the Cloud Tasks attempt (0-based) and the task id, for the last-attempt
  *   rule and the store calls' lines.
@@ -44,6 +49,7 @@ export function depsDeReconcileEstoqueLi(registro: {
       }),
     increment: (by: number) => FieldValue.increment(by),
     agendador: criarAgendadorReconcileEstoqueLiDoAmbiente,
+    agendadorEstoque: criarAgendadorEstoqueLiDoAmbiente,
     logger,
   };
 }

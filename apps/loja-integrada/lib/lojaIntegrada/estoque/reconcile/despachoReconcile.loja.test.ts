@@ -35,6 +35,7 @@ import {
   INICIO_RUN_RECONCILE_MS,
   RUN_A,
   agendadorGravador,
+  filaEstoqueGravadora,
   loggerGravador,
   refDeposito,
   seedContaComDeposito,
@@ -77,6 +78,7 @@ function mundo(
 ) {
   const relogio = { agora: AGORA_RECONCILE_MS };
   const fila = agendadorGravador();
+  const estoque = filaEstoqueGravadora();
   const log = loggerGravador();
   const sink = gravadorDeLog();
   const deps = (extra: Partial<DepsReconcileEstoqueLi> = {}): DepsReconcileEstoqueLi => ({
@@ -100,13 +102,14 @@ function mundo(
     },
     increment,
     agendador: () => fila.agendador,
+    agendadorEstoque: () => estoque.agendador,
     logger: log.logger,
     fetch: p.fetch,
     escrever: sink.escrever,
     tamanhoPaginaCaminhada: 2,
     ...extra,
   });
-  return { relogio, fila, log, sink, deps };
+  return { relogio, fila, estoque, log, sink, deps };
 }
 
 /** Runs slices from `seq`, each handing off to the next, until one does not. */

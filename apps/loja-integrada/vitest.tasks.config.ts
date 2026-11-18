@@ -109,6 +109,24 @@ import { defineConfig } from 'vitest/config';
 //     earlier file without this suite's conta, so the trigger's work is driven IN PROCESS
 //     (the cache reset per case), and only the dispatched fan-out is observed in the emulator.
 //
+// ⚠️ Since step 12 (PR 12-g) a SIXTH rule set: the daily stock reconcile.
+//   - The conta trigger gains a depósito-change ARM: an UPDATE of a Loja Integrada conta whose
+//     depósito becomes another one enqueues ONE reconcile run on the READS queue (a CREATE never
+//     fires, which is why every suite that seeds a conta with a depósito does it by a create).
+//     That dispatched run walks EVERY link and conta in the emulator, writes each conta's
+//     `sincEstoqueLojaIntegrada/{conta}` snapshot and kits map, and its store phase stops at the
+//     read switch. So a suite that moves a conta's depósito awaits that run's end (the run
+//     document released) before it ends, and seeds no links while it runs.
+//   - The run document `reconcileEstoqueLojaIntegrada/atual` is the kit fan-out's slot document
+//     too: a reconcile suite wipes it before AND after each case, and asserts the run's `contas`
+//     is exactly its own conta before reading a per-conta counter.
+//   - `lib/lojaIntegrada/estoque/reconcile/reconcileEstoque.tasks.test.ts` drives the chain IN
+//     PROCESS with its hand-offs RECORDED (never the real reads root), so no deployed dispatch
+//     drives the same lease beside it; its sends go through the real STOCK root (dispatched in
+//     the lane at `dry-run`, they stop at their write context). It keeps the third and fifth
+//     trigger's rules (its own produtos, the anchor awaited, the sync documents deleted before
+//     the records) and writes only an INLINE kits header, so no fan-out ever follows.
+//
 // Each file's `beforeEach` deletes what it reads, because the files
 // share one emulator and run one at a time (`fileParallelism: false`).
 export default defineConfig({

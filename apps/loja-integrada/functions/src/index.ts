@@ -90,7 +90,10 @@ import { getDb } from './lib/admin';
  * nothing and enqueues the run's first slice onto the READS queue, which runs
  * each slice (`tipo: estoque-reconcile`) — one chain for every conta — and
  * enqueues the next one by name. With the stock valve `off`, or the read switch
- * off, the schedule enqueues nothing.
+ * off, the schedule enqueues nothing. The conta trigger gains its depósito-change
+ * arm (an UPDATE re-pointing a Loja Integrada conta's depósito enqueues ONE full
+ * run at once, zero reads), and the run's queue phase enqueues its sends onto the
+ * STOCK queue at their reserved global-slot instants.
  *
  * Every export below is a Cloud Function name, and the names are unique across
  * codebases (`functions-export-names.test.js`): keep the exports explicit and

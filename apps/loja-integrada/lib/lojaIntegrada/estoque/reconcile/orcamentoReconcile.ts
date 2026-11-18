@@ -20,6 +20,8 @@
  * | `mapa` — one batch of the kits map writer (headers, shards, a page of the sweep), with the run document's lease | 20 s, nominal |
  * | `chamada` — one Loja Integrada call of the store's list walk (`faseLi.ts`): a page of the stock list, or one product's stock detail | the import's own row: `RITMO_LEITURA_LI_MS` + `PRAZO_LI_MS.leitura` = 2 s + 20 s = 22 s |
  * | `consulta` — the lookups of ONE page's store rows no snapshot entry names: the link queries (per 15 ids, per stored form of the conta ref), and the evaluation of the produtos they find | 20 s, nominal |
+ * | `lote` — one batch of the queue phase (`filaReconcile.ts`): ONE reservation of at most `LOTE_FILA_RECONCILE_LI` instants on the global slot, then their enqueues 20 at a time | 30 s, nominal (an enqueue answers in about 0.1–0.3 s; the reservation is one masked read and one write) |
+ * | `fim` — one conta's end (`fimReconcile.ts`): its avisos (each one read, and a write when it moves) and its `ultimoReconcile` | 20 s, nominal |
  *
  * A page's lookups are a unit of their OWN, started only when the page holds a row to look up and
  * its worst case still fits; when it does not, the page is dropped unread — nothing of it is kept
@@ -41,7 +43,7 @@ import {
 } from '../../importacao/orcamento';
 
 /** A unit of work a reconcile slice may start (module header). */
-export type UnidadeReconcileLi = 'erp' | 'mapa' | 'chamada' | 'consulta';
+export type UnidadeReconcileLi = 'erp' | 'mapa' | 'chamada' | 'consulta' | 'lote' | 'fim';
 
 /** Named members of {@link UnidadeReconcileLi}. */
 export const UNIDADE_RECONCILE_LI = {
@@ -49,6 +51,8 @@ export const UNIDADE_RECONCILE_LI = {
   mapa: 'mapa',
   chamada: 'chamada',
   consulta: 'consulta',
+  lote: 'lote',
+  fim: 'fim',
 } as const satisfies Record<string, UnidadeReconcileLi>;
 
 /**
@@ -61,6 +65,8 @@ export const PIOR_CASO_UNIDADE_RECONCILE_LI_MS = {
   // The import's row, the SAME constant: one paced read of the store.
   chamada: PIOR_CASO_UNIDADE_IMPORTACAO_LI_MS.chamada,
   consulta: 20_000,
+  lote: 30_000,
+  fim: 20_000,
 } as const satisfies Record<UnidadeReconcileLi, number>;
 
 /** The longest a slice may run: the import's budget plus its tail (100 s), the SAME constant. */

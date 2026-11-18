@@ -34,9 +34,9 @@
  * Besides one per verdict, the two the depósito safety gate is decided from: `avaliados` — the
  * linked, non-parity children whose OWN record feeds S (a kit its components bound is not one) —
  * and `zeroPorDeposito` — those with no record at the conta's depósito but one at another, which
- * are pushed the depósito's real 0. A depósito misconfigured for the conta shows as a large share
- * of the second in the first. Children held because they never had stock count in `avaliados`
- * only: they are never pushed.
+ * are pushed the depósito's real 0 (sampled under `deposito-sem-registros`, the gate's aviso). A
+ * depósito misconfigured for the conta shows as a large share of the second in the first. Children
+ * held because they never had stock count in `avaliados` only: they are never pushed.
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import {
@@ -303,7 +303,11 @@ export async function avaliarPaginaErpLi(
           : null;
         if (x.restrito && composicao === null) contar(conta, 'kitsSemComposicao');
         if (plano.kitNaoVerificavel) contar(conta, 'kitsNaoVerificaveis');
-        if (!x.restrito && x.entrada.estoque.tipo === 'nenhum') contar(conta, 'zeroPorDeposito');
+        if (!x.restrito && x.entrada.estoque.tipo === 'nenhum') {
+          // The safety gate's numerator, and the sample its aviso names (`filaReconcile.ts`).
+          estadoDe(conta).amostrar(MOTIVO_AMOSTRA_ESTOQUE_LI.depositoSemRegistros, [produtoId]);
+          contar(conta, 'zeroPorDeposito');
+        }
         aplicar(conta, idLi, {
           p: produtoId,
           s: plano.S,

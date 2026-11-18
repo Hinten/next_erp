@@ -52,12 +52,14 @@ import {
   MAX_AMOSTRA_AVISO_ESTOQUE_LI,
   type MotivoAmostraEstoqueLi,
   type ReconcileContaEstoqueLi,
+  type UltimoReconcileEstoqueLi,
   baldeSnapshotEstoqueLi,
   entradaSnapshotEstoqueLiSchema,
   execucaoContaEstoqueLiSchema,
   paisSnapshotEstoqueLiSchema,
   reconcileContaEstoqueLiSchema,
   snapshotEstoqueLiSchema,
+  ultimoReconcileEstoqueLiSchema,
 } from '@delfrance/schemas';
 
 import { compararIdLi } from '../planoEstoqueLi';
@@ -138,6 +140,8 @@ interface RaizLi extends DocLidoLi {
   execucao: ExecucaoContaEstoqueLi;
   reconcile: ReconcileContaEstoqueLi | null;
   cursorSujo: boolean;
+  /** The run's end for this conta (`fimReconcile.ts`), written only once set. */
+  ultimoReconcile: UltimoReconcileEstoqueLi | null;
 }
 
 /** Only the `x` entries of a bucket of another run (module header). */
@@ -276,6 +280,17 @@ export class EstadoContaReconcileLi {
     this.raiz.sujo = true;
   }
 
+  /**
+   * The conta's end of the run (`fimReconcile.ts`): its `ultimoReconcile`, parsed, and the list
+   * cursor cleared — written with the rest of the root, so the slice never writes the root twice.
+   */
+  encerrar(ultimo: UltimoReconcileEstoqueLi): void {
+    this.raiz.ultimoReconcile = ultimoReconcileEstoqueLiSchema.parse(ultimo);
+    this.raiz.reconcile = null;
+    this.raiz.cursorSujo = true;
+    this.raiz.sujo = true;
+  }
+
   /** Replaces the run state's map cursor (or anything else of it), parsed. */
   atualizarExecucao(patch: Partial<ExecucaoContaEstoqueLi>): void {
     this.raiz.execucao = execucaoContaEstoqueLiSchema.parse({ ...this.raiz.execucao, ...patch });
@@ -296,9 +311,13 @@ export class EstadoContaReconcileLi {
         tipo: 'gravar',
         ref: this.raiz.ref,
         versao: this.raiz.versao,
-        dados: sincEstoqueLojaIntegradaCollection.parseMerge(
-          this.raiz.cursorSujo ? { execucao, reconcile: this.raiz.reconcile } : { execucao },
-        ),
+        dados: sincEstoqueLojaIntegradaCollection.parseMerge({
+          execucao,
+          ...(this.raiz.cursorSujo ? { reconcile: this.raiz.reconcile } : {}),
+          ...(this.raiz.ultimoReconcile === null
+            ? {}
+            : { ultimoReconcile: this.raiz.ultimoReconcile }),
+        }),
       });
     }
     for (const balde of this.baldes.values()) {
@@ -419,6 +438,7 @@ export async function carregarEstadosReconcileLi(
           execucao: execucao.data,
           reconcile: cursor.success ? cursor.data : null,
           cursorSujo: false,
+          ultimoReconcile: null,
         },
         baldes,
         pais: {

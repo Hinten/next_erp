@@ -27,12 +27,19 @@
  *       FIRST (its read switch), one page — and the page's lookups — or one confirmation of an
  *       unseen linked child per unit; the rows out of step join the run's `candidatos`
  *       (`candidatosReconcile.ts`); a conta skipped or done moves `idxConta` on;
- *     - `fila` passes straight through for now: the queue phase lands with the rest of PR 12-g;
- *     - `fim` releases the lease.
+ *     - `fila`: the queue phase (`filaReconcile.ts`): its start once per run (the safety gate,
+ *       the valve — a dry-run enqueues NOTHING —, the contas read again, the canary, the sort,
+ *       over-advertising first), then one batch per unit: ONE reservation of exactly its size on the
+ *       global slot, its `estoque` send tasks named by the run's window; what was enqueued leaves
+ *       the list;
+ *     - `fim`: per conta (`idxConta`), the end phase (`fimReconcile.ts`): the avisos (only under
+ *       `on`), `ultimoReconcile`; then the lease is released.
  *  6. ONE end-of-slice checkpoint: the run document (`seq + 1`, the lease extended, or released at
  *     `fim`) and every per-conta document the slice changed, in ONE batch; then the NAMED
  *     continuation `(execucaoId, seq + 1)`, 2 s later — 60 s after a 429 PAUSE of the store
- *     phase.
+ *     phase. After the release, when a conta's depósito moved while the run ran
+ *     (`fimReconcile.ts`), ONE new full run is enqueued at once (`estoque-reconcile-redeposito-<µs>`,
+ *     seq 0); its failure is ONE line, never a rethrow (the run is already released).
  *
  * ## Failures (root rule 6) — each narrowed to its class
  *
@@ -44,7 +51,10 @@
  *    parks and skips the conta, the conta's refusals skip it. A failure a retry may change is
  *    rethrown AFTER a progress checkpoint at the SAME `seq` (the lease extended, everything the
  *    slice completed written), so the retry resumes at the page that failed; on the queue's last
- *    attempt the store phase ends that conta instead and the chain goes on.
+ *    attempt the store phase ends that conta instead and the chain goes on. The queue phase does
+ *    the same with a transient Cloud Tasks failure, the slot's contention or Firestore's: what was
+ *    enqueued is checkpointed, the original error rethrown — on the last attempt the rest is
+ *    counted `naoEnfileirados` and the run goes to its end.
  *  - Everything else is rethrown and the queue retries the SAME task: before its end checkpoint it
  *    resumes from the last one; after it, the continuation check re-enqueues the successor. On the
  *    queue's LAST attempt a failure a retry could have changed — Firestore's, Cloud Tasks', another
@@ -78,6 +88,7 @@ import {
   type AmbienteLi,
   FLUXO_LI,
   MODO_LI,
+  type ValvulaLi,
   lerValvula,
   registrarValvulaLi,
 } from '../../core/valvulas';
@@ -87,6 +98,7 @@ import {
   ATRASO_PAUSA_429_IMPORTACAO_LI_S,
 } from '../../importacao/agendadorImportacao';
 import type { EscritorLogLi } from '../../core/log';
+import type { AgendadorEstoqueLi } from '../agendadorEstoque';
 import { TETO_ESTOQUE_ENV_LI, lerTetoEstoqueLi } from '../configEstoqueLi';
 import {
   type AgendadorReconcileEstoqueLi,
@@ -96,6 +108,7 @@ import {
 import { TAMANHO_PAGINA_CAMINHADA_LI, lerPaginaCaminhadaLi } from './caminhadaVinculos';
 import { ListaCandidatosReconcileLi } from './candidatosReconcile';
 import {
+  type EscritaSincLi,
   type EstadoEscritaReconcileLi,
   LEASE_RECONCILE_ESTOQUE_LI_MS,
   LiReconcileEstoqueAdiadoError,
@@ -110,6 +123,8 @@ import {
 } from './execucaoReconcile';
 import { avaliarPaginaErpLi } from './faseErp';
 import { FaseLiReconcileLi } from './faseLi';
+import { FilaReconcileLi } from './filaReconcile';
+import { CONTADOR_DEPOSITO_MUDOU_LI, FimReconcileLi, idExecucaoRedepositoLi } from './fimReconcile';
 import {
   type MapaKitsMontadoLi,
   histogramaDeKitsLi,
@@ -148,8 +163,10 @@ export interface DepsReconcileEstoqueLi {
   readonly esperar: (ms: number) => Promise<void>;
   /** A tier-0 `FieldValue.increment`, for the park's reconexão aviso. */
   readonly increment: (by: number) => unknown;
-  /** The producer ROOT, built only when an enqueue is due. */
+  /** The reads-queue producer ROOT (the chain's own hand-offs), built only when an enqueue is due. */
   readonly agendador: () => AgendadorReconcileEstoqueLi;
+  /** The STOCK-queue producer ROOT (the queue phase's sends), built only when a send is due. */
+  readonly agendadorEstoque: () => AgendadorEstoqueLi;
   readonly logger: {
     info(msg: string, meta?: Record<string, unknown>): void;
     warn(msg: string, meta?: Record<string, unknown>): void;
@@ -345,7 +362,7 @@ export async function despacharReconcileEstoqueLi(
     atrasoDoFim: ATRASO_CONTINUACAO_IMPORTACAO_LI_S,
   };
   try {
-    return await executarSliceLi(db, tarefa, estado, deps, rastro);
+    return await executarSliceLi(db, tarefa, estado, deps, rastro, valvula);
   } catch (err) {
     if (deps.tentativa < TASK_MAX_ATTEMPTS - 1 || !retentavel(err)) throw err;
     return encerrarNaUltimaTentativaLi(db, tarefa, rastro, deps);
@@ -367,6 +384,7 @@ async function executarSliceLi(
   estado: EstadoEscritaReconcileLi,
   deps: DepsReconcileEstoqueLi,
   rastro: RastroDoSliceLi,
+  valvula: ValvulaLi,
 ): Promise<ResultadoReconcileLi> {
   const ids = { execucaoId: tarefa.execucaoId, seq: tarefa.seq };
   const run = runDoEstado(estado);
@@ -400,6 +418,23 @@ async function executarSliceLi(
     mapas.set(e.conta.contaId, montado);
     return montado;
   };
+  /** One conta's state, loaded once per slice whichever phase asks first. */
+  const estadoDe = async (conta: {
+    readonly idx: number;
+    readonly contaId: string;
+  }): Promise<EstadoContaReconcileLi | null> => {
+    const carregado = estados.get(conta.contaId);
+    if (carregado !== undefined) return carregado;
+    const lidos = await carregarEstadosReconcileLi(
+      db,
+      tarefa.execucaoId,
+      [conta.contaId],
+      conta.idx,
+    );
+    const lido = lidos?.get(conta.contaId) ?? null;
+    if (lido !== null) estados.set(conta.contaId, lido);
+    return lido;
+  };
   // The store phase, built when the slice reaches it.
   let faseLi: FaseLiReconcileLi | null = null;
   const faseLiDoSlice = (): FaseLiReconcileLi => {
@@ -414,21 +449,48 @@ async function executarSliceLi(
       candidatos,
       contar,
       contador: (nome) => contadores[nome] ?? 0,
-      estadoDe: async (conta) => {
-        const carregado = estados.get(conta.contaId);
-        if (carregado !== undefined) return carregado;
-        const lidos = await carregarEstadosReconcileLi(
-          db,
-          tarefa.execucaoId,
-          [conta.contaId],
-          conta.idx,
-        );
-        const lido = lidos?.get(conta.contaId) ?? null;
-        if (lido !== null) estados.set(conta.contaId, lido);
-        return lido;
-      },
+      estadoDe,
     });
     return faseLi;
+  };
+  // The queue phase, built when the slice reaches it.
+  let fila: FilaReconcileLi | null = null;
+  const filaDoSlice = (): FilaReconcileLi => {
+    fila ??= new FilaReconcileLi({
+      db,
+      deps,
+      execucaoId: tarefa.execucaoId,
+      runIniciadoEmMs: run.iniciadoEmMs ?? 0,
+      contas: run.contas,
+      valvula,
+      candidatos,
+      orcamento,
+      contar,
+      contador: (nome) => contadores[nome] ?? 0,
+      estadoDe,
+    });
+    return fila;
+  };
+  // The end phase, built when the slice reaches it; its conta roots ride the end-of-slice batch.
+  const escritasDoFim: EscritaSincLi[] = [];
+  let fim: FimReconcileLi | null = null;
+  const fimDoSlice = (): FimReconcileLi => {
+    fim ??= new FimReconcileLi({
+      db,
+      deps,
+      execucaoId: tarefa.execucaoId,
+      runIniciadoEmMs: run.iniciadoEmMs ?? 0,
+      contas: run.contas,
+      valvula,
+      orcamento,
+      contadores: () => contadores,
+      registrarMaximo: (nome, n) => {
+        contadores[nome] = Math.max(contadores[nome] ?? 0, n);
+      },
+      escritas: escritasDoFim,
+      estadoCarregado: (contaId) => estados.get(contaId),
+    });
+    return fim;
   };
 
   /** The run document's fields as the slice leaves them, but `seq` and the lease. */
@@ -523,9 +585,42 @@ async function executarSliceLi(
         }
       }
     }
-    // The queue phase lands with the rest of PR 12-g.
     if (fase === FASE_RECONCILE_ESTOQUE_LI.fila) {
-      fase = FASE_RECONCILE_ESTOQUE_LI.fim;
+      const passo = await filaDoSlice().unidade();
+      switch (passo.tipo) {
+        case 'unidade':
+          continue maquina;
+        case 'concluida':
+          fase = FASE_RECONCILE_ESTOQUE_LI.fim;
+          idxConta = 0;
+          continue maquina;
+        case 'sem-orcamento':
+          break maquina;
+        case 'parado':
+          deps.logger.warn(`${TAG} estado de conta de outra execução — o slice para`, ids);
+          return { kind: 'parado' };
+        case 'falha': {
+          // What was enqueued leaves the stored list, at the SAME seq; then the ORIGINAL error.
+          const parado = await gravarProgressoAntesDaFalhaLi(
+            db,
+            estado,
+            progresso(),
+            estados,
+            deps.agoraMs,
+          );
+          if (parado) return { kind: 'parado' };
+          throw passo.erro;
+        }
+      }
+    }
+    if (idxConta < run.contas.length) {
+      const passo = await fimDoSlice().unidade(idxConta);
+      if (passo.tipo === 'sem-orcamento') break;
+      if (passo.tipo === 'parado') {
+        deps.logger.warn(`${TAG} estado de conta de outra execução — o slice para`, ids);
+        return { kind: 'parado' };
+      }
+      idxConta += 1;
       continue;
     }
     final = true;
@@ -533,7 +628,7 @@ async function executarSliceLi(
   }
 
   // 6. The end-of-slice checkpoint: per-conta documents first when they exceed one batch.
-  const escritas = [...estados.values()].flatMap((e) => e.escritas());
+  const escritas = [...[...estados.values()].flatMap((e) => e.escritas()), ...escritasDoFim];
   while (escritas.length > MAX_ESCRITAS_LOTE_RECONCILE_LI) {
     const parte = escritas.splice(0, MAX_ESCRITAS_LOTE_RECONCILE_LI);
     const r = await gravarLoteReconcileLi(
@@ -559,6 +654,7 @@ async function executarSliceLi(
 
   if (final) {
     deps.logger.info(`${TAG} execução encerrada`, { ...ids, ...contadores });
+    await pedirRevisaoDeDepositoLi(contadores[CONTADOR_DEPOSITO_MUDOU_LI] ?? 0, tarefa, deps);
     return { kind: 'encerrado' };
   }
   return passarAdiante(db, tarefa, estado, tarefa.seq + 1, atraso, deps, fase);
@@ -680,6 +776,44 @@ async function unidadeDoMapaLi(
     case ETAPA_MAPA_ESTOQUE_LI.feito:
       return { parado: false, feito: true, contadores };
   }
+}
+
+/**
+ * After the release: ONE new full run when a conta's depósito moved while this one ran (module
+ * header, step 6) — named after the conta document's update time, so a retried enqueue collides.
+ * Never rethrown: the run is already released, so a retry would only find it done; the next
+ * nightly run covers a lost one.
+ */
+async function pedirRevisaoDeDepositoLi(
+  versaoUs: number,
+  tarefa: TarefaReconcileEstoqueLi,
+  deps: DepsReconcileEstoqueLi,
+): Promise<void> {
+  if (versaoUs <= 0) return;
+  const execucaoId = idExecucaoRedepositoLi(versaoUs);
+  const meta = { execucaoId: tarefa.execucaoId, novaExecucaoId: execucaoId };
+  try {
+    await deps
+      .agendador()
+      .enfileirar({ tipo: TIPO_TAREFA_RECONCILE_ESTOQUE_LI, execucaoId, seq: 0 }, { atrasoS: 0 });
+  } catch (err) {
+    if (err instanceof LiTarefasDesligadasError) {
+      deps.logger.warn(
+        `${TAG} depósito mudou — tarefas desligadas, nova execução não enfileirada`,
+        meta,
+      );
+      return;
+    }
+    if (err instanceof LiTarefasTransitoriasError) {
+      deps.logger.error(`${TAG} depósito mudou — nova execução não enfileirada`, {
+        ...meta,
+        motivo: 'revisao-nao-enfileirada',
+      });
+      return;
+    }
+    throw err;
+  }
+  deps.logger.info(`${TAG} depósito mudou durante a execução — nova execução enfileirada`, meta);
 }
 
 /**

@@ -92,9 +92,26 @@ export class ListaCandidatosReconcileLi {
     return this.bytes;
   }
 
-  /** The list, in the order the candidates were first added. */
+  /** The list, in the order the candidates were first added (or as {@link substituir} left it). */
   lista(): CandidatoReconcileEstoqueLi[] {
     return [...this.porChave.values()];
+  }
+
+  /**
+   * Replaces the whole list, in the given order — the queue phase's (`filaReconcile.ts`): sorted
+   * once at its start, then shortened by what each batch enqueued. Never grows the list (the
+   * queue phase only removes), so the budget holds; a repeated (conta, store id) keeps its FIRST
+   * place.
+   */
+  substituir(nova: readonly CandidatoReconcileEstoqueLi[]): void {
+    this.porChave.clear();
+    this.bytes = 0;
+    for (const c of nova) {
+      if (this.porChave.has(chave(c))) continue;
+      this.porChave.set(chave(c), c);
+      this.bytes += bytesDoCandidatoLi(c);
+    }
+    this.alterada = true;
   }
 
   /** The current LAST member in the queue's order: the first to drop. */

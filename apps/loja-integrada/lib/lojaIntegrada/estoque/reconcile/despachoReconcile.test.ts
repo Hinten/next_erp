@@ -15,6 +15,7 @@ import {
   RUN_A,
   RUN_B,
   agendadorGravador,
+  filaEstoqueGravadora,
   componentesDoKit,
   loggerGravador,
   seedContaComDeposito,
@@ -50,6 +51,7 @@ const tarefa = (seq: number, execucaoId = RUN_A) => ({
 function mundo(over: Partial<DepsReconcileEstoqueLi> = {}, falha?: () => unknown) {
   const relogio = { agora: AGORA_RECONCILE_MS };
   const fila = agendadorGravador(falha);
+  const estoque = filaEstoqueGravadora();
   const log = loggerGravador();
   const deps = (extra: Partial<DepsReconcileEstoqueLi> = {}): DepsReconcileEstoqueLi => ({
     ambiente: { LOJA_INTEGRADA_MODO_ESTOQUE: 'dry-run' },
@@ -57,6 +59,7 @@ function mundo(over: Partial<DepsReconcileEstoqueLi> = {}, falha?: () => unknown
     inicioMs: relogio.agora,
     tentativa: 0,
     agendador: () => fila.agendador,
+    agendadorEstoque: () => estoque.agendador,
     logger: log.logger,
     idTarefa: null,
     esperar: () => Promise.resolve(),
@@ -66,7 +69,7 @@ function mundo(over: Partial<DepsReconcileEstoqueLi> = {}, falha?: () => unknown
     ...over,
     ...extra,
   });
-  return { relogio, fila, log, deps };
+  return { relogio, fila, estoque, log, deps };
 }
 
 /** Two contas, three plain children and a kit, a parent, a duplicate across pages. */

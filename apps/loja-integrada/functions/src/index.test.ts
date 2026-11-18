@@ -969,7 +969,9 @@ describe('the Firestore triggers (GATILHOS)', () => {
     // At-least-once redelivery for transient Firestore failures; without it the
     // event is dropped on the first one. A redelivery replays the ORIGINAL
     // before/after, and every arm but one is safe under that: the conta reconcile
-    // reads neither (it re-reads the conta itself), the history trigger and the
+    // reads neither (it re-reads the conta itself), the conta trigger's depósito arm
+    // (PR 12-g) enqueues ONE task NAMED by the after side's update time (a replay
+    // re-meets it), the history trigger and the
     // stock trigger enqueue NAMED tasks (the stock one keeps no state and writes
     // nothing; its tasks re-read the stock when they run), and the anchor's
     // remove re-derives from a guarded re-read of the

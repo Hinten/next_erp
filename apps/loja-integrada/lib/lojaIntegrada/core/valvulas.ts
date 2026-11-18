@@ -260,6 +260,29 @@ export function decidirAlvo(v: ValvulaLi, a: AlvoLi): DecisaoAlvoLi {
   }
 }
 
+/**
+ * Whether a flow's valve is live for SOME target of `contaId` — for a decision about the conta as a
+ * whole, which has no single target (the daily stock reconcile's per-conta avisos). Pure. Only
+ * under `on`: the canary `*`, or a list holding at least one well-formed entry of exactly this
+ * conta (`<contaId>:<n>`, the conta part compared whole — `C1` is not `C10`). A conta id outside
+ * the canary's grammar is never live, as {@link decidirAlvo} answers for its targets.
+ */
+export function valvulaLigadaParaContaLi(v: ValvulaLi, contaId: string): boolean {
+  if (v.modo !== MODO_LI.on || v.canario === null) return false;
+  if (!CONTA_DO_CANARIO.test(contaId)) return false;
+  switch (v.canario.tipo) {
+    case 'nenhum':
+      return false;
+    case 'todos':
+      return true;
+    case 'lista':
+      for (const chave of v.canario.chaves) {
+        if (chave.slice(0, chave.lastIndexOf(':')) === contaId) return true;
+      }
+      return false;
+  }
+}
+
 /** The run-start line's own campos. Primitives only; malformed entries by position, never by text. */
 export function camposDaValvula(v: ValvulaLi): Readonly<Record<string, CampoLogLi>> {
   const lista = v.canario?.tipo === 'lista' ? v.canario : null;

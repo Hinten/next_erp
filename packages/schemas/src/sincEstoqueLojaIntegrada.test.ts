@@ -176,6 +176,7 @@ describe('execucaoContaEstoqueLiSchema (PR 12-g amendment: one run’s state for
       'sem-linha-na-loja',
       'ausente',
       'estoque-ambiguo',
+      'deposito-sem-registros',
     ]);
     expect(Object.values(MOTIVO_AMOSTRA_ESTOQUE_LI).sort()).toEqual(
       [...motivoAmostraEstoqueLiSchema.options].sort(),
