@@ -5,6 +5,7 @@ import { formatReais } from '@delfrance/core/money';
 import {
   ESTADO_ANUNCIO_SHOPEE,
   ehKitNativoAtivo,
+  edicaoErpPendenteShopee,
   ehVinculoSubstituido,
   type EstadoPublicacaoRascunhoShopee,
   type ProdutoShopeeLink,
@@ -12,6 +13,7 @@ import {
 
 import {
   COR_ESTADO_ANUNCIO_SHOPEE,
+  ROTULO_ALTERACOES_NAO_ENVIADAS_SHOPEE,
   ROTULO_ESTADO_ANUNCIO_SHOPEE,
   estadoAnuncioShopeeLido,
   formatarInstanteShopee,
@@ -76,6 +78,12 @@ export function StatusAnuncioShopee({ link, shopId, publicacao = null }: StatusA
         {substituidoPor !== null && (
           <Badge color="grape" variant="light">
             Substituído
+          </Badge>
+        )}
+        {/* Saved in the ERP, not yet sent: a read-only viewer sees it too. */}
+        {edicaoErpPendenteShopee(link) && (
+          <Badge color="orange" variant="light">
+            {ROTULO_ALTERACOES_NAO_ENVIADAS_SHOPEE}
           </Badge>
         )}
         {ehKitNativoAtivo(link) ? (

@@ -2,6 +2,7 @@ import { FirebaseError } from 'firebase/app';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  ALVO_EDICAO_SHOPEE,
   CAMPO_RASCUNHO_SHOPEE,
   CODIGO_RASCUNHO_SHOPEE,
   MSG_ITEM_NAME_EM_BRANCO_RASCUNHO_SHOPEE,
@@ -2612,6 +2613,34 @@ describe('#1911 — each draft and taxonomy method: its route, its verb, its bod
       { ...ALVO_RASCUNHO, linkDocId: 'rascunho-legado-1', base: CAMPOS },
     ],
     [
+      'atualizarRascunho (a PUBLISHED listing: `alvo` rides in the body)',
+      (c: ReturnType<typeof client>) =>
+        c.atualizarRascunho({
+          ...ALVO_RASCUNHO,
+          linkDocId: 'anuncio-1',
+          base: { item_name: 'Camiseta' },
+          patch: { item_name: 'Camiseta básica' },
+          alvo: ALVO_EDICAO_SHOPEE.anuncio,
+        }),
+      { linkDocId: 'anuncio-1', gravados: [CAMPO_RASCUNHO_SHOPEE.itemName] },
+      `${BASE}/rascunho/atualizar`,
+      {
+        ...ALVO_RASCUNHO,
+        linkDocId: 'anuncio-1',
+        base: { item_name: 'Camiseta' },
+        patch: { item_name: 'Camiseta básica' },
+        alvo: 'anuncio',
+      },
+    ],
+    [
+      'descartarEdicoesAnuncio (route, verb and body BY NAME)',
+      (c: ReturnType<typeof client>) =>
+        c.descartarEdicoesAnuncio({ ...ALVO_RASCUNHO, linkDocId: 'anuncio-1', revisao: 3 }),
+      { linkDocId: 'anuncio-1', descartado: true },
+      `${BASE}/anuncio/descartar-edicoes`,
+      { ...ALVO_RASCUNHO, linkDocId: 'anuncio-1', revisao: 3 },
+    ],
+    [
       'recomendacaoCategoria',
       (c: ReturnType<typeof client>) =>
         c.recomendacaoCategoria({ integracaoId: 'int/1 2&x', nome: 'Camiseta & Cia/branca' }),
@@ -2664,6 +2693,51 @@ describe('#1911 — each draft and taxonomy method: its route, its verb, its bod
     await c.limitesDoItem({ integracaoId: 'int-1', categoryId: 0 });
 
     expect(pedidos[0]?.url).toBe(`${BASE}/taxonomia/limites?integracaoId=int-1&categoryId=0`);
+  });
+});
+
+describe('PR3 — `alvo` only for a PUBLISHED edit; the discard-edits body is rebuilt by name', () => {
+  it("⭐ a draft edit (no `alvo`) sends NO `alvo` key at all ⟷ NEAR-MISS: `alvo: 'anuncio'` sends exactly that,", async () => {
+    const rascunho = gravador(JSON.stringify({ linkDocId: 'r-1', gravados: [] }));
+    const anuncio = gravador(JSON.stringify({ linkDocId: 'r-1', gravados: [] }));
+    const entrada = { ...ALVO_RASCUNHO, linkDocId: 'r-1', base: {}, patch: {} };
+
+    await rascunho.c.atualizarRascunho(entrada);
+    await anuncio.c.atualizarRascunho({ ...entrada, alvo: ALVO_EDICAO_SHOPEE.anuncio });
+
+    expect(corpoEnviado(rascunho.pedidos[0]?.init)).not.toHaveProperty('alvo');
+    expect(corpoEnviado(anuncio.pedidos[0]?.init)).toHaveProperty('alvo', 'anuncio');
+  });
+
+  it('⭐ `descartarEdicoesAnuncio` drops a stray key and sends `revisao` as given ⟷ NEAR-MISS: a 409 is a ShopeeClientHttpError, never a resolved answer', async () => {
+    const { c, pedidos } = gravador(JSON.stringify({ linkDocId: 'a-1', descartado: false }));
+
+    const r = await c.descartarEdicoesAnuncio({
+      ...ALVO_RASCUNHO,
+      linkDocId: 'a-1',
+      revisao: 7,
+      base: { item_name: 'x' },
+    } as Parameters<typeof c.descartarEdicoesAnuncio>[0]);
+
+    expect(r).toEqual({ linkDocId: 'a-1', descartado: false });
+    expect(corpoEnviado(pedidos[0]?.init)).toStrictEqual({
+      ...ALVO_RASCUNHO,
+      linkDocId: 'a-1',
+      revisao: 7,
+    });
+    expect(pedidos[0]?.init !== undefined && 'signal' in pedidos[0].init).toBe(false);
+
+    const recusado = gravador(
+      JSON.stringify({
+        error: 'conflito',
+        message: 'revisão mudou',
+        code: CODIGO_RASCUNHO_SHOPEE.conflito,
+      }),
+      409,
+    );
+    await expect(
+      recusado.c.descartarEdicoesAnuncio({ ...ALVO_RASCUNHO, linkDocId: 'a-1', revisao: 7 }),
+    ).rejects.toBeInstanceOf(ShopeeClientHttpError);
   });
 });
 
@@ -3529,6 +3603,19 @@ describe('#1911 (P16) — `canais`: os canais de envio da loja para um produto',
       Accept: 'application/json',
     });
     expect(pedidos[0]?.init !== undefined && 'signal' in pedidos[0].init).toBe(false);
+  });
+
+  it('com `linkDocId` (a seção de um anúncio publicado) a consulta o carrega, codificado ⟷ NEAR-MISS: sem ele a chave NÃO aparece (nem `linkDocId=` nem `undefined`)', async () => {
+    const comLink = gravador(JSON.stringify(CANAIS_200));
+    const semLink = gravador(JSON.stringify(CANAIS_200));
+
+    await comLink.c.canais({ integracaoId: 'int-1', produtoId: 'prod-1', linkDocId: 'L/1 x' });
+    await semLink.c.canais({ integracaoId: 'int-1', produtoId: 'prod-1' });
+
+    expect(comLink.pedidos[0]?.url).toBe(
+      `${BASE}/canais?integracaoId=int-1&produtoId=prod-1&linkDocId=L%2F1%20x`,
+    );
+    expect(semLink.pedidos[0]?.url).toBe(`${BASE}/canais?integracaoId=int-1&produtoId=prod-1`);
   });
 
   it('⭐ um 200 é lido pelo schema COMPARTILHADO — `nome: null` continua null, uma chave desconhecida (no topo e na linha) é descartada ⟷ NEAR-MISS: sem `medidasCompletas` ⇒ ShopeeClientRespostaInvalidaError, nunca lido como false', async () => {

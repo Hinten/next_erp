@@ -9,6 +9,7 @@ import { PERM } from '@delfrance/auth';
 import {
   ACAO_STATUS_ANUNCIO,
   AGUARDAR_ANUNCIO_INCERTO_SHOPEE_MS,
+  ALVO_EDICAO_SHOPEE,
   AGUARDAR_KIT_INCERTO_SHOPEE_MS,
   CAMPO_RASCUNHO_SHOPEE,
   ESTADO_ANUNCIO_SHOPEE,
@@ -34,7 +35,18 @@ import {
 } from '@/lib/shopee/client';
 import {
   DIALOGO_DESCARTE_CRIACAO_INCERTA_SHOPEE,
+  FRASE_ANUNCIO_DEIXOU_DE_SER_EDITAVEL_DURANTE_EDICAO_SHOPEE,
+  FRASE_ANUNCIO_EDICAO_SALVA_SHOPEE,
+  FRASE_ANUNCIO_NAO_EDITAVEL_SHOPEE,
+  FRASE_CONFIRMAR_DESCARTE_EDICOES_SHOPEE,
   FRASE_DESCARTE_EM_CONFLITO_SHOPEE,
+  FRASE_EDICOES_DESCARTADAS_SHOPEE,
+  FRASE_NADA_A_DESCARTAR_SHOPEE,
+  ROTULO_ALTERACOES_NAO_ENVIADAS_SHOPEE,
+  ROTULO_CAMPO_RASCUNHO_SHOPEE,
+  ROTULO_CONFIRMAR_DESCARTE_EDICOES_SHOPEE,
+  ROTULO_DESCARTAR_EDICOES_SHOPEE,
+  TITULO_DESCARTAR_EDICOES_SHOPEE,
   FRASE_CONFIRMAR_DESCARTE_LOCAL_SHOPEE,
   FRASE_CONFIRMAR_DESCARTE_SHOPEE,
   FRASE_RASCUNHO_AGUARDANDO_SERVIDOR_SHOPEE,
@@ -108,7 +120,11 @@ import {
 } from '@/lib/shopee/wire';
 import { MantineTestProvider } from '@/lib/testing/mantine';
 import { shopeeClientFalso } from '@/lib/testing/shopeeClientFalso';
-import type { RascunhoShopeeProps } from './RascunhoShopee';
+import type {
+  PropsDoAnuncioShopee,
+  PropsDoFormularioShopee,
+  RascunhoShopeeProps,
+} from './RascunhoShopee';
 import type { ConflitoRascunhoShopeeModalProps } from './ConflitoRascunhoShopeeModal';
 import type { DesfechoAcaoShopeeProps } from './DesfechoAcaoShopee';
 import type { AcoesShopee } from './AcoesAnuncioShopee';
@@ -180,8 +196,11 @@ const h = vi.hoisted(() => ({
   extraData: null as Record<string, unknown> | null,
   /** The `extraData/singleton` LISTENER failed (`null` = it answers `extraData`). */
   extraDataErro: null as Error | null,
-  /** The LAST props each draft form received, by link doc id (the `RascunhoShopee` double). */
-  rascunhos: new Map<string, RascunhoShopeeProps>(),
+  /**
+   * The LAST props each form received, by link doc id (the `RascunhoShopee`
+   * double) — a draft's, or (PR3) a published listing's (`modo: 'anuncio'`).
+   */
+  rascunhos: new Map<string, PropsDoFormularioShopee>(),
   /** The LAST props the conflict modal received (the `ConflitoRascunhoShopeeModal` double). */
   conflito: null as ConflitoRascunhoShopeeModalProps | null,
   /** The LAST props each outcome panel received, by link doc id (the REAL panel, wrapped — #1911 P11). */
@@ -351,9 +370,45 @@ vi.mock('./RascunhoShopee', async () => {
       </div>
     );
   }
+  /**
+   * PR3 — a PUBLISHED listing's form: its own root test id (never under the
+   * `shopee-anuncio-` / `shopee-rascunho-` prefixes the block and draft
+   * matchers read), the shared title field and ONLY «Salvar» and «Desfazer
+   * alterações» — no «Salvar rascunho», «Descartar» or «Publicar».
+   */
+  function FormularioDoAnuncioDuplo({ p }: { p: PropsDoAnuncioShopee }) {
+    return (
+      <div data-testid={`shopee-edicao-anuncio-${p.linkDocId}`}>
+        {p.bloco.avisos.map((a) => (
+          <p key={a}>{a}</p>
+        ))}
+        {p.resultado !== null && (
+          <p data-testid={`resultado-${p.linkDocId}`}>{p.resultado.mensagem}</p>
+        )}
+        <input
+          aria-label="Título do anúncio"
+          value={p.bloco.valores.item_name ?? ''}
+          readOnly={!p.bloco.camposEditaveis}
+          onChange={(e) => p.onCampo('item_name', e.target.value)}
+        />
+        {p.podeEditar && (
+          <>
+            <button type="button" disabled={!p.bloco.podeSalvar} onClick={p.onSalvar}>
+              Salvar
+            </button>
+            <button type="button" disabled={!p.bloco.podeDesfazer} onClick={p.onDesfazer}>
+              Desfazer alterações
+            </button>
+          </>
+        )}
+      </div>
+    );
+  }
   return {
-    RascunhoShopee: (p: RascunhoShopeeProps) => {
-      h.rascunhos.set(p.linkDocId, p);
+    RascunhoShopee: (props: PropsDoFormularioShopee) => {
+      h.rascunhos.set(props.linkDocId, props);
+      if (props.modo === 'anuncio') return <FormularioDoAnuncioDuplo p={props} />;
+      const p = props;
       return (
         <div data-testid={`shopee-rascunho-${p.linkDocId}`}>
           {p.bloco.avisos.map((a) => (
@@ -449,6 +504,7 @@ vi.mock('./ConflitoRascunhoShopeeModal', () => ({
 
 const {
   FRASE_CONFIRMAR_DESCARTE_ATESTADO_SHOPEE,
+  FRASE_DESCARTE_EDICOES_ANUNCIO_MUDOU_SHOPEE,
   FRASE_DESCRICAO_DO_PRODUTO_NAO_LIDA_SHOPEE,
   FRASE_KIT_VINCULOS_MUDARAM_SHOPEE,
   FRASE_SESSAO_NAO_RENOVADA_SHOPEE,
@@ -1688,7 +1744,7 @@ describe('ShopeeEditor — republish an existing link, never a first publish', (
     ).toBeDefined();
   });
 
-  it('(n) a draft link — with or without a category — gets its OWN buttons (Salvar rascunho / Descartar / Publicar), never the old sentence; a published sibling keeps Republicar and no Publicar', () => {
+  it('(n) a draft link — with or without a category — gets its OWN buttons (Salvar rascunho / Descartar / Publicar), never the old sentence; a published sibling keeps Republicar and no Publicar — and (PR3) its OWN edit form, never a draft’s', () => {
     comAutoria();
     h.client = shopeeClientFalso({ limitesDoItem: async () => limitesDoItem(100087) });
     h.links = [
@@ -1711,8 +1767,13 @@ describe('ShopeeEditor — republish an existing link, never a first publish', (
       expect(semBotao(id, 'Reverificar')).toBeNull();
     }
     expect(botao('L-pub', 'Republicar')).toBeDefined();
+    // INVERTED on purpose (PR3): the published listing the ERP may edit gets
+    // its own form — under its own root, never the draft's.
+    expect(within(bloco('L-pub')).getByTestId('shopee-edicao-anuncio-L-pub')).toBeDefined();
+    expect(formDoAnuncioDe('L-pub').modo).toBe('anuncio');
     expect(within(bloco('L-pub')).queryByTestId('shopee-rascunho-L-pub')).toBeNull();
     expect(semBotao('L-pub', 'Salvar rascunho')).toBeNull();
+    expect(semBotao('L-pub', 'Descartar')).toBeNull();
     // Case-sensitive: "Republicar" does not match; a draft's button would.
     expect(semBotao('L-pub', /Publicar/)).toBeNull();
   });
@@ -1753,6 +1814,7 @@ describe('ShopeeEditor — republish an existing link, never a first publish', (
       kitAberto: () => false,
       alternarKit: vi.fn(),
       ofereceKitNativo: () => false,
+      pedirDescarteDasEdicoes: vi.fn(),
     };
     const linha = (id: string, extra: Record<string, unknown>) =>
       link(id, { estadoAnuncio: null, ...extra }).data as ProdutoShopeeLink;
@@ -3421,6 +3483,15 @@ const rascunho = (id: string, extra: Record<string, unknown> = {}): Linha =>
 const formDe = (linkDocId: string): RascunhoShopeeProps => {
   const p = h.rascunhos.get(linkDocId);
   if (p === undefined) throw new Error(`no draft form rendered for ${linkDocId}`);
+  // PR3: a PUBLISHED listing's form is no draft's — read it with `formDoAnuncioDe`.
+  if (p.modo === 'anuncio') throw new Error(`${linkDocId} rendered a published listing's form`);
+  return p;
+};
+/** The props a PUBLISHED listing's form `linkDocId` got on the LAST render (PR3). */
+const formDoAnuncioDe = (linkDocId: string): PropsDoAnuncioShopee => {
+  const p = h.rascunhos.get(linkDocId);
+  if (p === undefined) throw new Error(`no form rendered for ${linkDocId}`);
+  if (p.modo !== 'anuncio') throw new Error(`${linkDocId} rendered a draft's form`);
   return p;
 };
 const raizDoRascunho = (linkDocId: string) => screen.getByTestId(`shopee-rascunho-${linkDocId}`);
@@ -4518,7 +4589,7 @@ describe('ShopeeEditor — a draft write that loses (#1911 P10, rule 7 tier 3)',
       const { onCampo } = formDe('L-rasc');
       const vistos: unknown[] = [];
       const registrar = h.rascunhos.set.bind(h.rascunhos);
-      h.rascunhos.set = (k: string, v: RascunhoShopeeProps) => {
+      h.rascunhos.set = (k: string, v: PropsDoFormularioShopee) => {
         vistos.push([v.bloco.valores.item_name, v.bloco.sujo]);
         return registrar(k, v);
       };
@@ -4567,6 +4638,27 @@ describe('ShopeeEditor — a draft write that loses (#1911 P10, rule 7 tier 3)',
     expect(
       within(bloco('L-a')).getByText(FRASE_RASCUNHO_PUBLICADO_DURANTE_EDICAO_SHOPEE),
     ).toBeDefined();
+  });
+
+  it('⛔ a draft PUBLISHED mid-edit keeps its notice: the published listing’s form stays closed until the notice is dismissed (a keystroke in it would erase the notice unseen) ⟷ NEAR-MISS dismissed, the form opens', () => {
+    comAutoria();
+    h.links = [rascunho('L-a')];
+    const { rerender } = renderEditor();
+    digitarTitulo('L-a', 'Editando A');
+    h.links = [link('L-a', { item_id: 1000005 })];
+    rerenderEditor(rerender);
+    expect(
+      within(bloco('L-a')).getByText(FRASE_RASCUNHO_PUBLICADO_DURANTE_EDICAO_SHOPEE),
+    ).toBeDefined();
+    expect(screen.queryByTestId('shopee-edicao-anuncio-L-a')).toBeNull();
+
+    fireEvent.click(
+      within(screen.getByTestId('shopee-rascunho-aviso-L-a')).getByRole('button', {
+        name: 'Dispensar aviso',
+      }),
+    );
+    expect(screen.queryByText(FRASE_RASCUNHO_PUBLICADO_DURANTE_EDICAO_SHOPEE)).toBeNull();
+    expect(screen.getByTestId('shopee-edicao-anuncio-L-a')).toBeDefined();
   });
 
   it('a dirty entry whose draft got PUBLISHED is dropped with a notice on its block; one DISCARDED elsewhere with a notice on the conta — a cache-served snapshot proves nothing gone', () => {
@@ -8723,5 +8815,508 @@ describe('ShopeeEditor — «Publicar como kit nativo», the first native-kit cr
     );
     fireEvent.click(passo);
     expect(screen.getByRole('dialog', { name: 'Publicar como kit nativo' })).toBeDefined();
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*       PR3 — a PUBLISHED listing's content, edited here (save-only)          */
+/* -------------------------------------------------------------------------- */
+
+const raizDoAnuncio = (linkDocId: string) =>
+  screen.getByTestId(`shopee-edicao-anuncio-${linkDocId}`);
+const botaoDoAnuncio = (linkDocId: string, nome: string) =>
+  within(raizDoAnuncio(linkDocId)).getByRole('button', { name: nome }) as HTMLButtonElement;
+const tituloDoAnuncio = (linkDocId: string) =>
+  within(raizDoAnuncio(linkDocId)).getByLabelText('Título do anúncio') as HTMLInputElement;
+const digitarTituloDoAnuncio = (linkDocId: string, valor: string) =>
+  fireEvent.change(tituloDoAnuncio(linkDocId), { target: { value: valor } });
+/** The action row's «Descartar alterações não enviadas» of `linkDocId`. */
+const descartarEdicoesDe = (linkDocId: string) =>
+  within(bloco(linkDocId)).getByRole('button', {
+    name: ROTULO_DESCARTAR_EDICOES_SHOPEE,
+  }) as HTMLButtonElement;
+const dialogoDescarteDasEdicoes = () =>
+  screen.queryByRole('dialog', { name: TITULO_DESCARTAR_EDICOES_SHOPEE });
+const confirmarDescarteDasEdicoes = () =>
+  fireEvent.click(
+    within(dialogoDescarteDasEdicoes()!).getByRole('button', {
+      name: ROTULO_CONFIRMAR_DESCARTE_EDICOES_SHOPEE,
+    }),
+  );
+/** A published listing holding unsent ERP edits at revision `revisao` (`null` = none stored). */
+const comEdicaoPendente = (
+  id: string,
+  revisao: number | null,
+  extra: Record<string, unknown> = {},
+): Linha =>
+  link(id, {
+    edicaoErpPendenteEm: 1_700_000_000_000,
+    ...(revisao === null ? {} : { edicaoErpRevisao: revisao }),
+    ...extra,
+  });
+
+describe('ShopeeEditor — a PUBLISHED listing’s edit form (PR3)', () => {
+  it('an editable listing gets its form while the operator may author it on a found conta — NEAR-MISS: superseded, removed or native kit get none, nor does a «não encontrada» conta', async () => {
+    comAutoria();
+    h.links = [
+      link('L-pub'),
+      link('L-subst', { item_id: 1000002, substituidoPorLinkDocId: 'L-pub' }),
+      link('L-rem', { item_id: 1000003, estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.removido }),
+      link('L-kit', { item_id: 1000004, kitNativo: true }),
+      link('L-orfa', {
+        item_id: 1000009,
+        contaProdutoShopeeOuterRef: 'documents/integracao/int-9',
+      }),
+    ];
+    renderEditor();
+    expect(within(bloco('L-pub')).getByTestId('shopee-edicao-anuncio-L-pub')).toBeDefined();
+    expect(formDoAnuncioDe('L-pub').podeEditar).toBe(true);
+    expect(formDoAnuncioDe('L-pub').bloco.alvo).toBe(ALVO_EDICAO_SHOPEE.anuncio);
+    // Republicar stays the listing's: the form adds Salvar / Desfazer only.
+    expect(botao('L-pub', 'Republicar')).toBeDefined();
+    for (const id of ['L-subst', 'L-rem', 'L-kit']) {
+      // Positive first: the block rendered.
+      expect(bloco(id), id).toBeDefined();
+      expect(within(bloco(id)).queryByTestId(`shopee-edicao-anuncio-${id}`), id).toBeNull();
+      expect(h.rascunhos.has(id), id).toBe(false);
+    }
+    fireEvent.click(await screen.findByRole('tab', { name: /Conta int-9 \(não encontrada\)/ }));
+    expect(bloco('L-orfa')).toBeDefined();
+    expect(within(bloco('L-orfa')).queryByTestId('shopee-edicao-anuncio-L-orfa')).toBeNull();
+    expect(h.rascunhos.has('L-orfa')).toBe(false);
+  });
+
+  it('NEAR-MISS: without produto.write there is no form — and Republicar still shows', () => {
+    comEscrita();
+    h.links = [link('L-pub')];
+    renderEditor();
+    expect(botao('L-pub', 'Republicar')).toBeDefined();
+    expect(within(bloco('L-pub')).queryByTestId('shopee-edicao-anuncio-L-pub')).toBeNull();
+    expect(h.rascunhos.has('L-pub')).toBe(false);
+  });
+
+  it('L2: a VIRTUAL-kit produto’s ordinary listing is editable — NEAR-MISS: its draft keeps the kit-virtual block', () => {
+    comAutoria();
+    h.produto = { nome: 'Kit', paiId: null, ehKit: true, ehKitVirtual: true };
+    h.links = [link('L-pub'), rascunho('L-rasc')];
+    renderEditor();
+    expect(formDoAnuncioDe('L-pub').bloco.kitVirtual).toBe(false);
+    expect(formDoAnuncioDe('L-pub').bloco.camposEditaveis).toBe(true);
+    expect(formDe('L-rasc').bloco.kitVirtual).toBe(true);
+  });
+
+  it('«Salvar» sends the edit with `alvo: anuncio` and says it waits for «Republicar» — NEAR-MISS: a draft’s save in the same tab carries no `alvo`', async () => {
+    comAutoria();
+    const atualizarRascunho = vi.fn<ShopeeClient['atualizarRascunho']>(async (input) => ({
+      linkDocId: input.linkDocId,
+      gravados: ['item_name'],
+    }));
+    h.client = shopeeClientFalso({ atualizarRascunho });
+    h.links = [link('L-pub'), rascunho('L-rasc')];
+    renderEditor();
+
+    digitarTituloDoAnuncio('L-pub', 'Anúncio L-pub editado');
+    fireEvent.click(botaoDoAnuncio('L-pub', 'Salvar'));
+    await waitFor(() => expect(atualizarRascunho).toHaveBeenCalledTimes(1));
+    expect(atualizarRascunho.mock.calls[0]?.[0]).toStrictEqual({
+      integracaoId: 'int-1',
+      produtoId: 'prod-1',
+      linkDocId: 'L-pub',
+      base: { item_name: 'Anúncio L-pub' },
+      patch: { item_name: 'Anúncio L-pub editado' },
+      alvo: ALVO_EDICAO_SHOPEE.anuncio,
+    });
+    await waitFor(() =>
+      expect(h.notify).toHaveBeenCalledWith({
+        color: 'green',
+        message: FRASE_ANUNCIO_EDICAO_SALVA_SHOPEE,
+      }),
+    );
+
+    digitarTitulo('L-rasc', 'Camiseta azul marinho');
+    fireEvent.click(botaoDoRascunho('L-rasc', 'Salvar rascunho'));
+    await waitFor(() => expect(atualizarRascunho).toHaveBeenCalledTimes(2));
+    expect(atualizarRascunho.mock.calls[1]?.[0]).toStrictEqual({
+      integracaoId: 'int-1',
+      produtoId: 'prod-1',
+      linkDocId: 'L-rasc',
+      base: { item_name: 'Camiseta azul' },
+      patch: { item_name: 'Camiseta azul marinho' },
+    });
+  });
+
+  it('the form’s spinner is its own save’s only — NEVER the action row’s republish of the same link', async () => {
+    comAutoria();
+    let soltarPublicacao: (r: RespostaPublicarShopee) => void = () => undefined;
+    let soltarSalvar: (r: RespostaAtualizar) => void = () => undefined;
+    const publicar = vi.fn<ShopeeClient['publicar']>(
+      () =>
+        new Promise((resolve) => {
+          soltarPublicacao = resolve;
+        }),
+    );
+    const atualizarRascunho = vi.fn<ShopeeClient['atualizarRascunho']>(
+      () =>
+        new Promise((resolve) => {
+          soltarSalvar = resolve;
+        }),
+    );
+    h.client = shopeeClientFalso({ publicar, atualizarRascunho });
+    h.links = [link('L-pub')];
+    renderEditor();
+
+    fireEvent.click(botao('L-pub', 'Republicar'));
+    expect(publicar).toHaveBeenCalledTimes(1);
+    expect(formDoAnuncioDe('L-pub').emVoo).toBeNull();
+    await act(async () => {
+      soltarPublicacao(ITEM_REPUBLICADO);
+      await Promise.resolve();
+    });
+    // The lock is released once the outcome is recorded.
+    await waitFor(() => expect(desfechoDe('L-pub').desfecho.tipo).toBe('publicado'));
+
+    // NEAR-MISS: its own save IS its spinner.
+    digitarTituloDoAnuncio('L-pub', 'Anúncio L-pub editado');
+    fireEvent.click(botaoDoAnuncio('L-pub', 'Salvar'));
+    expect(atualizarRascunho).toHaveBeenCalledTimes(1);
+    expect(formDoAnuncioDe('L-pub').emVoo).toBe('salvar-rascunho');
+    await act(async () => {
+      soltarSalvar({ linkDocId: 'L-pub', gravados: ['item_name'] });
+      await Promise.resolve();
+    });
+  });
+
+  it('Republicar waits while THIS link’s form is dirty — the button and its handler — and acts again after «Desfazer»; another link’s dirt does not hold it', async () => {
+    comAutoria();
+    const publicar = vi.fn<ShopeeClient['publicar']>(async () => ITEM_REPUBLICADO);
+    h.client = shopeeClientFalso({ publicar });
+    h.links = [link('L-pub'), link('L-outro', { item_id: 1000002 })];
+    renderEditor();
+    // A first republish leaves an outcome, whose panel hands this test the editor's handlers.
+    fireEvent.click(botao('L-pub', 'Republicar'));
+    await waitFor(() => expect(desfechoDe('L-pub').desfecho.tipo).toBe('publicado'));
+    expect(publicar).toHaveBeenCalledTimes(1);
+
+    digitarTituloDoAnuncio('L-pub', 'Anúncio L-pub editado');
+    expect(botao('L-pub', 'Republicar').hasAttribute('disabled')).toBe(true);
+    expect(botao('L-outro', 'Republicar').hasAttribute('disabled')).toBe(false);
+    // Called past its disabled button: nothing is sent.
+    act(() => desfechoDe('L-pub').acoes.republicar('int-1', 'L-pub'));
+    expect(publicar).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(botaoDoAnuncio('L-pub', 'Desfazer alterações'));
+    expect(botao('L-pub', 'Republicar').hasAttribute('disabled')).toBe(false);
+    act(() => desfechoDe('L-pub').acoes.republicar('int-1', 'L-pub'));
+    await waitFor(() => expect(publicar).toHaveBeenCalledTimes(2));
+  });
+
+  it('the «Alterações não enviadas» badge reads `edicaoErpPendenteEm` > 0 — NEAR-MISS: 0 or absent shows none', () => {
+    comEscrita();
+    h.links = [
+      comEdicaoPendente('L-pend', 3),
+      link('L-zero', { item_id: 1000002, edicaoErpPendenteEm: 0 }),
+      link('L-sem', { item_id: 1000003 }),
+    ];
+    renderEditor();
+    expect(within(bloco('L-pend')).getByText(ROTULO_ALTERACOES_NAO_ENVIADAS_SHOPEE)).toBeDefined();
+    for (const id of ['L-zero', 'L-sem']) {
+      // Positive first: the block rendered, with its action row.
+      expect(botao(id, 'Republicar'), id).toBeDefined();
+      expect(within(bloco(id)).queryByText(ROTULO_ALTERACOES_NAO_ENVIADAS_SHOPEE), id).toBeNull();
+    }
+  });
+
+  it('the leave guard and the tab mark report a dirty published entry — NEAR-MISS: «Desfazer» clears them', () => {
+    comAutoria();
+    const onDirtyChange = vi.fn();
+    h.links = [link('L-pub')];
+    renderEditor({ onDirtyChange });
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+    digitarTituloDoAnuncio('L-pub', 'Anúncio L-pub editado');
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+    expect(screen.getByRole('tab', { name: /Loja A/ }).getAttribute('data-dirty')).toBe('true');
+    fireEvent.click(botaoDoAnuncio('L-pub', 'Desfazer alterações'));
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+  });
+
+  it('a 422 keeps the entry and shows the server’s sentence ⟷ a 409 ANUNCIO_NAO_EDITAVEL drops it with a toast', async () => {
+    comAutoria();
+    const invalida = new ShopeeClientHttpError(
+      'Um anúncio publicado precisa de marca. Nada foi gravado.',
+      422,
+      CODIGO_FALHA_SHOPEE.anuncioEdicaoInvalida,
+      null,
+      null,
+      DETALHES_ERRO_SHOPEE_VAZIOS,
+    );
+    const atualizarRascunho = vi
+      .fn<ShopeeClient['atualizarRascunho']>()
+      .mockRejectedValueOnce(invalida)
+      .mockRejectedValueOnce(recusaDoRascunho(409, CODIGO_FALHA_SHOPEE.anuncioNaoEditavel));
+    h.client = shopeeClientFalso({ atualizarRascunho });
+    h.links = [link('L-pub')];
+    renderEditor();
+
+    digitarTituloDoAnuncio('L-pub', 'Anúncio L-pub editado');
+    fireEvent.click(botaoDoAnuncio('L-pub', 'Salvar'));
+    await waitFor(() =>
+      expect(screen.getByTestId('resultado-L-pub').textContent).toBe(invalida.message),
+    );
+    expect(tituloDoAnuncio('L-pub').value).toBe('Anúncio L-pub editado');
+    expect(formDoAnuncioDe('L-pub').bloco.sujo).toBe(true);
+    expect(h.notify).not.toHaveBeenCalled();
+
+    fireEvent.click(botaoDoAnuncio('L-pub', 'Salvar'));
+    await waitFor(() =>
+      expect(h.notify).toHaveBeenCalledWith({
+        color: 'orange',
+        message: FRASE_ANUNCIO_NAO_EDITAVEL_SHOPEE,
+      }),
+    );
+    expect(tituloDoAnuncio('L-pub').value).toBe('Anúncio L-pub');
+    expect(formDoAnuncioDe('L-pub').bloco.sujo).toBe(false);
+  });
+
+  it('a dirty published entry is dropped WITH a notice once the listing is superseded — and its form goes with it', () => {
+    comAutoria();
+    const onDirtyChange = vi.fn();
+    h.links = [link('L-pub')];
+    const { rerender } = renderEditor({ onDirtyChange });
+    digitarTituloDoAnuncio('L-pub', 'Anúncio L-pub editado');
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+
+    h.links = [link('L-pub', { substituidoPorLinkDocId: 'L-kit' })];
+    rerenderEditor(rerender, { onDirtyChange });
+    expect(
+      within(bloco('L-pub')).getByText(FRASE_ANUNCIO_DEIXOU_DE_SER_EDITAVEL_DURANTE_EDICAO_SHOPEE),
+    ).toBeDefined();
+    expect(within(bloco('L-pub')).queryByTestId('shopee-edicao-anuncio-L-pub')).toBeNull();
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+  });
+
+  it('a published 409 with fields opens the SAME conflict modal, its buttons enabled over the stored listing', async () => {
+    comAutoria();
+    const atualizarRascunho = vi.fn<ShopeeClient['atualizarRascunho']>().mockRejectedValueOnce(
+      recusaDoRascunho(409, CODIGO_FALHA_SHOPEE.rascunhoConflito, {
+        conflitos: [{ campo: CAMPO_RASCUNHO_SHOPEE.itemName, atual: 'Outro título' }],
+      }),
+    );
+    h.client = shopeeClientFalso({ atualizarRascunho });
+    h.links = [link('L-pub')];
+    renderEditor();
+    digitarTituloDoAnuncio('L-pub', 'Anúncio L-pub editado');
+    fireEvent.click(botaoDoAnuncio('L-pub', 'Salvar'));
+    await screen.findByTestId('shopee-rascunho-conflito');
+    expect(h.conflito?.edicao?.alvo).toBe(ALVO_EDICAO_SHOPEE.anuncio);
+    expect(h.conflito?.servidorCarregado).toBe(true);
+    expect(
+      (screen.getByRole('button', { name: 'Salvar mesmo assim' }) as HTMLButtonElement).disabled,
+    ).toBe(false);
+    expect(
+      (screen.getByRole('button', { name: 'Usar o que está salvo' }) as HTMLButtonElement).disabled,
+    ).toBe(false);
+  });
+
+  it('a refusal row on an editable listing routes to ITS form («Corrigir no anúncio») with no draft input — NEAR-MISS: without the form it does not', async () => {
+    const problema: ProblemaShopee = {
+      campo: 'attribute_list',
+      motivo: 'categoria-invalida',
+      mensagem: 'A categoria 100087 não aceita este atributo.',
+      acao: null,
+    };
+    const rotulo = `Corrigir no anúncio: ${ROTULO_CAMPO_RASCUNHO_SHOPEE.attributes}`;
+    const casos: [string, () => void, boolean][] = [
+      ['authoring', comAutoria, true],
+      ['no produto.write', comEscrita, false],
+    ];
+    for (const [caso, permitir, comFormulario] of casos) {
+      permitir();
+      h.desfechos = new Map();
+      h.client = shopeeClientFalso({
+        publicar: vi.fn<ShopeeClient['publicar']>().mockRejectedValueOnce(recusa422([problema])),
+      });
+      h.links = [link('L-pub')];
+      const { unmount } = renderEditor();
+      fireEvent.click(botao('L-pub', 'Republicar'));
+      await waitFor(() => expect(desfechoDe('L-pub').desfecho.tipo, caso).toBe('recusado'));
+      expect(desfechoDe('L-pub').rascunho, caso).toBeNull();
+      expect(desfechoDe('L-pub').formularioDoAnuncio ?? null, caso).toStrictEqual(
+        comFormulario ? { logisticaConfiavel: false } : null,
+      );
+      expect(within(bloco('L-pub')).queryAllByRole('button', { name: rotulo }), caso).toHaveLength(
+        comFormulario ? 1 : 0,
+      );
+      unmount();
+    }
+  });
+
+  it('the size-chart line of an edited listing follows the category being EDITED — NEAR-MISS: unedited, it reads the stored one', () => {
+    comAutoria();
+    h.produto = { nome: 'Camiseta', paiId: null, tabelaDeMedidasModaUid: 'documents/tabMedi/tm-1' };
+    h.tabMedi = {
+      nome: 'Camisetas adulto',
+      tabelasMedidasShopee: {
+        'int-1': [{ categoryId: 100088, size_chart_id: 700024640, name: 'Camisetas' }],
+      },
+    };
+    h.links = [link('L-pub')];
+    renderEditor();
+    expect(within(bloco('L-pub')).getByText(/não tem modelo para a categoria/)).toBeDefined();
+    act(() => formDoAnuncioDe('L-pub').onCampo('category_id', 100088));
+    expect(
+      within(bloco('L-pub')).getByText(/modelo #700024640 \(categoria «Camisetas»\)/),
+    ).toBeDefined();
+  });
+});
+
+describe('ShopeeEditor — discarding a published listing’s UNSENT edits (PR3)', () => {
+  type RespostaDescarteDasEdicoes = Awaited<ReturnType<ShopeeClient['descartarEdicoesAnuncio']>>;
+  function comDescarte(resposta: Partial<RespostaDescarteDasEdicoes> = {}) {
+    comAutoria();
+    const descartarEdicoesAnuncio = vi.fn<ShopeeClient['descartarEdicoesAnuncio']>(
+      async (input) => ({ linkDocId: input.linkDocId, descartado: true, ...resposta }),
+    );
+    h.client = shopeeClientFalso({ descartarEdicoesAnuncio });
+    return descartarEdicoesAnuncio;
+  }
+
+  it('asks first, then sends the revision the operator SAW; Cancelar sends nothing', async () => {
+    const descartarEdicoesAnuncio = comDescarte();
+    h.links = [comEdicaoPendente('L-pub', 3)];
+    renderEditor();
+    fireEvent.click(descartarEdicoesDe('L-pub'));
+    const dialogo = dialogoDescarteDasEdicoes();
+    if (dialogo === null) throw new Error('the confirmation must open');
+    expect(within(dialogo).getByText(FRASE_CONFIRMAR_DESCARTE_EDICOES_SHOPEE)).toBeDefined();
+    fireEvent.click(within(dialogo).getByRole('button', { name: 'Cancelar' }));
+    expect(dialogoDescarteDasEdicoes()).toBeNull();
+    expect(descartarEdicoesAnuncio).not.toHaveBeenCalled();
+
+    fireEvent.click(descartarEdicoesDe('L-pub'));
+    confirmarDescarteDasEdicoes();
+    await waitFor(() => expect(descartarEdicoesAnuncio).toHaveBeenCalledTimes(1));
+    expect(descartarEdicoesAnuncio.mock.calls[0]?.[0]).toStrictEqual({
+      integracaoId: 'int-1',
+      produtoId: 'prod-1',
+      linkDocId: 'L-pub',
+      revisao: 3,
+    });
+    await waitFor(() =>
+      expect(h.notify).toHaveBeenCalledWith({
+        color: 'green',
+        message: FRASE_EDICOES_DESCARTADAS_SHOPEE,
+      }),
+    );
+  });
+
+  it('a 200 `descartado: false` says nothing was pending — never «descartadas»', async () => {
+    comDescarte({ descartado: false });
+    h.links = [comEdicaoPendente('L-pub', 3)];
+    renderEditor();
+    fireEvent.click(descartarEdicoesDe('L-pub'));
+    confirmarDescarteDasEdicoes();
+    await waitFor(() =>
+      expect(h.notify).toHaveBeenCalledWith({
+        color: 'blue',
+        message: FRASE_NADA_A_DESCARTAR_SHOPEE,
+      }),
+    );
+    expect(h.notify).not.toHaveBeenCalledWith(
+      expect.objectContaining({ message: FRASE_EDICOES_DESCARTADAS_SHOPEE }),
+    );
+  });
+
+  it('critique #6: a revision that moves while the confirmation is open sends NOTHING and says so — NEAR-MISS: another field moving keeps the captured revision and sends it', async () => {
+    const descartarEdicoesAnuncio = comDescarte();
+    h.links = [comEdicaoPendente('L-pub', 3)];
+    const { rerender } = renderEditor();
+    fireEvent.click(descartarEdicoesDe('L-pub'));
+    // Another tab saved a newer edit meanwhile.
+    h.links = [comEdicaoPendente('L-pub', 4)];
+    rerenderEditor(rerender);
+    confirmarDescarteDasEdicoes();
+    expect(dialogoDescarteDasEdicoes()).toBeNull();
+    expect(h.notify).toHaveBeenCalledWith({
+      color: 'orange',
+      message: FRASE_DESCARTE_EDICOES_ANUNCIO_MUDOU_SHOPEE,
+    });
+    expect(descartarEdicoesAnuncio).not.toHaveBeenCalled();
+
+    // NEAR-MISS: the revision stands (a stock write-back moved another field).
+    fireEvent.click(descartarEdicoesDe('L-pub'));
+    h.links = [comEdicaoPendente('L-pub', 4, { ultimaModificacao: 9 })];
+    rerenderEditor(rerender);
+    confirmarDescarteDasEdicoes();
+    await waitFor(() => expect(descartarEdicoesAnuncio).toHaveBeenCalledTimes(1));
+    expect(descartarEdicoesAnuncio.mock.calls[0]?.[0].revisao).toBe(4);
+  });
+
+  it('is disabled while the form is dirty, and with no readable revision — NEAR-MISS: clean with a revision, enabled', () => {
+    comDescarte();
+    h.links = [
+      comEdicaoPendente('L-pub', 3),
+      comEdicaoPendente('L-sem-rev', null, { item_id: 1000002 }),
+    ];
+    renderEditor();
+    expect(descartarEdicoesDe('L-pub').hasAttribute('disabled')).toBe(false);
+    expect(descartarEdicoesDe('L-sem-rev').hasAttribute('disabled')).toBe(true);
+    digitarTituloDoAnuncio('L-pub', 'Anúncio L-pub editado');
+    expect(descartarEdicoesDe('L-pub').hasAttribute('disabled')).toBe(true);
+    fireEvent.click(botaoDoAnuncio('L-pub', 'Desfazer alterações'));
+    expect(descartarEdicoesDe('L-pub').hasAttribute('disabled')).toBe(false);
+  });
+
+  it('waits on a just-saved edit’s echo — the REVISION — and only then offers the discard again', async () => {
+    comAutoria();
+    const atualizarRascunho = vi.fn<ShopeeClient['atualizarRascunho']>(async (input) => ({
+      linkDocId: input.linkDocId,
+      gravados: ['item_name'],
+    }));
+    h.client = shopeeClientFalso({ atualizarRascunho });
+    h.links = [comEdicaoPendente('L-pub', 3)];
+    const { rerender } = renderEditor();
+    digitarTituloDoAnuncio('L-pub', 'Anúncio L-pub editado');
+    fireEvent.click(botaoDoAnuncio('L-pub', 'Salvar'));
+    await waitFor(() =>
+      expect(h.notify).toHaveBeenCalledWith({
+        color: 'green',
+        message: FRASE_ANUNCIO_EDICAO_SALVA_SHOPEE,
+      }),
+    );
+    // Saved, awaiting the echo: the revision read now could be stale.
+    expect(descartarEdicoesDe('L-pub').hasAttribute('disabled')).toBe(true);
+    // NEAR-MISS: a foreign write moves the stamp but not the revision — still waiting.
+    h.links = [comEdicaoPendente('L-pub', 3, { ultimaModificacao: 9 })];
+    rerenderEditor(rerender);
+    expect(descartarEdicoesDe('L-pub').hasAttribute('disabled')).toBe(true);
+    // The echo: the revision moved.
+    h.links = [comEdicaoPendente('L-pub', 4, { item_name: 'Anúncio L-pub editado' })];
+    rerenderEditor(rerender);
+    expect(descartarEdicoesDe('L-pub').hasAttribute('disabled')).toBe(false);
+  });
+
+  it('a 409 CONFLITO shows the route’s OWN sentence on the form — never a success', async () => {
+    comAutoria();
+    const conflito = new ShopeeClientHttpError(
+      'As alterações mudaram depois que você abriu a confirmação. Nada foi descartado.',
+      409,
+      CODIGO_FALHA_SHOPEE.rascunhoConflito,
+      null,
+      null,
+      { ...DETALHES_ERRO_SHOPEE_VAZIOS, conflitos: [] },
+    );
+    h.client = shopeeClientFalso({
+      descartarEdicoesAnuncio: vi
+        .fn<ShopeeClient['descartarEdicoesAnuncio']>()
+        .mockRejectedValueOnce(conflito),
+    });
+    h.links = [comEdicaoPendente('L-pub', 3)];
+    renderEditor();
+    fireEvent.click(descartarEdicoesDe('L-pub'));
+    confirmarDescarteDasEdicoes();
+    await waitFor(() =>
+      expect(screen.getByTestId('resultado-L-pub').textContent).toBe(conflito.message),
+    );
+    expect(h.notify).not.toHaveBeenCalled();
   });
 });

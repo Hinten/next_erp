@@ -25,8 +25,9 @@ import { AfterSaveBlockedError } from '@delfrance/ui';
  * holds on both paths.
  */
 export const MENSAGEM_RASCUNHO_SHOPEE_PENDENTE =
-  'O rascunho da Shopee tem alterações não salvas: use «Salvar rascunho», ' +
-  '«Desfazer alterações» ou «Descartar» na aba Shopee. O que você alterou no produto já foi salvo.';
+  'A aba Shopee tem alterações não salvas (rascunho ou anúncio): use «Salvar rascunho» ou ' +
+  '«Salvar», «Desfazer alterações» ou «Descartar» na aba Shopee. O que você alterou no produto ' +
+  'já foi salvo.';
 
 /** Throws {@link AfterSaveBlockedError} when the Shopee tab reports unsaved draft work. */
 export function exigirRascunhosShopeeSalvos(sujo: boolean): void {

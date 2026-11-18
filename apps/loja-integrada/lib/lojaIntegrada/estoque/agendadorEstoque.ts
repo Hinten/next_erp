@@ -1,8 +1,11 @@
 /**
  * The stock-queue PRODUCER, pure (master plan step 12, PR 12-e): what an enqueue onto
  * `filaEstoqueLojaIntegrada` means, with the transport handed in, and how a stock task is NAMED
- * and SCHEDULED. Shared by every producer of the queue: the send run's one `deriva` follow-up
- * now, the stock trigger, the reconcile and the manual push later.
+ * and SCHEDULED. Shared by every producer of the queue: the send run's one `deriva` follow-up,
+ * the stock trigger (an `estoque` task per child and per flagged kit, and the ONE `estoque-kits`
+ * fan-out of a component with more store kits than the eager ceiling), that fan-out's consumer
+ * (an `estoque` task per kit, paced on the global slot), and later the reconcile and the manual
+ * push.
  *
  * The queue itself is bound by a composition root in the functions codebase, never here: it
  * resolves the region-qualified queue path and reads the sweep-only valve, and passes both in
@@ -18,13 +21,39 @@
  *    (origin, conta, produto, delete flag); a create and a delete in one window are two tasks, and
  *    a `deriva` follow-up never collides with the event that caused it. The window is in the
  *    name, so Cloud Tasks' ban on re-using a name for about an hour never bites. The digest keeps
- *    the id inside `[A-Za-z0-9_-]{1,500}` whatever the ids hold.
+ *    the id inside `[A-Za-z0-9_-]{1,500}` whatever the ids hold. A fan-out task is
+ *    `estoque-kits-` + sha256 of `estoque-kits:<conta>:<componente>:<janela>`
+ *    ({@link idDaTarefaEstoqueKitsLi}): its own prefix AND its own tag, so it can never take the
+ *    name of a send task, whatever the ids hold.
  *  - **Schedule.** `(janela + 1) · 60 s + 60 s + (hash(produto) mod 30 s)`
  *    ({@link agendamentoEstoqueLi}): the task cannot dispatch before the window has closed AND a
  *    margin at least as long as an enqueue's own deadline has passed, so an enqueue at `t` either
  *    creates its task or collides with one that dispatches after `t` and reads the ERP as `t` left
  *    it. A late redelivery lands in a later window — one more run costing one store read, never a
- *    loss. The spread keeps one conta's produtos from all dispatching on the same second.
+ *    loss. The spread keeps one conta's produtos from all dispatching on the same second. A
+ *    fan-out task is scheduled the same way, spread by its component.
+ *
+ * ## A bulk enqueue: the window handed in, and a not-before bound
+ *
+ * The `estoque-kits` fan-out (`processarKitsEstoque.ts`) enqueues up to thousands of kit tasks and
+ * may be retried by its queue in a later window. So {@link enfileirarTarefaEstoqueLi} takes two
+ * options ({@link OpcoesEnvioEstoqueLi}):
+ *
+ *  - **`janela`**, the window that NAMES the task, in place of the clock's: the fan-out names every
+ *    kit task by ITS OWN payload's window `J`. Why that is safe: every task named for `J` — whoever
+ *    enqueued it — is scheduled at or after `agendamentoEstoqueLi(J, ·)` ≥ `(J + 2) · 60 s` (the
+ *    bound below can only push it later), and the fan-out task of window `J` was enqueued by the
+ *    trigger with its clock in `J`, after every read, so the crossing that caused it committed
+ *    before `(J + 1) · 60 s`. A kit task named for `J` therefore dispatches AFTER that crossing and
+ *    reads the state it left: meeting one (an answered already-exists) loses nothing. And a retry
+ *    of the fan-out, in any later window, names its kit tasks exactly as the first attempt did, so
+ *    its re-enqueues meet the first attempt's tasks — success — instead of doubling the fan-out.
+ *  - **`naoAntesDeMs`**, a not-before bound: the schedule is the LATER of the window's and this one,
+ *    so the window's schedule stays a floor and the naming proof above keeps its margin. The
+ *    fan-out passes the instants it reserved on the ONE global stagger slot (`slotEstoqueLi.ts`).
+ *
+ * Every other producer (the trigger, the `deriva` follow-up) passes neither: the clock names the
+ * task, as above.
  *
  * ## The payload is PARSED before it leaves
  *
@@ -45,8 +74,10 @@
 import { sha256Hex } from '@delfrance/data/admin';
 import {
   TIPO_TAREFA_ESTOQUE_LI,
+  type TarefaEstoqueKitsLi,
   type TarefaEstoqueLi,
   type TarefaFilaEstoqueLi,
+  tarefaEstoqueKitsLiSchema,
   tarefaEstoqueLiSchema,
 } from '@delfrance/schemas';
 
@@ -71,6 +102,13 @@ export const MARGEM_AGENDAMENTO_ESTOQUE_LI_MS = 60_000;
 /** The spread of one window's tasks across produtos, in ms. */
 export const DISPERSAO_ESTOQUE_LI_MS = 30_000;
 
+/**
+ * The enqueues a BULK producer (the `estoque-kits` fan-out) has in flight at once, on the
+ * re-drive's precedent (`CONCORRENCIA_REDRIVE_LI`, `notificacoes/notificacao.ts`): about 2 000
+ * kit tasks at 0.1–0.3 s an enqueue stay far inside the stock queue's 300 s timeout.
+ */
+export const CONCORRENCIA_ENFILEIRAMENTO_LOTE_ESTOQUE_LI = 20;
+
 /** `⌊agoraMs / 60 s⌋`: the window an enqueue at `agoraMs` belongs to. */
 export function janelaEstoqueLi(agoraMs: number): number {
   return Math.floor(agoraMs / JANELA_ESTOQUE_LI_MS);
@@ -82,6 +120,13 @@ export function idDaTarefaEstoqueLi(
 ): string {
   const apagado = t.apagado ? 'd' : 'w';
   return `estoque-${sha256Hex(`estoque:${t.origem}:${t.contaId}:${t.produtoId}:${apagado}:${String(t.janela)}`)}`;
+}
+
+/** The Cloud Tasks task id of a fan-out task (module header, "Name"). */
+export function idDaTarefaEstoqueKitsLi(
+  t: Pick<TarefaEstoqueKitsLi, 'contaId' | 'componenteId' | 'janela'>,
+): string {
+  return `estoque-kits-${sha256Hex(`estoque-kits:${t.contaId}:${t.componenteId}:${String(t.janela)}`)}`;
 }
 
 /** When a task of `janela` for `produtoId` may dispatch, in ms since the epoch (module header). */
@@ -153,25 +198,68 @@ export function criarAgendadorEstoqueLi(opcoes: OpcoesAgendadorEstoqueLi): Agend
 /** A stock task's ids, everything but the window (read here, at the enqueue). */
 export type TarefaEstoqueSemJanelaLi = Omit<TarefaEstoqueLi, 'tipo' | 'janela'>;
 
+/** What a BULK producer adds to one enqueue (module header, "A bulk enqueue"). */
+export interface OpcoesEnvioEstoqueLi {
+  /**
+   * The window that NAMES the task, in place of the clock's — then the clock is not read at all.
+   * Only the fan-out passes it: its own payload's window.
+   */
+  readonly janela?: number;
+  /** A not-before bound, in ms since the epoch: the schedule is the later of the window's and it. */
+  readonly naoAntesDeMs?: number;
+}
+
 /**
  * Enqueue ONE `estoque` task: the clock read right here, IMMEDIATELY before the enqueue (never
- * before the caller's own reads), the payload built and PARSED (strict: a quantity or an extra
- * key throws `ZodError`, and nothing is sent), then named and scheduled (module header). Rejects
- * as the agendador does.
+ * before the caller's own reads) — unless `opcoes.janela` names the window instead — the payload
+ * built and PARSED (strict: a quantity or an extra key throws `ZodError`, and nothing is sent),
+ * then named and scheduled (module header; `opcoes.naoAntesDeMs` can only move the schedule
+ * later). Rejects as the agendador does.
  */
 export async function enfileirarTarefaEstoqueLi(
   agendador: AgendadorEstoqueLi,
   agoraMs: () => number,
   semJanela: TarefaEstoqueSemJanelaLi,
+  opcoes: OpcoesEnvioEstoqueLi = {},
 ): Promise<void> {
-  const janela = janelaEstoqueLi(agoraMs());
+  const janela = opcoes.janela ?? janelaEstoqueLi(agoraMs());
   const tarefa = tarefaEstoqueLiSchema.parse({
     ...semJanela,
     tipo: TIPO_TAREFA_ESTOQUE_LI.estoque,
     janela,
   });
+  const agendamento = agendamentoEstoqueLi(tarefa.janela, tarefa.produtoId);
   await agendador.enfileirar(tarefa, {
     id: idDaTarefaEstoqueLi(tarefa),
-    agendarParaMs: agendamentoEstoqueLi(janela, tarefa.produtoId),
+    agendarParaMs:
+      opcoes.naoAntesDeMs === undefined ? agendamento : Math.max(agendamento, opcoes.naoAntesDeMs),
+  });
+}
+
+/** A fan-out task's ids, everything but the window (read here, at the enqueue). */
+export type TarefaEstoqueKitsSemJanelaLi = Omit<TarefaEstoqueKitsLi, 'tipo' | 'janela'>;
+
+/**
+ * Enqueue ONE `estoque-kits` fan-out task, exactly as {@link enfileirarTarefaEstoqueLi} enqueues a
+ * send task: the clock read right here, immediately before the enqueue; the payload built and
+ * PARSED strict (`ZodError` on an extra key, nothing sent); named by
+ * {@link idDaTarefaEstoqueKitsLi} and scheduled by {@link agendamentoEstoqueLi} over the
+ * COMPONENT, so the naming proof of the module header holds for it too — the fan-out reads the
+ * component's stock when it RUNS, never what the event saw. Rejects as the agendador does.
+ */
+export async function enfileirarTarefaEstoqueKitsLi(
+  agendador: AgendadorEstoqueLi,
+  agoraMs: () => number,
+  semJanela: TarefaEstoqueKitsSemJanelaLi,
+): Promise<void> {
+  const janela = janelaEstoqueLi(agoraMs());
+  const tarefa = tarefaEstoqueKitsLiSchema.parse({
+    ...semJanela,
+    tipo: TIPO_TAREFA_ESTOQUE_LI.estoqueKits,
+    janela,
+  });
+  await agendador.enfileirar(tarefa, {
+    id: idDaTarefaEstoqueKitsLi(tarefa),
+    agendarParaMs: agendamentoEstoqueLi(janela, tarefa.componenteId),
   });
 }

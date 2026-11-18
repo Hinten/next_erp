@@ -17,6 +17,7 @@ import { FirebaseError } from 'firebase/app';
 import { CAMPO_RASCUNHO_SHOPEE, type CanalLogisticaRascunhoShopee } from '@delfrance/schemas';
 
 import {
+  FRASE_COMO_IMPORTAR_ANUNCIO_VINCULADO_SHOPEE,
   FRASE_LOGISTICA_RASCUNHO_SHOPEE,
   linhaDoCanalSomenteLeituraShopee,
 } from '@/lib/shopee/anuncioProduto';
@@ -84,6 +85,15 @@ export interface LogisticaRascunhoShopeeProps {
   editavel: boolean;
   /** The new form value; `RascunhoShopee` forwards it as `onCampo('logistic_info', valor)`. */
   onMudar: (valor: readonly Canal[] | null) => void;
+  /**
+   * `null` = a DRAFT (every behaviour above, unchanged). Set = a PUBLISHED
+   * listing's edit: never «Automática» (the server refuses `logistic_info:
+   * null` there), the read carries the link, the stored channels with no row
+   * are kept as they are, and `logisticaConfiavel: false` (the stored list was
+   * never stamped by the ERP) shows only the stored lines and the import-first
+   * sentence — no read, no control.
+   */
+  anuncio: { readonly logisticaConfiavel: boolean } | null;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -113,6 +123,24 @@ export const FRASE_LOGISTICA_DO_SISTEMA_ANTERIOR_SHOPEE =
 export const FRASE_CANAIS_ESCOLHIDOS_SHOPEE =
   'Só os canais ligados abaixo vão na publicação. O frete grátis vale por canal: a opção ' +
   '«Oferece frete grátis» do produto não vale para este anúncio.';
+
+/** A published listing's logistics the ERP never stamped: why there is nothing to edit yet. */
+export const FRASE_LOGISTICA_ANUNCIO_IMPORTE_ANTES_SHOPEE =
+  'Os canais de envio deste anúncio ainda não foram gravados pelo ERP. Para editá-los, importe o ' +
+  'anúncio quando ele não tiver alterações não enviadas (com alterações pendentes a importação ' +
+  'não regrava os canais); a edição parte do que a Shopee tem.';
+
+/** A published listing's channels: the intro in place of {@link FRASE_CANAIS_ESCOLHIDOS_SHOPEE}. */
+export const FRASE_CANAIS_ESCOLHIDOS_ANUNCIO_SHOPEE =
+  'Só os canais ligados abaixo ficam ligados no anúncio depois do próximo «Republicar». O frete ' +
+  'grátis vale por canal: a opção «Oferece frete grátis» do produto não vale para este anúncio.';
+
+/** A published listing: switching a channel off can be refused by Shopee. */
+export const FRASE_CANAL_DESLIGADO_NO_ANUNCIO_SHOPEE =
+  'Desligar um canal pode ser recusado pela Shopee quando outros canais dependem dele.';
+
+/** A published listing's zero-ON sentence (there is no «Automática» to go back to). */
+export const FRASE_NENHUM_CANAL_LIGADO_ANUNCIO_SHOPEE = 'Ligue ao menos um canal.';
 
 /** The basis of every fit verdict: the route reads the STORED produto. */
 export const FRASE_BASE_DA_CONFERENCIA_CANAIS_SHOPEE =
@@ -174,8 +202,14 @@ export function rotuloDoCanalLogisticaShopee(logisticId: number, nome: string | 
  * The stored channels with no row (D16-17): each named as its row would be,
  * joined by «, ».
  */
-export function fraseDosCanaisForaDaLojaShopee(lista: readonly CanalForaDaLojaShopee[]): string {
+export function fraseDosCanaisForaDaLojaShopee(
+  lista: readonly CanalForaDaLojaShopee[],
+  anuncio = false,
+): string {
   const nomes = lista.map((c) => rotuloDoCanalLogisticaShopee(c.logisticId, c.nome)).join(', ');
+  if (anuncio) {
+    return `Canais gravados que a loja não oferece aqui (ficam como estão no anúncio): ${nomes}.`;
+  }
   return `Canais gravados que a loja não oferece mais (não vão na publicação e saem da lista ao salvar): ${nomes}.`;
 }
 
@@ -220,13 +254,18 @@ function lerCanais(
   client: ShopeeClient | null,
   integracaoId: string | null,
   produtoId: string,
+  linkDocId?: string,
 ): Promise<RespostaCanaisShopee> {
   // `enabled` (and the click's own guard) keep a missing client or conta from
   // ever reaching here; this is the type's due.
   if (client === null || integracaoId === null) {
     throw new Error('cliente da Shopee indisponível');
   }
-  return client.canais({ integracaoId, produtoId });
+  return client.canais({
+    integracaoId,
+    produtoId,
+    ...(linkDocId === undefined ? {} : { linkDocId }),
+  });
 }
 
 /** What the apply reads at ITS time — the last committed render's, never the click's. */
@@ -325,6 +364,8 @@ export function LogisticaRascunhoShopee({
   logisticaInvalida,
   editavel,
   onMudar,
+  // Defensive: a renderer that forgot the prop reads as a draft, never a crash.
+  anuncio = null,
 }: LogisticaRascunhoShopeeProps) {
   const client = useShopeeClient();
   const queryClient = useQueryClient();
@@ -335,7 +376,10 @@ export function LogisticaRascunhoShopee({
   // time a choose reads or shows a loader.
   const [lendo, setLendo] = useState(false);
   const geracao = useRef(0);
-  const chave = chaveCanaisShopee(contaId ?? '', produtoId, revisaoDoProduto);
+  // A published listing's read is of ITS link; a draft's key and call are
+  // the five-element, link-less ones.
+  const linkDaLeitura = anuncio === null ? undefined : linkDocId;
+  const chave = chaveCanaisShopee(contaId ?? '', produtoId, revisaoDoProduto, linkDaLeitura);
   const atual = useRef<Atual>({ valor, editavel, chave, onMudar });
   useLayoutEffect(() => {
     atual.current = { valor, editavel, chave, onMudar };
@@ -353,8 +397,12 @@ export function LogisticaRascunhoShopee({
 
   const consulta = useQuery({
     queryKey: chave,
-    queryFn: () => lerCanais(client, contaId, produtoId),
-    enabled: client !== null && contaId !== null && !novo && (valor !== null || lendo),
+    queryFn: () => lerCanais(client, contaId, produtoId, linkDaLeitura),
+    enabled:
+      client !== null &&
+      contaId !== null &&
+      !novo &&
+      (anuncio === null ? valor !== null || lendo : anuncio.logisticaConfiavel && valor !== null),
     staleTime: 0,
     retry: shopeeQueryRetry,
   });
@@ -366,6 +414,25 @@ export function LogisticaRascunhoShopee({
       {ROTULO_LOGISTICA_RASCUNHO_SHOPEE}
     </Text>
   );
+
+  if (anuncio !== null && (!anuncio.logisticaConfiavel || valor === null)) {
+    // A published listing whose list the ERP never stamped: the stored lines
+    // read-only, the way to a trusted list, and no read, no control.
+    return (
+      <Stack gap={4} id={idDoCampo} data-testid={raiz}>
+        {titulo}
+        {valor !== null &&
+          valor.map((canal, i) => (
+            <Text key={`${String(i)}-${String(canal.logistic_id)}`} size="sm">
+              {linhaDoCanalSomenteLeituraShopee(canal)}
+            </Text>
+          ))}
+        <Text size="sm" c="dimmed" data-testid={`${raiz}-importe-antes`}>
+          {`${FRASE_LOGISTICA_ANUNCIO_IMPORTE_ANTES_SHOPEE} ${FRASE_COMO_IMPORTAR_ANUNCIO_VINCULADO_SHOPEE}`}
+        </Text>
+      </Stack>
+    );
+  }
 
   if (contaId === null) {
     return (
@@ -414,7 +481,7 @@ export function LogisticaRascunhoShopee({
     const resposta = await lerParaEscolherCanaisShopee(() =>
       queryClient.fetchQuery({
         queryKey: chave,
-        queryFn: () => lerCanais(client, contaId, produtoId),
+        queryFn: () => lerCanais(client, contaId, produtoId, linkDaLeitura),
         staleTime: 0,
         retry: shopeeQueryRetry,
       }),
@@ -457,22 +524,23 @@ export function LogisticaRascunhoShopee({
   // loader no read will end — and nothing applied from that later data.
   const escolhaAberta = escolhendo && (lendo || falhou);
   const modo = escolhaAberta ? MODO_LOGISTICA_SHOPEE.escolhida : modoDaLogisticaShopee(valor);
-  const seletor = (
-    <SegmentedControl
-      aria-labelledby={idDoTitulo}
-      w="fit-content"
-      size="xs"
-      value={modo}
-      onChange={mudarModo}
-      disabled={!editavel}
-      // Lands on the radiogroup root: an Enter on a segment bubbles to it.
-      onKeyDown={semEnviarOFormularioDoProduto}
-      data={[
-        { value: MODO_LOGISTICA_SHOPEE.automatica, label: ROTULO_LOGISTICA_AUTOMATICA_SHOPEE },
-        { value: MODO_LOGISTICA_SHOPEE.escolhida, label: ROTULO_ESCOLHER_CANAIS_SHOPEE },
-      ]}
-    />
-  );
+  const seletor =
+    anuncio !== null ? null : (
+      <SegmentedControl
+        aria-labelledby={idDoTitulo}
+        w="fit-content"
+        size="xs"
+        value={modo}
+        onChange={mudarModo}
+        disabled={!editavel}
+        // Lands on the radiogroup root: an Enter on a segment bubbles to it.
+        onKeyDown={semEnviarOFormularioDoProduto}
+        data={[
+          { value: MODO_LOGISTICA_SHOPEE.automatica, label: ROTULO_LOGISTICA_AUTOMATICA_SHOPEE },
+          { value: MODO_LOGISTICA_SHOPEE.escolhida, label: ROTULO_ESCOLHER_CANAIS_SHOPEE },
+        ]}
+      />
+    );
 
   if (valor === null && !escolhaAberta) {
     return (
@@ -547,7 +615,9 @@ export function LogisticaRascunhoShopee({
   );
   const mudar = (logisticId: number, mudanca: MudancaDoCanalShopee) => {
     if (resposta === undefined) return;
-    const proximo = comCanalShopee(valor, resposta, logisticId, mudanca);
+    const proximo = comCanalShopee(valor, resposta, logisticId, mudanca, {
+      manterForaDaLista: anuncio !== null,
+    });
     // A change the row refuses answers the value itself: nothing to send up.
     if (proximo !== valor) onMudar(proximo);
   };
@@ -557,8 +627,13 @@ export function LogisticaRascunhoShopee({
       {titulo}
       {seletor}
       <Text size="sm" c="dimmed">
-        {FRASE_CANAIS_ESCOLHIDOS_SHOPEE}
+        {anuncio === null ? FRASE_CANAIS_ESCOLHIDOS_SHOPEE : FRASE_CANAIS_ESCOLHIDOS_ANUNCIO_SHOPEE}
       </Text>
+      {anuncio !== null && (
+        <Text size="xs" c="dimmed" data-testid={`${raiz}-aviso-desligar`}>
+          {FRASE_CANAL_DESLIGADO_NO_ANUNCIO_SHOPEE}
+        </Text>
+      )}
       {falha}
       {!falhou && resposta === undefined && carregando}
       {resposta !== undefined && !resposta.medidasCompletas && (
@@ -591,12 +666,14 @@ export function LogisticaRascunhoShopee({
       )}
       {fora.length > 0 && (
         <Text size="sm" c="orange" data-testid={`${raiz}-fora-da-loja`}>
-          {fraseDosCanaisForaDaLojaShopee(fora)}
+          {fraseDosCanaisForaDaLojaShopee(fora, anuncio !== null)}
         </Text>
       )}
       {logisticaInvalida === MOTIVO_DA_LOGISTICA_INVALIDA_SHOPEE.semCanalLigado && (
         <Text size="sm" c="red">
-          {FRASE_NENHUM_CANAL_LIGADO_SHOPEE}
+          {anuncio === null
+            ? FRASE_NENHUM_CANAL_LIGADO_SHOPEE
+            : FRASE_NENHUM_CANAL_LIGADO_ANUNCIO_SHOPEE}
         </Text>
       )}
       {/* With no row at all, the shop's own sentence already says it (D16-18). */}

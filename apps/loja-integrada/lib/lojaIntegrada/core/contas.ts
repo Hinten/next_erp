@@ -3,7 +3,10 @@
  * enumeration of Loja Integrada contas, and the wrong-store guard built on it.
  *
  * ⚠️ Every read here decides a write, so none of them may come from
- * `contaCache.ts`.
+ * `contaCache.ts`. ONE caller caches the enumeration in its own module: the
+ * stock trigger's depósito map (`estoque/depositosLi.ts`, 15 min), whose answer
+ * decides only whether to ENQUEUE a send run — the run reads the conta again
+ * itself before it writes anything. Every other caller reads it here, uncached.
  *
  * ⚠️ **The enumeration's clauses are load-bearing.** `where('tipo', '==', 3)
  * .orderBy('nome')` is exactly the declared `integracao (tipo ASC, nome ASC)`
@@ -27,7 +30,7 @@
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import { integracaoCollection } from '@delfrance/data/admin/collections';
-import { INTEGRACAO_TIPO, type Integracao } from '@delfrance/schemas';
+import { INTEGRACAO_TIPO, type Integracao, depositoDaContaLi } from '@delfrance/schemas';
 
 import { relogioDoDocumentoUs } from '../avisos/avisos';
 import { fingerprintDoToken } from './credencial';
@@ -79,6 +82,12 @@ export interface ContaLojaIntegradaResumo {
   readonly nome: string;
   /** `false` only when the document says so explicitly (the schema default is `true`). */
   readonly ativo: boolean;
+  /**
+   * The conta's depósito as a BARE document id (`depositoDaContaLi`: either stored
+   * form of its `depositoOuterRef`), or `null` when it names none — what the stock
+   * sync reads the conta's records at.
+   */
+  readonly depositoId: string | null;
 }
 
 /** The enumeration, and WHEN it was read. */
@@ -97,7 +106,7 @@ export interface ContasLojaIntegrada {
  * EVERY Loja Integrada conta, active or not, ordered by `nome` — except one
  * lacking the field (module header).
  *
- * Fields are read RAW off each row: two are needed, and a soft parse of every
+ * Fields are read RAW off each row: a few are needed, and a soft parse of every
  * conta would warn-spam each tick on a legacy partial document.
  */
 export async function listarContasLojaIntegrada(db: Firestore): Promise<ContasLojaIntegrada> {
@@ -112,6 +121,7 @@ export async function listarContasLojaIntegrada(db: Firestore): Promise<ContasLo
       integracaoId: doc.id,
       nome: typeof data.nome === 'string' ? data.nome : '',
       ativo: data.ativo !== false,
+      depositoId: depositoDaContaLi(data),
     };
   });
   return { contas, leituraUs: relogioDoDocumentoUs(snap.readTime) };

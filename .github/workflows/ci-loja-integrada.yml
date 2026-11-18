@@ -46,15 +46,29 @@ name: CI — Loja Integrada
 #     (both depósito ref forms, the any-depósito listing, the collection-group
 #     duplicate probe) and its one `deriva` follow-up enqueued through the real
 #     producer root onto `filaEstoqueLojaIntegrada`. The DISPATCHED follow-up
-#     stops at the stock valve, which this job leaves unset, so that hop is
-#     unobservable here by design; its options and dispatch are pinned offline.
+#     passes the stock valve (`dry-run` in the job env, below) and stops at its
+#     write context on the read switch, writing nothing, so that hop is
+#     unobservable here by design; its options and dispatch are pinned offline;
+#   - `apps/loja-integrada/lib/lojaIntegrada/estoque/gatilhoEstoque.tasks.test.ts`
+#     — the stock trigger's work (step 12, PR 12-f) IN PROCESS against the real
+#     Firestore: the cached depósito map's real `integracao` query (a conta
+#     stored with the BARE depósito form), the produto's own links listing, the
+#     kits header (absent and present), a sibling at another depósito, and its
+#     enqueues through the real producer root; then the kit FAN-OUT
+#     (`estoque-kits`) DISPATCHED to the real deployed `filaEstoqueLojaIntegrada`,
+#     observed through its one write, the global stagger slot
+#     `reconcileEstoqueLojaIntegrada/atual.proximoSlotMs`, read back raw.
 # ⚠️ The triggers fire on EVERY suite's writes, not only their own: the
 # functions emulator loads the whole codebase. The conta trigger fires on every
 # `integracao` write, the history trigger (`onHistoricoFreteLojaIntegrada`,
 # step 7) on every `pedidos/*/historicoFtIni/*` create, and the anchor trigger
 # (`onProdutoLojaIntegradaLinkChanged`, step 9) on every
 # `produtos/*/produtolojaintegrada/*` write — including the order import suite's
-# link docs, so that suite awaits the anchor's write on each seeded produto. The
+# link docs, so that suite awaits the anchor's write on each seeded produto — and
+# the STOCK trigger (`onEstoqueLojaIntegrada`, step 12) on every
+# `produtos/*/estoques/*` write: at this job's `dry-run` stock valve it may
+# enqueue send runs (which stop at their write context and write nothing) and,
+# for a seeded kits header, a fan-out (whose one write is the slot document). The
 # rules that keep the files apart (unique conta, pedido and produto ids, the
 # step-3 suites' incomplete seeds, a trigger suite awaiting its own last effect)
 # are in `vitest.tasks.config.ts`.
@@ -167,9 +181,17 @@ name: CI — Loja Integrada
 #     whichever database it is asked for, so a trigger bound to `(default)` is
 #     not proven to fail here, and an emulator cannot show that a function did
 #     nothing. Both are pinned OFFLINE in functions/src/index.test.ts,
-#     functions/src/onIntegracaoLojaIntegradaChanged.test.ts and
+#     functions/src/onIntegracaoLojaIntegradaChanged.test.ts,
 #     functions/src/onHistoricoFreteLojaIntegrada.test.ts (the history trigger's
-#     filter, by counting its reads and enqueues).
+#     filter, by counting its reads and enqueues) and, for the stock trigger,
+#     functions/src/onEstoqueLojaIntegrada.test.ts and
+#     lib/lojaIntegrada/estoque/gatilhoEstoque.test.ts (its gate order and its
+#     cost per event, by counting).
+#   - The DEPLOYED stock trigger end to end. Its depósito map is a 15-minute
+#     cache in the emulator's worker, warmed by whichever suite writes a stock
+#     record first, so the suite drives the trigger's work in process instead;
+#     the map's TTL, the gate order and the clock-after-reads rule are pinned
+#     offline.
 #   - A PR that touches ONLY a shared package outside the app's `workspace:*`
 #     closure. The `changes` job below walks that graph from the app, so a change
 #     reaching the bundle by any other edge (a path alias, a copied file) does
@@ -357,6 +379,14 @@ jobs:
       # `on`, and no LOJA_INTEGRADA_CANARIO_* here: vitest.tasks.setup.ts refuses
       # any write valve set to exactly `on` and any non-blank canary list.
       LOJA_INTEGRADA_MODO_RASTREIO: 'dry-run'
+      # The STOCK valve (step 12, PR 12-f), at `dry-run` so the dispatched kit
+      # fan-out (`estoque-kits`) passes its valve and writes the one document the
+      # stock trigger's suite observes (the global stagger slot). SAFE for the same
+      # reason as the write-back's valve: with the read switch `off` every
+      # dispatched stock SEND run stops at its write context, before any Loja
+      # Integrada client exists, and writes nothing (under `dry-run` it neither
+      # raises an aviso nor parks). Never `on`: vitest.tasks.setup.ts refuses it.
+      LOJA_INTEGRADA_MODO_ESTOQUE: 'dry-run'
       NEXT_TELEMETRY_DISABLED: '1'
     steps:
       - uses: actions/checkout@v6

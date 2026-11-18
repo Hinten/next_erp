@@ -53,7 +53,13 @@ export interface CategoriaRascunhoShopeeProps {
   onEscolher: (categoryId: number) => void;
   /** Put the HELD category back — offered only while `bloco.podeVoltarCategoria` (`incerta` with an unsaved category change: the picker is closed, and this revert is the one pick the block still accepts); `null` ⇒ no such button. `RascunhoShopee` forwards it as `onCampo('category_id', bloco.categoriaGravada)`. */
   onVoltar: (() => void) | null;
+  /** The form edits a PUBLISHED listing (`bloco.alvo === 'anuncio'`): the pick-confirm sentence says «anúncio», and that a save must carry the new category's attributes. Optional — absent ⇒ `false`, a draft (owner's choice: existing draft fixtures stay untouched). */
+  anuncio?: boolean;
 }
+
+/** The pick-confirm sentence of a PUBLISHED listing (the draft one says «neste rascunho»; the server refuses a category change that leaves the list empty). */
+export const FRASE_TROCA_DE_CATEGORIA_NO_ANUNCIO_SHOPEE =
+  'Trocar a categoria remove os atributos deste anúncio: preencha os da nova categoria antes de salvar.';
 
 /** The modal's title (DC §2.10). */
 export const TITULO_ESCOLHA_CATEGORIA_SHOPEE = 'Categoria na Shopee';
@@ -344,6 +350,7 @@ export function CategoriaRascunhoShopee({
   voltarApagaAtributos,
   onEscolher,
   onVoltar,
+  anuncio = false,
 }: CategoriaRascunhoShopeeProps) {
   const [aberto, setAberto] = useState(false);
   const [confirmandoVolta, setConfirmandoVolta] = useState(false);
@@ -460,7 +467,9 @@ export function CategoriaRascunhoShopee({
             <Stack gap="md" data-testid={`${raiz}-modal`}>
               {atributosPreenchidos && (
                 <Alert color="yellow" variant="light">
-                  {FRASE_TROCA_DE_CATEGORIA_APAGA_ATRIBUTOS_SHOPEE}
+                  {anuncio
+                    ? FRASE_TROCA_DE_CATEGORIA_NO_ANUNCIO_SHOPEE
+                    : FRASE_TROCA_DE_CATEGORIA_APAGA_ATRIBUTOS_SHOPEE}
                   {atributosGravadosForaDaCategoria &&
                     ` ${FRASE_VOLTAR_A_CATEGORIA_GRAVADA_TRAZ_ATRIBUTOS_SHOPEE}`}
                 </Alert>

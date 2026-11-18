@@ -130,6 +130,7 @@ function acoesBase(over: Partial<AcoesShopee> = {}): AcoesShopee {
     pedirPausa: vi.fn(),
     reativar: vi.fn(),
     reverificar: vi.fn(),
+    pedirDescarteDasEdicoes: vi.fn(),
     republicar: vi.fn(),
     abrirKit: vi.fn(),
     incertoDe: () => null,
@@ -1185,6 +1186,7 @@ async function secaoDeLogistica(
           logisticaDoSistemaAnterior={false}
           logisticaInvalida={null}
           editavel
+          anuncio={null}
           onMudar={vi.fn()}
         />
       </QueryClientProvider>
@@ -1828,5 +1830,43 @@ describe('DesfechoAcaoShopee — a DRAFT row is worded by the block’s facts (R
       rascunho: null,
     });
     expect(painel().textContent).toContain(FRASE_RECUSA_SEM_PASSO_SHOPEE);
+  });
+});
+
+describe('DesfechoAcaoShopee — a PUBLISHED listing the form edits («Corrigir no anúncio», PR3)', () => {
+  it('⭐ an editable published listing (`formularioDoAnuncio` set) ⇒ «Corrigir no anúncio: Atributos», which FOCUSES the form field — and offers no attestation exit', () => {
+    const campo = document.createElement('input');
+    campo.id = idDoCampoRascunhoShopee(LINK, CAMPO_RASCUNHO_SHOPEE.attributes);
+    document.body.appendChild(campo);
+    show({
+      desfecho: recusado([problema({ campo: 'attribute_list', motivo: 'atributo-obrigatorio' })]),
+      rascunho: null,
+      formularioDoAnuncio: { logisticaConfiavel: true },
+    });
+    expect(botoes()).toEqual(['Corrigir no anúncio: Atributos']);
+    fireEvent.click(
+      within(painel()).getByRole('button', { name: 'Corrigir no anúncio: Atributos' }),
+    );
+    expect(document.activeElement).toBe(campo);
+    expect(linha().textContent).not.toContain(FRASE_CORRIGIR_NO_SELLER_CENTRE_SHOPEE);
+  });
+
+  it('NEAR-MISS: the same row with `formularioDoAnuncio: null` stays «Corrigir no Seller Centre» — text, no button', () => {
+    show({
+      desfecho: recusado([problema({ campo: 'attribute_list', motivo: 'atributo-obrigatorio' })]),
+      rascunho: null,
+      formularioDoAnuncio: null,
+    });
+    expect(botoes()).toEqual([]);
+    expect(linha().textContent).toContain(FRASE_CORRIGIR_NO_SELLER_CENTRE_SHOPEE);
+  });
+
+  it('NEAR-MISS: a DRAFT keeps «Corrigir no rascunho» even when a form context is also handed', () => {
+    show({
+      desfecho: recusado([problema({ campo: 'attribute_list', motivo: 'atributo-obrigatorio' })]),
+      formularioDoAnuncio: { logisticaConfiavel: true },
+    });
+    expect(botoes()).toContain('Corrigir no rascunho: Atributos');
+    expect(botoes()).not.toContain('Corrigir no anúncio: Atributos');
   });
 });
