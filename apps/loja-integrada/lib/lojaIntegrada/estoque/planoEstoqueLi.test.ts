@@ -16,15 +16,18 @@ import {
   decidirEnvioEstoqueLi,
   diffLinhaEstoqueLi,
   disparaKitsZeradosLi,
+  disponivelNoDepositoLi,
   envioDeEstoqueDesligadoLi,
   estoqueNoDepositoLi,
   irmaosParaLerLi,
   kitRestritoLi,
   kitSinalizadoLi,
   kitsSinalizadosLi,
+  kitsZeradosPeloComponenteLi,
   ordenarCandidatosEstoqueLi,
   planoEstoqueLi,
   refletidoLi,
+  registroNoDepositoLi,
   relevanciaEventoEstoqueLi,
 } from './planoEstoqueLi';
 import type { DocEstoqueLi } from './quantidadeEstoqueLi';
@@ -1343,5 +1346,141 @@ describe('ordenarCandidatosEstoqueLi: over-advertising first', () => {
       c(0, '5', -4),
     ]);
     expect(entrada[0]).toEqual(c(0, '5', -4)); // the input is untouched
+  });
+});
+
+describe('registroNoDepositoLi / disponivelNoDepositoLi — the ONE reading of a record at the conta’s depósito', () => {
+  const FORMAS = ['documents/depositos/D', 'depositos/D'] as const;
+
+  it.each(FORMAS)('EQUAL: a record at %j is at the depósito', (ref) => {
+    expect(registroNoDepositoLi({ depositoOuterRef: ref }, FORMAS)).toBe(true);
+    expect(disponivelNoDepositoLi({ depositoOuterRef: ref, quantidade: 5 }, FORMAS)).toBe(5);
+  });
+
+  it.each([
+    ['a leading slash', '/documents/depositos/D'],
+    ['a case change', 'documents/depositos/d'],
+    ['a trailing space', 'documents/depositos/D '],
+    ['another depósito', 'documents/depositos/D2'],
+    ['a bare id', 'D'],
+    ['a reference-like object', { path: 'depositos/D' }],
+    ['null', null],
+  ])('⚠️ NEAR-MISS: %s is ANOTHER depósito (nothing is folded) ⇒ null', (_r, ref) => {
+    expect(registroNoDepositoLi({ depositoOuterRef: ref }, FORMAS)).toBe(false);
+    expect(disponivelNoDepositoLi({ depositoOuterRef: ref, quantidade: 5 }, FORMAS)).toBeNull();
+  });
+
+  it('absent record and absent ref ⇒ null; an inherited ref is not stored data', () => {
+    expect(disponivelNoDepositoLi(null, FORMAS)).toBeNull();
+    expect(disponivelNoDepositoLi({ quantidade: 5 }, FORMAS)).toBeNull();
+    const herdado = Object.create({ depositoOuterRef: 'depositos/D' }) as Record<string, unknown>;
+    expect(registroNoDepositoLi(herdado, FORMAS)).toBe(false);
+  });
+
+  it('the available quantity RAW: reservation subtracted (a negative one floored to 0), never rounded or clamped', () => {
+    const r = (q: unknown, res: unknown) => ({
+      depositoOuterRef: 'depositos/D',
+      quantidade: q,
+      quantidadeReservada: res,
+    });
+    expect(disponivelNoDepositoLi(r(5, 2), FORMAS)).toBe(3);
+    expect(disponivelNoDepositoLi(r(2.5, 0), FORMAS)).toBe(2.5);
+    expect(disponivelNoDepositoLi(r(2, 5), FORMAS)).toBe(-3);
+    expect(disponivelNoDepositoLi(r(2, -4), FORMAS)).toBe(2);
+    expect(disponivelNoDepositoLi(r(undefined, null), FORMAS)).toBe(0);
+  });
+
+  it.each([
+    ['a text quantity', '5', 0],
+    ['an infinite reservation', 5, Number.POSITIVE_INFINITY],
+    ['NaN', Number.NaN, 0],
+  ])('an unreadable counter (%s) ⇒ NaN (fail open)', (_r, q, res) => {
+    expect(
+      disponivelNoDepositoLi(
+        { depositoOuterRef: 'depositos/D', quantidade: q, quantidadeReservada: res },
+        FORMAS,
+      ),
+    ).toBeNaN();
+  });
+});
+
+describe('kitsZeradosPeloComponenteLi: the kits the fan-out enqueues — this component alone holds them at 0', () => {
+  const kit = (q: Record<string, number>) => ({ q });
+
+  it('available 1 ⇒ the kits needing 2 and 3 are in, the one needing 1 is not (3 → 1 empties a kit that needs 2)', () => {
+    expect(
+      kitsZeradosPeloComponenteLi({
+        kits: {
+          'k-precisa-1': kit({ c: 1, d: 1 }),
+          'k-precisa-2': kit({ c: 2 }),
+          'k-precisa-3': kit({ c: 3, d: 1 }),
+        },
+        componenteId: 'c',
+        disponivel: 1,
+      }),
+    ).toEqual(['k-precisa-2', 'k-precisa-3']);
+  });
+
+  it('⚠️ NEAR-MISS: the rule is the KIT’s bound, never the component’s own zero — available 1 is not 0, yet the kit needing 2 is in', () => {
+    const kits = { 'k-2': kit({ c: 2 }) };
+    expect(kitsZeradosPeloComponenteLi({ kits, componenteId: 'c', disponivel: 1 })).toEqual([
+      'k-2',
+    ]);
+    // …and a bound of exactly 1 (available = q) stays out.
+    expect(kitsZeradosPeloComponenteLi({ kits, componenteId: 'c', disponivel: 2 })).toEqual([]);
+  });
+
+  it.each([0, -3, -0.5])('available %s (none, or negative) ⇒ EVERY kit', (disponivel) => {
+    expect(
+      kitsZeradosPeloComponenteLi({
+        kits: { a: kit({ c: 1 }), b: kit({ c: 5 }), z: kit({ c: 0.25 }) },
+        componenteId: 'c',
+        disponivel,
+      }),
+    ).toEqual(['z', 'a', 'b']);
+  });
+
+  it('fractional: the RAW available divides unrounded — 0.4 of 0.5 is in, 1 of 0.5 and 2.5 of 2 are out', () => {
+    const kits = { meio: kit({ c: 0.5 }), dois: kit({ c: 2 }) };
+    expect(kitsZeradosPeloComponenteLi({ kits, componenteId: 'c', disponivel: 0.4 })).toEqual([
+      'meio',
+      'dois',
+    ]);
+    expect(kitsZeradosPeloComponenteLi({ kits, componenteId: 'c', disponivel: 1 })).toEqual([
+      'dois',
+    ]);
+    expect(kitsZeradosPeloComponenteLi({ kits, componenteId: 'c', disponivel: 2.5 })).toEqual([]);
+  });
+
+  it('fail open: a kit that does not list the component, or an available that is not a number, is included', () => {
+    expect(
+      kitsZeradosPeloComponenteLi({
+        kits: { sem: kit({ outro: 1 }), com: kit({ c: 1 }) },
+        componenteId: 'c',
+        disponivel: 9,
+      }),
+    ).toEqual(['sem']);
+    expect(
+      kitsZeradosPeloComponenteLi({
+        kits: { a: kit({ c: 1 }), b: kit({ c: 9 }) },
+        componenteId: 'c',
+        disponivel: Number.NaN,
+      }),
+    ).toEqual(['a', 'b']);
+  });
+
+  it('ORDER: the quantity ascending (the likeliest crossings first), then the kit id; an unreadable quantity last', () => {
+    expect(
+      kitsZeradosPeloComponenteLi({
+        kits: {
+          'k-b': kit({ c: 4 }),
+          'k-sem': kit({ x: 1 }),
+          'k-a': kit({ c: 4 }),
+          'k-c': kit({ c: 2 }),
+        },
+        componenteId: 'c',
+        disponivel: 1,
+      }),
+    ).toEqual(['k-c', 'k-a', 'k-b', 'k-sem']);
   });
 });

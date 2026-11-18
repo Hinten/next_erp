@@ -1,6 +1,7 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import {
   ACAO_STATUS_ANUNCIO,
+  ALVO_EDICAO_SHOPEE,
   ESTADO_ANUNCIO_SHOPEE,
   FORMAT_TYPE_COM_UNIDADE_SHOPEE,
   INPUT_TYPE_ATRIBUTO_SHOPEE,
@@ -65,9 +66,14 @@ import { warmRoutes } from './helpers/warmup';
  * ⚠️ The draft routes are stubbed too, so no draft document is ever written,
  * created or deleted by this suite: every test opens the seeded draft as
  * seeded. That draft has no category, so the editor reads no category bands
- * nor attribute tree and asks apps/shopee for nothing on render — no test of
- * ITS produto needs a taxonomy stub. No seeded draft stores a channel list
- * either, so every draft's «Logística» section is «Automática» and reads no
+ * nor attribute tree for it. The produto's LIVE listing, though, is one the
+ * ERP may edit (PR3: its own form, saved to the ERP and sent by «Republicar»),
+ * so its form reads its category's node, bands and attribute tree on render:
+ * {@link rotasComStub} answers those three for that category by default
+ * ({@link rotasDoAnuncioEditavel}), and a test that must send nothing asserts
+ * the WRITES ({@link escritas}) empty, the reads by {@link leiturasDistintas}.
+ * Its channel list is not ERP-stamped, so it reads no channels. No seeded
+ * draft stores a channel list either, so every draft's «Logística» section is «Automática» and reads no
  * channels on render; the one test that chooses them (#1911 P16) stubs
  * `canais` for itself. Three tests open a SECOND produto, whose
  * draft has a category, each stubbing its own reads through
@@ -123,6 +129,21 @@ const TOAST_RASCUNHO_SALVO = 'Rascunho salvo.';
 const TOAST_RASCUNHO_DESCARTADO = 'Rascunho descartado.';
 /** `ROTULO_SEM_MARCA_SHOPEE` (`MarcaRascunhoShopee.tsx`) — the picker's own «Sem marca» option. */
 const ROTULO_SEM_MARCA = 'Sem marca (No Brand)';
+
+/*
+ * A PUBLISHED listing's edit form (PR3), spelled for the same reason.
+ */
+
+/** The published-edit form's root test id prefix (`RascunhoShopee.tsx`); the rest is the link doc id. */
+const RAIZ_DA_EDICAO_DO_ANUNCIO = 'shopee-edicao-anuncio-';
+/** `ROTULO_SALVAR_ANUNCIO_SHOPEE` (`RascunhoShopee.tsx`) — the published form's save. */
+const ROTULO_SALVAR_ANUNCIO = 'Salvar';
+/** `FRASE_ANUNCIO_EDICAO_SALVA_SHOPEE` — the published save's 2xx toast. */
+const TOAST_ANUNCIO_EDICAO_SALVA =
+  'Alterações salvas no ERP. Elas vão para a Shopee no próximo «Republicar».';
+/** `FRASE_FORMULARIO_SUJO_BLOQUEIA_ACOES_SHOPEE` — why Republicar waits while the form is dirty. */
+const FRASE_FORMULARIO_SUJO_BLOQUEIA_ACOES =
+  'Salve ou desfaça as alterações do formulário antes de republicar ou descartar.';
 
 /**
  * The ONE brand seeded on conta 1's shortlist (`integracao/{id}/brandshopee`,
@@ -960,9 +981,47 @@ function rotasDaEscolhaDeCategoria(conta: string, titulo: string): ReadonlyMap<s
   ]);
 }
 
+/**
+ * The reads of the seeded LIVE listing's edit form (PR3): that listing is one
+ * the ERP may edit, so on render its form reads its category's node (the
+ * category label), bands and attribute tree — {@link SHOPEE_E2E_CATEGORIA},
+ * the ready draft's leaf, answered from the same stubbed tree (optional
+ * attributes only). Any conta: the listing's conta is run-scoped, and every
+ * test pins WHICH conta asked through {@link leiturasDistintas}. Another
+ * category falls to `semStub`. The three tests that open the second produto
+ * REPLACE these paths with their own stubs.
+ */
+function rotasDoAnuncioEditavel(): [string, Stub][] {
+  const daCategoria = (url: URL): boolean =>
+    url.searchParams.get('categoryId') === String(SHOPEE_E2E_CATEGORIA);
+  return [
+    [
+      'taxonomia/categorias',
+      (_corpo, url) =>
+        daCategoria(url) ? { status: 200, corpo: noDaArvoreE2e(SHOPEE_E2E_CATEGORIA) } : null,
+    ],
+    [
+      'taxonomia/limites',
+      (_corpo, url) =>
+        daCategoria(url)
+          ? {
+              status: 200,
+              corpo: limitesDaFolhaE2e(SHOPEE_E2E_CATEGORIA, FAIXA_DO_TITULO_DO_RASCUNHO_PRONTO),
+            }
+          : null,
+    ],
+    [
+      'taxonomia/atributos',
+      (_corpo, url) =>
+        daCategoria(url) ? { status: 200, corpo: ARVORE_OPCIONAL_DO_RASCUNHO_PRONTO } : null,
+    ],
+  ];
+}
+
 /** The apps/shopee routes this spec answers, by path under {@link PREFIXO_ROTAS}. */
 function rotasComStub(kitRemovido: string): ReadonlyMap<string, Stub> {
   return new Map<string, Stub>([
+    ...rotasDoAnuncioEditavel(),
     ['anuncio-status', (corpo) => ({ status: 200, corpo: respostaDoStatus(corpo) })],
     ['publicar', (corpo) => ({ status: 422, corpo: recusaDaPublicacao(corpo, kitRemovido) })],
     // The three draft routes (#1911 P10). Answered 2xx and writing NOTHING, so
@@ -981,10 +1040,12 @@ function rotasComStub(kitRemovido: string): ReadonlyMap<string, Stub> {
 
 interface StubsShopee {
   /**
-   * Every Shopee backend call the page made, in order. A test whose page must
-   * send nothing asserts it EMPTY, never `semStub` alone: every stubbed route
-   * answers 2xx — the three draft writes, a pause, a publish — so a stray
-   * call to one of them never reaches `semStub`.
+   * Every Shopee backend call the page made, in order — reads included (since
+   * PR3 the live listing's edit form reads its category on render). A test
+   * whose page must send nothing asserts the WRITES ({@link escritas}) EMPTY,
+   * never `semStub` alone: every stubbed route answers 2xx — the draft writes,
+   * a pause, a publish — so a stray call to one of them never reaches
+   * `semStub`.
    */
   readonly chamadas: Chamada[];
   /** Every GET of {@link chamadas} again, with its query (in order; a repeat is recorded again). */
@@ -1111,6 +1172,25 @@ test.describe.serial('Produto Shopee tab e2e — listing state, actions and the 
   const pronto = { produtoId: `${prefix}-pronto`, rascunho: `${prefix}-pronto-rascunho` };
   /** The ready draft's stored title (mirrors the seed) — the suggestions' `nome`, and every band's measure. */
   const tituloPronto = `${prefix}-pronto`;
+  /** The live listing's stored title (mirrors `seedProdutoShopeeVinculado`) — its edit's baseline. */
+  const tituloDoAtivo = `${prefix}-ativo`;
+  /**
+   * What the live listing's edit form reads on render (PR3) — its category's
+   * node, bands and attribute tree, for THIS conta ({@link rotasDoAnuncioEditavel}).
+   * Only when its conta's panel is open: the node is read by the form's
+   * category label.
+   */
+  const lidasDoAnuncioAtivo = [
+    leitura('taxonomia/categorias', {
+      integracaoId: conta,
+      categoryId: String(SHOPEE_E2E_CATEGORIA),
+    }),
+    leitura('taxonomia/limites', { integracaoId: conta, categoryId: String(SHOPEE_E2E_CATEGORIA) }),
+    leitura('taxonomia/atributos', {
+      integracaoId: conta,
+      categoryId: String(SHOPEE_E2E_CATEGORIA),
+    }),
+  ].sort();
 
   test.beforeAll(async ({ browser }) => {
     // Compiling cold routes can outlast the default 60s hook budget.
@@ -1189,8 +1269,13 @@ test.describe.serial('Produto Shopee tab e2e — listing state, actions and the 
       `shopee-anuncio-${links.rascunho}`,
     ]);
 
-    // Showing the state sends nothing — no draft write, no pause, no publish.
-    expect(stubs.chamadas).toEqual([]);
+    // Showing the state sends nothing — no draft write, no pause, no publish —
+    // and reads only what the live listing's edit form reads (PR3): its
+    // category's node, bands and attribute tree, for THIS conta.
+    await expect
+      .poll(() => leiturasDistintas(stubs), { timeout: 30_000 })
+      .toEqual(lidasDoAnuncioAtivo);
+    expect(escritas(stubs)).toEqual([]);
     expect(stubs.semStub, 'Shopee routes this spec does not stub').toEqual([]);
   });
 
@@ -1204,12 +1289,12 @@ test.describe.serial('Produto Shopee tab e2e — listing state, actions and the 
     const dialogo = page.getByRole('dialog', { name: 'Pausar anúncio' });
     await expect(dialogo).toBeVisible();
     // Nothing leaves the browser before the operator confirms.
-    expect(stubs.chamadas).toEqual([]);
+    expect(escritas(stubs)).toEqual([]);
     await dialogo.getByRole('button', { name: 'Pausar', exact: true }).click();
 
     // The run's own per-listing sentence, in THIS listing's block.
     await expect(ativo.getByText(MENSAGEM_PAUSA_STUB)).toBeVisible({ timeout: 30_000 });
-    expect(stubs.chamadas).toEqual([
+    expect(escritas(stubs)).toEqual([
       {
         metodo: 'POST',
         rota: 'anuncio-status',
@@ -1262,12 +1347,16 @@ test.describe.serial('Produto Shopee tab e2e — listing state, actions and the 
     // The draft block offers its first publish now (#1911 P11 inverted P10's
     // count-0 pin on purpose): ONE «Publicar», disabled while a pendência
     // stands — the publish would refuse it. Its gate also asks apps/shopee
-    // nothing for a draft with no category (the `chamadas` below).
+    // nothing for a draft with no category: the only reads are the live
+    // listing's edit form's (PR3), below.
     const publicar = editor.getByRole('button', { name: ROTULO_PUBLICAR, exact: true });
     await expect(publicar).toBeVisible();
     await expect(publicar).toBeDisabled();
     await expect(rascunho.getByRole('button', { name: /Publicar/ })).toHaveCount(1);
-    expect(stubs.chamadas).toEqual([]);
+    await expect
+      .poll(() => leiturasDistintas(stubs), { timeout: 30_000 })
+      .toEqual(lidasDoAnuncioAtivo);
+    expect(escritas(stubs)).toEqual([]);
     expect(stubs.semStub, 'Shopee routes this spec does not stub').toEqual([]);
   });
 
@@ -1293,7 +1382,7 @@ test.describe.serial('Produto Shopee tab e2e — listing state, actions and the 
     await expect(dialogo.getByText(/já foi excluído na Shopee/)).toBeVisible();
     await dialogo.getByRole('button', { name: 'Cancelar' }).click();
     await expect(dialogo).toHaveCount(0);
-    expect(stubs.chamadas).toEqual([]);
+    expect(escritas(stubs)).toEqual([]);
     expect(stubs.semStub, 'Shopee routes this spec does not stub').toEqual([]);
   });
 
@@ -1321,7 +1410,7 @@ test.describe.serial('Produto Shopee tab e2e — listing state, actions and the 
     // Scoped to the conta's panel: the page's inline scripts are not the tab's copy.
     await expect(painel.getByText(TEXTO_DE_TERMINAL)).toHaveCount(0);
 
-    expect(stubs.chamadas).toEqual([
+    expect(escritas(stubs)).toEqual([
       {
         metodo: 'POST',
         rota: 'publicar',
@@ -1357,7 +1446,7 @@ test.describe.serial('Produto Shopee tab e2e — listing state, actions and the 
     // The cut-off re-verify never reaches the recorder (the newer handler took
     // it), so anything recorded is a call the failure set off — a draft save,
     // a pause or a publish, each answered 2xx and so invisible to `semStub`.
-    expect(stubs.chamadas).toEqual([]);
+    expect(escritas(stubs)).toEqual([]);
     expect(stubs.semStub, 'Shopee routes this spec does not stub').toEqual([]);
   });
 
@@ -1382,13 +1471,13 @@ test.describe.serial('Produto Shopee tab e2e — listing state, actions and the 
 
     await titulo.fill(tituloEditado);
     // Nothing leaves the browser before the operator saves.
-    expect(stubs.chamadas).toEqual([]);
+    expect(escritas(stubs)).toEqual([]);
     await editor.getByRole('button', { name: 'Salvar rascunho', exact: true }).click();
 
     // ONLY the edited field, and beside it the value the operator SAW stored —
     // never the description, category or brand nobody touched.
     await expect
-      .poll(() => stubs.chamadas, { timeout: 30_000 })
+      .poll(() => escritas(stubs), { timeout: 30_000 })
       .toEqual([
         {
           metodo: 'POST',
@@ -1438,14 +1527,14 @@ test.describe.serial('Produto Shopee tab e2e — listing state, actions and the 
     await expect(editor.getByText(PENDENCIA_MARCA)).toHaveCount(0);
     await expect(editor.getByText(PENDENCIA_CATEGORIA).first()).toBeVisible();
     // Nothing leaves the browser before the operator saves.
-    expect(stubs.chamadas).toEqual([]);
+    expect(escritas(stubs)).toEqual([]);
     await editor.getByRole('button', { name: 'Salvar rascunho', exact: true }).click();
 
     // ONLY the brand, as the pair the draft stores: the row's id with its
     // ORIGINAL name — the one publish sends — never the label the picker
     // showed; and beside it the brand the operator saw stored, none.
     await expect
-      .poll(() => stubs.chamadas, { timeout: 30_000 })
+      .poll(() => escritas(stubs), { timeout: 30_000 })
       .toEqual([
         {
           metodo: 'POST',
@@ -1507,9 +1596,11 @@ test.describe.serial('Produto Shopee tab e2e — listing state, actions and the 
     // Like typing, the mode takes a click once the links listener answered
     // FROM THE SERVER — a label click on a disabled segment changes nothing,
     // so wait for it. «Automática» reads no channels: by now the section has
-    // been on screen all along and asked apps/shopee nothing.
+    // been on screen all along and asked apps/shopee nothing (the only reads
+    // are the live listing's edit form's, PR3).
     await expect(escolher).toBeEnabled({ timeout: 30_000 });
-    expect(stubs.chamadas).toEqual([]);
+    expect(stubs.leituras.filter((l) => l.rota === 'canais')).toEqual([]);
+    expect(escritas(stubs)).toEqual([]);
     await escolherSegmento(modo, ROTULO_ESCOLHER_CANAIS);
     await expect(escolher).toBeChecked();
 
@@ -1517,7 +1608,9 @@ test.describe.serial('Produto Shopee tab e2e — listing state, actions and the 
     // repeat of that read is not what this test is about).
     await expect
       .poll(() => leiturasDistintas(stubs), { timeout: 30_000 })
-      .toEqual([leitura('canais', { integracaoId: conta, produtoId })]);
+      .toEqual(
+        [...lidasDoAnuncioAtivo, leitura('canais', { integracaoId: conta, produtoId })].sort(),
+      );
     // Each selectable channel is a row named by the shop's list, and the rows
     // follow THAT list's order — B before A — never the ids'.
     await expect(linha(CANAL_A_E2E)).toContainText(CANAL_A_E2E.nome, { timeout: 30_000 });
@@ -1577,10 +1670,11 @@ test.describe.serial('Produto Shopee tab e2e — listing state, actions and the 
     await expect(page.getByText(TOAST_RASCUNHO_SALVO, { exact: true })).toBeVisible({
       timeout: 30_000,
     });
-    // Nothing read beyond the shop's channels, and nothing outside the stubs.
-    expect(leiturasDistintas(stubs)).toEqual([
-      leitura('canais', { integracaoId: conta, produtoId }),
-    ]);
+    // Nothing read beyond the shop's channels (and the live listing's edit
+    // form's reads), and nothing outside the stubs.
+    expect(leiturasDistintas(stubs)).toEqual(
+      [...lidasDoAnuncioAtivo, leitura('canais', { integracaoId: conta, produtoId })].sort(),
+    );
     expect(stubs.semStub, 'Shopee routes this spec does not stub').toEqual([]);
   });
 
@@ -1599,19 +1693,19 @@ test.describe.serial('Produto Shopee tab e2e — listing state, actions and the 
     // A cancel sends nothing.
     await dialogo.getByRole('button', { name: 'Cancelar' }).click();
     await expect(dialogo).toHaveCount(0);
-    expect(stubs.chamadas).toEqual([]);
+    expect(escritas(stubs)).toEqual([]);
 
     await descartar.click();
     await expect(dialogo).toBeVisible();
     // Nothing leaves the browser before the operator confirms.
-    expect(stubs.chamadas).toEqual([]);
+    expect(escritas(stubs)).toEqual([]);
     await dialogo.getByRole('button', { name: /^Descartar/ }).click();
 
     // ALL SIX stored fields, as stored — `null` included — so a draft whose
     // channels were chosen meanwhile is refused instead of deleted unseen; and
     // no Seller-Centre attestation for a draft with no uncertain create.
     await expect
-      .poll(() => stubs.chamadas, { timeout: 30_000 })
+      .poll(() => escritas(stubs), { timeout: 30_000 })
       .toEqual([
         {
           metodo: 'POST',
@@ -1670,7 +1764,7 @@ test.describe.serial('Produto Shopee tab e2e — listing state, actions and the 
     await expect(editor.getByRole('button', { name: ROTULO_PUBLICAR, exact: true })).toBeDisabled();
     await expect(editor.getByText(FRASE_PUBLICAR_RASCUNHO_NOVO)).toBeVisible();
     // Opening it wrote nothing.
-    expect(stubs.chamadas).toEqual([]);
+    expect(escritas(stubs)).toEqual([]);
     // A draft's channels are chosen once it is saved: the section says so, and
     // offers no choice (nor reads the shop's channels — `canais` has no stub here).
     await expect(editor.getByText(FRASE_SALVE_PARA_ESCOLHER_CANAIS)).toBeVisible();
@@ -1684,7 +1778,7 @@ test.describe.serial('Produto Shopee tab e2e — listing state, actions and the 
     // (D-13) — at the id minted when the draft was opened, and no second-listing
     // flag, since nothing was confirmed.
     await expect
-      .poll(() => stubs.chamadas, { timeout: 30_000 })
+      .poll(() => escritas(stubs), { timeout: 30_000 })
       .toEqual([
         {
           metodo: 'POST',
@@ -1736,7 +1830,71 @@ test.describe.serial('Produto Shopee tab e2e — listing state, actions and the 
     // No new draft opened: the stored draft's editor is still the only one.
     await expect(salvarRascunho).toHaveCount(1);
     await expect(painel.getByText(FRASE_RASCUNHO_NOVO)).toHaveCount(0);
-    expect(stubs.chamadas).toEqual([]);
+    expect(escritas(stubs)).toEqual([]);
+    expect(stubs.semStub, 'Shopee routes this spec does not stub').toEqual([]);
+  });
+
+  test("saves a published listing's edited title to the ERP only, and holds its Republicar while the edit is unsaved", async ({
+    page,
+  }) => {
+    const stubs = await instalarStubsShopee(page, links.kitRemovido);
+    await page.goto(`/produtos/${produtoId}/editar`);
+    const painel = await abrirConta(page, conta);
+
+    const ativo = painel.getByTestId(`shopee-anuncio-${links.ativo}`);
+    const editor = ativo.getByTestId(`${RAIZ_DA_EDICAO_DO_ANUNCIO}${links.ativo}`);
+    const titulo = editor.getByRole('textbox', { name: /^Título/ });
+    const salvar = editor.getByRole('button', { name: ROTULO_SALVAR_ANUNCIO, exact: true });
+    const republicar = ativo.getByRole('button', { name: 'Republicar', exact: true });
+
+    // Positive first: the listing's own form, holding the stored title, with
+    // nothing to save — and none of a draft's buttons.
+    await expect(titulo).toHaveValue(tituloDoAtivo, { timeout: 30_000 });
+    await expect(salvar).toBeDisabled();
+    await expect(editor.getByRole('button', { name: 'Salvar rascunho', exact: true })).toHaveCount(
+      0,
+    );
+    await expect(editor.getByRole('button', { name: ROTULO_PUBLICAR, exact: true })).toHaveCount(0);
+    await expect(editor.getByRole('button', { name: 'Descartar', exact: true })).toHaveCount(0);
+    await expect(republicar).toBeEnabled();
+
+    // The field takes typing once the links listener answered FROM THE SERVER.
+    const tituloEditado = `${tituloDoAtivo} editado`;
+    await titulo.fill(tituloEditado, { timeout: 30_000 });
+    // «Republicar» sends the STORED copy: it waits while the form holds
+    // unsaved text, and says why.
+    await expect(republicar).toBeDisabled();
+    await expect(
+      ativo.getByText(FRASE_FORMULARIO_SUJO_BLOQUEIA_ACOES, { exact: true }),
+    ).toBeVisible();
+    // Nothing leaves the browser before the operator saves.
+    expect(escritas(stubs)).toEqual([]);
+    await salvar.click();
+
+    // ONLY the edited field, beside the value the operator SAW stored, and
+    // `alvo` naming a published listing's edit — a draft's body has none.
+    await expect
+      .poll(() => escritas(stubs), { timeout: 30_000 })
+      .toEqual([
+        {
+          metodo: 'POST',
+          rota: 'rascunho/atualizar',
+          corpo: {
+            integracaoId: conta,
+            produtoId,
+            linkDocId: links.ativo,
+            base: { item_name: tituloDoAtivo },
+            patch: { item_name: tituloEditado },
+            alvo: ALVO_EDICAO_SHOPEE.anuncio,
+          },
+        },
+      ]);
+    await expect(page.getByText(TOAST_ANUNCIO_EDICAO_SALVA, { exact: true })).toBeVisible({
+      timeout: 30_000,
+    });
+    // Saved: the ERP holds the edit, so «Republicar» may send it — and saving
+    // sent nothing to Shopee (no publish was recorded above).
+    await expect(republicar).toBeEnabled();
     expect(stubs.semStub, 'Shopee routes this spec does not stub').toEqual([]);
   });
 

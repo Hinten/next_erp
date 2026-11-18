@@ -305,6 +305,55 @@ describe('GET canais — a escada da rota (#1911 P15)', () => {
   });
 });
 
+describe('GET canais — linkDocId, o editor de um anúncio PUBLICADO (PR2)', () => {
+  const LINK = 'link-1';
+  const SENTENCA = 'linkDocId deve ser um id de documento (sem "/" nem "..").';
+
+  function leiturasDoVinculo(): number {
+    return db.opLog.filter((op) => op.path.includes('/prodshopee/')).length;
+  }
+
+  it.each(['a/b', '..', '.'])(
+    "linkDocId '%s' ⇒ 400 com a frase do id + no-store, sem carregar a conta nem ler nada",
+    async (linkDocId) => {
+      const { status, cache, body } = await responder({ ...QUERY, linkDocId });
+      expect(status).toBe(400);
+      expect(cache).toBe('no-store');
+      expect(body).toEqual({ error: SENTENCA });
+      expect(h.loadCtx).not.toHaveBeenCalled();
+      expect(db.opLog).toEqual([]);
+    },
+  );
+
+  it("vínculo ausente ⇒ 404 'Vínculo link-1 não encontrado neste produto.' + no-store, getChannelList 0 vezes", async () => {
+    const { status, cache, body } = await responder({ ...QUERY, linkDocId: LINK });
+    expect(status).toBe(404);
+    expect(cache).toBe('no-store');
+    expect(body).toEqual({ error: `Vínculo ${LINK} não encontrado neste produto.` });
+    expect(h.getChannelList).not.toHaveBeenCalled();
+    expect(db.writes).toEqual([]);
+  });
+
+  it('PAR: o vínculo da conta existe ⇒ 200 com o MESMO envelope, uma leitura do vínculo', async () => {
+    db.seed(`produtos/${PRODUTO}/prodshopee/${LINK}`, {
+      contaProdutoShopeeOuterRef: `documents/integracao/${CONTA}`,
+      item_id: 4242,
+    });
+    const { status, body } = await responder({ ...QUERY, linkDocId: LINK });
+    expect(status).toBe(200);
+    expect(respostaCanaisShopeeSchema.parse(body)).toEqual(body);
+    expect(h.getChannelList).toHaveBeenCalledTimes(1);
+    expect(leiturasDoVinculo()).toBe(1);
+  });
+
+  it('linkDocId em branco ⇒ a lib é chamada SEM ele: 200, nenhuma leitura de prodshopee', async () => {
+    const { status } = await responder({ ...QUERY, linkDocId: '   ' });
+    expect(status).toBe(200);
+    expect(leiturasDoVinculo()).toBe(0);
+    expect(h.getChannelList).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('GET canais — a fonte (#1911 P15)', () => {
   it('route.ts não lê por cache nem pelo contexto da taxonomia', () => {
     const fonte = readFileSync(fileURLToPath(new URL('./route.ts', import.meta.url)), 'utf8');

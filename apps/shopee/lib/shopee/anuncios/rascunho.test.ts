@@ -2236,7 +2236,7 @@ describe('atualizarRascunhoShopee — base conferida (nível 3) + update guardad
      * dropped that claim in round 4; the save and discard routes share THIS
      * builder, so both are pinned.
      */
-    it('a frase do 409 JA_PUBLICADO (salvar E descartar): o vínculo REGISTRA um anúncio — nunca «já existe na Shopee» —, o conteúdo não é editado aqui, recarregue, nada gravado', async () => {
+    it('a frase do 409 JA_PUBLICADO (salvar E descartar): o vínculo REGISTRA um anúncio — nunca «já existe na Shopee» —, edita-se como anúncio publicado, recarregue, nada gravado', async () => {
       const db = new FakeDb();
       const anuncio = rascunho({ item_id: ITEM_VIVO });
       db.seed(CAMINHO, anuncio);
@@ -2253,8 +2253,8 @@ describe('atualizarRascunhoShopee — base conferida (nível 3) + update guardad
       for (const err of [aoSalvar, aoDescartar]) {
         expect(err.code).toBe(CODIGO_RASCUNHO_SHOPEE.jaPublicado);
         expect(err.message).toBe(
-          `o vínculo ${RASCUNHO} já não é um rascunho: ele já registra um anúncio da Shopee, e o ` +
-            'conteúdo de um anúncio publicado não é editado aqui. Recarregue a aba. Nada foi gravado.',
+          `o vínculo ${RASCUNHO} já não é um rascunho: ele já registra um anúncio da Shopee, ` +
+            'que se edita como anúncio publicado. Recarregue a aba. Nada foi gravado.',
         );
         // ⛔ near-miss: the over-claim the round-4 reservation dropped stays gone here too.
         expect(err.message).not.toMatch(/já existe na Shopee|o anúncio já existe/);
@@ -3296,5 +3296,476 @@ describe('rascunho.ts decide com o módulo do @delfrance/schemas, nunca com uma 
     ]) {
       expect(fonte, `rascunho.ts nomeia ${proibido}`).not.toContain(proibido);
     }
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*       alvo: 'anuncio' — editar um anúncio PUBLICADO (save-only, PR2)        */
+/* -------------------------------------------------------------------------- */
+
+describe("atualizarRascunhoShopee com alvo 'anuncio' — o anúncio publicado (Lucas 2026-11-17)", () => {
+  const CAMINHO_VIVO = `${COLECAO}/${VIVO}`;
+  const CANAL_A = { logistic_id: 90_003, enabled: true, is_free: false };
+  const CANAL_B = { logistic_id: 90_004, enabled: true, is_free: true };
+
+  function publicado(extra: Record<string, unknown> = {}): Record<string, unknown> {
+    return rascunho({
+      item_id: ITEM_VIVO,
+      estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
+      brand_id: 1_001,
+      original_brand_name: 'Marca X',
+      attributes: ATRIBUTOS,
+      ...extra,
+    });
+  }
+
+  function corpoAnuncio(
+    baseVista: Record<string, unknown>,
+    patch: Record<string, unknown>,
+    o: Record<string, unknown> = {},
+  ) {
+    return corpoAtualizar(baseVista, patch, { linkDocId: VIVO, alvo: 'anuncio', ...o });
+  }
+
+  function dbPublicado(extra: Record<string, unknown> = {}): FakeDb {
+    const db = new FakeDb();
+    db.seed(CAMINHO_VIVO, publicado(extra));
+    return db;
+  }
+
+  describe('a matriz alvo × documento', () => {
+    it('alvo rascunho (o padrão) sobre um anúncio ⇒ 409 JA_PUBLICADO, zero escritas', async () => {
+      const db = dbPublicado();
+      const err = await recusaDe(
+        atualizarRascunhoShopee(
+          deps(db),
+          corpoAtualizar(
+            { item_name: 'Camiseta do rascunho' },
+            { item_name: 'Novo' },
+            {
+              linkDocId: VIVO,
+            },
+          ),
+        ),
+      );
+      expect(err.status).toBe(409);
+      expect(err.code).toBe(CODIGO_RASCUNHO_SHOPEE.jaPublicado);
+      expect(db.patches).toEqual([]);
+    });
+
+    it('alvo anuncio sobre um RASCUNHO ⇒ 409 ANUNCIO_NAO_EDITAVEL, zero escritas', async () => {
+      const db = new FakeDb();
+      db.seed(CAMINHO, rascunho());
+      const err = await recusaDe(
+        atualizarRascunhoShopee(
+          deps(db),
+          corpoAtualizar(
+            { item_name: 'Camiseta do rascunho' },
+            { item_name: 'Novo' },
+            {
+              alvo: 'anuncio',
+            },
+          ),
+        ),
+      );
+      expect(err.status).toBe(409);
+      expect(err.code).toBe(CODIGO_RASCUNHO_SHOPEE.anuncioNaoEditavel);
+      expect(db.patches).toEqual([]);
+    });
+
+    it.each([
+      ['kit nativo', { kitNativo: true }],
+      ['removido', { estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.removido }],
+      ['item_id fracionário (1.5)', { item_id: 1.5 }],
+      ['substituído por outro vínculo', { substituidoPorLinkDocId: 'outro' }],
+    ])('alvo anuncio sobre %s ⇒ 409 ANUNCIO_NAO_EDITAVEL, zero escritas', async (_nome, extra) => {
+      const db = dbPublicado(extra);
+      const err = await recusaDe(
+        atualizarRascunhoShopee(
+          deps(db),
+          corpoAnuncio({ item_name: 'Camiseta do rascunho' }, { item_name: 'Novo' }),
+        ),
+      );
+      expect(err.code).toBe(CODIGO_RASCUNHO_SHOPEE.anuncioNaoEditavel);
+      expect(db.patches).toEqual([]);
+    });
+
+    it('alvo anuncio sobre o vínculo de OUTRA conta ⇒ 404 INEXISTENTE', async () => {
+      const db = dbPublicado({ contaProdutoShopeeOuterRef: `documents/integracao/${OUTRA_CONTA}` });
+      const err = await recusaDe(
+        atualizarRascunhoShopee(deps(db), corpoAnuncio({ item_name: 'x' }, { item_name: 'y' })),
+      );
+      expect(err.status).toBe(404);
+      expect(err.code).toBe(CODIGO_RASCUNHO_SHOPEE.inexistente);
+    });
+  });
+
+  describe('a edição grava o campo + revisão + pendência no MESMO update', () => {
+    it('título: revisão ausente ⇒ 1, pendência = AGORA, guardado pela leitura que decidiu', async () => {
+      const db = dbPublicado();
+      const lido = db.store[CAMINHO_VIVO]?.updateTime;
+      const { db: registrado, precondicoes } = comPrecondicoesRegistradas(db, CAMINHO_VIVO);
+
+      const r = await atualizarRascunhoShopee(
+        deps(registrado),
+        corpoAnuncio({ item_name: 'Camiseta do rascunho' }, { item_name: 'Camiseta Azul' }),
+      );
+
+      expect(r).toEqual({ linkDocId: VIVO, gravados: [CAMPO_RASCUNHO_SHOPEE.itemName] });
+      expect(db.patches).toEqual([
+        {
+          path: CAMINHO_VIVO,
+          patch: {
+            item_name: 'Camiseta Azul',
+            edicaoErpRevisao: 1,
+            edicaoErpPendenteEm: AGORA,
+            ultimaModificacao: AGORA,
+          },
+        },
+      ]);
+      expect(precondicoes).toEqual([lido]);
+    });
+
+    it('revisão 4 ⇒ 5', async () => {
+      const db = dbPublicado({ edicaoErpRevisao: 4, edicaoErpPendenteEm: AGORA - 1000 });
+      await atualizarRascunhoShopee(
+        deps(db),
+        corpoAnuncio({ description: null }, { description: 'Nova descrição' }),
+      );
+      expect(doc(db, CAMINHO_VIVO)?.edicaoErpRevisao).toBe(5);
+      expect(doc(db, CAMINHO_VIVO)?.edicaoErpPendenteEm).toBe(AGORA);
+      expect(doc(db, CAMINHO_VIVO)?.description).toBe('Nova descrição');
+    });
+
+    it('categoria + atributos da nova categoria no mesmo save passa', async () => {
+      const db = dbPublicado();
+      const r = await atualizarRascunhoShopee(
+        deps(db),
+        corpoAnuncio(
+          { category_id: 100_017, attributes: camposDoRascunhoShopee(publicado()).attributes },
+          { category_id: 100_099, attributes: ATRIBUTOS_DA_NOVA_CATEGORIA },
+        ),
+      );
+      expect(r.gravados).toEqual([
+        CAMPO_RASCUNHO_SHOPEE.categoryId,
+        CAMPO_RASCUNHO_SHOPEE.attributes,
+      ]);
+      expect(doc(db, CAMINHO_VIVO)?.category_id).toBe(100_099);
+      expect(doc(db, CAMINHO_VIVO)?.edicaoErpRevisao).toBe(1);
+    });
+
+    it('remover UM de dois atributos passa', async () => {
+      const db = dbPublicado();
+      await atualizarRascunhoShopee(
+        deps(db),
+        corpoAnuncio(
+          {
+            category_id: 100_017,
+            attributes: camposDoRascunhoShopee(publicado()).attributes,
+          },
+          { attributes: [ATRIBUTOS[0]] },
+        ),
+      );
+      expect(doc(db, CAMINHO_VIVO)?.attributes).toEqual([ATRIBUTOS[0]]);
+      expect(doc(db, CAMINHO_VIVO)?.edicaoErpRevisao).toBe(1);
+    });
+
+    it('«Sem marca» (brand_id 0) passa', async () => {
+      const db = dbPublicado();
+      await atualizarRascunhoShopee(
+        deps(db),
+        corpoAnuncio(
+          { marca: camposDoRascunhoShopee(publicado()).marca },
+          { marca: { brand_id: 0, original_brand_name: 'No Brand' } },
+        ),
+      );
+      expect(doc(db, CAMINHO_VIVO)?.brand_id).toBe(0);
+      expect(doc(db, CAMINHO_VIVO)?.edicaoErpRevisao).toBe(1);
+    });
+
+    it('trocar a categoria de um link cujos atributos guardados são null passa', async () => {
+      const db = dbPublicado({ attributes: null });
+      await atualizarRascunhoShopee(
+        deps(db),
+        corpoAnuncio({ category_id: 100_017, attributes: null }, { category_id: 100_099 }),
+      );
+      expect(doc(db, CAMINHO_VIVO)?.category_id).toBe(100_099);
+    });
+
+    it('trocar a categoria de um link cujos atributos guardados são [] passa', async () => {
+      const db = dbPublicado({ attributes: [] });
+      await atualizarRascunhoShopee(
+        deps(db),
+        corpoAnuncio(
+          {
+            category_id: 100_017,
+            attributes: camposDoRascunhoShopee(publicado({ attributes: [] })).attributes,
+          },
+          { category_id: 100_099 },
+        ),
+      );
+      expect(doc(db, CAMINHO_VIVO)?.category_id).toBe(100_099);
+    });
+
+    it('um no-op não grava nem carimba', async () => {
+      const db = dbPublicado();
+      const r = await atualizarRascunhoShopee(
+        deps(db),
+        corpoAnuncio({ item_name: 'Camiseta do rascunho' }, { item_name: 'Camiseta do rascunho' }),
+      );
+      expect(r.gravados).toEqual([]);
+      expect(db.patches).toEqual([]);
+      expect(doc(db, CAMINHO_VIVO)?.edicaoErpRevisao).toBeUndefined();
+    });
+
+    it('uma edição de RASCUNHO nunca carimba', async () => {
+      const db = new FakeDb();
+      db.seed(CAMINHO, rascunho());
+      await atualizarRascunhoShopee(
+        deps(db),
+        corpoAtualizar({ item_name: 'Camiseta do rascunho' }, { item_name: 'Outro' }),
+      );
+      expect(doc(db)?.edicaoErpRevisao).toBeUndefined();
+      expect(doc(db)?.edicaoErpPendenteEm).toBeUndefined();
+    });
+  });
+
+  describe('as recusas 422 ANUNCIO_EDICAO_INVALIDA (nada é gravado)', () => {
+    async function recusa422(patch: Record<string, unknown>, baseVista: Record<string, unknown>) {
+      const db = dbPublicado();
+      const err = await recusaDe(atualizarRascunhoShopee(deps(db), corpoAnuncio(baseVista, patch)));
+      expect(err.status).toBe(422);
+      expect(err.code).toBe(CODIGO_RASCUNHO_SHOPEE.anuncioEdicaoInvalida);
+      expect(db.patches).toEqual([]);
+      return err;
+    }
+
+    it('marca null', async () => {
+      const err = await recusa422(
+        { marca: null },
+        { marca: camposDoRascunhoShopee(publicado()).marca },
+      );
+      expect(err.message).toContain('marca');
+    });
+
+    it('logistic_info null («Automática»)', async () => {
+      const err = await recusa422({ logistic_info: null }, { logistic_info: null });
+      expect(err.message).toContain('logistic_info');
+    });
+
+    it('attributes null sobre uma lista guardada não vazia', async () => {
+      const err = await recusa422(
+        { attributes: null },
+        { category_id: 100_017, attributes: camposDoRascunhoShopee(publicado()).attributes },
+      );
+      expect(err.message).toContain('attributes');
+    });
+
+    it('attributes [] sobre uma lista guardada não vazia', async () => {
+      const err = await recusa422(
+        { attributes: [] },
+        { category_id: 100_017, attributes: camposDoRascunhoShopee(publicado()).attributes },
+      );
+      expect(err.message).toContain('attributes');
+    });
+
+    it('trocar a categoria SEM nomear os atributos, com uma lista guardada não vazia', async () => {
+      const err = await recusa422(
+        { category_id: 100_099 },
+        { category_id: 100_017, attributes: camposDoRascunhoShopee(publicado()).attributes },
+      );
+      expect(err.message).toContain('attributes');
+    });
+  });
+
+  describe('a trava de publicação NÃO se aplica a um anúncio publicado (E-3)', () => {
+    it('uma trava em andamento / incerta não impede a edição, nem a da categoria', async () => {
+      const db = dbPublicado({ publicacaoEmCurso: travaAlheia(AGORA + 60_000) });
+      await atualizarRascunhoShopee(
+        deps(db),
+        corpoAnuncio({ item_name: 'Camiseta do rascunho' }, { item_name: 'Edição com trava' }),
+      );
+      expect(doc(db, CAMINHO_VIVO)?.item_name).toBe('Edição com trava');
+
+      const db2 = dbPublicado({
+        attributes: null,
+        publicacaoEmCurso: travaAlheia(AGORA - 3_600_000),
+      });
+      await atualizarRascunhoShopee(
+        deps(db2),
+        corpoAnuncio({ category_id: 100_017, attributes: null }, { category_id: 100_099 }),
+      );
+      expect(doc(db2, CAMINHO_VIVO)?.category_id).toBe(100_099);
+    });
+  });
+
+  describe('a logística preserva o tamanho e a taxa guardados (mesclarLogisticaGravadaShopee)', () => {
+    const LISTA_CONFIAVEL = [
+      { ...CANAL_A, size_id: 7, shipping_fee: 12.5 },
+      { logistic_id: 90_009, enabled: true, is_free: false, size_id: 9 },
+    ];
+
+    it('quase-par: o MESMO patch num RASCUNHO carimbado não acrescenta nada (só carrega tamanho/taxa)', async () => {
+      const db = new FakeDb();
+      db.seed(
+        CAMINHO,
+        rascunho({ logistic_info: LISTA_CONFIAVEL, logisticaGravadaEm: AGORA - 1000 }),
+      );
+      await atualizarRascunhoShopee(
+        deps(db),
+        corpoAtualizar(
+          { logistic_info: camposDoRascunhoShopee(doc(db) ?? {}).logistic_info },
+          { logistic_info: [{ ...CANAL_A, is_free: true }, CANAL_B] },
+        ),
+      );
+      expect(doc(db)?.logistic_info).toEqual([
+        { logistic_id: 90_003, enabled: true, is_free: true, size_id: 7, shipping_fee: 12.5 },
+        { logistic_id: 90_004, enabled: true, is_free: true },
+      ]);
+    });
+
+    it('uma entrada guardada DESLIGADA e omitida pelo patch continua enabled:false (is_free guardado)', async () => {
+      const db = dbPublicado({
+        logistic_info: [CANAL_A, { logistic_id: 90_009, enabled: false, is_free: true }],
+        logisticaGravadaEm: AGORA - 1000,
+      });
+      await atualizarRascunhoShopee(
+        deps(db),
+        corpoAnuncio(
+          { logistic_info: camposDoRascunhoShopee(doc(db, CAMINHO_VIVO) ?? {}).logistic_info },
+          { logistic_info: [CANAL_B] },
+        ),
+      );
+      expect(doc(db, CAMINHO_VIVO)?.logistic_info).toEqual([
+        CANAL_B,
+        { logistic_id: 90_003, enabled: false, is_free: false },
+        { logistic_id: 90_009, enabled: false, is_free: true },
+      ]);
+    });
+
+    it('lista guardada SEM carimbo, com tamanho/taxa ⇒ 422 ANUNCIO_EDICAO_INVALIDA e zero escritas', async () => {
+      const db = dbPublicado({ logistic_info: LISTA_CONFIAVEL });
+      const err = await recusaDe(
+        atualizarRascunhoShopee(
+          deps(db),
+          corpoAnuncio({ logistic_info: null }, { logistic_info: [CANAL_A] }),
+        ),
+      );
+      expect(err.status).toBe(422);
+      expect(err.code).toBe(CODIGO_RASCUNHO_SHOPEE.anuncioEdicaoInvalida);
+      expect(db.patches).toEqual([]);
+    });
+
+    it('quase-par: a MESMA lista CARIMBADA é gravada e carrega tamanho/taxa', async () => {
+      const db = dbPublicado({ logistic_info: LISTA_CONFIAVEL, logisticaGravadaEm: AGORA - 1000 });
+      const r = await atualizarRascunhoShopee(
+        deps(db),
+        corpoAnuncio(
+          { logistic_info: camposDoRascunhoShopee(doc(db, CAMINHO_VIVO) ?? {}).logistic_info },
+          { logistic_info: [CANAL_A] },
+        ),
+      );
+      expect(r.gravados).toEqual([CAMPO_RASCUNHO_SHOPEE.logisticInfo]);
+      expect((doc(db, CAMINHO_VIVO)?.logistic_info as unknown[])[0]).toEqual({
+        ...CANAL_A,
+        size_id: 7,
+        shipping_fee: 12.5,
+      });
+    });
+
+    it('sem lista guardada nenhuma (null, sem carimbo) ⇒ 422 ao nomear logistic_info', async () => {
+      const db = dbPublicado();
+      const err = await recusaDe(
+        atualizarRascunhoShopee(
+          deps(db),
+          corpoAnuncio({ logistic_info: null }, { logistic_info: [CANAL_A] }),
+        ),
+      );
+      expect(err.code).toBe(CODIGO_RASCUNHO_SHOPEE.anuncioEdicaoInvalida);
+      expect(db.patches).toEqual([]);
+    });
+
+    it('lista guardada SEM carimbo e um patch que NÃO nomeia logistic_info ⇒ passa', async () => {
+      const db = dbPublicado({ logistic_info: LISTA_CONFIAVEL });
+      const r = await atualizarRascunhoShopee(
+        deps(db),
+        corpoAnuncio({ item_name: 'Camiseta do rascunho' }, { item_name: 'Novo título' }),
+      );
+      expect(r.gravados).toEqual([CAMPO_RASCUNHO_SHOPEE.itemName]);
+      expect(doc(db, CAMINHO_VIVO)?.logistic_info).toEqual(LISTA_CONFIAVEL);
+    });
+
+    it('um RASCUNHO LEGADO (sem carimbo) grava a lista SEM shipping_fee nem size_id', async () => {
+      const db = new FakeDb();
+      db.seed(
+        CAMINHO,
+        rascunho({
+          logistic_info: [
+            { logistic_id: 90_003, enabled: true, is_free: true },
+            {
+              logistic_id: 90_004,
+              enabled: true,
+              is_free: false,
+              shipping_fee: '12.90',
+              size_id: 3,
+            },
+          ],
+        }),
+      );
+      const nua = { ...CANAL_B, is_free: false };
+      await atualizarRascunhoShopee(
+        deps(db),
+        corpoAtualizar({ logistic_info: null }, { logistic_info: [CANAL_A, nua] }),
+      );
+      expect(doc(db)?.logistic_info).toEqual([CANAL_A, nua]);
+    });
+
+    it('size_id / shipping_fee do MESMO logistic_id sobrevivem; outro id nunca herda; o omitido é DESLIGADO e guarda os seus', async () => {
+      const db = dbPublicado({ logistic_info: LISTA_CONFIAVEL, logisticaGravadaEm: AGORA - 1000 });
+      await atualizarRascunhoShopee(
+        deps(db),
+        corpoAnuncio(
+          { logistic_info: camposDoRascunhoShopee(doc(db, CAMINHO_VIVO) ?? {}).logistic_info },
+          { logistic_info: [{ ...CANAL_A, is_free: true }, CANAL_B] },
+        ),
+      );
+      expect(doc(db, CAMINHO_VIVO)?.logistic_info).toEqual([
+        { logistic_id: 90_003, enabled: true, is_free: true, size_id: 7, shipping_fee: 12.5 },
+        { logistic_id: 90_004, enabled: true, is_free: true },
+        // The omitted channel keeps its own size: re-enabling it later still sends it.
+        { logistic_id: 90_009, enabled: false, is_free: false, size_id: 9 },
+      ]);
+      expect(doc(db, CAMINHO_VIVO)?.logisticaGravadaEm).toBe(AGORA);
+    });
+
+    it('um RASCUNHO (lista guardada sem tamanho/taxa) grava a lista pura, como antes', async () => {
+      const db = new FakeDb();
+      db.seed(CAMINHO, rascunho({ logistic_info: [CANAL_A], logisticaGravadaEm: AGORA - 1000 }));
+      await atualizarRascunhoShopee(
+        deps(db),
+        corpoAtualizar({ logistic_info: [CANAL_A] }, { logistic_info: [CANAL_A, CANAL_B] }),
+      );
+      expect(doc(db)?.logistic_info).toEqual([CANAL_A, CANAL_B]);
+    });
+  });
+
+  describe('perder a precondição RE-DECIDE', () => {
+    it('uma edição que chega entre a leitura e a escrita: a revisão sai da leitura FRESCA', async () => {
+      const db = dbPublicado();
+      const concorrente = comEscritaConcorrente(db, CAMINHO_VIVO, () => {
+        // Another operator saved the SAME field meanwhile: revision 1.
+        db.seed(CAMINHO_VIVO, {
+          ...publicado({ item_name: 'Camiseta do rascunho' }),
+          edicaoErpRevisao: 1,
+          edicaoErpPendenteEm: AGORA - 5,
+        });
+      });
+      const r = await atualizarRascunhoShopee(
+        deps(concorrente),
+        corpoAnuncio({ item_name: 'Camiseta do rascunho' }, { item_name: 'Minha edição' }),
+      );
+      expect(r.gravados).toEqual([CAMPO_RASCUNHO_SHOPEE.itemName]);
+      expect(doc(db, CAMINHO_VIVO)?.edicaoErpRevisao).toBe(2);
+    });
   });
 });

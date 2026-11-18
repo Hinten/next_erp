@@ -139,6 +139,15 @@ export interface ContextoPublicacao {
   readonly grupos: readonly GrupoParaTier[];
   readonly link: LinkListagemLido | null;
   readonly linkDocId: string | null;
+  /**
+   * The link's `edicaoErpRevisao` as read by the SAME read that built the body
+   * (`revisaoDeEdicaoErpShopee`), `null` for no link / a never-edited one.
+   * Absent ⇒ `null` (every fixture that predates it). It travels to the
+   * write-backs, which compare it with the fresh read: an ERP edit stamped after
+   * this read keeps its content (rule 7 tier 1) instead of being overwritten by
+   * the body this publish SENT.
+   */
+  readonly revisaoDeEdicaoErp?: number | null;
   readonly linksDeVariacao: readonly LinkDeVariacao[];
   readonly limites: LimitesDeItemLidos;
   readonly atributos: AtributosProjetados;
@@ -297,6 +306,8 @@ export const ORDEM_RELISTAGEM: readonly OrdemDeRelistagem[] =
 export interface PlanoPublicacao {
   readonly produtoId: string;
   readonly linkDocId: string | null;
+  /** {@link ContextoPublicacao.revisaoDeEdicaoErp}, folded to `null` when absent. */
+  readonly revisaoDeEdicaoErp?: number | null;
   /** `null` on a first publish; a stored non-positive id folds to `null`. */
   readonly itemId: number | null;
   readonly ehAtualizacao: boolean;
@@ -550,6 +561,9 @@ export function planejarPublicacao(
     pesoKg: pesoParaPublicar(produto),
     dimensaoCm: dimensaoParaPublicar(produto),
     ofereceFreteGratis: produto.ofereceFreteGratis,
+    // E-4: only an UPDATE of a live listing sends a stored off as
+    // `enabled: false`; a create never switches a channel off.
+    enviarDesligados: contexto.ehAtualizacao,
   });
 
   const { taxInfo, omitido } = montarTaxInfo(contexto.imposto.imposto);
@@ -671,6 +685,7 @@ export function planejarPublicacao(
   return {
     produtoId: produto.id,
     linkDocId: contexto.linkDocId,
+    revisaoDeEdicaoErp: contexto.revisaoDeEdicaoErp ?? null,
     itemId,
     ehAtualizacao: contexto.ehAtualizacao,
     temFilhos,

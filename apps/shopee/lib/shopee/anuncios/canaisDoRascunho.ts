@@ -14,6 +14,17 @@
  *    reads, so the editor and the publish can never read a weight or a box two
  *    ways (#1369). The fit is therefore the STORED produto's: an unsaved weight
  *    edit is not reflected, exactly as a publish would not see it.
+ * 2b. OPTIONALLY (`linkDocId`, a PUBLISHED listing's editor): that produto's
+ *    `prodshopee` link, read by id BEFORE any Shopee call. Absent or another
+ *    conta's ⇒ `vinculo-inexistente` (the route's 404). Its stored
+ *    `logistic_info` — only when THIS app wrote it, decided by the
+ *    `@delfrance/schemas` helper `logisticaArmazenadaConfiavelShopee` (the
+ *    publisher's one trust predicate; a distrusted list is ignored, exactly
+ *    as a publish ignores it) — is handed to the verdict so a `SIZE_SELECTION` /
+ *    `CUSTOM_PRICE` channel whose `size_id` / `shipping_fee` the listing
+ *    already holds reads as sendable instead of "needs Seller Centre" — per
+ *    `logistic_id`, never another channel's value. Without `linkDocId` the
+ *    answer is byte-identical to the draft editor's.
  * 3. ONE `get_channel_list`, UNCACHED (`lerCanaisDaLoja`): a stale list would
  *    offer a channel the shop closed minutes ago, and publish reads it uncached
  *    for the same reason.
@@ -42,19 +53,25 @@ import type { Firestore } from 'firebase-admin/firestore';
 import type { ShopeeClient } from '@delfrance/integrations-shopee';
 import {
   MOTIVO_INDISPONIVEL_CANAL_SHOPEE,
+  logisticaArmazenadaConfiavelShopee,
   textoUtilizavelShopee,
+  vinculoShopeeEhDaConta,
   type MotivoIndisponivelCanalShopee,
   type RespostaCanaisShopee,
 } from '@delfrance/schemas';
-import { produtoCollection } from '@delfrance/data/admin/collections';
+import { produtoCollection, produtoShopeeLinkCollection } from '@delfrance/data/admin/collections';
 
 import { avaliarCanaisDaLojaShopee, type MotivoCanalPulado } from './logisticaPublicacao';
 import { dimensaoParaPublicar, pesoParaPublicar } from './montagemAnuncio';
 import { lerCanaisDaLoja, produtoParaPublicar } from './publicarAnuncio';
 
-/** What one read answers: the produto is gone, or the envelope the route returns as its 200. */
+/**
+ * What one read answers: the produto is gone, the named link is not this
+ * conta's (or is gone), or the envelope the route returns as its 200.
+ */
 export type LeituraCanaisDoRascunhoShopee =
   | { readonly tipo: 'produto-inexistente' }
+  | { readonly tipo: 'vinculo-inexistente' }
   | { readonly tipo: 'ok'; readonly resposta: RespostaCanaisShopee };
 
 /**
@@ -91,7 +108,12 @@ const INDISPONIVEL = {
  */
 export async function lerCanaisDoRascunhoShopee(
   deps: { readonly db: Firestore; readonly client: ShopeeClient },
-  entrada: { readonly produtoId: string },
+  entrada: {
+    readonly produtoId: string;
+  } & (
+    | { readonly linkDocId?: undefined; readonly integracaoId?: string }
+    | { readonly linkDocId: string; readonly integracaoId: string }
+  ),
 ): Promise<LeituraCanaisDoRascunhoShopee> {
   const snap = await produtoCollection.docRef(deps.db, {}, entrada.produtoId).get();
   if (!snap.exists) return { tipo: 'produto-inexistente' };
@@ -102,12 +124,30 @@ export async function lerCanaisDoRascunhoShopee(
   const pesoKg = pesoParaPublicar(produto);
   const dimensaoCm = dimensaoParaPublicar(produto);
 
+  // The listing's stored list, read BEFORE the Shopee call so a miss costs the
+  // shop nothing. Another conta's link reads as absent (both ref encodings).
+  let armazenado: readonly unknown[] | null = null;
+  if (entrada.linkDocId !== undefined) {
+    const linkSnap = await produtoShopeeLinkCollection
+      .docRef(deps.db, { produtoId: entrada.produtoId }, entrada.linkDocId)
+      .get();
+    if (!linkSnap.exists) return { tipo: 'vinculo-inexistente' };
+    const link = (linkSnap.data() ?? {}) as Record<string, unknown>;
+    if (!vinculoShopeeEhDaConta(link, entrada.integracaoId)) {
+      return { tipo: 'vinculo-inexistente' };
+    }
+    // Trust is decided by the schemas helper — the publisher's ONE predicate —
+    // so a distrusted (legacy) list contributes nothing, as in a publish (#2015).
+    armazenado = logisticaArmazenadaConfiavelShopee(link);
+  }
+
   const canais = await lerCanaisDaLoja(deps.client);
   const avaliados = avaliarCanaisDaLojaShopee({
     canais,
     pesoKg,
     dimensaoCm,
     ofereceFreteGratis: produto.ofereceFreteGratis,
+    armazenado,
   });
 
   return {

@@ -567,8 +567,11 @@ export async function propagateKitStatusToChildren(
   if (!kitStatusChanged(change)) return [];
   const children = await port.getChildren(parentId);
   if (children.length === 0) return [];
-  await port.commit(buildKitStatusChildOps(change, children));
-  return children.map((c) => c.id);
+  return port.commitKitStatus(
+    parentId,
+    children.map((child) => child.id),
+    change,
+  );
 }
 
 // ---------------------------------------------------------------------------

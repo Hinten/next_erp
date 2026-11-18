@@ -2517,8 +2517,7 @@ describe('#1911 P11 — the answers of a draft’s Publicar (§C.2)', () => {
     expect(t).not.toMatch(TEXTO_DE_TERMINAL);
     // NEAR-MISS: the plain sentence is untouched — and is NOT the attested one.
     expect(FRASE_RASCUNHO_JA_PUBLICADO_SHOPEE).toBe(
-      'Este rascunho já virou anúncio na Shopee — recarregue a aba; o conteúdo de um anúncio ' +
-        'publicado não é editado aqui.',
+      'Este rascunho já virou anúncio na Shopee — recarregue a aba. Nada foi feito.',
     );
     expect(FRASE_RASCUNHO_JA_PUBLICADO_SHOPEE).not.toContain('confirmação');
   });
