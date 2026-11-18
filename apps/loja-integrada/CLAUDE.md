@@ -1006,6 +1006,58 @@ The full stock-sync section lands with the rest of step 12; these are the facts 
   context loader, park, pacer, write engine or send run reached, no client named, no `fetch`, the
   package loaded only by `pedidos/vinculoProdutoLi.ts` (constants).
 
+## Stock reconcile (step 12, PR 12-g — the ERP side so far)
+
+The store's list walk, the queue phase, the avisos and the depósito-change arm land with the rest
+of PR 12-g; these are the facts already in the tree.
+
+- **Files** (`estoque/reconcile/`): `agendamentoReconcile.ts` (the nightly start),
+  `agendadorReconcile.ts` (the reads-queue producer, tasks `li-<execucaoId>-<seq>`),
+  `despachoReconcile.ts` (ONE slice), `execucaoReconcile.ts` (the run document: the decision, the
+  take, every batch), `orcamentoReconcile.ts` (the import's 70 + 30 s budget, one rule:
+  `cabeNoOrcamentoMsLi`), `caminhadaVinculos.ts` (one page of the link walk), `faseErp.ts` (one page
+  evaluated for every conta), `snapshotReconcile.ts` (a slice's per-conta state, the entry
+  precedence), `mapaKitsReconcile.ts` (the kits map writer). In `functions/src/`:
+  `reconciliarEstoque.ts` (`onSchedule('23 4 * * *')`, America/Sao_Paulo, `retryCount: 3`),
+  `depsReconcileEstoque.ts`, the `estoque-reconcile` arm of `filaLeitura.ts` and the producer root in
+  `agendador.ts`.
+- **The nightly start reads NOTHING**: valve `off` ⇒ nothing; read switch not exactly `on` ⇒ nothing
+  (one INFO); else ONE task `estoque-reconcile-<AAAAMMDD>` seq 0 (the SCHEDULE TIME's São Paulo date,
+  so a Scheduler retry collides); a transient enqueue failure rethrows for the Scheduler's retry.
+- **One chain for every conta**, slices on the reads queue: payload, valve, cap (zero reads each),
+  then the run document `reconcileEstoqueLojaIntegrada/atual` decides (`executar` same run + seq with
+  the lease held; `continuacao` one seq behind ⇒ the stored seq re-enqueued at 60 s; a new run only
+  at seq 0: `adiar` when the stored one started in the same minute window — so two runs never share
+  the stock queue's naming window —, `assumir` when free, expired or started > 48 h ago, else
+  `ocupado`). The take lists the active contas with a depósito (one WARNING for an active one without)
+  and fixes each one's depósito in its root `execucao`; with none the run is released at once.
+- **Every write rides the run document's precondition** (one batch; rule 7 tier 1): a slot-only
+  change by the kit fan-out ⇒ the SAME batch re-applied (the slot kept); our own landed batch with a
+  lost reply ⇒ recognised (`guardaOPatchLi`), never re-advanced; the lease gone ⇒ `parado`; another
+  dispatch of the same seq ⇒ `LiReconcileEstoqueConcorrenteError`. A slice NEVER writes
+  `proximoSlotMs`. One end-of-slice checkpoint (`seq + 1`, lease + 1 h) and the named hand-off 2 s
+  later; the release bumps `seq` too, so a late duplicate of a run's last slice is refused.
+- **The ERP phase**: the key walk (`select` + `orderBy(documentId())` + `startAfter('<full path>')`
+  + 300, the permanent CG `produtolojaintegrada (__name__ ASC)`, pinned by
+  `caminhadaVinculos.indexes.test.ts`); the cursor is always the page's last link, a full page's
+  trailing produto completed by its own where-less listing and skipped on the next page; only
+  `produtos/{p}/produtolojaintegrada/{l}` counts. Per page: the links alone (`pai` ⇒ `pais`,
+  `nao-suportado` ⇒ `ns`, `vinculo-ambiguo` ⇒ `amb` per id, nothing read), ONE masked produtos
+  `getAll`, parity ⇒ `par` (no record read), ONE `lerRegistrosNoDepositoLi` per depósito (the send
+  run's reader, generalised: canonical ids by `getAll`, the join, the own-collection query, 20 at a
+  time), the plan, the never-had-stock listing only on `consultar-estoques`. Two produtos on one
+  store id meet in the snapshot ⇒ `dup` (an `x` never counts as a produto). A store kit's entry
+  carries its composition (`q`, `e`), so the kits map is written from the snapshot alone.
+- **The kits map** per conta, bounded and resumable (`execucao.mapa`): components in id order, one
+  batch per unit with each component's header AND shards (the 12-f reader's `completa` holds when
+  it lands), then the sweep of every header and shard of another run (listings projected to
+  `execucaoId`), then one INFO line with the kits-per-component histogram.
+- **Last attempt**: a retryable failure (Firestore, Cloud Tasks, the concurrency error) releases the
+  lease with ONE ERROR `tentativas-esgotadas`, or hands off when the run is already one seq ahead
+  (with our delay when the stored document holds OUR end patch); coding bugs stay loud.
+- **Amendments to the 12-a contracts** (in `packages/schemas`): the root's `execucao`, a kit entry's
+  `q`/`e`, the walk's `concluida`. Bare schemas: both rulesets regenerate with a zero diff.
+
 ## Notification pipeline (step 3)
 
 - `notificacoes/notificacao.ts` binds the shared failures-only core to

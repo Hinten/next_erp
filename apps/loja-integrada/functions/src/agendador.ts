@@ -1,8 +1,12 @@
 import { requireRegion } from '@delfrance/core/region';
 import { getFunctions } from 'firebase-admin/functions';
 
-import type { TarefaImportacaoLi } from '@delfrance/schemas';
+import type { TarefaImportacaoLi, TarefaReconcileEstoqueLi } from '@delfrance/schemas';
 
+import {
+  type AgendadorReconcileEstoqueLi,
+  criarAgendadorReconcileEstoqueLi,
+} from '../../lib/lojaIntegrada/estoque/reconcile/agendadorReconcile';
 import {
   type AgendadorImportacaoLi,
   criarAgendadorImportacaoLi,
@@ -17,8 +21,11 @@ import { getAdminApp } from './lib/admin';
 /**
  * The COMPOSITION ROOT of the reads-queue producers for this functions codebase:
  * the order poller (step 3) enqueues through {@link criarAgendadorLiDoAmbiente},
- * and the product import (step 9) — its job-creation trigger and each dispatch's
- * named continuation — through {@link criarAgendadorImportacaoLiDoAmbiente}.
+ * the product import (step 9) — its job-creation trigger and each dispatch's
+ * named continuation — through {@link criarAgendadorImportacaoLiDoAmbiente}, and
+ * the daily stock reconcile (step 12, PR 12-g) — its nightly start and each
+ * slice's named continuation — through
+ * {@link criarAgendadorReconcileEstoqueLiDoAmbiente}.
  * What a rejection means, the transient naming, the "payload alone" rule and the
  * import's task names are the pure modules'
  * (`lib/lojaIntegrada/notificacoes/agendador.ts`,
@@ -85,6 +92,23 @@ export function criarAgendadorImportacaoLiDoAmbiente(): AgendadorImportacaoLi {
   return criarAgendadorImportacaoLi({
     fila: () =>
       getFunctions(getAdminApp()).taskQueue<TarefaImportacaoLi>(
+        `locations/${regiaoDaFilaLi()}/functions/${FILA_LEITURA_LI}`,
+      ),
+    desligado: tarefasLiDesligadas(),
+  });
+}
+
+/**
+ * The daily stock reconcile's producer (master plan step 12, PR 12-g), on the
+ * SAME reads queue, through the SAME region and valve readers — one queue, one
+ * region, one sweep-only valve. The valve is read ONCE, here, when a caller
+ * builds it (the schedule and a slice build it only when an enqueue is due); the
+ * queue is resolved per enqueue, and never while the valve is closed.
+ */
+export function criarAgendadorReconcileEstoqueLiDoAmbiente(): AgendadorReconcileEstoqueLi {
+  return criarAgendadorReconcileEstoqueLi({
+    fila: () =>
+      getFunctions(getAdminApp()).taskQueue<TarefaReconcileEstoqueLi>(
         `locations/${regiaoDaFilaLi()}/functions/${FILA_LEITURA_LI}`,
       ),
     desligado: tarefasLiDesligadas(),

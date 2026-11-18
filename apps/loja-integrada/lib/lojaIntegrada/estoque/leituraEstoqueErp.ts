@@ -43,7 +43,7 @@
  * it stores: a record whose stored owner disagrees with its path is attributed to its path, and a
  * component it does not then answer for is looked up again by its own collection.
  */
-import type { Firestore } from 'firebase-admin/firestore';
+import type { DocumentSnapshot, Firestore } from 'firebase-admin/firestore';
 import {
   estoqueCollection,
   produtoCollection,
@@ -125,14 +125,8 @@ function proprio(o: Readonly<Record<string, unknown>>, chave: string): unknown {
  */
 export { depositoDaContaLi, formasDoDepositoLi };
 
-/** The produto, masked to {@link CAMPOS_PRODUTO_ESTOQUE_LI}, or `null` when it does not exist. */
-export async function lerProdutoEstoqueLi(
-  db: Firestore,
-  produtoId: string,
-): Promise<ProdutoEstoqueLi | null> {
-  const [snap] = await db.getAll(produtoCollection.docRef(db, {}, produtoId), {
-    fieldMask: [...CAMPOS_PRODUTO_ESTOQUE_LI],
-  });
+/** A masked produto read, as the quantity reads it — or `null` when the document is absent. */
+function produtoDoSnapshotLi(snap: DocumentSnapshot | undefined): ProdutoEstoqueLi | null {
   if (snap === undefined || !snap.exists) return null;
   const dados: Readonly<Record<string, unknown>> = snap.data() ?? {};
   return {
@@ -142,6 +136,44 @@ export async function lerProdutoEstoqueLi(
     componentesKit: (proprio(dados, 'componentesKit') ?? null) as ComponentesKit | null,
     statusProdutosMarketplace: proprio(dados, 'statusProdutosMarketplace'),
   };
+}
+
+/** The produto, masked to {@link CAMPOS_PRODUTO_ESTOQUE_LI}, or `null` when it does not exist. */
+export async function lerProdutoEstoqueLi(
+  db: Firestore,
+  produtoId: string,
+): Promise<ProdutoEstoqueLi | null> {
+  const [snap] = await db.getAll(produtoCollection.docRef(db, {}, produtoId), {
+    fieldMask: [...CAMPOS_PRODUTO_ESTOQUE_LI],
+  });
+  return produtoDoSnapshotLi(snap);
+}
+
+/** The most produtos one masked `getAll` of {@link lerProdutosEstoqueLi} names. */
+export const MAX_PRODUTOS_POR_LEITURA_ESTOQUE_LI = 300;
+
+/**
+ * Many produtos, each masked to {@link CAMPOS_PRODUTO_ESTOQUE_LI} exactly as
+ * {@link lerProdutoEstoqueLi} reads one (the same projection, one copy): ONE `getAll` per
+ * {@link MAX_PRODUTOS_POR_LEITURA_ESTOQUE_LI} distinct ids, in order. Keyed by id; `null` for an
+ * absent document. No read for an empty list. The daily reconcile reads a walk page's produtos so.
+ */
+export async function lerProdutosEstoqueLi(
+  db: Firestore,
+  produtoIds: readonly string[],
+): Promise<ReadonlyMap<string, ProdutoEstoqueLi | null>> {
+  const unicos = [...new Set(produtoIds)];
+  const lidos = new Map<string, ProdutoEstoqueLi | null>();
+  for (let i = 0; i < unicos.length; i += MAX_PRODUTOS_POR_LEITURA_ESTOQUE_LI) {
+    const fatia = unicos.slice(i, i + MAX_PRODUTOS_POR_LEITURA_ESTOQUE_LI);
+    const snaps = await db.getAll(...fatia.map((id) => produtoCollection.docRef(db, {}, id)), {
+      fieldMask: [...CAMPOS_PRODUTO_ESTOQUE_LI],
+    });
+    fatia.forEach((id, n) => {
+      lidos.set(id, produtoDoSnapshotLi(snaps[n]));
+    });
+  }
+  return lidos;
 }
 
 /** The produto's OWN `produtolojaintegrada` documents, raw, every conta's (a where-less listing). */
@@ -189,18 +221,33 @@ async function lerEstoqueNoDepositoPorConsultaLi(
 }
 
 /**
- * The kit components that BOUND the kit, in the shared fold's own sense (`kitEstoqueDisponivel`:
- * `limitarEstoque !== false` and a finite quantity above 0), for a kit (`ehKit` or `ehKitVirtual`,
- * exactly `true`) — none for anything else. An id that cannot be one path segment is left out:
- * it cannot be read, so it stays unresolved and counts 0 in the fold.
+ * The kit components that BOUND the kit, with each one's quantity in the kit, in the shared
+ * fold's own sense (`kitEstoqueDisponivel`: `limitarEstoque !== false` and a finite quantity above
+ * 0), for a kit (`ehKit` or `ehKitVirtual`, exactly `true`) — none for anything else, in the
+ * stored entries' order. An id that cannot be one path segment is left out: it cannot be read, so
+ * it stays unresolved and counts 0 in the fold.
  */
-export function componentesQueLimitamLi(produto: ProdutoEstoqueLi): string[] {
+function entradasQueLimitamLi(produto: ProdutoEstoqueLi): [string, number][] {
   if (produto.ehKit !== true && produto.ehKitVirtual !== true) return [];
   return componentesKitEntries(produto.componentesKit)
     .filter(([, kit]) => kit.limitarEstoque !== false)
     .filter(([, kit]) => Number.isFinite(kit.quantidade) && kit.quantidade > 0)
-    .map(([id]) => id)
-    .filter(segmentoDeCaminhoLi);
+    .filter(([id]) => segmentoDeCaminhoLi(id))
+    .map(([id, kit]): [string, number] => [id, kit.quantidade]);
+}
+
+/** The ids of {@link entradasQueLimitamLi}: what a send run reads at the depósito for a kit. */
+export function componentesQueLimitamLi(produto: ProdutoEstoqueLi): string[] {
+  return entradasQueLimitamLi(produto).map(([id]) => id);
+}
+
+/**
+ * The same components, each → its quantity in the kit (the kits map's `q`, which the daily
+ * reconcile records for a store kit): ONE filter with {@link componentesQueLimitamLi}, so the map
+ * can never name a component the send run does not read, or miss one it does.
+ */
+export function quantidadesQueLimitamLi(produto: ProdutoEstoqueLi): Record<string, number> {
+  return Object.fromEntries(entradasQueLimitamLi(produto));
 }
 
 /** Up to {@link MAX_VALORES_IN_ESTOQUE_LI} values per slice. */
@@ -210,6 +257,41 @@ function emFatias<T>(valores: readonly T[]): T[][] {
     fatias.push(valores.slice(i, i + MAX_VALORES_IN_ESTOQUE_LI));
   }
   return fatias;
+}
+
+/**
+ * Run `fn` over `itens` with at most `limite` running at once, the results in `itens`' order. With
+ * `limite` 1 it is a plain sequential loop: the send run's order of reads, byte for byte. A
+ * rejection propagates, and no new item starts after it. The daily reconcile's bulk reads use it
+ * too (`reconcile/faseErp.ts`).
+ */
+export async function emParaleloLi<T, R>(
+  itens: readonly T[],
+  limite: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const saida: R[] = new Array<R>(itens.length);
+  let proximo = 0;
+  let falhou = false;
+  const trabalhador = async (): Promise<void> => {
+    while (!falhou && proximo < itens.length) {
+      const i = proximo;
+      proximo += 1;
+      const item = itens[i] as T;
+      let concluiu = false;
+      try {
+        saida[i] = await fn(item);
+        concluiu = true;
+      } finally {
+        // No handler: a rejection propagates as is, and stops the others taking new items.
+        if (!concluiu) falhou = true;
+      }
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.max(1, Math.min(limite, itens.length)) }, () => trabalhador()),
+  );
+  return saida;
 }
 
 /**
@@ -228,8 +310,40 @@ export async function lerComponentesNoDepositoLi(
   depositoId: string,
   estoqueIds: Readonly<Record<string, string | null>> | null,
 ): Promise<DocEstoqueLi[]> {
-  const componentes = componentesQueLimitamLi(produto);
+  return lerRegistrosNoDepositoLi(db, componentesQueLimitamLi(produto), depositoId, estoqueIds);
+}
+
+/** {@link lerRegistrosNoDepositoLi}'s options. */
+export interface OpcoesRegistrosNoDepositoLi {
+  /**
+   * How many of the group joins and of the own-collection queries may run at once (default 1:
+   * one after another, the send run's order). The daily reconcile reads a whole walk page so.
+   */
+  readonly concorrencia?: number;
+}
+
+/**
+ * EVERY record of the given produtos at the conta's depósito — the read
+ * {@link lerComponentesNoDepositoLi} makes for a kit's bounding components, for ANY list of
+ * produtos (the daily reconcile reads a walk page's own records and its kits' components through
+ * it, so a send run and the reconcile can never resolve a produto's stock differently). In order:
+ * the ids `idsConhecidos` names that ARE the canonical record (`makeEstoqueUid`), by ONE `getAll`;
+ * then the group join for those still missing, per stored form, at most
+ * {@link MAX_VALORES_IN_ESTOQUE_LI} per query; then the own-collection query for each one whose
+ * CANONICAL record is still unread. No read at all for an empty list. Several records of one
+ * produto all come back: resolving them is `estoqueNoDepositoLi`'s.
+ */
+export async function lerRegistrosNoDepositoLi(
+  db: Firestore,
+  produtoIds: readonly string[],
+  depositoId: string,
+  idsConhecidos: Readonly<Record<string, string | null>> | null,
+  opcoes: OpcoesRegistrosNoDepositoLi = {},
+): Promise<DocEstoqueLi[]> {
+  const componentes = [...new Set(produtoIds)];
   if (componentes.length === 0) return [];
+  const concorrencia = opcoes.concorrencia ?? 1;
+  const estoqueIds = idsConhecidos;
   const formas = formasDoDepositoLi(depositoId);
   const porDono = new Map<string, Map<string, DocEstoqueLi>>();
   const guardar = (doc: DocEstoqueLi, aceitos: ReadonlySet<string>): void => {
@@ -263,17 +377,22 @@ export async function lerComponentesNoDepositoLi(
   // 2. The group join, per stored form, for the components still missing.
   const [campoDono, campoDeposito] = CAMPOS_INDICE_COMPONENTES_LI;
   const semRegistro = () => componentes.filter((c) => !porDono.has(c));
-  for (const fatia of emFatias(semRegistro())) {
+  const juncoes = emFatias(semRegistro()).flatMap((fatia) =>
+    formas.map((forma) => ({ fatia, forma })),
+  );
+  const respostas = await emParaleloLi(juncoes, concorrencia, ({ fatia, forma }) =>
+    estoqueCollection
+      .groupQuery(db)
+      .where(campoDono, 'in', fatia)
+      .where(campoDeposito, '==', forma)
+      .get(),
+  );
+  juncoes.forEach(({ fatia }, i) => {
     const aceitos = new Set(fatia);
-    for (const forma of formas) {
-      const snap = await estoqueCollection
-        .groupQuery(db)
-        .where(campoDono, 'in', fatia)
-        .where(campoDeposito, '==', forma)
-        .get();
-      for (const d of snap.docs) guardar({ caminho: d.ref.path, dados: d.data() }, aceitos);
+    for (const d of respostas[i]?.docs ?? []) {
+      guardar({ caminho: d.ref.path, dados: d.data() }, aceitos);
     }
-  }
+  });
 
   // 3. A component whose CANONICAL record is still unread: its own collection. A join hit is not
   //    a complete answer — a record with no `parentId` (the canonical one included) is invisible
@@ -286,10 +405,13 @@ export async function lerComponentesNoDepositoLi(
       (doc) => caminhoEstoqueLi(doc.caminho)?.estoqueId === canonico,
     );
   };
-  for (const componente of componentes.filter((c) => !temCanonico(c))) {
-    const registros = await lerEstoqueNoDepositoPorConsultaLi(db, componente, formas);
-    for (const registro of registros) guardar(registro, new Set([componente]));
-  }
+  const semCanonico = componentes.filter((c) => !temCanonico(c));
+  const proprios = await emParaleloLi(semCanonico, concorrencia, (componente) =>
+    lerEstoqueNoDepositoPorConsultaLi(db, componente, formas),
+  );
+  semCanonico.forEach((componente, i) => {
+    for (const registro of proprios[i] ?? []) guardar(registro, new Set([componente]));
+  });
 
   return [...porDono.values()].flatMap((grupo) => [...grupo.values()]);
 }

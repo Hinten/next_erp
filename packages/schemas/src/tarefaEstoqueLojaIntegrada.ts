@@ -1,6 +1,10 @@
 import { z } from 'zod';
 import { contaIdLiSchema } from './notificacaoLojaIntegrada';
-import { idDocumentoEstoqueLiSchema, idExecucaoEstoqueLiSchema } from './sincEstoqueLojaIntegrada';
+import {
+  ID_EXECUCAO_ESTOQUE_LI_REGEX,
+  idDocumentoEstoqueLiSchema,
+  idExecucaoEstoqueLiSchema,
+} from './sincEstoqueLojaIntegrada';
 
 /**
  * The Cloud Tasks payloads of the Loja Integrada stock sync (master plan step 12, PR 12-a).
@@ -155,3 +159,19 @@ export const tarefaReconcileEstoqueLiSchema = z.strictObject({
   seq: z.number().int().nonnegative(),
 });
 export type TarefaReconcileEstoqueLi = z.infer<typeof tarefaReconcileEstoqueLiSchema>;
+
+/**
+ * The Cloud Tasks id of dispatch `seq` of reconcile run `execucaoId` on the reads queue:
+ * `li-<execucaoId>-<seq>` — the import's shape (`idTarefaImportacaoLi`), and never one of its ids,
+ * since every run id starts `estoque-reconcile`. A retried hand-off, the continuation check's
+ * repair and a scheduler retry of the same tick all name the SAME task, so only one runs.
+ *
+ * Throws `RangeError` on a run id outside its grammar or a `seq` that is not a non-negative safe
+ * integer (every caller holds a parsed payload, so that is a bug).
+ */
+export function idTarefaReconcileEstoqueLi(execucaoId: string, seq: number): string {
+  if (!ID_EXECUCAO_ESTOQUE_LI_REGEX.test(execucaoId) || !Number.isSafeInteger(seq) || seq < 0) {
+    throw new RangeError('idTarefaReconcileEstoqueLi: execucaoId ou seq inválido');
+  }
+  return `li-${execucaoId}-${String(seq)}`;
+}

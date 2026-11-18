@@ -35,11 +35,18 @@ import {
  * whose `execucaoId` or `seq` differs from the stored one is refused. A running chain wins over a
  * new one; a chain older than 48 h is abandoned with a WARNING. No transaction.
  *
+ * One exception, the import's (`importacaoLojaIntegrada.ts`): a slice of the stored run whose
+ * `seq` is ONE behind the stored one, while the lease is held, already wrote its end-of-slice
+ * checkpoint and its hand-off may have failed — it only re-enqueues the stored `seq`'s named task
+ * and stops (the `continuacao` repair). The release of the lease (`emExecucaoAteMs: 0`) bumps
+ * `seq` too, so a late duplicate of a run's last slice is refused rather than repaired.
+ *
  * Two writers, both tier 1 (a lost precondition re-reads and re-derives):
  *
  *  - the slice holding the lease writes everything, each write `update(patch, { lastUpdateTime })`
  *    on the slice's own read, advance-only (a chain that finds no document starts with a
- *    `create`);
+ *    `create`); its writes of the per-conta documents ride the same batch
+ *    (`sincEstoqueLojaIntegrada.ts`, "Writers");
  *  - the `estoque-kits` fan-out holds NO lease and writes ONLY `proximoSlotMs`, the one global
  *    stagger slot every bulk producer takes: `create({ proximoSlotMs })` when the document is
  *    absent (every other field reads its default, so no run is implied; `ALREADY_EXISTS` re-reads),
@@ -84,9 +91,16 @@ export const FASE_RECONCILE_ESTOQUE_LI = {
  * ordered by document KEY over the whole collection group, so a path — never a field value — is
  * what it resumes after, and two links of one store id on either side of a page boundary are
  * both seen.
+ *
+ * `concluida` (PR 12-g amendment): the walk read its last page — the kits map writer runs next.
+ * `ultimoDocPath` is `null` only for a walk that found no link at all.
  */
 export const walkReconcileEstoqueLiSchema = z.object({
-  ultimoDocPath: z.string().regex(/^(?:[^/]+\/[^/]+\/)*produtolojaintegrada\/[^/]+$/),
+  ultimoDocPath: z
+    .string()
+    .regex(/^(?:[^/]+\/[^/]+\/)*produtolojaintegrada\/[^/]+$/)
+    .nullable(),
+  concluida: z.boolean().default(false),
 });
 export type WalkReconcileEstoqueLi = z.infer<typeof walkReconcileEstoqueLiSchema>;
 

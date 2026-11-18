@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import * as barrel from './index';
+import { MAX_AMOSTRA_AVISO_ESTOQUE_LI } from './aviso';
 import { ALL_DOMAINS } from './registry';
 import * as modulo from './sincEstoqueLojaIntegrada';
 import {
   BALDES_SNAPSHOT_ESTOQUE_LI,
+  ETAPA_MAPA_ESTOQUE_LI,
+  MOTIVO_AMOSTRA_ESTOQUE_LI,
   COLECAO_SINC_ESTOQUE_LI,
   FLAG_ENTRADA_ESTOQUE_LI,
   ID_BALDE_SNAPSHOT_ESTOQUE_LI_REGEX,
@@ -14,12 +17,14 @@ import {
   SUBCOLECOES_SINC_ESTOQUE_LI,
   baldeSnapshotEstoqueLi,
   entradaSnapshotEstoqueLiSchema,
+  execucaoContaEstoqueLiSchema,
   fatiaKitsComponenteEstoqueLiSchema,
   flagEntradaEstoqueLiSchema,
   idDocumentoEstoqueLiSchema,
   idFatiaKitsEstoqueLi,
   idProdutoLiTextoSchema,
   kitsComponenteEstoqueLiSchema,
+  motivoAmostraEstoqueLiSchema,
   paisSnapshotEstoqueLiSchema,
   sincEstoqueLojaIntegradaSchema,
   snapshotEstoqueLiSchema,
@@ -33,6 +38,7 @@ describe('sincEstoqueLojaIntegradaSchema (the per-conta root)', () => {
     expect(sincEstoqueLojaIntegradaSchema.parse({})).toEqual({
       reconcile: null,
       ultimoReconcile: null,
+      execucao: null,
     });
   });
 
@@ -45,12 +51,13 @@ describe('sincEstoqueLojaIntegradaSchema (the per-conta root)', () => {
         concluidoEmMs: AGORA_MS - 60_000,
         contadores: { linhasLi: 7103, candidatos: 41, retidos: 12 },
       },
+      execucao: null,
     };
     expect(sincEstoqueLojaIntegradaSchema.parse(doc)).toEqual(doc);
   });
 
   it('an explicit null cursor and last run round-trip — null is the stored "none", not an absence', () => {
-    const doc = { reconcile: null, ultimoReconcile: null };
+    const doc = { reconcile: null, ultimoReconcile: null, execucao: null };
     expect(sincEstoqueLojaIntegradaSchema.parse(doc)).toEqual(doc);
   });
 
@@ -69,7 +76,7 @@ describe('sincEstoqueLojaIntegradaSchema (the per-conta root)', () => {
       janelaDesdeMs: AGORA_MS,
       continuacao: { ultimoProdutoId: 'p1' },
     }) as Record<string, unknown>;
-    expect(Object.keys(lido).sort()).toEqual(['reconcile', 'ultimoReconcile']);
+    expect(Object.keys(lido).sort()).toEqual(['execucao', 'reconcile', 'ultimoReconcile']);
   });
 
   it('⚠️ NEAR-MISS: the cursor refuses a negative offset, a zero page and a fractional one', () => {
@@ -127,6 +134,118 @@ describe('sincEstoqueLojaIntegradaSchema (the per-conta root)', () => {
       expect(temSchemaEMeta, nome).toBe(false);
       expect(Reflect.get(barrel, nome), nome).toBe(valor);
     }
+  });
+});
+
+describe('execucaoContaEstoqueLiSchema (PR 12-g amendment: one run’s state for a conta)', () => {
+  const base = { execucaoId: RUN, depositoId: 'dep-1' };
+
+  it('a fresh state parses to an empty walk, no sample and no map cursor', () => {
+    expect(execucaoContaEstoqueLiSchema.parse(base)).toEqual({
+      ...base,
+      vistos: [],
+      amostras: {},
+      mapa: null,
+    });
+    expect(sincEstoqueLojaIntegradaSchema.parse({ execucao: base }).execucao).toEqual({
+      ...base,
+      vistos: [],
+      amostras: {},
+      mapa: null,
+    });
+  });
+
+  it('a full state round-trips: seen ids, samples per reason, the map cursor', () => {
+    const doc = {
+      ...base,
+      vistos: ['1', '123456789'],
+      amostras: {
+        [MOTIVO_AMOSTRA_ESTOQUE_LI.retido]: ['p1'],
+        [MOTIVO_AMOSTRA_ESTOQUE_LI.duplicado]: ['p2', 'p3'],
+      },
+      mapa: { etapa: ETAPA_MAPA_ESTOQUE_LI.escrita, ultimoComponenteId: 'blank' },
+    };
+    expect(execucaoContaEstoqueLiSchema.parse(doc)).toEqual(doc);
+  });
+
+  it('the sample reasons are the held one and every vinculo motivo — ambiguo and estoque-ambiguo apart', () => {
+    expect(motivoAmostraEstoqueLiSchema.options).toEqual([
+      'retido',
+      'ambiguo',
+      'duplicado',
+      'sem-linha-na-loja',
+      'ausente',
+      'estoque-ambiguo',
+    ]);
+    expect(Object.values(MOTIVO_AMOSTRA_ESTOQUE_LI).sort()).toEqual(
+      [...motivoAmostraEstoqueLiSchema.options].sort(),
+    );
+  });
+
+  it(`⚠️ NEAR-MISS: a sample holds at most ${String(MAX_AMOSTRA_AVISO_ESTOQUE_LI)} ids, of an unknown reason none`, () => {
+    const ids = (n: number) => Array.from({ length: n }, (_, i) => `p${String(i)}`);
+    const ok = (amostras: unknown) =>
+      execucaoContaEstoqueLiSchema.safeParse({ ...base, amostras }).success;
+    expect(ok({ retido: ids(MAX_AMOSTRA_AVISO_ESTOQUE_LI) })).toBe(true);
+    expect(ok({ retido: ids(MAX_AMOSTRA_AVISO_ESTOQUE_LI + 1) })).toBe(false);
+    expect(ok({ 'Retido ': ['p1'] })).toBe(false);
+    expect(ok({ retido: ['a/b'] })).toBe(false);
+  });
+
+  it('⚠️ NEAR-MISS: the depósito is a BARE id, and a seen id its canonical text', () => {
+    const ok = (extra: Record<string, unknown>) =>
+      execucaoContaEstoqueLiSchema.safeParse({ ...base, ...extra }).success;
+    expect(ok({ depositoId: 'depositos/dep-1' })).toBe(false);
+    expect(ok({ vistos: ['0123'] })).toBe(false);
+    expect(ok({ vistos: [123] })).toBe(false);
+    expect(ok({ mapa: { etapa: 'escrevendo', ultimoComponenteId: null } })).toBe(false);
+    expect(ok({ execucaoId: 'a b' })).toBe(false);
+  });
+
+  it('STRIPS unknown keys of the run state too', () => {
+    const lido = execucaoContaEstoqueLiSchema.parse({ ...base, extra: 1 }) as Record<
+      string,
+      unknown
+    >;
+    expect(Object.hasOwn(lido, 'extra')).toBe(false);
+  });
+});
+
+describe('a kit entry’s composition (PR 12-g amendment)', () => {
+  const kit = { p: 'kit1', s: 2, f: FLAG_ENTRADA_ESTOQUE_LI.valido, k: true as const };
+  const ok = (e: unknown) => entradaSnapshotEstoqueLiSchema.safeParse(e).success;
+
+  it('a valid kit carries its components’ quantities and resolved records, with the same keys', () => {
+    const entrada = {
+      ...kit,
+      q: { blank: 1, print: 2 },
+      e: { blank: 'est-blank-dep-1', print: null },
+    };
+    expect(entradaSnapshotEstoqueLiSchema.parse(entrada)).toEqual(entrada);
+    expect(ok(kit)).toBe(true);
+  });
+
+  it('⚠️ NEAR-MISS: both or neither; the same components; never on a non-kit or a non-valid entry', () => {
+    expect(ok({ ...kit, q: { blank: 1 } })).toBe(false);
+    expect(ok({ ...kit, e: { blank: null } })).toBe(false);
+    expect(ok({ ...kit, q: { blank: 1 }, e: { print: null } })).toBe(false);
+    expect(ok({ ...kit, q: { blank: 1, print: 1 }, e: { blank: null } })).toBe(false);
+    expect(ok({ ...kit, q: {}, e: {} })).toBe(false);
+    expect(
+      ok({ p: 'p1', s: 2, f: FLAG_ENTRADA_ESTOQUE_LI.valido, q: { a: 1 }, e: { a: null } }),
+    ).toBe(false);
+    expect(
+      ok({
+        p: 'kit1',
+        s: null,
+        f: FLAG_ENTRADA_ESTOQUE_LI.ambiguo,
+        k: true,
+        q: { a: 1 },
+        e: { a: null },
+      }),
+    ).toBe(false);
+    expect(ok({ ...kit, q: { blank: 0 }, e: { blank: null } })).toBe(false);
+    expect(ok({ ...kit, q: { 'a/b': 1 }, e: { 'a/b': null } })).toBe(false);
   });
 });
 

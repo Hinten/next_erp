@@ -708,15 +708,21 @@ describe('FakeDb — the batch (step 5, the pedido and its pagamentos)', () => {
     expect(db.ler('integracao/a')).toBeUndefined();
   });
 
-  it('refuses what it does not model: two writes on one path, an empty or a second commit, set/delete, a bad payload', async () => {
+  it('refuses what it does not model: two writes on one path, an empty or a second commit, a set with options, a guarded delete, a bad payload', async () => {
     const db = new FakeDb();
     const { a, b, c } = refsDe(db);
     const dupla = asDb(db).batch();
     dupla.create(a, { x: 1 });
     expect(() => dupla.create(a, { x: 2 })).toThrow(/duas escritas/);
     await expect(asDb(db).batch().commit()).rejects.toThrow(/lote vazio/);
-    expect(() => asDb(db).batch().set(a, { x: 1 })).toThrow(/set\(\) num lote/);
-    expect(() => asDb(db).batch().delete(a)).toThrow(/delete\(\) num lote/);
+    expect(() => asDb(db).batch().set(a, { x: 1 }, { merge: true })).toThrow(/set\(\) num lote/);
+    expect(() => asDb(db).batch().delete(a, { exists: true })).toThrow(
+      /delete\(\) com precondição/,
+    );
+    expect(() => asDb(db).batch().set(b, { x: undefined })).toThrow(/undefined/);
+    const setEDelete = asDb(db).batch();
+    setEDelete.set(a, { x: 1 });
+    expect(() => setEDelete.delete(a)).toThrow(/duas escritas/);
     expect(() => asDb(db).batch().create(b, { x: undefined })).toThrow(/undefined/);
     expect(() => asDb(db).batch().update(b, {})).toThrow(/update vazio/);
     expect(() => asDb(db).batch().update(b, { 'p.q': 1 })).toThrow(/chave com ponto/);
@@ -741,6 +747,163 @@ describe('FakeDb — the batch (step 5, the pedido and its pagamentos)', () => {
     lote.update(a, { m: { p: 9 } }, { lastUpdateTime: lido.updateTime });
     await lote.commit();
     expect(db.ler('integracao/a')).toEqual({ m: { p: 9 }, outro: 1 });
+  });
+});
+
+describe('FakeDb — set and delete in a batch (step 12: the kits map writer and its sweep)', () => {
+  it('set replaces the WHOLE document (or creates it) and delete removes it, under the batch’s one stamp', async () => {
+    const db = new FakeDb();
+    db.seed('integracao/a', { velho: 1, x: 0 });
+    db.seed('integracao/b', { y: 1 });
+    const a = integracaoCollection.docRef(asDb(db), {}, 'a');
+    const b = integracaoCollection.docRef(asDb(db), {}, 'b');
+    const c = integracaoCollection.docRef(asDb(db), {}, 'c');
+    const lote = asDb(db).batch();
+    lote.set(a, { x: 1 });
+    lote.set(c, { z: 3 });
+    lote.delete(b);
+    const [r] = await lote.commit();
+    expect(db.ler('integracao/a')).toEqual({ x: 1 });
+    expect(db.ler('integracao/c')).toEqual({ z: 3 });
+    expect(db.ler('integracao/b')).toBeUndefined();
+    expect(db.carimboDe('integracao/a')?.isEqual(r?.writeTime)).toBe(true);
+    expect(db.escritas.map((e) => [e.verbo, e.caminho, e.lote, e.sobrescrita])).toEqual([
+      ['set', 'integracao/a', 1, true],
+      ['set', 'integracao/c', 1, true],
+      ['delete', 'integracao/b', 1, undefined],
+    ]);
+  });
+
+  it('⚠️ NEAR-MISS: a set or delete carries no check of its own, but a stale update beside it rejects the WHOLE batch', async () => {
+    const db = new FakeDb();
+    db.seed('integracao/run', { n: 1 });
+    db.seed('integracao/b', { y: 1 });
+    const run = integracaoCollection.docRef(asDb(db), {}, 'run');
+    const lido = await run.get();
+    await run.update({ n: 2 });
+    const lote = asDb(db).batch();
+    lote.update(run, { n: 3 }, { lastUpdateTime: lido.updateTime });
+    lote.set(integracaoCollection.docRef(asDb(db), {}, 'a'), { x: 1 });
+    lote.delete(integracaoCollection.docRef(asDb(db), {}, 'b'));
+    await expect(lote.commit()).rejects.toMatchObject({ code: 9 });
+    expect(db.ler('integracao/a')).toBeUndefined();
+    expect(db.ler('integracao/b')).toEqual({ y: 1 });
+    // A delete of an absent document lands (idempotent), and a set needs none to exist.
+    const solto = asDb(db).batch();
+    solto.delete(integracaoCollection.docRef(asDb(db), {}, 'nunca'));
+    solto.set(integracaoCollection.docRef(asDb(db), {}, 'novo'), { v: 1 });
+    await solto.commit();
+    expect(db.ler('integracao/novo')).toEqual({ v: 1 });
+  });
+});
+
+describe('FakeDb — a lost reply on a batch (step 12: the reconcile’s chained checkpoints)', () => {
+  it('a guarded update of the batch with a lost reply: the WHOLE batch is stored, then the commit rejects 9', async () => {
+    const db = new FakeDb();
+    db.seed('integracao/run', { n: 1 });
+    const run = integracaoCollection.docRef(asDb(db), {}, 'run');
+    const lido = await run.get();
+    db.respostaPerdidaNaProximaEscrita('integracao/run');
+    const lote = asDb(db).batch();
+    lote.update(run, { n: 2 }, { lastUpdateTime: lido.updateTime });
+    lote.set(integracaoCollection.docRef(asDb(db), {}, 'outro'), { x: 1 });
+    await expect(lote.commit()).rejects.toMatchObject({ code: 9 });
+    expect(db.ler('integracao/run')).toEqual({ n: 2 });
+    expect(db.ler('integracao/outro')).toEqual({ x: 1 });
+    // One-shot: the next guarded batch on the path commits normally.
+    const deNovo = asDb(db).batch();
+    deNovo.update(run, { n: 3 }, { lastUpdateTime: (await run.get()).updateTime });
+    await deNovo.commit();
+    expect(db.ler('integracao/run')).toEqual({ n: 3 });
+  });
+
+  it('⚠️ NEAR-MISS: an UNGUARDED update in a batch never loses its reply', async () => {
+    const db = new FakeDb();
+    db.seed('integracao/run', { n: 1 });
+    db.respostaPerdidaNaProximaEscrita('integracao/run');
+    const lote = asDb(db).batch();
+    lote.update(integracaoCollection.docRef(asDb(db), {}, 'run'), { n: 2 });
+    await lote.commit();
+    expect(db.ler('integracao/run')).toEqual({ n: 2 });
+  });
+});
+
+describe('FakeDb — the KEY order of a group query, and its path cursor (step 12: the reconcile walk)', () => {
+  const caminhos = [
+    'produtos/p-1/produtolojaintegrada/a',
+    'produtos/p/produtolojaintegrada/z',
+    'produtos/p/produtolojaintegrada/b',
+    'produtos/p0/produtolojaintegrada/a',
+  ];
+
+  async function semear(): Promise<FakeDb> {
+    const db = new FakeDb();
+    for (const c of caminhos) db.seed(c, { id: 1 });
+    return db;
+  }
+
+  it('orders full paths SEGMENT BY SEGMENT — `p` before `p-1`, as the server does', async () => {
+    const db = await semear();
+    const snap = await produtoLojaIntegradaLinkCollection
+      .groupQuery(asDb(db))
+      .orderBy(FieldPath.documentId())
+      .get();
+    expect(snap.docs.map((d) => d.ref.path)).toEqual([
+      'produtos/p/produtolojaintegrada/b',
+      'produtos/p/produtolojaintegrada/z',
+      'produtos/p-1/produtolojaintegrada/a',
+      'produtos/p0/produtolojaintegrada/a',
+    ]);
+  });
+
+  it('⚠️ NEAR-MISS: a raw text order would put p-1 first — the walk would skip it after a cursor at p', async () => {
+    expect('produtos/p-1/x' < 'produtos/p/x').toBe(true);
+    const db = await semear();
+    const snap = await produtoLojaIntegradaLinkCollection
+      .groupQuery(asDb(db))
+      .orderBy(FieldPath.documentId())
+      .startAfter('produtos/p/produtolojaintegrada/z')
+      .limit(1)
+      .get();
+    expect(snap.docs.map((d) => d.ref.path)).toEqual(['produtos/p-1/produtolojaintegrada/a']);
+    expect(db.consultas.at(-1)).toMatchObject({
+      grupo: true,
+      apos: 'produtos/p/produtolojaintegrada/z',
+      limite: 1,
+    });
+  });
+
+  it('a path cursor seeks past a document that no longer exists', async () => {
+    const db = await semear();
+    const snap = await produtoLojaIntegradaLinkCollection
+      .groupQuery(asDb(db))
+      .orderBy(FieldPath.documentId())
+      .startAfter('produtos/p/produtolojaintegrada/c')
+      .get();
+    expect(snap.docs.map((d) => d.ref.path)).toEqual([
+      'produtos/p/produtolojaintegrada/z',
+      'produtos/p-1/produtolojaintegrada/a',
+      'produtos/p0/produtolojaintegrada/a',
+    ]);
+  });
+
+  it('refuses a group cursor that is not a document path, and a snapshot cursor on a group', async () => {
+    const db = await semear();
+    const q = produtoLojaIntegradaLinkCollection
+      .groupQuery(asDb(db))
+      .orderBy(FieldPath.documentId());
+    expect(() => q.startAfter('a')).toThrow(/caminho de documento/);
+    expect(() => q.startAfter('produtos/p/produtolojaintegrada')).toThrow(/caminho de documento/);
+    expect(() => q.startAfter('/produtos/p/produtolojaintegrada/b')).toThrow(
+      /caminho de documento/,
+    );
+    expect(() => q.startAfter('produtos//produtolojaintegrada/b')).toThrow(/caminho de documento/);
+    const [primeiro] = (await q.limit(1).get()).docs;
+    await expect(q.startAfter(primeiro as never).get()).rejects.toThrow(/snapshot/);
+    // A collection query still takes a plain id only.
+    expect(() =>
+      integracaoCollection.ref(asDb(db), {}).orderBy(FieldPath.documentId()).startAfter('a/b'),
+    ).toThrow(/id simples/);
   });
 });
 
