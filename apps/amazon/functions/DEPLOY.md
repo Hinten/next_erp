@@ -336,8 +336,9 @@ are local builds; neither deploys anything.
 - **`sweepAmazonStock`** — `onSchedule('3,8,13,18,23,28,33,38,43,48,53,58 * * * *')`. The
   FIVE-MINUTE STOCK TICK (master plan step 12, PR 12-e2;
   `lib/amazon/estoque/sincronizacaoEstoque.ts`): per active conta, the `estoques` rows stamped
-  at the conta's depósito since the durable cursor in `sincronizacaoEstoqueAmazon/{contaId}`
-  (one collection-group window query per depósito ref form, at most ten pages), their
+  at the conta's depósito from 5 minutes below the durable cursor in
+  `sincronizacaoEstoqueAmazon/{contaId}`, a row kept when stamped or committed after
+  cursor − 20 s (one collection-group window query per depósito ref form, at most ten pages), their
   produtos' `prodAmazon` partitions, and — for 1 to 30 moved SKUs — ONE patch task per SKU
   onto `processAmazonStockPatch`, NAMED by its observation (the newest commit time among the
   SKU's rows), so a re-read window dedupes. 31 to 3,000 SKUs ⇒ ONE window `feed-enviar` onto
@@ -694,7 +695,8 @@ below stays COMMENTED OUT until the window:**
 # enqueues too (its patch tasks, a delta feed, a reconcile request's first page):
 # the tick ends the conta `enfileiramento-falhou` and KEEPS its cursor, so every
 # tick while the valve stays closed re-reads the whole, growing window, and once
-# the cursor is 24 h old the window is clamped to a reconcile request, whose first
+# the cursor is more than 23 h 55 min old (the window reaches 5 minutes below
+# it) the window is clamped to a reconcile request, whose first
 # page the closed valve refuses as well; the daily reconcile's run start and feed
 # backstop are refused the same way (one WARNING per conta). Strict `=== '1'`:
 # unset, blank, `true` and `1 ` all leave enqueuing ON. Use it before the queue

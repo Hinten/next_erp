@@ -41,12 +41,13 @@ const DEP = 'dep-descoberta-1';
 const CANONICA = `documents/depositos/${DEP}`;
 const NUA = `depositos/${DEP}`;
 const REF_CONTA = `documents/integracao/${CONTA}`;
-/** The tick's window over these tests' stamps: `(1000, 2000]`, keeping every row. */
+/** A window over these tests' stamps: `(1000, 2000]`, keeping every row by stamp, never forcing. */
 const JANELA: JanelaEstoqueAmazon = {
   desdeMs: 1_000,
   ateMs: 2_000,
   manterDesdeMs: 1_000,
   commitAposMs: null,
+  forcarPorCommit: false,
 };
 const AGORA = 5_000;
 /** A deadline that never passes in these tests unless a case moves the clock. */
@@ -340,6 +341,7 @@ describe('★ observations: the commit, never the stamp', () => {
       ateMs: 2_000,
       manterDesdeMs: null,
       commitAposMs: corte,
+      forcarPorCommit: true,
     };
     const r = completa(await descobrirJanelaEstoqueAmazon(ctx(), recuperacao, SEM_PRAZO));
     expect(r.observacoes.map((o) => [o.sku, o.forcar])).toEqual([['SKU-B', true]]);

@@ -531,9 +531,21 @@ the checkout print and the `/pedidos` row action), which needs this backend depl
   reconcile run and the stock feed lease (the idle cost's only addition): a live run 15+ min
   without progress ⇒ its page RE-KICKED (named by the stall); an EXPIRED `montando` lease holding
   a pending start ⇒ its named `vez` recovery, then the start cleared (through
-  `consumirPendenteVezFeed`, which re-reads and re-decides). **T5–T6** `janelaDoTick` — its
-  `RangeError` caught BY CLASS around that call alone (`janela-invalida`: a reconcile request,
-  then the cursor RESET to now; the next conta goes on) — then
+  `consumirPendenteVezFeed`, which re-reads and re-decides). **T5–T6** `janelaDoTick` — `(max(cursor − 5 min, agora − 24 h), agora]`, keeping a row
+  stamped after `cursor − 20 s` or stamped further back but COMMITTED after `cursor − 20 s`
+  (the main estoque writer, `apps/functions/src/estoques/sincronizarEstoquePedido.ts`,
+  stamps BEFORE its transaction, so a row can commit after the tick that read past its
+  stamp), never forcing (`forcarPorCommit: false`); `truncada` once `cursor − 5 min` is
+  more than 24 h back; no window when the cursor is ahead of the clock by 20 s or more.
+  ⚠️ Residue: a commit lagging its stamp by more than about 5 minutes (as little as
+  4 min 40 s when the tick's clock runs the full 20-s skew ahead of Firestore's) across a
+  tick boundary is still missed (the SKU's next movement or the daily reconcile corrects
+  it). Cost: the rows stamped in the 4 min 40 s below `cursor − 20 s` are read again and
+  dropped unless committed late (a busy depósito reads each row about twice; the idle
+  tick's operation COUNT is unchanged), and they count toward the 10 × 300 page cap, so a
+  burst reaches `truncada` sooner. Its `RangeError` is caught BY CLASS around that call alone
+  (`janela-invalida`: a reconcile request, then the cursor RESET to now; the next conta goes
+  on) — then
   `descobrirJanelaEstoqueAmazon` (`descobertaFirestore.ts`, the ONE window reader): per depósito
   ref form ONE collection-group query (never `in`), `ultimaModificacao >` the start AND `<=` the
   end, ordered by the stamp then `__name__`, projected to the stamp, 300 a page, ≤ 10 pages over
@@ -546,10 +558,16 @@ the checkout print and the `/pedidos` row action), which needs this backend depl
   patch task per SKU NAMED by its observation (the newest commit `updateTime` of its rows, never
   the tick's clock), ≤ 16 in flight; a SKU no payload can carry (> 40 code points, which no
   write path sends) counted and dropped; 31–3,000 ⇒ the delta feed: ONE window `feed-enviar`
-  onto the jobs queue (bounds, keep rule, depósito — never the SKUs), named by (conta, window),
+  onto the jobs queue (bounds, the keep rule WHOLE —
+  `manterDesdeMs`, `commitAposMs`, `forcarPorCommit: false` — and the depósito, never the SKUs), named by (conta, window),
   no delay; under a canary LIST only the canary's SKUs as patch tasks (`decidirLote`); more,
   a truncated window or T6's deadline ⇒ `solicitarReconciliacaoEstoqueAmazon(…, 'tick')`. Both
   hand-offs are durable before the cursor moves (`repasse`, `entrega` on the line).
+  ⚠️ The window batch carries the tick's keep rule whole, so the send re-derives exactly the
+  tick's rows; `forcarPorCommit` (not `commitAposMs`) is what marks a recovery-born batch
+  (`esperaAteMs` set exactly then; `classeDoLote`), and a turned-away tick-born batch records
+  its RANGE start (`desdeMs`) as the pending start, never `manterDesdeMs`: a `vez` recovery
+  keeps by stamp only, so recording `manterDesdeMs` would reopen the late-commit gap.
   **T8** the aviso `estoque-sem-deposito` BEFORE the final write (clocked by T4's read time),
   on the flag's TRANSITION, and re-synced to the current condition by a run that took over an
   UNRELEASED lease (an earlier run may have landed its aviso and lost the flag); then the final
@@ -557,7 +575,8 @@ the checkout print and the `/pedidos` row action), which needs this backend depl
   every SKU the payload can carry was enqueued (or that had none) or that was durably handed
   off — RESET only by the two hand-offs above.
   **T9** ONE `evento: 'estoque'` line
-  per conta (`fase: 'tick'`). A Firestore status error, an unparseable sync doc or request
+  per conta (`fase: 'tick'`); its `linhas` counts every row the window query returned, the
+  reach-back's dropped re-reads included. A Firestore status error, an unparseable sync doc or request
   (`documento-invalido`) and a lost-precondition class (`conflito`) are contained per
   conta (an unparseable run or lease at T4b costs only its own step: `manutencaoInvalida`,
   WARNING, the window still read); a named failure of either producer ⇒ `enfileiramento-falhou`, the cursor kept;
@@ -833,9 +852,13 @@ the checkout print and the `/pedidos` row action), which needs this backend depl
   included, or the conta's last stock feed's end, inside the documented 15-min lag; a `feed`
   outcome is never read per SKU; a forced catch-up drops ONLY the equality shortcut — and the
   batch form: ≤ 30 SKUs patches, 31+ one feed, a window batch above 3,000 a reconcile);
-  `descobertaEstoque.ts` (the tick's window, bounded both sides; the recovery's, `S − 5 min`
+  `descobertaEstoque.ts` (the tick's window, bounded both sides, reaching back to
+  `cursor − 5 min` (the commit lag of a writer that stamps before its transaction) and keeping
+  every row stamped after `cursor − 20 s` and every row COMMITTED after it, never forcing; the
+  recovery's, `S − 5 min`
   wide but keeping only rows COMMITTED after `S − 20 s`, plus every row past the pending start,
-  forced only by the commit test, the ONE `toMillis()`; rows → produtos by PATH → probes (the
+  forced only by the commit test and only there (`forcarPorCommit`); the commit test is the
+  ONE `toMillis()`; rows → produtos by PATH → probes (the
   parent too) → the conta's SKUs in both ref forms → per SKU its observation, the newest commit
   `updateTime`, compared as a `Timestamp`); `tarefaEstoque.ts` (the strict, quantity-free
   payload; the name `sha256Hex('estoque:<origem>:<conta>:<referencia>:<sku>')`, a delta's

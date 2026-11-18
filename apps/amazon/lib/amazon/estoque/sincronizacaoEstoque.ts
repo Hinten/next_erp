@@ -69,13 +69,23 @@
  *   planned from it, so the reconcile hand-off, then the cursor RESET to now
  *   (`janela-invalida`, WARNING) — the tick heals the cursor instead of
  *   repeating the refusal every five minutes. A `null` window (a cursor ahead
- *   of this clock by more than the overlap) reads nothing. Otherwise
- *   `descobrirJanelaEstoqueAmazon`: the window, paged, at most ten pages over
- *   both ref forms. Truncated (the page cap or the 24-hour clamp) ⇒ T6 is
- *   skipped and the window goes to a reconcile. The deadline reached before or
- *   between WINDOW pages says only that the reads were slow, not how much
- *   moved: `orcamento-esgotado`, the cursor kept (the next tick re-reads the
- *   window).
+ *   of this clock by the overlap or more) reads nothing. The window reaches 5 minutes below the cursor and keeps a row
+ *   stamped after `cursor − 20 s`, or stamped further back but COMMITTED after
+ *   `cursor − 20 s`: the main estoque writer
+ *   (`apps/functions/src/estoques/sincronizarEstoquePedido.ts`) takes its stamp
+ *   before its transaction, so a row the previous tick's query could not see
+ *   yet can carry a stamp below the overlap. A kept row never forces its SKU
+ *   here. A commit lagging its stamp by more than about 5 minutes (as little as
+ *   4 min 40 s when this clock runs the full 20-s skew ahead of Firestore's)
+ *   across a tick boundary is still missed (the SKU's next movement or the
+ *   daily reconcile corrects it), and the rows of the reach-back are read
+ *   again and dropped unless committed late (`descobertaEstoque.ts`, "The
+ *   residue and the cost"). Then `descobrirJanelaEstoqueAmazon`: the window, paged, at
+ *   most ten pages over both ref forms. Truncated (the page cap or the 24-hour
+ *   clamp) ⇒ T6 is skipped and the window goes to a reconcile. The deadline
+ *   reached before or between WINDOW pages says only that the reads were slow,
+ *   not how much moved: `orcamento-esgotado`, the cursor kept (the next tick
+ *   re-reads the window).
  * - **T6** — inside the same call: produtos → deduplicated probes → partition
  *   listings → the conta's SKUs with their observations. The deadline reached
  *   here ⇒ the window goes to a reconcile (a window too slow to map is a mass
@@ -114,7 +124,9 @@
  *   re-applied.
  * - **T9** — ONE `evento: 'estoque'` line per conta run (`fase: 'tick'`): the
  *   outcome, the batch form, the hand-off, the rows, produtos, probes, SKUs and
- *   tasks, `truncada`, `orcamentoEsgotado`; never a SKU, a ref or a value.
+ *   tasks, `truncada`, `orcamentoEsgotado`; never a SKU, a ref or a value. The
+ *   rows (`linhas`) are every row the window query RETURNED, the reach-back's
+ *   re-read rows the keep rule dropped included, never only the ones that moved.
  *
  * ## The hand-offs, durable
  *
@@ -122,8 +134,10 @@
  * is never lost:
  *
  *  - the DELTA FEED (`feed-necessario`, 31–3,000 SKUs): ONE window
- *    `feed-enviar` onto the jobs queue — the window's bounds, its keep rule and
- *    the depósito, never its SKUs (the send re-derives them) — NAMED
+ *    `feed-enviar` onto the jobs queue — the window's bounds, its keep rule
+ *    WHOLE (`manterDesdeMs`, `commitAposMs`, `forcarPorCommit: false`) and
+ *    the depósito, never its SKUs (the send re-derives exactly the tick's
+ *    rows) — NAMED
  *    `nomeEnvioFeed(conta, execucaoIdDaJanelaFeed(conta, desdeMs, ateMs))`, so
  *    the same window twice is one batch; no delay;
  *  - the RECONCILE (`reconciliacao-necessaria`: more than 3,000 SKUs, a
@@ -338,7 +352,7 @@ export const DESFECHO_TICK_ESTOQUE_AMAZON = {
   enfileirado: 'enfileirado',
   /** The conta's first tick: the cursor stored at now, no window read. */
   primeiroTick: 'primeiro-tick',
-  /** The cursor is ahead of this clock by more than the overlap: nothing to read. */
+  /** The cursor is ahead of this clock by the overlap or more: nothing to read. */
   cursorAdiantado: 'cursor-adiantado',
   /** A durable hand-off (`repasse` names it, `entrega` what it answered): the cursor advanced. */
   repassado: 'repassado',

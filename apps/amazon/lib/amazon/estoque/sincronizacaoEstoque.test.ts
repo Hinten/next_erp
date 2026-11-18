@@ -50,11 +50,7 @@ import {
   falhaDoFunctions,
 } from '../testing/falhaDeEnfileiramento';
 import { AGORA_MS, caminhoAviso, caminhoConta, loggerEspiao } from '../testing/fixtures';
-import {
-  LINHAS_POR_PAGINA_JANELA,
-  SOBREPOSICAO_MS,
-  TETO_PAGINAS_JANELA,
-} from './descobertaEstoque';
+import { LINHAS_POR_PAGINA_JANELA, TETO_PAGINAS_JANELA } from './descobertaEstoque';
 import { MOTIVO_ESTOQUE_AMAZON } from './motivosEstoque';
 import {
   AmazonEstoqueRegiaoDaFilaInvalidaError,
@@ -117,6 +113,12 @@ const T0 = AGORA_MS;
 const CURSOR = T0 - INTERVALO_TICK_ESTOQUE_AMAZON_MS;
 /** A stamp inside the tick's window. */
 const MOVEU = T0 - 60_000;
+/**
+ * How far the tick's window reaches below its cursor, WRITTEN OUT: these cases
+ * pin the five minutes themselves, so a shorter reach-back in the planner reds
+ * them too.
+ */
+const CINCO_MINUTOS_MS = 300_000;
 /** The switch on, the stock valve in dry-run: the tick runs (it never writes to Amazon). */
 const AMBIENTE = Object.freeze({ AMAZON_CHAMADAS: 'on', AMAZON_MODO_ESTOQUE: 'dry-run' });
 
@@ -412,7 +414,7 @@ describe('★ the idle tick’s EXACT cost', () => {
     sincronizacao();
     produto('P');
     vinculo('P', 'l1', 'SKU-P');
-    linha('P', CURSOR - SOBREPOSICAO_MS); // just below the window: never read
+    linha('P', CURSOR - CINCO_MINUTOS_MS); // just below the window's reach-back: never read
     const r = await tick();
     expect(unica(r)).toMatchObject({
       desfecho: DESFECHO_TICK_ESTOQUE_AMAZON.janelaVazia,
@@ -474,7 +476,7 @@ describe('★ the idle tick’s EXACT cost', () => {
         grupo: true,
         filtros: [
           ['depositoOuterRef', forma],
-          ['ultimaModificacao >', CURSOR - SOBREPOSICAO_MS],
+          ['ultimaModificacao >', CURSOR - CINCO_MINUTOS_MS],
           ['ultimaModificacao <=', T0],
         ],
         ordens: [
@@ -763,7 +765,8 @@ describe('★ observations: the overlap dedupes, a re-write mints a new task', (
     produto('COMP');
     vinculo('KIT', 'lk', 'SKU-KIT');
     vinculo('COMP', 'lc', 'SKU-COMP');
-    // The component sells: only its row moves, the kit's stays below the window.
+    // The component sells: only its row moves. The kit's sits below the overlap
+    // (inside the reach-back, committed long before the cursor): never kept.
     linha('KIT', CURSOR - 60_000);
     linha('COMP', MOVEU);
     await tick();
@@ -785,6 +788,172 @@ describe('★ observations: the overlap dedupes, a re-write mints a new task', (
     const r = unica(await tick());
     expect(enfileiradas.map((t) => t.sku)).toEqual(['SKU-W']);
     expect(r).toMatchObject({ produtos: 1, sondas: 2, skus: 1, tarefas: 1 });
+  });
+});
+
+/**
+ * The millisecond the next rows seeded will COMMIT in: a marker's own. The
+ * fake's clock moves one µs per write (from seven hours before T0), so the few
+ * rows a case seeds next commit in that same millisecond, and a cursor taken
+ * relative to it places a row's commit exactly where the case needs it — apart
+ * from the row's stamp.
+ */
+function proximoCommitMs(): number {
+  return fake.seed('relogio/marco', {}).toMillis();
+}
+
+/** The commit millisecond of `caminho`. */
+function commitMsDe(caminho: string): number {
+  const t = fake.carimboDe(caminho);
+  if (t === undefined) throw new Error(`fixture: ${caminho} ausente`);
+  return t.toMillis();
+}
+
+describe('★ the commit lag: a row stamped below the overlap but COMMITTED after the cursor', () => {
+  /**
+   * One conta whose cursor is `cursorMs`, one produto P with SKU-P, and P's row
+   * stamped `carimboMs`; the clock one interval after the cursor. Returns the row's path.
+   */
+  function cenario(cursorMs: number, carimboMs: number): string {
+    conta();
+    sincronizacao(CONTA, { cursorMs });
+    produto('P');
+    vinculo('P', 'l1', 'SKU-P');
+    agoraMs = cursorMs + INTERVALO_TICK_ESTOQUE_AMAZON_MS;
+    return linha('P', carimboMs);
+  }
+
+  it('★ stamped cursor − 30 s, committed cursor + 1 s (after the tick that read at the cursor) ⇒ ONE delta task named by that commit, the cursor advanced', async () => {
+    const cursorMs = proximoCommitMs() - 1_000;
+    const caminho = cenario(cursorMs, cursorMs - 30_000);
+    expect(commitMsDe(caminho)).toBe(cursorMs + 1_000);
+    const r = unica(await tick());
+    const commit = fake.carimboDe(caminho);
+    if (commit === undefined) throw new Error('fixture');
+    // A delta named by its observation (the tick enqueues every SKU as a delta;
+    // that its window never forces is pinned in `descobertaEstoque.test.ts`).
+    expect(enfileiradas).toEqual([
+      {
+        v: 1,
+        contaId: CONTA,
+        sku: 'SKU-P',
+        origem: ORIGEM_TAREFA_ESTOQUE_AMAZON.delta,
+        referencia: referenciaDaObservacao(commit),
+        depositoId: null,
+      },
+    ]);
+    expect(r).toMatchObject({
+      desfecho: DESFECHO_TICK_ESTOQUE_AMAZON.enfileirado,
+      linhas: 1,
+      skus: 1,
+      tarefas: 1,
+      cursorAvancou: true,
+    });
+    expect(consultasDaJanela()[0]?.filtros[1]).toEqual([
+      'ultimaModificacao >',
+      cursorMs - CINCO_MINUTOS_MS,
+    ]);
+    expect(fake.ler(sync())?.cursorMs).toBe(agoraMs);
+  });
+
+  it('★ NEAR-MISS: the same row committed at cursor − 21 s (the previous tick’s query read it) ⇒ returned, dropped, NO task — the cursor still advances', async () => {
+    const cursorMs = proximoCommitMs() + 21_000;
+    const caminho = cenario(cursorMs, cursorMs - 30_000);
+    expect(commitMsDe(caminho)).toBe(cursorMs - 21_000);
+    const r = unica(await tick());
+    expect(enfileiradas).toEqual([]);
+    expect(r).toMatchObject({
+      desfecho: DESFECHO_TICK_ESTOQUE_AMAZON.janelaVazia,
+      linhas: 1,
+      produtos: 0,
+      skus: 0,
+      cursorAvancou: true,
+    });
+    expect(leiturasEm('produtos/')).toEqual([]);
+  });
+
+  it('committed INSIDE the skew allowance (cursor − 10 s) ⇒ ONE task: the margin is the 20-s clock skew, never zero', async () => {
+    const cursorMs = proximoCommitMs() + 10_000;
+    const caminho = cenario(cursorMs, cursorMs - 30_000);
+    expect(commitMsDe(caminho)).toBe(cursorMs - 10_000);
+    expect(unica(await tick())).toMatchObject({ desfecho: 'enfileirado', linhas: 1, tarefas: 1 });
+  });
+
+  it('★ the residue: committed late but stamped cursor − 6 min ⇒ outside the range, NO task; stamped cursor − 4 min 59 s ⇒ ONE task', async () => {
+    const cursorMs = proximoCommitMs() - 1_000;
+    const caminho = cenario(cursorMs, cursorMs - 6 * 60_000);
+    expect(commitMsDe(caminho)).toBe(cursorMs + 1_000);
+    const r = unica(await tick());
+    expect(r).toMatchObject({ desfecho: DESFECHO_TICK_ESTOQUE_AMAZON.janelaVazia, linhas: 0 });
+    expect(enfileiradas).toEqual([]);
+
+    fake = new FakeDb();
+    const outroCursorMs = proximoCommitMs() - 1_000;
+    const outroCaminho = cenario(outroCursorMs, outroCursorMs - 4 * 60_000 - 59_000);
+    expect(commitMsDe(outroCaminho)).toBe(outroCursorMs + 1_000);
+    expect(unica(await tick())).toMatchObject({ desfecho: 'enfileirado', linhas: 1, tarefas: 1 });
+  });
+
+  it('★ a row stamped AND committed inside the overlap, read by two consecutive ticks ⇒ the SAME task name both times; the second enqueue meets ALREADY_EXISTS', async () => {
+    const marco = proximoCommitMs();
+    // The first tick reads at marco + 5 s; the row is stamped in the millisecond it commits in.
+    const caminho = cenario(marco + 5_000 - INTERVALO_TICK_ESTOQUE_AMAZON_MS, marco);
+    expect(commitMsDe(caminho)).toBe(marco);
+    expect(unica(await tick())).toMatchObject({ tarefas: 1, jaEnfileiradas: 0 });
+    agoraMs += INTERVALO_TICK_ESTOQUE_AMAZON_MS;
+    expect(unica(await tick())).toMatchObject({ tarefas: 0, jaEnfileiradas: 1 });
+    const [primeira] = enfileiradas;
+    const [segunda] = jaExistentes;
+    if (primeira === undefined || segunda === undefined) throw new Error('duas tarefas esperadas');
+    expect(enfileiradas).toHaveLength(1);
+    expect(jaExistentes).toHaveLength(1);
+    expect(nomeDaTarefaEstoque(segunda)).toBe(nomeDaTarefaEstoque(primeira));
+    const commit = fake.carimboDe(caminho);
+    if (commit === undefined) throw new Error('fixture');
+    expect(segunda.referencia).toBe(referenciaDaObservacao(commit));
+  });
+
+  it('★ the cost: a row stamped in the 4 min 40 s below cursor − 20 s and committed long before is RETURNED and dropped — the idle tick’s operation count, no produto read', async () => {
+    conta();
+    sincronizacao();
+    produto('P');
+    vinculo('P', 'l1', 'SKU-P');
+    const caminho = linha('P', CURSOR - 4 * 60_000);
+    // Committed long before cursor − 20 s (the fake's clock starts at T0 − 7 h).
+    expect(commitMsDe(caminho)).toBeLessThan(CURSOR - 20_000);
+    const r = unica(await tick());
+    expect(r).toMatchObject({
+      desfecho: DESFECHO_TICK_ESTOQUE_AMAZON.janelaVazia,
+      paginas: 2,
+      linhas: 1,
+      produtos: 0,
+      sondas: 0,
+      skus: 0,
+      cursorAvancou: true,
+    });
+    expect(fake.contagem).toEqual({ leituras: 2, chamadasGetAll: 0, consultas: 3, escritas: 2 });
+    expect(leiturasEm('produtos/')).toEqual([]);
+    expect(listagens()).toEqual([]);
+  });
+
+  it('★ the cost: re-read rows count toward the page cap — 3,001 rows in that band, none kept, still truncate the window to the reconcile hand-off', async () => {
+    conta();
+    sincronizacao();
+    let ultima = '';
+    for (let i = 0; i < TETO_PAGINAS_JANELA * LINHAS_POR_PAGINA_JANELA + 1; i += 1) {
+      ultima = linha(`P${String(i).padStart(5, '0')}`, CURSOR - 4 * 60_000);
+    }
+    // None kept: stamped below cursor − 20 s, and even the LAST row seeded
+    // committed long before it.
+    expect(commitMsDe(ultima)).toBeLessThan(CURSOR - 20_000);
+    const r = unica(await tick());
+    expect(r).toMatchObject({
+      repasse: REPASSE_TICK_ESTOQUE_AMAZON.reconciliacaoNecessaria,
+      truncada: true,
+      paginas: TETO_PAGINAS_JANELA,
+      produtos: 0,
+    });
+    expect(fake.ler(sync())).toMatchObject({ cursorMs: CURSOR });
   });
 });
 

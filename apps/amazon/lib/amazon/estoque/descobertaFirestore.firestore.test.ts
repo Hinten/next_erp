@@ -57,6 +57,7 @@ const JANELA: JanelaEstoqueAmazon = {
   ateMs: 2_000,
   manterDesdeMs: 1_000,
   commitAposMs: null,
+  forcarPorCommit: false,
 };
 const SEM_PRAZO = { prazoMs: Number.MAX_SAFE_INTEGER };
 
@@ -235,6 +236,7 @@ describe.skipIf(!EMULATED)('the stock discovery on real Firestore (emulator)', (
         ateMs: 2_000,
         manterDesdeMs: null,
         commitAposMs: commitA.toMillis(),
+        forcarPorCommit: true,
       }),
     );
     expect(r.observacoes.map((o) => [o.sku, o.forcar])).toEqual([[`${P}SKU-B`, true]]);
