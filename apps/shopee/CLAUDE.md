@@ -451,9 +451,8 @@ a page of the 3-day queue irreversibly.
 - `lib/shopee/testing/fakeDb.ts` — the shared in-memory Firestore double
   **125** suites in this app name (123 drive it), and since step 8 it has a
   suite of its OWN. ⚠️ Re-derive the number, never increment it:
-  `git grep -l "testing/fakeDb" -- "apps/shopee/**/*.test.ts" | wc -l` (after
-  step 8: 20, 21: 114, #1911: 123, #2164: 125 — the two `*.tasks.test.ts` suites it
-  counts name the double in a docblock only).
+  `git grep -l "testing/fakeDb" -- "apps/shopee/**/*.test.ts" | wc -l` (the
+  two `*.tasks.test.ts` suites it counts name the double in a docblock only).
   Step 9 extended the double ADDITIVELY: an
   `__arrayUnion` sentinel applied on write, **dotted-path** expansion on
   `update` (the price patch writes `precos.<tabelaId>`), and a real `updateTime`

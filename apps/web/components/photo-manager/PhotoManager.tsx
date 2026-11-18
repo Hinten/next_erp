@@ -59,6 +59,7 @@ import { useDocSnapshot } from '@delfrance/data/hooks';
 import { DELETE_MARK } from '@delfrance/ui';
 import { idFromRef } from './arquivoRef';
 import { FotoViewerModal } from './FotoViewerModal';
+import classes from './PhotoManager.module.css';
 
 /** A `Foto` plus the transient staged-deletion marker (keyed by `DELETE_MARK`). */
 type EditableFoto = Foto & { [DELETE_MARK]?: boolean };
@@ -96,6 +97,10 @@ interface SectionList {
   grupoId: string | null;
   uid: string | null;
   indexes: number[];
+}
+
+function galleryHasPhoto(fotos: Foto[], indexes: number[], arquivoOuterRef: string): boolean {
+  return indexes.some((index) => fotos[index]?.arquivoOuterRef === arquivoOuterRef);
 }
 
 /**
@@ -394,7 +399,7 @@ export function PhotoManager({
     } else {
       const target = sectionLists[dstList]!;
       const moving = listsFotos[src.list]![src.pos]!;
-      if (listsFotos[dstList]!.some((f) => f.arquivoOuterRef === moving.arquivoOuterRef)) {
+      if (galleryHasPhoto(fotos, target.indexes, moving.arquivoOuterRef)) {
         notifications.show({
           color: 'gray',
           message: 'Esta foto já existe na galeria de destino.',
@@ -601,21 +606,35 @@ function SectionGrid({
   onToggleDelete,
   onOpen,
 }: SectionGridProps) {
-  const { setNodeRef, isOver } = useDroppable({ id: `${CONTAINER_PREFIX}${sectionKey}` });
+  const { active, over, isOver, setNodeRef } = useDroppable({
+    id: `${CONTAINER_PREFIX}${sectionKey}`,
+    data: { sectionKey },
+    disabled,
+  });
+  const draggedRef: unknown = active?.data.current?.arquivoOuterRef;
+  const isSource = active?.data.current?.sectionKey === sectionKey;
+  const acceptsPhoto =
+    !disabled &&
+    !isSource &&
+    typeof draggedRef === 'string' &&
+    !galleryHasPhoto(fotos, indexes, draggedRef);
+  let dropState: 'available' | 'target' | 'reorder' | undefined;
+  if (acceptsPhoto) {
+    // The collision target can be the grid itself or a sortable photo inside it.
+    dropState = over?.data.current?.sectionKey === sectionKey ? 'target' : 'available';
+  } else if (isSource && isOver) {
+    dropState = 'reorder';
+  }
+
   return (
     <SortableContext items={indexes.map((i) => sortableIds[i]!)} strategy={rectSortingStrategy}>
       <Box
         ref={setNodeRef}
         p={2}
-        style={
-          isOver
-            ? {
-                outline: '2px dashed var(--mantine-color-blue-4)',
-                outlineOffset: 2,
-                borderRadius: 4,
-              }
-            : undefined
-        }
+        role="group"
+        aria-label={galleryLabel ?? 'Galeria principal'}
+        className={classes.grid}
+        data-photo-drop-state={dropState}
       >
         {indexes.length === 0 ? (
           // A real drop target even when empty — fotos can be dragged INTO
@@ -640,6 +659,7 @@ function SectionGrid({
                 <SortableFoto
                   key={sortableIds[index]!}
                   sortableId={sortableIds[index]!}
+                  sectionKey={sectionKey}
                   foto={foto}
                   db={db}
                   pos={pos}
@@ -664,6 +684,7 @@ function SectionGrid({
 interface SortableFotoProps {
   /** Unique dnd id (`ref|variantePath#occurrence`) — see `buildSortableIds`. */
   sortableId: string;
+  sectionKey: string;
   foto: Foto;
   db: Firestore;
   /** 0-based position within its gallery, for the "ampliar" label. */
@@ -684,6 +705,7 @@ interface SortableFotoProps {
 
 function SortableFoto({
   sortableId,
+  sectionKey,
   foto,
   db,
   pos,
@@ -699,6 +721,7 @@ function SortableFoto({
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: sortableId,
     disabled,
+    data: { sectionKey, arquivoOuterRef: foto.arquivoOuterRef },
   });
   const style = {
     transform: CSS.Transform.toString(transform),
