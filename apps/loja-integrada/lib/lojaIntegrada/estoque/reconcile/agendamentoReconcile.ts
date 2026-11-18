@@ -9,12 +9,7 @@
  *
  *  1. The valve `LOJA_INTEGRADA_MODO_ESTOQUE`: `off` (unset, blank, a typo — one WARNING) ⇒
  *     nothing.
- *  2. The read switch `LOJA_INTEGRADA_CHAMADAS`: not exactly `on` ⇒ nothing, ONE INFO line. A run
- *     whose store phase stops at the switch for every conta would pay the whole ERP phase for no
- *     diff; until the window the switch is off everywhere, so the nightly run waits for it. (A run
- *     enqueued another way — a depósito change, an operator's — still walks the ERP: that is how
- *     the ERP phase is measured before the window.)
- *  3. ONE enqueue: `{ tipo: 'estoque-reconcile', execucaoId: 'estoque-reconcile-<AAAAMMDD>',
+ *  2. ONE enqueue: `{ tipo: 'estoque-reconcile', execucaoId: 'estoque-reconcile-<AAAAMMDD>',
  *     seq: 0 }` at once, the date the SCHEDULE TIME's civil date in São Paulo — so a Cloud
  *     Scheduler retry of the same night names the same run, and its task id
  *     (`idTarefaReconcileEstoqueLi`) collides: one run per night. Only a schedule time that does
@@ -23,6 +18,15 @@
  * An answered already-exists is success (the producer says so). The closed sweep-only valve is
  * ONE WARNING (nothing to retry: it is a decision). A transient Cloud Tasks failure is RETHROWN,
  * so the schedule's own retry tries the same name again — the night is not lost to one hiccup.
+ *
+ * ⚠️ The read switch `LOJA_INTEGRADA_CHAMADAS` is NOT read here: the approved design is "valve off
+ * ⇒ nothing, otherwise ONE task". With the switch off every conta's store phase stops at its
+ * context with zero reads (`faseLi.ts`), but the ERP phase still runs, and it rebuilds the snapshot
+ * and the KITS MAP every night. The stock trigger's eager kit sends and its zero-crossing fan-out
+ * read that map (`gatilhoEstoque.ts`: no header ⇒ `nenhum`), so gating this start on the switch
+ * would leave every kit listing without event-driven sends from the moment the switch goes `on`
+ * until a run completed after it. The nightly ERP phase is also how its cost is measured before
+ * the window.
  */
 import { dataCivilNoFuso, parseIsoToMillis } from '@delfrance/core/datetime';
 import { FUSO_FISCAL, TIPO_TAREFA_RECONCILE_ESTOQUE_LI } from '@delfrance/schemas';
@@ -31,7 +35,6 @@ import {
   type AmbienteLi,
   FLUXO_LI,
   MODO_LI,
-  lerChaveDeChamadas,
   lerValvula,
   registrarValvulaLi,
 } from '../../core/valvulas';
@@ -50,7 +53,6 @@ export function idDaExecucaoAgendadaLi(ms: number): string {
 /** What one firing did. */
 export type ResultadoAgendamentoReconcileLi =
   | { readonly kind: 'desligado' }
-  | { readonly kind: 'chamadas-desligadas' }
   | { readonly kind: 'tarefas-desligadas'; readonly execucaoId: string }
   | { readonly kind: 'enfileirado'; readonly execucaoId: string };
 
@@ -71,12 +73,6 @@ export async function agendarReconcileEstoqueLi(args: {
   if (valvula.modo === MODO_LI.off) {
     if (!valvula.modoReconhecido) registrarValvulaLi(valvula, { conta: null });
     return { kind: 'desligado' };
-  }
-  if (!lerChaveDeChamadas(args.ambiente)) {
-    args.logger.info(`${TAG} — chave de chamadas desligada, nada enfileirado`, {
-      motivo: 'chamadas-desligadas',
-    });
-    return { kind: 'chamadas-desligadas' };
   }
   const doTick = args.horaAgendada === undefined ? null : parseIsoToMillis(args.horaAgendada);
   let ms = doTick ?? Number.NaN;

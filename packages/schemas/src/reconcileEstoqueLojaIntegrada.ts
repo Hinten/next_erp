@@ -39,7 +39,10 @@ import {
  * `seq` is ONE behind the stored one, while the lease is held, already wrote its end-of-slice
  * checkpoint and its hand-off may have failed — it only re-enqueues the stored `seq`'s named task
  * and stops (the `continuacao` repair). The release of the lease (`emExecucaoAteMs: 0`) bumps
- * `seq` too, so a late duplicate of a run's last slice is refused rather than repaired.
+ * `seq` too, so a late duplicate of a run's last slice is never run again: it only asks once more
+ * for the depósito re-run the stored counters name (`revisao`, PR 12-g — the repair of a release
+ * that landed behind an error; the re-run's name makes a repeat collide), and any other slice of
+ * a released run is refused.
  *
  * Two writers, both tier 1 (a lost precondition re-reads and re-derives):
  *

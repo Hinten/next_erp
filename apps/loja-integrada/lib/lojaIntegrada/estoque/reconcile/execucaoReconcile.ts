@@ -17,11 +17,15 @@
  *    - `seq` ONE behind and the lease held ⇒ `continuacao`: an earlier attempt of this slice wrote
  *      its end-of-slice checkpoint and its hand-off may have failed — the slice only re-enqueues
  *      the stored `seq` (the import's repair, `importacao/job.ts`);
- *    - anything else ⇒ `nada` (a stale chain, or a late duplicate of a run already released: the
- *      release bumps `seq`).
+ *    - `seq` ONE behind and the lease RELEASED ⇒ `revisao`: an earlier attempt of this slice
+ *      released the run (the release bumps `seq`) and may have died before asking for the new full
+ *      run a depósito change needs (a release that LANDED behind a DEADLINE_EXCEEDED): the slice
+ *      only asks again, from the stored counter — the run's name makes a repeat collide;
+ *    - anything else ⇒ `nada` (a stale chain, or a late duplicate of a run already released).
  *  - ANOTHER run: only its first slice (`seq` 0) may start one; any other ⇒ `nada`. Then:
  *    - a document that does not parse ⇒ `assumir`, abandoned (ONE ERROR line; the take writes
- *      every reconcile field, never `proximoSlotMs`);
+ *      every reconcile field, never `proximoSlotMs` — which is why the slot is never part of the
+ *      parse: read as `null`, a malformed slot cannot make a run unreadable);
  *    - no run ever (a document the kit fan-out created for its slot alone) ⇒ `assumir`;
  *    - the stored run STARTED in the same minute window ⇒ `adiar`: the slice throws
  *      {@link LiReconcileEstoqueAdiadoError} and the queue retries it a minute later. Two runs never
@@ -140,7 +144,7 @@ export interface RunLidoLi {
   readonly existe: boolean;
   /** The RAW stored fields (`{}` when absent): what `guardaOPatchLi` compares. */
   readonly dados: Readonly<Record<string, unknown>>;
-  /** Parsed with the REFINED schema; `null` when absent or off it. */
+  /** Parsed with the REFINED schema, the slot read as `null`; `null` when absent or off it. */
   readonly run: ReconcileEstoqueLojaIntegrada | null;
   /** The read's `updateTime`; `null` when absent. */
   readonly versao: Timestamp | null;
@@ -154,7 +158,12 @@ export function refRunReconcileLi(db: Firestore): DocumentReference {
 function runDoSnapshot(snap: DocumentSnapshot): RunLidoLi {
   if (!snap.exists) return { existe: false, dados: {}, run: null, versao: null };
   const dados: Record<string, unknown> = snap.data() ?? {};
-  const lido = reconcileEstoqueLojaIntegradaSchema.safeParse(dados);
+  // The slot is the kit fan-out's field and no decision here derives anything from it: parsed as
+  // `null`, as the slice's own state is (`despachoReconcile.ts`), so a slot off its schema (a hand
+  // edit) can never make the RUN unreadable — the take never writes the slot, so it could never
+  // heal it, and every later slice would find `run = null`. The fan-out reads it fail-open too.
+  // `dados` keeps it raw for `guardaOPatchLi`.
+  const lido = reconcileEstoqueLojaIntegradaSchema.safeParse({ ...dados, proximoSlotMs: null });
   return {
     existe: true,
     dados,
@@ -176,6 +185,8 @@ export type DecisaoSliceReconcileLi =
   | { readonly tipo: 'executar' }
   /** Re-enqueue the stored `seq` and stop. */
   | { readonly tipo: 'continuacao'; readonly seq: number }
+  /** Ask again for the depósito re-run the stored counter names, and stop. */
+  | { readonly tipo: 'revisao' }
   | { readonly tipo: 'nada' }
   | { readonly tipo: 'ocupado' }
   | { readonly tipo: 'adiar' }
@@ -193,6 +204,7 @@ export function decidirSliceReconcileLi(
     if (run.emExecucaoAteMs !== 0 && tarefa.seq + 1 === run.seq) {
       return { tipo: 'continuacao', seq: run.seq };
     }
+    if (run.emExecucaoAteMs === 0 && tarefa.seq + 1 === run.seq) return { tipo: 'revisao' };
     return { tipo: 'nada' };
   }
   if (tarefa.seq !== 0) return { tipo: 'nada' };

@@ -13,7 +13,6 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
 import { TASK_MAX_ATTEMPTS } from '@delfrance/data/admin/notifications';
-import { LiNotFoundError } from '@delfrance/integrations-loja-integrada';
 import {
   type EntradaSnapshotEstoqueLi,
   FLAG_ENTRADA_ESTOQUE_LI,
@@ -547,7 +546,27 @@ describe('a row no entry names is looked up — by its number AND its decimal te
       c0VinculosForaDoSnapshot: 2,
       c0SemVinculoNovos: 2,
       c0EmDia: 1,
+      // ⚠️ The evaluator's own counters of what the lookups found reach the conta: the safety gate
+      // (avaliados, zeroPorDeposito), the avisos and ultimoReconcile read them.
+      c0Vinculados: 2,
+      c0Validos: 2,
+      c0Avaliados: 2,
+      // …and the run's read-path counters: the lookups' ERP reads are the night's reads too.
+      erpProdutosLidos: 2,
+      erpCanonicosAchados: 2,
     });
+  });
+
+  it('⚠️ a child found by a lookup whose only record is at ANOTHER depósito counts for the safety gate (zeroPorDeposito) and is sampled for its aviso', async () => {
+    const { db, p } = cenario({ linhas: [emDia(211, 7)] });
+    seedProduto(db, 'outro');
+    seedLinkFilho(db, 'outro', 'l1', CONTA, 211);
+    seedRegistro(db, 'outro', 'dep-outro', 7);
+    const m = montar(db, p);
+    await m.correr();
+    expect(m.estado().entrada('211')).toEqual({ p: 'outro', s: 0, f: 'v' });
+    expect(m.contadores).toMatchObject({ c0Avaliados: 1, c0ZeroPorDeposito: 1, c0Validos: 1 });
+    expect(m.estado().raiz.execucao.amostras['deposito-sem-registros']).toEqual(['outro']);
   });
 
   it('⚠️ the steady state: a row whose `x` was carried makes ZERO lookups', async () => {
@@ -587,6 +606,8 @@ describe('a row no entry names is looked up — by its number AND its decimal te
     expect(m.estado().entrada('301')).toEqual({ p: 'd1', s: null, f: 'dup' });
     expect(m.candidatos.lista()).toEqual([]);
     expect(m.estado().raiz.execucao.amostras.duplicado).toEqual(['d1', 'd2']);
+    // Counted as the sample names them: the end phase's duplicate aviso takes its count from here.
+    expect(m.contadores).toMatchObject({ c0Duplicados: 2 });
   });
 
   it('a store kit found by a lookup gets its entry, but joins the kits map only at the next walk (counted)', async () => {
@@ -854,11 +875,31 @@ describe('the failures, each narrowed to its class', () => {
     expect(m.contadores).toEqual({});
   });
 
-  it('⚠️ NEAR-MISS: a 404 on the LIST is not the store’s answer to give — rethrown, loud, on every attempt', async () => {
+  it.each([
+    ['a 404', 404, 'LiNotFoundError'],
+    ['a 400', 400, 'LiHttpError'],
+  ])(
+    '⚠️ %s on the LIST is a deterministic refusal: the conta ENDS on the FIRST attempt (one ERROR recusa-da-loja, counted), so the chain goes on to the next conta — never a retry, never a rethrow',
+    async (_n, status, classe) => {
+      const { db, p } = doisNaLista();
+      p.fila.push(
+        naProxima(CAMINHO_LISTA_ESTOQUE_LI, 'GET', () => respostaJson(status, undefined)),
+      );
+      const m = montar(db, p, { tentativa: 0 });
+      expect(await m.correr()).toEqual([{ tipo: 'conta-encerrada' }]);
+      expect(m.contadores).toEqual({ c0RecusasDaLoja: 1 });
+      expect(
+        m.log.linhas.map((l) => [l.nivel, l.meta.motivo, l.meta.classe, l.meta.status]),
+      ).toEqual([['error', 'recusa-da-loja', classe, status]]);
+      expect(listas(p)).toHaveLength(1);
+    },
+  );
+
+  it('⚠️ NEAR-MISS: a coding bug inside a unit is still rethrown as-is', async () => {
     const { db, p } = doisNaLista();
-    p.fila.push(naProxima(CAMINHO_LISTA_ESTOQUE_LI, 'GET', () => respostaJson(404, undefined)));
+    db.falharLeitura(`sincEstoqueLojaIntegrada/${CONTA}`, new TypeError('bug'));
     const m = montar(db, p, { tentativa: TASK_MAX_ATTEMPTS - 1 });
-    await expect(m.fase.unidade(CONTA_DA_FASE)).rejects.toBeInstanceOf(LiNotFoundError);
+    await expect(m.fase.unidade(CONTA_DA_FASE)).rejects.toBeInstanceOf(TypeError);
   });
 });
 

@@ -106,8 +106,15 @@
  *    the slice writes what it completed, then rethrows the ORIGINAL error and the queue retries the
  *    slice at the cursor. On the queue's LAST attempt the conta is ended instead (one ERROR,
  *    counted, its walk incomplete) and the chain goes on with the next one.
- *  - **Anything else** — a 404 on the LIST, another 3xx/4xx, `LiConfigError`, a coding bug — is
- *    rethrown as-is, on every attempt.
+ *  - **A deterministic refusal of the conta's request** — a 404 on the LIST, another 3xx/4xx, a
+ *    `LiConfigError` (the package refused the request before sending it: a stored token it cannot
+ *    send, say) ⇒ the conta is ENDED on EVERY attempt, its list incomplete: one ERROR
+ *    `recusa-da-loja` (the class and the status only), counted `recusasDaLoja`, and the chain goes
+ *    on with the next conta. A retry would meet the same answer, and ONE chain serves every conta:
+ *    rethrown, one conta's refusal would stop every conta after it — the queue and end phases too —
+ *    every night.
+ *  - **Anything else** — a coding bug — is rethrown as-is, on every attempt (on the queue's last
+ *    one the slice releases the lease first, `despachoReconcile.ts`).
  *
  * Every line carries ids and numbers only. ⚠️ Never name the Admin SDK's multi-document
  * read-and-write call here — not even in a comment (`estrutura.test.ts`).
@@ -119,6 +126,7 @@ import { contaRefForms } from '@delfrance/data/admin/produtos';
 import {
   type EstoqueProdutoLinhaLi,
   LiAuthError,
+  LiConfigError,
   LiHttpError,
   LiNetworkError,
   LiNotFoundError,
@@ -687,12 +695,16 @@ export class FaseLiReconcileLi {
           return registro === null ? [] : [registro];
         }),
       }));
+      const global = new Map<string, number>();
       const porConta = await avaliarPaginaErpLi(
         db,
         grupos,
         [estado.conta],
         new Map([[conta.contaId, estado]]),
+        { global },
       );
+      // The run's read-path counters: the lookups' ERP reads are the night's reads too.
+      for (const [nome, n] of global) this.args.contar(nome, n);
       for (const [nome, n] of porConta.get(conta.contaId) ?? []) resultado.contar(nome, n);
     }
 
@@ -863,7 +875,22 @@ export class FaseLiReconcileLi {
       if (pulo !== null) return pulo;
     }
     if (retentavelNaFaseLi(err)) return this.falhaRetentavel(conta, err);
+    if (err instanceof LiHttpError || err instanceof LiConfigError) {
+      return this.recusaDaLoja(conta, err);
+    }
     return null;
+  }
+
+  /** A deterministic refusal of the conta's request (module header, "Failures"): the conta ends. */
+  private recusaDaLoja(conta: ContaDaFaseLi, err: LiHttpError | LiConfigError): PassoFaseLi {
+    this.contarDaConta(conta, 'recusasDaLoja');
+    this.args.deps.logger.error(`${TAG} a loja recusou a leitura — a conta fica incompleta`, {
+      ...this.ids(conta),
+      motivo: 'recusa-da-loja',
+      classe: classeDaFalhaLi(err),
+      status: err instanceof LiHttpError ? err.status : null,
+    });
+    return { tipo: 'conta-encerrada' };
   }
 
   /** A failure a retry may change: retried, or — on the queue's last attempt — the conta ended. */

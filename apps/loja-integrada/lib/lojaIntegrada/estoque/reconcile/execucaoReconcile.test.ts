@@ -85,7 +85,7 @@ describe('decidirSliceReconcileLi — the SAME run', () => {
     });
   });
 
-  it('⚠️ NEAR-MISS: two behind, one ahead, or a late duplicate of a RELEASED run’s last slice ⇒ nada', () => {
+  it('⚠️ NEAR-MISS: two behind, one ahead ⇒ nada; ONE behind a RELEASED run ⇒ revisao (its release may have landed behind an error), any other seq of it ⇒ nada', () => {
     const d = (seq: number, run = runEmCurso()) =>
       decidirSliceReconcileLi(lido(run), { execucaoId: RUN_A, seq }, AGORA_RECONCILE_MS).tipo;
     expect(d(2)).toBe('nada');
@@ -95,7 +95,8 @@ describe('decidirSliceReconcileLi — the SAME run', () => {
       seq: 5,
       fase: FASE_RECONCILE_ESTOQUE_LI.fim,
     });
-    expect(d(4, liberado)).toBe('nada');
+    expect(d(4, liberado)).toBe('revisao');
+    expect(d(3, liberado)).toBe('nada');
     expect(d(5, liberado)).toBe('nada');
   });
 });

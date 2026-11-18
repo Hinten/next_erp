@@ -63,15 +63,18 @@ async function avaliar(
   const leiturasAntes = db.leituras.length;
   const consultasAntes = db.consultas.length;
   const getAll = vi.spyOn(db, 'getAll');
+  const global = new Map<string, number>();
   const contadores = await avaliarPaginaErpLi(
     asDb(db),
     grupos(db, produtoIds),
     [...estados.values()].map((e) => e.conta),
     estados,
+    { global },
   );
   return {
     estados,
     contadores,
+    global: Object.fromEntries(global),
     c1: estados.get('C1'),
     leituras: db.leituras.slice(leiturasAntes),
     consultas: db.consultas.slice(consultasAntes),
@@ -278,5 +281,42 @@ describe('avaliarPaginaErpLi — what one page costs', () => {
       f: FLAG_ENTRADA_ESTOQUE_LI.valido,
     });
     expect(r.c1?.entrada('3')).toMatchObject({ s: 2, k: true });
+  });
+
+  it('⚠️ the RUN’s read-path counters say which path each produto took: found by id; legacy only (by id NOT found, the join, the own query); nothing here (the join, the own query, the listing)', async () => {
+    const db = new FakeDb();
+    // a: the canonical record. leg: a legacy record only. nunca: none anywhere. outro: another depósito only.
+    for (const [p, id] of [
+      ['a', 1],
+      ['leg', 2],
+      ['nunca', 3],
+      ['outro', 4],
+    ] as const) {
+      seedProduto(db, p);
+      seedLinkFilho(db, p, 'l1', 'C1', id);
+    }
+    seedRegistro(db, 'a', DEP, 3);
+    seedRegistro(db, 'leg', DEP, 2, { id: 'legado' });
+    seedRegistro(db, 'outro', 'dep-2', 9);
+    const r = await avaliar(db, ['a', 'leg', 'nunca', 'outro']);
+    expect(r.global).toEqual({
+      erpProdutosLidos: 4,
+      erpCanonicosAchados: 1,
+      erpCanonicosAusentes: 3,
+      // ONE slice of the three still missing, per stored form of the depósito ref.
+      erpJuncoes: 2,
+      // Every produto whose CANONICAL record is still unread — the legacy one included.
+      erpConsultasProprias: 3,
+      erpListagensSemEstoque: 2,
+    });
+    expect(r.contadores.get('C1')).toEqual(
+      new Map([
+        ['vinculados', 4],
+        ['avaliados', 4],
+        ['zeroPorDeposito', 1],
+        ['validos', 3],
+        ['retidos', 1],
+      ]),
+    );
   });
 });

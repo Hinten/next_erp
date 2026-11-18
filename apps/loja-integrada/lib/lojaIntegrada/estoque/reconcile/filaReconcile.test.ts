@@ -3,10 +3,13 @@
  * slice machine — over-advertising first, ONE reservation of exactly each batch's size on the global
  * slot, the run's own window naming every send, a retried slice re-meeting its own sends, the
  * backlog horizon, the slot exhausted, the canary, the safety gate's 5% boundary, a conta whose
- * depósito moved mid-run, the valve (a dry-run enqueues NOTHING) — against `testing/fakeDb.ts` and
- * the REAL stock producer over a recording transport. No Loja Integrada call: `fetch` throws.
+ * depósito moved mid-run (and the ONE re-run it asks for), a conta deactivated mid-run, the valve
+ * (a dry-run enqueues NOTHING and reads no conta), the budget across queue slices, a row the strict
+ * parse refuses, the saturated slot's one line — against `testing/fakeDb.ts` and the REAL stock
+ * producer over a recording transport. No Loja Integrada call: `fetch` throws.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { ZodError } from 'zod';
 import { TASK_MAX_ATTEMPTS } from '@delfrance/data/admin/notifications';
 import {
   type CandidatoReconcileEstoqueLi,
@@ -17,6 +20,7 @@ import {
   type TarefaEstoqueLi,
 } from '@delfrance/schemas';
 
+import { relogioDoDocumentoUs } from '../../avisos/avisos';
 import { CANARIO_ENV_LI, VALVULA_ENV_LI } from '../../core/valvulas';
 import { FakeDb, asDb } from '../../testing/fakeDb';
 import { falhaDoFunctions } from '../../testing/falhaDeEnfileiramento';
@@ -40,6 +44,7 @@ import {
   pisoDoSlotEstoqueLi,
   reservarSlotGlobalEstoqueLi,
 } from '../slotEstoqueLi';
+import { idExecucaoRedepositoLi } from './contasReconcile';
 import { type DepsReconcileEstoqueLi, despacharReconcileEstoqueLi } from './despachoReconcile';
 import {
   HORIZONTE_SUBANUNCIO_RECONCILE_LI_MS,
@@ -106,10 +111,12 @@ function mundo(
     readonly canario?: string;
     readonly estoque?: ReturnType<typeof filaEstoqueGravadora>;
     readonly tentativa?: number;
+    /** Called at each reads-queue enqueue (`agendadorGravador`'s probe). */
+    readonly sonda?: () => unknown;
   } = {},
 ) {
   const relogio = { agora: AGORA_RECONCILE_MS };
-  const fila = agendadorGravador();
+  const fila = agendadorGravador(undefined, o.sonda);
   const estoque = o.estoque ?? filaEstoqueGravadora();
   const log = loggerGravador();
   const deps = (extra: Partial<DepsReconcileEstoqueLi> = {}): DepsReconcileEstoqueLi => ({
@@ -149,6 +156,23 @@ async function encadear(db: FakeDb, m: ReturnType<typeof mundo>, seq = 5) {
   }
   throw new Error('a cadeia não terminou');
 }
+
+/** µs of the stored conta's last write: what names the depósito re-run. */
+const versaoDaConta = (db: FakeDb, contaId: string): number => {
+  const carimbo = db.carimboDe(`integracao/${contaId}`);
+  if (carimbo === undefined) throw new Error(`integracao/${contaId} ausente`);
+  return relogioDoDocumentoUs(carimbo);
+};
+
+/** The slot after each of the queue phase's reservations, in order. */
+const reservas = (db: FakeDb): number[] =>
+  db.escritas
+    .filter(
+      (e) =>
+        e.caminho === CAMINHO_RUN_RECONCILE_LI &&
+        Object.keys(e.dados ?? {}).join() === 'proximoSlotMs',
+    )
+    .map((e) => Number(e.dados?.proximoSlotMs));
 
 const J_RUN = janelaEstoqueLi(INICIO_RUN_RECONCILE_MS);
 const nome = (contaId: string, produtoId: string) =>
@@ -207,6 +231,18 @@ describe('the queue phase under on', () => {
         geracao: 0,
       });
     }
+    // ⚠️ Each send carries the depósito its run diffed the conta at (the bare id, either stored
+    // form folded): the send run drops it when the conta names another by then.
+    expect(
+      m.estoque.enviadas.map((e) => [
+        (e.tarefa as TarefaEstoqueLi).contaId,
+        (e.tarefa as TarefaEstoqueLi).depositoId,
+      ]),
+    ).toEqual([
+      ['C1', 'dep-1'],
+      ['C1', 'dep-1'],
+      ['C2', 'dep-2'],
+    ]);
     // Exactly what was enqueued, never more: two batches (over, then under), two reservations.
     expect(db.ler(CAMINHO_RUN_RECONCILE_LI)?.proximoSlotMs).toBe(piso + 3 * I);
     const reservas = db.escritas.filter(
@@ -260,6 +296,13 @@ describe('the queue phase under on', () => {
     expect(m.estoque.enviadas).toHaveLength(230);
     expect(db.ler(CAMINHO_RUN_RECONCILE_LI)?.proximoSlotMs).toBe(piso + 230 * I);
     expect(db.ler(CAMINHO_RUN_RECONCILE_LI)?.contadores).toMatchObject({ reservasSlot: 3 });
+    // ⚠️ NEAR-MISS: exactly 100, 100, 30 — never 101, 101, 28.
+    const slots = reservas(db);
+    expect(slots.map((v, k) => v - (k === 0 ? piso : (slots[k - 1] ?? 0)))).toEqual([
+      100 * I,
+      100 * I,
+      30 * I,
+    ]);
   });
 
   it('a kit candidate carries its components’ record ids from its snapshot entry (`e`); a plain child carries none', async () => {
@@ -416,18 +459,67 @@ describe('the gate, the contas read again, and the valve', () => {
       { c: 1, i: '30', p: 'p30', d: 5 },
     ]);
     seedContaComDeposito(db, 'C1', refDeposito('dep-9'), { nome: 'a' });
-    const m = mundo();
+    const m = mundo({ sonda: () => db.ler(CAMINHO_RUN_RECONCILE_LI)?.emExecucaoAteMs });
     const r = await encadear(db, m);
     expect(r.at(-1)).toEqual({ kind: 'encerrado' });
     expect(m.estoque.enviadas.map((e) => (e.tarefa as TarefaEstoqueLi).produtoId)).toEqual(['p30']);
     expect(
       m.log.linhas.filter((l) => l.nivel === 'warn' && l.meta.motivo === 'deposito-mudou'),
     ).toHaveLength(1);
-    // The depósito re-run: one seq-0 task of a new run, after the release.
-    const novas = m.fila.enfileirados.filter((e) => e.execucaoId !== RUN_A);
-    expect(novas).toHaveLength(1);
-    expect(novas[0]?.execucaoId).toMatch(/^estoque-reconcile-redeposito-\d+$/);
-    expect(novas[0]).toMatchObject({ seq: 0, atrasoS: 0 });
+    // The depósito re-run: ONE seq-0 task of a new run, named by C1's update time, enqueued with
+    // the lease already released.
+    expect(m.fila.enfileirados).toEqual([
+      { execucaoId: idExecucaoRedepositoLi(versaoDaConta(db, 'C1')), seq: 0, atrasoS: 0 },
+    ]);
+    expect(m.fila.sondados).toEqual([0]);
+  });
+
+  it('⚠️ a change UNDONE before the release (D1 → D2 seen by the queue phase, then D2 → D1): the sends the queue dropped are lost to this run, so it still asks for ONE re-run, named by the write the queue phase saw', async () => {
+    const db = emFila([
+      { c: 0, i: '10', p: 'p10', d: 5 },
+      { c: 1, i: '30', p: 'p30', d: 5 },
+    ]);
+    seedContaComDeposito(db, 'C1', refDeposito('dep-9'), { nome: 'a' });
+    const vista = versaoDaConta(db, 'C1');
+    // The release's listing is the run's only query on the contas: the change is undone right before.
+    db.antesDaProximaConsulta('integracao', () => {
+      seedContaComDeposito(db, 'C1', refDeposito('dep-1'), { nome: 'a' });
+    });
+    const m = mundo();
+    expect((await encadear(db, m)).at(-1)).toEqual({ kind: 'encerrado' });
+    expect(m.estoque.enviadas.map((e) => (e.tarefa as TarefaEstoqueLi).produtoId)).toEqual(['p30']);
+    expect(m.fila.enfileirados).toEqual([
+      { execucaoId: idExecucaoRedepositoLi(vista), seq: 0, atrasoS: 0 },
+    ]);
+  });
+
+  it('⚠️ NEAR-MISS: a conta whose depósito was REMOVED loses its candidates too (ONE WARNING) but asks for no re-run — nothing to send to', async () => {
+    const db = emFila([{ c: 0, i: '10', p: 'p10', d: 5 }]);
+    seedContaComDeposito(db, 'C1', null, { nome: 'a' });
+    const m = mundo();
+    expect((await encadear(db, m)).at(-1)).toEqual({ kind: 'encerrado' });
+    expect(m.estoque.enviadas).toEqual([]);
+    expect(
+      m.log.linhas.filter((l) => l.nivel === 'warn' && l.meta.motivo === 'deposito-mudou'),
+    ).toHaveLength(1);
+    expect(m.fila.enfileirados).toEqual([]);
+  });
+
+  it('⚠️ a conta DEACTIVATED after the store phase (its depósito unchanged) ⇒ 0 sends for it (ONE WARNING conta-inativa), C2 unaffected, no re-run', async () => {
+    const db = emFila([
+      { c: 0, i: '10', p: 'p10', d: 5 },
+      { c: 1, i: '30', p: 'p30', d: 5 },
+    ]);
+    seedContaComDeposito(db, 'C1', refDeposito('dep-1'), { nome: 'a', ativo: false });
+    const m = mundo();
+    expect((await encadear(db, m)).at(-1)).toEqual({ kind: 'encerrado' });
+    expect(m.estoque.enviadas.map((e) => (e.tarefa as TarefaEstoqueLi).produtoId)).toEqual(['p30']);
+    expect(
+      m.log.linhas
+        .filter((l) => l.nivel === 'warn' && l.msg.endsWith('nada dela é enviado'))
+        .map((l) => [l.meta.contaId, l.meta.motivo]),
+    ).toEqual([['C1', 'conta-inativa']]);
+    expect(m.fila.enfileirados).toEqual([]);
   });
 
   it('⚠️ NEAR-MISS: the depósito stored in the OTHER form (documents/depositos/dep-2 for depositos/dep-2) is the SAME depósito — sent, no re-run', async () => {
@@ -477,10 +569,123 @@ describe('the gate, the contas read again, and the valve', () => {
     expect(contadores).not.toHaveProperty('c0ForaDoCanario');
     expect(contadores).not.toHaveProperty('c1ForaDoCanario');
     expect(resumos.map((l) => l.meta.foraDoCanario)).toEqual([0, 0]);
+    // ⚠️ …and no conta is read again by the queue phase under dry-run: the only reads of the
+    // contas by id are the end phase's ONE getAll.
+    expect(db.leituras.filter((l) => l.startsWith('integracao/'))).toEqual([
+      'integracao/C1',
+      'integracao/C2',
+    ]);
+  });
+});
+
+describe('the queue phase across slices', () => {
+  it('⚠️ the budget: a slice stops at the first batch that no longer fits (its sends leave the stored list); C1 re-pointed between the slices ⇒ the NEXT slice’s re-read drops the rest of C1 (ONE WARNING) and the release asks for ONE re-run', async () => {
+    const candidatos = Array.from({ length: 230 }, (_, k) => ({
+      c: 0,
+      i: String(1000 + k),
+      p: `p${String(k)}`,
+      d: 1 + k,
+    }));
+    const db = emFila(candidatos);
+    const m = mundo();
+    // Each reservation takes 25 s: the first two batches fit (they start at 0 and 25 s), the third
+    // (50 s in, a 30 s unit) does not.
+    for (let k = 0; k < 2; k += 1) {
+      db.antesDaProximaEscrita(CAMINHO_RUN_RECONCILE_LI, () => {
+        m.relogio.agora += 25_000;
+      });
+    }
+    const r1 = await despacharReconcileEstoqueLi(
+      asDb(db),
+      tarefa(5),
+      m.deps({ inicioMs: m.relogio.agora }),
+    );
+    expect(r1).toEqual({ kind: 'continua', fase: 'fila', seq: 6 });
+    expect(m.estoque.enviadas).toHaveLength(2 * LOTE_FILA_RECONCILE_LI);
+    expect(db.ler(CAMINHO_RUN_RECONCILE_LI)?.candidatos).toHaveLength(30);
+    expect(reservas(db)).toHaveLength(2);
+
+    seedContaComDeposito(db, 'C1', refDeposito('dep-9'), { nome: 'a' });
+    m.relogio.agora += 2_000;
+    const r2 = await despacharReconcileEstoqueLi(
+      asDb(db),
+      tarefa(6),
+      m.deps({ inicioMs: m.relogio.agora }),
+    );
+    expect(r2).toEqual({ kind: 'encerrado' });
+    expect(m.estoque.enviadas).toHaveLength(2 * LOTE_FILA_RECONCILE_LI);
+    expect(
+      m.log.linhas.filter((l) => l.nivel === 'warn' && l.meta.motivo === 'deposito-mudou'),
+    ).toHaveLength(1);
+    expect(db.ler(CAMINHO_RUN_RECONCILE_LI)?.contadores).toMatchObject({
+      c0Enfileirados: 200,
+      c0CandidatosBloqueados: 30,
+    });
+    expect(m.fila.enfileirados.filter((e) => e.execucaoId !== RUN_A)).toEqual([
+      { execucaoId: idExecucaoRedepositoLi(versaoDaConta(db, 'C1')), seq: 0, atrasoS: 0 },
+    ]);
+  });
+
+  it('a stored slot past now + 12 h: the over-advertising batches still go behind it, with ONE ERROR per run however many batches meet it', async () => {
+    const candidatos = Array.from({ length: 150 }, (_, k) => ({
+      c: 0,
+      i: String(2000 + k),
+      p: `q${String(k)}`,
+      d: 1 + k,
+    }));
+    const db = emFila(candidatos, {
+      proximoSlotMs: AGORA_RECONCILE_MS + HORIZONTE_SUBANUNCIO_RECONCILE_LI_MS + 60_000,
+    });
+    const m = mundo();
+    expect((await encadear(db, m)).at(-1)).toEqual({ kind: 'encerrado' });
+    expect(m.estoque.enviadas).toHaveLength(150);
+    expect(reservas(db)).toHaveLength(2);
+    expect(
+      m.log.linhas.filter((l) => l.nivel === 'error' && l.msg.endsWith('a fila entra atrás dele')),
+    ).toHaveLength(1);
+    expect(db.ler(CAMINHO_RUN_RECONCILE_LI)?.contadores).toMatchObject({ filaSaturada: 1 });
   });
 });
 
 describe('the queue phase’s failures', () => {
+  it('⚠️ a row the strict parse refuses (ZodError) LEAVES the list, counted recusadosFila — it would refuse on every attempt; the others go and the run ends', async () => {
+    const estoque = filaEstoqueGravadora({
+      falhar: (t) => ((t as TarefaEstoqueLi).produtoId === 'p11' ? new ZodError([]) : null),
+    });
+    const db = emFila([
+      { c: 0, i: '10', p: 'p10', d: 5 },
+      { c: 0, i: '11', p: 'p11', d: 4 },
+      { c: 1, i: '30', p: 'p30', d: 3 },
+    ]);
+    const m = mundo({ estoque });
+    // A clock that moves on every read: a row that never left the list would end each slice on
+    // the budget instead of spinning inside it, and the chain would never end.
+    const resultados = [];
+    let seq = 5;
+    for (let n = 0; n < 40; n += 1) {
+      const r = await despacharReconcileEstoqueLi(
+        asDb(db),
+        tarefa(seq),
+        m.deps({
+          inicioMs: m.relogio.agora,
+          agoraMs: () => (m.relogio.agora += 100),
+        }),
+      );
+      resultados.push(r);
+      if (r.kind !== 'continua') break;
+      seq = r.seq;
+    }
+    expect(resultados.at(-1)).toEqual({ kind: 'encerrado' });
+    expect(estoque.enviadas.map((e) => (e.tarefa as TarefaEstoqueLi).produtoId)).toEqual([
+      'p10',
+      'p30',
+    ]);
+    expect(db.ler(CAMINHO_RUN_RECONCILE_LI)).toMatchObject({
+      candidatos: [],
+      contadores: { c0RecusadosFila: 1, c0Enfileirados: 1, c1Enfileirados: 1 },
+    });
+  });
+
   it('a transient Cloud Tasks failure: the batch finishes, the slice checkpoints what landed at the SAME seq, then rethrows; the retry sends only the rest', async () => {
     let falhar = true;
     const estoque = filaEstoqueGravadora({

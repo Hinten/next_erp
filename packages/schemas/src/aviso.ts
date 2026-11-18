@@ -1399,10 +1399,11 @@ export const TIPO_AVISO_LABELS = {
  *    list (`sem-linha-na-loja`), a link whose ERP produto no longer exists
  *    (`ausente`), two stock records at the conta's depósito neither of which is
  *    the canonical one (`estoque-ambiguo`), and the reconcile's safety gate: more
- *    than 5% of the conta's linked children have a stock record elsewhere but
- *    none at the conta's depósito, so the run sent NOTHING for that conta
- *    (`deposito-sem-registros`; the count is those children, the sample their
- *    produtos).
+ *    than 5% of the conta's EVALUATED children (the linked, non-parity children
+ *    whose own record feeds the quantity; held ones count here only) have a
+ *    stock record elsewhere but none at the conta's depósito, so the run sent
+ *    NOTHING for that conta (`deposito-sem-registros`; the count is those
+ *    children, the sample their produtos).
  *
  *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId, entidade: motivo })`
  *    — one row per (conta, motivo).

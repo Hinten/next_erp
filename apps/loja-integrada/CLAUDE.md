@@ -881,7 +881,9 @@ lands with the rest of step 12; this is the send run and its queue.
 - **Order of a run, every skip BEFORE the write context:** strict parse, the valve
   (`iniciarEscritaLi(FLUXO_LI.estoque)`, `off` = zero reads), the cap
   `LOJA_INTEGRADA_ESTOQUE_MAX` from `ambiente` (unset/blank = none; only a canonical positive
-  integer; anything else refuses every run, zero reads), the conta and its depósito, the masked
+  integer; anything else refuses every run, zero reads), the conta and its depósito (a reconcile
+  send's `depositoId` must be it: a cached copy naming another is evicted and read once more, and a
+  conta still naming another drops the send, `deposito-mudou` — PR 12-g), the masked
   produto + its where-less links, the link-only plan (`planoDosVinculosEstoqueLi`: a link skip
   reads no stock record), the records (a canonical `estoqueId` hint by id only when it IS
   `makeEstoqueUid(produto, depósito)` at the depósito — never a delete's, whose hint names the
@@ -1025,9 +1027,12 @@ the store's stock list (`li`), the sends (`fila`), the avisos (`fim`).
   `reconciliarEstoque.ts` (`onSchedule('23 4 * * *')`, America/Sao_Paulo, `retryCount: 3`),
   `depsReconcileEstoque.ts`, the `estoque-reconcile` arm of `filaLeitura.ts` and the producer root in
   `agendador.ts`.
-- **The nightly start reads NOTHING**: valve `off` ⇒ nothing; read switch not exactly `on` ⇒ nothing
-  (one INFO); else ONE task `estoque-reconcile-<AAAAMMDD>` seq 0 (the SCHEDULE TIME's São Paulo date,
-  so a Scheduler retry collides); a transient enqueue failure rethrows for the Scheduler's retry.
+- **The nightly start reads NOTHING**: valve `off` ⇒ nothing; else ONE task
+  `estoque-reconcile-<AAAAMMDD>` seq 0 (the SCHEDULE TIME's São Paulo date, so a Scheduler retry
+  collides); a transient enqueue failure rethrows for the Scheduler's retry. The read switch is NOT
+  read (the approved design): with it off the run's ERP side still rebuilds the snapshot and the
+  kits map every night — the stock trigger's eager kit sends and zero-crossing fan-out read that map
+  (no header ⇒ `nenhum`) — and every store phase stops at the switch.
 - **One chain for every conta**, slices on the reads queue: payload, valve, cap (zero reads each),
   then the run document `reconcileEstoqueLojaIntegrada/atual` decides (`executar` same run + seq with
   the lease held; `continuacao` one seq behind ⇒ the stored seq re-enqueued at 60 s; a new run only
@@ -1051,7 +1056,10 @@ the store's stock list (`li`), the sends (`fila`), the avisos (`fim`).
   run's reader, generalised: canonical ids by `getAll`, the join, the own-collection query, 20 at a
   time), the plan, the never-had-stock listing only on `consultar-estoques`. Two produtos on one
   store id meet in the snapshot ⇒ `dup` (an `x` never counts as a produto). A store kit's entry
-  carries its composition (`q`, `e`), so the kits map is written from the snapshot alone.
+  carries its composition (`q`, `e`), so the kits map is written from the snapshot alone. The
+  RUN's read-path counters (`erpProdutosLidos`, `erpCanonicosAchados`/`Ausentes`, `erpJuncoes`,
+  `erpConsultasProprias`, `erpListagensSemEstoque`; the records reader's `aoContar` sink) say
+  which path each produto took — the end line carries them, for the staging measurement.
 - **The kits map** per conta, bounded and resumable (`execucao.mapa`): components in id order, one
   batch per unit with each component's header AND shards (the 12-f reader's `completa` holds when
   it lands), then the sweep of every header and shard of another run (listings projected to
@@ -1081,7 +1089,10 @@ the store's stock list (`li`), the sends (`fila`), the avisos (`fim`).
   5xx, the deadline, the network, a malformed envelope, a paging stop, Firestore ⇒ a progress
   checkpoint at the SAME seq, then the original error rethrown (the retry resumes at the failed
   page) — on the queue's last attempt that conta is ended instead (one ERROR) and the chain goes
-  on; a 404 on the list and anything else stay loud. The candidates live in the run document under a
+  on; a DETERMINISTIC refusal of the conta's request (a 404 or another 3xx/4xx on the list, a
+  `LiConfigError`) ends that conta on EVERY attempt (one ERROR `recusa-da-loja`, counted) — ONE
+  chain serves every conta, so a rethrow would stop every conta after it, every night; a coding bug
+  stays loud. The candidates live in the run document under a
   600 000-byte budget (one per conta and store id; when full, the lowest `d` goes first).
 - **The safety gate** (once, at the queue phase's start, in EVERY valve mode): a conta whose
   `zeroPorDeposito × 100 > 5 × avaliados` — more than 5% of its evaluated children have a record
@@ -1092,11 +1103,12 @@ the store's stock list (`li`), the sends (`fila`), the avisos (`fim`).
 - **The queue phase** (`fila`): a valve not exactly `on` ⇒ NOTHING enqueued, no slot write, ONE
   summary INFO line per conta (the per-candidate lines are the store phase's), the list cleared.
   Under `on`: the contas read again UNCACHED (before each slice too) — a conta gone, inactive or
-  whose depósito moved since the take loses its candidates (ONE WARNING); the canary by the send
+  whose depósito moved since the take loses its candidates (ONE WARNING), and one re-pointed at
+  ANOTHER depósito (not left with none) is recorded for the release's re-run; the canary by the send
   run's own `decidirAlvo`; the list SORTED once, over-advertising first. Then batches of ≤ 100 of
   ONE kind: ONE reservation of exactly the batch's size on the global slot (`reservarSlotGlobalEstoqueLi`,
   whose read is now MASKED to `proximoSlotMs`), each `estoque` send (`origem: reconcile`, ids only, a
-  kit's `estoqueIds` from its entry's `e`) named by the RUN's window and scheduled at exactly its
+  kit's `estoqueIds` from its entry's `e`, and the run's `depositoId` for the conta) named by the RUN's window and scheduled at exactly its
   instant (`agendadorEstoque.ts`'s header carries the naming proof; the `adiar` rule makes the
   window unique per run). A batch that does not over-advertise reserves only instants within 12 h
   (`ateHorizonteMs`, the slot's own horizon constant) and the rest is DEFERRED to the next night
@@ -1113,20 +1125,38 @@ the store's stock list (`li`), the sends (`fila`), the avisos (`fim`).
   (count, sample) and no aviso read. `ultimoReconcile` (the conta's counters, prefix off) and the
   cursor cleared, in the slice's batch (through the loaded state when the slice holds it, so the
   root is written once). A conta gone gets nothing; an inactive or re-pointed one gets no aviso.
-  Then the release; and when a conta's depósito moved meanwhile, ONE full run
-  `estoque-reconcile-redeposito-<µs>` enqueued after it (a failure is one line, never a rethrow).
+  Then the release: its slice first LISTS the contas once more — an active conta whose depósito is
+  not the one the run fixed, or an active conta with one that the run did not take (never a conta
+  created during the run and not written since) — and stores what it found in the release patch's
+  counters (`depositoMudouEmUs`, with the queue phase's own record); AFTER the release lands, ONE
+  full run `estoque-reconcile-redeposito-<µs>` is enqueued (a failure is one line, never a
+  rethrow). A release that landed behind an error is repaired by the retry: the same run, one `seq`
+  behind a RELEASED lease ⇒ `revisao` (ask again from the stored counter, nothing else). The reads
+  queue's one-at-a-time dispatch keeps any arm run out of the gap between the listing and the
+  release.
 - **The depósito-change arm** of `onIntegracaoLojaIntegradaChanged`: an UPDATE of a Loja Integrada
   conta whose folded depósito becomes another one (none → D included) and the valve not `off` ⇒ ONE
   named first slice (`estoque-reconcile-deposito-<µs of the write>`), zero reads, no read-switch
   check (that is how the ERP side runs before the window). Never on a create, a spelling change, a
   removal, an inactive conta. A run holding the lease refuses it; the running chain catches the
-  change itself (above): worst case the rest of that chain plus one full run, and never a send
-  computed at the old depósito.
+  change itself (above): worst case the rest of that chain plus one full run. A chain that ends
+  abandoned asks only for what its counter holds, and the change otherwise waits for the next night.
+  Sends already queued are bound to their run's depósito: the send run drops one whose conta names
+  another (`deposito-mudou`), after one read past the conta cache; within that cache's 15 minutes a
+  re-point a warm instance has not seen still sends at the old depósito (every send run's staleness).
 - **Last attempt**: a retryable failure (Firestore, Cloud Tasks, the concurrency error) releases the
   lease with ONE ERROR `tentativas-esgotadas`, or hands off when the run is already one seq ahead
-  (with our delay when the stored document holds OUR end patch); coding bugs stay loud.
+  (with our delay when the stored document holds OUR end patch), or asks again for the re-run when
+  our release already landed; coding bugs stay loud — rethrown — but release the lease first with
+  ONE ERROR `falha-nao-retentavel` (the class only), so no deterministic failure holds it for an
+  hour. Every last-attempt release asks for the re-run its counter names.
 - **Amendments to the 12-a contracts** (in `packages/schemas`): the root's `execucao`, a kit entry's
-  `q`/`e`, the walk's `concluida`. Bare schemas: both rulesets regenerate with a zero diff. The
+  `q`/`e`, the walk's `concluida`; the write protocol (every per-conta write rides the run
+  document's batch and precondition — a root under its own read, a kits header or shard `set` or
+  deleted with no precondition of its own, the single lease holder's); the `revisao` decision; and
+  the stock send payload's `depositoId`, EXACTLY on `origem: reconcile` (producer and consumer are
+  one codebase, and no reconcile send existed before it). Bare schemas: both rulesets regenerate
+  with a zero diff. The
   store phase needs no further field: whether a conta's list is complete, the confirmations made
   and the pauses taken are the run document's per-conta counters (`c<idx>ListaCompleta`, …), which
   the take resets with the run.

@@ -34,12 +34,24 @@
  * ## A change that lands while a run holds the lease
  *
  * The new run's first slice meets the running chain and is refused (`ocupado`,
- * `execucaoReconcile.ts`). The running chain then catches it itself: its queue phase reads every
- * conta again before each slice and sends nothing for a conta whose depósito is no longer the one
- * it fixed, and its end phase, after the release, enqueues ONE full run named after the conta's
- * update time (`fimReconcile.ts`). Worst case: the rest of the running chain plus one full run —
- * never a send computed at the old depósito. The send runs themselves always read the conta's
- * CURRENT depósito.
+ * `execucaoReconcile.ts`). The running chain then catches it itself (`contasReconcile.ts`, "Does a
+ * depósito change ask for a new full run?"): its queue phase reads every conta again before each
+ * slice and drops what is left for a conta whose depósito is no longer the one it fixed, and the
+ * slice that releases LISTS the contas once more — a conta it did not take included, a conta
+ * created during the run excluded — and, after the release, enqueues ONE full run named after the
+ * newest conta update time it saw. Worst case: the rest of the running chain plus one full run.
+ * The reads queue dispatches one task at a time, so no arm run slips between that listing and the
+ * release. Residuals: a chain that ends ABANDONED (the queue's attempts spent, or a crash that
+ * leaves its lease to expire) asks only for what its queue phase recorded, and a change undone
+ * before the release that the queue phase never saw asks for nothing — each waits for the next
+ * nightly run.
+ *
+ * Sends already enqueued are covered by the payload: every reconcile send carries its run's
+ * depósito, and the send run drops one whose conta now names another (`processarEstoque.ts`, step
+ * 4, after one read past the conta cache when the cached copy differs). Within the cache's 15
+ * minutes a re-point a warm instance has not seen yet still sends at the old depósito — the
+ * staleness every send run has — and the change's own run, scheduled behind those sends on the
+ * global slot, sends last.
  *
  * Next-free, no `db`: nothing here touches Firestore.
  */

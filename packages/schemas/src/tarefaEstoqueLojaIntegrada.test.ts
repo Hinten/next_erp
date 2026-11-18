@@ -141,6 +141,21 @@ describe('tarefaEstoqueLiSchema (one send run)', () => {
     expect(tarefaEstoqueLiSchema.safeParse({ ...deriva, geracao: 2 }).success).toBe(false);
   });
 
+  it('⚠️ PR 12-g amendment: a depósito is carried EXACTLY by a reconcile send — an id, never a quantity', () => {
+    const reconcile = { ...ESTOQUE, origem: ORIGEM_TAREFA_ESTOQUE_LI.reconcile, depositoId: 'd1' };
+    expect(tarefaEstoqueLiSchema.parse(reconcile)).toEqual(reconcile);
+    // NEAR-MISS: a reconcile send without its depósito (absent or null) would be sent wherever the
+    // conta now points; any other origin reads the conta's depósito when it runs.
+    const { depositoId: _semDeposito, ...semDeposito } = reconcile;
+    expect(tarefaEstoqueLiSchema.safeParse(semDeposito).success).toBe(false);
+    expect(tarefaEstoqueLiSchema.safeParse({ ...reconcile, depositoId: null }).success).toBe(false);
+    expect(tarefaEstoqueLiSchema.safeParse({ ...ESTOQUE, depositoId: 'd1' }).success).toBe(false);
+    expect(tarefaEstoqueLiSchema.safeParse({ ...ESTOQUE, depositoId: null }).success).toBe(true);
+    for (const depositoId of ['', 'a/b', '..', 5]) {
+      expect(tarefaEstoqueLiSchema.safeParse({ ...reconcile, depositoId }).success).toBe(false);
+    }
+  });
+
   it('the window is a non-negative safe integer', () => {
     for (const janela of [-1, 1.5, Number.NaN, 2 ** 53, '30000000']) {
       expect(tarefaEstoqueLiSchema.safeParse({ ...ESTOQUE, janela }).success, String(janela)).toBe(

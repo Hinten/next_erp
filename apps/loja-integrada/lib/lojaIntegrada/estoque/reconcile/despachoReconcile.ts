@@ -14,7 +14,8 @@
  *     applies it, and every send would refuse it).
  *  4. The run document, and the decision (`execucaoReconcile.ts`): `nada`, `ocupado` (one INFO
  *     line), `adiar` (a retryable throw), `continuacao` (the named successor re-enqueued at 60 s,
- *     nothing else), `assumir` — the active Loja Integrada contas with a depósito, in the listing's
+ *     nothing else), `revisao` (the depósito re-run asked for again from the stored counter,
+ *     nothing else: the repair of a release that landed behind an error), `assumir` — the active Loja Integrada contas with a depósito, in the listing's
  *     order (an active one with none: one WARNING), each one's depósito fixed in its root; with
  *     none the run is released at once (`sem-contas`, one INFO line) — then `executar`.
  *  5. The PHASE MACHINE, one unit at a time while its worst case fits the budget
@@ -37,9 +38,13 @@
  *  6. ONE end-of-slice checkpoint: the run document (`seq + 1`, the lease extended, or released at
  *     `fim`) and every per-conta document the slice changed, in ONE batch; then the NAMED
  *     continuation `(execucaoId, seq + 1)`, 2 s later — 60 s after a 429 PAUSE of the store
- *     phase. After the release, when a conta's depósito moved while the run ran
- *     (`fimReconcile.ts`), ONE new full run is enqueued at once (`estoque-reconcile-redeposito-<µs>`,
- *     seq 0); its failure is ONE line, never a rethrow (the run is already released).
+ *     phase. The slice that releases first LISTS the contas once more (`fimReconcile.ts`, "At the
+ *     release"; the queue phase may have recorded a change too) and stores what it found in the
+ *     release patch's counters; AFTER the release lands, when a depósito change asks for it, ONE
+ *     new full run is enqueued at once (`estoque-reconcile-redeposito-<µs>`, seq 0) — after, so
+ *     its first slice never meets this run's lease. Its failure is ONE line, never a rethrow (the
+ *     run is already released); a release that landed behind an error is repaired by the retry's
+ *     `revisao`. A run released on the queue's last attempt asks for what its counter holds too.
  *
  * ## Failures (root rule 6) — each narrowed to its class
  *
@@ -62,7 +67,11 @@
  *    run still at this `seq` is released with ONE ERROR `tentativas-esgotadas` (the next night
  *    starts over: no store phase ever runs on a half-built snapshot); a run ONE `seq` ahead is
  *    handed off — with this slice's own delay when the stored document holds ITS end-of-slice
- *    patch, else as a courtesy at the conservative 60 s. Coding bugs stay loud on every attempt.
+ *    patch, else as a courtesy at the conservative 60 s; a run this slice already RELEASED asks
+ *    again for its depósito re-run. Coding bugs stay loud on every attempt — rethrown, never
+ *    swallowed — but on the LAST attempt the lease is released first with ONE ERROR
+ *    `falha-nao-retentavel` (the error's class only), so one deterministic failure never holds
+ *    the lease for an hour and refuses every run in it.
  *
  * Every line carries ids and counts only. ⚠️ Never name the Admin SDK's multi-document
  * read-and-write call here — not even in a comment (`estrutura.test.ts`).
@@ -124,7 +133,8 @@ import {
 import { avaliarPaginaErpLi } from './faseErp';
 import { FaseLiReconcileLi } from './faseLi';
 import { FilaReconcileLi } from './filaReconcile';
-import { CONTADOR_DEPOSITO_MUDOU_LI, FimReconcileLi, idExecucaoRedepositoLi } from './fimReconcile';
+import { CONTADOR_DEPOSITO_MUDOU_LI, idExecucaoRedepositoLi } from './contasReconcile';
+import { FimReconcileLi } from './fimReconcile';
 import {
   type MapaKitsMontadoLi,
   histogramaDeKitsLi,
@@ -194,6 +204,8 @@ export type ResultadoReconcileLi =
   | { readonly kind: 'ocupado' }
   /** The named successor was re-enqueued (the repair). */
   | { readonly kind: 'continuacao'; readonly seq: number }
+  /** A released run's depósito re-run was asked for again (the release's repair). */
+  | { readonly kind: 'revisao' }
   /** The slice ran and handed off to `seq`. */
   | { readonly kind: 'continua'; readonly fase: FaseReconcileEstoqueLi; readonly seq: number }
   /** The run reached its end and released the lease. */
@@ -311,6 +323,13 @@ export async function despacharReconcileEstoqueLi(
         throw new LiReconcileEstoqueAdiadoError(tarefa.execucaoId);
       case 'continuacao':
         return repararContinuacao(db, tarefa, lido, decisao.seq, deps);
+      case 'revisao':
+        await pedirRevisaoDeDepositoLi(
+          lido.run?.contadores[CONTADOR_DEPOSITO_MUDOU_LI] ?? 0,
+          tarefa,
+          deps,
+        );
+        return { kind: 'revisao' };
       case 'executar':
         if (lido.versao === null) return { kind: 'nada' };
         estado = {
@@ -364,9 +383,67 @@ export async function despacharReconcileEstoqueLi(
   try {
     return await executarSliceLi(db, tarefa, estado, deps, rastro, valvula);
   } catch (err) {
-    if (deps.tentativa < TASK_MAX_ATTEMPTS - 1 || !retentavel(err)) throw err;
+    if (deps.tentativa < TASK_MAX_ATTEMPTS - 1) throw err;
+    if (!retentavel(err)) {
+      // Loud — rethrown — but never left holding the lease (module header, "Failures").
+      await liberarAntesDeFalharLi(db, tarefa, err, deps);
+      throw err;
+    }
     return encerrarNaUltimaTentativaLi(db, tarefa, rastro, deps);
   }
+}
+
+/**
+ * The queue's LAST attempt failed with an error no retry could change (module header,
+ * "Failures"): a run still at this slice's `seq` with the lease held is released with ONE ERROR,
+ * the error's class only, and asks for its depósito re-run. The caller rethrows the ORIGINAL error
+ * whatever happens here; a Firestore failure of this release, or another writer winning it, is
+ * left to the lease's expiry.
+ */
+async function liberarAntesDeFalharLi(
+  db: Firestore,
+  tarefa: TarefaReconcileEstoqueLi,
+  err: unknown,
+  deps: DepsReconcileEstoqueLi,
+): Promise<void> {
+  try {
+    const relido = await lerRunReconcileLi(db);
+    const run = relido.run;
+    if (
+      run === null ||
+      relido.versao === null ||
+      run.execucaoId !== tarefa.execucaoId ||
+      run.seq !== tarefa.seq ||
+      run.emExecucaoAteMs === 0
+    ) {
+      return;
+    }
+    deps.logger.error(`${TAG} falha na última tentativa — a execução solta a vez`, {
+      execucaoId: tarefa.execucaoId,
+      seq: tarefa.seq,
+      fase: run.fase,
+      motivo: 'falha-nao-retentavel',
+      classe: classeDoErroLi(err),
+    });
+    const estado: EstadoEscritaReconcileLi = {
+      execucaoId: tarefa.execucaoId,
+      seq: run.seq,
+      versaoRun: relido.versao,
+      runEsperado: relido.dados,
+    };
+    await liberar(db, estado, run.seq);
+    await pedirRevisaoDeDepositoLi(run.contadores[CONTADOR_DEPOSITO_MUDOU_LI] ?? 0, tarefa, deps);
+  } catch (falha) {
+    if (isGrpcStatusError(falha) || falha instanceof LiReconcileEstoqueConcorrenteError) return;
+    throw falha;
+  }
+}
+
+/** The class name of a failure, for its log line (never its message). */
+function classeDoErroLi(err: unknown): string | null {
+  if (typeof err !== 'object' || err === null) return null;
+  const nome: unknown = Reflect.get(err, 'name');
+  return typeof nome === 'string' && nome.length <= 100 ? nome : null;
 }
 
 /** The run as this slice left it, parsed (a bug if it does not parse: every write was checked). */
@@ -395,6 +472,9 @@ async function executarSliceLi(
   const contadores: Record<string, number> = { ...run.contadores };
   const contar = (nome: string, n = 1): void => {
     if (n !== 0) contadores[nome] = (contadores[nome] ?? 0) + n;
+  };
+  const registrarMaximo = (nome: string, n: number): void => {
+    if (n > (contadores[nome] ?? 0)) contadores[nome] = n;
   };
   const candidatos = new ListaCandidatosReconcileLi(run.candidatos, deps.orcamentoBytesCandidatos);
 
@@ -467,6 +547,7 @@ async function executarSliceLi(
       orcamento,
       contar,
       contador: (nome) => contadores[nome] ?? 0,
+      registrarMaximo,
       estadoDe,
     });
     return fila;
@@ -484,9 +565,6 @@ async function executarSliceLi(
       valvula,
       orcamento,
       contadores: () => contadores,
-      registrarMaximo: (nome, n) => {
-        contadores[nome] = Math.max(contadores[nome] ?? 0, n);
-      },
       escritas: escritasDoFim,
       estadoCarregado: (contaId) => estados.get(contaId),
     });
@@ -513,7 +591,9 @@ async function executarSliceLi(
           walk?.ultimoDocPath ?? null,
           deps.tamanhoPaginaCaminhada ?? TAMANHO_PAGINA_CAMINHADA_LI,
         );
-        const porConta = await avaliarPaginaErpLi(db, pagina.grupos, contas, estados);
+        const global = new Map<string, number>();
+        const porConta = await avaliarPaginaErpLi(db, pagina.grupos, contas, estados, { global });
+        for (const [nome, n] of global) contar(nome, n);
         for (const conta of contas) {
           for (const [nome, n] of porConta.get(conta.contaId) ?? []) {
             contar(nomeDoContadorDaContaLi(conta.idx, nome), n);
@@ -626,6 +706,9 @@ async function executarSliceLi(
     final = true;
     break;
   }
+
+  // The release's check (module header, step 6): stored in the release patch's counters.
+  if (final) registrarMaximo(CONTADOR_DEPOSITO_MUDOU_LI, await fimDoSlice().revisaoDeDeposito());
 
   // 6. The end-of-slice checkpoint: per-conta documents first when they exceed one batch.
   const escritas = [...[...estados.values()].flatMap((e) => e.escritas()), ...escritasDoFim];
@@ -894,13 +977,14 @@ async function encerrarNaUltimaTentativaLi(
 ): Promise<ResultadoReconcileLi> {
   const relido = await lerRunReconcileLi(db);
   const run = relido.run;
-  if (
-    run === null ||
-    relido.versao === null ||
-    run.execucaoId !== tarefa.execucaoId ||
-    run.emExecucaoAteMs === 0
-  ) {
+  if (run === null || relido.versao === null || run.execucaoId !== tarefa.execucaoId) {
     return { kind: 'parado' };
+  }
+  if (run.emExecucaoAteMs === 0) {
+    // OUR release landed behind the error: what it asked for is asked again (the `revisao` repair).
+    if (run.seq !== tarefa.seq + 1) return { kind: 'parado' };
+    await pedirRevisaoDeDepositoLi(run.contadores[CONTADOR_DEPOSITO_MUDOU_LI] ?? 0, tarefa, deps);
+    return { kind: 'revisao' };
   }
   const estado: EstadoEscritaReconcileLi = {
     execucaoId: tarefa.execucaoId,
@@ -916,6 +1000,7 @@ async function encerrarNaUltimaTentativaLi(
       motivo: 'tentativas-esgotadas',
     });
     await liberar(db, estado, run.seq);
+    await pedirRevisaoDeDepositoLi(run.contadores[CONTADOR_DEPOSITO_MUDOU_LI] ?? 0, tarefa, deps);
     return { kind: 'tentativas-esgotadas' };
   }
   if (run.seq !== tarefa.seq + 1) return { kind: 'parado' };

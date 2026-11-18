@@ -24,7 +24,10 @@
  *     candidate in every mode.
  *  3. Under `on`: every conta is read again, uncached (`contasReconcile.ts`): a conta gone,
  *     inactive, or whose depósito is no longer the one the run fixed is the wrong conta for this
- *     snapshot ⇒ its candidates dropped (ONE WARNING, counted); then the canary, per target, by the
+ *     snapshot ⇒ its candidates dropped (ONE WARNING, counted) — and a conta re-pointed at ANOTHER
+ *     depósito (not one left with none) is remembered, so the run asks for a new full run after its
+ *     release (`CONTADOR_DEPOSITO_MUDOU_LI`): those sends are lost to this run even if the change is
+ *     undone before its end; then the canary, per target, by the
  *     send run's own pure decision (`decidirAlvo` on `<conta>:<store id>`): a target the send run
  *     would only dry-run is not worth a store GET (counted `foraDoCanario`); then the list SORTED
  *     once (`ordenarCandidatosEstoqueLi`: OVER-ADVERTISING first, `d` descending) and stored.
@@ -36,10 +39,16 @@
  * 0`) or not — and:
  *
  *  - **ONE reservation of exactly its size** on the global slot (`reservarSlotGlobalEstoqueLi`),
- *    so the slot advances by `m × 17 s` for `m` sends and never holds instants nothing used (only
- *    a batch cut short by a failure leaves a gap, and only of its failed sends: latency, never
- *    load). Never double-booked: the reservation queues behind the stored slot, the kit fan-out's
- *    included;
+ *    so the slot advances by `m × 17 s` for `m` sends. Never double-booked: the reservation queues
+ *    behind the stored slot, the kit fan-out's included. Instants nothing uses are latency, never
+ *    load, and come from two cases: a batch cut short by a failure (its failed sends), and a slice
+ *    whose end checkpoint does not land, or that dies after its batches — the shortened list is
+ *    persisted only at the end of the slice, so the retry runs from the stored list, every send
+ *    re-meets its own name, and every batch reserves its instants AGAIN: up to one slice's batches
+ *    (≈ 2 × 100 × 17 s ≈ 57 min of slot) per lost checkpoint, which delays every later bulk send
+ *    (the fan-out's zero-crossing kits included) and eats into the 12 h horizon below. Persisting
+ *    the list after every batch would close it at one run-document write (up to 600 KB) per batch;
+ *    the measurement on Enterprise decides;
  *  - **the backlog horizon**: a batch that is NOT over-advertising reserves only the instants at
  *    or before `now +` {@link HORIZONTE_SUBANUNCIO_RECONCILE_LI_MS} (the slot's own 12 h backlog
  *    horizon, the SAME constant); the rows past it are DEFERRED (counted `adiadosHorizonte`, never
@@ -99,8 +108,10 @@ import {
 } from '../slotEstoqueLi';
 import type { ListaCandidatosReconcileLi } from './candidatosReconcile';
 import {
+  CONTADOR_DEPOSITO_MUDOU_LI,
   type ContaRevistaLi,
   type IndisponibilidadeContaLi,
+  depositoQuePedeRevisaoLi,
   indisponibilidadeDaContaLi,
   reverContasDoRunLi,
 } from './contasReconcile';
@@ -170,6 +181,8 @@ export interface ArgsFilaReconcileLi {
   readonly contar: (nome: string, n?: number) => void;
   /** A run counter's current value (the stored name). */
   readonly contador: (nome: string) => number;
+  /** Sets a run counter to `max(stored, n)` (the stored name). */
+  readonly registrarMaximo: (nome: string, n: number) => void;
   /** The conta's state, loaded once per slice; `null` = another run's (the slice stops). */
   readonly estadoDe: (conta: {
     readonly idx: number;
@@ -280,7 +293,8 @@ export class FilaReconcileLi {
   /**
    * The contas read again (module header, "One unit"): each conta that still has candidates and is
    * no longer the run's — gone, inactive, its depósito moved — loses them (ONE WARNING per conta
-   * per run). Returns the indexes so blocked.
+   * per run); a conta re-pointed at another depósito asks for a new full run after the release
+   * (module header). Returns the indexes so blocked.
    */
   private async revisar(): Promise<Map<number, IndisponibilidadeContaLi>> {
     const lista = this.args.candidatos.lista();
@@ -289,12 +303,12 @@ export class FilaReconcileLi {
     const bloqueadas = new Map<number, IndisponibilidadeContaLi>();
     for (const idx of comCandidatos) {
       const estado = await this.estado(idx);
-      const motivo = indisponibilidadeDaContaLi(
-        this.revistas.get(estado.conta.contaId),
-        estado.conta.depositoId,
-      );
+      const revista = this.revistas.get(estado.conta.contaId);
+      const motivo = indisponibilidadeDaContaLi(revista, estado.conta.depositoId);
       if (motivo === null) continue;
       bloqueadas.set(idx, motivo);
+      const revisao = depositoQuePedeRevisaoLi(revista, estado.conta.depositoId, 0);
+      if (revisao > 0) this.args.registrarMaximo(CONTADOR_DEPOSITO_MUDOU_LI, revisao);
       if (this.daConta(idx, 'contaIndisponivel') === 0) {
         this.contarDaConta(idx, 'contaIndisponivel');
         this.args.deps.logger.warn(`${TAG} conta mudou durante a execução — nada dela é enviado`, {
@@ -407,6 +421,9 @@ export class FilaReconcileLi {
       apagado: false,
       estoqueIds: kit,
       geracao: 0,
+      // The depósito this run diffed the conta at: the send run drops the send when the conta now
+      // names another (`processarEstoque.ts`, step 4).
+      depositoId: estado.conta.depositoId,
     };
   }
 

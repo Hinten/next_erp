@@ -37,6 +37,14 @@
  * are pushed the depósito's real 0 (sampled under `deposito-sem-registros`, the gate's aviso). A
  * depósito misconfigured for the conta shows as a large share of the second in the first. Children
  * held because they never had stock count in `avaliados` only: they are never pushed.
+ *
+ * And the RUN's (`opcoes.global`, per depósito read, not per conta): what each read path cost —
+ * the masked produtos read (`erpProdutosLidos`), the canonical records found and not found by id
+ * (`erpCanonicosAchados`, `erpCanonicosAusentes`), the group joins (`erpJuncoes`), the
+ * own-collection fallbacks (`erpConsultasProprias`) and the never-had-stock listings
+ * (`erpListagensSemEstoque`). Whether a corpus takes the one-point-read path or the
+ * NOT_FOUND + join + own query + listing path per produto is what decides a night's reads, so the
+ * end line and the staging measurement need them.
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import {
@@ -53,6 +61,8 @@ import {
 } from '@delfrance/schemas';
 
 import {
+  CONTAGEM_REGISTROS_NO_DEPOSITO_LI,
+  type ContagemRegistrosNoDepositoLi,
   componentesQueLimitamLi,
   emParaleloLi,
   lerProdutosEstoqueLi,
@@ -76,6 +86,14 @@ export const CONCURRENCIA_LEITURAS_ERP_LI = 20;
 
 /** A conta's counters of one page, unprefixed (module header). */
 export type ContadoresErpLi = Map<string, number>;
+
+/** The RUN's counter each read path of the records reader adds to (module header). */
+const CONTADOR_GLOBAL_DO_REGISTRO: Readonly<Record<ContagemRegistrosNoDepositoLi, string>> = {
+  [CONTAGEM_REGISTROS_NO_DEPOSITO_LI.canonicosAchados]: 'erpCanonicosAchados',
+  [CONTAGEM_REGISTROS_NO_DEPOSITO_LI.canonicosAusentes]: 'erpCanonicosAusentes',
+  [CONTAGEM_REGISTROS_NO_DEPOSITO_LI.juncoes]: 'erpJuncoes',
+  [CONTAGEM_REGISTROS_NO_DEPOSITO_LI.consultasProprias]: 'erpConsultasProprias',
+};
 
 function somar(contadores: ContadoresErpLi, nome: string, n = 1): void {
   if (n === 0) return;
@@ -147,9 +165,14 @@ export async function avaliarPaginaErpLi(
   grupos: readonly GrupoDeVinculosLi[],
   contas: readonly ContaDoRunLi[],
   estados: ReadonlyMap<string, EstadoContaReconcileLi>,
-  opcoes: { readonly concorrencia?: number } = {},
+  opcoes: {
+    readonly concorrencia?: number;
+    /** The RUN's read-path counters of the page are added here (module header). */
+    readonly global?: ContadoresErpLi;
+  } = {},
 ): Promise<Map<string, ContadoresErpLi>> {
   const concorrencia = opcoes.concorrencia ?? CONCURRENCIA_LEITURAS_ERP_LI;
+  const global = opcoes.global ?? new Map<string, number>();
   const contadores = new Map<string, ContadoresErpLi>(contas.map((c) => [c.contaId, new Map()]));
   const estadoDe = (conta: ContaDoRunLi): EstadoContaReconcileLi => {
     const estado = estados.get(conta.contaId);
@@ -204,10 +227,9 @@ export async function avaliarPaginaErpLi(
   if (vinculados.length === 0) return contadores;
 
   // 2. The produtos, masked.
-  const produtos = await lerProdutosEstoqueLi(
-    db,
-    vinculados.map((v) => v.produtoId),
-  );
+  const aLerProdutos = vinculados.map((v) => v.produtoId);
+  const produtos = await lerProdutosEstoqueLi(db, aLerProdutos);
+  somar(global, 'erpProdutosLidos', new Set(aLerProdutos).size);
 
   // 3. Parity, and what each depósito must read.
   const aLer = new Map<string, Set<string>>();
@@ -245,7 +267,12 @@ export async function avaliarPaginaErpLi(
       lista,
       depositoId,
       Object.fromEntries(lista.map((id) => [id, makeEstoqueUid(id, depositoId)])),
-      { concorrencia },
+      {
+        concorrencia,
+        aoContar: (nome, n) => {
+          somar(global, CONTADOR_GLOBAL_DO_REGISTRO[nome], n);
+        },
+      },
     );
     porDeposito.set(depositoId, agruparPorDono(registros));
   }
@@ -280,6 +307,7 @@ export async function avaliarPaginaErpLi(
       entradas.filter((x) => x.plano.tipo === 'consultar-estoques').map((x) => x.v.produtoId),
     ),
   ];
+  somar(global, 'erpListagensSemEstoque', aConsultar.length);
   const consultados = await emParaleloLi(aConsultar, concorrencia, (produtoId) =>
     temEstoqueEmQualquerDepositoLi(db, produtoId),
   );

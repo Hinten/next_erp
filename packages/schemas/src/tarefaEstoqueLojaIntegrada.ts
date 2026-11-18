@@ -99,7 +99,14 @@ const janelaSchema = z.number().int().nonnegative();
  *    rather than holding the produto as one that never had stock;
  *  - `estoqueIds`: for a kit, each component → its stock record id at the depósito (or `null`),
  *    so the run point-reads them; `null` otherwise;
- *  - `geracao`: 1 exactly for a `deriva` follow-up, which never enqueues another — the loop cap.
+ *  - `geracao`: 1 exactly for a `deriva` follow-up, which never enqueues another — the loop cap;
+ *  - `depositoId` (PR 12-g amendment): EXACTLY a `reconcile` send carries it — the bare id of the
+ *    depósito its run diffed the conta at (an id, never a quantity). The send run drops a send whose
+ *    conta now names another depósito (`processarEstoque.ts`, step 4): a reconcile send waits up to
+ *    the slot's horizon, and a re-point in between must never push numbers computed elsewhere.
+ *    Every other origin leaves it absent (or `null`): they read the conta's depósito when they run.
+ *    The producer and the consumer are ONE functions codebase, deployed together, and no reconcile
+ *    send existed before this field — so the strict rule above loses no task in flight.
  */
 export const tarefaEstoqueLiSchema = z
   .strictObject({
@@ -114,10 +121,15 @@ export const tarefaEstoqueLiSchema = z
       .record(idDocumentoEstoqueLiSchema, idDocumentoEstoqueLiSchema.nullable())
       .nullable(),
     geracao: z.union([z.literal(0), z.literal(1)]),
+    depositoId: idDocumentoEstoqueLiSchema.nullable().optional(),
   })
   .refine((t) => (t.geracao === 1) === (t.origem === ORIGEM_TAREFA_ESTOQUE_LI.deriva), {
     path: ['geracao'],
     message: 'geracao 1 é exatamente a da deriva',
+  })
+  .refine((t) => (t.depositoId != null) === (t.origem === ORIGEM_TAREFA_ESTOQUE_LI.reconcile), {
+    path: ['depositoId'],
+    message: 'depositoId é exatamente o do reconcile',
   });
 export type TarefaEstoqueLi = z.infer<typeof tarefaEstoqueLiSchema>;
 

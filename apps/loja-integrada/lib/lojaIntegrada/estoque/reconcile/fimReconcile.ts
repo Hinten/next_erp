@@ -11,10 +11,16 @@
  * GONE (or no longer a Loja Integrada one) gets nothing: no root write, no aviso — the expiry
  * sweep's orphan pass closes its rows. A conta inactive, or whose depósito moved since the take,
  * gets its `ultimoReconcile` but NO aviso: the run's findings are about a conta that is not the one
- * it now is. A moved depósito is also remembered (`depositoMudouEmUs`: the conta document's update
- * time), and after the release the slice enqueues ONE full run named after it
- * (`estoque-reconcile-redeposito-<µs>`), because the depósito-change trigger's own run met this
- * one's lease and was refused.
+ * it now is.
+ *
+ * ## At the release ({@link FimReconcileLi.revisaoDeDeposito})
+ *
+ * Once, in the slice that releases the lease, the contas are LISTED again
+ * (`revisaoDeDepositoNaLiberacaoLi`, `contasReconcile.ts`): an active conta whose depósito is not
+ * the one the run fixed in its root — or an active conta with a depósito the run did not take —
+ * asks for ONE new full run after the release (`estoque-reconcile-redeposito-<µs>`), because the
+ * depósito-change trigger's own run met this one's lease and was refused. The roots read for the
+ * end phase give the depósitos the run fixed; the listing is the release's only extra read.
  *
  * ## The avisos — only under `on`, and only for a conta the valve is live for
  *
@@ -74,9 +80,9 @@ import { agoraUsDe, relogioDoEnvioDeEstoqueUs } from '../../avisos/avisos';
 import { type ValvulaLi, valvulaLigadaParaContaLi } from '../../core/valvulas';
 import {
   type ContaRevistaLi,
-  INDISPONIBILIDADE_CONTA_LI,
   indisponibilidadeDaContaLi,
   reverContasDoRunLi,
+  revisaoDeDepositoNaLiberacaoLi,
 } from './contasReconcile';
 import type { EscritaSincLi } from './execucaoReconcile';
 import { type OrcamentoReconcileLi, UNIDADE_RECONCILE_LI } from './orcamentoReconcile';
@@ -86,14 +92,6 @@ const TAG = '[loja-integrada/estoque] reconcile';
 
 /** The motivo every machine resolution of the reconcile's avisos is stamped with. */
 export const MOTIVO_RESOLUCAO_RECONCILE_LI = 'conferencia-sem-casos';
-
-/** The run counter that remembers a moved depósito (module header, "Which conta"). */
-export const CONTADOR_DEPOSITO_MUDOU_LI = 'depositoMudouEmUs';
-
-/** The id of the full run a moved depósito asks for, after this one (module header). */
-export function idExecucaoRedepositoLi(versaoUs: number): string {
-  return `estoque-reconcile-redeposito-${String(versaoUs)}`;
-}
 
 /**
  * The conta's counters of the run, the prefix `c<idx>` taken off (module header). Pure. Only a
@@ -201,8 +199,6 @@ export interface ArgsFimReconcileLi {
   readonly orcamento: OrcamentoReconcileLi;
   /** The run's counters as they stand. */
   readonly contadores: () => Readonly<Record<string, number>>;
-  /** Sets a run counter to `max(stored, n)` (the stored name). */
-  readonly registrarMaximo: (nome: string, n: number) => void;
   /** Where the conta roots' writes go: the slice's end-of-slice batch. */
   readonly escritas: EscritaSincLi[];
   /**
@@ -267,9 +263,6 @@ export class FimReconcileLi {
     if (!execucao.success || execucao.data.execucaoId !== execucaoId) return { tipo: 'parado' };
 
     const indisponivel = indisponibilidadeDaContaLi(revista, execucao.data.depositoId);
-    if (indisponivel === INDISPONIBILIDADE_CONTA_LI.depositoMudou && revista.versaoUs !== null) {
-      this.args.registrarMaximo(CONTADOR_DEPOSITO_MUDOU_LI, revista.versaoUs);
-    }
     const contadores = contadoresDaContaLi(this.args.contadores(), idx);
     const casos = casosDoFimLi(contadores);
     const ligada = indisponivel === null && valvulaLigadaParaContaLi(this.args.valvula, contaId);
@@ -308,6 +301,27 @@ export class FimReconcileLi {
       });
     }
     return { tipo: 'unidade' };
+  }
+
+  /**
+   * The release's check (module header, "At the release"): the µs a depósito change asks a new
+   * full run by, `0` for none. The depósitos the run fixed come from the roots this phase read.
+   */
+  async revisaoDeDeposito(): Promise<number> {
+    const { raizes } = await this.lidos();
+    const fixados = new Map<string, string>();
+    for (const [contaId, snap] of raizes) {
+      if (!snap.exists) continue;
+      const raiz = sincEstoqueLojaIntegradaCollection.parseRead(snap.data() ?? {});
+      const execucao = execucaoContaEstoqueLiSchema.safeParse(raiz.execucao);
+      if (execucao.success && execucao.data.execucaoId === this.args.execucaoId) {
+        fixados.set(contaId, execucao.data.depositoId);
+      }
+    }
+    return revisaoDeDepositoNaLiberacaoLi(this.args.db, {
+      fixados,
+      runIniciadoEmMs: this.args.runIniciadoEmMs,
+    });
   }
 
   /** One row: raised on a count, resolved (when open) on none, untouched when not decidable. */

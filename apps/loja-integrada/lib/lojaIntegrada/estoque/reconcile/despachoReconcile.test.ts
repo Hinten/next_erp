@@ -288,6 +288,19 @@ describe('a whole run — the ERP phase, the kits map, the release', () => {
       c0Pais: 1,
       c1Validos: 1,
     });
+    // The RUN's read-path counters (the staging measurement): six child produtos read masked; the
+    // canonical record of every own child and of both kit components found by id (a1, a2, d1, z9,
+    // blank, print at dep-1; b1 at dep-2) — so no join and no own-collection query was needed; no
+    // never-had-stock listing.
+    expect(run.contadores).toMatchObject({ erpProdutosLidos: 6, erpCanonicosAchados: 7 });
+    for (const nome of [
+      'erpCanonicosAusentes',
+      'erpJuncoes',
+      'erpConsultasProprias',
+      'erpListagensSemEstoque',
+    ]) {
+      expect(run.contadores, nome).not.toHaveProperty(nome);
+    }
     // C3 (no depósito) warned once; C4 (inactive) silently out.
     expect(m.log.linhas.filter((l) => l.nivel === 'warn').map((l) => l.meta.contaId)).toEqual([
       'C3',
@@ -357,7 +370,7 @@ describe('a whole run — the ERP phase, the kits map, the release', () => {
 });
 
 describe('a slice and the other writers of the run document', () => {
-  it('⚠️ the kit fan-out writes the slot between the slice’s read and its end checkpoint: the checkpoint lands and the slot is kept', async () => {
+  it('⚠️ the kit fan-out writes the slot between the take and the kits map’s first batch, at a FROZEN clock: every batch of the slice still lands (every patch moves the lease past the stored one), the slot is kept', async () => {
     const db = new FakeDb();
     semearCatalogo(db);
     db.seed(RUN_PATH, { proximoSlotMs: AGORA_RECONCILE_MS + 1 });
@@ -376,6 +389,47 @@ describe('a slice and the other writers of the run document', () => {
       proximoSlotMs: AGORA_RECONCILE_MS + 77_000,
       fase: 'fim',
     });
+    // ⚠️ The kits map's batch the fan-out raced landed whole: with the clock frozen its lease patch
+    // would EQUAL the take's, and a re-read that finds the patch already there reads as "our batch
+    // landed" — its headers would be lost for the night.
+    expect(db.ler('sincEstoqueLojaIntegrada/C1/kits/blank')).toMatchObject({
+      execucaoId: RUN_A,
+      F: 1,
+    });
+    expect(db.ler('sincEstoqueLojaIntegrada/C1/kits/print')).toMatchObject({
+      execucaoId: RUN_A,
+      F: 1,
+    });
+    expect(db.ler('sincEstoqueLojaIntegrada/C1/kits/velho')).toBeUndefined();
+  });
+
+  it('⚠️ a run document whose SLOT is off its schema (a hand edit) is taken over, and its next slice RUNS: the slot is never part of the run’s parse', async () => {
+    const db = new FakeDb();
+    semearCatalogo(db);
+    db.seed(RUN_PATH, {
+      execucaoId: RUN_B,
+      iniciadoEmMs: AGORA_RECONCILE_MS - 86_400_000,
+      emExecucaoAteMs: 0,
+      seq: 9,
+      fase: 'fim',
+      contas: [],
+      proximoSlotMs: 'x',
+    });
+    const m = mundo();
+    // The first slice only takes the lease (no budget left for a unit).
+    const r1 = await despacharReconcileEstoqueLi(
+      asDb(db),
+      tarefa(0),
+      m.deps({ inicioMs: m.relogio.agora - 50_001 }),
+    );
+    expect(r1).toEqual({ kind: 'continua', fase: 'erp', seq: 1 });
+    expect(m.log.linhas.filter((l) => l.nivel === 'error')).toEqual([]);
+    m.relogio.agora += 2_000;
+    const r2 = await despacharReconcileEstoqueLi(asDb(db), tarefa(1), m.deps());
+    expect(r2.kind).not.toBe('nada');
+    expect(r2).toEqual({ kind: 'encerrado' });
+    // The slice never writes the slot: the hand edit is still there for a person to clear.
+    expect(db.ler(RUN_PATH)).toMatchObject({ proximoSlotMs: 'x', execucaoId: RUN_A });
   });
 
   it('another run takes the lease mid-slice: the slice stops (parado) — no hand-off, nothing more of it written', async () => {
@@ -460,7 +514,7 @@ describe('the queue’s LAST attempt', () => {
     ]);
   });
 
-  it('⚠️ NEAR-MISS: a coding bug stays loud on the last attempt too (nothing released)', async () => {
+  it('⚠️ a coding bug stays LOUD on the last attempt (rethrown), but never holds the lease for the hour: released with ONE ERROR falha-nao-retentavel (its class only); NEAR-MISS: before the last attempt nothing is released', async () => {
     const db = new FakeDb();
     semearCatalogo(db);
     db.falharConsulta('produtolojaintegrada', new TypeError('bug'));
@@ -469,12 +523,34 @@ describe('the queue’s LAST attempt', () => {
       despacharReconcileEstoqueLi(
         asDb(db),
         tarefa(0),
-        m.deps({ tentativa: TASK_MAX_ATTEMPTS - 1 }),
+        m.deps({ tentativa: TASK_MAX_ATTEMPTS - 2 }),
       ),
     ).rejects.toBeInstanceOf(TypeError);
     expect(db.ler(RUN_PATH)).toMatchObject({
+      seq: 0,
       emExecucaoAteMs: AGORA_RECONCILE_MS + LEASE_RECONCILE_ESTOQUE_LI_MS,
     });
+    expect(m.log.linhas.filter((l) => l.nivel === 'error')).toEqual([]);
+
+    await expect(
+      despacharReconcileEstoqueLi(
+        asDb(db),
+        tarefa(0),
+        m.deps({ tentativa: TASK_MAX_ATTEMPTS - 1 }),
+      ),
+    ).rejects.toBeInstanceOf(TypeError);
+    expect(db.ler(RUN_PATH)).toMatchObject({ seq: 1, emExecucaoAteMs: 0 });
+    expect(
+      m.log.linhas
+        .filter((l) => l.nivel === 'error')
+        .map((l) => [l.meta.motivo, l.meta.classe, l.meta.seq]),
+    ).toEqual([['falha-nao-retentavel', 'TypeError', 0]]);
+    // The next run takes the free lease at once.
+    m.relogio.agora += 120_000;
+    db.falharConsulta('produtolojaintegrada', null);
+    expect((await despacharReconcileEstoqueLi(asDb(db), tarefa(0, RUN_B), m.deps())).kind).not.toBe(
+      'ocupado',
+    );
   });
 
   it('our end checkpoint LANDED behind an error: the last attempt hands off with OUR delay, never releases', async () => {

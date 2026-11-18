@@ -18,7 +18,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-const LIGADO = { LOJA_INTEGRADA_MODO_ESTOQUE: 'dry-run', LOJA_INTEGRADA_CHAMADAS: 'on' };
+const LIGADO = { LOJA_INTEGRADA_MODO_ESTOQUE: 'dry-run' };
 /** 04:23 in São Paulo on 2026-11-19 (UTC−3). */
 const TICK = '2026-11-19T07:23:00Z';
 const RELOGIO = Date.UTC(2027, 5, 1, 12, 0, 0);
@@ -84,14 +84,16 @@ describe('agendarReconcileEstoqueLi', () => {
     }
   });
 
-  it('⚠️ NEAR-MISS: the read switch not EXACTLY on does nothing either — one INFO line, no producer', async () => {
-    for (const chave of [undefined, 'off', 'ON', 'on ']) {
-      const ambiente: Record<string, string> = { LOJA_INTEGRADA_MODO_ESTOQUE: 'on' };
+  it('⚠️ the read switch is NOT read: off, unset or a typo still enqueues the ONE run (its ERP phase rebuilds the kits map; its store phase stops at the switch)', async () => {
+    for (const chave of [undefined, 'off', 'ON', 'on ', 'on']) {
+      const ambiente: Record<string, string> = { LOJA_INTEGRADA_MODO_ESTOQUE: 'dry-run' };
       if (chave !== undefined) ambiente.LOJA_INTEGRADA_CHAMADAS = chave;
       const x = rodar(ambiente, TICK);
-      expect(await x.r).toEqual({ kind: 'chamadas-desligadas' });
-      expect(x.construir).not.toHaveBeenCalled();
-      expect(x.log.linhas.map((l) => l.nivel)).toEqual(['info']);
+      expect(await x.r).toEqual({ kind: 'enfileirado', execucaoId: 'estoque-reconcile-20261119' });
+      expect(x.fila.enfileirados).toEqual([
+        { execucaoId: 'estoque-reconcile-20261119', seq: 0, atrasoS: 0 },
+      ]);
+      expect(x.log.linhas.filter((l) => l.nivel !== 'info')).toEqual([]);
     }
   });
 

@@ -321,7 +321,32 @@ export interface OpcoesRegistrosNoDepositoLi {
    * one after another, the send run's order). The daily reconcile reads a whole walk page so.
    */
   readonly concorrencia?: number;
+  /**
+   * Told what each path of the read cost — the daily reconcile's measurement (its ERP side's
+   * fallbacks are what decide a night's reads): {@link CONTAGEM_REGISTROS_NO_DEPOSITO_LI}'s names,
+   * each with a count, a name that counted 0 never told. Absent: nothing is told.
+   */
+  readonly aoContar?: (nome: ContagemRegistrosNoDepositoLi, n: number) => void;
 }
+
+/** What {@link OpcoesRegistrosNoDepositoLi.aoContar} is told, one name per path of the read. */
+export type ContagemRegistrosNoDepositoLi =
+  | 'canonicosAchados'
+  | 'canonicosAusentes'
+  | 'juncoes'
+  | 'consultasProprias';
+
+/** Named members of {@link ContagemRegistrosNoDepositoLi}. */
+export const CONTAGEM_REGISTROS_NO_DEPOSITO_LI = {
+  /** Canonical ids read by the `getAll` that came back as a record at the depósito. */
+  canonicosAchados: 'canonicosAchados',
+  /** Canonical ids read by the `getAll` that did not (absent, or at another depósito). */
+  canonicosAusentes: 'canonicosAusentes',
+  /** Group-join queries (slices × stored forms). */
+  juncoes: 'juncoes',
+  /** Own-collection queries (one per produto whose canonical record is still unread). */
+  consultasProprias: 'consultasProprias',
+} as const satisfies Record<string, ContagemRegistrosNoDepositoLi>;
 
 /**
  * EVERY record of the given produtos at the conta's depósito — the read
@@ -344,6 +369,9 @@ export async function lerRegistrosNoDepositoLi(
   const componentes = [...new Set(produtoIds)];
   if (componentes.length === 0) return [];
   const concorrencia = opcoes.concorrencia ?? 1;
+  const contar = (nome: ContagemRegistrosNoDepositoLi, n: number): void => {
+    if (n > 0) opcoes.aoContar?.(nome, n);
+  };
   const estoqueIds = idsConhecidos;
   const formas = formasDoDepositoLi(depositoId);
   const porDono = new Map<string, Map<string, DocEstoqueLi>>();
@@ -367,12 +395,16 @@ export async function lerRegistrosNoDepositoLi(
         estoqueCollection.docRef(db, { produtoId: c }, makeEstoqueUid(c, depositoId)),
       ),
     );
+    let achados = 0;
     for (const snap of snaps) {
       const dados = snap.exists ? snap.data() : undefined;
       if (dados !== undefined && registroNoDepositoLi(dados, formas)) {
         guardar({ caminho: snap.ref.path, dados }, todos);
+        achados += 1;
       }
     }
+    contar(CONTAGEM_REGISTROS_NO_DEPOSITO_LI.canonicosAchados, achados);
+    contar(CONTAGEM_REGISTROS_NO_DEPOSITO_LI.canonicosAusentes, snaps.length - achados);
   }
 
   // 2. The group join, per stored form, for the components still missing.
@@ -381,6 +413,7 @@ export async function lerRegistrosNoDepositoLi(
   const juncoes = emFatias(semRegistro()).flatMap((fatia) =>
     formas.map((forma) => ({ fatia, forma })),
   );
+  contar(CONTAGEM_REGISTROS_NO_DEPOSITO_LI.juncoes, juncoes.length);
   const respostas = await emParaleloLi(juncoes, concorrencia, ({ fatia, forma }) =>
     estoqueCollection
       .groupQuery(db)
@@ -407,6 +440,7 @@ export async function lerRegistrosNoDepositoLi(
     );
   };
   const semCanonico = componentes.filter((c) => !temCanonico(c));
+  contar(CONTAGEM_REGISTROS_NO_DEPOSITO_LI.consultasProprias, semCanonico.length);
   const proprios = await emParaleloLi(semCanonico, concorrencia, (componente) =>
     lerEstoqueNoDepositoPorConsultaLi(db, componente, formas),
   );

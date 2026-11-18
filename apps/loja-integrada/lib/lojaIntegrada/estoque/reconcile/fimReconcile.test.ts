@@ -4,9 +4,13 @@
  * the valve is live for, clocked by the run's start; a dry-run reads and writes no aviso and says
  * the counts as info lines; `sem-linha-na-loja` decided only after a whole list and a full
  * confirmation; `ultimoReconcile` with the conta's counters; a gone conta gets nothing; the lease
- * released. Against `testing/fakeDb.ts`. No Loja Integrada call: `fetch` throws.
+ * released; the end spread over two slices under the budget; and the release's ONE question — does
+ * a depósito change ask for a new full run? — asked of the contas LISTED again, the run enqueued
+ * only AFTER the release lands, and repaired when the release landed behind an error. Against
+ * `testing/fakeDb.ts`. No Loja Integrada call: `fetch` throws.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { TASK_MAX_ATTEMPTS } from '@delfrance/data/admin/notifications';
 import {
   MOTIVO_ESTOQUE_VINCULO_LI,
   TIPO_AVISO,
@@ -14,9 +18,9 @@ import {
   chaveDeAviso,
 } from '@delfrance/schemas';
 
-import { relogioDoEnvioDeEstoqueUs } from '../../avisos/avisos';
+import { relogioDoDocumentoUs, relogioDoEnvioDeEstoqueUs } from '../../avisos/avisos';
 import { CANARIO_ENV_LI, VALVULA_ENV_LI } from '../../core/valvulas';
-import { FakeDb, asDb } from '../../testing/fakeDb';
+import { FakeDb, asDb, grpc } from '../../testing/fakeDb';
 import {
   AGORA_RECONCILE_MS,
   CAMINHO_RUN_RECONCILE_LI,
@@ -29,13 +33,9 @@ import {
   seedContaComDeposito,
   seedRunNaFaseLi,
 } from '../../testing/reconcileEstoqueLi';
+import { CONTADOR_DEPOSITO_MUDOU_LI, idExecucaoRedepositoLi } from './contasReconcile';
 import { type DepsReconcileEstoqueLi, despacharReconcileEstoqueLi } from './despachoReconcile';
-import {
-  MOTIVO_RESOLUCAO_RECONCILE_LI,
-  casosDoFimLi,
-  contadoresDaContaLi,
-  idExecucaoRedepositoLi,
-} from './fimReconcile';
+import { MOTIVO_RESOLUCAO_RECONCILE_LI, casosDoFimLi, contadoresDaContaLi } from './fimReconcile';
 
 beforeEach(() => {
   vi.stubGlobal('fetch', () => {
@@ -75,15 +75,20 @@ function emFim(
   return db;
 }
 
-function deps(
-  o: { readonly modo?: string; readonly canario?: string } = {},
-): ReturnType<typeof montar> {
+interface OpcoesMundoFim {
+  readonly modo?: string;
+  readonly canario?: string;
+  /** Called at each reads-queue enqueue (`agendadorGravador`'s probe). */
+  readonly sonda?: () => unknown;
+}
+
+function deps(o: OpcoesMundoFim = {}): ReturnType<typeof montar> {
   return montar(o);
 }
 
-function montar(o: { readonly modo?: string; readonly canario?: string }) {
+function montar(o: OpcoesMundoFim) {
   const log = loggerGravador();
-  const fila = agendadorGravador();
+  const fila = agendadorGravador(undefined, o.sonda);
   const d: DepsReconcileEstoqueLi = {
     ambiente: {
       [VALVULA_ENV_LI.estoque]: o.modo ?? 'on',
@@ -314,14 +319,196 @@ describe('no aviso unless the valve is live for the conta', () => {
     expect(db.ler(`avisos/${chaveSemErp('C2')}`)).toMatchObject({ params: { produtos: 1 } });
   });
 
-  it('a conta whose depósito moved gets no aviso, and after the release ONE full run is enqueued, named by the conta’s update time', async () => {
+  it('a conta deactivated after the store phase gets its ultimoReconcile but NO aviso, and asks for no re-run', async () => {
+    const db = emFim({ c0Retidos: 1 });
+    seedContaComDeposito(db, 'C1', refDeposito('dep-1'), { nome: 'Loja Um', ativo: false });
+    const { d, fila } = deps();
+    expect(await despacharReconcileEstoqueLi(asDb(db), tarefa(5), d)).toEqual({
+      kind: 'encerrado',
+    });
+    expect(avisosLidos(db).some((l) => l.includes(':C1'))).toBe(false);
+    expect(db.ler('sincEstoqueLojaIntegrada/C1')?.ultimoReconcile).toMatchObject({
+      execucaoId: RUN_A,
+    });
+    expect(fila.enfileirados).toEqual([]);
+  });
+});
+
+/** µs of the stored conta's last write: what names the depósito re-run. */
+const versaoDaConta = (db: FakeDb, contaId: string): number => {
+  const carimbo = db.carimboDe(`integracao/${contaId}`);
+  if (carimbo === undefined) throw new Error(`integracao/${contaId} ausente`);
+  return relogioDoDocumentoUs(carimbo);
+};
+
+describe('the release asks for ONE new full run when a depósito change needs it', () => {
+  it('⚠️ a conta re-pointed while the run held the lease: no aviso; the contas LISTED again at the release; ONE run named by THAT conta’s update time, enqueued only AFTER the release landed', async () => {
     const db = emFim({ c0Retidos: 1 });
     seedContaComDeposito(db, 'C1', refDeposito('dep-9'), { nome: 'Loja Um' });
-    const { d, fila } = deps();
+    const { d, fila } = deps({ sonda: () => db.ler(CAMINHO_RUN_RECONCILE_LI)?.emExecucaoAteMs });
     const r = await despacharReconcileEstoqueLi(asDb(db), tarefa(5), d);
     expect(r).toEqual({ kind: 'encerrado' });
     expect(db.ler(`avisos/${chaveSemErp('C1')}`)).toBeUndefined();
-    expect(fila.enfileirados).toHaveLength(1);
-    expect(fila.enfileirados[0]?.execucaoId).toMatch(/^estoque-reconcile-redeposito-\d+$/);
+    const versao = versaoDaConta(db, 'C1');
+    expect(fila.enfileirados).toEqual([
+      { execucaoId: idExecucaoRedepositoLi(versao), seq: 0, atrasoS: 0 },
+    ]);
+    // Enqueued with the lease ALREADY released: its first slice never meets this run's lease.
+    expect(fila.sondados).toEqual([0]);
+    expect(db.ler(CAMINHO_RUN_RECONCILE_LI)?.contadores).toMatchObject({
+      [CONTADOR_DEPOSITO_MUDOU_LI]: versao,
+    });
+    // ONE listing of the contas (the take's own query) — the release's only extra query.
+    expect(db.consultas.filter((c) => c.colecao === 'integracao')).toHaveLength(1);
+  });
+
+  it('⚠️ NEAR-MISS: a depósito REMOVED (D1 → none) asks for nothing — the arm’s own rule: nothing to send to; the other spelling of one depósito is no change either', async () => {
+    const db = emFim({});
+    seedContaComDeposito(db, 'C1', null, { nome: 'Loja Um' });
+    seedContaComDeposito(db, 'C2', 'depositos/dep-2', { nome: 'Loja Dois' });
+    const { d, fila } = deps();
+    expect(await despacharReconcileEstoqueLi(asDb(db), tarefa(5), d)).toEqual({
+      kind: 'encerrado',
+    });
+    expect(fila.enfileirados).toEqual([]);
+    expect(db.ler(CAMINHO_RUN_RECONCILE_LI)?.contadores).not.toHaveProperty(
+      CONTADOR_DEPOSITO_MUDOU_LI,
+    );
+  });
+
+  it('⚠️ a conta the run did NOT take (no depósito at the take) given one meanwhile asks for the run too; an inactive one does not', async () => {
+    const db = emFim({});
+    seedContaComDeposito(db, 'C3', refDeposito('dep-3'), { nome: 'Loja Tres' });
+    seedContaComDeposito(db, 'C5', refDeposito('dep-5'), { nome: 'Loja Cinco', ativo: false });
+    const { d, fila } = deps();
+    await despacharReconcileEstoqueLi(asDb(db), tarefa(5), d);
+    expect(fila.enfileirados).toEqual([
+      { execucaoId: idExecucaoRedepositoLi(versaoDaConta(db, 'C3')), seq: 0, atrasoS: 0 },
+    ]);
+    // Only the suspect is read again by id (its stamps), never the inactive one.
+    expect(db.leituras.filter((l) => l === 'integracao/C5')).toEqual([]);
+  });
+
+  it('⚠️ NEAR-MISS: a conta CREATED during the run with a depósito and never written since asks for nothing (the arm never fires on a create); one written after its create does', async () => {
+    const db = new FakeDb();
+    // The run started before every stamp this fake issues.
+    const inicio = Math.floor(relogioDoDocumentoUs(db.seed('marco/inicio', {})) / 1000);
+    seedContaComDeposito(db, 'C1', refDeposito('dep-1'), { nome: 'Loja Um' });
+    seedContaComDeposito(db, 'C2', refDeposito('dep-2'), { nome: 'Loja Dois' });
+    seedRunNaFaseLi(
+      db,
+      [
+        { contaId: 'C1', depositoId: 'dep-1' },
+        { contaId: 'C2', depositoId: 'dep-2' },
+      ],
+      { fase: 'fim', idxConta: 0, iniciadoEmMs: inicio },
+    );
+    seedContaComDeposito(db, 'C3', refDeposito('dep-3'), { nome: 'Nova' });
+    const { d, fila } = deps();
+    await despacharReconcileEstoqueLi(asDb(db), tarefa(5), d);
+    expect(fila.enfileirados).toEqual([]);
+
+    const db2 = new FakeDb();
+    const inicio2 = Math.floor(relogioDoDocumentoUs(db2.seed('marco/inicio', {})) / 1000);
+    seedContaComDeposito(db2, 'C1', refDeposito('dep-1'), { nome: 'Loja Um' });
+    seedContaComDeposito(db2, 'C2', refDeposito('dep-2'), { nome: 'Loja Dois' });
+    seedRunNaFaseLi(
+      db2,
+      [
+        { contaId: 'C1', depositoId: 'dep-1' },
+        { contaId: 'C2', depositoId: 'dep-2' },
+      ],
+      { fase: 'fim', idxConta: 0, iniciadoEmMs: inicio2 },
+    );
+    seedContaComDeposito(db2, 'C3', null, { nome: 'Nova' });
+    seedContaComDeposito(db2, 'C3', refDeposito('dep-3'), { nome: 'Nova' });
+    const m2 = deps();
+    await despacharReconcileEstoqueLi(asDb(db2), tarefa(5), m2.d);
+    expect(m2.fila.enfileirados).toEqual([
+      { execucaoId: idExecucaoRedepositoLi(versaoDaConta(db2, 'C3')), seq: 0, atrasoS: 0 },
+    ]);
+  });
+
+  it('⚠️ the end spread over TWO slices: the budget stops after C1; C1 is re-pointed between the slices and the arm’s own run is refused (ocupado); the release still asks for ONE run, named by C1’s update time', async () => {
+    const db = emFim({ c0Retidos: 1, c1Retidos: 1 });
+    const relogio = { agora: AGORA_RECONCILE_MS };
+    const base = deps({ modo: 'dry-run' });
+    // C1's end logs its one line; then the clock is past the end unit's budget (50 000 ms).
+    const logger = {
+      ...base.log.logger,
+      info: (msg: string, meta?: Record<string, unknown>) => {
+        base.log.logger.info(msg, meta);
+        if (msg.endsWith('achado da conta (sem aviso)') && meta?.contaId === 'C1') {
+          relogio.agora += 50_001;
+        }
+      },
+    };
+    const d = (): DepsReconcileEstoqueLi => ({
+      ...base.d,
+      agoraMs: () => relogio.agora,
+      inicioMs: relogio.agora,
+      logger,
+    });
+
+    const r1 = await despacharReconcileEstoqueLi(asDb(db), tarefa(5), d());
+    expect(r1).toEqual({ kind: 'continua', fase: 'fim', seq: 6 });
+    expect(db.ler(CAMINHO_RUN_RECONCILE_LI)).toMatchObject({ fase: 'fim', idxConta: 1, seq: 6 });
+    expect(db.ler('sincEstoqueLojaIntegrada/C1')?.ultimoReconcile).toMatchObject({
+      execucaoId: RUN_A,
+    });
+    expect(db.ler('sincEstoqueLojaIntegrada/C2')?.ultimoReconcile).toBeNull();
+
+    seedContaComDeposito(db, 'C1', refDeposito('dep-9'), { nome: 'Loja Um' });
+    relogio.agora += 2_000;
+    expect(
+      await despacharReconcileEstoqueLi(
+        asDb(db),
+        {
+          tipo: TIPO_TAREFA_RECONCILE_ESTOQUE_LI,
+          execucaoId: 'estoque-reconcile-deposito-1',
+          seq: 0,
+        },
+        d(),
+      ),
+    ).toEqual({ kind: 'ocupado' });
+
+    expect(await despacharReconcileEstoqueLi(asDb(db), tarefa(6), d())).toEqual({
+      kind: 'encerrado',
+    });
+    expect(base.fila.enfileirados).toEqual([
+      { execucaoId: RUN_A, seq: 6, atrasoS: 2 },
+      { execucaoId: idExecucaoRedepositoLi(versaoDaConta(db, 'C1')), seq: 0, atrasoS: 0 },
+    ]);
+  });
+
+  it('⚠️ a release that LANDED behind a DEADLINE_EXCEEDED: the retry asks again (revisao) — on the queue’s last attempt too', async () => {
+    for (const ultima of [false, true]) {
+      const db = emFim({});
+      seedContaComDeposito(db, 'C1', refDeposito('dep-9'), { nome: 'Loja Um' });
+      const { d, fila } = deps();
+      db.respostaPerdidaNaProximaEscrita(CAMINHO_RUN_RECONCILE_LI, grpc(4, 'DEADLINE_EXCEEDED'));
+      const esperado = [
+        { execucaoId: idExecucaoRedepositoLi(versaoDaConta(db, 'C1')), seq: 0, atrasoS: 0 },
+      ];
+      if (ultima) {
+        expect(
+          await despacharReconcileEstoqueLi(asDb(db), tarefa(5), {
+            ...d,
+            tentativa: TASK_MAX_ATTEMPTS - 1,
+          }),
+        ).toEqual({ kind: 'revisao' });
+        expect(fila.enfileirados).toEqual(esperado);
+        continue;
+      }
+      await expect(despacharReconcileEstoqueLi(asDb(db), tarefa(5), d)).rejects.toMatchObject({
+        code: 4,
+      });
+      expect(db.ler(CAMINHO_RUN_RECONCILE_LI)).toMatchObject({ emExecucaoAteMs: 0, seq: 6 });
+      expect(fila.enfileirados).toEqual([]);
+      expect(
+        await despacharReconcileEstoqueLi(asDb(db), tarefa(5), { ...d, tentativa: 1 }),
+      ).toEqual({ kind: 'revisao' });
+      expect(fila.enfileirados).toEqual(esperado);
+    }
   });
 });

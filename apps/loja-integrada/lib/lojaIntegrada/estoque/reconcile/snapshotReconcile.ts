@@ -50,6 +50,7 @@ import {
   FLAG_ENTRADA_ESTOQUE_LI,
   ID_PAIS_SNAPSHOT_ESTOQUE_LI,
   MAX_AMOSTRA_AVISO_ESTOQUE_LI,
+  MOTIVO_AMOSTRA_ESTOQUE_LI,
   type MotivoAmostraEstoqueLi,
   type ReconcileContaEstoqueLi,
   type UltimoReconcileEstoqueLi,
@@ -209,7 +210,7 @@ export class EstadoContaReconcileLi {
     const { entrada, duplicados } = mesclarEntradaSnapshotLi(balde.e.get(idLi), parsed);
     balde.e.set(idLi, entrada);
     balde.sujo = true;
-    if (duplicados.length > 0) this.amostrar('duplicado', duplicados);
+    if (duplicados.length > 0) this.amostrar(MOTIVO_AMOSTRA_ESTOQUE_LI.duplicado, duplicados);
     return duplicados;
   }
 

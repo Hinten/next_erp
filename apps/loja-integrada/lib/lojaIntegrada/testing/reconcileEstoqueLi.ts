@@ -108,18 +108,29 @@ export interface EnfileiradoReconcileLi {
   readonly atrasoS: number;
 }
 
-/** A reads-queue producer that records, or rejects with `falha` when given. */
-export function agendadorGravador(falha?: () => unknown): {
+/**
+ * A reads-queue producer that records, or rejects with `falha` when given. `sonda`, when given, is
+ * called at EACH enqueue and its answer kept in `sondados` (same order as `enfileirados`): what
+ * the world looked like at that instant — the run document's lease, say.
+ */
+export function agendadorGravador(
+  falha?: () => unknown,
+  sonda?: () => unknown,
+): {
   readonly agendador: AgendadorReconcileEstoqueLi;
   readonly enfileirados: EnfileiradoReconcileLi[];
+  readonly sondados: unknown[];
 } {
   const enfileirados: EnfileiradoReconcileLi[] = [];
+  const sondados: unknown[] = [];
   return {
     enfileirados,
+    sondados,
     agendador: {
       async enfileirar(tarefa, { atrasoS }) {
         if (falha !== undefined) throw falha();
         enfileirados.push({ execucaoId: tarefa.execucaoId, seq: tarefa.seq, atrasoS });
+        if (sonda !== undefined) sondados.push(sonda());
       },
     },
   };
