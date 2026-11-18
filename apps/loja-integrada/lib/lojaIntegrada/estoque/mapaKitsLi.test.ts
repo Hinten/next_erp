@@ -157,6 +157,19 @@ describe('lerFatiasKitsLi', () => {
     expect(await lerFatiasKitsLi(asDb(db3), 'a', 'p', cab)).toMatchObject({ completa: false });
   });
 
+  it('a kit repeated across shards keeps the FIRST shard’s copy (counted as repeated); ⚠️ NEAR-MISS: the later shard’s other quantity is not taken', async () => {
+    const db = new FakeDb();
+    db.seed(fatiaPath('a', 'p~0'), { execucaoId: EXEC, kits: { k1: { i: '1', q: { p: 1 } } } });
+    db.seed(fatiaPath('a', 'p~1'), {
+      execucaoId: EXEC,
+      kits: { k1: { i: '9', q: { p: 5 } }, k2: { i: '2', q: { p: 2 } } },
+    });
+    const lidas = await lerFatiasKitsLi(asDb(db), 'a', 'p', cab);
+    expect(lidas.kits.k1).toEqual({ i: '1', q: { p: 1 } });
+    expect(lidas.kits.k2).toEqual({ i: '2', q: { p: 2 } });
+    expect(lidas).toMatchObject({ repetidos: 1, completa: false });
+  });
+
   it('a header promising no shard reads nothing', async () => {
     const db = new FakeDb();
     const lidas = await lerFatiasKitsLi(asDb(db), 'a', 'p', { execucaoId: EXEC, F: 1, fatias: 0 });

@@ -20,6 +20,7 @@ import {
   type TarefaEstoqueKitsLi,
   type TarefaEstoqueLi,
   type TarefaFilaEstoqueLi,
+  tarefaEstoqueLiSchema,
 } from '@delfrance/schemas';
 
 import { __setRelogioDoCacheParaTestes } from '../core/contaCache';
@@ -45,6 +46,7 @@ import {
 import {
   HORIZONTE_MAX_SLOT_ESTOQUE_LI_MS,
   INTERVALO_SLOT_ESTOQUE_LOTE_LI_MS,
+  LIMITE_AGENDAMENTO_SLOT_ESTOQUE_LI_MS,
   pisoDoSlotEstoqueLi,
 } from './slotEstoqueLi';
 
@@ -512,20 +514,44 @@ describe('an incomplete shard read (a map caught between two runs of its writer)
     });
   }
 
-  it('before the last attempt ⇒ ONE WARNING with the counts, then LiMapaKitsEstoqueIncompletoError: nothing reserved or enqueued', async () => {
-    const h = montar({ tentativa: 0 });
-    semearIncompleto(h.db);
-    await expect(h.rodar()).rejects.toBeInstanceOf(LiMapaKitsEstoqueIncompletoError);
-    expect(h.linhas).toHaveLength(1);
-    expect(h.linhas[0]?.[2]).toMatchObject({
-      F: 1005,
-      fatias: 2,
-      kitsLidos: 1005,
-      deOutraExecucao: 1,
-      acao: 'tenta-de-novo',
+  it.each(Array.from({ length: TASK_MAX_ATTEMPTS - 1 }, (_, tentativa) => tentativa))(
+    'before the last attempt (tentativa %i) ⇒ ONE WARNING with the counts, then LiMapaKitsEstoqueIncompletoError: nothing reserved or enqueued',
+    async (tentativa) => {
+      const h = montar({ tentativa });
+      semearIncompleto(h.db);
+      await expect(h.rodar()).rejects.toBeInstanceOf(LiMapaKitsEstoqueIncompletoError);
+      expect(h.linhas).toHaveLength(1);
+      expect(h.linhas[0]?.[2]).toMatchObject({
+        F: 1005,
+        fatias: 2,
+        kitsLidos: 1005,
+        deOutraExecucao: 1,
+        acao: 'tenta-de-novo',
+      });
+      expect(h.db.escritas).toEqual([]);
+      expect(h.fila.enviadas).toEqual([]);
+    },
+  );
+
+  it('the retry that follows (no reservation behind it) queues BEHIND a stored slot like a first attempt — never double-booked', async () => {
+    const fila = filaFake();
+    const primeira = montar({ tentativa: 0, fila });
+    semearIncompleto(primeira.db);
+    const armazenado = T0 + 30 * 60_000;
+    primeira.db.seed(SLOT, { proximoSlotMs: armazenado });
+    await expect(primeira.rodar()).rejects.toBeInstanceOf(LiMapaKitsEstoqueIncompletoError);
+    expect(primeira.db.ler(SLOT)).toEqual({ proximoSlotMs: armazenado });
+
+    // The writer finished meanwhile: shard 1 now of the header's run.
+    primeira.db.seed(fatiaPath(1), { execucaoId: EXEC, kits: kitsQuePrecisam(5, 1, 'b') });
+    const r = await processarTarefaEstoqueKitsLi(asDb(primeira.db), kitsTarefa(), {
+      ...primeira.deps,
+      tentativa: 1,
     });
-    expect(h.db.escritas).toEqual([]);
-    expect(h.fila.enviadas).toEqual([]);
+
+    expect(r).toMatchObject({ kind: 'enfileirado', contagens: { zerados: 1005 } });
+    expect(fila.enviadas[0]?.scheduleTime.getTime()).toBe(armazenado);
+    expect(primeira.db.ler(SLOT)).toEqual({ proximoSlotMs: armazenado + 1005 * I });
   });
 
   it('on the LAST attempt ⇒ the WARNING, then the kits that WERE read go on (over-inclusive)', async () => {
@@ -578,7 +604,7 @@ describe('the slot: paced, advance-only, re-read on a lost race', () => {
     expect(h.db.ler(SLOT)).toEqual({ proximoSlotMs: outro + 2 * I });
   });
 
-  it('BEYOND the horizon ⇒ ONE ERROR (the queue is oversubscribed), the kits start at the floor, the slot never moves back', async () => {
+  it('BEYOND the horizon ⇒ ONE ERROR (the backlog signal), and the kits STILL queue behind it: never double-booked', async () => {
     const h = montar();
     seedConta(h.db);
     seedRegistro(h.db, 0);
@@ -586,16 +612,49 @@ describe('the slot: paced, advance-only, re-read on a lost race', () => {
     const armazenado = T0 + HORIZONTE_MAX_SLOT_ESTOQUE_LI_MS + 60_000;
     h.db.seed(SLOT, { proximoSlotMs: armazenado });
 
-    await h.rodar();
+    const r = await h.rodar();
 
-    expect(h.fila.enviadas.map((e) => e.scheduleTime.getTime())).toEqual([PISO, PISO + I]);
-    expect(h.db.ler(SLOT)).toEqual({ proximoSlotMs: armazenado });
+    expect(h.fila.enviadas.map((e) => e.scheduleTime.getTime())).toEqual([
+      armazenado,
+      armazenado + I,
+    ]);
+    expect(h.db.ler(SLOT)).toEqual({ proximoSlotMs: armazenado + 2 * I });
+    // The line's horizon counts this run's own reservation.
+    expect(r).toMatchObject({ contagens: { horizonteMs: armazenado + 2 * I - T0 } });
     expect(h.linhas.map(([s, , m]) => [s, m?.horizonteArmazenadoMs])).toEqual([
       ['ERROR', armazenado - T0],
     ]);
   });
 
-  it('a RETRIED attempt (tentativa > 0) starts at the floor even behind a stored slot within the horizon — and never moves the slot back', async () => {
+  it('a reservation past the schedule LIMIT ⇒ ONE ERROR, slot-esgotado: nothing written, nothing enqueued', async () => {
+    const h = montar();
+    seedConta(h.db);
+    seedRegistro(h.db, 0);
+    seedEmLinha(h.db, kitsQuePrecisam(2, 1, 'k'));
+    const armazenado = T0 + LIMITE_AGENDAMENTO_SLOT_ESTOQUE_LI_MS;
+    h.db.seed(SLOT, { proximoSlotMs: armazenado });
+
+    const r = await h.rodar();
+
+    expect(r).toEqual({
+      kind: 'slot-esgotado',
+      contagens: {
+        F: 2,
+        kitsLidos: 2,
+        zerados: 2,
+        enfileirados: 0,
+        recusados: 0,
+        horizonteMs: null,
+      },
+    });
+    expect(h.db.escritas).toEqual([]);
+    expect(h.fila.enviadas).toEqual([]);
+    expect(h.linhas.map(([s, , m]) => [s, m?.horizonteArmazenadoMs])).toEqual([
+      ['ERROR', armazenado - T0],
+    ]);
+  });
+
+  it('a RETRIED attempt (tentativa > 0) reserves like a first one: behind a stored slot — ⚠️ NEAR-MISS of the floor', async () => {
     const h = montar({ tentativa: 1 });
     seedConta(h.db);
     seedRegistro(h.db, 0);
@@ -605,19 +664,29 @@ describe('the slot: paced, advance-only, re-read on a lost race', () => {
 
     await h.rodar();
 
-    expect(h.fila.enviadas.map((e) => e.scheduleTime.getTime())).toEqual([PISO, PISO + I]);
-    // ⚠️ NEAR-MISS: a first attempt (tentativa 0) over the same slot queues behind it.
-    expect(h.db.ler(SLOT)).toEqual({ proximoSlotMs: armazenado });
-    const primeira = montar({ tentativa: 0 });
-    seedConta(primeira.db);
-    seedRegistro(primeira.db, 0);
-    seedEmLinha(primeira.db, kitsQuePrecisam(2, 1, 'k'));
-    primeira.db.seed(SLOT, { proximoSlotMs: armazenado });
-    await primeira.rodar();
-    expect(primeira.fila.enviadas.map((e) => e.scheduleTime.getTime())).toEqual([
+    expect(PISO).toBeLessThan(armazenado);
+    expect(h.fila.enviadas.map((e) => e.scheduleTime.getTime())).toEqual([
       armazenado,
       armazenado + I,
     ]);
+    expect(h.db.ler(SLOT)).toEqual({ proximoSlotMs: armazenado + 2 * I });
+  });
+
+  it('a fan-out past the first round of 20: EVERY send at its own reserved instant, in order, one interval apart — none reuses a first-round instant', async () => {
+    const h = montar();
+    seedConta(h.db);
+    seedRegistro(h.db, 0);
+    seedEmFatias(h.db, [kitsQuePrecisam(45, 1, 'k')]);
+
+    await h.rodar();
+
+    expect(tarefasEnviadas(h.fila).map((t) => t.produtoId)).toEqual(
+      Object.keys(kitsQuePrecisam(45, 1, 'k')),
+    );
+    const agendas = h.fila.enviadas.map((e) => e.scheduleTime.getTime());
+    expect(agendas).toEqual(Array.from({ length: 45 }, (_, k) => PISO + k * I));
+    expect(new Set(agendas).size).toBe(45);
+    expect(h.db.ler(SLOT)).toEqual({ proximoSlotMs: PISO + 45 * I });
   });
 
   it('the clock is read AFTER the slot’s read — never before the reads', async () => {
@@ -653,7 +722,7 @@ describe('the names: by THIS task’s window, so a retry re-meets its own sends'
     expect(J).toBeLessThan(janelaEstoqueLi(T0));
   });
 
-  it('a RETRY in a later window creates ZERO new names; its reservation starts at the floor and never extends past the first one', async () => {
+  it('a RETRY in a later window creates ZERO new names; it reserves again BEHIND the first (the stated gap: instants of sends that exist, reserved and unused)', async () => {
     const fila = filaFake();
     const primeira = montar({ fila });
     seedConta(primeira.db);
@@ -676,10 +745,36 @@ describe('the names: by THIS task’s window, so a retry re-meets its own sends'
     });
     expect(fila.nomes.size).toBe(4);
     expect(fila.enviadas).toHaveLength(4);
-    // max(stored, floor(t1) + 4·I): the first attempt's range covers it — no phantom gap.
+    // Behind the first reservation (or the retry's own floor, here later): 4 more instants, none
+    // of them used (every send already existed) — latency for later bulk sends, never a second
+    // send per interval.
     expect(primeira.db.ler(SLOT)?.proximoSlotMs).toBe(
-      Math.max(Number(slotDaPrimeira), pisoDoSlotEstoqueLi(t1) + 4 * I),
+      Math.max(Number(slotDaPrimeira), pisoDoSlotEstoqueLi(t1)) + 4 * I,
     );
+  });
+
+  it('⚠️ the cost is per FIRING: two fan-outs of consecutive sale-minutes below qMax each enqueue the WHOLE at-0 set again, under their own names', async () => {
+    const fila = filaFake();
+    const h = montar({ fila });
+    seedConta(h.db);
+    // Kits needing 5 and 10 of the component (both at 0 at 4 and at 3) and one needing 1.
+    seedEmLinha(h.db, {
+      ...kitsQuePrecisam(1, 5, 'cinco'),
+      ...kitsQuePrecisam(1, 10, 'dez'),
+      ...kitsQuePrecisam(1, 1, 'um'),
+    });
+    seedRegistro(h.db, 4);
+    await h.rodar(kitsTarefa({ janela: J }));
+    seedRegistro(h.db, 3);
+    await h.rodar(kitsTarefa({ janela: J + 1 }));
+
+    expect(tarefasEnviadas(fila).map((t) => [t.produtoId, t.janela])).toEqual([
+      ['cinco-0000', J],
+      ['dez-0000', J],
+      ['cinco-0000', J + 1],
+      ['dez-0000', J + 1],
+    ]);
+    expect(fila.nomes.size).toBe(4);
   });
 });
 
@@ -702,6 +797,52 @@ describe('what a rejection means (the real producer, a fake queue)', () => {
     expect(r).toMatchObject({ kind: 'tarefas-desligadas', contagens: { enfileirados: 0 } });
     expect(h.linhas.filter(([s]) => s === 'WARNING')).toHaveLength(1);
     expect(h.db.escritas).toHaveLength(1);
+  });
+
+  it('a send the strict schema refuses is COUNTED, named in ONE WARNING (field names only), and the rest of the batch goes on', async () => {
+    // Defence in depth: the map and the task share their id schemas, so a real map never makes
+    // the producer refuse a kit's payload — a producer double stands in for one that would.
+    const lida = tarefaEstoqueLiSchema.safeParse({
+      tipo: TIPO_TAREFA_ESTOQUE_LI.estoque,
+      contaId: 'conta.li',
+      produtoId: 'k-0001',
+      origem: ORIGEM_TAREFA_ESTOQUE_LI.kit,
+      janela: J,
+      estoqueId: null,
+      apagado: false,
+      estoqueIds: null,
+      geracao: 0,
+    });
+    if (lida.success) throw new Error('teste: o payload devia ser recusado');
+    const fila = filaFake();
+    const h = montar({ fila });
+    seedConta(h.db);
+    seedRegistro(h.db, 0);
+    seedEmLinha(h.db, kitsQuePrecisam(3, 1, 'k'));
+    const real = h.deps.agendador;
+
+    const r = await processarTarefaEstoqueKitsLi(asDb(h.db), kitsTarefa(), {
+      ...h.deps,
+      agendador: {
+        enfileirar: (t, o) =>
+          t.tipo === TIPO_TAREFA_ESTOQUE_LI.estoque && t.produtoId === 'k-0001'
+            ? Promise.reject(lida.error)
+            : real.enfileirar(t, o),
+      },
+    });
+
+    expect(r).toMatchObject({
+      kind: 'enfileirado',
+      contagens: { zerados: 3, enfileirados: 2, recusados: 1 },
+    });
+    expect(tarefasEnviadas(fila).map((t) => t.produtoId)).toEqual(['k-0000', 'k-0002']);
+    expect(h.linhas).toEqual([
+      [
+        'WARNING',
+        expect.any(String) as unknown as string,
+        { contaId: CONTA, componenteId: C, recusados: 1, campos: ['contaId'] },
+      ],
+    ]);
   });
 
   it('a TRANSIENT Cloud Tasks failure on one kit ⇒ the rest of the batch still goes out, then ONE LiTarefasTransitoriasError', async () => {

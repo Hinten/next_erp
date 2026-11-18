@@ -363,28 +363,27 @@ describe('an `estoque-kits` task (PR 12-f)', () => {
     expect(deps?.agoraMs()).toBeGreaterThan(0);
   });
 
-  it('the line carries the counts and the reserved horizon of a fan-out that read its map', async () => {
-    const contagens = {
-      F: 40,
-      kitsLidos: 40,
-      zerados: 3,
-      enfileirados: 3,
-      recusados: 0,
-      horizonteMs: 216_000,
-    };
-    vi.mocked(kitsEstoque.processarTarefaEstoqueKitsLi).mockResolvedValueOnce({
-      kind: 'enfileirado',
-      contagens,
-    });
+  it.each(['enfileirado', 'nenhum', 'tarefas-desligadas', 'slot-esgotado'] as const)(
+    'the line carries the counts and the reserved horizon of a fan-out that read its map (%s)',
+    async (kind) => {
+      const contagens = {
+        F: 40,
+        kitsLidos: 40,
+        zerados: 3,
+        enfileirados: 3,
+        recusados: 0,
+        horizonteMs: kind === 'slot-esgotado' ? null : 216_000,
+      };
+      vi.mocked(kitsEstoque.processarTarefaEstoqueKitsLi).mockResolvedValueOnce({
+        kind,
+        contagens,
+      });
 
-    await rodar({ data: kits(), retryCount: 0, id: 't' });
+      await rodar({ data: kits(), retryCount: 0, id: 't' });
 
-    expect(linhaUnica()).toMatchObject({
-      kind: 'enfileirado',
-      detail: null,
-      kits: contagens,
-    });
-  });
+      expect(linhaUnica()).toMatchObject({ kind, detail: null, kits: contagens });
+    },
+  );
 
   it('a fan-out that THROWS propagates — the queue retries it — and writes no line', async () => {
     const falha = new Error('transitória');

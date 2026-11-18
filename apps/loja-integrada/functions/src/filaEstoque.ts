@@ -83,6 +83,7 @@ function detalheDoResultadoKits(r: ResultadoKitsEstoqueLi): string | null {
     case 'nenhum':
     case 'enfileirado':
     case 'tarefas-desligadas':
+    case 'slot-esgotado':
       return null;
   }
 }
@@ -93,6 +94,7 @@ function contagensDoResultadoKits(r: ResultadoKitsEstoqueLi): Record<string, unk
     case 'nenhum':
     case 'enfileirado':
     case 'tarefas-desligadas':
+    case 'slot-esgotado':
       return { ...r.contagens };
     case 'pulado':
     case 'payload-invalido':

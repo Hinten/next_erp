@@ -8,19 +8,27 @@
  *
  * ## The interval, and what it buys
  *
- * {@link INTERVALO_SLOT_ESTOQUE_LOTE_LI_MS} = the FLOOR of one bulk run (a kit or reconcile send:
- * two pacer intervals before its deciding read, then the read and the PUT, no read-back) PLUS the
- * floor of one event run (two intervals before its deciding read, two before its read-back, three
- * calls): 6 × `RITMO_ESCRITA_LI_MS` = 12 s, the calls themselves absorbed by the headroom
+ * {@link INTERVALO_SLOT_ESTOQUE_LOTE_LI_MS} = one bulk run (a kit or reconcile send: two pacer
+ * intervals, then the deciding GET and the PUT, no read-back) PLUS one event run (two intervals,
+ * the GET and the PUT, two more intervals, the read-back): 6 × `RITMO_ESCRITA_LI_MS` of sleeps
+ * and 5 calls at {@link ORCAMENTO_POR_CHAMADA_SLOT_ESTOQUE_LI_MS} each = 17 s — the step plan's own
+ * run estimates (6 s for a two-call run, 11 s for a three-call one, margin included). The pacer
+ * sleeps BEFORE each call, so a call's time comes on top of its interval, never inside it
  * (`slotEstoqueLi.test.ts` pins the arithmetic against the pacer, so a pacer change moves it).
- * One event run fits between two bulk runs, so a fan-out keeps the queue about half busy. A
- * 2 000-kit fan-out spans about 6.7 h at 12 s (3.3 h at the 6 s a bulk run alone would take, with
- * the queue then fully busy).
+ * One event run fits between two bulk sends, so a fan-out keeps the queue about two-thirds busy.
+ * A 2 000-kit fan-out spans about 9.4 h.
+ *
+ * ⚠️ The per-call budget is an ESTIMATE, not a bound: a call may take up to its 20 s deadline,
+ * and the ERP reads, the credential re-reads and the dispatch itself add to every run. When a
+ * real bulk-plus-event pair takes longer than the interval, an event run no longer fits between
+ * two bulk sends and the event backlog grows for as long as a fan-out lasts. The owner's staging
+ * measurement of a run's duration confirms or corrects it before the window.
  *
  * ⚠️ Pacing is the ONLY latency control here. Cloud Tasks guarantees no order among tasks that
- * are ready together, so once a backlog exists — a burst of event tasks, an oversubscribed slot —
- * neither an event task nor a kit send has any latency bound beyond the backlog's drain. The
- * fan-out logs the reserved horizon (`proximoSlotMs − now`) on its queue line: that is the signal.
+ * are ready together, so once a backlog exists — a burst of event tasks, a long slot — neither an
+ * event task nor a kit send has any latency bound beyond the backlog's drain. The fan-out logs
+ * the reserved horizon (`proximoSlotMs − now`, this run's reservation included) on its queue
+ * line: that is the signal.
  *
  * ## The reservation ({@link reservarSlotsLi}, pure)
  *
@@ -28,22 +36,32 @@
  *    window past the latest instant any task of the current window can be scheduled at
  *    (`agendamentoEstoqueLi`), so a reserved instant always beats the window's own schedule, and
  *    every task is scheduled at EXACTLY its reserved instant.
- *  - **Within the horizon** (the stored slot at most {@link HORIZONTE_MAX_SLOT_ESTOQUE_LI_MS} ahead of
- *    now): the run starts at the later of the floor and the stored slot, one interval apart, and
- *    advances the slot past its last instant.
- *  - **Beyond the horizon** (saturated): the run starts at the FLOOR, ahead of the backlog, and
- *    writes `max(stored, floor + n · interval)`, so the slot never moves back. The caller logs one
- *    ERROR line: the queue is oversubscribed, and `LOJA_INTEGRADA_ESTOQUE_KITS_IMEDIATO_MAX=0` is
- *    the lever. A stored value past Cloud Tasks' 30-day schedule limit lands here too.
- *  - **A retried attempt** (`doPiso`): starts at the floor too and writes `max(stored, floor +
- *    n · interval)`. Its sends are named by the fan-out's window, so the ones the first attempt
- *    enqueued meet their own tasks (already-exists: their schedules stand) and only the ones that
- *    failed get the new, early instants — instead of a second range of n instants after the
- *    first, a phantom gap of hours.
+ *  - **Always behind the stored slot, never double-booked**: the run starts at the later of the
+ *    floor and the stored slot, one interval apart, and the slot advances past its last instant.
+ *    Two reservations never share an instant, so the queue never carries more than one bulk send
+ *    per interval, whatever the backlog — event runs keep their place between bulk sends.
+ *  - **The backlog signal** (saturated: the stored slot more than
+ *    {@link HORIZONTE_MAX_SLOT_ESTOQUE_LI_MS} ahead of now — 12 h, more than one planned 2 000-kit
+ *    fan-out): the caller logs ONE ERROR line, and the run still queues behind the backlog, so
+ *    every bulk send waits longer — a zero-crossing kit waits about (stored − now) + its index ×
+ *    the interval. No setting relieves it today. The eager ceiling does NOT: a ceiling of 0 moves
+ *    the small components' kits onto this slot too, which adds to it (that lever is for eager
+ *    sends crowding the queue). What would is a pre-filter on the fan-out (it re-sends the kits
+ *    already at 0, once per firing) or another interval — both the owner's decisions.
+ *  - **The schedule limit** ({@link LIMITE_AGENDAMENTO_SLOT_ESTOQUE_LI_MS}, 29 days: one day inside
+ *    Cloud Tasks' 30-day limit on a schedule): a run whose last instant would land beyond it is
+ *    `excedeLimite`, and NOTHING is reserved or written — Cloud Tasks would refuse its tail, and a
+ *    retry would only push the slot further. The caller logs ONE ERROR and enqueues nothing; those
+ *    kits wait for the nightly reconcile. Only a backlog of weeks, or a hand-edited value, gets
+ *    there (`functions/DEPLOY.md`).
+ *  - **A retried attempt reserves like a first one.** The sends an earlier attempt enqueued meet
+ *    their own names (already-exists: their schedules stand), the rest take new instants behind
+ *    the stored slot, and the earlier attempt's instants of the sends that now exist stay reserved
+ *    but unused: a gap of at most n × the interval on the slot. Later bulk sends wait longer; the
+ *    queue never carries more. An attempt that failed BEFORE its reservation (an incomplete map, a
+ *    lost slot race, a failed read) leaves no gap.
  *  - A stored value that is not a non-negative safe integer reads as none: a malformed run
  *    document never blocks the fan-out (fail open).
- *
- * Latency of a zero-crossing kit: about min(stored horizon, the bound) + its index × the interval.
  *
  * ## The write ({@link reservarSlotGlobalEstoqueLi}; root `CLAUDE.md` rule 7, tier 1)
  *
@@ -70,14 +88,24 @@ import { ID_RECONCILE_ESTOQUE_LI } from '@delfrance/schemas';
 
 import { DISPERSAO_ESTOQUE_LI_MS, JANELA_ESTOQUE_LI_MS, janelaEstoqueLi } from './agendadorEstoque';
 
+/** The time budgeted to ONE store call on top of its pacer interval, in ms (module header, "The interval"). */
+export const ORCAMENTO_POR_CHAMADA_SLOT_ESTOQUE_LI_MS = 1_000;
+
 /** The spacing of two bulk sends on the slot, in ms (module header, "The interval"). */
-export const INTERVALO_SLOT_ESTOQUE_LOTE_LI_MS = 12_000;
+export const INTERVALO_SLOT_ESTOQUE_LOTE_LI_MS = 17_000;
 
 /**
- * How far ahead of now the stored slot may be before a fan-out stops queueing behind it, in ms
- * (module header, "Beyond the horizon"): 4 h, inside the nightly reconcile's 24 h bound.
+ * How far ahead of now the stored slot may be before a fan-out logs ONE ERROR line, in ms (module
+ * header, "The backlog signal"): 12 h, more than the 9.4 h of one planned 2 000-kit fan-out. The
+ * run queues behind it either way.
  */
-export const HORIZONTE_MAX_SLOT_ESTOQUE_LI_MS = 4 * 60 * 60_000;
+export const HORIZONTE_MAX_SLOT_ESTOQUE_LI_MS = 12 * 60 * 60_000;
+
+/**
+ * The latest a reservation's last instant may land after now, in ms (module header, "The schedule
+ * limit"): 29 days, one day inside Cloud Tasks' 30-day limit on a task's schedule.
+ */
+export const LIMITE_AGENDAMENTO_SLOT_ESTOQUE_LI_MS = 29 * 24 * 60 * 60_000;
 
 /** Attempts of one reservation's write before {@link LiSlotEstoqueEmConflitoError}. */
 export const MAX_TENTATIVAS_SLOT_ESTOQUE_LI = 3;
@@ -103,14 +131,16 @@ export function pisoDoSlotEstoqueLi(agoraMs: number): number {
 
 /** What one reservation decided. */
 export interface ReservaDeSlotsLi {
-  /** The instant of each send, in order, one interval apart. */
+  /** The instant of each send, in order, one interval apart, all at or after the stored slot. */
   readonly inicios: readonly number[];
-  /** The slot after the reservation: never below the stored one. */
+  /** The slot after the reservation: one interval past the last instant, above the stored one. */
   readonly proximoMs: number;
   /** The slot as read (`null`: absent or not a valid instant). */
   readonly armazenadoMs: number | null;
-  /** The stored slot was more than the horizon ahead of now: the run started at the floor. */
+  /** The stored slot was more than the horizon ahead of now: ONE ERROR line, and still behind it. */
   readonly saturado: boolean;
+  /** The last instant would land past the schedule limit: NOTHING may be reserved or enqueued. */
+  readonly excedeLimite: boolean;
 }
 
 /** The stored slot as an instant, or `null` (module header: fail open). */
@@ -120,15 +150,14 @@ function instanteValido(v: unknown): number | null {
 
 /**
  * The reservation of `quantidade` sends at `agoraMs` over the stored slot `armazenadoMs` (module
- * header, "The reservation"). Pure. Throws `RangeError` for a `quantidade` below 1 — a caller with
- * nothing to send reserves nothing.
+ * header, "The reservation"): always behind the stored slot, never sharing an instant with it.
+ * Pure. Throws `RangeError` for a `quantidade` below 1 — a caller with nothing to send reserves
+ * nothing.
  */
 export function reservarSlotsLi(args: {
   readonly agoraMs: number;
   readonly armazenadoMs: number | null;
   readonly quantidade: number;
-  /** A retried attempt: start at the floor (module header). */
-  readonly doPiso: boolean;
   readonly intervaloMs?: number;
   readonly horizonteMaxMs?: number;
 }): ReservaDeSlotsLi {
@@ -139,21 +168,21 @@ export function reservarSlotsLi(args: {
   }
   const armazenado = instanteValido(args.armazenadoMs);
   const piso = pisoDoSlotEstoqueLi(args.agoraMs);
-  const saturado = armazenado !== null && armazenado - args.agoraMs > horizonteMax;
-  const base = armazenado === null || saturado || args.doPiso ? piso : Math.max(piso, armazenado);
+  const base = armazenado === null ? piso : Math.max(piso, armazenado);
   const inicios = Array.from({ length: args.quantidade }, (_, i) => base + i * intervalo);
-  const fim = base + args.quantidade * intervalo;
+  const proximoMs = base + args.quantidade * intervalo;
   return {
     inicios,
-    proximoMs: armazenado === null ? fim : Math.max(armazenado, fim),
+    proximoMs,
     armazenadoMs: armazenado,
-    saturado,
+    saturado: armazenado !== null && armazenado - args.agoraMs > horizonteMax,
+    excedeLimite: proximoMs - args.agoraMs > LIMITE_AGENDAMENTO_SLOT_ESTOQUE_LI_MS,
   };
 }
 
 /** What one reservation of the global slot did. */
 export interface ReservaGravadaLi extends ReservaDeSlotsLi {
-  /** `false` when the stored slot already covered it (nothing to advance): no write was sent. */
+  /** `false` exactly when the reservation exceeds the schedule limit: no write was sent. */
   readonly escrito: boolean;
   /** The clock read after the deciding read, in ms: the reservation's own now. */
   readonly agoraMs: number;
@@ -162,8 +191,9 @@ export interface ReservaGravadaLi extends ReservaDeSlotsLi {
 /**
  * Reserve `quantidade` sends on the global slot and write its advance (module header, "The
  * write"). `db` a parameter, the admin handle, the RAW stored field (only `proximoSlotMs` is read).
- * Rejects with {@link LiSlotEstoqueEmConflitoError} after the attempts, and rethrows any other
- * failure as thrown.
+ * A reservation past the schedule limit writes nothing (`escrito: false`, `excedeLimite`). Rejects
+ * with {@link LiSlotEstoqueEmConflitoError} after the attempts, and rethrows any other failure as
+ * thrown.
  */
 export async function reservarSlotGlobalEstoqueLi(
   db: Firestore,
@@ -171,7 +201,6 @@ export async function reservarSlotGlobalEstoqueLi(
     readonly quantidade: number;
     /** Read AFTER each read of the slot, never before. */
     readonly agoraMs: () => number;
-    readonly doPiso: boolean;
   },
 ): Promise<ReservaGravadaLi> {
   const ref = reconcileEstoqueLojaIntegradaCollection.docRef(db, {}, ID_RECONCILE_ESTOQUE_LI);
@@ -195,11 +224,8 @@ export async function reservarSlotGlobalEstoqueLi(
       agoraMs,
       armazenadoMs: armazenado,
       quantidade: args.quantidade,
-      doPiso: args.doPiso,
     });
-    if (snap.exists && reserva.proximoMs === armazenado) {
-      return { ...reserva, escrito: false, agoraMs };
-    }
+    if (reserva.excedeLimite) return { ...reserva, escrito: false, agoraMs };
     const patch = reconcileEstoqueLojaIntegradaCollection.parseMerge({
       proximoSlotMs: reserva.proximoMs,
     });

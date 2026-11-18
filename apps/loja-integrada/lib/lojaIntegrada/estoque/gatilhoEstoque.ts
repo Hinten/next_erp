@@ -37,13 +37,26 @@
  *     or kits in shards): ONE fan-out task exactly when a kit can have crossed from positive to 0
  *     (`disparaKitsZeradosLi`); the shards are never read here.
  *
+ * ## A create of the CANONICAL record has an unknown before-side
+ *
+ * The send run resolves a produto's records at the depósito canonical-wins
+ * (`estoqueNoDepositoLi`): until the canonical record `makeEstoqueUid(produto, depósito)` exists, a
+ * legacy record answers — and every ERP writer creates the canonical id. So the canonical
+ * record's create (or its move INTO the depósito) can displace a positive legacy record: what the
+ * run read before is unknown, not 0. On the zero-crossing path that side is read as above every
+ * kit's need ({@link ANTES_DESCONHECIDO_LI}), so the fan-out fires exactly when the new record is
+ * below `qMax`. A non-canonical record's create cannot change the run's resolution while the
+ * canonical one exists, and reads 0 as before. The eager path needs nothing: its filter already
+ * reads an absent side as 0, the tie-inclusive direction.
+ *
  * ## A sibling is read as the send run resolves it
  *
  * The header's `comps` names one record per sibling. When that record is not the CANONICAL one
- * (`makeEstoqueUid(sibling, depósito)`), the canonical path joins the SAME `getAll`: a canonical
- * record at the depósito wins (as `estoqueNoDepositoLi` resolves the two), else the named one
- * answers — so a legacy record left beside a newer canonical one never hides a move. A sibling
- * that is absent, at another depósito or unreadable is left out of the readings, and its kits flag.
+ * (`makeEstoqueUid(sibling, depósito)`), the canonical path joins the SAME `getAll`, and the
+ * records read at the depósito are resolved by the shared `estoqueNoDepositoLi` — the send run's
+ * own rule, so a legacy record left beside a newer canonical one never hides a move. A sibling
+ * that is absent, at another depósito, unresolved or unreadable is left out of the readings, and
+ * its kits flag.
  *
  * ## The enqueues, after EVERY read
  *
@@ -51,13 +64,19 @@
  * enqueue — never the event's time, never a value captured before the reads — so a task's name
  * never meets a task that may already have dispatched. Every send task goes first (the direct
  * ones, then the flagged kits), at most {@link CONCORRENCIA_ENFILEIRAMENTO_GATILHO_LI} at a time;
- * the fan-out tasks go LAST, only once every send task was accepted, so an Eventarc retry after a
- * transient failure never enqueues a second fan-out for the same move. What a rejection means is
- * the producer's contract: an answered already-exists is success; the closed sweep-only valve is
- * ONE WARNING and the event's remaining enqueues are skipped; a transient Cloud Tasks failure is
- * rethrown for Eventarc's retry (the names make a retry inside the window idempotent; one in a
- * later window is one more run, never a loss); a payload the strict schema refuses is ONE WARNING
- * with field names, and only that task is skipped; anything else is rethrown untouched.
+ * the fan-out tasks go LAST, only once every send task was accepted, so a failed SEND task never
+ * leaves a fan-out behind it to be enqueued again by the retry. A fan-out itself can still be
+ * enqueued twice, under two names, since its name carries the window of its own enqueue: when the
+ * fan-outs of several concerned contas share a round and one fails transiently after another
+ * landed, when a fan-out landed but its answer was lost (classified transient), and when Eventarc
+ * delivers the event twice — the retry or redelivery in a later window names it anew. Nothing is
+ * lost (each send re-reads); the cost is one more fan-out: its reads, its slot instants and up to
+ * F sends. What a rejection means is the producer's contract: an answered already-exists is
+ * success; the closed sweep-only valve is ONE WARNING and the event's remaining enqueues are
+ * skipped; a transient Cloud Tasks failure is rethrown for Eventarc's retry (the names make a
+ * retry inside the window idempotent; one in a later window is one more run, never a loss); a
+ * payload the strict schema refuses is ONE WARNING with field names, and only that task is
+ * skipped; anything else is rethrown untouched.
  *
  * ## What it never does
  *
@@ -70,8 +89,10 @@
 import type { Firestore } from 'firebase-admin/firestore';
 import { ZodError } from 'zod';
 import {
+  type DocEstoqueLi,
   type KitsComponenteEstoqueLi,
   ORIGEM_TAREFA_ESTOQUE_LI,
+  estoqueNoDepositoLi,
   formasDoDepositoLi,
   makeEstoqueUid,
   vinculoDaContaLi,
@@ -234,9 +255,10 @@ function caminhoCanonicoDoIrmao(caminho: string, depositoId: string): string | n
 
 /**
  * The siblings' available quantities NOW, keyed by the path the header's `comps` names (module
- * header, "A sibling is read as the send run resolves it"): the canonical record when it is at
- * the depósito, else the named record when IT is; a value that is not a finite number is left out
- * (its kits flag).
+ * header, "A sibling is read as the send run resolves it"): the records read for it — the named
+ * one and, beside a legacy id, the canonical one — that are at the depósito, resolved by the
+ * shared `estoqueNoDepositoLi`. A sibling with no record there, or whose record's value is not a
+ * finite number, is left out (its kits flag).
  */
 function leiturasDosIrmaos(
   irmaos: readonly string[],
@@ -246,18 +268,44 @@ function leiturasDosIrmaos(
 ): Map<string, number> {
   const leituras = new Map<string, number>();
   for (const caminho of irmaos) {
+    const partes = caminhoEstoqueLi(caminho);
+    if (partes === null) continue;
     const canonico = caminhoCanonicoDoIrmao(caminho, depositoId);
-    const dadosCanonico = canonico === null ? null : (lidos.get(canonico) ?? null);
-    const dados =
-      dadosCanonico !== null && registroNoDepositoLi(dadosCanonico, formas)
-        ? dadosCanonico
-        : (lidos.get(caminho) ?? null);
-    const disponivel = disponivelNoDepositoLi(dados, formas);
+    const registros: DocEstoqueLi[] = [];
+    for (const lido of canonico === null ? [caminho] : [caminho, canonico]) {
+      const dados = lidos.get(lido) ?? null;
+      if (dados !== null && registroNoDepositoLi(dados, formas)) {
+        registros.push({ caminho: lido, dados });
+      }
+    }
+    const estoque = estoqueNoDepositoLi({ produtoId: partes.produtoId, depositoId, registros });
+    if (estoque.tipo !== 'um') continue;
+    const disponivel = disponivelNoDepositoLi(estoque.registro.dados, formas);
     if (typeof disponivel === 'number' && Number.isFinite(disponivel)) {
       leituras.set(caminho, disponivel);
     }
   }
   return leituras;
+}
+
+/**
+ * The before-side the zero-crossing path reads for the CANONICAL record's create or move into the
+ * depósito (module header, "A create of the CANONICAL record has an unknown before-side"): above
+ * every kit's need, so `disparaKitsZeradosLi` fires exactly when the new record is below `qMax`.
+ */
+const ANTES_DESCONHECIDO_LI = Number.MAX_SAFE_INTEGER;
+
+/**
+ * The before-side the zero-crossing path decides on, for one conta: the event's own, except an
+ * absent one of the CANONICAL record at that conta's depósito ({@link ANTES_DESCONHECIDO_LI}).
+ */
+function antesDoCruzamentoLi(
+  ev: EventoEstoqueLi,
+  depositoId: string,
+  antes: DisponivelDoEventoLi,
+): DisponivelDoEventoLi {
+  const canonico = ev.estoqueId === makeEstoqueUid(ev.produtoId, depositoId);
+  return antes === null && canonico ? ANTES_DESCONHECIDO_LI : antes;
 }
 
 /** The field names a strict parse refused, deduplicated and sorted — never a value. */
@@ -347,7 +395,11 @@ export async function tratarEventoEstoqueLi(
           : {
               tipo: 'zerados',
               cabecalho,
-              dispara: disparaKitsZeradosLi({ antes, depois, qMax: cabecalho.qMax }),
+              dispara: disparaKitsZeradosLi({
+                antes: antesDoCruzamentoLi(ev, conta.depositoId, antes),
+                depois,
+                qMax: cabecalho.qMax,
+              }),
             };
     }
     return { conta, formas, direta, antes, depois, kits };

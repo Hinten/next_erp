@@ -966,12 +966,18 @@ The full stock-sync section lands with the rest of step 12; these are the facts 
 - **Kits.** Header inline and `F` ≤ `LOJA_INTEGRADA_ESTOQUE_KITS_IMEDIATO_MAX` (unset = 30; 0..30;
   anything else ONE WARNING per event that reaches a header, and it acts as 0) ⇒ EAGER: the
   zero-cost skip (only with a finite cap) or the siblings read in ONE `getAll` — a sibling named
-  by a legacy id has its CANONICAL path read beside it, and the canonical record at the depósito
-  wins, as the run resolves them — then `kitsSinalizadosLi` (tie-inclusive, fail-open), one
-  `estoque` task per flagged kit. Otherwise (more kits, or kits in shards) ⇒ ONE `estoque-kits`
-  fan-out exactly when `disparaKitsZeradosLi` fires; the shards are never read by the trigger.
-  The send tasks go first (at most 8 at a time), the fan-outs LAST, so a retry after a transient
-  failure never doubles a fan-out. The clock is read inside each enqueue helper, after every read.
+  by a legacy id has its CANONICAL path read beside it, and the records read at the depósito are
+  resolved by the shared `estoqueNoDepositoLi` — then `kitsSinalizadosLi` (tie-inclusive,
+  fail-open), one `estoque` task per flagged kit. Otherwise (more kits, or kits in shards) ⇒ ONE
+  `estoque-kits` fan-out exactly when `disparaKitsZeradosLi` fires — on EVERY decrease while the
+  component sits below `qMax`, so the cost is per firing — with the before-side of the CANONICAL
+  record's create (or move in) read as unknown, since it can displace a positive legacy record;
+  the shards are never read by the trigger. The send tasks go first (at most 8 at a time), the
+  fan-outs LAST, so a failed send task never leaves a fan-out for the retry to enqueue again. A
+  fan-out itself can still be enqueued twice, under two window names: contas sharing a round where
+  one fails after another landed, a landed enqueue whose answer was lost, a duplicate Eventarc
+  delivery (nothing is lost; the cost is one more fan-out). The clock is read inside each enqueue
+  helper, after every read.
 - **The fan-out** (`estoque-kits` on the stock queue): payload strict, the valve, the cap (both
   zero reads), the conta (`lerContaEmCache`), then in parallel the header and the component's own
   record (canonical by id, else the two-form query; none, ambiguous or unreadable ⇒ available 0,
@@ -988,11 +994,14 @@ The full stock-sync section lands with the rest of step 12; these are the facts 
   write, tier 1 by the 12-a schema's contract: `create` when absent, else `update` with its own
   read's `lastUpdateTime`, advance-only, a 9 or 6 re-read (a re-read finding exactly the value this
   attempt wrote is a landed write, never a second advance), at most 3 writes, then
-  `LiSlotEstoqueEmConflitoError`. One interval, `INTERVALO_SLOT_ESTOQUE_LOTE_LI_MS` = 12 s (a bulk
-  run's pacer floor plus an event run's, pinned against `RITMO_ESCRITA_LI_MS`), the floor
-  `(⌊now / 60 s⌋ + 3) · 60 s + 30 s`, and a 4 h horizon: a stored slot beyond it is ONE ERROR line
-  and the run starts at the floor; a retried attempt starts at the floor too. Pacing is the only
-  latency control: Cloud Tasks orders no ready tasks.
+  `LiSlotEstoqueEmConflitoError`. One interval, `INTERVALO_SLOT_ESTOQUE_LOTE_LI_MS` = 17 s (a bulk
+  run plus an event run: their pacer intervals and 1 s per call, pinned against
+  `RITMO_ESCRITA_LI_MS`), the floor `(⌊now / 60 s⌋ + 3) · 60 s + 30 s`. Every reservation queues
+  BEHIND the stored slot — never double-booked, a retried attempt included (its earlier attempt's
+  unused instants are a stated gap: latency, never load). A stored slot more than 12 h ahead is ONE
+  ERROR line (the backlog signal; no setting relieves it today), and a reservation that would end
+  past 29 days (inside Cloud Tasks' 30-day schedule limit) writes and enqueues nothing:
+  `slot-esgotado`, ONE ERROR. Pacing is the only latency control: Cloud Tasks orders no ready tasks.
 - `estrutura.test.ts` walks the trigger and the fan-out (the stock producer's root a leaf): no
   context loader, park, pacer, write engine or send run reached, no client named, no `fetch`, the
   package loaded only by `pedidos/vinculoProdutoLi.ts` (constants).
@@ -1240,8 +1249,9 @@ firebase.loja-integrada.tasks.json --only firestore,functions,tasks` (ports 8085
   `produtos/*/estoques/*` writes, and at the lane's `dry-run` stock valve it may enqueue send runs
   (which write nothing) and, for a seeded kits header, a fan-out (whose one write is the slot
   document). So a suite that writes stock records uses produtos no other suite seeds, never moves a
-  record from positive to 0 under a sharded or over-ceiling header, deletes its kits map before its
-  records, and wipes `reconcileEstoqueLojaIntegrada/atual` (awaiting the fan-out's write when it
+  record from positive to 0 under a sharded or over-ceiling header nor creates a CANONICAL record
+  below that header's `qMax` (its before-side is unknown, so it fires), deletes its kits map before
+  its records, and wipes `reconcileEstoqueLojaIntegrada/atual` (awaiting the fan-out's write when it
   caused one). `lib/lojaIntegrada/estoque/gatilhoEstoque.tasks.test.ts` drives the trigger's work IN
   PROCESS (the deployed trigger's depósito map is a 15-minute cache in the emulator's worker,
   warmed by whichever suite writes first) through the real producer root, and observes the

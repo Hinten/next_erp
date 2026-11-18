@@ -332,6 +332,20 @@ reconcile. The trigger NEEDS `integracao (tipo ASC, nome ASC)` and the fan-out
 declared in `firestore.indexes.json`): on Enterprise a missing index full-scans
 and bills the scan.
 
+⚠️ **The global stagger slot paces every bulk stock send.**
+`reconcileEstoqueLojaIntegrada/atual.proximoSlotMs` spaces the kit fan-out's
+sends one per 17 s, each fan-out behind every reservation already made, so the
+stock queue never carries two bulk sends in one interval. Its two ERROR lines
+are the backlog's signal: `slot global além do horizonte` (more than 12 h of
+bulk sends already reserved; the fan-out still queues behind them) and `slot
+global além do limite de agendamento` (the reservation would end past 29 days:
+that fan-out enqueued NOTHING, and its kits wait for the nightly reconcile). No
+setting relieves a backlog today — `LOJA_INTEGRADA_ESTOQUE_KITS_IMEDIATO_MAX=0`
+moves more kits onto the slot. Only a backlog of weeks or a hand-edited value
+reaches the limit; a person who finds a value no backlog explains deletes the
+`proximoSlotMs` FIELD (never the document), and the next fan-out starts at the
+floor.
+
 ⚠️ **The conta trigger shares its path.** `onIntegracaoLojaIntegradaChanged` is
 the THIRD `onDocumentWritten` on `integracao/{integracaoId}`, after Mercado
 Livre's `onIntegracaoMercadoLivreChanged` and Shopee's `onIntegracaoShopeeChanged`

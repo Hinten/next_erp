@@ -20,7 +20,8 @@
  *     → Cloud Tasks emulator → Functions emulator
  *     → filaEstoqueLojaIntegrada                   the real deployed onTaskDispatched
  *     → processarTarefaEstoqueKitsLi: the valve (`dry-run`, the job env), the conta, the
- *       sharded header and its shard, the component's own record (available 1)
+ *       sharded header and its shard, the component's own record — a LEGACY id, so the canonical
+ *       point read finds nothing and the real two-form `in` query answers (available 1)
  *     → the kits it holds at 0 → the global slot: `reconcileEstoqueLojaIntegrada/atual` CREATED
  *       with `proximoSlotMs` — its one write, read back raw here
  *     → one `estoque` send task per such kit (each later dispatched send run finds no kit
@@ -38,17 +39,19 @@
  * and nothing here asserts a dispatch time — only the slot the consumer computed, EXACTLY: with
  * the slot document wiped and no prior slot, `proximoSlotMs − n · interval − 30 s` is the floor of
  * a window the case spanned (a whole minute), with n the kits seeded at bound 0. A consumer that
- * picked another count lands off the minute grid unless it differs from n by a multiple of five
- * AND the case crossed a minute boundary; the selection itself is pinned exactly offline
- * (`processarKitsEstoque.test.ts`).
+ * picked another count lands off the minute grid (the interval is 17 s) unless it differs from n
+ * by a multiple of 60 — a shift of 17 minutes, which only a case lasting that long would accept;
+ * the selection itself is pinned exactly offline (`processarKitsEstoque.test.ts`).
  *
  * Isolation (`vitest.tasks.config.ts`, the fifth trigger's rules):
  *  - a conta, a depósito and produto ids no other suite uses (the produtos also carry a per-run
  *    suffix, so a named-task dedup across runs against one emulator can never hide a dispatch);
  *  - the conta has `nome` (the map's query orders by it), no filial and no `dataCadastro` (the
  *    conta trigger only reads), and it is never edited (the deployed consumer's conta cache);
- *  - the ONLY component record seeded under a kits header is created AT its final value (no
- *    positive → 0 move ever happens on it, so the deployed trigger never fans out), and a sibling
+ *  - the ONLY component record seeded under a kits header is created AT its final value under a
+ *    LEGACY id (no positive → 0 move happens on it, and a non-canonical create's before-side reads
+ *    0, so the deployed trigger never fans out — a CANONICAL create below `qMax` would, since its
+ *    before-side is unknown: `gatilhoEstoque.ts`), and a sibling
  *    record sits at a depósito no Loja Integrada conta stocks from (the deployed trigger stops at
  *    its map);
  *  - every wipe deletes `sincEstoqueLojaIntegrada/{conta}` FIRST, then the slot document, then the
@@ -91,6 +94,8 @@ const P_IRMAO = `p-li-gatilho-ci-irmao-${RODADA}`;
 const P_ZERADOS = `p-li-gatilho-ci-zerados-${RODADA}`;
 const PRODUTOS = [P_DIRETO, P_IMEDIATO, P_IRMAO, P_ZERADOS] as const;
 const EXEC = 'estoque-reconcile-20270115';
+/** The zero-crossing component's record id: a legacy auto-id, never `makeEstoqueUid`'s. */
+const LEGADO_ZERADOS = 'auto-legado-gatilho-ci';
 const SLOT = { colecao: 'reconcileEstoqueLojaIntegrada', id: 'atual' } as const;
 
 const canonico = (produtoId: string, deposito = DEP) => `est-${produtoId}-${deposito}`;
@@ -311,18 +316,19 @@ describe.skipIf(!EMULATED || !TASKS)(
           kits: null,
           fatias: 1,
         });
-      // The component's record, CREATED at its final value: no positive → 0 move ever happens
-      // on it, so the deployed trigger (which fires on this create) never fans out.
+      // The component's record, CREATED at its final value under a LEGACY id: no positive → 0
+      // move happens on it, and a non-canonical create's before-side reads 0, so the deployed
+      // trigger (which fires on this create) never fans out. A canonical id would make it fire.
       await db()
         .collection('produtos')
         .doc(P_ZERADOS)
         .collection('estoques')
-        .doc(canonico(P_ZERADOS))
+        .doc(LEGADO_ZERADOS)
         .set(registro(1));
 
       const r = await tratarEventoEstoqueLi(deps(), {
         produtoId: P_ZERADOS,
-        estoqueId: canonico(P_ZERADOS),
+        estoqueId: LEGADO_ZERADOS,
         antes: registro(3),
         depois: registro(1),
       });

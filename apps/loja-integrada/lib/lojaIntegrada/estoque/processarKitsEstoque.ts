@@ -29,11 +29,24 @@
  *     so a retry 300 s later reads the map after its writer finished; on the last attempt the kits
  *     that WERE read go on (the over-inclusive direction).
  *  7. Nothing at 0 ⇒ `nenhum`, and NO write.
- *  8. The global slot (`slotEstoqueLi.ts`): n instants reserved, its ONLY Firestore write. A
- *     saturated slot (beyond the horizon) is ONE ERROR line and the run starts at the floor.
+ *  8. The global slot (`slotEstoqueLi.ts`): n instants reserved behind the stored slot, never
+ *     sharing one with another reservation — its ONLY Firestore write. A retried attempt reserves
+ *     like a first one. A slot beyond the horizon is ONE ERROR line and the run still queues
+ *     behind it; a reservation past the schedule limit is ONE ERROR line, `slot-esgotado`, and
+ *     nothing is written or enqueued (those kits wait for the nightly reconcile).
  *  9. The enqueues, {@link CONCORRENCIA_ENFILEIRAMENTO_LOTE_ESTOQUE_LI} at a time, each named by
  *     THIS task's window and scheduled at exactly its reserved instant (`agendadorEstoque.ts`, "A
  *     bulk enqueue"), so a retry of this task re-meets its own sends instead of doubling them.
+ *
+ * ## The cost is per FIRING, not per crossing
+ *
+ * The trigger fires a fan-out on every decrease of the component while it sits below the header's
+ * `qMax` (`disparaKitsZeradosLi`), so a component at 5 that sells to 4, then to 3, fires twice;
+ * each fan-out enqueues EVERY kit this component holds at 0 — those already at 0 in the store
+ * included — named by its own window, so nothing deduplicates them across firings. Each such send
+ * costs its send run's ERP reads, one store GET at `on` (a PUT too when the store differs) and
+ * one slot interval. A pre-filter would need the event's before-available in the payload (a
+ * change to the strict, ids-only schema): the owner's decision, from the ERP kit counts.
  *
  * ## What a rejection means
  *
@@ -153,6 +166,8 @@ export type ResultadoKitsEstoqueLi =
   /** No kit at 0: nothing reserved, nothing written. */
   | { readonly kind: 'nenhum'; readonly contagens: ContagensKitsEstoqueLi }
   | { readonly kind: 'enfileirado'; readonly contagens: ContagensKitsEstoqueLi }
+  /** The reservation would end past the schedule limit: nothing reserved, written or enqueued. */
+  | { readonly kind: 'slot-esgotado'; readonly contagens: ContagensKitsEstoqueLi }
   /** The sweep-only valve closed the queue mid-batch: the rest was not enqueued. */
   | { readonly kind: 'tarefas-desligadas'; readonly contagens: ContagensKitsEstoqueLi };
 
@@ -280,19 +295,29 @@ export async function processarTarefaEstoqueKitsLi(
   };
   if (zerados.length === 0) return { kind: 'nenhum', contagens };
 
-  // 8. The global slot: the run's only write.
+  // 8. The global slot: the run's only write, behind every reservation already made.
   const reserva = await reservarSlotGlobalEstoqueLi(db, {
     quantidade: zerados.length,
     agoraMs: deps.agoraMs,
-    doPiso: deps.tentativa > 0,
   });
-  contagens.horizonteMs = reserva.proximoMs - reserva.agoraMs;
-  if (reserva.saturado && reserva.armazenadoMs !== null) {
-    deps.logger.error(`${TAG} slot global além do horizonte — este fan-out parte do piso`, {
+  const horizonteArmazenadoMs =
+    reserva.armazenadoMs === null ? null : reserva.armazenadoMs - reserva.agoraMs;
+  if (reserva.excedeLimite) {
+    deps.logger.error(`${TAG} slot global além do limite de agendamento — nada enfileirado`, {
       ...ids,
       F: cabecalho.F,
       zerados: zerados.length,
-      horizonteArmazenadoMs: reserva.armazenadoMs - reserva.agoraMs,
+      horizonteArmazenadoMs,
+    });
+    return { kind: 'slot-esgotado', contagens };
+  }
+  contagens.horizonteMs = reserva.proximoMs - reserva.agoraMs;
+  if (reserva.saturado) {
+    deps.logger.error(`${TAG} slot global além do horizonte — este fan-out entra atrás dele`, {
+      ...ids,
+      F: cabecalho.F,
+      zerados: zerados.length,
+      horizonteArmazenadoMs,
     });
   }
 

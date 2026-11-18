@@ -1148,6 +1148,36 @@ describe('lib/lojaIntegrada layout', () => {
     },
   );
 
+  it('the stock trigger’s rules each BITE on their own (synthetic sources): a fetch call, a client named in code, the package loaded outside the allow-list — and none for the near-misses', () => {
+    const fontes: Record<string, string> = {
+      'lib/lojaIntegrada/estoque/x-fetch.ts':
+        "export const r = () => fetch('https://loja.invalid');\n",
+      'lib/lojaIntegrada/estoque/x-nome.ts': 'export const c = criarClienteLeituraLi;\n',
+      'lib/lojaIntegrada/estoque/x-nome-comentado.ts':
+        '// built only by criarClienteLeituraLi, never here\nexport const c = 1;\n',
+      'lib/lojaIntegrada/estoque/x-pacote.ts':
+        "import { URL_BASE_LI } from '@delfrance/integrations-loja-integrada';\nexport const u = URL_BASE_LI;\n",
+      [CARREGAM_O_PACOTE_NO_GATILHO_DE_ESTOQUE[0] ?? '']:
+        "import { LIMITE } from '@delfrance/integrations-loja-integrada';\nexport const l = LIMITE;\n",
+    };
+    const ler: LeitorDeFonte = (c) => fontes[c] ?? null;
+    const de = (arquivo: string) => violacoesDoGatilhoDeEstoque([arquivo], ler);
+
+    expect(de('lib/lojaIntegrada/estoque/x-fetch.ts')).toEqual([
+      'lib/lojaIntegrada/estoque/x-fetch.ts calls fetch',
+    ]);
+    expect(de('lib/lojaIntegrada/estoque/x-nome.ts')).toEqual([
+      'lib/lojaIntegrada/estoque/x-nome.ts names a Loja Integrada client or context',
+    ]);
+    expect(de('lib/lojaIntegrada/estoque/x-pacote.ts')).toEqual([
+      'lib/lojaIntegrada/estoque/x-pacote.ts loads the package',
+    ]);
+    // ⚠️ NEAR-MISSES: the name inside a comment only, and the package loaded by the ONE file
+    // allowed to (for its constants).
+    expect(de('lib/lojaIntegrada/estoque/x-nome-comentado.ts')).toEqual([]);
+    expect(de(CARREGAM_O_PACOTE_NO_GATILHO_DE_ESTOQUE[0] ?? '')).toEqual([]);
+  });
+
   it('every route file under the conta folder is in ROTAS_DE_LEITURA_LI, ROTAS_SEM_CHAMADA_LI or one of the credential routes (a new route cannot skip the walk)', () => {
     const naPasta = arquivosTs(RAIZ_APP)
       .map(relApp)

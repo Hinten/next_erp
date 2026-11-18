@@ -740,6 +740,21 @@ describe('gate 5 — F at most the eager ceiling: the siblings, then the tie-inc
     },
   );
 
+  it('⚠️ NEAR-MISS: the same invalid ceiling on an event that reaches NO header (NOT_FOUND, the common case) logs no WARNING — the direct task alone', async () => {
+    const h = montar({ ambiente: { [TETO_KITS_IMEDIATOS_ENV_LI]: 'abc' } });
+    seedConta(h.db, CONTA_A);
+    seedLink(h.db, CONTA_A);
+    expect(await tratarEventoEstoqueLi(h.deps, evento(reg(5), reg(4)))).toMatchObject({
+      tipo: 'processado',
+      diretas: 1,
+      kits: 0,
+      fanouts: 0,
+    });
+    expect(h.db.leituras).toEqual([cabecalhoPath(CONTA_A)]);
+    expect(linhasDe(h, 'WARNING')).toEqual([]);
+    expect(h.linhas.map(([s, m]) => [s, m.includes('enfileirado')])).toEqual([['INFO', true]]);
+  });
+
   it('a header that does not parse ⇒ ONE WARNING with field names, no kit work', async () => {
     const h = montar();
     seedConta(h.db, CONTA_A);
@@ -889,6 +904,102 @@ describe('the zero-cost skip (active only with a finite cap)', () => {
     h.db.seed(caminho('s'), reg(10));
     await tratarEventoEstoqueLi(h.deps, evento(reg(12), reg(10)));
     expect(h.db.leituras).toEqual([cabecalhoPath(CONTA_A), caminho('s')]);
+  });
+});
+
+describe('a record that MOVES between depósitos concerns the contas of BOTH sides', () => {
+  const DEP2 = 'documents/depositos/dep-li-2';
+
+  it.each([
+    ['away from the conta’s depósito (DOC → OUTRO)', DOC, OUTRO],
+    ['into it (OUTRO → DOC)', OUTRO, DOC],
+  ])('a linked child moving %s ⇒ the direct task for that conta', async (_r, de, para) => {
+    const h = montar();
+    seedConta(h.db, CONTA_A);
+    seedLink(h.db, CONTA_A);
+    const r = await tratarEventoEstoqueLi(
+      h.deps,
+      evento(reg(5, { depositoOuterRef: de }), reg(5, { depositoOuterRef: para })),
+    );
+    expect(r).toMatchObject({ tipo: 'processado', contas: [CONTA_A], diretas: 1 });
+    expect(h.enfileirados.map((e) => e.tarefa)).toEqual([tarefaDireta(CONTA_A)]);
+  });
+
+  it('a component at 5 moving AWAY, under a sharded header ⇒ ONE estoque-kits for the old conta (the moved-away side reads 0)', async () => {
+    const h = montar();
+    seedConta(h.db, CONTA_A);
+    seedCabecalho(h.db, CONTA_A, cabecalhoEmFatias(31, 2));
+    await tratarEventoEstoqueLi(h.deps, evento(reg(5), reg(5, { depositoOuterRef: OUTRO })));
+    expect(h.enfileirados.map((e) => [e.tarefa.tipo, e.tarefa.contaId])).toEqual([
+      [TIPO_TAREFA_ESTOQUE_LI.estoqueKits, CONTA_A],
+    ]);
+  });
+
+  it('two LI contas on DIFFERENT depósitos, a move between them ⇒ each conta its own decision: both direct, the fan-out only where the stock left', async () => {
+    const h = montar();
+    seedConta(h.db, CONTA_A);
+    seedConta(h.db, CONTA_B, DEP2);
+    seedLink(h.db, CONTA_A, { id: 111 });
+    seedLink(h.db, CONTA_B, { id: 222 });
+    seedCabecalho(h.db, CONTA_A, cabecalhoEmFatias(31, 2));
+    seedCabecalho(h.db, CONTA_B, cabecalhoEmFatias(31, 2));
+
+    const r = await tratarEventoEstoqueLi(
+      h.deps,
+      evento(reg(5), reg(5, { depositoOuterRef: DEP2 })),
+    );
+
+    expect(r).toMatchObject({ contas: [CONTA_A, CONTA_B], diretas: 2, fanouts: 1 });
+    expect(h.enfileirados.map((e) => [e.tarefa.tipo, e.tarefa.contaId])).toEqual([
+      [TIPO_TAREFA_ESTOQUE_LI.estoque, CONTA_A],
+      [TIPO_TAREFA_ESTOQUE_LI.estoque, CONTA_B],
+      [TIPO_TAREFA_ESTOQUE_LI.estoqueKits, CONTA_A],
+    ]);
+  });
+});
+
+describe('the zero-crossing path: a create of the CANONICAL record has an unknown before-side', () => {
+  it('the canonical record CREATED at −1 (it may displace a positive legacy record the run read) ⇒ ONE estoque-kits', async () => {
+    const h = montar();
+    seedConta(h.db, CONTA_A);
+    seedCabecalho(h.db, CONTA_A, cabecalhoEmFatias(31, 2));
+    await tratarEventoEstoqueLi(h.deps, evento(null, reg(-1)));
+    expect(h.enfileirados.map((e) => e.tarefa.tipo)).toEqual([TIPO_TAREFA_ESTOQUE_LI.estoqueKits]);
+  });
+
+  it('the canonical record MOVED INTO the depósito at 1, below qMax 2 ⇒ ONE estoque-kits', async () => {
+    const h = montar();
+    seedConta(h.db, CONTA_A);
+    seedCabecalho(h.db, CONTA_A, cabecalhoEmFatias(31, 2));
+    await tratarEventoEstoqueLi(h.deps, evento(reg(9, { depositoOuterRef: OUTRO }), reg(1)));
+    expect(h.enfileirados.map((e) => e.tarefa.tipo)).toEqual([TIPO_TAREFA_ESTOQUE_LI.estoqueKits]);
+  });
+
+  it.each([
+    ['a LEGACY-id record created at −1 (the canonical one, if any, still wins)', 'legado-1', -1],
+    ['the canonical record created at 2, not below qMax 2', E, 2],
+  ])('⚠️ NEAR-MISS: %s ⇒ no fan-out', async (_r, estoqueId, quantidade) => {
+    const h = montar();
+    seedConta(h.db, CONTA_A);
+    seedCabecalho(h.db, CONTA_A, cabecalhoEmFatias(31, 2));
+    await tratarEventoEstoqueLi(h.deps, evento(null, reg(quantidade), P, estoqueId));
+    expect(h.enfileirados).toEqual([]);
+  });
+});
+
+describe('⚠️ the fan-out fires per DECREASE below qMax, not per crossing (its cost is per firing)', () => {
+  it('5 → 4 and then 4 → 3 under qMax 10 (sharded) ⇒ one estoque-kits EACH, in their own windows', async () => {
+    let agora = T0;
+    const h = montar({ agora: () => agora });
+    seedConta(h.db, CONTA_A);
+    seedCabecalho(h.db, CONTA_A, cabecalhoEmFatias(31, 10));
+    await tratarEventoEstoqueLi(h.deps, evento(reg(5), reg(4)));
+    agora = T0 + 60_000;
+    await tratarEventoEstoqueLi(h.deps, evento(reg(4), reg(3)));
+    expect(h.enfileirados.map((e) => [e.tarefa.tipo, e.tarefa.janela])).toEqual([
+      [TIPO_TAREFA_ESTOQUE_LI.estoqueKits, JANELA],
+      [TIPO_TAREFA_ESTOQUE_LI.estoqueKits, JANELA + 1],
+    ]);
   });
 });
 
@@ -1061,6 +1172,41 @@ describe('enqueue rejections, through the REAL producer', () => {
       LiTarefasTransitoriasError,
     );
     expect(f.chamadas.map((c) => c.tarefa.tipo)).toEqual([TIPO_TAREFA_ESTOQUE_LI.estoque]);
+  });
+
+  it('⚠️ the stated residual: two contas’ fan-outs share a round; A lands, B fails transiently ⇒ the retry one window later enqueues A’s fan-out AGAIN, under a new name', async () => {
+    let agora = T0;
+    let falharB = true;
+    const aceitas: { readonly tarefa: TarefaFilaEstoqueLi; readonly id: string }[] = [];
+    const fila: FilaEstoqueLi = {
+      async enqueue(tarefa, { id }) {
+        if (falharB && tarefa.contaId === CONTA_B) throw falhaDoFunctions('unknown-error', 503);
+        if (aceitas.some((a) => a.id === id)) throw falhaDoFunctions('task-already-exists', 409);
+        aceitas.push({ tarefa, id });
+      },
+    };
+    const h = montar({
+      agora: () => agora,
+      agendador: criarAgendadorEstoqueLi({ fila: () => fila, desligado: false }),
+    });
+    seedConta(h.db, CONTA_A);
+    seedConta(h.db, CONTA_B, NUA);
+    seedCabecalho(h.db, CONTA_A, cabecalhoEmFatias());
+    seedCabecalho(h.db, CONTA_B, cabecalhoEmFatias());
+    const ev = evento(reg(1), reg(0));
+
+    await expect(tratarEventoEstoqueLi(h.deps, ev)).rejects.toBeInstanceOf(
+      LiTarefasTransitoriasError,
+    );
+    // Eventarc's retry, one window later.
+    agora = T0 + 60_000;
+    falharB = false;
+    await tratarEventoEstoqueLi(h.deps, ev);
+
+    const deA = aceitas.filter((a) => a.tarefa.contaId === CONTA_A);
+    expect(deA.map((a) => a.tarefa.janela)).toEqual([JANELA, JANELA + 1]);
+    expect(new Set(deA.map((a) => a.id)).size).toBe(2);
+    expect(aceitas.filter((a) => a.tarefa.contaId === CONTA_B)).toHaveLength(1);
   });
 
   it('with every send accepted, the fan-out goes LAST', async () => {
