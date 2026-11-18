@@ -11,7 +11,9 @@ import { FirebaseFunctionsError } from 'firebase-admin/functions';
 import {
   ORIGEM_TAREFA_ESTOQUE_LI,
   TIPO_TAREFA_ESTOQUE_LI,
+  type TarefaEstoqueKitsLi,
   type TarefaEstoqueLi,
+  tarefaEstoqueKitsLiSchema,
   tarefaEstoqueLiSchema,
 } from '@delfrance/schemas';
 
@@ -30,9 +32,12 @@ import {
   MARGEM_AGENDAMENTO_ESTOQUE_LI_MS,
   type OpcoesEnfileiramentoEstoqueLi,
   type TarefaEstoqueSemJanelaLi,
+  type TarefaEstoqueKitsSemJanelaLi,
   agendamentoEstoqueLi,
   criarAgendadorEstoqueLi,
+  enfileirarTarefaEstoqueKitsLi,
   enfileirarTarefaEstoqueLi,
+  idDaTarefaEstoqueKitsLi,
   idDaTarefaEstoqueLi,
   janelaEstoqueLi,
 } from './agendadorEstoque';
@@ -348,5 +353,136 @@ describe('enfileirarTarefaEstoqueLi: the clock at the enqueue, the strict parse,
 
   it('the queue is named after the function that serves it', () => {
     expect(FILA_ESTOQUE_LI).toBe('filaEstoqueLojaIntegrada');
+  });
+});
+
+describe('the fan-out task (estoque-kits): its own name, the same window and schedule', () => {
+  const kits = (over: Partial<TarefaEstoqueKitsLi> = {}): TarefaEstoqueKitsLi => ({
+    tipo: TIPO_TAREFA_ESTOQUE_LI.estoqueKits,
+    contaId: 'conta-li-est',
+    componenteId: 'prod-1',
+    janela: JANELA,
+    ...over,
+  });
+
+  it('golden value, and the preimage spelled out', () => {
+    expect(idDaTarefaEstoqueKitsLi(kits())).toBe(
+      'estoque-kits-201c5be3fe3c947a86bbffb7e8d5ce8aef6b49fc54326be6707f1f55076e32ca',
+    );
+    expect(idDaTarefaEstoqueKitsLi(kits())).toBe(
+      `estoque-kits-${sha(`estoque-kits:conta-li-est:prod-1:${String(JANELA)}`)}`,
+    );
+  });
+
+  it('EQUAL pair: the same conta, component and window ⇒ the same id', () => {
+    expect(idDaTarefaEstoqueKitsLi(kits())).toBe(idDaTarefaEstoqueKitsLi({ ...kits() }));
+  });
+
+  it.each([
+    ['conta', { contaId: 'conta-li-esu' }],
+    ['componente', { componenteId: 'prod-2' }],
+    ['janela', { janela: JANELA + 1 }],
+  ] as const)('⚠️ NEAR-MISS: another %s ⇒ another id', (_rotulo, over) => {
+    expect(idDaTarefaEstoqueKitsLi(kits(over))).not.toBe(idDaTarefaEstoqueKitsLi(kits()));
+  });
+
+  it('⚠️ DISTINCT from every send task of the same ids, whatever the origin (own prefix AND own tag)', () => {
+    const id = idDaTarefaEstoqueKitsLi(kits());
+    for (const origem of Object.values(ORIGEM_TAREFA_ESTOQUE_LI)) {
+      for (const apagado of [false, true]) {
+        expect(
+          idDaTarefaEstoqueLi(
+            tarefa({
+              origem,
+              apagado,
+              produtoId: 'prod-1',
+              geracao: origem === ORIGEM_TAREFA_ESTOQUE_LI.deriva ? 1 : 0,
+            }),
+          ),
+        ).not.toBe(id);
+      }
+    }
+    expect(id.startsWith('estoque-kits-')).toBe(true);
+    // The tag alone keeps the digests apart: the send preimage of the same parts is another one.
+    expect(id.slice('estoque-kits-'.length)).not.toBe(
+      sha(`estoque:conta-li-est:prod-1:${String(JANELA)}`),
+    );
+  });
+
+  it('inside Cloud Tasks’ task-id grammar, whatever the ids hold', () => {
+    for (const t of [kits(), kits({ componenteId: 'p ó~0', contaId: 'C_1-a' })]) {
+      expect(idDaTarefaEstoqueKitsLi(t)).toMatch(/^[A-Za-z0-9_-]{1,500}$/);
+    }
+  });
+
+  function gravador() {
+    const eventos: string[] = [];
+    const enfileiradas: { tarefa: unknown; opcoes: OpcoesEnfileiramentoEstoqueLi }[] = [];
+    const agendador: AgendadorEstoqueLi = {
+      enfileirar: (t, o) => {
+        eventos.push('enfileirar');
+        enfileiradas.push({ tarefa: t, opcoes: o });
+        return Promise.resolve();
+      },
+    };
+    return { agendador, eventos, enfileiradas };
+  }
+
+  const semJanela: TarefaEstoqueKitsSemJanelaLi = {
+    contaId: 'conta-li-est',
+    componenteId: 'prod-1',
+  };
+
+  it('enfileirarTarefaEstoqueKitsLi: the clock read right before the enqueue; parsed; named; scheduled over the component', async () => {
+    const g = gravador();
+    const relogio = () => {
+      g.eventos.push('relogio');
+      return JANELA * 60_000 + 59_999;
+    };
+    await enfileirarTarefaEstoqueKitsLi(g.agendador, relogio, semJanela);
+    expect(g.eventos).toEqual(['relogio', 'enfileirar']);
+    const esperada = kits();
+    expect(g.enfileiradas).toEqual([
+      {
+        tarefa: esperada,
+        opcoes: {
+          id: idDaTarefaEstoqueKitsLi(esperada),
+          agendarParaMs: agendamentoEstoqueLi(JANELA, 'prod-1'),
+        },
+      },
+    ]);
+    expect(tarefaEstoqueKitsLiSchema.safeParse(g.enfileiradas[0]?.tarefa).success).toBe(true);
+  });
+
+  it('an extra key (a quantity) is refused by the strict parse: ZodError, nothing enqueued', async () => {
+    const g = gravador();
+    const comQuantidade = {
+      ...semJanela,
+      disponivel: 0,
+    } as unknown as TarefaEstoqueKitsSemJanelaLi;
+    await expect(
+      enfileirarTarefaEstoqueKitsLi(g.agendador, () => JANELA * 60_000, comQuantidade),
+    ).rejects.toBeInstanceOf(ZodError);
+    expect(g.enfileiradas).toEqual([]);
+  });
+
+  it('rejects as the agendador does: the closed valve, a transient failure', async () => {
+    await expect(
+      enfileirarTarefaEstoqueKitsLi(
+        criarAgendadorEstoqueLi({ fila: fila().fila, desligado: true }),
+        () => JANELA * 60_000,
+        semJanela,
+      ),
+    ).rejects.toBeInstanceOf(LiTarefasDesligadasError);
+    await expect(
+      enfileirarTarefaEstoqueKitsLi(
+        criarAgendadorEstoqueLi({
+          fila: fila(falhaDoFunctions('unknown-error', 503)).fila,
+          desligado: false,
+        }),
+        () => JANELA * 60_000,
+        semJanela,
+      ),
+    ).rejects.toBeInstanceOf(LiTarefasTransitoriasError);
   });
 });

@@ -16,6 +16,7 @@ import {
   decidirEnvioEstoqueLi,
   diffLinhaEstoqueLi,
   disparaKitsZeradosLi,
+  disponivelNoDepositoLi,
   envioDeEstoqueDesligadoLi,
   estoqueNoDepositoLi,
   irmaosParaLerLi,
@@ -25,6 +26,7 @@ import {
   ordenarCandidatosEstoqueLi,
   planoEstoqueLi,
   refletidoLi,
+  registroNoDepositoLi,
   relevanciaEventoEstoqueLi,
 } from './planoEstoqueLi';
 import type { DocEstoqueLi } from './quantidadeEstoqueLi';
@@ -1343,5 +1345,60 @@ describe('ordenarCandidatosEstoqueLi: over-advertising first', () => {
       c(0, '5', -4),
     ]);
     expect(entrada[0]).toEqual(c(0, '5', -4)); // the input is untouched
+  });
+});
+
+describe('registroNoDepositoLi / disponivelNoDepositoLi — the ONE reading of a record at the conta’s depósito', () => {
+  const FORMAS = ['documents/depositos/D', 'depositos/D'] as const;
+
+  it.each(FORMAS)('EQUAL: a record at %j is at the depósito', (ref) => {
+    expect(registroNoDepositoLi({ depositoOuterRef: ref }, FORMAS)).toBe(true);
+    expect(disponivelNoDepositoLi({ depositoOuterRef: ref, quantidade: 5 }, FORMAS)).toBe(5);
+  });
+
+  it.each([
+    ['a leading slash', '/documents/depositos/D'],
+    ['a case change', 'documents/depositos/d'],
+    ['a trailing space', 'documents/depositos/D '],
+    ['another depósito', 'documents/depositos/D2'],
+    ['a bare id', 'D'],
+    ['a reference-like object', { path: 'depositos/D' }],
+    ['null', null],
+  ])('⚠️ NEAR-MISS: %s is ANOTHER depósito (nothing is folded) ⇒ null', (_r, ref) => {
+    expect(registroNoDepositoLi({ depositoOuterRef: ref }, FORMAS)).toBe(false);
+    expect(disponivelNoDepositoLi({ depositoOuterRef: ref, quantidade: 5 }, FORMAS)).toBeNull();
+  });
+
+  it('absent record and absent ref ⇒ null; an inherited ref is not stored data', () => {
+    expect(disponivelNoDepositoLi(null, FORMAS)).toBeNull();
+    expect(disponivelNoDepositoLi({ quantidade: 5 }, FORMAS)).toBeNull();
+    const herdado = Object.create({ depositoOuterRef: 'depositos/D' }) as Record<string, unknown>;
+    expect(registroNoDepositoLi(herdado, FORMAS)).toBe(false);
+  });
+
+  it('the available quantity RAW: reservation subtracted (a negative one floored to 0), never rounded or clamped', () => {
+    const r = (q: unknown, res: unknown) => ({
+      depositoOuterRef: 'depositos/D',
+      quantidade: q,
+      quantidadeReservada: res,
+    });
+    expect(disponivelNoDepositoLi(r(5, 2), FORMAS)).toBe(3);
+    expect(disponivelNoDepositoLi(r(2.5, 0), FORMAS)).toBe(2.5);
+    expect(disponivelNoDepositoLi(r(2, 5), FORMAS)).toBe(-3);
+    expect(disponivelNoDepositoLi(r(2, -4), FORMAS)).toBe(2);
+    expect(disponivelNoDepositoLi(r(undefined, null), FORMAS)).toBe(0);
+  });
+
+  it.each([
+    ['a text quantity', '5', 0],
+    ['an infinite reservation', 5, Number.POSITIVE_INFINITY],
+    ['NaN', Number.NaN, 0],
+  ])('an unreadable counter (%s) ⇒ NaN (fail open)', (_r, q, res) => {
+    expect(
+      disponivelNoDepositoLi(
+        { depositoOuterRef: 'depositos/D', quantidade: q, quantidadeReservada: res },
+        FORMAS,
+      ),
+    ).toBeNaN();
   });
 });

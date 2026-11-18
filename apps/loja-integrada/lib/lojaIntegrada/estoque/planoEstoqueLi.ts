@@ -17,7 +17,11 @@
  *     ({@link planoDosVinculosEstoqueLi}) is asked first, so a link skip reads no stock record.
  *  4. **Kits** with at most 30 store kits per component ({@link kitsSinalizadosLi}): the
  *     tie-inclusive, fail-open filter, and the zero-cost skip ({@link irmaosParaLerLi}). A
- *     sibling is read by its PATH — a record id is unique only under its owner.
+ *     sibling is read by its PATH — a record id is unique only under its owner. Every record's
+ *     available quantity at the conta's depósito — the event's own two sides, a sibling's, a
+ *     fan-out component's — is read through ONE function ({@link disponivelNoDepositoLi}), and
+ *     whether a record is at that depósito through another ({@link registroNoDepositoLi}), the
+ *     exact two-form match the send run's own reads apply.
  *  5. **Kits** beyond 30 ({@link disparaKitsZeradosLi}, {@link cruzaParaZeroLi}): only a kit
  *     going from positive to 0 is sent at once; everything else waits for the nightly reconcile.
  *  6. **The reconcile's diff** of one store row against the snapshot ({@link diffLinhaEstoqueLi})
@@ -513,6 +517,37 @@ export function planoEstoqueLi(entrada: EntradaPlanoEstoqueLi): PlanoEstoqueLi {
  * after) — which the kit minimum counts as 0 (#238). `NaN` (unreadable) fails open.
  */
 export type DisponivelDoEventoLi = number | null;
+
+/**
+ * Whether a record is at the conta's depósito: its stored `depositoOuterRef` is EXACTLY one of the
+ * two stored forms (`formasDoDepositoLi`) — the equality Firestore applies to the send run's own
+ * `in` query, so a record this answers `false` for is one the run cannot find either. Nothing is
+ * folded: a leading slash, a case change, a trailing space or a stored reference object is
+ * another depósito here (the daily reconcile's full walk is where such a record shows).
+ *
+ * Equal (`true` for the forms of `D`): `'documents/depositos/D'`, `'depositos/D'`.
+ * Distinct: `'/documents/depositos/D'`, `'documents/depositos/d'`, `'documents/depositos/D '`,
+ * `'documents/depositos/D2'`, an object, `null`, absent.
+ */
+export function registroNoDepositoLi(dados: DadosEstoqueLi, formas: readonly string[]): boolean {
+  const deposito = proprio(dados, 'depositoOuterRef');
+  return typeof deposito === 'string' && formas.includes(deposito);
+}
+
+/**
+ * A stock record's available quantity at the conta's depósito — the ONE reading the trigger, its
+ * sibling check and the kit fan-out take of any record: `null` when there is no record
+ * (`dados === null`) or it is not at the depósito ({@link registroNoDepositoLi}); `NaN` when a
+ * counter is unreadable (fail open); otherwise `estoqueDisponivel`, RAW (neither floored nor
+ * clamped: a kit quotient divides it unrounded).
+ */
+export function disponivelNoDepositoLi(
+  dados: DadosEstoqueLi | null,
+  formas: readonly string[],
+): DisponivelDoEventoLi {
+  if (dados === null || !registroNoDepositoLi(dados, formas)) return null;
+  return disponivelDoRegistro(dados);
+}
 
 /** One kit's components and their quantities, as the kits map stores it. */
 export interface KitDoMapaLi {
