@@ -30,7 +30,6 @@ import {
   ProdutoReferencedError,
   deleteProdutoCascade,
   kitStatusChangeDoSave,
-  propagateKitStatusToChildren,
   type KitStatusChange,
 } from '@delfrance/data/produto';
 import { useDocSnapshot, useSnapshot } from '@delfrance/data/hooks';
@@ -39,6 +38,7 @@ import { produtoCollection } from '@/lib/data/produtoCollection';
 import { grupoDeVariacoesCollection } from '@/lib/data/grupoDeVariacoesCollection';
 import { listaDePrecosCollection } from '@/lib/data/listaDePrecosCollection';
 import { buildProdutoTransactionWrites, createClientProdutoPort } from '@/lib/produtos/clientPort';
+import { commitChildKitEdits } from '@/lib/produtos/kitChildren';
 import { exigirRascunhosShopeeSalvos } from '@/lib/produtos/rascunhoShopeePendente';
 import { getFirebaseFirestore, getFirebaseStorage } from '@/lib/firebase/client';
 import { useAuth, usePermission } from '@/lib/auth';
@@ -164,6 +164,7 @@ export default function EditarProdutoPage() {
   // Staged per-variation kit maps (the "Gerar Variações" grid), flushed AFTER
   // the variation-children flush so the child docs exist.
   const flushKitVariacoesRef = useRef<KitVariacoesFlush | null>(null);
+  const kitResetRevision = useRef(0);
   // The Mercado Livre tab edits its OWN documents (the link subcollection), so
   // it is invisible to this form's `isDirty` — without both of these an operator
   // could edit an anúncio, hit "Salvar alterações", and lose the work with no
@@ -595,6 +596,7 @@ export default function EditarProdutoPage() {
               onChange={p.onChange}
               disabled={p.disabled}
               excludeIds={kitExcludeIds}
+              resetRevisionRef={kitResetRevision}
             />
             <KitVariacoesManager
               produtoId={params.id}
@@ -602,6 +604,7 @@ export default function EditarProdutoPage() {
               grupos={grupos}
               rows={effectiveVariationRows}
               disabled={p.disabled}
+              resetRevisionRef={kitResetRevision}
               flushRef={flushKitVariacoesRef}
               onDirtyChange={setKitVariacoesDirty}
             />
@@ -798,11 +801,8 @@ export default function EditarProdutoPage() {
                 oldEhKitVirtual: pendente.oldEhKitVirtual,
               }
             : (desteSave ?? pendente);
-        if (mudanca) {
-          kitPendente.current = mudanca;
-          await propagateKitStatusToChildren(port, id, mudanca);
-          kitPendente.current = null;
-        }
+        const deixouDeSerKit = mudanca?.oldEhKit === true && !mudanca.ehKit;
+        if (mudanca) kitPendente.current = mudanca;
 
         // (The extraData singleton is now written atomically with the produto
         // doc via `transactionWrites`, not here — so a flaky connection can't
@@ -813,11 +813,17 @@ export default function EditarProdutoPage() {
         // initial history records).
         const children = await flushChildrenRef.current?.(id);
 
+        // Include the final family after any staged creates or reuses.
+        if (mudanca) {
+          await commitChildKitEdits(db, id, { status: mudanca });
+          kitPendente.current = null;
+        }
+
         // Then persist each kit-variation child's generated `componentesKit`
         // (from "Gerar Variações") — the child docs exist by now. The pairing is
         // handed over directly because it CANNOT travel through React state:
         // both awaits run in one microtask, so nothing re-renders in between.
-        await flushKitVariacoesRef.current?.(id, children?.reusedByKey ?? {});
+        await flushKitVariacoesRef.current?.(id, children?.reusedByKey ?? {}, deixouDeSerKit);
 
         // Mercado Livre is the last WRITE: its link docs have six writers, so a
         // save here can lose a race and raise `AfterSaveBlockedError` (tier 3).

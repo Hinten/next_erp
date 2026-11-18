@@ -117,14 +117,13 @@ vi.mock('@delfrance/data/hooks', async (importOriginal) => ({
     };
   },
 }));
-vi.mock('@delfrance/data/produto', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@delfrance/data/produto')>()),
-  propagateKitStatusToChildren: async (
-    _port: unknown,
+vi.mock('@/lib/produtos/kitChildren', () => ({
+  commitChildKitEdits: async (
+    _db: unknown,
     _id: string,
-    change: Record<string, unknown>,
+    { status }: { status: Record<string, unknown> },
   ) => {
-    h.propagacoes.push(change);
+    h.propagacoes.push(status);
     if (h.falhasDePropagacao > 0) {
       h.falhasDePropagacao -= 1;
       throw new Error('rede caiu no meio da propagação');
@@ -163,7 +162,10 @@ import EditarProdutoPage from './page';
 import { produtoCollection } from '@/lib/data/produtoCollection';
 import { SECTION_SHOPEE } from '../../_components/produtoFields';
 import type { VariationRow } from '../../_components/VariationManager';
-import { KitVariacoesManager } from '../../_components/KitVariacoesManager';
+import {
+  KitVariacoesManager,
+  type KitVariacoesManagerProps,
+} from '../../_components/KitVariacoesManager';
 
 /** Mounts the page; the returned function re-renders it (a new `h.filhos` emission reaches it). */
 function montar(): () => void {
@@ -332,11 +334,15 @@ describe('produtos/[id]/editar — «É kit virtual» needs «É kit» (step 19,
       before: { ehKit: true, ehKitVirtual: false },
       patch: { ehKit: false, componentesKit: null, componentesKitKeys: null },
     };
+    const flushRecipes = vi.fn(async () => {});
+    kitVariacoesManager().flushRef.current = flushRecipes;
     h.falhasDePropagacao = 1;
     await expect(capturado().onAfterSave!('p1', { ehKit: false }, unkit)).rejects.toThrow(
       'rede caiu',
     );
+    expect(flushRecipes).not.toHaveBeenCalled();
     await capturado().onAfterSave!('p1', { ehKit: false });
+    expect(flushRecipes).toHaveBeenCalledExactlyOnceWith('p1', {}, true);
     expect(h.propagacoes).toHaveLength(2);
     expect(h.propagacoes[1]).toEqual(h.propagacoes[0]);
     expect(h.propagacoes[1]).toMatchObject({ ehKit: false, oldEhKit: true });
@@ -645,7 +651,7 @@ function variationManager(): {
  * (the second child of its `Stack`, beside the parent's `KitManager`) — its
  * props, never rendered.
  */
-function kitVariacoesManager(): { onDirtyChange?: (dirty: boolean) => void } {
+function kitVariacoesManager(): KitVariacoesManagerProps {
   const renderInput = capturado().fields?.componentesKit?.renderInput;
   if (!renderInput) throw new Error('the page gives «Componentes do kit» no input');
   const pilha = renderInput({
@@ -657,7 +663,7 @@ function kitVariacoesManager(): { onDirtyChange?: (dirty: boolean) => void } {
     descriptor: {} as FieldRenderProps['descriptor'],
   }) as ReactElement<{ children: ReactNode }>;
   const grade = Children.toArray(pilha.props.children).find(
-    (c): c is ReactElement<{ onDirtyChange?: (dirty: boolean) => void }> =>
+    (c): c is ReactElement<KitVariacoesManagerProps> =>
       isValidElement(c) && c.type === KitVariacoesManager,
   );
   if (!grade) throw new Error('the Kit tab renders no KitVariacoesManager');

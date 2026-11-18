@@ -136,9 +136,12 @@ test.describe.serial('Produtos kit e2e — Gerar Variações (per-variation grid
       [seed.varCompPId]: { quantidade: 2, limitarEstoque: true },
     });
     expect(child?.componentesKitKeys).toEqual([seed.varCompPId]);
+    expect((await getProdutoData(seed.varKitMId))?.componentesKitKeys).toEqual([seed.varCompMId]);
   });
 
-  test('un-kitting the parent clears its variation children’s componentesKit', async ({ page }) => {
+  test('turning off a kit clears the family even when new variation recipes are staged', async ({
+    page,
+  }) => {
     // Precondition: the previous test left the size-P child carrying a kit map.
     await expect
       .poll(async () => (await getProdutoData(seed.varKitPId))?.componentesKit != null, {
@@ -146,63 +149,38 @@ test.describe.serial('Produtos kit e2e — Gerar Variações (per-variation grid
       })
       .toBe(true);
 
-    // Precondition for the «É kit virtual» step below (step 19, #1527): save the
-    // parent with «É kit virtual» ON first, and see it stored — otherwise the
-    // final `ehKitVirtual: false` would hold vacuously (the seed stores false).
-    // A real variation child takes only the flags from this save, never a map
-    // change, so the child's map the un-kit must clear is still there.
+    // Prove the virtual flag is set on the whole family before testing cleanup.
+    const familyIds = [seed.kitId, seed.varKitPId, seed.varKitMId];
     await page.goto(`/produtos/${seed.kitId}/editar`);
     await page.getByRole('tab', { name: 'Kit' }).click();
     await page.getByRole('switch', { name: 'É kit virtual', exact: true }).click();
     await page.getByRole('button', { name: 'Salvar alterações', exact: true }).click();
-    await expect
-      .poll(async () => (await getProdutoData(seed.kitId))?.ehKitVirtual ?? null, {
-        timeout: 30_000,
-      })
-      .toBe(true);
+    await expect(page).toHaveURL(/\/produtos(?:\?.*)?$/);
+    for (const id of familyIds) {
+      expect(await getProdutoData(id)).toMatchObject({ ehKit: true, ehKitVirtual: true });
+    }
 
     await page.goto(`/produtos/${seed.kitId}/editar`);
     await page.getByRole('tab', { name: 'Kit' }).click();
 
-    // Toggle "É kit" OFF and save — the parent stops being a kit. «É kit
-    // virtual» is not touched on purpose: the save must switch it off. ⚠️ This
-    // navigation is deliberately NOT gated on server truth: the editor may paint
-    // the cached copy from BEFORE the save above (flag OFF) and take the click
-    // before the server snapshot arrives. That stale path is what this step
-    // covers end-to-end — there `deriveOnSave` sees "no change", and only the
-    // save transaction's `camposDeKitDoPatch` (over the doc it read) switches the
-    // stored flag off. Do not add a wait here without keeping a stale-path case.
+    // The draft used to restore the child recipes after the status cleanup.
+    await page.getByRole('button', { name: 'Gerar Variações' }).click();
+    await expectToast(page, 'Componentes gerados para as variações.');
+
+    // Switch off only «É kit». The save must also clear «É kit virtual».
     await page.getByRole('switch', { name: 'É kit', exact: true }).click();
     await page.getByRole('button', { name: 'Salvar alterações', exact: true }).click();
 
-    // Kit-status propagation (Flutter parity): the variation child's kit map is
-    // cleared on the child doc. This can ONLY come from the propagation use-case
-    // — `deriveOnSave` clears the PARENT's map, never the child's.
-    await expect
-      .poll(
-        async () => {
-          const c = await getProdutoData(seed.varKitPId);
-          return { kit: c?.componentesKit ?? null, ehKit: c?.ehKit ?? null };
-        },
-        { timeout: 30_000 },
-      )
-      .toEqual({ kit: null, ehKit: false });
-
-    await test.step('desmarcar É kit desmarca também É kit virtual', async () => {
-      // The editor stores «É kit virtual» only together with «É kit»
-      // (`ehKitVirtualEfetivo`): `deriveOnSave` from a form that matches the
-      // stored doc, and the save transaction's `camposDeKitDoPatch` from the doc
-      // it read whatever the form showed — so the parent never keeps the mismatch.
-      await expect
-        .poll(
-          async () => {
-            const p = await getProdutoData(seed.kitId);
-            return { ehKit: p?.ehKit ?? null, ehKitVirtual: p?.ehKitVirtual ?? null };
-          },
-          { timeout: 30_000 },
-        )
-        .toEqual({ ehKit: false, ehKitVirtual: false });
-    });
+    await expect(page).toHaveURL(/\/produtos(?:\?.*)?$/);
+    const cleared = {
+      ehKit: false,
+      ehKitVirtual: false,
+      componentesKit: null,
+      componentesKitKeys: null,
+    };
+    for (const id of familyIds) {
+      expect(await getProdutoData(id)).toMatchObject(cleared);
+    }
   });
 });
 

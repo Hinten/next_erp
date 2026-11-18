@@ -1257,10 +1257,11 @@ export function VariationManager({
         <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
           <SortableContext items={rows.map((r) => r.key)} strategy={verticalListSortingStrategy}>
             <Stack gap="xs">
-              {rows.map((row) => (
+              {rows.map((row, index) => (
                 <SortableChild
                   key={row.key}
                   row={row}
+                  striped={index % 2 === 1}
                   disabled={disabled}
                   checkingRefs={checking.has(row.key)}
                   skuError={
@@ -1306,6 +1307,7 @@ export function VariationManager({
 
 interface SortableChildProps {
   row: ChildRow;
+  striped: boolean;
   disabled?: boolean;
   /** Reference lookup in flight for this row (delete guard). */
   checkingRefs?: boolean;
@@ -1320,6 +1322,7 @@ interface SortableChildProps {
 
 function SortableChild({
   row,
+  striped,
   disabled,
   checkingRefs,
   skuError,
@@ -1340,7 +1343,13 @@ function SortableChild({
   };
 
   return (
-    <Paper ref={setNodeRef} style={style} withBorder p="xs">
+    <Paper
+      ref={setNodeRef}
+      style={style}
+      withBorder
+      p="xs"
+      bg={striped ? 'var(--mantine-color-default-hover)' : undefined}
+    >
       <Group wrap="nowrap" align="flex-end" gap="xs">
         {!disabled && (
           <ActionIcon

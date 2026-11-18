@@ -126,6 +126,8 @@ const PATHSPECS = [
  * 2 event-clock watermark, 3 tell the human.
  */
 const INVENTARIO = {
+  'apps/web/lib/produtos/kitChildren.ts':
+    'B — candidate child ids and recipe baselines are selected outside the transaction. Every attempt rechecks parent kit status and child membership. Recipe writes reject changed baselines unless the intended recipe already landed. A sole member mirrors the parent recipe read in the same attempt.',
   'apps/mercado-livre/lib/marketplace/notificacoes/missedFeedsSweep.ts':
     'B (#1292): recordMissedFeedsHealth reads the app health inside every OCC attempt and refuses lastSweepAtUs >= the incoming attempt stamp (both microseconds). It advances the watermark on the same write, preserves lastSuccessAtUs from that fresh snapshot on failure, and only advances success after all streams drain. Provider and task I/O remain outside the transaction. Tests: missedFeedsSweep.test.ts and missedFeedsSweep.firestore.test.ts.',
   'apps/mercado-livre/lib/marketplace/size-charts/sizeChartOperation.ts':
