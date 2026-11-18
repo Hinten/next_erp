@@ -113,11 +113,11 @@
 import {
   ESTADO_ANUNCIO_SHOPEE,
   TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE,
-  ehKitNativoAtivo,
+  classeDoVinculoShopee,
   ehKitVirtualEfetivo,
-  ehRascunhoShopee,
   ehVinculoSubstituido,
   type AcaoSugeridaPublicacaoShopee,
+  type ClasseDoVinculoShopee,
 } from '@delfrance/schemas';
 
 import {
@@ -308,19 +308,14 @@ interface Particao {
   readonly so: readonly VinculoDaConta[];
 }
 
-type Classe = keyof Particao;
-
 /**
  * Which of N / X / R / O / RO / SO one link belongs to — see the module header.
- * The draft test runs AFTER the native-kit one (an item-less native link is X,
- * and the shared predicate says the same) and BEFORE the superseded and removed
- * ones: a draft has no listing, so neither reading can apply to it.
+ * ONE definition, `classeDoVinculoShopee` in `@delfrance/schemas`, shared with
+ * the web's «Publicar como kit nativo» offer (`primeiraPublicacaoEhKitNativoShopee`),
+ * so the button and this arm can never disagree (#1369).
  */
-function classeDe(v: VinculoDaConta): Classe {
-  if (v.raw.kitNativo === true) return ehKitNativoAtivo(v.raw) ? 'n' : 'x';
-  if (ehRascunhoShopee(v.raw)) return 'r';
-  if (ehVinculoSubstituido(v.raw)) return 'so';
-  return ehRemovido(v.raw) ? 'ro' : 'o';
+function classeDe(v: VinculoDaConta): ClasseDoVinculoShopee {
+  return classeDoVinculoShopee(v.raw);
 }
 
 function particionar(vinculos: readonly VinculoDaConta[]): Particao {
