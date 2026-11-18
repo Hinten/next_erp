@@ -124,6 +124,16 @@
       "script": "2026-11-li-integracoes-com-produto",
       "collection": "produtolojaintegrada",
       "scope": "COLLECTION_GROUP"
+    },
+    {
+      "script": "2026-11-li-estoque-contagens",
+      "collection": "produtolojaintegrada",
+      "scope": "COLLECTION_GROUP"
+    },
+    {
+      "script": "2026-11-li-estoque-contagens",
+      "collection": "estoques",
+      "scope": "COLLECTION_GROUP"
     }
   ]
 }

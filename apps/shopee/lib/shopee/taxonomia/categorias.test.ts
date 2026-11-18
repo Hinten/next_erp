@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
 import type { ShopeeCategoria } from '@delfrance/integrations-shopee';
+import { termosDaBuscaShopee } from '@delfrance/schemas';
 
 import {
   SHOPEE_CATEGORIA_PROFUNDIDADE_MAX,
+  buscarCategorias,
   caminhoDaCategoria,
   construirIndice,
   ehFolha,
@@ -189,5 +191,48 @@ describe('filhosDe / raizes', () => {
   it('devolve lista vazia para uma folha e para um id desconhecido', () => {
     expect(filhosDe(indice, 100182)).toEqual([]);
     expect(filhosDe(indice, 999999)).toEqual([]);
+  });
+});
+
+describe('buscarCategorias', () => {
+  const indice = construirIndice(ARVORE);
+  const ids = (q: string, limite?: number) =>
+    buscarCategorias(indice, termosDaBuscaShopee(q), limite).encontradas.map((c) => c.category_id);
+
+  it('EQUAL pair: acha pelo nome sem acento nem caixa', () => {
+    expect(ids('CALCADOS')).toEqual([100200]);
+    expect(ids('calçados')).toEqual([100200]);
+  });
+
+  it('folhas primeiro, depois os nós do meio, cada grupo na ordem da Shopee', () => {
+    // "o" casa Moda, Roupas (meio) e Calçados (folha) — nunca Camisetas nem Casa.
+    expect(ids('o')).toEqual([100200, 100000, 100100]);
+  });
+
+  it('todas as palavras precisam casar o nome do PRÓPRIO nó — o ancestral não conta', () => {
+    expect(ids('moda')).toEqual([100000]);
+    expect(ids('moda camisetas')).toEqual([]);
+  });
+
+  it('⚠️ NEAR-MISS: uma letra diferente não casa — `camisetaz` não acha «Camisetas»', () => {
+    expect(ids('camisetaz')).toEqual([]);
+  });
+
+  it('corta no limite e diz que cortou', () => {
+    const r = buscarCategorias(indice, termosDaBuscaShopee('o'), 2);
+    expect(r.encontradas.map((c) => c.category_id)).toEqual([100200, 100000]);
+    expect(r.truncada).toBe(true);
+    expect(buscarCategorias(indice, termosDaBuscaShopee('o'), 3).truncada).toBe(false);
+  });
+
+  it('uma busca sem termos não acha nada (em branco não é "tudo")', () => {
+    expect(buscarCategorias(indice, [])).toEqual({ encontradas: [], truncada: false });
+  });
+
+  it('acha pelo nome original quando o de exibição não casa', () => {
+    const outra = construirIndice([
+      { ...no(300000, 0, false, 'Casa'), original_category_name: 'Home' },
+    ]);
+    expect(buscarCategorias(outra, termosDaBuscaShopee('home')).encontradas).toHaveLength(1);
   });
 });

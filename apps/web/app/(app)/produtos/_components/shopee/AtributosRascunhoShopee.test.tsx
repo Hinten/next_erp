@@ -620,19 +620,37 @@ describe('AtributosRascunhoShopee — lista única e filhos', () => {
   it('escolher «Sem fio» manda o id e mostra os três filhos obrigatórios, recuados, com «Exigido quando…»', () => {
     mostrar({ arvore: arvore(TIPO_DE_CONEXAO) });
     expect(linha(100408).getAttribute('data-profundidade')).toBe('0');
-    expect(linha(100408).style.paddingLeft).toBe('calc(var(--mantine-spacing-lg) * 0)');
+    expect(linha(100408).style.paddingLeft).toBe(
+      'calc(var(--mantine-spacing-xs) + var(--mantine-spacing-lg) * 0)',
+    );
     expect(linhaAusente(101237)).toBeNull();
     escolher(linha(100408), 'Tipo de Conexão', ROTULO_SEM_FIO);
     expect(h.edicoes).toEqual([[100408, { tipo: 'lista', valueIds: [SEM_FIO] }]]);
     for (const filho of [101237, 101197, 101040]) {
       expect(linha(filho).getAttribute('data-profundidade')).toBe('1');
       // Indented by its depth — never flush with its parent.
-      expect(linha(filho).style.paddingLeft).toBe('calc(var(--mantine-spacing-lg) * 1)');
+      expect(linha(filho).style.paddingLeft).toBe(
+        'calc(var(--mantine-spacing-xs) + var(--mantine-spacing-lg) * 1)',
+      );
       expect(linha(filho).style.paddingLeft).not.toBe(linha(100408).style.paddingLeft);
       expect(linha(filho).textContent).toContain(
         `Exigido quando Tipo de Conexão é «${ROTULO_SEM_FIO}».`,
       );
     }
+  });
+
+  it('zebra: as linhas alternam o fundo, na ordem da árvore, filhos incluídos', () => {
+    mostrar({ arvore: arvore(TIPO_DE_CONEXAO) });
+    escolher(linha(100408), 'Tipo de Conexão', ROTULO_SEM_FIO);
+    const ordem = [100408, 101237, 101197, 101040];
+    expect(ordem.map((id) => linha(id).getAttribute('data-zebra'))).toEqual([
+      'false',
+      'true',
+      'false',
+      'true',
+    ]);
+    expect(linha(101237).style.background).toBe('var(--mantine-color-default-hover)');
+    expect(linha(100408).style.background).toBe('');
   });
 
   it('NEAR-MISS: escolher «Com fio» não mostra filho nenhum', () => {

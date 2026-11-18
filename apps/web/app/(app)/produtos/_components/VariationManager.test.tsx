@@ -1,6 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useState } from 'react';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  renderHook,
+  screen,
+  waitFor,
+} from '@testing-library/react';
 import type { Firestore } from 'firebase/firestore';
 import { Controller, FormProvider, useForm, type UseFormReturn } from 'react-hook-form';
 import { ZodError } from 'zod';
@@ -142,6 +150,7 @@ vi.mock('firebase/firestore', async (importOriginal) => {
 
 const { VariationManager } = await import('./VariationManager');
 type ChildrenFlush = import('./VariationManager').ChildrenFlush;
+type VariationConversion = import('./VariationManager').VariationConversion;
 type VariationPriceEdits = import('./VariationManager').VariationPriceEdits;
 
 /* --------------------------------- fixtures -------------------------------- */
@@ -181,12 +190,14 @@ function child(
   ordem: number,
   precos: PrecosMap = null,
 ) {
-  return { id, data: { nome, sku, variacoesUid, ordem, precos } };
+  return { id, data: { nome, sku, variacoesUid, ordem, precos, paiId: 'p1' } };
 }
 
 interface ManagerOptions {
   propagatePriceToChildren?: boolean;
   onPriceDirtyChange?: (dirty: boolean) => void;
+  onDraftDirtyChange?: (dirty: boolean) => void;
+  grupos?: GrupoComId[];
 }
 
 function renderManager(
@@ -196,19 +207,22 @@ function renderManager(
 ) {
   const flushRef: React.MutableRefObject<ChildrenFlush | null> = { current: null };
   const priceEditsRef: React.MutableRefObject<VariationPriceEdits | null> = { current: null };
+  const conversionRef: React.MutableRefObject<VariationConversion | null> = { current: null };
   const renderTree = (nextOptions: ManagerOptions = options) => (
     <MantineTestProvider>
       <VariationManager
         produtoId="p1"
         db={db}
-        grupos={grupos()}
+        grupos={nextOptions.grupos ?? grupos()}
         propagatePriceToChildren={nextOptions.propagatePriceToChildren}
         value={value}
         onChange={() => undefined}
         onGroupsChange={() => undefined}
         onPriceDirtyChange={nextOptions.onPriceDirtyChange}
+        onDraftDirtyChange={nextOptions.onDraftDirtyChange}
         flushRef={flushRef}
         priceEditsRef={priceEditsRef}
+        conversionRef={conversionRef}
         membroUnicoId={membroUnicoId}
       />
     </MantineTestProvider>
@@ -217,6 +231,7 @@ function renderManager(
   return {
     ...utils,
     flushRef,
+    conversionRef,
     priceEditsRef,
     rerenderWith: (nextOptions: ManagerOptions) => utils.rerender(renderTree(nextOptions)),
   };
@@ -880,20 +895,20 @@ describe('VariationManager — the family keeps a member', () => {
  * hand-editing a SKU or deleting the member.
  */
 describe('VariationManager — the SKU gate runs after the reuse', () => {
-  it('absorbs a codigo-less variante onto the sole member instead of refusing', async () => {
+  it('absorbs a codigo-less variante onto the sole member instead of refusing', () => {
     // The family of one, as it exists after #1424: one child carrying the
     // parent's own SKU.
     h.setChildren([child('membro-1', 'Camiseta', 'CAM', null, 0)]);
-    const { flushRef } = renderManager([uidSemCodigo], 'membro-1');
+    const { conversionRef } = renderManager([uidSemCodigo], 'membro-1');
 
     fireEvent.click(screen.getByText('Gerar variações'));
 
     // No refusal, and the generated row landed ON the member's document.
-    const { pending } = await startFlush(flushRef.current!);
-    await settleCommit(pending);
-
-    expect(h.ops.filter((o) => o.kind === 'set')).toEqual([]);
-    expect(h.ops).toContainEqual(expect.objectContaining({ kind: 'update', id: 'membro-1' }));
+    const conversion = conversionRef.current!;
+    expect(conversion.filhoUnicoId).toBe('membro-1');
+    expect(conversion.prepare({}).writes).toEqual([
+      expect.objectContaining({ type: 'update', ref: { id: 'membro-1' } }),
+    ]);
   });
 
   // ...and the near-miss: a genuine collision between two DIFFERENT documents
@@ -924,16 +939,17 @@ describe('VariationManager — the SKU gate runs after the reuse', () => {
  * carrying the family's barcode while M has none.
  */
 describe('VariationManager — the absorbed member drops the family barcode', () => {
-  it('clears gtin when a real variation absorbs the sole member', async () => {
+  it('clears gtin when a real variation absorbs the sole member', () => {
     h.setChildren([child('membro-1', 'Camiseta', 'CAM', null, 0)]);
-    const { flushRef } = renderManager([uidP, uidG], 'membro-1');
+    const { conversionRef } = renderManager([uidP, uidG], 'membro-1');
 
     fireEvent.click(screen.getByText('Gerar variações'));
-    const { pending } = await startFlush(flushRef.current!);
-    await settleCommit(pending);
-
-    const absorvida = h.ops.find((o) => o.kind === 'update' && o.id === 'membro-1');
-    expect(absorvida?.data).toMatchObject({ gtin: null });
+    const conversion = conversionRef.current!;
+    expect(conversion.filhoUnicoId).toBeNull();
+    expect(conversion.prepare({}).writes[0]).toMatchObject({
+      ref: { id: 'membro-1' },
+      data: { gtin: null, variacoesUid: [uidP] },
+    });
   });
 
   // ⚠️ The near-miss. A row the reuse did NOT absorb is an ordinary edit, and an
@@ -951,6 +967,140 @@ describe('VariationManager — the absorbed member drops the family barcode', ()
 
     const editada = h.ops.find((o) => o.kind === 'update' && o.id === 'c1');
     expect(editada?.data).not.toHaveProperty('gtin');
+  });
+});
+
+describe('VariationManager — the first real variants', () => {
+  it('applies edited inherited measurements and keeps the reused child’s overrides', () => {
+    const parent = {
+      nome: 'Camiseta',
+      sku: 'CAM',
+      filhoUnicoId: 'membro-1',
+      pesoLiquidoKg: 1,
+      alturaCm: 10,
+      larguraCm: 20 as number | null,
+      profundidadeCm: 30,
+    };
+    h.parent.current.data.data = parent;
+    const member = {
+      ...child('membro-1', parent.nome, 'CAM-UN', null, 0).data,
+      pesoLiquidoKg: 1,
+      alturaCm: 8,
+      larguraCm: 20,
+      profundidadeCm: 30,
+    };
+    h.setChildren([{ id: 'membro-1', data: member }]);
+    const { result } = renderHook(() => useForm({ defaultValues: parent }));
+    const conversionRef: React.MutableRefObject<VariationConversion | null> = { current: null };
+    render(
+      <MantineTestProvider>
+        <FormProvider {...result.current}>
+          <VariationManager
+            produtoId="p1"
+            db={db}
+            grupos={grupos()}
+            value={[uidP]}
+            onChange={() => undefined}
+            onGroupsChange={() => undefined}
+            flushRef={{ current: null }}
+            conversionRef={conversionRef}
+          />
+        </FormProvider>
+      </MantineTestProvider>,
+    );
+    act(() => {
+      result.current.setValue('pesoLiquidoKg', 2, { shouldDirty: true });
+      result.current.setValue('alturaCm', 15, { shouldDirty: true });
+      result.current.setValue('larguraCm', null, { shouldDirty: true });
+      result.current.setValue('profundidadeCm', 25);
+    });
+
+    fireEvent.click(screen.getByText('Gerar variações'));
+    const [write] = conversionRef.current!.prepare(result.current.getValues()).writes;
+    expect(write).toMatchObject({
+      type: 'update',
+      ref: { id: 'membro-1' },
+      data: { pesoLiquidoKg: 2, larguraCm: null },
+    });
+    if (write?.type !== 'update') throw new Error('Expected an update on the reused variant');
+    expect(write.data).not.toHaveProperty('alturaCm');
+    expect(write.data).not.toHaveProperty('profundidadeCm');
+    expect(() => write.guard?.assertCurrent?.(member, parent)).not.toThrow();
+    expect(() => write.guard?.assertCurrent?.(member, { ...parent, pesoLiquidoKg: 3 })).toThrow(
+      /outra sessão/,
+    );
+  });
+
+  it('rebuilds generated options without treating shopee-UN as a size', async () => {
+    const parent = { nome: 'Camiseta', sku: 'shopee', filhoUnicoId: 'membro-1' };
+    h.parent.current.data.data = parent;
+    const member = child('membro-1', parent.nome, 'shopee-UN', null, 0, { l1: { valor: 20 } });
+    h.setChildren([member]);
+    const { conversionRef, priceEditsRef } = renderManager([uidP, uidG], 'membro-1', {
+      propagatePriceToChildren: false,
+    });
+    expect(rowCount()).toBe(0);
+    expect(screen.queryByRole('button', { name: 'Nova variante' })).toBeNull();
+    expect(screen.queryByRole('link', { name: 'Abrir variação' })).toBeNull();
+    act(() => priceEditsRef.current!.setPrice('membro-1', 'l1', 27));
+
+    fireEvent.click(screen.getByText('Gerar variações'));
+    fireEvent.click(screen.getByText('Reconstituir variações'));
+    expect(skuInputs().map((input) => input.value)).toEqual(['shopeeP', 'shopeeG']);
+    expect(screen.queryByText(/shopee-UN/)).toBeNull();
+    expect(screen.getByText('Camiseta P', { selector: 'strong' })).toBeTruthy();
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Remover variação' })[0]!);
+    await waitFor(() =>
+      expect(screen.getByText('Camiseta G', { selector: 'strong' })).toBeTruthy(),
+    );
+    const conversion = conversionRef.current!;
+    expect(conversion.filhoUnicoId).toBe('membro-1');
+    const prepared = conversion.prepare({ propagatePriceToChildren: false });
+    expect(prepared.writes).toEqual([
+      expect.objectContaining({
+        type: 'update',
+        ref: { id: 'membro-1' },
+        data: expect.objectContaining({ sku: 'shopeeG', precos: { l1: { valor: 27 } } }),
+      }),
+    ]);
+    const check = prepared.writes[0]!.guard!.assertCurrent!;
+    expect(() => check(member.data, parent)).not.toThrow();
+    expect(() => check({ ...member.data, variacoesUid: [uidP] }, parent)).toThrow(/outra sessão/);
+    expect(rowCount()).toBe(2);
+  });
+
+  it('reconstructs a genuine single variant with no parent SKU and keeps its custom SKU', () => {
+    h.parent.current.data.data = { nome: 'Camiseta', sku: null, filhoUnicoId: 'c1' };
+    h.setChildren([child('c1', 'Nome antigo', 'CUSTOM', [uidP], 0)]);
+    const onDraftDirtyChange = vi.fn();
+    renderManager([uidP], 'c1', { onDraftDirtyChange });
+
+    fireEvent.click(screen.getByText('Reconstituir variações'));
+    expect(screen.getByDisplayValue('Camiseta P')).toBeTruthy();
+    expect(skuInputs().map((input) => input.value)).toEqual(['CUSTOM']);
+    expect(onDraftDirtyChange).toHaveBeenLastCalledWith(true);
+  });
+
+  it('uses applicable groups for legacy SKUs and applies the draft only on complete success', () => {
+    const [size] = grupos();
+    const unrelated = { ...size!, id: 'outro', data: { ...size!.data, nome: 'Inaplicável' } };
+    h.setChildren([
+      child('p', 'Nome antigo P', 'CAMP', null, 0),
+      child('g', 'Nome antigo G', 'CAMQ', null, 1),
+    ]);
+    const onDraftDirtyChange = vi.fn();
+    renderManager([uidP], null, { grupos: [size!, unrelated], onDraftDirtyChange });
+
+    fireEvent.click(screen.getByText('Reconstituir variações'));
+    expect(screen.getByDisplayValue('Nome antigo P')).toBeTruthy();
+    expect(screen.getByText(/combinação completa para o SKU "CAMQ"/)).toBeTruthy();
+    expect(onDraftDirtyChange).toHaveBeenLastCalledWith(false);
+
+    fireEvent.change(skuInputs()[1]!, { target: { value: 'CAMG' } });
+    fireEvent.click(screen.getByText('Reconstituir variações'));
+    expect(screen.getByDisplayValue('Camiseta P')).toBeTruthy();
+    expect(screen.getByDisplayValue('Camiseta G')).toBeTruthy();
   });
 });
 

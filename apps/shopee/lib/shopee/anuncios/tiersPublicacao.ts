@@ -281,7 +281,9 @@
  * Whenever the model leg sends `update_tier_variation`, every live option of a
  * tier that PAIRS goes at its index under its OWN current name
  * (`nomeDeTierShopee(viva.nome)`), never the paired variante's; a republish whose
- * leg plans `nenhuma` sends no tier body at all. Only a nameless live option —
+ * leg plans `nenhuma` sends no tier body at all — and a changed tier-1 option IMAGE
+ * set alone plans `update` ({@link imagensDeOpcaoDivergem}), so a swapped variation
+ * cover still reaches Shopee. Only a nameless live option —
  * possible only beside a non-zero option id, which `tiersDoItem` keeps — falls back
  * to its stored row's `shopee_option_name`, then to the variante's name. The row's
  * name counts even when its variante has left the grupo (the position then pairs no
@@ -560,6 +562,12 @@ export interface ArgsReconciliar {
   readonly viva: ArvoreVivaDoItem | null;
   /** `montarTiers(...).tiers.length`. */
   readonly profundidadeNossa: number;
+  /**
+   * `montarTiers(...).tiers` — read ONLY for the tier-1 option images
+   * ({@link imagensDeOpcaoDivergem}). Absent = images never decide the `acao`
+   * (the plan's `viva: null` pass, where nothing live can be compared).
+   */
+  readonly tiers?: readonly TierMontado[];
 }
 
 /**
@@ -1589,6 +1597,56 @@ function reconstroiAEstrutura(viva: ArvoreVivaDoItem | null, profundidadeNossa: 
   return modelosVivosDe(viva).length === 0 || profundidadeMudou(viva, profundidadeNossa);
 }
 
+/** A non-empty image id, else `null` — the wire answers `''` and `null` alike for "none". */
+function idDeImagem(valor: string | null | undefined): string | null {
+  return typeof valor === 'string' && valor.length > 0 ? valor : null;
+}
+
+/**
+ * The image id the LIVE listing holds on tier 1's option at wire index `j`, or
+ * `null`. Read off the RAW trees, because `tiersDoItem` keeps no image: the
+ * standardised tree first, then the custom one (`option_list[j].image`).
+ */
+function imagemVivaDaOpcao(viva: ArvoreVivaDoItem, j: number): string | null {
+  const padronizada = idDeImagem(
+    viva.standardise_tier_variation?.[0]?.variation_option_list[j]?.image_id,
+  );
+  if (padronizada !== null) return padronizada;
+  return idDeImagem(viva.tier_variation?.[0]?.option_list[j]?.image?.image_id);
+}
+
+/**
+ * Does the tier-1 option image set we AUTHORED differ from the one the live
+ * listing holds? The reason, on its own, to send `update_tier_variation` — the
+ * only call that carries option images on a republish. Without it, a republish
+ * whose models did not move planned `nenhuma` and silently dropped every new
+ * variation cover the publish had just uploaded.
+ *
+ * - Tier 1 only: `montarTiers` never authors an image anywhere else.
+ * - Our set is ALL-OR-NONE, so one option with `image_id: null` means we hold no
+ *   set to send ⇒ `false`. An image check must never be what sends a body with
+ *   no images in it (what Shopee does with that is unmeasured).
+ * - Option `j` of ours is the live option at wire index `j`: on an update the
+ *   live options keep their index and ours are appended after them, so an
+ *   appended option has no live image and reads as divergent.
+ * - The comparison is EXACT — image ids are opaque, never trimmed or folded.
+ *   PAIR: `'img-a'` ≡ `'img-a'`. NEAR-MISS: `'img-a'` vs `'IMG-A'` stay distinct,
+ *   and a live option with no image differs from ours. Whether a re-read id is
+ *   byte-equal to the one `upload_image` minted is unmeasured; if it is not,
+ *   every republish sends one extra `update_tier_variation` with an unchanged
+ *   `model_list` — an extra call, nothing lost.
+ */
+export function imagensDeOpcaoDivergem(
+  tiers: readonly TierMontado[],
+  viva: ArvoreVivaDoItem | null,
+): boolean {
+  if (!viva) return false;
+  const opcoes = tiers[0]?.opcoes ?? [];
+  if (opcoes.length === 0) return false;
+  if (opcoes.some((o) => o.image_id === null)) return false;
+  return opcoes.some((o, j) => o.image_id !== imagemVivaDaOpcao(viva, j));
+}
+
 /**
  * What to send on the tier/model leg, as DATA.
  *
@@ -1720,8 +1778,14 @@ export function reconciliarModelos(args: ArgsReconciliar): PlanoDeModelos {
   const listaMudou = modelList.some(
     (linha, i) => !mesmoTierIndex(linha.tier_index, vivos[i]!.tier_index),
   );
+  // A changed tier-1 image set is a reason on its own: only
+  // `update_tier_variation` carries option images, and the FULL `modelList`
+  // above re-lists every live model at its own position, so nothing moves.
+  const imagensMudaram = args.tiers !== undefined && imagensDeOpcaoDivergem(args.tiers, args.viva);
   const acao: PlanoDeModelos['acao'] =
-    listaMudou || novos.length > 0 || atualizarSku.length > 0 ? 'update' : 'nenhuma';
+    listaMudou || novos.length > 0 || atualizarSku.length > 0 || imagensMudaram
+      ? 'update'
+      : 'nenhuma';
 
   return {
     acao,

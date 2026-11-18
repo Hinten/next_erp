@@ -115,6 +115,24 @@ export const respostaCategoriasShopeeSchema = z
   });
 export type RespostaCategoriasShopee = z.infer<typeof respostaCategoriasShopeeSchema>;
 
+/** One category a text search found: the row and its path (root FIRST, the row LAST). */
+export const categoriaEncontradaDtoSchema = categoriaResumoDtoSchema.extend({
+  pathFromRoot: z.array(categoriaResumoDtoSchema),
+});
+export type CategoriaEncontradaDto = z.infer<typeof categoriaEncontradaDtoSchema>;
+
+/**
+ * `GET …/taxonomia/categorias/busca?integracaoId=&q=` — 200: the categories of
+ * the conta's tree whose own name matches every word of `q`
+ * (`correspondeABuscaShopee`), leaves first, capped; `truncated` says the cap
+ * cut the list. An empty `resultados` is a real answer (nothing matched).
+ */
+export const respostaBuscaCategoriasShopeeSchema = z.object({
+  resultados: z.array(categoriaEncontradaDtoSchema),
+  truncated: z.boolean(),
+});
+export type RespostaBuscaCategoriasShopee = z.infer<typeof respostaBuscaCategoriasShopeeSchema>;
+
 /* -------------------------------------------------------------------------- */
 /*                                 Attributes                                 */
 /* -------------------------------------------------------------------------- */

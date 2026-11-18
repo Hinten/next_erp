@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, type CSSProperties } from 'react';
 import {
   Badge,
   Button,
@@ -625,9 +625,10 @@ export function AtributosRascunhoShopee({
         {ROTULO_ATRIBUTOS_RASCUNHO_SHOPEE}
       </Text>
       <EstadoDaLeitura raiz={raiz} leitura={leitura} anuncio={anuncio} />
-      {linhas.map((linha) => (
+      {linhas.map((linha, i) => (
         <LinhaDoAtributo
           key={linha.attributeId}
+          zebra={i % 2 === 1}
           linkDocId={linkDocId}
           anuncio={anuncio}
           linha={linha}
@@ -807,8 +808,23 @@ interface PropsDaLinha {
   anuncio: boolean;
 }
 
-function LinhaDoAtributo(props: PropsDaLinha) {
-  const { linkDocId, linha } = props;
+/**
+ * Every other row is shaded ("zebra striping") so each attribute reads as its
+ * own block. `--mantine-color-default-hover` adapts to light and dark schemes
+ * (`PhotoManager`'s stripes use the same token). Every row gets the same
+ * padding, so shaded and plain rows line up; a child's depth indent adds to it.
+ */
+function estiloDaLinha(zebra: boolean, profundidade: number): CSSProperties {
+  return {
+    padding: 'var(--mantine-spacing-xs)',
+    paddingLeft: `calc(var(--mantine-spacing-xs) + var(--mantine-spacing-lg) * ${String(profundidade)})`,
+    borderRadius: 'var(--mantine-radius-sm)',
+    background: zebra ? 'var(--mantine-color-default-hover)' : undefined,
+  };
+}
+
+function LinhaDoAtributo(props: PropsDaLinha & { zebra: boolean }) {
+  const { linkDocId, linha, zebra } = props;
   const idDaLinha = `shopee-atributo-${linkDocId}-${String(linha.attributeId)}`;
   const problemas = linha.problemas
     .map((p) => fraseDoProblemaDoAtributoShopee(p, linha.tipoDoValor, linha.controle))
@@ -819,7 +835,8 @@ function LinhaDoAtributo(props: PropsDaLinha) {
       gap={4}
       data-testid={idDaLinha}
       data-profundidade={linha.profundidade}
-      style={{ paddingLeft: `calc(var(--mantine-spacing-lg) * ${String(linha.profundidade)})` }}
+      data-zebra={zebra}
+      style={estiloDaLinha(zebra, linha.profundidade)}
     >
       <ControleDaLinha {...props} idDaLinha={idDaLinha} />
       {frasesDosProblemas.length > 0 && (

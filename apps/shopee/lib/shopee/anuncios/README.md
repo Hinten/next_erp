@@ -1727,7 +1727,15 @@ a child's model unrefused (P14a open point 6's class). Pinned in
 Whenever the model leg sends `update_tier_variation`, every live option of a tier
 that PAIRS goes under its OWN current name (`nomeDeTierShopee(viva.nome)`), never
 the paired variante's; a republish whose leg plans `acao: 'nenhuma'` sends no tier
-body at all, because `reconciliarModelos` never compares option names. Only a
+body at all, because `reconciliarModelos` never compares option names. It DOES
+compare the tier-1 option IMAGES (`imagensDeOpcaoDivergem`): a complete image set
+of ours that differs from the live one plans `update` on its own, with the live
+`model_list` re-sent unchanged — before that, a republish that only swapped the
+variation covers sent nothing and the new images never reached Shopee. An
+incomplete set (all-or-none failed) never triggers it. ⚠️ Whether a re-read option
+`image_id` is byte-equal to the id `upload_image` minted is unmeasured (the BR
+capture redacts it); if not, each republish of a photo-bearing family sends one
+extra `update_tier_variation` — an extra call, nothing moved. Only a
 nameless live option — possible only beside a non-zero option id, which
 `tiersDoItem` keeps — falls back to its stored row's `shopee_option_name`, then to
 the variante's name. The row's name counts even when its variante has left the
@@ -2396,6 +2404,19 @@ never resurrected by a status write.
 ⚠️ The two are **not interchangeable**: `mergeIfExists` rejects a nested object,
 so adding `ultimaPublicacao` or `falhaPublicacao` to a lifecycle patch is a
 runtime TypeError, not a silent success. A test in each suite pins the shape.
+
+### A done publish ticks the produto's `publicado` (2026-11-17)
+
+The publish writes the LINK documents, never the produto — with ONE exception:
+`publicarShopee` calls `marcarProdutoPublicado` (`@delfrance/data/admin/produtos`)
+once a run comes back DONE (the item arm's result, a kit's `criado` /
+`retomado` / `atualizado`), so the ERP catalogue shows the produto as
+**Publicado**. Paused listings count; an uncertain outcome (`item-incerto`, a
+kit's `incerto`) never does, and the dry run writes nothing. The helper writes
+`publicado` alone (no `ultimaModificacao`), skips a produto already `true`,
+and rides the read's `updateTime` (rule 7 tier 1): an operator edit in between
+wins and nothing is written. Writing the flag is not gating on it — no Shopee
+path reads `publicado`. Pinned in `publicarShopee.test.ts` (`publicado (2026-11-17)`).
 
 ### The link trigger: the zero-read fast path and why the survivor scan needs no index
 

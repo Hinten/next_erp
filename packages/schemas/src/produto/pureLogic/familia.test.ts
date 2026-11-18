@@ -5,6 +5,7 @@ import {
   colapsarPaiEFilhoUnico,
   derivarFilhoUnico,
   ehFamiliaDeUm,
+  ehMembroUnicoImplicito,
   ehKitVirtualEfetivo,
   CAMPOS_ESPELHADOS_COM_COMPARADOR,
   espelhoArmazenadoDoMembro,
@@ -29,6 +30,28 @@ import { produtoSchema } from '../collection/produto';
 
 const pai = (id = 'p1') => ({ id, paiId: null });
 const filho = (id: string, paiId: string) => ({ id, paiId });
+
+describe('ehMembroUnicoImplicito', () => {
+  const raiz = { ...pai(), nome: 'Camiseta', sku: 'shopee', filhoUnicoId: 'c1' };
+  const membro = { ...filho('c1', 'p1'), nome: 'Camiseta', sku: 'shopee-UN', ordem: 0 };
+
+  it('recognizes a ranked mirror even with options left on the parent', () => {
+    const comGrupos = { ...raiz, grupoDeVariacoesUid: ['tamanho'] };
+    expect(ehMembroUnicoImplicito(comGrupos, membro, 1)).toBe(true);
+    expect(ehMembroUnicoImplicito(comGrupos, { ...membro, sku: 'shopee' }, 1)).toBe(true);
+    expect(ehMembroUnicoImplicito(comGrupos, { ...membro, sku: 'shopee-UNI' }, 1)).toBe(false);
+  });
+
+  it('preserves genuine or distinguishable legacy variants and rejects an inconsistent pointer', () => {
+    expect(ehMembroUnicoImplicito(raiz, { ...membro, grupoDeVariacoesUid: ['tamanho'] }, 1)).toBe(
+      false,
+    );
+    expect(ehMembroUnicoImplicito(raiz, { ...membro, sku: 'shopeeP' }, 1)).toBe(false);
+    expect(ehMembroUnicoImplicito(raiz, { ...membro, paiId: 'another' }, 1)).toBe(false);
+    expect(ehMembroUnicoImplicito(raiz, membro, 2)).toBe(false);
+    expect(ehMembroUnicoImplicito(raiz, { ...membro, ordem: null, sku: 'antigo' }, 1)).toBe(true);
+  });
+});
 
 describe('colapsarPaiEFilhoUnico — what IS one produto', () => {
   it('collapses a parent and its own sole member, to the CHILD', () => {

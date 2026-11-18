@@ -54,9 +54,9 @@ import {
   type ComponentesKit,
   componentesKitEntries,
   contaDoLinkLi,
+  depositoDaContaLi,
+  formasDoDepositoLi,
   makeEstoqueUid,
-  toOuterRef,
-  toOuterRefOrNull,
   vinculoLiConta,
 } from '@delfrance/schemas';
 
@@ -116,24 +116,13 @@ function proprio(o: Readonly<Record<string, unknown>>, chave: string): unknown {
   return Object.hasOwn(o, chave) ? o[chave] : undefined;
 }
 
-/** Both stored forms of a depósito ref: `documents/depositos/<id>`, then `depositos/<id>`. */
-export function formasDoDepositoLi(depositoId: string): readonly [string, string] {
-  return [toOuterRef(`depositos/${depositoId}`), `depositos/${depositoId}`];
-}
-
 /**
- * The conta's depósito as a BARE document id, or `null` when its `depositoOuterRef` does not name
- * exactly one `depositos` document (absent, `null`, another collection, a nested path, junk).
- * Either stored form is read.
+ * The depósito readers — both stored forms of a ref (`formasDoDepositoLi`) and the conta's
+ * depósito as a bare id (`depositoDaContaLi`) — live in `@delfrance/schemas`
+ * (`estoqueErpLojaIntegrada.ts`), so a `tools/migrations` audit reads the identical answers;
+ * re-exported here, so no importer changed.
  */
-export function depositoDaContaLi(conta: { readonly depositoOuterRef?: unknown }): string | null {
-  const ref = toOuterRefOrNull(conta.depositoOuterRef);
-  if (ref === null) return null;
-  const partes = ref.split('/');
-  const id = partes[2];
-  if (partes.length !== 3 || partes[1] !== 'depositos' || id === undefined) return null;
-  return segmentoDeCaminhoLi(id) ? id : null;
-}
+export { depositoDaContaLi, formasDoDepositoLi };
 
 /** Whether a record's stored depósito is one of the two forms. */
 function noDeposito(dados: Readonly<Record<string, unknown>>, formas: readonly string[]): boolean {

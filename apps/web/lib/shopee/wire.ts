@@ -476,6 +476,17 @@ export {
 } from '@delfrance/schemas';
 
 /**
+ * The category TEXT search — `GET …/taxonomia/categorias/busca?integracaoId=&q=`:
+ * the matching categories with their paths, leaves first, capped (`truncated`).
+ */
+export {
+  categoriaEncontradaDtoSchema,
+  respostaBuscaCategoriasShopeeSchema,
+  type CategoriaEncontradaDto,
+  type RespostaBuscaCategoriasShopee,
+} from '@delfrance/schemas';
+
+/**
  * The item bands — `GET …/taxonomia/limites?integracaoId=[&categoryId=]` — read
  * by TWO screens, so two schemas over ONE declaration:
  *

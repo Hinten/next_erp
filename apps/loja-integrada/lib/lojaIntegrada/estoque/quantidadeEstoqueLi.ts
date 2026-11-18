@@ -42,7 +42,13 @@
  *
  * PURE: no clock, no network, no Firestore, no environment read.
  */
-import type { ComponentesKit } from '@delfrance/schemas';
+import {
+  type CaminhoEstoqueLi,
+  type ComponentesKit,
+  type DocEstoqueLi,
+  caminhoEstoqueLi,
+  segmentoDeCaminhoLi,
+} from '@delfrance/schemas';
 import {
   type MembroDaFamilia,
   type OpcoesDeQuantidade,
@@ -71,39 +77,12 @@ export interface ProdutoEstoqueLi {
 }
 
 /**
- * One stock record as a read hands it over: its full document path
- * (`produtos/{produtoId}/estoques/{estoqueId}`) and its raw data.
+ * The stock record type and its path readers (`caminhoEstoqueLi`, `segmentoDeCaminhoLi`) live in
+ * `@delfrance/schemas` (`estoqueErpLojaIntegrada.ts`), so a `tools/migrations` audit reads the
+ * identical answers; re-exported here, so no importer changed.
  */
-export interface DocEstoqueLi {
-  readonly caminho: string;
-  readonly dados: Readonly<Record<string, unknown>>;
-}
-
-/** A stock record's path, split. */
-export interface CaminhoEstoqueLi {
-  readonly produtoId: string;
-  readonly estoqueId: string;
-}
-
-const CAMINHO_ESTOQUE = /^produtos\/([^/]+)\/estoques\/([^/]+)$/;
-
-/**
- * The owner and the id of a stock record from its path, or `null` when the text is not exactly
- * `produtos/{produtoId}/estoques/{estoqueId}` (a leading slash, a `documents/` prefix, another
- * collection, an empty segment — an Admin SDK path is never any of those).
- */
-export function caminhoEstoqueLi(caminho: string): CaminhoEstoqueLi | null {
-  const m = CAMINHO_ESTOQUE.exec(caminho);
-  if (m === null) return null;
-  const [, produtoId, estoqueId] = m;
-  if (produtoId === undefined || estoqueId === undefined) return null;
-  return { produtoId, estoqueId };
-}
-
-/** A document id that can sit in one path segment: not empty, no `/`. */
-export function segmentoDeCaminhoLi(id: string): boolean {
-  return id !== '' && !id.includes('/');
-}
+export { caminhoEstoqueLi, segmentoDeCaminhoLi };
+export type { CaminhoEstoqueLi, DocEstoqueLi };
 
 /**
  * The inverse of {@link caminhoEstoqueLi}: the path of record `estoqueId` of produto `produtoId`,

@@ -125,7 +125,11 @@ describe('sincronizarMembroUnico — losing the write', () => {
    */
   function stubDb(
     update: () => Promise<unknown>,
-    opts: { exists?: boolean; pai?: Record<string, unknown> } = {},
+    opts: {
+      exists?: boolean;
+      pai?: Record<string, unknown>;
+      membro?: Record<string, unknown>;
+    } = {},
   ) {
     const chamadas: Array<Record<string, unknown>> = [];
     // ⚠️ Reads are counted, not just writes. "Costs nothing when nothing moved"
@@ -134,7 +138,7 @@ describe('sincronizarMembroUnico — losing the write', () => {
     let leituras = 0;
     const docs: Record<string, Record<string, unknown>> = {
       p1: opts.pai ?? { paiId: null, filhoUnicoId: 'c1', nome: 'Bandeja Decorativa' },
-      c1: { nome: 'Bandeja', paiId: 'p1' },
+      c1: opts.membro ?? { nome: 'Bandeja', paiId: 'p1' },
     };
     const refDe = (id: string) => ({
       get: async () => {
@@ -196,6 +200,27 @@ describe('sincronizarMembroUnico — losing the write', () => {
     const { db, chamadas } = stubDb(() => Promise.resolve(), { exists: false });
     await expect(sincronizarMembroUnico(db, 'p1', antes, depois)).resolves.toBeNull();
     expect(chamadas).toEqual([]);
+  });
+
+  it('drops a delayed delivery when the child became a genuine single variation', async () => {
+    const { db, chamadas } = stubDb(() => Promise.resolve(), {
+      membro: {
+        nome: antes.nome,
+        paiId: 'p1',
+        variacoesUid: ['documents/grupoDeVariacoes/tamanho/variacoes/p'],
+      },
+    });
+    await expect(sincronizarMembroUnico(db, 'p1', antes, depois)).resolves.toBeNull();
+    expect(chamadas).toEqual([]);
+  });
+
+  it('checks the current pointer before reading a former member', async () => {
+    const { db, chamadas, leituras } = stubDb(() => Promise.resolve(), {
+      pai: { ...depois, filhoUnicoId: null },
+    });
+    await expect(sincronizarMembroUnico(db, 'p1', antes, depois)).resolves.toBeNull();
+    expect(chamadas).toEqual([]);
+    expect(leituras()).toBe(0);
   });
 
   it('is a no-op on a produto with no sole member', async () => {

@@ -294,6 +294,7 @@ export async function aplicarModelos(
     armazenados: entrada.armazenados,
     viva,
     profundidadeNossa: montagem.tiers.length,
+    tiers: montagem.tiers,
   });
 
   const padronizadas = padronizadasDeTiers(montagem.tiers);

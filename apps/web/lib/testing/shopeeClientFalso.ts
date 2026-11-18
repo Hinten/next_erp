@@ -24,6 +24,7 @@ export function shopeeClientFalso(metodos: Partial<ShopeeClient> = {}): ShopeeCl
     reclamacaoEstado: naoEsperado('reclamacaoEstado'),
     reclamacaoAcao: naoEsperado('reclamacaoAcao'),
     categorias: naoEsperado('categorias'),
+    buscarCategorias: naoEsperado('buscarCategorias'),
     limites: naoEsperado('limites'),
     tabelaMedidasLista: naoEsperado('tabelaMedidasLista'),
     tabelaMedidasDetalhe: naoEsperado('tabelaMedidasDetalhe'),
