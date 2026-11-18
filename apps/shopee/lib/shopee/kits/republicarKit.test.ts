@@ -70,6 +70,7 @@ import { publicarKitShopee } from './publicarKit';
 import type { ArmaDeKit, EntradaDeKit } from './prepararKit';
 import { MOTIVO_ANEXO_IMPOSSIVEL } from './republicarKit';
 import type { KitDeps, ResultadoPublicacaoKit } from './resultadoKit';
+import { aoVivoDeTeste } from './testing/reservaDeTeste';
 
 /* -------------------------------------------------------------------------- */
 /*  Fixture ids by ROLE only (s19-ctx / reconcile §0). Never a real id.         */
@@ -557,6 +558,7 @@ function deps(db: FakeDb, loja: Loja, nowMs = AGORA): KitDeps {
     depositoOuterRef: 'documents/depositos/dep-1',
     operacaoOuterRef: null,
     nowMs,
+    aoVivo: aoVivoDeTeste(nowMs),
     esperar: () => Promise.resolve(),
     taxonomia: {
       integracaoId: INTEGRACAO,

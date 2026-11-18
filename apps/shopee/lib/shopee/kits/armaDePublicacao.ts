@@ -535,3 +535,22 @@ export function escolherArmaDePublicacao(a: {
   if (corpo.converterEmKit) return aRecusa(problemaOpcaoDeKitEmAnuncioComum('converterEmKit'));
   return resultado;
 }
+
+/**
+ * #1912: does the dispatcher's answer say that the conta's LINKS no longer make
+ * this a native kit's first create? Read by `publicarShopee` for a request
+ * carrying `criarKitNativo`; it lives HERE because these motivos are spelled by
+ * their one producer only (`errosPublicacao.test.ts`, O7). Another ARM (a live listing appeared), or
+ * one of the two refusals a link causes: `vinculos-ambiguos` (two live native
+ * kits) and `opcao-de-kit-em-anuncio-comum` (the kit options the web sends now
+ * reach an ordinary listing). A refusal about the PRODUTO (`produto-e-filho`,
+ * `kit-virtual-sem-kit`) is answered as it is.
+ */
+export function vinculosMudaramParaAPrimeiraCriacao(despacho: ResultadoDoDespacho): boolean {
+  if (despacho.ok) return despacho.arma.arma !== 'kit-criar';
+  return despacho.problemas.some(
+    (p) =>
+      p.motivo === MOTIVO_PUBLICACAO_BLOQUEADA.vinculosAmbiguos ||
+      p.motivo === MOTIVO_PUBLICACAO_BLOQUEADA.opcaoDeKitEmAnuncioComum,
+  );
+}

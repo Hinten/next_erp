@@ -449,11 +449,11 @@ a page of the 3-day queue irreversibly.
   `avisos/autorizacao.ts`, which stays the one module on the AVISOS path that
   knows the unit (the three pedido seams above are the others).
 - `lib/shopee/testing/fakeDb.ts` — the shared in-memory Firestore double
-  **123** suites in this app name (121 drive it), and since step 8 it has a
+  **124** suites in this app name (122 drive it), and since step 8 it has a
   suite of its OWN. ⚠️ Re-derive the number, never increment it:
   `git grep -l "testing/fakeDb" -- "apps/shopee/**/*.test.ts" | wc -l` (after
   step 8: 20, 9: 34, 12: 57, 13: 73, 14: 81, 15: 84, 15b: 87, 17: 93, 18: 95,
-  19: 108, 20: 111, 21: 114, #1911: 123 — the two `*.tasks.test.ts` suites it
+  19: 108, 20: 111, 21: 114, #1911: 123, #1912: 124 — the two `*.tasks.test.ts` suites it
   counts name the double in a docblock only).
   Step 9 extended the double ADDITIVELY: an
   `__arrayUnion` sentinel applied on write, **dotted-path** expansion on
@@ -1644,8 +1644,17 @@ the pick (see **Publish**). Depth and register rows 248–269:
 - `add_kit_item` is NOT idempotent and NOTHING stores create progress: every kit
   command is an ENSURE re-derived from Shopee reads + the links. Same-SKU kit
   scan first, create arms only (any hit refuses: import it); ONE call;
-  `incerto` ⇒ 202, nothing written. The kit link id derives from (conta,
-  `item_id`) and step 9's import uses the same id.
+  `incerto` ⇒ 202, nothing written but the kept lease. The kit link id derives
+  from (conta, `item_id`) and step 9's import uses the same id.
+- **Every create arm runs under the single-flight LEASE** (#1912,
+  `kits/criacaoKitEmCurso.ts`; reading + codes in `@delfrance/schemas`
+  `kitCriacaoShopee.ts`): taken BEFORE any link is read, fenced and stamped right
+  before `add_kit_item`, released once the run knows (a refusal, `nao-criado`,
+  the link write), KEPT after `incerto` or a throw past the send. A second run of
+  the same (conta, kit produto) answers 409 `SHOPEE_KIT_CRIACAO_EM_ANDAMENTO`
+  with zero Shopee calls. It needs `deps.aoVivo` (no fallback to `nowMs`), it is
+  tier 1 (no transaction), Admin-only and outside `ALL_DOMAINS` (no rules).
+  `kit-atualizar` takes none. Residuals: registers 330–333.
 - One main per KIT (`--principal`); 1 tier, ≤ 9 models (a family = one model per
   child). Every component is sent (`limitarEstoque` is deprecated).
 - The composition is frozen and a quantity change is a SILENT 200: never read an
@@ -1662,10 +1671,11 @@ the pick (see **Publish**). Depth and register rows 248–269:
 - Stock: never (step 12 `kit-derivado`). Price: step 13 sends
   `update_kit_item`. A recipe edit opens `shopeeKitReceitaDivergente` (the
   `apps/functions` trigger vs `receitaKitConferida`). Depth + register rows
-  270–306: `kits/README.md`.
+  270–306 and 330–333: `kits/README.md`.
 - A refusal that names a CLI flag also carries `acao` (`@delfrance/schemas`
-  `shopeeAcaoSugerida.ts`) and the 202 carries `aguardarMs`: the web tab keys
-  on those, never on a sentence (`exigirAcaoSeHaComando` pins it).
+  `shopeeAcaoSugerida.ts`) and the 202 carries `aguardarMs` (the kept lease's
+  remaining hold): the web tab keys on those, never on a sentence
+  (`exigirAcaoSeHaComando` pins it).
 
 ## Rules specific to this app
 

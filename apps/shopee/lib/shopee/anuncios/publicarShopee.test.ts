@@ -47,7 +47,9 @@ import {
   type ShopeeUpdateKitItemRequest,
 } from '@delfrance/integrations-shopee';
 import {
+  CODIGO_CRIACAO_KIT_SHOPEE,
   CODIGO_RASCUNHO_SHOPEE,
+  ESPERA_MAXIMA_CRIACAO_KIT_SHOPEE_MS,
   ESTADO_ANUNCIO_SHOPEE,
   importacaoShopeeOptionsSchema,
   toOuterRef,
@@ -58,8 +60,10 @@ import { integracaoCollection } from '@delfrance/data/admin/collections';
 import { MOTIVO_ESTOQUE_SHOPEE } from '../estoque/errosEstoque';
 import { podeEnviarEstoqueShopee } from '../estoque/podeEnviarEstoque';
 import { lerFixture, FIXTURE_ADD_KIT_ITEM_SG_TOO_MANY_CONNECTIONS } from '../fixtures/wireCorpus';
+import { ConflitoDeCriacaoDeKitShopeeError } from '../kits/criacaoKitEmCurso';
 import { idDoVinculoDeKit } from '../kits/idsKit';
 import type { KitDeps, ResultadoPublicacaoKit } from '../kits/resultadoKit';
+import { aoVivoDeTeste, semEscritasDaReserva } from '../kits/testing/reservaDeTeste';
 import { iniciarImportacaoShopee, processarImportacaoShopee } from '../produtos/importacaoMassa';
 import type { ImportarKitShopeeDeps } from '../produtos/itemLido';
 import { importarKitShopee } from '../produtos/kitShopee';
@@ -626,6 +630,7 @@ function deps(db: FakeDb, loja: Loja, nowMs = AGORA): KitDeps {
     depositoOuterRef: 'documents/depositos/dep-1',
     operacaoOuterRef: null,
     nowMs,
+    aoVivo: aoVivoDeTeste(nowMs),
     esperar: () => Promise.resolve(),
     taxonomia: {
       integracaoId: INTEGRACAO,
@@ -672,7 +677,15 @@ const publicar = (
   db: FakeDb,
   loja: Loja,
   over: Partial<EntradaDePublicacaoShopee> = {},
-): Promise<ResultadoPublicacaoShopee | null> => publicarShopee(deps(db, loja), entrada(over));
+  nowMs: number = AGORA,
+): Promise<ResultadoPublicacaoShopee | null> =>
+  publicarShopee(deps(db, loja, nowMs), entrada(over));
+
+/**
+ * An instant past ANY create lease taken at AGORA (#1912): the hold an
+ * `incerto` keeps, its post-send grace included, is over.
+ */
+const DEPOIS_DA_RESERVA = AGORA + ESPERA_MAXIMA_CRIACAO_KIT_SHOPEE_MS;
 
 /** The KIT result of a publish, asserting the dispatcher routed it to a kit arm. */
 async function kit(p: Promise<ResultadoPublicacaoShopee | null>): Promise<ResultadoPublicacaoKit> {
@@ -804,7 +817,7 @@ describe('publicarShopee — a entrada', () => {
     expect(motivos(erro)).toEqual([MOTIVO_PUBLICACAO_BLOQUEADA.kitVirtualSemKit]);
     expect(erro.produtoId).toBe(K);
     expect(loja.ops).toEqual([]);
-    expect(db.writes).toEqual([]);
+    expect(semEscritasDaReserva(db.writes)).toEqual([]);
   });
 
   describe('(PR #1869 review) um --link que NÃO é desta conta é o 404 — qualquer opção, num kit nativo VIVO', () => {
@@ -874,7 +887,7 @@ describe('publicarShopee — a entrada', () => {
     expect(ensaio.arma).toEqual({ arma: 'kit-criar' });
     expect(ensaio.ensaio.plano.kitNovo).toEqual({ acao: 'criar' });
     expect(loja.ops).not.toContain('add_kit_item');
-    expect(db.writes).toEqual([]);
+    expect(semEscritasDaReserva(db.writes)).toEqual([]);
   });
 });
 
@@ -915,7 +928,7 @@ describe('RT11 — recusa L6 → importação → publicação, pelo despacho', 
       expect(erro.problemas[0]?.mensagem).toContain(`item ${String(KIT_1)}`);
       expect(erro.problemas[0]?.mensagem).toContain('importe-o');
       expect(quantas(loja, 'add_kit_item', desde)).toBe(0);
-      expect(db.writes).toEqual([]);
+      expect(semEscritasDaReserva(db.writes)).toEqual([]);
 
       // (2) step 9's REAL import links it onto K — no new produto, ONE link.
       await importar(db, loja, KIT_1);
@@ -970,15 +983,27 @@ describe('RT12 — `incerto` → recusa → importação EM MASSA → a próxima
       recusa: { codigo: 'product.error_busi' },
     });
     expect(incerto.comando).not.toBeNull();
-    expect(db.writes).toEqual([]);
+    expect(semEscritasDaReserva(db.writes)).toEqual([]);
 
-    // (2) the re-run is still kit-criar (no link) — its scan refuses "importe-o".
+    // (2) the re-run is still kit-criar (no link). #1912: inside the kept
+    // create lease's hold it is refused with ZERO Shopee calls; once the hold
+    // is over its scan refuses "importe-o".
     expect(await escolherArmaShopee(deps(db, loja), entrada())).toEqual({
       ok: true,
       arma: { arma: 'kit-criar' },
     });
+    const opsAntes = loja.ops.length;
+    const cedo = await publicarShopee(
+      deps(db, loja, AGORA + 1_000),
+      entradaDoComando(incerto.comando ?? ''),
+    ).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(cedo).toMatchObject({ code: CODIGO_CRIACAO_KIT_SHOPEE.emAndamento });
+    expect(loja.ops.length).toBe(opsAntes);
     const erro = await recusaDe(
-      publicarShopee(deps(db, loja), entradaDoComando(incerto.comando ?? '')),
+      publicarShopee(deps(db, loja, DEPOIS_DA_RESERVA), entradaDoComando(incerto.comando ?? '')),
     );
     expect(motivos(erro)).toEqual([MOTIVO_PUBLICACAO_BLOQUEADA.kitJaExisteNaShopee]);
 
@@ -1154,73 +1179,96 @@ describe('RT14 (metade do PR 7) — a retomada do converter pelo despacho', () =
 });
 
 /* ========================================================================== */
-/*  RT15 — the accepted double create (R-w)                                     */
+/*  RT15 — the double create, now SINGLE-FLIGHT (#1912, register 303)          */
 /* ========================================================================== */
 
-describe('RT15 — a criação dupla ACEITA (R-w, registro 303)', () => {
-  it('duas execuções kit-criar SIMULTÂNEAS (as duas buscas vazias) criam e vinculam DOIS kits ⇒ publicar ⇒ vinculos-ambiguos com os DOIS item ids, zero chamadas; o passo 12 pula o estoque dos dois', async () => {
+describe('RT15 — a criação dupla agora é IMPOSSÍVEL entre execuções concorrentes (#1912, registro 303)', () => {
+  it('duas execuções kit-criar SIMULTÂNEAS ⇒ UM add_kit_item: a outra recebe 409 «em andamento» sem enviar nada; UM vínculo; a próxima publicação é kit-atualizar, nunca vinculos-ambiguos', async () => {
     const db = new FakeDb();
     semearComponentes(db);
     semearFamilia(db);
     const loja = novaLoja();
-    // Neither add_kit_item proceeds until both runs reached it: both scans ran
-    // before any kit existed, both link reads saw nothing — the real race.
-    loja.portao = { esperados: 2, chegaram: 0, liberar: [] };
 
-    const [a, b] = await Promise.all([kit(publicar(db, loja)), kit(publicar(db, loja))]);
+    // Both runs read the links before either took the lease — the real race.
+    const [a, b] = await Promise.allSettled([publicar(db, loja), publicar(db, loja)]);
 
-    expect([a.desfecho, b.desfecho]).toEqual(['criado', 'criado']);
-    expect([a.itemId, b.itemId].sort()).toEqual([KIT_1, KIT_2]);
-    expect(quantas(loja, 'add_kit_item')).toBe(2);
-    expect(vinculosDeK(db)).toEqual([VINCULO_1, VINCULO_2].sort());
+    const ok = [a, b].filter((x) => x.status === 'fulfilled');
+    const recusadas = [a, b].filter((x) => x.status === 'rejected');
+    expect(ok).toHaveLength(1);
+    expect(recusadas).toHaveLength(1);
+    const venc = ok[0]?.status === 'fulfilled' ? ok[0].value : null;
+    expect(venc?.tipo === 'kit' ? venc.resultado.desfecho : null).toBe('criado');
+    const perdedora = recusadas[0]?.status === 'rejected' ? recusadas[0].reason : null;
+    expect(perdedora).toBeInstanceOf(ConflitoDeCriacaoDeKitShopeeError);
+    expect(perdedora).toMatchObject({
+      code: CODIGO_CRIACAO_KIT_SHOPEE.emAndamento,
+      aguardarMs: expect.any(Number),
+    });
+    expect(quantas(loja, 'add_kit_item')).toBe(1);
+    expect(vinculosDeK(db)).toEqual([VINCULO_1]);
+    // The winner released its lease right after the link write.
+    expect(db.idsEm('kitCriacaoShopee')).toEqual([]);
+    // Step 12 skips the one kit (Shopee derives a kit's stock): nothing oversells.
+    expect(
+      podeEnviarEstoqueShopee(vinculo(db, VINCULO_1) ?? {}, doc(db, `produtos/${K}`) ?? {}, {
+        nowMs: AGORA,
+      }),
+    ).toEqual({ enviar: false, motivo: MOTIVO_ESTOQUE_SHOPEE.kitDerivado });
 
-    const desde = loja.ops.length;
-    const erro = await recusaDe(publicar(db, loja));
-    expect(motivos(erro)).toEqual([MOTIVO_PUBLICACAO_BLOQUEADA.vinculosAmbiguos]);
-    expect(erro.problemas[0]?.mensagem).toContain(`item ${String(KIT_1)}`);
-    expect(erro.problemas[0]?.mensagem).toContain(`item ${String(KIT_2)}`);
-    expect(loja.ops.length).toBe(desde);
-
-    // Nothing oversells: step 12 skips both (Shopee derives a kit's stock).
-    // (The step-13 half — a price planned and sent for both, and the survivor-only
-    // plan once the twin is deleted — is PR 8's: precos/enviarPrecoKit.test.ts, RT15.)
-    for (const linkDocId of [VINCULO_1, VINCULO_2]) {
-      expect(
-        podeEnviarEstoqueShopee(vinculo(db, linkDocId) ?? {}, doc(db, `produtos/${K}`) ?? {}, {
-          nowMs: AGORA,
-        }),
-        linkDocId,
-      ).toEqual({ enviar: false, motivo: MOTIVO_ESTOQUE_SHOPEE.kitDerivado });
-    }
+    // ⛔ NEAR-MISS of the old residual: the next plain publish is ONE kit's
+    // republish — never vinculos-ambiguos, never a second create.
+    const r = await kit(publicar(db, loja));
+    expect(r).toMatchObject({ arma: 'kit-atualizar', itemId: KIT_1 });
+    expect(quantas(loja, 'add_kit_item')).toBe(1);
   });
 
-  it('(L10(4)) UM vinculado e um gêmeo NÃO vinculado ⇒ publicar = kit-atualizar com ZERO get_item_list e nenhum aviso do gêmeo; o próximo braço de CRIAÇÃO (--link vinculado --recriar) recusa nomeando o gêmeo; --converter-em-kit ⇒ ja-e-kit-nativo, zero chamadas', async () => {
+  it('três execuções SIMULTÂNEAS (duas abas e o CLI) ⇒ ainda UM add_kit_item', async () => {
     const db = new FakeDb();
     semearComponentes(db);
     semearFamilia(db);
     const loja = novaLoja();
-    loja.portao = { esperados: 2, chegaram: 0, liberar: [] };
-    // Whichever run gets the SECOND kit dies before its link write.
-    loja.falhaAposCriarPorItem.set(
-      KIT_2,
-      new TypeError('fixture: o processo caiu antes do vínculo'),
-    );
 
-    const [a, b] = await Promise.allSettled([publicar(db, loja), publicar(db, loja)]);
-    expect([a.status, b.status].sort()).toEqual(['fulfilled', 'rejected']);
+    const r = await Promise.allSettled([
+      publicar(db, loja),
+      publicar(db, loja),
+      publicar(db, loja),
+    ]);
+
+    expect(r.filter((x) => x.status === 'fulfilled')).toHaveLength(1);
+    for (const x of r) {
+      if (x.status === 'rejected') {
+        expect(x.reason).toMatchObject({ code: CODIGO_CRIACAO_KIT_SHOPEE.emAndamento });
+      }
+    }
+    expect(quantas(loja, 'add_kit_item')).toBe(1);
+  });
+
+  it('(L10(4)) UM vinculado e um gêmeo NÃO vinculado (feito fora da reserva — registro 331, ou o Seller Centre) ⇒ publicar = kit-atualizar com ZERO get_item_list e nenhum aviso do gêmeo; o próximo braço de CRIAÇÃO (--link vinculado --recriar) recusa nomeando o gêmeo; --converter-em-kit ⇒ ja-e-kit-nativo, zero chamadas', async () => {
+    const db = new FakeDb();
+    semearComponentes(db);
+    semearFamilia(db);
+    const loja = novaLoja();
+    expect((await kit(publicar(db, loja))).itemId).toBe(KIT_1);
+    // The twin: the SAME body sent again straight to the shop, by nobody that
+    // holds this ERP's lease.
+    const corpo = loja.corposDoAdd[0];
+    if (corpo === undefined) throw new Error('fixture: sem corpo do add_kit_item');
+    await loja.client.addKitItem(corpo);
     expect(vinculosDeK(db)).toEqual([VINCULO_1]);
     expect(loja.itens.get(KIT_2)?.base.item_status).toBe('NORMAL');
 
     // A plain publish republishes the linked kit — and never scans.
     const desde = loja.ops.length;
-    const atual = await kit(publicar(db, loja));
+    const atual = await kit(publicar(db, loja, {}, AGORA + 1_000));
     expect(atual).toMatchObject({ arma: 'kit-atualizar', itemId: KIT_1 });
     expect(quantas(loja, 'get_item_list', desde)).toBe(0);
     expect(atual.avisos.map((x) => x.mensagem).join(' ')).not.toContain(String(KIT_2));
 
     // The next CREATE-arm run scans and names the twin.
     const desde2 = loja.ops.length;
-    const erro = await recusaDe(publicar(db, loja, { linkDocId: VINCULO_1, recriar: true }));
+    const erro = await recusaDe(
+      publicar(db, loja, { linkDocId: VINCULO_1, recriar: true }, AGORA + 2_000),
+    );
     expect(motivos(erro)).toEqual([MOTIVO_PUBLICACAO_BLOQUEADA.kitJaExisteNaShopee]);
     expect(erro.problemas[0]?.mensagem).toContain(`item ${String(KIT_2)}`);
     expect(quantas(loja, 'add_kit_item', desde2)).toBe(0);
@@ -1228,12 +1276,12 @@ describe('RT15 — a criação dupla ACEITA (R-w, registro 303)', () => {
 
     // A converter with no live ordinary listing never scans.
     const desde3 = loja.ops.length;
-    const ja = await recusaDe(publicar(db, loja, { converterEmKit: true }));
+    const ja = await recusaDe(publicar(db, loja, { converterEmKit: true }, AGORA + 3_000));
     expect(motivos(ja)).toEqual([MOTIVO_PUBLICACAO_BLOQUEADA.jaEKitNativo]);
     expect(loja.ops.length).toBe(desde3);
   });
 
-  it('(L10-R2) em voo: o `incerto` deixa o kit sem vínculo ⇒ o `comando` EXATO do 202 busca e recusa nomeando-o; depois que outra execução vinculou um kit, o MESMO comando é kit-atualizar com zero get_item_list', async () => {
+  it('(L10-R2) em voo: o `incerto` deixa o kit sem vínculo ⇒ o `comando` EXATO do 202, depois da espera da reserva, busca e recusa nomeando-o; depois que outra execução vinculou um kit, o MESMO comando é kit-atualizar com zero get_item_list', async () => {
     const db = new FakeDb();
     semearComponentes(db);
     semearFamilia(db);
@@ -1244,17 +1292,62 @@ describe('RT15 — a criação dupla ACEITA (R-w, registro 303)', () => {
     expect(incerto.desfecho).toBe('incerto');
     const comando = incerto.comando ?? '';
 
-    const erro = await recusaDe(publicarShopee(deps(db, loja), entradaDoComando(comando)));
+    const erro = await recusaDe(
+      publicarShopee(deps(db, loja, DEPOIS_DA_RESERVA), entradaDoComando(comando)),
+    );
     expect(motivos(erro)).toEqual([MOTIVO_PUBLICACAO_BLOQUEADA.kitJaExisteNaShopee]);
     expect(erro.problemas[0]?.mensagem).toContain(`item ${String(KIT_1)}`);
 
     // Another run links a kit (here: step 9's import of that very kit).
     await importar(db, loja, KIT_1);
     const desde = loja.ops.length;
-    const r = await kit(publicarShopee(deps(db, loja), entradaDoComando(comando)));
+    const r = await kit(
+      publicarShopee(deps(db, loja, DEPOIS_DA_RESERVA), entradaDoComando(comando)),
+    );
     expect(r).toMatchObject({ arma: 'kit-atualizar', linkDocId: VINCULO_1 });
     expect(quantas(loja, 'get_item_list', desde)).toBe(0);
     expect(quantas(loja, 'add_kit_item')).toBe(1);
+  });
+});
+
+/* ========================================================================== */
+/*  #1912 — «Publicar como kit nativo» never runs another arm                  */
+/* ========================================================================== */
+
+describe('#1912 — criarKitNativo: um clique na primeira publicação do kit nunca vira outro braço', () => {
+  it('com um anúncio COMUM vivo vinculado ⇒ 409 vinculosMudaram, zero chamadas à Shopee; ⛔ quase-par: sem a intenção, o mesmo pedido vai ao braço de item', async () => {
+    const db = new FakeDb();
+    semearComponentes(db);
+    semearFamilia(db);
+    db.seed(`produtos/${K}/prodshopee/comum-1`, {
+      contaProdutoShopeeOuterRef: toOuterRef(integracaoCollection.docPath({}, INTEGRACAO)),
+      item_id: 2_500_139_999,
+      kitNativo: false,
+      estadoAnuncio: 'ativo',
+    });
+    const loja = novaLoja();
+
+    const erro = await publicar(db, loja, { criarKitNativo: true }).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(erro).toBeInstanceOf(ConflitoDeCriacaoDeKitShopeeError);
+    expect(erro).toMatchObject({ code: CODIGO_CRIACAO_KIT_SHOPEE.vinculosMudaram });
+    expect(loja.ops).toEqual([]);
+    expect(db.idsEm('kitCriacaoShopee')).toEqual([]);
+
+    expect(await escolherArmaShopee(deps(db, loja), entrada({ principal: null }))).toEqual({
+      ok: true,
+      arma: { arma: 'item', linkDocId: 'comum-1' },
+    });
+  });
+
+  it('sem vínculo vivo ⇒ a intenção É o kit-criar: cria normalmente', async () => {
+    const db = new FakeDb();
+    semearComponentes(db);
+    semearFamilia(db);
+    const r = await kit(publicar(db, novaLoja(), { criarKitNativo: true }));
+    expect(r).toMatchObject({ arma: 'kit-criar', desfecho: 'criado' });
   });
 });
 
@@ -1287,7 +1380,7 @@ describe('publicado (2026-11-17) — o braço de KIT marca o produto publicado',
 
     expect(r.desfecho).toBe('incerto');
     expect(doc(db, `produtos/${K}`)?.publicado).toBe(false);
-    expect(db.writes).toEqual([]);
+    expect(semEscritasDaReserva(db.writes)).toEqual([]);
   });
 });
 
@@ -1565,6 +1658,7 @@ describe('#1911 (P1, D3) — um RASCUNHO nunca é o anúncio vivo, pela entrada'
       depositoOuterRef: 'documents/depositos/dep-1',
       operacaoOuterRef: null,
       nowMs: AGORA,
+      aoVivo: aoVivoDeTeste(AGORA),
       esperar: () => Promise.resolve(),
       taxonomia: {
         integracaoId: INTEGRACAO,
@@ -1655,7 +1749,7 @@ describe('#1911 (P1, D3) — um RASCUNHO nunca é o anúncio vivo, pela entrada'
     const ensaio = await ensaiarPublicacaoShopee(depsDeItem(db, loja), entradaDoItem(), RESOLVEDOR);
 
     expect(ensaio).toMatchObject({ tipo: 'item', linkDocId: VIVO });
-    expect(db.writes).toEqual([]);
+    expect(semEscritasDaReserva(db.writes)).toEqual([]);
   });
 
   it('⛔ quase-par: o rascunho NOMEADO é o braço de item NELE — alcançável só pelo nome', async () => {
@@ -1680,7 +1774,7 @@ describe('#1911 (P1, D3) — um RASCUNHO nunca é o anúncio vivo, pela entrada'
 
     expect(motivos(erro)).toEqual([MOTIVO_PUBLICACAO_BLOQUEADA.rascunhoNaoNomeado]);
     expect(loja.ops).toEqual([]);
-    expect(db.writes).toEqual([]);
+    expect(semEscritasDaReserva(db.writes)).toEqual([]);
     expect(prepararPublicacao).not.toHaveBeenCalled();
   });
 
@@ -1699,7 +1793,7 @@ describe('#1911 (P1, D3) — um RASCUNHO nunca é o anúncio vivo, pela entrada'
 
       expect(motivos(erro)).toEqual([MOTIVO_PUBLICACAO_BLOQUEADA.rascunhoEmKitVirtual]);
       expect(loja.ops).toEqual([]);
-      expect(db.writes).toEqual([]);
+      expect(semEscritasDaReserva(db.writes)).toEqual([]);
       expect(prepararPublicacao).not.toHaveBeenCalled();
     });
 
@@ -1724,7 +1818,7 @@ describe('#1911 (P1, D3) — um RASCUNHO nunca é o anúncio vivo, pela entrada'
       ]);
       expect(erro.problemas[0]?.mensagem).toContain('defeito do ERP');
       expect(loja.ops).toEqual([]);
-      expect(db.writes).toEqual([]);
+      expect(semEscritasDaReserva(db.writes)).toEqual([]);
     });
 
     it('⛔ quase-par: o vínculo VIVO comum (kitNativo false) entregue direto ao passo 11 NÃO recusa — o vínculo é a autoridade', async () => {
@@ -1739,7 +1833,7 @@ describe('#1911 (P1, D3) — um RASCUNHO nunca é o anúncio vivo, pela entrada'
       );
 
       expect(contexto?.link).toMatchObject({ item_id: ITEM_VIVO, ehRascunho: false });
-      expect(db.writes).toEqual([]);
+      expect(semEscritasDaReserva(db.writes)).toEqual([]);
     });
 
     it('⛔ quase-par: um vínculo CORROMPIDO (item_id 0, kitNativo false) NÃO é rascunho — o sinal vem do documento CRU, não do item_id já dobrado para null', async () => {
@@ -1934,7 +2028,7 @@ describe('#1911 (P1, D3) — um RASCUNHO nunca é o anúncio vivo, pela entrada'
       expect(erro.linkDocId).toBe(VIVO);
       expect(publicarAnuncioShopee).toHaveBeenCalledTimes(1);
       expect(loja.ops).toEqual([]);
-      expect(db.writes).toEqual([]);
+      expect(semEscritasDaReserva(db.writes)).toEqual([]);
     });
   });
 });
@@ -2119,7 +2213,7 @@ describe('(§I4, round 5) uma atestação COM expectativa que o despacho manda a
     expect(erro).not.toBeInstanceOf(ConflitoDeRascunhoShopeeError);
     expect((erro as Error).message).toContain('sem linkDocId');
     expect(loja.ops).toEqual([]);
-    expect(db.writes).toEqual([]);
+    expect(semEscritasDaReserva(db.writes)).toEqual([]);
   });
 
   it('⛔ quase-par: --converter-em-kit no MESMO comum com a flag NUA ⇒ o kit-converter de sempre (um add_kit_item)', async () => {

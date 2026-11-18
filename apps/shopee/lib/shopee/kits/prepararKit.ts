@@ -66,6 +66,7 @@
 import type { ShopeeClient } from '@delfrance/integrations-shopee';
 import {
   ESTADO_ANUNCIO_SHOPEE,
+  classeDoVinculoShopee,
   componentesKitSchema,
   ehFamiliaDeUm,
   fotoSchema,
@@ -102,7 +103,8 @@ import type { ItemLido } from '../produtos/itemLido';
 import { lerAnuncioShopee } from '../produtos/lerAnuncio';
 import { linhasLidasDoModeloKit } from './aplicarKit';
 import { lerBaseInfoDosItens, resolverComponentesDoKitErp } from './componentesKit';
-import { localizarKitsPorSku } from './localizarKitPorSku';
+import { conflitoKitVinculosMudaram } from './criacaoKitEmCurso';
+import { clienteDaBuscaNoPrazo, localizarKitsPorSku } from './localizarKitPorSku';
 import {
   decidirKitNovo,
   kitVivoRemovido,
@@ -435,6 +437,15 @@ export async function prepararKit(
   entrada: EntradaDeKit,
   arma: ArmaDeKit,
   resolvedor: ResolvedorDeImagensShopee,
+  opcoes: {
+    /**
+     * #1912 — the create lease's deadline checkpoint, asked before every
+     * Shopee read of the scan (`podeContinuarNaReserva`). REQUIRED: a live run
+     * passes the lease's; the DRY RUN (no lease, no send) passes an explicit
+     * "no deadline" (`semPrazo`), never an omitted one.
+     */
+    readonly podeContinuar: () => boolean;
+  },
 ): Promise<ContextoKitPreparado> {
   const db = deps.db;
   const ehCriacao = arma.arma !== 'kit-atualizar';
@@ -450,6 +461,15 @@ export async function prepararKit(
   const produto = { id: entrada.produtoId, sku: textoOuNull(raw.sku), raw };
 
   const vinculos = await lerVinculosDeK(deps, produto.id);
+  // #1912 (A4): read UNDER the create lease, the links may have changed since
+  // the dispatcher read them. A live ORDINARY listing linked meanwhile means
+  // this is no longer a native kit's FIRST publish: refuse with nothing sent —
+  // never a kit created beside it without the second-listing choice (D15). A
+  // live NATIVE link is not refused here: `decidirKitNovo` completes it
+  // (`retomado`), the resume of a create another run just linked.
+  if (arma.arma === 'kit-criar' && vinculos.some((v) => classeDoVinculoShopee(v.raw) === 'o')) {
+    throw conflitoKitVinculosMudaram();
+  }
   const alvo = alvoDoArma(arma, vinculos);
 
   const descricao = await lerDescricao(db, produto.id);
@@ -643,8 +663,15 @@ export async function prepararKit(
       // `kit-criar` and `kit-converter` exclude nothing (an ordinary listing is
       // not a kit row); the recriar excludes its target's `item_id` (M115).
       excluirItemIds: itemIdsForaDaBusca(arma, alvo),
+      podeContinuar: opcoes.podeContinuar,
     });
-    nossosVivos = await lerKitsNossos(deps.client, busca, nativos.nossos, vinculos, deps.nowMs);
+    nossosVivos = await lerKitsNossos(
+      clienteDaBuscaNoPrazo(deps.client, opcoes.podeContinuar),
+      busca,
+      nativos.nossos,
+      vinculos,
+      deps.nowMs,
+    );
   }
 
   /* ---- 4b. PR 6: a recriar/converter RESUME reads the COMPLETED kit's main. */

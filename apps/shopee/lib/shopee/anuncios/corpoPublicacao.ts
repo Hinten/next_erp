@@ -131,6 +131,17 @@ export const MSG_CRIACAO_INCERTA_ADOTA_INVALIDO =
 export const MSG_CRIACAO_INCERTA_ADOTA_SEM_ATESTACAO =
   'criacaoIncertaAdota só vale junto com confirmarCriacaoIncerta: true.';
 
+/** A `criarKitNativo` that is not a JSON boolean (#1912). */
+export const MSG_CRIAR_KIT_NATIVO_INVALIDO = 'criarKitNativo deve ser true ou false.';
+
+/**
+ * `criarKitNativo` beside anything that names or picks another arm (#1912): the
+ * intent is a native kit's FIRST create, which is always unnamed.
+ */
+export const MSG_CRIAR_KIT_NATIVO_COM_OUTRA_ACAO =
+  'criarKitNativo não vai junto com linkDocId, recriar ou converterEmKit — a primeira publicação ' +
+  'de um kit nativo não nomeia vínculo.';
+
 /** Both kit actions in one request (step 19, R-a): one action per publish. */
 export const MSG_OPCOES_DE_KIT_EXCLUSIVAS =
   'recriar e converterEmKit não podem ir juntos — uma ação de kit por pedido.';
@@ -200,8 +211,8 @@ function lerIdOpcional(src: Record<string, unknown>, nome: string): LeituraCorpo
 
 /**
  * `{ integracaoId, produtoId, linkDocId?, status?, categoryId?, principal?,
- * recriar?, converterEmKit?, confirmarSegundoAnuncio?, confirmarCriacaoIncerta?,
- * criacaoIncertaAdota? }`.
+ * recriar?, converterEmKit?, criarKitNativo?, confirmarSegundoAnuncio?,
+ * confirmarCriacaoIncerta?, criacaoIncertaAdota? }`.
  */
 export interface CorpoPublicar {
   readonly integracaoId: string;
@@ -224,6 +235,14 @@ export interface CorpoPublicar {
   readonly recriar: boolean;
   /** Step 19 (L8): convert the ordinary listing into a native kit. Absent/`null` ⇒ `false`. */
   readonly converterEmKit: boolean;
+  /**
+   * #1912: the operator asked for a native kit's FIRST create (the web's
+   * «Publicar como kit nativo»). The publish refuses 409
+   * `SHOPEE_KIT_CRIACAO_VINCULOS_MUDARAM` with nothing sent when the dispatcher
+   * would pick any other arm — so a click can never republish an ordinary
+   * listing that appeared meanwhile. Absent/`null` ⇒ `false` (the CLI's).
+   */
+  readonly criarKitNativo: boolean;
   /**
    * #1911 (D15): the operator confirmed that publishing this DRAFT may create a
    * SECOND listing of the produto on the conta. Absent/`null` ⇒ `false`.
@@ -351,6 +370,8 @@ export function lerCorpoPublicar(body: unknown): LeituraCorpo<CorpoPublicar> {
   if (!recriar.ok) return recriar;
   const converterEmKit = lerFlag(src.valor, 'converterEmKit', MSG_CONVERTER_INVALIDO);
   if (!converterEmKit.ok) return converterEmKit;
+  const criarKitNativo = lerFlag(src.valor, 'criarKitNativo', MSG_CRIAR_KIT_NATIVO_INVALIDO);
+  if (!criarKitNativo.ok) return criarKitNativo;
   const confirmarSegundoAnuncio = lerFlag(
     src.valor,
     'confirmarSegundoAnuncio',
@@ -374,6 +395,10 @@ export function lerCorpoPublicar(body: unknown): LeituraCorpo<CorpoPublicar> {
   if (recriar.valor && converterEmKit.valor) return erro(MSG_OPCOES_DE_KIT_EXCLUSIVAS);
   // A recriar always NAMES its target (S1F-02): every re-run is the same request.
   if (recriar.valor && linkDocId.valor === null) return erro(MSG_RECRIAR_SEM_LINK);
+  // A FIRST kit create is unnamed by definition (#1912).
+  if (criarKitNativo.valor && (linkDocId.valor !== null || recriar.valor || converterEmKit.valor)) {
+    return erro(MSG_CRIAR_KIT_NATIVO_COM_OUTRA_ACAO);
+  }
   // So does an attestation's expectation (§I1, round 3). Without `linkDocId`
   // the publisher MINTS a fresh draft for a produto with no link (K1-5); a
   // fresh draft never reads `incerta`, so the reservation refuses the
@@ -393,6 +418,7 @@ export function lerCorpoPublicar(body: unknown): LeituraCorpo<CorpoPublicar> {
     principal: principal.valor,
     recriar: recriar.valor,
     converterEmKit: converterEmKit.valor,
+    criarKitNativo: criarKitNativo.valor,
     confirmarSegundoAnuncio: confirmarSegundoAnuncio.valor,
     confirmarCriacaoIncerta: confirmarCriacaoIncerta.valor,
     criacaoIncertaAdota: criacaoIncertaAdota.valor,

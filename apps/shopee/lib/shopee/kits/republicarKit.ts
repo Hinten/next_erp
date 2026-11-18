@@ -739,6 +739,7 @@ export async function republicarKit(
     chamadasShopee,
     recusa: null,
     comando: null,
+    aguardarMs: null,
   };
   registrarRepublicacao(resultado);
   return resultado;
