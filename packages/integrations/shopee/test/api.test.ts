@@ -231,6 +231,42 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+describe('searchItem', () => {
+  it.each([
+    [{ itemSku: 'A+B/01' }, 'item_sku', 'A+B/01'],
+    [{ itemName: 'Camiseta Azul' }, 'item_name', 'Camiseta Azul'],
+  ] as const)(
+    'sends the selected filter and a signed GET with an opaque offset',
+    async (filtro, campo, termo) => {
+      const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () =>
+        jsonResponse({
+          error: '',
+          request_id: 'req-search',
+          response: { item_id_list: [42, '43'], next_offset: 'novo+=/?' },
+        }),
+      );
+      const client = createShopeeClient(shopConfig(fetchImpl));
+
+      await expect(
+        client.searchItem({ ...filtro, pageSize: 20, offset: 'atual+=/?' }),
+      ).resolves.toEqual({
+        item_id_list: [42, 43],
+        next_offset: 'novo+=/?',
+      });
+      const [url, init] = fetchImpl.mock.calls[0]!;
+      const parsed = new URL(String(url));
+      expect(init?.method).toBe('GET');
+      expect(parsed.pathname).toBe(pacote.SHOPEE_SEARCH_ITEM_PATH);
+      expect(parsed.searchParams.get('page_size')).toBe('20');
+      expect(parsed.searchParams.get('offset')).toBe('atual+=/?');
+      expect(parsed.searchParams.get(campo)).toBe(termo);
+      expect(parsed.searchParams.has(campo === 'item_sku' ? 'item_name' : 'item_sku')).toBe(false);
+      expect(parsed.searchParams.get('shop_id')).toBe(String(TEST_SHOP_ID));
+      expect(parsed.searchParams.get('sign')).toMatch(/^[0-9a-f]{64}$/);
+    },
+  );
+});
+
 /* -------------------------------------------------------------------------- */
 
 describe('createShopeeClient — shop-signed', () => {

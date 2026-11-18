@@ -6,6 +6,7 @@ import {
   CAMPO_RASCUNHO_SHOPEE,
   CODIGO_RASCUNHO_SHOPEE,
   MSG_ITEM_NAME_EM_BRANCO_RASCUNHO_SHOPEE,
+  MODO_BUSCA_ANUNCIO_SHOPEE,
   projetarTabelaShopee,
   respostaAtributosShopeeSchema,
   respostaCanaisShopeeSchema,
@@ -73,6 +74,60 @@ const CONTA = {
 
 afterEach(() => {
   vi.restoreAllMocks();
+});
+
+describe('single Shopee listing import', () => {
+  it('encodes the search query and forwards its abort signal', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockImplementation(async () => ok(JSON.stringify({ resultados: [], proximoCursor: null })));
+    const { signal } = new AbortController();
+    await client(fetchImpl).buscarAnuncios({
+      integracaoId: 'conta-a',
+      modo: MODO_BUSCA_ANUNCIO_SHOPEE.sku,
+      termo: 'A+B/01',
+      cursor: 'proximo+=/?',
+      signal,
+    });
+
+    const [url, init] = fetchImpl.mock.calls[0]!;
+    const parsed = new URL(String(url));
+    expect(parsed.pathname).toBe('/api/marketplace/shopee/anuncios/busca');
+    expect(Object.fromEntries(parsed.searchParams)).toEqual({
+      integracaoId: 'conta-a',
+      modo: 'sku',
+      termo: 'A+B/01',
+      cursor: 'proximo+=/?',
+    });
+    expect(init).toMatchObject({
+      method: 'GET',
+      signal,
+      headers: { Authorization: 'Bearer token' },
+    });
+  });
+
+  it('posts a numeric ID with the requested import options and validates the success response', async () => {
+    const resposta = { produtoId: 'p-42', nome: 'Vestido', criado: true };
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockImplementationOnce(async () => ok(JSON.stringify(resposta)))
+      .mockImplementationOnce(async () => ok(JSON.stringify({ ...resposta, produtoId: null })));
+    const shopee = client(fetchImpl);
+    const input = { integracaoId: 'conta-a', itemId: 42, options: { sobrescreverPreco: false } };
+
+    await expect(shopee.importarAnuncio(input)).resolves.toEqual(resposta);
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      1,
+      'http://localhost:3009/api/marketplace/shopee/importar',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+    );
+    await expect(shopee.importarAnuncio(input)).rejects.toBeInstanceOf(
+      ShopeeClientRespostaInvalidaError,
+    );
+  });
 });
 
 describe('the request', () => {

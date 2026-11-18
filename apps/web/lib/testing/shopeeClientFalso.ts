@@ -33,6 +33,8 @@ export function shopeeClientFalso(metodos: Partial<ShopeeClient> = {}): ShopeeCl
     definirStatusAnuncios: naoEsperado('definirStatusAnuncios'),
     publicar: naoEsperado('publicar'),
     reverificarAnuncio: naoEsperado('reverificarAnuncio'),
+    buscarAnuncios: naoEsperado('buscarAnuncios'),
+    importarAnuncio: naoEsperado('importarAnuncio'),
     startMassImport: naoEsperado('startMassImport'),
     massImportStatus: naoEsperado('massImportStatus'),
     cancelMassImport: naoEsperado('cancelMassImport'),
