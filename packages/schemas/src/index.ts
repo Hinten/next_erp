@@ -1142,7 +1142,18 @@ export {
   type RespostaVariacoesShopee,
   type RecomendacaoDto,
   type RespostaRecomendacaoCategoriaShopee,
+  categoriaEncontradaDtoSchema,
+  respostaBuscaCategoriasShopeeSchema,
+  type CategoriaEncontradaDto,
+  type RespostaBuscaCategoriasShopee,
 } from './taxonomiaShopeeDto';
+
+// The Shopee pickers' ONE text-search fold (category search + brand filter).
+export {
+  dobrarTextoBuscaShopee,
+  termosDaBuscaShopee,
+  correspondeABuscaShopee,
+} from './buscaTextoShopee';
 
 // The Shopee CHANNELS route envelope (#1911, P15), declared once like the
 // taxonomy ones above: `apps/shopee`'s `canais` route builds its 200 against it
@@ -1879,6 +1890,13 @@ export * from './notificacaoEscritaLojaIntegrada';
 export * from './sincEstoqueLojaIntegrada';
 export * from './reconcileEstoqueLojaIntegrada';
 export * from './tarefaEstoqueLojaIntegrada';
+
+// The Loja Integrada stock sync's ERP-side READERS (master plan step 12): the stock path, the
+// conta's depósito and its two stored forms, the canonical-wins record resolution and the
+// conta's link verdict on one produto. Pure; moved out of `apps/loja-integrada` (which
+// re-exports them) so a `tools/migrations` audit reads the identical answers. Not a collection,
+// so no `registry.ts` entry; a star export for the fold-inventory's raw-text reason above.
+export * from './estoqueErpLojaIntegrada';
 
 // The machine-readable next step of a Shopee publish refusal (step 21, #1529):
 // the refusal sites in `apps/shopee` produce it, the web's wire parses it per row

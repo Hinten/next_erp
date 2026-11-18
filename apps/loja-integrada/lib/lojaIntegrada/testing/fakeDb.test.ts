@@ -908,3 +908,51 @@ describe('FakeDb — select (step 9: the create-time SKU probe projects `sku`)',
     expect(() => ref.select('sku').select('nome')).toThrow(/select/);
   });
 });
+
+describe('FakeDb.getAll (step 12: the stock send run’s masked produto read and its component records)', () => {
+  it('one snapshot per ref, in order, each path recorded as a read; a missing doc is exists:false', async () => {
+    const db = new FakeDb();
+    db.seed('integracao/a', { nome: 'A' });
+    const [a, b] = await asDb(db).getAll(refDe(db, 'a'), refDe(db, 'b'));
+    expect(a?.exists).toBe(true);
+    expect(a?.ref.path).toBe('integracao/a');
+    expect(a?.data()).toEqual({ nome: 'A' });
+    expect(b?.exists).toBe(false);
+    expect(b?.data()).toBeUndefined();
+    expect(db.leituras).toEqual(['integracao/a', 'integracao/b']);
+  });
+
+  it('the fieldMask keeps only the listed top-level fields the document HAS', async () => {
+    const db = new FakeDb();
+    db.seed('integracao/a', { nome: 'A', tipo: 3, ativo: true });
+    const [a] = await asDb(db).getAll(refDe(db, 'a'), { fieldMask: ['nome', 'ausente'] });
+    expect(a?.data()).toEqual({ nome: 'A' });
+  });
+
+  it('⚠️ NEAR-MISS: a mask does not drop the document — one holding none of the fields reads empty', async () => {
+    const db = new FakeDb();
+    db.seed('integracao/a', { tipo: 3 });
+    const [a] = await asDb(db).getAll(refDe(db, 'a'), { fieldMask: ['nome'] });
+    expect(a?.exists).toBe(true);
+    expect(a?.data()).toEqual({});
+  });
+
+  it('refuses what it does not model: another option, an empty or dotted mask, no ref at all', () => {
+    const db = new FakeDb();
+    const getAll = (...args: unknown[]) => (db.getAll as (...a: unknown[]) => unknown)(...args);
+    expect(() => getAll(refDe(db, 'a'), { readTime: 1 })).toThrow(/getAll/);
+    expect(() => getAll(refDe(db, 'a'), { fieldMask: ['nome'], transactionId: 'x' })).toThrow(
+      /getAll/,
+    );
+    expect(() => getAll(refDe(db, 'a'), { fieldMask: [] })).toThrow(/getAll/);
+    expect(() => getAll(refDe(db, 'a'), { fieldMask: ['a.b'] })).toThrow(/getAll/);
+    expect(() => getAll()).toThrow(/getAll/);
+    expect(() => getAll('integracao/a')).toThrow(/getAll/);
+  });
+
+  it('a scripted read failure fails the call, as a get() would', async () => {
+    const db = new FakeDb();
+    db.falharProximaLeitura('integracao/a', grpc(14, 'UNAVAILABLE'));
+    await expect(asDb(db).getAll(refDe(db, 'a'))).rejects.toMatchObject({ code: 14 });
+  });
+});

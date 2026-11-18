@@ -1385,6 +1385,13 @@ describe('size charts — the four GETs', () => {
       '/api/marketplace/shopee/taxonomia/categorias?integracaoId=int%2F1%202%26x&categoryId=100087',
     ],
     [
+      'buscarCategorias',
+      (c: ReturnType<typeof client>) =>
+        c.buscarCategorias({ integracaoId: 'int/1 2&x', q: 'calça & cia' }),
+      { resultados: [], truncated: false },
+      '/api/marketplace/shopee/taxonomia/categorias/busca?integracaoId=int%2F1%202%26x&q=cal%C3%A7a%20%26%20cia',
+    ],
+    [
       'limites',
       (c: ReturnType<typeof client>) =>
         c.limites({ integracaoId: 'int/1 2&x', categoryId: 100087 }),

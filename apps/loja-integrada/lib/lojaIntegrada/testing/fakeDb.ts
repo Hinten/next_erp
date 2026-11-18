@@ -79,7 +79,14 @@
  *    same query builder over every stored document whose LAST collection
  *    segment is `id`, at any depth;
  *  - `batch()` (step 5: the pedido and its pagamentos in ONE commit) — see
- *    "The batch" below.
+ *    "The batch" below;
+ *  - `getAll(...refs)` and `getAll(...refs, { fieldMask })` (step 12: the stock send run reads
+ *    its produto masked to four fields, and a kit's component records by id, in one call each):
+ *    one snapshot per ref, in order — `exists`, `id`, `ref`, the stamps and `data()` — each path
+ *    recorded in {@link FakeDb.leituras} as a `get()` is. The mask keeps only the listed TOP-LEVEL
+ *    fields a document HAS (an absent document stays absent). A trailing option other than exactly
+ *    `{ fieldMask: [non-empty field names without a dot] }`, an empty call, and a value that is not
+ *    a document reference (no `path`) all throw.
  *
  * Everything else — a `set` with any other option, any other operator, a dotted update key, an
  * `undefined` value, a precondition that is not a stamp, an `orderBy` over a
@@ -882,6 +889,61 @@ export class FakeDb {
       apos: null,
       selecao: null,
     });
+  }
+
+  /**
+   * The Admin SDK's `getAll(...refs, readOptions?)` (module header): one snapshot per ref, in
+   * order, through the same read path as `get()` (so a scripted read failure fails it), with an
+   * optional top-level `fieldMask`.
+   */
+  getAll(...args: unknown[]) {
+    const ultimo = args.at(-1);
+    const ehOpcao =
+      typeof ultimo === 'object' &&
+      ultimo !== null &&
+      !Array.isArray(ultimo) &&
+      !Object.hasOwn(ultimo, 'path');
+    let mascara: readonly string[] | null = null;
+    if (ehOpcao) {
+      const chaves = Object.keys(ultimo);
+      const campos = (ultimo as { fieldMask?: unknown }).fieldMask;
+      if (
+        chaves.length !== 1 ||
+        chaves[0] !== 'fieldMask' ||
+        !Array.isArray(campos) ||
+        campos.length === 0 ||
+        campos.some((c) => typeof c !== 'string' || c === '' || c.includes('.'))
+      ) {
+        throw new Error(
+          'FakeDb: getAll() só é modelado com { fieldMask: [campos de topo, sem ponto] }',
+        );
+      }
+      mascara = campos as string[];
+    }
+    const refs = ehOpcao ? args.slice(0, -1) : args;
+    if (refs.length === 0) throw new Error('FakeDb: getAll() sem referência — o SDK recusa');
+    const caminhos = refs.map((ref) => {
+      const caminho = (ref as { path?: unknown } | null)?.path;
+      if (typeof caminho !== 'string' || caminho === '') {
+        throw new Error('FakeDb: getAll() só aceita referências de documento');
+      }
+      return caminho;
+    });
+    return Promise.all(
+      caminhos.map(async (caminho) => {
+        const id = caminho.split('/').at(-1) ?? '';
+        const ref = this.docRef(caminho, id);
+        const snap = await ref.get();
+        const dados = snap.data();
+        const visiveis =
+          mascara === null || dados === undefined
+            ? dados
+            : Object.fromEntries(
+                mascara.filter((c) => Object.hasOwn(dados, c)).map((c) => [c, dados[c]]),
+              );
+        return { ...snap, ref, data: () => visiveis };
+      }),
+    );
   }
 
   /** A batch: all or nothing, each write under its own precondition (module header). */

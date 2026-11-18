@@ -39,5 +39,6 @@ export {
   removerContaSeOrfa,
   type SentinelasDeArray,
 } from './integracoesComProduto';
+export { marcarProdutoPublicado, type DesfechoMarcarPublicado } from './marcarPublicado';
 export { sobrevivemVinculosDoProdutoLi } from './sobreviventesLi';
 export { MAX_VALORES_IN_SONDA_SKU_LI, sondarSkusLi, type SondaSkuLi } from './sondaSkuLi';

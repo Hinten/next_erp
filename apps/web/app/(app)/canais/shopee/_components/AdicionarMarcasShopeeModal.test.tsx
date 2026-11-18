@@ -73,6 +73,7 @@ vi.mock('@/components/shopee/ShopeeCategoriaBrowser', async (importActual) => {
 
 const {
   AdicionarMarcasShopeeModal,
+  MAX_PAGINAS_MARCAS_SHOPEE,
   chaveMarcasShopee,
   proximoOffsetDasMarcas,
   STATUS_MARCA_SHOPEE,
@@ -545,5 +546,176 @@ describe('status, category and the answers that are not a list', () => {
     expect(confirmar().textContent).toBe('Adicionar selecionadas (2)');
     fireEvent.click(confirmar());
     expect(onAdicionar).toHaveBeenCalledWith([NIKE, PUMA]);
+  });
+});
+
+describe('the text filter — over the brands ALREADY LOADED', () => {
+  const ACAI = marca(1010, 'Açaí Brasil');
+  const filtrar = (texto: string) =>
+    fireEvent.change(screen.getByRole('textbox', { name: 'Filtrar marcas' }), {
+      target: { value: texto },
+    });
+  const contagem = () => screen.getByTestId('shopee-marcas-contagem').textContent;
+
+  it('EQUAL pair: case and accents fold away, and the DISPLAY name counts too', async () => {
+    h.marcas.mockResolvedValue(pagina({ marcas: [NIKE, ADIDAS, ACAI] }));
+    show();
+    await escolher();
+    await opcao(1001);
+    expect(contagem()).toBe('3 marcas carregadas.');
+
+    filtrar('ACAI');
+    expect(screen.getByTestId('shopee-marca-opcao-1010')).toBeTruthy();
+    expect(screen.queryByTestId('shopee-marca-opcao-1001')).toBeNull();
+    expect(contagem()).toBe('1 de 3 marcas carregadas.');
+
+    filtrar('originals');
+    expect(screen.getByTestId('shopee-marca-opcao-1002')).toBeTruthy();
+    expect(screen.queryByTestId('shopee-marca-opcao-1010')).toBeNull();
+  });
+
+  it('⚠️ NEAR-MISS: another letter is another brand — `nikr` hides Nike, and says the miss may be unloaded', async () => {
+    h.marcas.mockResolvedValue(pagina({ hasNextPage: true, nextOffset: 100 }));
+    show();
+    await escolher();
+    await opcao(1001);
+
+    filtrar('nikr');
+
+    expect(screen.queryByTestId('shopee-marca-opcao-1001')).toBeNull();
+    expect(screen.getByTestId('shopee-marcas-filtro-vazio').textContent).toBe(
+      'Nenhuma marca carregada corresponde a «nikr». Carregue as demais marcas para buscar em todas.',
+    );
+    expect(contagem()).toBe('0 de 2 marcas carregadas — há mais marcas na Shopee.');
+  });
+
+  it('a brand ticked and then hidden by the filter stays ticked and is handed on', async () => {
+    const { onAdicionar } = show();
+    await escolher();
+    fireEvent.click(await caixa(1001));
+
+    filtrar('adidas');
+    expect(screen.queryByTestId('shopee-marca-opcao-1001')).toBeNull();
+    expect(confirmar().textContent).toBe('Adicionar selecionadas (1)');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Limpar filtro' }));
+    expect((await caixa(1001)).checked).toBe(true);
+    fireEvent.click(confirmar());
+    expect(onAdicionar).toHaveBeenCalledWith([NIKE]);
+  });
+});
+
+describe('«Carregar todas as marcas» — the remaining pages, one after another', () => {
+  it('walks every page with Shopee’s cursor until it says there is no more', async () => {
+    h.marcas
+      .mockResolvedValueOnce(pagina({ hasNextPage: true, nextOffset: 37 }))
+      .mockResolvedValueOnce(
+        pagina({ offset: 37, marcas: [PUMA], hasNextPage: true, nextOffset: 81 }),
+      )
+      .mockResolvedValueOnce(
+        pagina({ offset: 81, marcas: [marca(1004, 'Fila')], hasNextPage: false, nextOffset: 999 }),
+      );
+    show();
+    await escolher();
+    await opcao(1001);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Carregar todas as marcas' }));
+
+    await opcao(1004);
+    expect(h.marcas.mock.calls.map((c) => (c[0] as { offset: number }).offset)).toEqual([
+      0, 37, 81,
+    ]);
+    expect(screen.queryByRole('button', { name: 'Carregar todas as marcas' })).toBeNull();
+    expect(screen.getByTestId('shopee-marcas-contagem').textContent).toBe('4 marcas carregadas.');
+  });
+
+  it('stops on a failed page, says why, and asks nothing more on its own', async () => {
+    h.marcas
+      .mockResolvedValueOnce(pagina({ hasNextPage: true, nextOffset: 37 }))
+      .mockRejectedValueOnce(new ShopeeClientHttpError('Falha no servidor.', 500, null))
+      .mockResolvedValue(pagina({ offset: 37, marcas: [PUMA], hasNextPage: false }));
+    show();
+    await escolher();
+    await opcao(1001);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Carregar todas as marcas' }));
+
+    expect(await screen.findByTestId('shopee-marcas-erro-mais')).toBeTruthy();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(h.marcas).toHaveBeenCalledTimes(2);
+  });
+
+  it('clicking it again after a failed page RETRIES that page (same cursor) and resumes the walk', async () => {
+    h.marcas
+      .mockResolvedValueOnce(pagina({ hasNextPage: true, nextOffset: 37 }))
+      .mockRejectedValueOnce(new ShopeeClientHttpError('Falha no servidor.', 500, null))
+      .mockResolvedValueOnce(
+        pagina({ offset: 37, marcas: [PUMA], hasNextPage: true, nextOffset: 81 }),
+      )
+      .mockResolvedValueOnce(
+        pagina({ offset: 81, marcas: [marca(1004, 'Fila')], hasNextPage: false }),
+      );
+    show();
+    await escolher();
+    await opcao(1001);
+    fireEvent.click(screen.getByRole('button', { name: 'Carregar todas as marcas' }));
+    await screen.findByTestId('shopee-marcas-erro-mais');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Carregar todas as marcas' }));
+
+    await opcao(1004);
+    expect(h.marcas.mock.calls.map((c) => (c[0] as { offset: number }).offset)).toEqual([
+      0, 37, 37, 81,
+    ]);
+    expect(screen.queryByTestId('shopee-marcas-erro-mais')).toBeNull();
+  });
+
+  it('after a failed MANUAL «Carregar mais», «Carregar todas» retries that page and walks on', async () => {
+    h.marcas
+      .mockResolvedValueOnce(pagina({ hasNextPage: true, nextOffset: 37 }))
+      .mockRejectedValueOnce(new ShopeeClientHttpError('Falha no servidor.', 500, null))
+      .mockResolvedValueOnce(
+        pagina({ offset: 37, marcas: [PUMA], hasNextPage: true, nextOffset: 81 }),
+      )
+      .mockResolvedValueOnce(
+        pagina({ offset: 81, marcas: [marca(1004, 'Fila')], hasNextPage: false }),
+      );
+    show();
+    await escolher();
+    await opcao(1001);
+    fireEvent.click(screen.getByRole('button', { name: 'Carregar mais' }));
+    await screen.findByTestId('shopee-marcas-erro-mais');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Carregar todas as marcas' }));
+
+    await opcao(1004);
+    expect(h.marcas.mock.calls.map((c) => (c[0] as { offset: number }).offset)).toEqual([
+      0, 37, 37, 81,
+    ]);
+  });
+
+  it(`stops at ${String(MAX_PAGINAS_MARCAS_SHOPEE)} pages and leaves the rest to «Carregar mais»`, async () => {
+    let n = 0;
+    h.marcas.mockImplementation(() => {
+      n += 1;
+      return Promise.resolve(
+        pagina({
+          offset: n * 10,
+          marcas: [marca(5000 + n, `Marca ${String(n)}`)],
+          hasNextPage: true,
+          nextOffset: (n + 1) * 10,
+        }),
+      );
+    });
+    show();
+    await escolher();
+    await opcao(5001);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Carregar todas as marcas' }));
+
+    expect(await screen.findByTestId('shopee-marcas-teto', {}, { timeout: 5000 })).toBeTruthy();
+    expect(h.marcas).toHaveBeenCalledTimes(MAX_PAGINAS_MARCAS_SHOPEE);
+    expect(screen.queryByRole('button', { name: 'Carregar todas as marcas' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Carregar mais' })).toBeTruthy();
   });
 });

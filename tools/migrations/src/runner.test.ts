@@ -1,6 +1,6 @@
 import { pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
-import { BatchWriter, MigrationArgError, isMainModule, parseArgs } from './runner';
+import { BatchWriter, MigrationArgError, isMainModule, parseArgs, runMigration } from './runner';
 
 describe('isMainModule', () => {
   const argvOriginal = process.argv[1];
@@ -116,6 +116,18 @@ describe('parseArgs', () => {
 
   it('rejects a trailing flag with no value', () => {
     expect(() => parseArgs(['--project'])).toThrow(MigrationArgError);
+  });
+});
+
+describe('runMigration — the argv a script hands it', () => {
+  it('parses the argv it is GIVEN, not the process’s, before any credential is read', async () => {
+    // The process argv here is vitest's own; a runner that still read it would refuse an
+    // unknown vitest flag instead. The body is never reached: the refusal comes first.
+    const body = () => Promise.reject(new Error('the body must not run'));
+    await expect(runMigration('x', body, [])).rejects.toThrow(/--project <id> is required/);
+    await expect(runMigration('x', body, ['--project', 'x', '--dias', '3'])).rejects.toThrow(
+      /Unknown argument: --dias/,
+    );
   });
 });
 

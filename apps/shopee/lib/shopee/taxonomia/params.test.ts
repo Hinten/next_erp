@@ -4,6 +4,7 @@ import {
   type LeituraParam,
   lerCategoryIdObrigatorio,
   lerCategoryIdOpcional,
+  lerConsultaDeBusca,
   lerIdPositivoObrigatorio,
   lerIntegracaoId,
   lerInteiro,
@@ -318,5 +319,21 @@ describe('lerIntegracaoId', () => {
     expect(erroDe(lerIntegracaoId(query({ integracaoId: raw })))).toBe(
       'integracaoId é obrigatório.',
     );
+  });
+});
+
+describe('lerConsultaDeBusca — q da busca de categorias (2 a 100 caracteres)', () => {
+  it('apara e aceita uma consulta de 2 a 100 caracteres', () => {
+    expect(valorDe(lerConsultaDeBusca(query({ q: '  ca  ' })))).toBe('ca');
+    expect(valorDe(lerConsultaDeBusca(query({ q: 'x'.repeat(100) })))).toHaveLength(100);
+  });
+
+  it.each([
+    ['ausente', null, 'q é obrigatório.'],
+    ['em branco', '   ', 'q é obrigatório.'],
+    ['de uma letra', ' a ', 'q deve ter entre 2 e 100 caracteres.'],
+    ['longa demais', 'x'.repeat(101), 'q deve ter entre 2 e 100 caracteres.'],
+  ])('recusa uma consulta %s', (_caso, q, mensagem) => {
+    expect(erroDe(lerConsultaDeBusca(query({ q })))).toBe(mensagem);
   });
 });

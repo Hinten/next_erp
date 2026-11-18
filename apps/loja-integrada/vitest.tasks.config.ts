@@ -78,6 +78,16 @@ import { defineConfig } from 'vitest/config';
 // leaving each array awaited before its produtos go. Its one job is seeded
 // `executando`, so the job trigger ignores it.
 //
+// ⚠️ Since step 12 (PR 12-e) the codebase loads a third queue,
+// `filaEstoqueLojaIntegrada`, and `lib/lojaIntegrada/estoque/processarEstoque.tasks.test.ts`
+// runs the stock send run IN PROCESS (its valve and the read switch on as PARAMETERS only).
+// It seeds an `integracao` conta (incomplete: the conta trigger only reads), produtos with
+// `estoques` records and link docs — so it keeps the THIRD trigger's rules above (its own
+// produtos, the anchor's add awaited before the run, the links deleted and the conta's
+// leaving awaited before the produtos go) — and one case enqueues a `deriva` follow-up
+// through the real producer root. That dispatched task stops at the stock valve, which the
+// lane leaves unset: it reads and writes nothing, so it cannot spill into another file.
+//
 // Each file's `beforeEach` deletes what it reads, because the files
 // share one emulator and run one at a time (`fileParallelism: false`).
 export default defineConfig({

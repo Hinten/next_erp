@@ -195,6 +195,27 @@ export function lerTextoObrigatorio(params: URLSearchParams, nome: string): Leit
   return ok(raw);
 }
 
+/** The shortest and longest category search the `categorias/busca` route accepts (trimmed). */
+export const BUSCA_CATEGORIAS_MIN = 2;
+export const BUSCA_CATEGORIAS_MAX = 100;
+
+/**
+ * The category search's `q`: trimmed, {@link BUSCA_CATEGORIAS_MIN} to
+ * {@link BUSCA_CATEGORIAS_MAX} characters. One letter would answer a large
+ * slice of a ~10⁴-node tree, so it is refused rather than truncated.
+ */
+export function lerConsultaDeBusca(params: URLSearchParams): LeituraParam<string> {
+  const texto = lerTextoObrigatorio(params, 'q');
+  if (!texto.ok) return texto;
+  const n = [...texto.valor].length;
+  if (n < BUSCA_CATEGORIAS_MIN || n > BUSCA_CATEGORIAS_MAX) {
+    return erro(
+      `q deve ter entre ${String(BUSCA_CATEGORIAS_MIN)} e ${String(BUSCA_CATEGORIAS_MAX)} caracteres.`,
+    );
+  }
+  return texto;
+}
+
 /** An optional free-text parameter, trimmed. Absent or blank ⇒ `null`. */
 export function lerTextoOpcional(
   params: URLSearchParams,

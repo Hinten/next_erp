@@ -1,21 +1,26 @@
 'use client';
 
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { useInfiniteQuery } from '@tanstack/react-query';
 import {
   Alert,
   Badge,
   Button,
   Checkbox,
+  CloseButton,
   Group,
   Loader,
   Modal,
   SegmentedControl,
   Stack,
   Text,
+  TextInput,
 } from '@mantine/core';
+import { IconSearch } from '@tabler/icons-react';
 import {
+  correspondeABuscaShopee,
   docIdDaMarcaShopee,
+  termosDaBuscaShopee,
   textoUtilizavelShopee,
   type CategoriaResumoDto,
   type MarcaDto,
@@ -50,8 +55,16 @@ import {
  *   nextOffset` VERBATIM — Shopee's cursor, never `offset + pageSize` — and is
  *   offered only while the LAST page says `hasNextPage`. A non-null
  *   `nextOffset` on its own is never a reason to ask again.
- * - **No text filter**: the route has no name search (Shopee's
- *   `get_brand_list` takes none), and a filter would be a fold.
+ * - **The text filter searches the brands ALREADY LOADED, and says so.** The
+ *   route has no name search (Shopee's `get_brand_list` takes none), so the
+ *   filter folds the loaded rows' original and display names through the
+ *   shared `correspondeABuscaShopee` (`@delfrance/schemas`: case and accents
+ *   only, every word must match) and counts what it covered. «Carregar todas
+ *   as marcas» walks the remaining pages one after another — each with the
+ *   cursor the previous one sent, the same `fetchNextPage` as «Carregar mais»
+ *   — until Shopee says there is no more, a page fails, or
+ *   {@link MAX_PAGINAS_MARCAS_SHOPEE} pages are on screen. It decides only
+ *   what is SHOWN: a brand ticked and then hidden by the filter stays ticked.
  * - **What cannot be picked** is shown, never dropped: a brand already in the
  *   shortlist ("já cadastrada") or already staged ("já selecionada") is
  *   checked and disabled; a brand the registration refuses is disabled with
@@ -96,6 +109,13 @@ const OPCOES_STATUS = [
   { value: String(STATUS_MARCA_SHOPEE.aprovadas), label: 'Aprovadas' },
   { value: String(STATUS_MARCA_SHOPEE.emAnalise), label: 'Em análise' },
 ];
+
+/**
+ * How many pages «Carregar todas as marcas» lets pile up (~3 000 brands at
+ * Shopee's 100 per page) before it stops and leaves the rest to «Carregar
+ * mais». Each page is one slow `get_brand_list`, asked one after another.
+ */
+export const MAX_PAGINAS_MARCAS_SHOPEE = 30;
 
 /** `['shopee','marcas',integracaoId,categoryId,status]` — one entry per category and status. */
 export function chaveMarcasShopee(
@@ -191,6 +211,19 @@ function rotuloDaMarca(dto: MarcaDto): string {
   return `${original}${exibicao} · id ${String(dto.brandId)}`;
 }
 
+/** What the filter covered: «N marcas carregadas», or «X de N …» while filtering, and whether Shopee has more. */
+function textoDaContagem(
+  visiveis: number,
+  carregadas: number,
+  filtrando: boolean,
+  haMais: boolean,
+): string {
+  const base = filtrando
+    ? `${String(visiveis)} de ${String(carregadas)} marcas carregadas`
+    : `${String(carregadas)} marcas carregadas`;
+  return haMais ? `${base} — há mais marcas na Shopee.` : `${base}.`;
+}
+
 interface EtapaMarcasProps {
   integracaoId: string;
   categoria: CategoriaResumoDto;
@@ -212,6 +245,10 @@ function EtapaMarcas({
   const client = useShopeeClient();
   const { categoryId } = categoria;
   const [status, setStatus] = useState<StatusMarcaShopee>(STATUS_MARCA_SHOPEE.aprovadas);
+  const [filtro, setFiltro] = useState('');
+  // «Carregar todas» asked; the walk below runs while it is set and there is
+  // still a page to ask for. Reset by «Carregar mais» and by a status switch.
+  const [carregandoTodas, setCarregandoTodas] = useState(false);
 
   const paginas = useInfiniteQuery({
     queryKey: chaveMarcasShopee(integracaoId, categoryId, status),
@@ -243,6 +280,28 @@ function EtapaMarcas({
       marcas.push(dto);
     }
   }
+
+  const termos = termosDaBuscaShopee(filtro);
+  const filtrando = termos.length > 0;
+  const visiveis = marcas.filter((dto) =>
+    correspondeABuscaShopee([dto.originalBrandName, dto.displayBrandName], termos),
+  );
+
+  // The «Carregar todas» walk: one page at a time, each asked only after the
+  // previous answered, through the same cursor rule as «Carregar mais». It
+  // stops on its own at the last page, on a failed page and at the cap; an
+  // unmount (another category, `key`) ends it with the component.
+  const noTeto = recebidas.length >= MAX_PAGINAS_MARCAS_SHOPEE;
+  const percorrendo =
+    carregandoTodas && paginas.hasNextPage && !paginas.isFetchNextPageError && !noTeto;
+  const { isFetchingNextPage, fetchNextPage } = paginas;
+  // Keyed on the page COUNT too: a fetch that starts and lands inside one
+  // batched render never flips `isFetchingNextPage` as far as this effect sees,
+  // and each new page is what must ask for the next.
+  const paginasRecebidas = recebidas.length;
+  useEffect(() => {
+    if (percorrendo && !isFetchingNextPage) void fetchNextPage();
+  }, [percorrendo, isFetchingNextPage, fetchNextPage, paginasRecebidas]);
 
   let corpo: ReactNode;
   if (paginas.isError && ultima === undefined) {
@@ -288,15 +347,25 @@ function EtapaMarcas({
             <Text size="sm">Nesta categoria a marca é obrigatória.</Text>
           </Alert>
         )}
+        {marcas.length > 0 && (
+          <Text size="xs" c="dimmed" data-testid="shopee-marcas-contagem">
+            {textoDaContagem(visiveis.length, marcas.length, filtrando, paginas.hasNextPage)}
+          </Text>
+        )}
         {marcas.length === 0 ? (
           <Text size="sm" c="dimmed" data-testid="shopee-marcas-vazia">
             {status === STATUS_MARCA_SHOPEE.aprovadas
               ? 'Nenhuma marca aprovada nesta categoria.'
               : 'Nenhuma marca em análise nesta categoria.'}
           </Text>
+        ) : visiveis.length === 0 ? (
+          <Text size="sm" c="dimmed" data-testid="shopee-marcas-filtro-vazio">
+            {`Nenhuma marca carregada corresponde a «${filtro.trim()}».`}
+            {paginas.hasNextPage && ' Carregue as demais marcas para buscar em todas.'}
+          </Text>
         ) : (
           <Stack gap={6} data-testid="shopee-marcas-lista">
-            {marcas.map((dto) => {
+            {visiveis.map((dto) => {
               const bloqueio = bloqueioDaMarca(dto, bloqueios);
               const marcada =
                 bloqueio?.tipo === 'cadastrada' ||
@@ -334,16 +403,47 @@ function EtapaMarcas({
             {falhaDaProxima}
           </Text>
         )}
+        {percorrendo && (
+          <Text size="xs" c="dimmed" data-testid="shopee-marcas-carregando-todas">
+            {`Carregando todas as marcas… ${String(marcas.length)} até agora.`}
+          </Text>
+        )}
+        {carregandoTodas && noTeto && paginas.hasNextPage && (
+          <Text size="xs" c="dimmed" data-testid="shopee-marcas-teto">
+            {`Parou em ${String(recebidas.length)} páginas (${String(marcas.length)} marcas) — use «Carregar mais» para continuar.`}
+          </Text>
+        )}
         {paginas.hasNextPage ? (
-          <Group justify="center">
+          <Group justify="center" gap="xs">
             <Button
               size="xs"
               variant="light"
-              loading={paginas.isFetchingNextPage}
-              onClick={() => void paginas.fetchNextPage()}
+              loading={paginas.isFetchingNextPage && !percorrendo}
+              disabled={percorrendo}
+              onClick={() => {
+                setCarregandoTodas(false);
+                void paginas.fetchNextPage();
+              }}
             >
               Carregar mais
             </Button>
+            {!noTeto && (
+              <Button
+                size="xs"
+                variant="subtle"
+                loading={percorrendo}
+                disabled={paginas.isFetchingNextPage && !percorrendo}
+                onClick={() => {
+                  setCarregandoTodas(true);
+                  // After a failed page (in a walk, or a manual «Carregar mais»)
+                  // the walk is held by `isFetchNextPageError`: this click is
+                  // the retry of THAT page, and its success resumes the walk.
+                  if (paginas.isFetchNextPageError) void paginas.fetchNextPage();
+                }}
+              >
+                Carregar todas as marcas
+              </Button>
+            )}
           </Group>
         ) : (
           ultima.hasNextPage && (
@@ -373,16 +473,35 @@ function EtapaMarcas({
         aria-label="Situação das marcas"
         data={OPCOES_STATUS}
         value={String(status)}
-        onChange={(v) =>
+        onChange={(v) => {
+          // Another status is another list: a walk asked over this one stops.
+          setCarregandoTodas(false);
           setStatus(
             Number(v) === STATUS_MARCA_SHOPEE.emAnalise
               ? STATUS_MARCA_SHOPEE.emAnalise
               : STATUS_MARCA_SHOPEE.aprovadas,
-          )
+          );
+        }}
+      />
+      <TextInput
+        aria-label="Filtrar marcas"
+        placeholder="Filtrar marcas pelo nome"
+        size="sm"
+        value={filtro}
+        leftSection={<IconSearch size={16} />}
+        rightSection={
+          filtro !== '' ? (
+            <CloseButton size="sm" aria-label="Limpar filtro" onClick={() => setFiltro('')} />
+          ) : undefined
         }
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') e.preventDefault();
+        }}
+        onChange={(e) => setFiltro(e.currentTarget.value)}
+        data-testid="shopee-marcas-filtro"
       />
       <Text size="xs" c="dimmed">
-        A Shopee não busca marcas por nome: navegue pelas páginas.
+        A Shopee não busca marcas por nome: o filtro procura nas marcas já carregadas.
       </Text>
       {corpo}
     </Stack>
