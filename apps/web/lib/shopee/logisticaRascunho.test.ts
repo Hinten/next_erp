@@ -814,3 +814,81 @@ describe('o módulo não re-deriva regra do servidor (#1369)', () => {
     }
   });
 });
+
+describe('chaveCanaisShopee com `linkDocId` — a leitura de um anúncio publicado (PR3)', () => {
+  it('⭐ sem `linkDocId` a chave tem 5 elementos (byte a byte a de sempre); com ele, 6 ⟷ NEAR-MISS: outro `linkDocId` ⇒ outra chave, e a de 5 nunca é a de 6', () => {
+    const cinco = chaveCanaisShopee('int-1', 'prod-1', 1);
+    const seis = chaveCanaisShopee('int-1', 'prod-1', 1, 'L-1');
+
+    expect(cinco).toEqual(['shopee', 'canais', 'int-1', 'prod-1', 1]);
+    expect(seis).toEqual(['shopee', 'canais', 'int-1', 'prod-1', 1, 'L-1']);
+    expect(mesmaChaveCanaisShopee(seis, chaveCanaisShopee('int-1', 'prod-1', 1, 'L-1'))).toBe(true);
+    expect(mesmaChaveCanaisShopee(seis, chaveCanaisShopee('int-1', 'prod-1', 1, 'L-2'))).toBe(
+      false,
+    );
+    expect(mesmaChaveCanaisShopee(seis, cinco)).toBe(false);
+    expect(mesmaChaveCanaisShopee(cinco, seis)).toBe(false);
+  });
+
+  it('o resíduo documentado: a chave NÃO carrega a logística gravada do vínculo — o mesmo vínculo e a mesma revisão são a MESMA chave', () => {
+    expect(
+      mesmaChaveCanaisShopee(
+        chaveCanaisShopee('int-1', 'prod-1', 1, 'L-1'),
+        chaveCanaisShopee('int-1', 'prod-1', 1, 'L-1'),
+      ),
+    ).toBe(true);
+  });
+});
+
+describe('comCanalShopee `manterForaDaLista` — um anúncio publicado não desliga o que a lista não mostra (R5)', () => {
+  // C is NOT selectable; AUSENTE is not in the answer at all. Both are stored.
+  const guardado = [on(A), on(C), off(AUSENTE, null)];
+
+  it('⭐ `true`: os canais gravados sem linha seguem com o MESMO ligado/desligado, uma vez por id, ordenados — um `is_free: null` vira `false` (a escrita estrita só aceita booleano; o servidor faz o mesmo) ⟷ NEAR-MISS: `false` os descarta', () => {
+    const mantido = comCanalShopee(
+      guardado,
+      LOJA,
+      B,
+      { ligado: true },
+      { manterForaDaLista: true },
+    );
+    expect(mantido).toEqual([
+      on(A),
+      on(B),
+      on(C),
+      off(D),
+      on(E),
+      off(F),
+      on(G),
+      off(AUSENTE, false),
+    ]);
+
+    const descartado = comCanalShopee(
+      guardado,
+      LOJA,
+      B,
+      { ligado: true },
+      { manterForaDaLista: false },
+    );
+    expect(descartado.some((c) => c.logistic_id === C || c.logistic_id === AUSENTE)).toBe(false);
+  });
+
+  it('o padrão (sem o argumento) é o do rascunho: byte a byte igual a `manterForaDaLista: false`', () => {
+    expect(JSON.stringify(comCanalShopee(guardado, LOJA, B, { ligado: true }))).toBe(
+      JSON.stringify(
+        comCanalShopee(guardado, LOJA, B, { ligado: true }, { manterForaDaLista: false }),
+      ),
+    );
+  });
+
+  it('um id repetido fora da lista vale uma vez (a PRIMEIRA entrada) ⟷ uma mudança recusada segue devolvendo o MESMO valor', () => {
+    const repetido = [on(A), on(C, true), off(C)];
+    const novo = comCanalShopee(repetido, LOJA, B, { ligado: true }, { manterForaDaLista: true });
+    expect(novo.filter((c) => c.logistic_id === C)).toEqual([on(C, true)]);
+
+    // E is compulsory: switching it off is refused whole, options or not.
+    expect(comCanalShopee(repetido, LOJA, E, { ligado: false }, { manterForaDaLista: true })).toBe(
+      repetido,
+    );
+  });
+});

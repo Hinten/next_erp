@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createEvent, fireEvent, render, screen, within } from '@testing-library/react';
 import type { Firestore } from 'firebase/firestore';
 import {
+  ALVO_EDICAO_SHOPEE,
   CAMPO_RASCUNHO_SHOPEE,
   ehRascunhoShopee,
   estadoPublicacaoRascunhoShopee,
@@ -66,6 +67,7 @@ import type { MarcaRascunhoShopeeProps } from './MarcaRascunhoShopee';
 import type {
   AtributosDoRascunhoShopee,
   ConfirmacaoDePublicacaoShopee,
+  PropsDoAnuncioShopee,
   RascunhoShopeeProps,
 } from './RascunhoShopee';
 
@@ -137,7 +139,16 @@ vi.mock('./MarcaRascunhoShopee', async (importOriginal) => ({
 }));
 
 const {
+  FRASE_ATRIBUTOS_REMOVIDOS_ANUNCIO_SHOPEE,
+  FRASE_BLOQUEIO_DO_ANUNCIO_SHOPEE,
+  FRASE_CAMPO_INVALIDO_ANUNCIO_SHOPEE,
   FRASE_CAMPO_INVALIDO_RASCUNHO_SHOPEE,
+  FRASE_CATEGORIA_TROCADA_ANUNCIO_SHOPEE,
+  FRASE_DESCRICAO_ESTENDIDA_ANUNCIO_SHOPEE,
+  FRASE_INTRO_EDICAO_ANUNCIO_SHOPEE,
+  FRASE_REPUBLICAR_TAMBEM_SHOPEE,
+  ROTULO_SALVAR_ANUNCIO_SHOPEE,
+  fraseDasDivergenciasDoAnuncioShopee,
   FRASE_TITULO_EM_BRANCO_RASCUNHO_SHOPEE,
   ROTULO_LER_DE_NOVO_RASCUNHO_SHOPEE,
   RascunhoShopee,
@@ -1868,5 +1879,272 @@ describe('RascunhoShopee — a FAILED read is said as such (#1911 P11 review: R7
     const dialogo = within(screen.getByTestId(`shopee-rascunho-publicar-${LINK}`));
     expect(dialogo.getByText(FALHA)).toBeTruthy();
     expect(dialogo.queryByText(FRASE_PUBLICAR_SEM_FAIXAS_SHOPEE)).toBeNull();
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*              PR3 — the form of a PUBLISHED listing (modo 'anuncio')         */
+/* -------------------------------------------------------------------------- */
+
+const ANUNCIO = 'anun0000000000000001';
+/** The published form's root: never prefixed `shopee-anuncio-` or `shopee-rascunho-`. */
+const RAIZ_ANUNCIO = `shopee-edicao-anuncio-${ANUNCIO}`;
+
+/** A published, live listing — `item_id` and a folded state, every content field filled. */
+function publicado(extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return rascunho({
+    item_id: 987654321,
+    estadoAnuncio: 'ativo',
+    description: 'Algodão',
+    category_id: 100087,
+    brand_id: 1234,
+    original_brand_name: 'Acme',
+    ...extra,
+  });
+}
+
+function blocoDoAnuncio(
+  link: Record<string, unknown>,
+  edicao: EdicaoRascunhoShopee | null = null,
+  over: Partial<EntradaDoBlocoRascunhoShopee> = {},
+) {
+  return estadoDoBlocoRascunhoShopee({
+    link,
+    edicao,
+    nowMs: AGORA,
+    kitVirtual: false,
+    servidorConfirmado: true,
+    podeEditar: true,
+    ocupado: false,
+    alvo: ALVO_EDICAO_SHOPEE.anuncio,
+    ...over,
+  });
+}
+
+function entradaDoAnuncio(link: Record<string, unknown>): EdicaoRascunhoShopee {
+  return edicaoDoRascunhoGuardadoShopee({
+    linkDocId: ANUNCIO,
+    contaId: CONTA,
+    link,
+    alvo: ALVO_EDICAO_SHOPEE.anuncio,
+  });
+}
+
+function showAnuncio(
+  over: Partial<PropsDoAnuncioShopee> = {},
+  link: Record<string, unknown> = publicado(),
+) {
+  const cb = callbacks();
+  render(
+    <MantineTestProvider>
+      <RascunhoShopee
+        modo="anuncio"
+        db={{} as Firestore}
+        contaId={CONTA}
+        contaNome="Loja Principal"
+        linkDocId={ANUNCIO}
+        produtoId={PRODUTO}
+        revisaoDoProduto={REVISAO_DO_PRODUTO}
+        bloco={blocoDoAnuncio(link)}
+        marcaGuardada={null}
+        limites={null}
+        divergencias={[]}
+        podeEditar
+        emVoo={null}
+        resultado={null}
+        onCampo={cb.onCampo}
+        atributos={ATRIBUTOS_SEM_CATEGORIA}
+        onAtributo={cb.onAtributo}
+        onSalvar={cb.onSalvar}
+        onDesfazer={cb.onDesfazer}
+        revisaoDoDesfazer={0}
+        {...over}
+      />
+    </MantineTestProvider>,
+  );
+  return cb;
+}
+
+const raizDoAnuncio = () => screen.getByTestId(RAIZ_ANUNCIO);
+const botaoDoAnuncio = (nome: string) =>
+  within(raizDoAnuncio()).getByRole('button', { name: nome }) as HTMLButtonElement;
+
+describe('RascunhoShopee — the form of a PUBLISHED listing', () => {
+  it('has its own root id and the intro, and the field ids of the draft form', () => {
+    showAnuncio();
+    expect(raizDoAnuncio()).toBeTruthy();
+    expect(screen.queryByTestId(`shopee-rascunho-${ANUNCIO}`)).toBeNull();
+    expect(screen.getByTestId(`${RAIZ_ANUNCIO}-intro`).textContent).toBe(
+      FRASE_INTRO_EDICAO_ANUNCIO_SHOPEE,
+    );
+    expect((screen.getByLabelText('Título do anúncio') as HTMLInputElement).id).toBe(
+      idDoCampoRascunhoShopee(ANUNCIO, CAMPO_RASCUNHO_SHOPEE.itemName),
+    );
+    expect(raizDoAnuncio().textContent).toContain('É o título que a Shopee mostra.');
+  });
+
+  it('NEAR-MISS: a draft has its own root and no published copy', () => {
+    show({ bloco: bloco({ link: rascunho({ category_id: 100087, brand_id: 0 }) }) });
+    expect(raiz()).toBeTruthy();
+    expect(screen.queryByTestId(RAIZ_ANUNCIO)).toBeNull();
+    expect(screen.queryByText(FRASE_INTRO_EDICAO_ANUNCIO_SHOPEE)).toBeNull();
+    expect(screen.queryByTestId(`${RAIZ}-republicar-tambem`)).toBeNull();
+    expect(h.logistica?.anuncio).toBeNull();
+    expect(h.categoria?.anuncio).toBe(false);
+    expect(h.atributos?.anuncio).toBe(false);
+  });
+
+  it('offers «Salvar» and «Desfazer alterações» only — never «Salvar rascunho», «Publicar» or «Descartar»', () => {
+    const cb = showAnuncio();
+    expect(
+      within(raizDoAnuncio())
+        .queryAllByRole('button')
+        .map((b) => b.textContent),
+    ).toStrictEqual([ROTULO_SALVAR_ANUNCIO_SHOPEE, 'Desfazer alterações']);
+    for (const b of within(raizDoAnuncio()).queryAllByRole('button')) {
+      expect(b.getAttribute('type')).toBe('button');
+    }
+    // Nothing to save yet ⇒ disabled.
+    expect(botaoDoAnuncio('Salvar').disabled).toBe(true);
+    expect(cb.onSalvar).not.toHaveBeenCalled();
+    expect(screen.queryByTestId(`${RAIZ_ANUNCIO}-pendencias`)).toBeNull();
+    expect(screen.queryByTestId(`shopee-rascunho-publicar-${ANUNCIO}`)).toBeNull();
+  });
+
+  it('«Salvar» runs onSalvar once the form holds a valid change', () => {
+    const link = publicado();
+    const edicao = comCampoRascunhoShopee(
+      entradaDoAnuncio(link),
+      CAMPO_RASCUNHO_SHOPEE.itemName,
+      'Camiseta nova',
+    );
+    const cb = showAnuncio({ bloco: blocoDoAnuncio(link, edicao) });
+    expect(botaoDoAnuncio('Salvar').disabled).toBe(false);
+    fireEvent.click(botaoDoAnuncio('Salvar'));
+    expect(cb.onSalvar).toHaveBeenCalledTimes(1);
+  });
+
+  it('typing reaches onCampo through the same field id', () => {
+    const cb = showAnuncio();
+    fireEvent.change(screen.getByLabelText('Título do anúncio'), { target: { value: 'Novo' } });
+    expect(cb.onCampo).toHaveBeenCalledWith(CAMPO_RASCUNHO_SHOPEE.itemName, 'Novo');
+  });
+
+  it('says what «Republicar» also sends — never price or stock', () => {
+    showAnuncio();
+    expect(screen.getByTestId(`${RAIZ_ANUNCIO}-republicar-tambem`).textContent).toBe(
+      FRASE_REPUBLICAR_TAMBEM_SHOPEE,
+    );
+    expect(FRASE_REPUBLICAR_TAMBEM_SHOPEE).not.toMatch(/preço|estoque/i);
+  });
+
+  it('hands the sections their published wording and the logistics its trust', () => {
+    showAnuncio();
+    expect(h.categoria?.anuncio).toBe(true);
+    expect(h.atributos?.anuncio).toBe(true);
+    // The link carries no ERP-stamped channel list ⇒ not trusted ⇒ the section says «importe antes».
+    expect(h.logistica?.anuncio).toStrictEqual({ logisticaConfiavel: false });
+  });
+
+  it('the invalid-field line is the published one', () => {
+    const link = publicado();
+    const edicao = comCampoRascunhoShopee(
+      entradaDoAnuncio(link),
+      CAMPO_RASCUNHO_SHOPEE.itemName,
+      '   ',
+    );
+    showAnuncio({ bloco: blocoDoAnuncio(link, edicao) });
+    expect(screen.getByTestId(`${RAIZ_ANUNCIO}-impedimento`).textContent).toBe(
+      FRASE_CAMPO_INVALIDO_ANUNCIO_SHOPEE,
+    );
+    expect(raizDoAnuncio().textContent).not.toContain(FRASE_CAMPO_INVALIDO_RASCUNHO_SHOPEE);
+  });
+
+  describe('the causes the server would refuse (422) — said before the click', () => {
+    it('an emptied brand ⇒ the «marca-vazia» line, and «Salvar» is disabled', () => {
+      const link = publicado();
+      const edicao = comCampoRascunhoShopee(
+        entradaDoAnuncio(link),
+        CAMPO_RASCUNHO_SHOPEE.marca,
+        null,
+      );
+      showAnuncio({ bloco: blocoDoAnuncio(link, edicao) });
+      expect(screen.getByTestId(`${RAIZ_ANUNCIO}-bloqueios`).textContent).toContain(
+        FRASE_BLOQUEIO_DO_ANUNCIO_SHOPEE['marca-vazia'],
+      );
+      expect(botaoDoAnuncio('Salvar').disabled).toBe(true);
+    });
+
+    it('NEAR-MISS: «Sem marca» (brand_id 0) is a brand ⇒ no line', () => {
+      const link = publicado();
+      const edicao = comCampoRascunhoShopee(entradaDoAnuncio(link), CAMPO_RASCUNHO_SHOPEE.marca, {
+        brand_id: 0,
+        original_brand_name: null,
+      });
+      showAnuncio({ bloco: blocoDoAnuncio(link, edicao) });
+      expect(screen.queryByTestId(`${RAIZ_ANUNCIO}-bloqueios`)).toBeNull();
+    });
+
+    it('NEAR-MISS: the same emptied brand on a DRAFT shows no such line', () => {
+      const link = rascunho({ category_id: 100087, brand_id: 1234, original_brand_name: 'Acme' });
+      const edicao = comCampoRascunhoShopee(entrada(link), CAMPO_RASCUNHO_SHOPEE.marca, null);
+      show({ bloco: bloco({ link, edicao }) });
+      expect(screen.queryByTestId(`${RAIZ}-bloqueios`)).toBeNull();
+    });
+
+    it('one sentence per cause', () => {
+      expect(Object.keys(FRASE_BLOQUEIO_DO_ANUNCIO_SHOPEE).sort()).toStrictEqual([
+        'atributos-esvaziados',
+        'categoria-sem-atributos',
+        'logistica-automatica',
+        'marca-vazia',
+      ]);
+    });
+  });
+
+  describe('the warnings — each only while its fact holds', () => {
+    it('an extended description warns', () => {
+      showAnuncio({}, publicado({ description_type: 'extended' }));
+      expect(screen.getByTestId(`${RAIZ_ANUNCIO}-avisos-anuncio`).textContent).toContain(
+        FRASE_DESCRICAO_ESTENDIDA_ANUNCIO_SHOPEE,
+      );
+    });
+
+    it('NEAR-MISS: a normal description, the held category, nothing removed ⇒ no warning', () => {
+      showAnuncio({}, publicado({ description_type: 'normal' }));
+      expect(screen.queryByTestId(`${RAIZ_ANUNCIO}-avisos-anuncio`)).toBeNull();
+    });
+
+    it('a changed category warns', () => {
+      const link = publicado();
+      const edicao = comCampoRascunhoShopee(
+        entradaDoAnuncio(link),
+        CAMPO_RASCUNHO_SHOPEE.categoryId,
+        100090,
+      );
+      showAnuncio({ bloco: blocoDoAnuncio(link, edicao) });
+      expect(screen.getByTestId(`${RAIZ_ANUNCIO}-avisos-anuncio`).textContent).toContain(
+        FRASE_CATEGORIA_TROCADA_ANUNCIO_SHOPEE,
+      );
+    });
+
+    it('the removed-attribute warning sends the operator to the Seller Centre to confirm', () => {
+      expect(FRASE_ATRIBUTOS_REMOVIDOS_ANUNCIO_SHOPEE).toContain('Seller Centre');
+    });
+  });
+
+  it('the stale-check sentence names the listing, not a draft', () => {
+    showAnuncio({ divergencias: [CAMPO_RASCUNHO_SHOPEE.itemName] });
+    expect(screen.getByTestId(`${RAIZ_ANUNCIO}-divergencias`).textContent).toBe(
+      fraseDasDivergenciasDoAnuncioShopee([CAMPO_RASCUNHO_SHOPEE.itemName]),
+    );
+    expect(fraseDasDivergenciasDoRascunhoShopee([CAMPO_RASCUNHO_SHOPEE.itemName])).not.toBe(
+      fraseDasDivergenciasDoAnuncioShopee([CAMPO_RASCUNHO_SHOPEE.itemName]),
+    );
+  });
+
+  it('a read-only operator sees the values and no button at all', () => {
+    showAnuncio({ podeEditar: false });
+    expect(within(raizDoAnuncio()).queryAllByRole('button')).toHaveLength(0);
   });
 });

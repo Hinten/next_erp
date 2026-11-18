@@ -13,6 +13,7 @@ import {
 } from '@delfrance/integrations-shopee';
 import {
   AGUARDAR_KIT_INCERTO_SHOPEE_MS,
+  CODIGO_CRIACAO_KIT_SHOPEE,
   CODIGO_RASCUNHO_SHOPEE,
   ESTADO_ANUNCIO_SHOPEE,
   INTEGRACAO_TIPO,
@@ -45,7 +46,8 @@ import type {
   ResultadoPublicacao,
 } from '@/lib/shopee/anuncios/publicarAnuncio';
 import { ShopeeContaNotConfiguredError } from '@/lib/shopee/core/shopee';
-import { MENSAGEM_KIT_INCERTO, type ResultadoPublicacaoKit } from '@/lib/shopee/kits/resultadoKit';
+import { conflitoKitEmAndamento, conflitoKitExpirado } from '@/lib/shopee/kits/criacaoKitEmCurso';
+import { mensagemKitIncerto, type ResultadoPublicacaoKit } from '@/lib/shopee/kits/resultadoKit';
 import {
   __setShopeeTaxonomiaClockForTests,
   limparTaxonomiaShopee,
@@ -788,7 +790,7 @@ describe('passo 19 — os braços de kit pela rota', () => {
     expect((deps as { increment: (n: number) => unknown }).increment(1)).toBeDefined();
   });
 
-  it('(M147) um kit-criar `incerto` ⇒ 202 com `recusa`, MENSAGEM_KIT_INCERTO e o `comando` exato', async () => {
+  it('(M147, #1912) um kit-criar `incerto` ⇒ 202 com `recusa`, a frase da espera da RESERVA e o `comando` exato', async () => {
     semearKit();
     const comando = `publicar:anuncio --integracao ${INT_A} --produto ${KIT} --principal comp-a`;
     h.publicarKit.mockResolvedValue(
@@ -808,6 +810,8 @@ describe('passo 19 — os braços de kit pela rota', () => {
           motivo: MOTIVO_PROBLEMA_PUBLICACAO.instabilidadeShopee,
         },
         comando,
+        // The KEPT create lease's remaining hold (#1912).
+        aguardarMs: 520_000,
       }),
     );
 
@@ -825,15 +829,31 @@ describe('passo 19 — os braços de kit pela rota', () => {
         fraseShopee: 'Too many connections',
         motivo: MOTIVO_PROBLEMA_PUBLICACAO.instabilidadeShopee,
       },
-      mensagem: MENSAGEM_KIT_INCERTO,
+      mensagem: mensagemKitIncerto(520_000),
       comando,
     });
-    // K4 (step 21): the wait the web holds its identical re-send for — the
-    // schemas' ONE copy, which the sentence beside it interpolates too.
-    expect(corpo.aguardarMs).toBe(AGUARDAR_KIT_INCERTO_SHOPEE_MS);
-    expect(MENSAGEM_KIT_INCERTO).toContain(
-      `aguarde ${String(AGUARDAR_KIT_INCERTO_SHOPEE_MS / 60_000)} minutos`,
+    // #1912: the wait the web holds its identical re-send for is the kept
+    // lease's — the ONE value the sentence beside it interpolates too.
+    expect(corpo.aguardarMs).toBe(520_000);
+    expect(corpo.mensagem).toContain('aguarde 9 minutos');
+  });
+
+  it('(M147, quase-par) um `incerto` SEM a espera da reserva cai na constante dos schemas, nunca num 0', async () => {
+    semearKit();
+    h.publicarKit.mockResolvedValue(
+      resultadoKitDouble({
+        desfecho: 'incerto',
+        itemId: null,
+        linkDocId: null,
+        recusa: { codigo: 'x', fraseShopee: null, motivo: null },
+        comando: 'publicar:anuncio',
+        aguardarMs: null,
+      }),
     );
+    const res = await POST(req(corpoValido({ produtoId: KIT }), AUTORIZADO));
+    const corpo = (await res.json()) as Record<string, unknown>;
+    expect(corpo.aguardarMs).toBe(AGUARDAR_KIT_INCERTO_SHOPEE_MS);
+    expect(corpo.mensagem).toBe(mensagemKitIncerto(AGUARDAR_KIT_INCERTO_SHOPEE_MS));
   });
 
   it('(M147, quase-par) um kit CRIADO é 200 sem `mensagem` — o 202 é só do incerto', async () => {
@@ -847,6 +867,39 @@ describe('passo 19 — os braços de kit pela rota', () => {
     expect('mensagem' in corpo).toBe(false);
     // ...and no wait either: `aguardarMs` is the 202's alone.
     expect('aguardarMs' in corpo).toBe(false);
+  });
+
+  it('(#1912) a reserva da criação recusa ⇒ 409 com `code` e `aguardarMs` POR NOME; ⚠️ quase-par: sem espera, a chave fica AUSENTE (nunca um 0)', async () => {
+    semearKit();
+    h.publicarKit.mockRejectedValueOnce(conflitoKitEmAndamento(123_000));
+    const res = await POST(req(corpoValido({ produtoId: KIT }), AUTORIZADO));
+    expect(res.status).toBe(409);
+    const corpo = (await res.json()) as Record<string, unknown>;
+    expect(Object.keys(corpo).sort()).toEqual(['aguardarMs', 'code', 'error']);
+    expect(corpo).toMatchObject({
+      code: CODIGO_CRIACAO_KIT_SHOPEE.emAndamento,
+      aguardarMs: 123_000,
+    });
+
+    semearKit();
+    h.publicarKit.mockRejectedValueOnce(conflitoKitExpirado('não coube'));
+    const res2 = await POST(req(corpoValido({ produtoId: KIT }), AUTORIZADO));
+    expect(res2.status).toBe(409);
+    const corpo2 = (await res2.json()) as Record<string, unknown>;
+    expect(corpo2.code).toBe(CODIGO_CRIACAO_KIT_SHOPEE.expirada);
+    expect('aguardarMs' in corpo2).toBe(false);
+  });
+
+  it('(#1912) criarKitNativo chega ao publicador; junto com linkDocId é 400 antes de qualquer leitura', async () => {
+    semearKit();
+    h.publicarKit.mockResolvedValue(resultadoKitDouble());
+    const ok = await POST(req(corpoValido({ produtoId: KIT, criarKitNativo: true }), AUTORIZADO));
+    expect(ok.status).toBe(200);
+
+    const ruim = await POST(
+      req(corpoValido({ produtoId: KIT, criarKitNativo: true, linkDocId: 'L1' }), AUTORIZADO),
+    );
+    expect(ruim.status).toBe(400);
   });
 
   it('(cut-note #12) um add_kit_item RECUSADO (nao-criado) ⇒ o REJECTED do respond, etapa add_kit_item, shopeeCode VERBATIM', async () => {
@@ -1691,11 +1744,13 @@ describe('#1911 — publicar um RASCUNHO pela rota', () => {
     expect(yaml).toContain('TETO_ROTA_SHOPEE_MS');
   });
 
-  it('a rota mapeia o 409 por instanceof ANTES do isShopeeError (texto da fonte)', () => {
+  it('a rota mapeia os 409 por instanceof ANTES do isShopeeError (texto da fonte) — o da trava do rascunho e o da reserva do kit (#1912)', () => {
     const fonte = readFileSync(fileURLToPath(new URL('./route.ts', import.meta.url)), 'utf8');
-    const conflito = fonte.indexOf('err instanceof ConflitoDeRascunhoShopeeError');
     const shopee = fonte.indexOf('if (isShopeeError(err))');
-    expect(conflito).toBeGreaterThan(0);
-    expect(conflito).toBeLessThan(shopee);
+    for (const classe of ['ConflitoDeRascunhoShopeeError', 'ConflitoDeCriacaoDeKitShopeeError']) {
+      const conflito = fonte.indexOf(`err instanceof ${classe}`);
+      expect(conflito, classe).toBeGreaterThan(0);
+      expect(conflito, classe).toBeLessThan(shopee);
+    }
   });
 });

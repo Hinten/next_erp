@@ -36,6 +36,7 @@ import {
   type ShopeeUpdateKitItemRequest,
 } from '@delfrance/integrations-shopee';
 import {
+  AGUARDAR_KIT_INCERTO_SHOPEE_MS,
   TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE,
   chaveAvisoReceitaKitShopee,
   chaveReceitaKitErp,
@@ -69,6 +70,7 @@ import { publicarKitShopee } from './publicarKit';
 import type { ArmaDeKit, EntradaDeKit } from './prepararKit';
 import { MOTIVO_ANEXO_IMPOSSIVEL } from './republicarKit';
 import type { KitDeps, ResultadoPublicacaoKit } from './resultadoKit';
+import { aoVivoDeTeste } from './testing/reservaDeTeste';
 
 /* -------------------------------------------------------------------------- */
 /*  Fixture ids by ROLE only (s19-ctx / reconcile §0). Never a real id.         */
@@ -556,6 +558,7 @@ function deps(db: FakeDb, loja: Loja, nowMs = AGORA): KitDeps {
     depositoOuterRef: 'documents/depositos/dep-1',
     operacaoOuterRef: null,
     nowMs,
+    aoVivo: aoVivoDeTeste(nowMs),
     esperar: () => Promise.resolve(),
     taxonomia: {
       integracaoId: INTEGRACAO,
@@ -1472,10 +1475,17 @@ describe('o que recusa a republicação — só linhas que NÃO são receita (§
     expect(contar(loja, 'update_kit_item')).toBe(0);
     expect(loja.ops.some((o) => o.startsWith('upload'))).toBe(false);
 
-    // A PURGED kit (no base row at all) is a deleted one too (S2C-07).
+    // A PURGED kit (no base row at all) is a deleted one too (S2C-07) — once
+    // its link is past the #2065 window (the doubt is pinned just below).
     const purgado = await familiaCriada();
     purgado.loja.itens.delete(KIT_ITEM);
-    const erroPurgado = await recusaDe(republicar(purgado.db, purgado.loja));
+    const erroPurgado = await recusaDe(
+      publicarKitShopee(
+        deps(purgado.db, purgado.loja, AGORA + AGUARDAR_KIT_INCERTO_SHOPEE_MS),
+        entrada(),
+        ATUALIZAR,
+      ),
+    );
     expect(erroPurgado.problemas.map((p) => p.motivo)).toEqual([
       MOTIVO_PUBLICACAO_BLOQUEADA.listagemRemovida,
     ]);
@@ -1486,6 +1496,54 @@ describe('o que recusa a republicação — só linhas que NÃO são receita (§
     kitPausado.base = { ...kitPausado.base, item_status: 'UNLIST' };
     expect((await republicar(pausado.db, pausado.loja)).desfecho).toBe('atualizado');
     expect(contar(pausado.loja, 'update_kit_item')).toBe(1);
+  });
+
+  it('(B2, #2065) um kit criado há pouco SEM linha na Shopee é DÚVIDA: recusa busca-de-kit-incompleta, NADA escrito (o vínculo segue ativo), zero update; ⚠️ near-misses: um minuto além da janela ⇒ removido; um STATUS de exclusão nunca é dúvida', async () => {
+    // Inside the window: 60 s after the create (`republicar`'s own clock).
+    const { db, loja } = await familiaCriada();
+    loja.itens.delete(KIT_ITEM);
+    const escritas = db.writes.length;
+
+    const erro = await recusaDe(republicar(db, loja));
+
+    expect(erro.problemas[0]).toEqual({
+      campo: 'sku',
+      motivo: MOTIVO_PUBLICACAO_BLOQUEADA.buscaDeKitIncompleta,
+      mensagem:
+        `o kit criado há pouco ainda não aparece na Shopee (item ${String(KIT_ITEM)}, vínculo ` +
+        `${VINCULO}) — nada foi enviado; aguarde 4 minutos e tente de novo`,
+    });
+    // No `acao`: the remedy is to wait, never a CLI flag.
+    expect(erro.problemas[0]).not.toHaveProperty('acao');
+    expect(db.writes.length).toBe(escritas);
+    expect(doc(db, `produtos/${K}/prodshopee/${VINCULO}`)?.estadoAnuncio).toBe('ativo');
+    expect(contar(loja, 'update_kit_item')).toBe(0);
+    expect(loja.ops.some((o) => o.startsWith('upload'))).toBe(false);
+
+    // NEAR-MISS (boundary): exactly AGUARDAR after the create the link is no
+    // longer recent ⇒ the absent row reads deleted, as before.
+    const tarde = await familiaCriada();
+    tarde.loja.itens.delete(KIT_ITEM);
+    const erroTarde = await recusaDe(
+      publicarKitShopee(
+        deps(tarde.db, tarde.loja, AGORA + AGUARDAR_KIT_INCERTO_SHOPEE_MS),
+        entrada(),
+        ATUALIZAR,
+      ),
+    );
+    expect(erroTarde.problemas.map((p) => p.motivo)).toEqual([
+      MOTIVO_PUBLICACAO_BLOQUEADA.listagemRemovida,
+    ]);
+    expect(doc(tarde.db, `produtos/${K}/prodshopee/${VINCULO}`)?.estadoAnuncio).toBe('removido');
+
+    // NEAR-MISS: a delete STATUS inside the window is Shopee's own word.
+    const apagado = await familiaCriada();
+    const kit = apagado.loja.itens.get(KIT_ITEM)!;
+    kit.base = { ...kit.base, item_status: 'SELLER_DELETE' };
+    const erroApagado = await recusaDe(republicar(apagado.db, apagado.loja));
+    expect(erroApagado.problemas.map((p) => p.motivo)).toEqual([
+      MOTIVO_PUBLICACAO_BLOQUEADA.listagemRemovida,
+    ]);
   });
 
   it('⛔ um vínculo NATIVO cujo item a Shopee NÃO serve como kit ⇒ erro de defeito, sem foto, sem update e sem escrita', async () => {

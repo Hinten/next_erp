@@ -41,7 +41,9 @@
  * plain `merge` of what was just READ; the superseded pointer a flat `merge`
  * of two scalars that a re-run re-writes identically. `delete_item` is sent
  * only to an old kit that READS live, and its ack is never trusted — only a
- * re-read decides. The accepted residual is R-w (register 303).
+ * re-read decides. Every create runs under the single-flight create lease
+ * (#1912, `criacaoKitEmCurso.ts`), handed in as `reserva`: register 303 is
+ * closed for concurrent runs; the residuals are 330–333.
  *
  * Next-free and clock-free: `deps.nowMs` is the one clock; the aviso's µs comes
  * from `avisos/autorizacao.ts`'s `agoraUsDe`.
@@ -83,7 +85,13 @@ import {
   type GarantiaCumprida,
 } from './aplicarKit';
 import { STATUS_KIT_VIVO } from './constantesKit';
-import { kitVivoRemovido, vinculosNativosDoKit, type PlanoKit } from './planoKit';
+import type { ReservaDeCriacaoDeKit } from './criacaoKitEmCurso';
+import {
+  kitVivoAusenteRecente,
+  kitVivoRemovido,
+  vinculosNativosDoKit,
+  type PlanoKit,
+} from './planoKit';
 import { lerKitVivo } from './prepararKit';
 import { avisoPrincipalDiferente } from './republicarKit';
 import {
@@ -541,8 +549,12 @@ async function garantirAntigoExcluido(
   if (vivo === null) {
     throw new Error('[shopee/kits] passo 3 da recriação sem a leitura do kit antigo');
   }
+  // #2065: an absent row on a target created moments ago is a DOUBT, never
+  // proof — it falls to the superseded branch below (the old kit may still
+  // sell), never to `removido` and never to a `delete_item` (no live status).
+  const rawDoAlvo = ctx.alvo?.raw ?? {};
 
-  if (kitVivoRemovido(vivo, deps.nowMs)) {
+  if (kitVivoRemovido(vivo, deps.nowMs) && !kitVivoAusenteRecente(vivo, rawDoAlvo, deps.nowMs)) {
     await escreverLeituraDoKit(deps, {
       produtoId: kitId,
       linkDocId: alvo.linkDocId,
@@ -574,7 +586,10 @@ async function garantirAntigoExcluido(
     }
     const releitura = await lerKitVivo(deps.client, alvo.itemId);
     chamadasShopee += chamadasDaLeituraDoKit(releitura.item);
-    if (kitVivoRemovido(releitura.vivo, deps.nowMs)) {
+    if (
+      kitVivoRemovido(releitura.vivo, deps.nowMs) &&
+      !kitVivoAusenteRecente(releitura.vivo, rawDoAlvo, deps.nowMs)
+    ) {
       await escreverLeituraDoKit(deps, {
         produtoId: kitId,
         linkDocId: alvo.linkDocId,
@@ -652,6 +667,7 @@ function resultadoIncerto(
     avisosResolvidos: 0,
     chamadasShopee: (ctx.busca?.chamadas ?? 0) + garantia.chamadasShopee,
     recusa: garantia.recusa,
+    aguardarMs: garantia.aguardarMs,
     comando: comandoDeRetomada(arma, {
       integracaoId: ctx.integracaoId,
       produtoId: ctx.produto.id,
@@ -710,6 +726,7 @@ export async function recriarKit(
   deps: KitDeps,
   ctx: ContextoKit,
   plano: PlanoKit,
+  reserva: ReservaDeCriacaoDeKit,
 ): Promise<ResultadoPublicacaoKit> {
   const alvo = alvoDoBraco(ctx, 'kit-recriar');
   const kitId = ctx.produto.id;
@@ -722,8 +739,13 @@ export async function recriarKit(
   const linkRemovido = alvo.raw.estadoAnuncio === ESTADO_ANUNCIO_SHOPEE.removido;
   const vivo = ctx.vivo;
   // The target still EXISTS on Shopee: its link is not `removido` and this
-  // run's read of it is not a deleted status or an absent row (S2C-07).
-  const alvoExiste = !linkRemovido && vivo !== null && !kitVivoRemovido(vivo, deps.nowMs);
+  // run's read of it is not a deleted status or an absent row (S2C-07) — an
+  // absent row on a `recente` link counts as existing (#2065: a doubt is never
+  // proof of a delete), so the gate below runs and step 3 supersedes it.
+  const alvoExiste =
+    !linkRemovido &&
+    vivo !== null &&
+    (!kitVivoRemovido(vivo, deps.nowMs) || kitVivoAusenteRecente(vivo, alvo.raw, deps.nowMs));
   const alvoVivo = alvoExiste && vivo.status !== null && VIVOS.has(vivo.status);
   if (alvoVivo && vivo.kit === null) {
     // A native link over a listing Shopee does not serve as a kit — no writer
@@ -742,7 +764,7 @@ export async function recriarKit(
     // `garantirKitNovo` throws the aggregated refusal (after the one fact a
     // create-arm run may write first, S2C-02) — the same answer `kit-criar`
     // gives, so an unlinked twin is named here and never hidden by step 0.
-    await garantirKitNovo(deps, ctx, plano);
+    await garantirKitNovo(deps, ctx, plano, reserva);
     throw new Error('[shopee/kits] garantirKitNovo não recusou um kitNovo recusar');
   }
 
@@ -766,7 +788,7 @@ export async function recriarKit(
   }
 
   /* ---- 1. ensure the NEW kit exists --------------------------------------- */
-  const garantia = await garantirKitNovo(deps, ctx, plano);
+  const garantia = await garantirKitNovo(deps, ctx, plano, reserva);
   if (garantia.desfecho === 'incerto') {
     const resultado = resultadoIncerto(ctx, 'kit-recriar', alvo.linkDocId, garantia);
     registrar(resultado);
@@ -815,6 +837,7 @@ export async function recriarKit(
     chamadasShopee,
     recusa: null,
     comando: null,
+    aguardarMs: null,
   };
   registrar(resultado);
   return resultado;
@@ -840,12 +863,13 @@ export async function converterEmKit(
   deps: KitDeps,
   ctx: ContextoKit,
   plano: PlanoKit,
+  reserva: ReservaDeCriacaoDeKit,
 ): Promise<ResultadoPublicacaoKit> {
   const alvo = alvoDoBraco(ctx, 'kit-converter');
   const kitId = ctx.produto.id;
 
   /* ---- 1. ensure the NEW kit exists --------------------------------------- */
-  const garantia = await garantirKitNovo(deps, ctx, plano);
+  const garantia = await garantirKitNovo(deps, ctx, plano, reserva);
   if (garantia.desfecho === 'incerto') {
     // The antecessor is always printed: re-running against the SAME ordinary
     // listing is what makes the re-run literally the same command (S1F-03).
@@ -902,6 +926,7 @@ export async function converterEmKit(
     chamadasShopee: (ctx.busca?.chamadas ?? 0) + garantia.chamadasShopee,
     recusa: null,
     comando: null,
+    aguardarMs: null,
   };
   registrar(resultado);
   return resultado;

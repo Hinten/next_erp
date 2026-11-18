@@ -38,6 +38,8 @@ import {
 import { reavaliarAvisoDeReceitaKit } from '@delfrance/data/admin/avisos';
 import {
   ACAO_STATUS_ANUNCIO,
+  AGUARDAR_KIT_INCERTO_SHOPEE_MS,
+  ESPERA_MAXIMA_CRIACAO_KIT_SHOPEE_MS,
   ESTADO_ANUNCIO_SHOPEE,
   MOTIVO_RESOLUCAO_RECEITA_KIT,
   TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE,
@@ -74,6 +76,8 @@ import { importarKitShopee } from '../produtos/kitShopee';
 import { lerAnuncioShopee } from '../produtos/lerAnuncio';
 import { limparTaxonomiaShopee } from '../taxonomia/cache';
 import { FakeDb, asDb, increment } from '../testing/fakeDb';
+import { ConflitoDeCriacaoDeKitShopeeError } from './criacaoKitEmCurso';
+import { aoVivoDeTeste, reservaDeTeste, semEscritasDaReserva } from './testing/reservaDeTeste';
 import { idDaVariacaoDeKit, idDoVinculoDeKit } from './idsKit';
 import type { ArmaDeKit, EntradaDeKit } from './prepararKit';
 import { ensaiarKitShopee, publicarKitShopee } from './publicarKit';
@@ -323,8 +327,11 @@ interface Loja {
    * after `depois` such calls went through (0 = the next one).
    */
   falhaNaLeitura: { readonly itemId: number; readonly erro: Error; depois: number } | null;
-  /** What the next `delete_item` does. */
-  exclusao: 'apaga' | 'recusa' | 'apaga-e-falha' | 'quebra';
+  /**
+   * What the next `delete_item` does. `'purga'` deletes and then answers NO
+   * row at all on the next read (a purge, or Shopee's lag on a fresh kit).
+   */
+  exclusao: 'apaga' | 'recusa' | 'apaga-e-falha' | 'quebra' | 'purga';
   /** The `item_status` the NEXT created kit reads back with. */
   statusDoProximo: string;
   /** The `create_time` the NEXT created kit reads back with (`undefined` = the role's). */
@@ -635,6 +642,9 @@ function novaLoja(): Loja {
         case 'apaga':
           apagar(corpo.item_id);
           return Promise.resolve({ request_id: 'req-3', error: '', message: '', warning: '' });
+        case 'purga':
+          itens.delete(corpo.item_id);
+          return Promise.resolve({ request_id: 'req-3', error: '', message: '', warning: '' });
       }
     },
   };
@@ -688,6 +698,7 @@ function deps(db: FakeDb, loja: Loja, nowMs = AGORA): KitDeps {
     depositoOuterRef: 'documents/depositos/dep-1',
     operacaoOuterRef: null,
     nowMs,
+    aoVivo: aoVivoDeTeste(nowMs),
     esperar: () => Promise.resolve(),
     taxonomia: {
       integracaoId: INTEGRACAO,
@@ -726,18 +737,35 @@ async function publicar(
   loja: Loja,
   arma: ArmaDeKit,
   ent: Partial<EntradaDeKit> = {},
+  nowMs: number = AGORA,
 ): Promise<ResultadoPublicacaoKit> {
-  return await publicarKitShopee(deps(db, loja), entrada(ent), arma);
+  return await publicarKitShopee(deps(db, loja, nowMs), entrada(ent), arma);
 }
 
 const criar = (db: FakeDb, loja: Loja, ent: Partial<EntradaDeKit> = {}) =>
   publicar(db, loja, { arma: 'kit-criar' }, ent);
 
-const recriar = (db: FakeDb, loja: Loja, linkDocId: string, ent: Partial<EntradaDeKit> = {}) =>
-  publicar(db, loja, { arma: 'kit-recriar', linkDocId }, ent);
+const recriar = (
+  db: FakeDb,
+  loja: Loja,
+  linkDocId: string,
+  ent: Partial<EntradaDeKit> = {},
+  nowMs: number = AGORA,
+) => publicar(db, loja, { arma: 'kit-recriar', linkDocId }, ent, nowMs);
 
-const converter = (db: FakeDb, loja: Loja, ent: Partial<EntradaDeKit> = {}) =>
-  publicar(db, loja, { arma: 'kit-converter', antecessorLinkDocId: VINCULO_COMUM }, ent);
+const converter = (
+  db: FakeDb,
+  loja: Loja,
+  ent: Partial<EntradaDeKit> = {},
+  nowMs: number = AGORA,
+) => publicar(db, loja, { arma: 'kit-converter', antecessorLinkDocId: VINCULO_COMUM }, ent, nowMs);
+
+/**
+ * An instant past ANY create lease taken at AGORA (#1912): the hold an
+ * `incerto` leaves, its post-send grace included, is over — the earliest a
+ * re-run of the same command is let through.
+ */
+const DEPOIS_DA_RESERVA = AGORA + ESPERA_MAXIMA_CRIACAO_KIT_SHOPEE_MS;
 
 /** Step 9's REAL single-item import of a kit. */
 async function importar(db: FakeDb, loja: Loja, itemId: number) {
@@ -1017,6 +1045,38 @@ describe('recriarKit — cria o NOVO primeiro, depois exclui o antigo (L4(4))', 
     const fim = loja.chamadas.findIndex((c, i) => i > inicio && c.op === 'add_kit_item');
     expect(inicio).toBeGreaterThan(-1);
     expect(loja.chamadas.slice(inicio, fim).filter((c) => c.ids.includes(KIT_1))).toEqual([]);
+  });
+
+  it('(B2, #2065) a releitura depois do delete_item SEM linha, num alvo criado há pouco, é DÚVIDA ⇒ o antigo fica SUBSTITUÍDO (+ kit-antigo-nao-excluido), nunca `removido`; ⚠️ near-miss: além da janela ⇒ `removido`', async () => {
+    const db = new FakeDb();
+    const loja = novaLoja();
+    await kitAntigoComReceitaEditada(db, loja);
+    loja.exclusao = 'purga';
+
+    // Same instant as the old kit's create: the old link is `recente`.
+    const r = await recriar(db, loja, VINCULO_1);
+
+    expect(r.antecessor).toMatchObject({
+      linkDocId: VINCULO_1,
+      excluido: false,
+      substituido: true,
+    });
+    expect(codigos(r)).toContain('kit-antigo-nao-excluido');
+    expect(vinculo(db, VINCULO_1)?.estadoAnuncio).not.toBe(ESTADO_ANUNCIO_SHOPEE.removido);
+    expect(vinculo(db, VINCULO_1)?.substituidoPorLinkDocId).toBe(VINCULO_2);
+
+    // NEAR-MISS: the same purge on an OLD target (past the window) is a delete.
+    const db2 = new FakeDb();
+    const loja2 = novaLoja();
+    await kitAntigoComReceitaEditada(db2, loja2);
+    loja2.exclusao = 'purga';
+    const r2 = await publicarKitShopee(
+      deps(db2, loja2, AGORA + AGUARDAR_KIT_INCERTO_SHOPEE_MS),
+      entrada(),
+      { arma: 'kit-recriar', linkDocId: VINCULO_1 },
+    );
+    expect(r2.antecessor).toMatchObject({ excluido: true, substituido: false });
+    expect(vinculo(db2, VINCULO_1)?.estadoAnuncio).toBe(ESTADO_ANUNCIO_SHOPEE.removido);
   });
 
   it('(M114) um add_kit_item RECUSADO (nao-criado) ⇒ ZERO delete_item, o antigo intacto, nada gravado no vínculo antigo', async () => {
@@ -1308,7 +1368,7 @@ describe('(M128) passo 0 — a rede de segurança `recriacao-sem-diferenca`', ()
     });
     expect(ensaio.contexto.principal).toEqual({ itemId: COMP_B_ITEM, modelId: null });
     expect(ensaio.contexto.principalPedido).toBeNull();
-    expect(db.writes.slice(escritas)).toEqual([]);
+    expect(semEscritasDaReserva(db.writes.slice(escritas))).toEqual([]);
 
     // ⛔ the first recriar (nothing linked yet) holds the principal it was HANDED.
     const db2 = new FakeDb();
@@ -1585,7 +1645,13 @@ describe('passo 3 e as retomadas da recriação (§2.5.4 R0–R5)', () => {
     });
     expect(vinculo(db, VINCULO_2)).toBeUndefined();
 
-    const erro = await recusaDe(recriar(db, loja, VINCULO_1));
+    // #1912: the SAME command inside the kept lease's hold sends nothing.
+    const opsAntes = loja.ops.length;
+    const cedo = await falhaDe(recriar(db, loja, VINCULO_1, {}, AGORA + 60_000));
+    expect(cedo).toBeInstanceOf(ConflitoDeCriacaoDeKitShopeeError);
+    expect(loja.ops.length).toBe(opsAntes);
+
+    const erro = await recusaDe(recriar(db, loja, VINCULO_1, {}, DEPOIS_DA_RESERVA));
     expect(motivos(erro)).toEqual([MOTIVO_PUBLICACAO_BLOQUEADA.kitJaExisteNaShopee]);
     expect(erro.problemas[0]?.mensagem).toContain(String(KIT_2));
     expect(quantas(loja, 'add_kit_item', desde)).toBe(1);
@@ -1664,12 +1730,40 @@ describe('passo 3 e as retomadas da recriação (§2.5.4 R0–R5)', () => {
     await kitAntigoComReceitaEditada(db, loja);
     loja.itens.delete(KIT_1);
 
-    const r = await recriar(db, loja, VINCULO_1);
+    // An OLD kit: its link is past the #2065 window (the doubt is pinned below).
+    const r = await publicarKitShopee(
+      deps(db, loja, AGORA + AGUARDAR_KIT_INCERTO_SHOPEE_MS),
+      entrada(),
+      { arma: 'kit-recriar', linkDocId: VINCULO_1 },
+    );
 
     expect(r).toMatchObject({ desfecho: 'criado', antecessor: { excluido: true } });
     expect(loja.ops).not.toContain('delete_item');
     expect(vinculo(db, VINCULO_1)?.estadoAnuncio).toBe(ESTADO_ANUNCIO_SHOPEE.removido);
     expect(avisoAberto(db)).toBe(false);
+  });
+
+  it('(B2, #2065) o MESMO alvo sem linha mas criado há pouco é DÚVIDA: nunca `removido`, nunca delete_item — o antigo pode estar vendendo', async () => {
+    const db = new FakeDb();
+    const loja = novaLoja();
+    await kitAntigoComReceitaEditada(db, loja);
+    loja.itens.delete(KIT_1);
+
+    // Same instant as the old kit's create: well inside the window.
+    const r = await recriar(db, loja, VINCULO_1);
+
+    // The doubt counts as "the target exists", so the delete gate runs: it
+    // cannot compare create times (no row ⇒ no create_time) and STOPS — the
+    // new kit is made, the old one is neither deleted, nor `removido`, nor
+    // superseded.
+    expect(r).toMatchObject({
+      desfecho: 'criado',
+      antecessor: { linkDocId: VINCULO_1, excluido: false, substituido: false },
+    });
+    expect(codigos(r)).toEqual(['kit-alvo-mais-novo']);
+    expect(loja.ops).not.toContain('delete_item');
+    expect(vinculo(db, VINCULO_1)?.estadoAnuncio).not.toBe(ESTADO_ANUNCIO_SHOPEE.removido);
+    expect(vinculo(db, VINCULO_1)?.substituidoPorLinkDocId ?? null).toBeNull();
   });
 
   it('(M177) R2 com as variantes TROCADAS depois da criação ⇒ cada modelo vivo liga pela SUA linha no vínculo novo: nenhuma linha nova sob o outro filho, nenhum recarimbo cruzado; o portão passa e UM delete_item', async () => {
@@ -1705,7 +1799,7 @@ describe('passo 3 e as retomadas da recriação (§2.5.4 R0–R5)', () => {
 
     expect(motivos(erro)).toContain(MOTIVO_PUBLICACAO_BLOQUEADA.semPeso);
     expect(loja.ops.slice(ops)).toEqual([]);
-    expect(db.writes.slice(escritas)).toEqual([]);
+    expect(semEscritasDaReserva(db.writes.slice(escritas))).toEqual([]);
   });
 
   it('(M183) uma recriação `incerto` ⇒ o 202: `recusa` + `comando` (o MESMO --link antigo --recriar, com --principal), zero delete_item, nada substituído, o log de escritas VAZIO', async () => {
@@ -1728,7 +1822,7 @@ describe('passo 3 e as retomadas da recriação (§2.5.4 R0–R5)', () => {
     });
     expect(r.recusa).not.toBeNull();
     expect(loja.ops).not.toContain('delete_item');
-    expect(db.writes.slice(escritas)).toEqual([]);
+    expect(semEscritasDaReserva(db.writes.slice(escritas))).toEqual([]);
   });
 
   it('(M183, variante) o alvo JÁ `removido` (uma reavaliação "nada" GRAVARIA a marca d’água) ⇒ o log de escritas segue VAZIO, sem 200 `kit-novo-inativo`', async () => {
@@ -1747,7 +1841,7 @@ describe('passo 3 e as retomadas da recriação (§2.5.4 R0–R5)', () => {
 
     expect(r.desfecho).toBe('incerto');
     expect(codigos(r)).not.toContain('kit-novo-inativo');
-    expect(db.writes.slice(escritas)).toEqual([]);
+    expect(semEscritasDaReserva(db.writes.slice(escritas))).toEqual([]);
   });
 });
 
@@ -1966,7 +2060,7 @@ describe('converterEmKit — o kit nativo novo, o anúncio comum SUBSTITUÍDO (L
     );
     expect(vinculo(db, VINCULO_COMUM)?.substituidoPorLinkDocId ?? null).toBeNull();
 
-    const erro = await recusaDe(converter(db, loja));
+    const erro = await recusaDe(converter(db, loja, {}, DEPOIS_DA_RESERVA));
     expect(motivos(erro)).toEqual([MOTIVO_PUBLICACAO_BLOQUEADA.kitJaExisteNaShopee]);
     expect(erro.problemas[0]?.mensagem).toContain(String(KIT_1));
 
@@ -2022,7 +2116,7 @@ describe('converterEmKit — o kit nativo novo, o anúncio comum SUBSTITUÍDO (L
 
     expect(motivos(erro)).toContain(MOTIVO_PUBLICACAO_BLOQUEADA.semPeso);
     expect(loja.ops.slice(ops)).toEqual([]);
-    expect(db.writes.slice(escritas)).toEqual([]);
+    expect(semEscritasDaReserva(db.writes.slice(escritas))).toEqual([]);
   });
 
   it('(M183) um converter `incerto` ⇒ o 202 com `recusa` + `comando`, NENHUMA substituição, o log de escritas VAZIO', async () => {
@@ -2037,7 +2131,7 @@ describe('converterEmKit — o kit nativo novo, o anúncio comum SUBSTITUÍDO (L
     expect(r).toMatchObject({ arma: 'kit-converter', desfecho: 'incerto', antecessor: null });
     expect(r.recusa).not.toBeNull();
     expect(r.comando).toContain('--converter-em-kit');
-    expect(db.writes.slice(escritas)).toEqual([]);
+    expect(semEscritasDaReserva(db.writes.slice(escritas))).toEqual([]);
   });
 });
 
@@ -2629,7 +2723,8 @@ describe('(H2) o comando de um recriar/converter `incerto` é LITERALMENTE o mes
     );
 
     loja.falhaSemCriar = muitasConexoes();
-    const normal = await recriar(db, loja, VINCULO_1);
+    // A second run once the first one's kept lease (#1912) is over.
+    const normal = await recriar(db, loja, VINCULO_1, {}, DEPOIS_DA_RESERVA);
     expect(normal.comando).not.toContain('--status');
   });
 
@@ -2666,14 +2761,22 @@ describe('(H2) o comando de um recriar/converter `incerto` é LITERALMENTE o mes
     });
 
     loja.falhaSemCriar = muitasConexoes();
-    const digitado = await recriarKit(deps(db, loja), { ...contexto, resolucao }, plano);
+    const digitado = await recriarKit(
+      deps(db, loja),
+      { ...contexto, resolucao },
+      plano,
+      await reservaDeTeste(deps(db, loja), K, 'kit-recriar'),
+    );
     expect(digitado.comando).toContain('--principal comp-a-filho');
 
     loja.falhaSemCriar = muitasConexoes();
+    // A SECOND run once the first one's kept lease (the `incerto` above) has
+    // lapsed — inside its hold it would be refused `emAndamento`.
     const mapeado = await recriarKit(
       deps(db, loja),
       { ...contexto, resolucao, principalSolicitado: null },
       plano,
+      await reservaDeTeste(deps(db, loja, DEPOIS_DA_RESERVA), K, 'kit-recriar'),
     );
     expect(mapeado.comando).toContain('--principal comp-a-alias');
   });
@@ -2755,7 +2858,7 @@ describe('(#2065) uma recriação/conversão RETOMADA nunca lê o kit novo como 
     );
     expect(erro.problemas[0]?.mensagem).toContain(VINCULO_2);
     expect(escritasNaLoja(loja, desde)).toEqual([]);
-    expect(db.writes.slice(escritas)).toEqual([]);
+    expect(semEscritasDaReserva(db.writes.slice(escritas))).toEqual([]);
     expect(vinculo(db, VINCULO_2)?.estadoAnuncio).toBe(ESTADO_ANUNCIO_SHOPEE.ativo);
   });
 
@@ -2809,7 +2912,7 @@ describe('(#2065) uma recriação/conversão RETOMADA nunca lê o kit novo como 
     expect(motivos(erro)).toEqual([MOTIVO_PUBLICACAO_BLOQUEADA.buscaDeKitIncompleta]);
     expect(erro.problemas[0]?.mensagem).toContain(VINCULO_1);
     expect(escritasNaLoja(loja, desde)).toEqual([]);
-    expect(db.writes.slice(escritas)).toEqual([]);
+    expect(semEscritasDaReserva(db.writes.slice(escritas))).toEqual([]);
     expect(vinculo(db, VINCULO_COMUM)?.substituidoPorLinkDocId ?? null).toBeNull();
   });
 

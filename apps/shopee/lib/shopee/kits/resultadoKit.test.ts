@@ -1,38 +1,26 @@
 import { readFileSync } from 'node:fs';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 import { AGUARDAR_KIT_INCERTO_SHOPEE_MS } from '@delfrance/schemas';
 
 import { MOTIVO_PUBLICACAO_BLOQUEADA } from '../anuncios/errosPublicacao';
-import { MENSAGEM_KIT_INCERTO, comandoDeRetomada, type ArmaKit } from './resultadoKit';
+import { comandoDeRetomada, mensagemKitIncerto, type ArmaKit } from './resultadoKit';
 
 const BASE = { integracaoId: 'int-1', produtoId: 'prod-kit', linkDocId: null, principal: null };
 
-describe('MENSAGEM_KIT_INCERTO — a frase do 202 (S1F-03, L10-R2)', () => {
-  it('K4 (passo 21): os minutos são os de AGUARDAR_KIT_INCERTO_SHOPEE_MS, a ÚNICA cópia', () => {
-    expect(MENSAGEM_KIT_INCERTO).toContain(
-      `aguarde ${String(AGUARDAR_KIT_INCERTO_SHOPEE_MS / 60_000)} minutos`,
-    );
-  });
-
-  it('⚠️ K4: a frase é INTERPOLADA, nunca um literal que concorda por sorte: outra espera ⇒ outro número', async () => {
-    vi.resetModules();
-    vi.doMock('@delfrance/schemas', async (importOriginal) => ({
-      ...(await importOriginal<typeof import('@delfrance/schemas')>()),
-      AGUARDAR_KIT_INCERTO_SHOPEE_MS: 300_000,
-    }));
-    try {
-      const { MENSAGEM_KIT_INCERTO: comOutraEspera } = await import('./resultadoKit');
-      expect(comOutraEspera).toContain('aguarde 5 minutos');
-      expect(comOutraEspera).not.toContain('4 minutos');
-    } finally {
-      vi.doUnmock('@delfrance/schemas');
-      vi.resetModules();
-    }
+describe('mensagemKitIncerto — a frase do 202 (S1F-03, L10-R2, #1912)', () => {
+  it('a espera é a que a RESERVA mantida informa, em minutos inteiros ARREDONDADOS para cima', () => {
+    expect(mensagemKitIncerto(AGUARDAR_KIT_INCERTO_SHOPEE_MS)).toContain('aguarde 4 minutos');
+    // 520 s ⇒ 8.67 min ⇒ 9 (never fewer than the lease holds).
+    expect(mensagemKitIncerto(520_000)).toContain('aguarde 9 minutos');
+    // NEAR-MISSES at the minute boundary: 240 000 is 4; one ms more is 5.
+    expect(mensagemKitIncerto(240_001)).toContain('aguarde 5 minutos');
+    // Never "0 minutos", and the singular reads right.
+    expect(mensagemKitIncerto(1)).toContain('aguarde 1 minuto e');
   });
 
   it('é a frase do seam, byte a byte', () => {
-    expect(MENSAGEM_KIT_INCERTO).toBe(
+    expect(mensagemKitIncerto(AGUARDAR_KIT_INCERTO_SHOPEE_MS)).toBe(
       'a Shopee pode ter criado o kit — aguarde 4 minutos e rode exatamente este comando de novo: ' +
         'se o kit existir, o ERP recusa com «já existe na Shopee — importe-o» e importar:anuncio o ' +
         'liga a este produto; senão, o ERP o cria. Se outra execução tiver vinculado um kit a este ' +

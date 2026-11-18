@@ -863,6 +863,32 @@ describe('the uncertain-create store (lerIncerto / gravarIncerto)', () => {
     expect(lerIncerto('int-1', 'prod-1')).toBeNull();
   });
 
+  it('(#1912) a native kit FIRST create round-trips with NO link; ⛔ near-misses: it never names a link, and never rides another arm', () => {
+    const PRIMEIRO: IncertoKitShopee = {
+      ate: 1_790_000_000_000,
+      corpo: {
+        integracaoId: 'int-1',
+        produtoId: 'prod-1',
+        criarKitNativo: true,
+        status: 'UNLIST',
+        principal: 'c2',
+      },
+    };
+    expect(gravarIncerto('int-1', 'prod-1', PRIMEIRO)).toBe(true);
+    expect(lerIncerto('int-1', 'prod-1')).toStrictEqual(PRIMEIRO);
+
+    const chave = chaveIncerto('int-1', 'prod-1');
+    for (const corpo of [
+      { ...PRIMEIRO.corpo, linkDocId: 'L1' },
+      { ...PRIMEIRO.corpo, recriar: true },
+      { ...PRIMEIRO.corpo, converterEmKit: true },
+      { ...PRIMEIRO.corpo, criarKitNativo: false },
+    ]) {
+      window.sessionStorage.setItem(chave, JSON.stringify({ ...PRIMEIRO, corpo }));
+      expect(lerIncerto('int-1', 'prod-1'), JSON.stringify(corpo)).toBeNull();
+    }
+  });
+
   it('degrades a blocked store to "nothing stored" and a full one to false — never a throw', () => {
     vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
       throw new DOMException('cheio', 'QuotaExceededError');
@@ -1097,14 +1123,15 @@ describe('the second-listing confirmation (D15)', () => {
 });
 
 describe('the draft sentences name only exits this tab offers (#1911 P10 review)', () => {
-  it('R8-copy#11: the kit-virtual notice and 422 never say "publique" — the tab has no first native-kit publish — and say where it is done', () => {
+  it('(#1912, was R8-copy#11) the kit-virtual notice and 422 name the OWN way out of the tab — «Publicar como kit nativo» — and never the terminal', () => {
     for (const frase of [
       FRASE_RASCUNHO_EM_KIT_VIRTUAL_SHOPEE,
       FRASE_RASCUNHO_DE_KIT_VIRTUAL_SHOPEE,
     ]) {
-      expect(frase).not.toMatch(/publique/i);
-      expect(frase).toContain('não é feita por esta tela');
-      expect(frase).toContain('terminal');
+      expect(frase).toContain('«Publicar como kit nativo»');
+      // NEAR-MISSES: no terminal, no CLI wording, no "não é feita por esta tela".
+      expect(frase).not.toMatch(/terminal/i);
+      expect(frase).not.toContain('não é feita por esta tela');
       expect(frase).not.toMatch(TEXTO_DE_TERMINAL);
     }
     // The notice still says what to do with THIS draft.
@@ -2517,8 +2544,7 @@ describe('#1911 P11 — the answers of a draft’s Publicar (§C.2)', () => {
     expect(t).not.toMatch(TEXTO_DE_TERMINAL);
     // NEAR-MISS: the plain sentence is untouched — and is NOT the attested one.
     expect(FRASE_RASCUNHO_JA_PUBLICADO_SHOPEE).toBe(
-      'Este rascunho já virou anúncio na Shopee — recarregue a aba; o conteúdo de um anúncio ' +
-        'publicado não é editado aqui.',
+      'Este rascunho já virou anúncio na Shopee — recarregue a aba. Nada foi feito.',
     );
     expect(FRASE_RASCUNHO_JA_PUBLICADO_SHOPEE).not.toContain('confirmação');
   });

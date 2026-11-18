@@ -645,6 +645,46 @@ export function kitVivoRemovido(vivo: ContextoKit['vivo'], agoraMs: number): boo
 }
 
 /**
+ * #2065 on a TARGET's live read: does {@link kitVivoRemovido}'s "deleted" rest
+ * ONLY on an absent row (no status at all) while the target's link is
+ * {@link vinculoDeKitRecente}? Then it is a DOUBT, never proof — Shopee's reads
+ * may not show a kit created moments ago — and no writer may fold it to
+ * `removido`. A delete STATUS (`SELLER_DELETE`, …) is Shopee's own word and is
+ * never a doubt; a link with no usable `publicadoEm` is not recent (its age is
+ * unknown), so a purged OLD kit still reads gone.
+ *
+ * The create scan's reading (`situacaoDoKitNosso`, `recente`) already applied
+ * this; the republish and the recriar's target read did not, so a re-send right
+ * after a create could write `removido` on a LIVE kit and the next unnamed
+ * publish created a second one.
+ */
+export function kitVivoAusenteRecente(
+  vivo: ContextoKit['vivo'],
+  rawDoVinculo: Record<string, unknown>,
+  agoraMs: number,
+): boolean {
+  return vivo !== null && vivo.status === null && vinculoDeKitRecente(rawDoVinculo, agoraMs);
+}
+
+/**
+ * {@link kitVivoAusenteRecente} as the REPUBLISH's refusal: the target kit was
+ * created moments ago and Shopee does not return it yet. Nothing was sent and
+ * nothing is written; no `acao` — the remedy is to wait and publish again.
+ */
+export function problemaKitAlvoRecente(a: {
+  readonly itemId: number;
+  readonly linkDocId: string;
+}): ProblemaDeBloqueio {
+  return bloqueio(
+    'sku',
+    MOTIVO_PUBLICACAO_BLOQUEADA.buscaDeKitIncompleta,
+    `o kit criado há pouco ainda não aparece na Shopee (item ${String(a.itemId)}, vínculo ` +
+      `${a.linkDocId}) — nada foi enviado; aguarde ` +
+      `${String(AGUARDAR_KIT_INCERTO_SHOPEE_MS / 60_000)} minutos e tente de novo`,
+  );
+}
+
+/**
  * `receita-nao-publicavel` — a recipe row that cannot reach Shopee, on a run
  * that sends no recipe (a create-arm resume, a republish): the kit keeps the
  * recipe it has. ⚠️ NO `--recriar` advice — a recriar would refuse on the very

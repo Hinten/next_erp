@@ -4109,7 +4109,7 @@ export async function seedKitEstoqueFixtures(prefix: string): Promise<{
  *    `C-P` (size P) and `C-M` (size M);
  *  - a kit `K` (ehKit:true) whose `componentesKit` references `C` (quantidade 2,
  *    custo 20 = 10×2 so the parent KitManager's cost recompute leaves the form
- *    pristine) with one variation child `K-P` (size P, no kit yet).
+ *    pristine) with two kit variations, `K-P` and `K-M`, ready for recipes.
  *
  * No `grupoDeVariacoes` docs are written — the matcher only compares the trailing
  * variant id of each `variacoesUid`, so a synthetic grupo id in the fake path is
@@ -4120,6 +4120,7 @@ export async function seedKitParaGerar(prefix: string): Promise<{
   kitId: string;
   varKitPId: string;
   varKitPNome: string;
+  varKitMId: string;
   componentId: string;
   componentNome: string;
   varCompPId: string;
@@ -4146,6 +4147,7 @@ export async function seedKitParaGerar(prefix: string): Promise<{
   const kitId = `${prefix}-kit`;
   const varKitPId = `${kitId}-p`;
   const varKitPNome = `${prefix}-kit P`;
+  const varKitMId = `${kitId}-m`;
 
   const batch = db().batch();
   // Component parent + its two variation children (size P / M).
@@ -4178,7 +4180,7 @@ export async function seedKitParaGerar(prefix: string): Promise<{
     ehKit: false,
     variacoesUid: [fake('m')],
   });
-  // Kit parent referencing the component, + its variation child (size P).
+  // Kit parent referencing the component, with size-P and size-M variations.
   batch.set(db().collection('produtos').doc(kitId), {
     ...base,
     nome: `${prefix}-kit`,
@@ -4196,11 +4198,29 @@ export async function seedKitParaGerar(prefix: string): Promise<{
     sku: sku('KIT_P'),
     paiId: kitId,
     ordem: 0,
-    ehKit: false,
+    ehKit: true,
     variacoesUid: [fake('p')],
   });
+  batch.set(db().collection('produtos').doc(varKitMId), {
+    ...base,
+    nome: `${prefix}-kit M`,
+    sku: sku('KIT_M'),
+    paiId: kitId,
+    ordem: 1,
+    ehKit: true,
+    variacoesUid: [fake('m')],
+  });
   await batch.commit();
-  return { kitId, varKitPId, varKitPNome, componentId, componentNome, varCompPId, varCompMId };
+  return {
+    kitId,
+    varKitPId,
+    varKitPNome,
+    varKitMId,
+    componentId,
+    componentNome,
+    varCompPId,
+    varCompMId,
+  };
 }
 
 /**

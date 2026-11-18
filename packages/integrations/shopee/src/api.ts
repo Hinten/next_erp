@@ -452,6 +452,7 @@ import {
   type ShopeeItemBaseInfo,
   type ShopeeItemLimit,
   type ShopeeItemList,
+  type ShopeeSearchItem,
   type ShopeeItemPromotionPayload,
   type ShopeeItemStatusWritable,
   type ShopeeItemViolationInfo,
@@ -506,6 +507,7 @@ import {
   shopeeItemBaseInfoSchema,
   shopeeItemLimitSchema,
   shopeeItemListSchema,
+  shopeeSearchItemSchema,
   shopeeItemPromotionSchema,
   shopeeItemViolationInfoSchema,
   shopeeItemWriteSchema,
@@ -589,6 +591,7 @@ export const SHOPEE_CATEGORY_RECOMMEND_PATH = '/api/v2/product/category_recommen
 
 /** `GET` — Shop-signed. WRAPPED. ONE page of this shop's item ids. */
 export const SHOPEE_GET_ITEM_LIST_PATH = '/api/v2/product/get_item_list';
+export const SHOPEE_SEARCH_ITEM_PATH = '/api/v2/product/search_item';
 /** `GET` — Shop-signed. WRAPPED. The full detail of up to 50 items. */
 export const SHOPEE_GET_ITEM_BASE_INFO_PATH = '/api/v2/product/get_item_base_info';
 /** `GET` — Shop-signed. WRAPPED. ONE item's variation trees and models. */
@@ -1126,6 +1129,12 @@ export interface GetItemListParams {
   /** Unix SECONDS. ⚠️ Must be strictly LATER than `updateTimeFromS`. */
   readonly updateTimeToS?: number;
 }
+
+/** `search_item` uses an opaque string offset and returns IDs only. */
+export type SearchItemParams = {
+  readonly pageSize: number;
+  readonly offset?: string;
+} & ({ readonly itemName: string } | { readonly itemSku: string });
 
 /** `get_item_base_info` — 1…50 items, in ONE call. */
 export interface GetItemBaseInfoParams {
@@ -1961,6 +1970,8 @@ export interface ShopeeClient {
    * documented mitigation is freezing the window with `updateTimeFromS`/`ToS`.
    */
   getItemList(p: GetItemListParams): Promise<ShopeeItemList>;
+
+  searchItem(p: SearchItemParams): Promise<ShopeeSearchItem>;
 
   /**
    * The FULL detail of 1…50 items.
@@ -4217,6 +4228,36 @@ export function createShopeeClient(config: ShopeeClientConfig): ShopeeClient {
           // really sends no window at all.
           update_time_from: p.updateTimeFromS,
           update_time_to: p.updateTimeToS,
+        },
+      });
+      return res.response;
+    },
+
+    searchItem: async (p) => {
+      const porSku = 'itemSku' in p;
+      const termo = porSku ? p.itemSku : p.itemName;
+      if (
+        !Number.isSafeInteger(p.pageSize) ||
+        p.pageSize < 1 ||
+        p.pageSize > SHOPEE_MAX_PAGE_SIZE
+      ) {
+        throw new ShopeeConfigError(
+          `page_size deve estar entre 1 e ${String(SHOPEE_MAX_PAGE_SIZE)}.`,
+        );
+      }
+      if (!termo.trim()) {
+        throw new ShopeeConfigError('Informe um nome ou SKU para buscar anúncios.');
+      }
+      const res = await shopeeCall(transport, {
+        method: 'GET',
+        path: SHOPEE_SEARCH_ITEM_PATH,
+        call: await signedCall(),
+        schema: shopeeSearchItemSchema,
+        surface: SHOPEE_SURFACE.business,
+        query: {
+          [porSku ? 'item_sku' : 'item_name']: termo,
+          page_size: p.pageSize,
+          offset: p.offset,
         },
       });
       return res.response;

@@ -3,6 +3,7 @@
 import { Alert, Button, Group, Modal, Stack, Table, Text } from '@mantine/core';
 import { IconAlertTriangle } from '@tabler/icons-react';
 import {
+  ALVO_EDICAO_SHOPEE,
   CAMPO_RASCUNHO_SHOPEE,
   ordenadosPorCanalLogisticaShopee,
   textoUtilizavelShopee,
@@ -14,8 +15,10 @@ import {
 import {
   FRASE_CONFLITO_CRIACAO_RASCUNHO_SHOPEE,
   FRASE_CONFLITO_RASCUNHO_SHOPEE,
+  FRASE_CONFLITO_ANUNCIO_SHOPEE,
   FRASE_RASCUNHO_CARREGANDO_SHOPEE,
   ROTULO_CAMPO_RASCUNHO_SHOPEE,
+  TITULO_CONFLITO_ANUNCIO_SHOPEE,
   TITULO_CONFLITO_RASCUNHO_SHOPEE,
   linhaDoCanalSomenteLeituraShopee,
   type OperacaoRascunhoShopee,
@@ -50,6 +53,11 @@ export interface ConflitoRascunhoShopeeAberto {
  */
 export const FRASE_CONFLITO_RENOVADO_RASCUNHO_SHOPEE =
   'O rascunho mudou de novo enquanto esta janela estava aberta: nada foi enviado. A coluna ' +
+  '«Salvo agora» mostra os valores atuais — confira antes de salvar.';
+
+/** The same refresh, worded for a PUBLISHED listing's edit (`edicao.alvo === 'anuncio'`). */
+export const FRASE_CONFLITO_RENOVADO_ANUNCIO_SHOPEE =
+  'O anúncio mudou de novo enquanto esta janela estava aberta: nada foi enviado. A coluna ' +
   '«Salvo agora» mostra os valores atuais — confira antes de salvar.';
 
 export interface ConflitoRascunhoShopeeModalProps {
@@ -211,22 +219,30 @@ export function ConflitoRascunhoShopeeModal({
   onCancelar,
 }: ConflitoRascunhoShopeeModalProps) {
   const criacao = conflito?.operacao === 'criar';
+  // The copy follows the entry's target: a published listing is never «rascunho».
+  const anuncio = edicao?.alvo === ALVO_EDICAO_SHOPEE.anuncio;
   return (
     <Modal
       opened={conflito !== null}
       onClose={onCancelar}
-      title={TITULO_CONFLITO_RASCUNHO_SHOPEE}
+      title={anuncio ? TITULO_CONFLITO_ANUNCIO_SHOPEE : TITULO_CONFLITO_RASCUNHO_SHOPEE}
       centered
       size="lg"
     >
       {conflito !== null && (
         <Stack data-testid="shopee-rascunho-conflito">
           <Alert color="red" icon={<IconAlertTriangle size={18} />}>
-            {criacao ? FRASE_CONFLITO_CRIACAO_RASCUNHO_SHOPEE : FRASE_CONFLITO_RASCUNHO_SHOPEE}
+            {anuncio
+              ? FRASE_CONFLITO_ANUNCIO_SHOPEE
+              : criacao
+                ? FRASE_CONFLITO_CRIACAO_RASCUNHO_SHOPEE
+                : FRASE_CONFLITO_RASCUNHO_SHOPEE}
           </Alert>
           {conflito.renovado === true && (
             <Alert color="orange" variant="light" data-testid="shopee-rascunho-conflito-renovado">
-              {FRASE_CONFLITO_RENOVADO_RASCUNHO_SHOPEE}
+              {anuncio
+                ? FRASE_CONFLITO_RENOVADO_ANUNCIO_SHOPEE
+                : FRASE_CONFLITO_RENOVADO_RASCUNHO_SHOPEE}
             </Alert>
           )}
 

@@ -38,7 +38,12 @@ import {
   type ShopeeKitItemInfo,
   type ShopeeUpdateKitItemRequest,
 } from '@delfrance/integrations-shopee';
-import { ESTADO_ANUNCIO_SHOPEE, toOuterRef, varianteFakePath } from '@delfrance/schemas';
+import {
+  ESPERA_MAXIMA_CRIACAO_KIT_SHOPEE_MS,
+  ESTADO_ANUNCIO_SHOPEE,
+  toOuterRef,
+  varianteFakePath,
+} from '@delfrance/schemas';
 import { integracaoCollection } from '@delfrance/data/admin/collections';
 
 import type { ResolvedorDeImagensShopee } from '../anuncios/fotosPublicacao';
@@ -69,6 +74,7 @@ import {
   type ItemPlanejadoPreco,
 } from './planoPreco';
 import type { ContextoContaPreco } from './regiaoPreco';
+import { aoVivoDeTeste } from '../kits/testing/reservaDeTeste';
 
 /* -------------------------------------------------------------------------- */
 /*  Fixture ids — the kit ROLES (s19-ctx), never a real partner, shop or item.  */
@@ -971,6 +977,7 @@ function depsDoKit(db: FakeDb, loja: Loja): KitDeps {
     depositoOuterRef: 'documents/depositos/dep-1',
     operacaoOuterRef: null,
     nowMs: AGORA,
+    aoVivo: aoVivoDeTeste(AGORA),
     esperar: () => Promise.resolve(),
     taxonomia: {
       integracaoId: INTEGRACAO,
@@ -1142,15 +1149,26 @@ describe('RT4 — a criação REAL → o preço do passo 13 → a releitura', ()
  * in RT4. Nothing below this line is hand-built.
  */
 async function criarDoisKits(db: FakeDb, loja: Loja): Promise<void> {
+  // #1912: two concurrent creates of K can no longer both send add_kit_item —
+  // the create lease refuses the second. The ONE way two kits still come out of
+  // this ERP is register 331: a holder stalled AT its send past its lease's
+  // whole hold, while a second run takes the lease over. Simulated exactly:
+  // A parks at the barrier already stamped; B, on a clock past A's hold, takes
+  // the lease over, scans (A's kit does not exist yet) and joins it.
   loja.portao = { esperados: 2, chegaram: 0, liberar: [] };
-  const criar = () =>
+  const criar = (nowMs: number) =>
     publicarKitShopee(
-      depsDoKit(db, loja),
+      { ...depsDoKit(db, loja), nowMs, aoVivo: aoVivoDeTeste(nowMs) },
       { produtoId: K, statusPedido: 'NORMAL', principal: 'comp-a-filho' },
       { arma: 'kit-criar' },
     );
 
-  const [a, b] = await Promise.all([criar(), criar()]);
+  const pa = criar(AGORA);
+  await vi.waitFor(() => {
+    expect(loja.portao?.chegaram).toBe(1);
+  });
+  const pb = criar(AGORA + ESPERA_MAXIMA_CRIACAO_KIT_SHOPEE_MS);
+  const [a, b] = await Promise.all([pa, pb]);
 
   expect([a.desfecho, b.desfecho]).toEqual(['criado', 'criado']);
   expect([a.itemId, b.itemId].sort()).toEqual([KIT, KIT_GEMEO]);
@@ -1212,7 +1230,7 @@ function verdeEnviado(modelId: number) {
   };
 }
 
-describe('RT15 (metade do PR 8) — a criação dupla ACEITA (R-w, registro 303) é precificada', () => {
+describe('RT15 (metade do PR 8) — a criação dupla RESIDUAL (registro 331, #1912) é precificada', () => {
   it('⚠️ PAR: dois kit-criar SIMULTÂNEOS ⇒ dois kits, dois vínculos ⇒ o passo 13 planeja OS DOIS (nenhum pulo, cada um com os modelos do SEU kit) e o G9 manda a CADA UM o seu `update_kit_item` — só o modelo que mudou, a receita viva', async () => {
     const db = new FakeDbComProjecao();
     semearComponentes(db);

@@ -25,11 +25,10 @@ import {
   type ShopeeKitItem,
   type ShopeeLogisticsChannel,
 } from '@delfrance/integrations-shopee';
-import {
-  AGUARDAR_KIT_INCERTO_SHOPEE_MS,
-  type EnderecoShopeeDoComponente,
-  type EstadoAnuncioShopee,
-  type ResolucaoComponenteKit,
+import type {
+  EnderecoShopeeDoComponente,
+  EstadoAnuncioShopee,
+  ResolucaoComponenteKit,
 } from '@delfrance/schemas';
 
 import type { PublicarAnuncioDeps } from '../anuncios/publicarAnuncio';
@@ -71,11 +70,14 @@ export type ArmaKit = 'kit-criar' | 'kit-atualizar' | 'kit-recriar' | 'kit-conve
  * What one kit run did.
  *
  * - `criado` — `add_kit_item` answered with an `item_id`;
- * - `retomado` — a recriar/converter whose new kit already existed (linked) and
- *   was completed instead of created;
+ * - `retomado` — a create arm whose new kit already existed (linked) and was
+ *   completed instead of created: a recriar/converter resume, or a `kit-criar`
+ *   whose link re-read (under the create lease) found the kit another run had
+ *   just linked;
  * - `atualizado` — a republish (`update_kit_item`);
  * - `incerto` — `add_kit_item` failed in a way that does not prove nothing was
- *   created; NOTHING was written and the operator re-runs the printed command.
+ *   created; nothing was written but the create LEASE, which is kept (#1912),
+ *   and the operator re-runs the printed command after `aguardarMs`.
  */
 export type DesfechoKit = 'criado' | 'retomado' | 'atualizado' | 'incerto';
 
@@ -157,6 +159,12 @@ export interface ResultadoPublicacaoKit {
   } | null;
   /** {@link comandoDeRetomada} of this run on `incerto`, else `null` (S1F-03). */
   readonly comando: string | null;
+  /**
+   * MILLISECONDS — on `incerto`, how long the KEPT create lease (#1912) keeps
+   * every other run out: the 202's `aguardarMs` and the wait the sentence names.
+   * `null` on every other desfecho.
+   */
+  readonly aguardarMs: number | null;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -333,17 +341,23 @@ export type LeituraDeKitNosso =
  * L10-R2: the "importe-o" promise holds only while no OTHER run has linked a kit
  * to this produto — once one has, the same command is `kit-atualizar` (or a
  * converter refusal), which scans nothing (L10(4)), so the sentence says so
- * instead of lying. The wait is `AGUARDAR_KIT_INCERTO_SHOPEE_MS` (`@delfrance/schemas`,
- * step 21): the route ceiling (`timeoutSeconds: 180`, `apps/shopee/apphosting.yaml`)
- * + 60 s over the ~9 s listing latency — ONE copy (#1369), which this sentence,
- * the `instabilidade-shopee` refusal (`./recusaKit.ts`) and the 202's `aguardarMs`
- * all read, and which the produto's Shopee tab waits out before it re-sends.
+ * instead of lying.
+ *
+ * The wait is the KEPT create lease's (#1912, `ResultadoPublicacaoKit.aguardarMs`):
+ * a re-run before it ends is refused `SHOPEE_KIT_CRIACAO_EM_ANDAMENTO` with
+ * nothing sent, and once it ends a send that started before the gate closed is
+ * visible to the scan. In whole minutes, rounded UP — never less than one.
  */
-export const MENSAGEM_KIT_INCERTO =
-  `a Shopee pode ter criado o kit — aguarde ${String(AGUARDAR_KIT_INCERTO_SHOPEE_MS / 60_000)} minutos e rode exatamente este comando de novo: se o kit existir, o ` +
-  'ERP recusa com «já existe na Shopee — importe-o» e importar:anuncio o liga a este produto; senão, o ERP o cria. ' +
-  'Se outra execução tiver vinculado um kit a este produto nesse meio-tempo, o comando não procura mais pelo SKU: ' +
-  'um kit duplicado só aparece num próximo --recriar';
+export function mensagemKitIncerto(aguardarMs: number): string {
+  const minutos = Math.max(Math.ceil(aguardarMs / 60_000), 1);
+  const espera = minutos === 1 ? '1 minuto' : `${String(minutos)} minutos`;
+  return (
+    `a Shopee pode ter criado o kit — aguarde ${espera} e rode exatamente este comando de novo: se o kit existir, o ` +
+    'ERP recusa com «já existe na Shopee — importe-o» e importar:anuncio o liga a este produto; senão, o ERP o cria. ' +
+    'Se outra execução tiver vinculado um kit a este produto nesse meio-tempo, o comando não procura mais pelo SKU: ' +
+    'um kit duplicado só aparece num próximo --recriar'
+  );
+}
 
 /**
  * Pure. The flags of THIS run re-rendered, so a re-run is literally the same

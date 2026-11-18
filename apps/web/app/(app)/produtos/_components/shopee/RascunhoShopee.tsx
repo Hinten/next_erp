@@ -47,6 +47,7 @@ import {
 import type { EdicaoDoAtributoShopee } from '@/lib/shopee/atributosRascunho';
 import type {
   BlocoRascunhoShopee,
+  BloqueioDaEdicaoDoAnuncioShopee,
   CampoSimplesDoFormularioRascunhoShopee,
   DescarteDoRascunhoShopee,
   ExistentesNaContaShopee,
@@ -172,7 +173,12 @@ export type AtributosDoRascunhoShopee = Pick<
   'leitura' | 'linhas' | 'semLugar' | 'removidosAoSalvar' | 'ensaiarAdicao'
 >;
 
-export interface RascunhoShopeeProps {
+/**
+ * The props BOTH forms share — a listing DRAFT ({@link RascunhoShopeeProps}) and a
+ * PUBLISHED listing's ERP-side edit ({@link PropsDoAnuncioShopee}). The component takes
+ * their union ({@link PropsDoFormularioShopee}); narrow with `props.modo`.
+ */
+export interface ComunsDoFormularioShopee {
   /** The Firestore handle — forwarded to the brand picker's shortlist listener (`useMarcasShopee`); supplied by the editor. */
   db: Firestore;
   /** The conta (`integracao` id) the draft belongs to — every taxonomy read and the shortlist are this conta's; `null` when the tab names no conta document that can answer (not found, an unreadable ref, still loading): then NOTHING is read — no tree, no shortlist listener — and the held category and brand show as plain text; supplied by the tab. */
@@ -189,16 +195,12 @@ export interface RascunhoShopeeProps {
   bloco: BlocoRascunhoShopee;
   /** The HELD projection's brand pair — §H Q1's "stored" brand: `projecaoGuardadaDoRascunhoShopee(edicao, link).marca` for a stored draft, `null` for a local new one; supplied by the tab. */
   marcaGuardada: ParMarcaRascunhoShopee | null;
-  /** The STORED produto `nome` (`produtoSnap`) and `extraData/singleton.descricao` (rev. 2a #10's new `useDocSnapshot`), each `null` when absent — or `null` while either document has not answered (then no pendência is computed); supplied by the editor. Since #1911 P11 the form reads the pendências from {@link decisaoDePublicar}, which the tab computes over this SAME value — so the list shown is the list that gates. */
-  textosDoProduto: TextosDoProdutoRascunhoShopee | null;
-  /** The title/description bands the tab holds (`client.limitesDoItem(…).limites` — the EDITED category's), or `null` while unknown: the fields' measured counter reads them (the band pendências are {@link decisaoDePublicar}'s); supplied by the tab. */
+  /** The title/description bands the tab holds (`client.limitesDoItem(…).limites` — the EDITED category's), or `null` while unknown: the fields' measured counter reads them (a draft's band pendências are its `decisaoDePublicar`'s); supplied by the tab. */
   limites: ArgsPendenciasRascunhoShopee['limites'];
   /** The stale check — `divergenciasDoServidorShopee(edicao, link)` (`[]` for no entry, a local new draft or nothing to save): fields another writer changed since the entry was loaded, so the next Salvar will answer 409; supplied by the tab. */
   divergencias: readonly CampoRascunhoShopee[];
   /** `PERM.integracao.write` ∧ `PERM.produto.write` ∧ the produto form editable — the SAME flag the tab passes as `bloco`'s `podeEditar`; `false` ⇒ fields read-only and NO button renders (but see `somenteDescartar`). */
   podeEditar: boolean;
-  /** The draft's conta document is GONE (a «não encontrada» tab whose id a document could carry) and the operator holds both bits: «Descartar» renders ALONE — enabled by `bloco.podeDescartar` — since the discard route needs only the link; nothing else is offered (no «Publicar»: `decisaoDePublicar` reads `sem-permissao` for a block the operator may not author, and the button renders only with `podeEditar`). Read only while `podeEditar` is `false`; supplied by the tab. */
-  somenteDescartar: boolean;
   /** This link's write in flight (the editor's `emVoo` when it names this link and a draft action or its «Publicar» — `'publicar'` on a draft's link is always this block's), else `null` — that button shows the spinner. */
   emVoo: AcaoDoBlocoRascunhoShopee | null;
   /** The last draft operation's sentence on this block (editor state, R2), or `null`. */
@@ -218,6 +220,20 @@ export interface RascunhoShopeeProps {
   onDesfazer: () => void;
   /** How many times «Desfazer alterações» ran on this draft (editor state) — the «Atributos» and «Logística» sections' key, so their screen-only state («Outro valor…» chosen, a composer's un-added text; a channel read on its way for «Escolher canais») starts over after an undo. Never keyed on whether an entry exists: that flips on the first keystroke and would steal the focus. */
   revisaoDoDesfazer: number;
+}
+
+/**
+ * The props of a DRAFT's form: everything it shares ({@link ComunsDoFormularioShopee}) plus
+ * what only a draft has — its pendências, «Publicar», «Descartar» and their confirmation.
+ * `modo` is OPTIONAL and `'rascunho'` so every existing draft fixture compiles unchanged.
+ */
+export interface RascunhoShopeeProps extends ComunsDoFormularioShopee {
+  /** Absent or `'rascunho'` — the discriminant against {@link PropsDoAnuncioShopee}. */
+  modo?: 'rascunho';
+  /** The STORED produto `nome` (`produtoSnap`) and `extraData/singleton.descricao` (rev. 2a #10's new `useDocSnapshot`), each `null` when absent — or `null` while either document has not answered (then no pendência is computed); supplied by the editor. Since #1911 P11 the form reads the pendências from {@link decisaoDePublicar}, which the tab computes over this SAME value — so the list shown is the list that gates. */
+  textosDoProduto: TextosDoProdutoRascunhoShopee | null;
+  /** The draft's conta document is GONE (a «não encontrada» tab whose id a document could carry) and the operator holds both bits: «Descartar» renders ALONE — enabled by `bloco.podeDescartar` — since the discard route needs only the link; nothing else is offered (no «Publicar»: `decisaoDePublicar` reads `sem-permissao` for a block the operator may not author, and the button renders only with `podeEditar`). Read only while `podeEditar` is `false`; supplied by the tab. */
+  somenteDescartar: boolean;
   /** «Descartar» (enabled ⇔ `bloco.podeDescartar`) with `bloco.descarte`: the editor opens that confirmation — `local` (drop, no request), `confirmar`, or `atestar` (the three-case Seller-Centre dialog). */
   onDescartar: (descarte: DescarteDoRascunhoShopee) => void;
   /**
@@ -264,6 +280,36 @@ export interface RascunhoShopeeProps {
   onCancelarPublicacao: () => void;
 }
 
+/**
+ * The props of a PUBLISHED listing's edit form (PR3, save-only): only what the two forms
+ * share. No «Publicar», «Descartar», pendências or confirmation exists for it — «Salvar» writes
+ * the ERP-side copy and «Republicar» (the action row) sends it. Its `emVoo` is only ever
+ * `'salvar-rascunho'` (the editor never maps the republish onto this form).
+ */
+export interface PropsDoAnuncioShopee extends ComunsDoFormularioShopee {
+  readonly modo: 'anuncio';
+}
+
+/** Either form — what the component, `RascunhosShopee.propsDe` and the editor hand around. */
+export type PropsDoFormularioShopee = RascunhoShopeeProps | PropsDoAnuncioShopee;
+
+/** The save button of a PUBLISHED listing's form — it writes the ERP-side copy only. */
+export const ROTULO_SALVAR_ANUNCIO_SHOPEE = 'Salvar';
+
+/** Under the published form's fields: what «Salvar» does and does not do. */
+export const FRASE_INTRO_EDICAO_ANUNCIO_SHOPEE =
+  'Edição do anúncio publicado: «Salvar» grava no ERP; nada vai para a Shopee até «Republicar».';
+
+/**
+ * What «Republicar» ALSO sends, because it is edited elsewhere (and what it does not: price and
+ * stock are never part of a republish).
+ */
+export const FRASE_REPUBLICAR_TAMBEM_SHOPEE =
+  '«Republicar» também envia o que é editado em outro lugar: peso, medidas, fotos, condição, SKU e GTIN (produto), impostos (aba Impostos), tabela de medidas e variações.';
+
+/** The title input's description on a published listing's form. */
+const DESCRICAO_TITULO_ANUNCIO_SHOPEE = 'É o título que a Shopee mostra.';
+
 /** A changed title no write accepts (the draft route's `item_name` refine: never blank). */
 export const FRASE_TITULO_EM_BRANCO_RASCUNHO_SHOPEE =
   'O título do anúncio não pode ficar em branco.';
@@ -271,6 +317,46 @@ export const FRASE_TITULO_EM_BRANCO_RASCUNHO_SHOPEE =
 /** «Salvar rascunho» is disabled because a changed field holds a value no write accepts. */
 export const FRASE_CAMPO_INVALIDO_RASCUNHO_SHOPEE =
   'Corrija o campo destacado para salvar o rascunho.';
+
+/** «Salvar» is disabled because a changed field holds a value no write accepts (published form). */
+export const FRASE_CAMPO_INVALIDO_ANUNCIO_SHOPEE = 'Corrija o campo destacado para salvar.';
+
+/**
+ * Why the server would refuse a published edit — one line per cause
+ * (`bloco.bloqueiosDoAnuncio`), shown while the block's impedimento reads
+ * `edicao-invalida-no-anuncio`. Every cause is a 422 «Nada foi gravado.» the form
+ * says before the click.
+ */
+export const FRASE_BLOQUEIO_DO_ANUNCIO_SHOPEE: Readonly<
+  Record<BloqueioDaEdicaoDoAnuncioShopee, string>
+> = {
+  'marca-vazia': 'Um anúncio publicado precisa de marca: escolha uma marca ou «Sem marca».',
+  'logistica-automatica':
+    '«Automática» só existe em rascunho: um anúncio publicado precisa de canais escolhidos.',
+  'atributos-esvaziados':
+    'Os atributos de um anúncio publicado não podem ser esvaziados de uma vez: remova só os que não se aplicam.',
+  'categoria-sem-atributos':
+    'Ao trocar a categoria de um anúncio publicado, preencha neste mesmo salvamento os atributos da nova categoria.',
+};
+
+/** The yellow warnings of a published form (each only while its fact holds). */
+export const FRASE_DESCRICAO_ESTENDIDA_ANUNCIO_SHOPEE =
+  'Este anúncio usa descrição estendida. Ao republicar, o ERP envia uma descrição normal, só com texto.';
+export const FRASE_CATEGORIA_TROCADA_ANUNCIO_SHOPEE =
+  'A nova categoria vai para a Shopee no próximo «Republicar». Se o anúncio tem variações em níveis padronizados da Shopee, a troca pode ser aplicada e a etapa das variações ser recusada em seguida — confira o resultado.';
+export const FRASE_ATRIBUTOS_REMOVIDOS_ANUNCIO_SHOPEE =
+  'Um atributo removido aqui deixa de ser enviado no próximo «Republicar»; confira no Seller Centre se a Shopee o retirou do anúncio.';
+
+/** The stale check's sentence on a PUBLISHED listing's form. */
+export function fraseDasDivergenciasDoAnuncioShopee(
+  campos: readonly CampoRascunhoShopee[],
+): string {
+  const nomes = campos.map((c) => ROTULO_CAMPO_RASCUNHO_SHOPEE[c]).join(', ');
+  return (
+    `Outra gravação mudou este anúncio depois que você começou a editar (${nomes}). ` +
+    'Ao salvar, o ERP mostra a diferença antes de sobrescrever.'
+  );
+}
 
 /**
  * The stale check said so before the click (`divergencias`): another writer
@@ -373,59 +459,81 @@ function descricaoDoCampo(
  * attributes' on its own root; the logistics' on its rows' container while
  * one of its rows has a control that can move, else on its root), never a
  * second wrapper here: one id, one element.
+ *
+ * **A PUBLISHED listing's form** (PR3, `props.modo === 'anuncio'`): the same fields and
+ * sections over the link's ERP-side copy, saved with «Salvar» (the edit route, `alvo:
+ * 'anuncio'`) and sent to Shopee only by the action row's «Republicar». It has no
+ * «Publicar», «Descartar», pendências or confirmation (those are a draft's — `rascunho`
+ * below is `null`); its root is `data-testid="shopee-edicao-anuncio-<linkDocId>"` — never
+ * prefixed `shopee-anuncio-` (the block's own) or `shopee-rascunho-` (a draft's) — and its
+ * own sub-ids (`-bloqueios`, `-avisos-anuncio`, `-republicar-tambem`, `-resultado`, …) derive
+ * from it, while every field id and section test id is shared with the draft form.
  */
-export function RascunhoShopee({
-  db,
-  contaId,
-  contaNome,
-  linkDocId,
-  produtoId,
-  revisaoDoProduto,
-  bloco,
-  marcaGuardada,
-  limites,
-  divergencias,
-  podeEditar,
-  somenteDescartar,
-  emVoo,
-  resultado,
-  onCampo,
-  atributos,
-  onAtributo,
-  onSalvar,
-  onDesfazer,
-  revisaoDoDesfazer,
-  onDescartar,
-  decisaoDePublicar,
-  falhaDaLeitura,
-  onPublicar,
-  confirmacaoDePublicacao,
-  onConfirmarPublicacao,
-  onCancelarPublicacao,
-}: RascunhoShopeeProps) {
-  const raiz = `shopee-rascunho-${linkDocId}`;
+export function RascunhoShopee(props: PropsDoFormularioShopee) {
+  const {
+    db,
+    contaId,
+    contaNome,
+    linkDocId,
+    produtoId,
+    revisaoDoProduto,
+    bloco,
+    marcaGuardada,
+    limites,
+    divergencias,
+    podeEditar,
+    emVoo,
+    resultado,
+    onCampo,
+    atributos,
+    onAtributo,
+    onSalvar,
+    onDesfazer,
+    revisaoDoDesfazer,
+  } = props;
+  // `null` for a PUBLISHED listing's form: every draft-only piece below reads it.
+  const rascunho = props.modo === 'anuncio' ? null : props;
+  const anuncio = rascunho === null;
+  const somenteDescartar = rascunho?.somenteDescartar ?? false;
+  const falhaDaLeitura = rascunho?.falhaDaLeitura ?? null;
+  const confirmacaoDePublicacao = rascunho?.confirmacaoDePublicacao ?? null;
+  const raiz = anuncio ? `shopee-edicao-anuncio-${linkDocId}` : `shopee-rascunho-${linkDocId}`;
   const { valores } = bloco;
   // The gate's own list (#1369) — `[]` while the produto texts are unknown or on a kit.
-  const { pendencias } = decisaoDePublicar;
+  const pendencias = rascunho?.decisaoDePublicar.pendencias ?? [];
   const tituloEmBranco =
     bloco.impedimento === 'campo-invalido' && textoUtilizavelShopee(valores.item_name) === null;
 
-  const descartar = (
-    <Button
-      type="button"
-      size="xs"
-      variant="light"
-      color="red"
-      disabled={!bloco.podeDescartar}
-      loading={emVoo === 'descartar-rascunho'}
-      onClick={() => onDescartar(bloco.descarte)}
-    >
-      Descartar
-    </Button>
-  );
+  const descartar =
+    rascunho === null ? null : (
+      <Button
+        type="button"
+        size="xs"
+        variant="light"
+        color="red"
+        disabled={!bloco.podeDescartar}
+        loading={emVoo === 'descartar-rascunho'}
+        onClick={() => rascunho.onDescartar(bloco.descarte)}
+      >
+        Descartar
+      </Button>
+    );
+
+  const avisosDoAnuncio = anuncio
+    ? [
+        bloco.descricaoEstendida ? FRASE_DESCRICAO_ESTENDIDA_ANUNCIO_SHOPEE : null,
+        bloco.categoriaTrocadaNoAnuncio ? FRASE_CATEGORIA_TROCADA_ANUNCIO_SHOPEE : null,
+        bloco.atributosRemovidosDoAnuncio ? FRASE_ATRIBUTOS_REMOVIDOS_ANUNCIO_SHOPEE : null,
+      ].filter((f): f is string => f !== null)
+    : [];
 
   return (
     <Stack gap="xs" data-testid={raiz}>
+      {anuncio && (
+        <Text size="sm" c="dimmed" data-testid={`${raiz}-intro`}>
+          {FRASE_INTRO_EDICAO_ANUNCIO_SHOPEE}
+        </Text>
+      )}
       {bloco.avisos.map((aviso) =>
         AVISOS_INFORMATIVOS.has(aviso) ? (
           <Text key={aviso} size="sm" c="dimmed">
@@ -450,7 +558,9 @@ export function RascunhoShopee({
 
       {divergencias.length > 0 && (
         <Alert color="orange" variant="light" data-testid={`${raiz}-divergencias`}>
-          {fraseDasDivergenciasDoRascunhoShopee(divergencias)}
+          {anuncio
+            ? fraseDasDivergenciasDoAnuncioShopee(divergencias)
+            : fraseDasDivergenciasDoRascunhoShopee(divergencias)}
         </Alert>
       )}
 
@@ -460,7 +570,9 @@ export function RascunhoShopee({
             id={idDoCampoRascunhoShopee(linkDocId, CAMPO_RASCUNHO_SHOPEE.itemName)}
             label="Título do anúncio"
             description={descricaoDoCampo(
-              'Começa com o nome do produto; é o título que a Shopee mostra.',
+              anuncio
+                ? DESCRICAO_TITULO_ANUNCIO_SHOPEE
+                : 'Começa com o nome do produto; é o título que a Shopee mostra.',
               valores.item_name,
               limites?.itemNameLengthLimit,
             )}
@@ -503,6 +615,7 @@ export function RascunhoShopee({
                   ? () => onCampo(CAMPO_RASCUNHO_SHOPEE.categoryId, bloco.categoriaGravada)
                   : null
               }
+              anuncio={anuncio}
             />
           </div>
           <div id={idDoCampoRascunhoShopee(linkDocId, CAMPO_RASCUNHO_SHOPEE.marca)}>
@@ -536,6 +649,7 @@ export function RascunhoShopee({
             publicacao={bloco.publicacao}
             editavel={bloco.camposEditaveis}
             onAtributo={onAtributo}
+            anuncio={anuncio}
           />
           {/* Stamps the logistics' field id itself (its rows' container, else its root). */}
           <LogisticaRascunhoShopee
@@ -551,8 +665,26 @@ export function RascunhoShopee({
             logisticaInvalida={bloco.logisticaInvalida}
             editavel={bloco.logisticaEditavel}
             onMudar={(valor) => onCampo(CAMPO_RASCUNHO_SHOPEE.logisticInfo, valor)}
+            // A published listing: trusted only once the ERP stamped its channel list (else «importe antes»).
+            anuncio={anuncio ? { logisticaConfiavel: !bloco.logisticaPorImportar } : null}
           />
         </>
+      )}
+
+      {anuncio && !bloco.kitVirtual && (
+        <Text size="xs" c="dimmed" data-testid={`${raiz}-republicar-tambem`}>
+          {FRASE_REPUBLICAR_TAMBEM_SHOPEE}
+        </Text>
+      )}
+
+      {avisosDoAnuncio.length > 0 && (
+        <Stack gap="xs" data-testid={`${raiz}-avisos-anuncio`}>
+          {avisosDoAnuncio.map((frase) => (
+            <Alert key={frase} color="yellow" variant="light">
+              {frase}
+            </Alert>
+          ))}
+        </Stack>
       )}
 
       {pendencias.length > 0 && (
@@ -570,15 +702,26 @@ export function RascunhoShopee({
 
       {podeEditar && !bloco.kitVirtual && bloco.impedimento === 'campo-invalido' && (
         <Text size="sm" c="red" data-testid={`${raiz}-impedimento`}>
-          {FRASE_CAMPO_INVALIDO_RASCUNHO_SHOPEE}
+          {anuncio ? FRASE_CAMPO_INVALIDO_ANUNCIO_SHOPEE : FRASE_CAMPO_INVALIDO_RASCUNHO_SHOPEE}
         </Text>
       )}
-      {podeEditar && !bloco.kitVirtual && bloco.impedimento === 'categoria-travada' && (
+      {anuncio && podeEditar && bloco.impedimento === 'edicao-invalida-no-anuncio' && (
+        // The server would answer 422 «Nada foi gravado.»: say why BEFORE the click.
+        <Stack gap={2} data-testid={`${raiz}-bloqueios`}>
+          {bloco.bloqueiosDoAnuncio.map((b) => (
+            <Text key={b} size="sm" c="red">
+              {FRASE_BLOQUEIO_DO_ANUNCIO_SHOPEE[b]}
+            </Text>
+          ))}
+        </Stack>
+      )}
+      {podeEditar && !anuncio && !bloco.kitVirtual && bloco.impedimento === 'categoria-travada' && (
         <Text size="sm" c="red" data-testid={`${raiz}-impedimento`}>
           {FRASE_CATEGORIA_TRAVADA_SHOPEE}
         </Text>
       )}
       {podeEditar &&
+        !anuncio &&
         !bloco.kitVirtual &&
         bloco.impedimento === 'categoria-travada' &&
         bloco.podeVoltarCategoria && (
@@ -602,7 +745,7 @@ export function RascunhoShopee({
                 loading={emVoo === 'salvar-rascunho'}
                 onClick={onSalvar}
               >
-                Salvar rascunho
+                {anuncio ? ROTULO_SALVAR_ANUNCIO_SHOPEE : 'Salvar rascunho'}
               </Button>
               {!bloco.novo && (
                 <Button
@@ -615,22 +758,24 @@ export function RascunhoShopee({
                   Desfazer alterações
                 </Button>
               )}
-              <Button
-                type="button"
-                size="xs"
-                color="green"
-                disabled={!decisaoDePublicar.podePublicar}
-                loading={emVoo === 'publicar'}
-                onClick={onPublicar}
-              >
-                {ROTULO_PUBLICAR_RASCUNHO_SHOPEE}
-              </Button>
+              {rascunho !== null && (
+                <Button
+                  type="button"
+                  size="xs"
+                  color="green"
+                  disabled={!rascunho.decisaoDePublicar.podePublicar}
+                  loading={emVoo === 'publicar'}
+                  onClick={rascunho.onPublicar}
+                >
+                  {ROTULO_PUBLICAR_RASCUNHO_SHOPEE}
+                </Button>
+              )}
               {descartar}
             </>
           )}
         </Group>
       )}
-      {podeEditar && !bloco.kitVirtual && falhaDaLeitura !== null && (
+      {rascunho !== null && podeEditar && !bloco.kitVirtual && falhaDaLeitura !== null && (
         // A FAILED read is the reason: said as such, never as "still loading".
         <Group gap="xs" data-testid={`${raiz}-publicar-falha-leitura`}>
           <Text size="xs" c="red">
@@ -649,26 +794,27 @@ export function RascunhoShopee({
           )}
         </Group>
       )}
-      {podeEditar &&
+      {rascunho !== null &&
+        podeEditar &&
         !bloco.kitVirtual &&
         falhaDaLeitura === null &&
-        decisaoDePublicar.aviso !== null && (
+        rascunho.decisaoDePublicar.aviso !== null && (
           <Text size="xs" c="dimmed" data-testid={`${raiz}-publicar-aviso`}>
-            {decisaoDePublicar.aviso}
+            {rascunho.decisaoDePublicar.aviso}
           </Text>
         )}
 
       {/* Mounted only while open, so «Criar pausado» starts from the editor's value on every opening. */}
-      {podeEditar && !bloco.kitVirtual && confirmacaoDePublicacao !== null && (
+      {rascunho !== null && podeEditar && !bloco.kitVirtual && confirmacaoDePublicacao !== null && (
         <ConfirmacaoDePublicacaoModal
           linkDocId={linkDocId}
           contaNome={contaNome}
           publicacao={bloco.publicacao}
           confirmacao={confirmacaoDePublicacao}
-          podePublicar={decisaoDePublicar.podePublicar}
-          aviso={falhaDaLeitura?.mensagem ?? decisaoDePublicar.aviso}
-          onConfirmar={onConfirmarPublicacao}
-          onCancelar={onCancelarPublicacao}
+          podePublicar={rascunho.decisaoDePublicar.podePublicar}
+          aviso={falhaDaLeitura?.mensagem ?? rascunho.decisaoDePublicar.aviso}
+          onConfirmar={rascunho.onConfirmarPublicacao}
+          onCancelar={rascunho.onCancelarPublicacao}
         />
       )}
     </Stack>

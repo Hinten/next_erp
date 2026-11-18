@@ -42,7 +42,7 @@ import type { PlanoKit } from '../kits/planoKit';
 import type { ContextoKitPreparado } from '../kits/prepararKit';
 import type { EnsaioDeKit } from '../kits/publicarKit';
 import {
-  MENSAGEM_KIT_INCERTO,
+  mensagemKitIncerto,
   comandoDeRetomada,
   type ResultadoPublicacaoKit,
 } from '../kits/resultadoKit';
@@ -1693,6 +1693,7 @@ function resultadoKit(over: Partial<ResultadoPublicacaoKit> = {}): ResultadoPubl
     chamadasShopee: 9,
     recusa: null,
     comando: null,
+    aguardarMs: null,
     ...over,
   };
 }
@@ -1723,6 +1724,8 @@ function resultadoIncerto(
       linkDocId,
       principal,
     }),
+    // The kept create lease's remaining hold (#1912).
+    aguardarMs: 400_000,
   });
 }
 
@@ -1952,8 +1955,10 @@ describe('o resultado de um kit nativo no --live (passo 19)', () => {
     const r = resumoDoResultadoKit(res, OPCOES_KIT);
     const texto = renderizarResultadoKit(res, OPCOES_KIT).join('\n');
 
-    expect(r.mensagemIncerto).toBe(MENSAGEM_KIT_INCERTO);
-    expect(texto).toContain(MENSAGEM_KIT_INCERTO);
+    // #1912: the wait named is the KEPT lease's, 400 s ⇒ 7 minutes, rounded up.
+    expect(r.mensagemIncerto).toBe(mensagemKitIncerto(400_000));
+    expect(r.mensagemIncerto).toContain('aguarde 7 minutos');
+    expect(texto).toContain(mensagemKitIncerto(400_000));
     expect(texto).toContain('product.error_busi (instabilidade-shopee) — "Too many connections"');
     expect(r.comandoDeRetomada).toBe(
       `pnpm --filter @delfrance/shopee-app publicar:anuncio --integracao ${INTEGRACAO_ID} ` +
@@ -2422,9 +2427,10 @@ describe('scripts/publicar-anuncio.ts — o relógio VIVO do rascunho (#1911)', 
     expect(RAMO_DRY_RUN).not.toContain('aoVivo');
   });
 
-  it('a recusa da trava não ganha o aviso de "talvez criado" — nada foi enviado', () => {
-    expect(FONTE_SCRIPT).toContain(
-      '!(err instanceof ArgumentoInvalidoError) && !ehConflitoDeRascunho(err)',
+  it('a recusa da trava (e a da reserva da criação de kit, #1912) não ganha o aviso de "talvez criado" — nada foi enviado', () => {
+    const condicao = FONTE_SCRIPT.replace(/\s+/g, ' ');
+    expect(condicao).toContain(
+      '!(err instanceof ArgumentoInvalidoError) && !ehConflitoDeRascunho(err) && !ehConflitoDeCriacaoDeKit(err)',
     );
   });
 });

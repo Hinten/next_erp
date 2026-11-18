@@ -28,7 +28,7 @@
  * variation tree for a grupo's Shopee tab (`variacoes`), and reads the shop's
  * logistics channels for ONE produto for a draft's «Logística» section
  * (`canais`, P16).
- * Every method of {@link ShopeeClient} — thirty-one today; re-count the
+ * Every method of {@link ShopeeClient} — thirty-two today; re-count the
  * interface, never bump this number — is answered by `apps/shopee` over an
  * authenticated cross-origin call (its `proxy.ts` allows exactly
  * `/api/marketplace/*`).
@@ -48,14 +48,23 @@ import { useMemo } from 'react';
 import type { z } from 'zod';
 import type {
   AcaoStatusAnuncio,
+  AlvoEdicaoShopee,
   AtributoShopeeRequisicao,
   CamposRascunhoShopee,
   ConteudoRascunhoShopee,
   corpoAtualizarRascunhoShopeeSchema,
   corpoCriarRascunhoShopeeSchema,
+  corpoDescartarEdicoesAnuncioShopeeSchema,
   corpoDescartarRascunhoShopeeSchema,
   importacaoShopeeOptionsSchema,
   MarcaRascunhoShopee,
+  ModoBuscaAnuncioShopee,
+  RespostaBuscaAnunciosShopee,
+  RespostaImportarAnuncioShopee,
+} from '@delfrance/schemas';
+import {
+  respostaBuscaAnunciosShopeeSchema,
+  respostaImportarAnuncioShopeeSchema,
 } from '@delfrance/schemas';
 
 import { envelopeDeErro, lerRespostaJson, resumirCampos } from '@delfrance/core/wire';
@@ -85,6 +94,7 @@ import {
   respostaBuscaCategoriasShopeeSchema,
   respostaCategoriasShopeeSchema,
   respostaCriarRascunhoShopeeSchema,
+  respostaDescartarEdicoesAnuncioShopeeSchema,
   respostaDescartarRascunhoShopeeSchema,
   respostaLimitesDoItemShopeeSchema,
   respostaLimitesShopeeSchema,
@@ -116,6 +126,7 @@ import {
   type RespostaBuscaCategoriasShopee,
   type RespostaCategoriasShopee,
   type RespostaCriarRascunhoShopee,
+  type RespostaDescartarEdicoesAnuncioShopee,
   type RespostaDescartarRascunhoShopee,
   type RespostaLimitesDoItemShopee,
   type RespostaLimitesShopee,
@@ -392,6 +403,14 @@ export interface PublicarShopeeInput {
   principal?: string;
   recriar?: true;
   converterEmKit?: true;
+  /**
+   * #1912: a native kit's FIRST create (the tab's «Publicar como kit nativo»),
+   * always with NO `linkDocId`. The route refuses 409
+   * `SHOPEE_KIT_CRIACAO_VINCULOS_MUDARAM` when the dispatcher would pick any
+   * other arm, so a click never republishes a listing that appeared meanwhile.
+   * ⚠️ Deploy order: apps/shopee first — an older backend IGNORES the key.
+   */
+  criarKitNativo?: true;
   confirmarSegundoAnuncio?: true;
   confirmarCriacaoIncerta?: true;
   criacaoIncertaAdota?: readonly number[];
@@ -480,6 +499,27 @@ export interface AtualizarRascunhoShopeeInput {
   linkDocId: string;
   base: Partial<CamposDoCorpoRascunhoShopee>;
   patch: PatchDoCorpoRascunhoShopee;
+  /**
+   * What the edit is FOR. Sent ONLY for `'anuncio'` (a PUBLISHED listing's
+   * save-only edit); absent => the body carries no `alvo` and the server reads
+   * a draft edit — the draft bodies stay byte-identical, and a web newer than
+   * the server degrades to a refusal instead of an unknown key on every draft
+   * save.
+   */
+  alvo?: AlvoEdicaoShopee;
+}
+
+/**
+ * Discard a published listing's pending ERP edits (`POST
+ * …/anuncio/descartar-edicoes`): the stored content is reloaded from Shopee.
+ * `revisao` is the `edicaoErpRevisao` the operator SAW — a revision that moved
+ * on is a 409, never a silent discard of a newer edit.
+ */
+export interface DescartarEdicoesAnuncioShopeeInput {
+  integracaoId: string;
+  produtoId: string;
+  linkDocId: string;
+  revisao: number;
 }
 
 /**
@@ -502,6 +542,18 @@ export interface DescartarRascunhoShopeeInput {
 }
 
 export interface ShopeeClient {
+  buscarAnuncios(input: {
+    integracaoId: string;
+    modo: ModoBuscaAnuncioShopee;
+    termo: string;
+    cursor?: string;
+    signal?: AbortSignal;
+  }): Promise<RespostaBuscaAnunciosShopee>;
+  importarAnuncio(input: {
+    integracaoId: string;
+    itemId: number;
+    options?: z.input<typeof importacaoShopeeOptionsSchema>;
+  }): Promise<RespostaImportarAnuncioShopee>;
   /** Mint the Shopee consent URL for an `integracao` conta (PERM.integracao.write). */
   oauthStart(integracaoId: string): Promise<ShopeeOauthStart>;
   /** Connection status — the two clocks. Always 200 (PERM.integracao.read). */
@@ -779,6 +831,20 @@ export interface ShopeeClient {
    */
   descartarRascunho(input: DescartarRascunhoShopeeInput): Promise<RespostaDescartarRascunhoShopee>;
   /**
+   * Throw away a PUBLISHED listing's pending ERP edits and reload Shopee's
+   * current content (PERM.integracao.write). 200 `descartado: true`, or `false`
+   * when nothing was pending (nothing read, nothing written). Refusals: 404
+   * `rascunhoInexistente`; 409 `anuncioNaoEditavel`; 409 `rascunhoConflito`
+   * with `[]` — two causes with two different sentences (a stale `revisao`, or
+   * a concurrent write), told apart only by the message; a 502 with Shopee's
+   * `kind` (the Shopee read comes BEFORE any write, so nothing changed). A 5xx
+   * with no `kind`, or a dropped connection, is UNCERTAIN. No `signal`, no
+   * retry.
+   */
+  descartarEdicoesAnuncio(
+    input: DescartarEdicoesAnuncioShopeeInput,
+  ): Promise<RespostaDescartarEdicoesAnuncioShopee>;
+  /**
    * The categories Shopee SUGGESTS for a product name (PERM.integracao.read) —
    * OFFERED, never applied (`applied: false`). A suggested id this shop's tree
    * lacks degrades its ROW and is counted in `unresolved`.
@@ -870,11 +936,19 @@ export interface ShopeeClient {
    * or a new draft. Never retried by this client (the query's
    * `shopeeQueryRetry` decides), and no `signal`: nothing here cancels it.
    *
+   * `linkDocId` (a PUBLISHED listing's section) makes the verdicts those of
+   * that link's stored logistics; omitted => the produto-only read, unchanged.
+   *
    * A produto that is gone is a CODELESS 404 whose `message` is the route's
-   * sentence; a conta that is not Shopee's is a 404/409 with its code; a Shopee
+   * sentence — and so is a vínculo that is gone: the two are NOT told apart by
+   * code. A conta that is not Shopee's is a 404/409 with its code; a Shopee
    * failure is the 502 with its `kind`.
    */
-  canais(input: { integracaoId: string; produtoId: string }): Promise<RespostaCanaisShopee>;
+  canais(input: {
+    integracaoId: string;
+    produtoId: string;
+    linkDocId?: string;
+  }): Promise<RespostaCanaisShopee>;
 }
 
 /** The label route. */
@@ -899,6 +973,8 @@ const PUBLICAR_PATH = '/api/marketplace/shopee/publicar';
 const REVERIFICAR_ANUNCIO_PATH = '/api/marketplace/shopee/reverificar-anuncio';
 
 /** The two account-wide jobs (#1529, step 21): the mass import and the price update. */
+const BUSCA_ANUNCIOS_PATH = '/api/marketplace/shopee/anuncios/busca';
+const IMPORTAR_PATH = '/api/marketplace/shopee/importar';
 const IMPORTAR_TODOS_PATH = '/api/marketplace/shopee/importar-todos';
 const IMPORTAR_TODOS_STATUS_PATH = '/api/marketplace/shopee/importar-todos/status';
 const IMPORTAR_TODOS_CANCELAR_PATH = '/api/marketplace/shopee/importar-todos/cancelar';
@@ -912,6 +988,7 @@ const ATUALIZAR_PRECOS_RELATORIO_PATH = '/api/marketplace/shopee/atualizar-preco
 const RASCUNHO_PATH = '/api/marketplace/shopee/rascunho';
 const RASCUNHO_ATUALIZAR_PATH = '/api/marketplace/shopee/rascunho/atualizar';
 const RASCUNHO_DESCARTAR_PATH = '/api/marketplace/shopee/rascunho/descartar';
+const ANUNCIO_DESCARTAR_EDICOES_PATH = '/api/marketplace/shopee/anuncio/descartar-edicoes';
 
 /** The draft editor's extra taxonomy read (#1911); the bands reuse {@link LIMITES_PATH}. */
 const RECOMENDACAO_CATEGORIA_PATH = '/api/marketplace/shopee/taxonomia/recomendacao-categoria';
@@ -1149,6 +1226,7 @@ function corpoDaPublicacao(p: PublicarShopeeInput): Record<string, unknown> {
     ...(p.principal === undefined ? {} : { principal: p.principal }),
     ...(p.recriar === undefined ? {} : { recriar: p.recriar }),
     ...(p.converterEmKit === undefined ? {} : { converterEmKit: p.converterEmKit }),
+    ...(p.criarKitNativo === undefined ? {} : { criarKitNativo: p.criarKitNativo }),
     ...(p.confirmarSegundoAnuncio === undefined
       ? {}
       : { confirmarSegundoAnuncio: p.confirmarSegundoAnuncio }),
@@ -1293,6 +1371,20 @@ function corpoDoRascunhoAtualizado(
     linkDocId: p.linkDocId,
     base: camposNomeadosPorNome(p.base),
     patch: camposNomeadosPorNome(p.patch),
+    // Forget this and the field is silently dropped: the server then reads a
+    // draft edit and answers 409 JA_PUBLICADO.
+    ...(p.alvo === undefined ? {} : { alvo: p.alvo }),
+  };
+}
+
+function corpoDoDescarteDeEdicoes(
+  p: DescartarEdicoesAnuncioShopeeInput,
+): z.input<typeof corpoDescartarEdicoesAnuncioShopeeSchema> {
+  return {
+    integracaoId: p.integracaoId,
+    produtoId: p.produtoId,
+    linkDocId: p.linkDocId,
+    revisao: p.revisao,
   };
 }
 
@@ -1586,6 +1678,15 @@ export function createShopeeClient(config: {
         produtoId: input.produtoId,
         ...(input.linkDocId ? { linkDocId: input.linkDocId } : {}),
       }),
+    buscarAnuncios: ({ integracaoId, modo, termo, cursor, signal }) =>
+      call(
+        `${BUSCA_ANUNCIOS_PATH}?${consulta({ integracaoId, modo, termo, cursor })}`,
+        respostaBuscaAnunciosShopeeSchema,
+        undefined,
+        signal,
+      ),
+    importarAnuncio: ({ integracaoId, itemId, options }) =>
+      call(IMPORTAR_PATH, respostaImportarAnuncioShopeeSchema, { integracaoId, itemId, options }),
     startMassImport: (input) =>
       call(IMPORTAR_TODOS_PATH, jobIdShopeeSchema, {
         integracaoId: input.integracaoId,
@@ -1658,6 +1759,12 @@ export function createShopeeClient(config: {
         respostaDescartarRascunhoShopeeSchema,
         corpoDoRascunhoDescartado(input),
       ),
+    descartarEdicoesAnuncio: (input) =>
+      call(
+        ANUNCIO_DESCARTAR_EDICOES_PATH,
+        respostaDescartarEdicoesAnuncioShopeeSchema,
+        corpoDoDescarteDeEdicoes(input),
+      ),
     recomendacaoCategoria: (input) =>
       call(
         `${RECOMENDACAO_CATEGORIA_PATH}?${consulta({
@@ -1708,6 +1815,7 @@ export function createShopeeClient(config: {
         `${CANAIS_PATH}?${consulta({
           integracaoId: input.integracaoId,
           produtoId: input.produtoId,
+          linkDocId: input.linkDocId,
         })}`,
         respostaCanaisShopeeSchema,
       ),

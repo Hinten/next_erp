@@ -13,6 +13,7 @@ import {
   semCamposDeEdicaoErpShopee,
   soCamposDeEdicaoErpShopee,
   anuncioShopeeVivo,
+  classeDoVinculoShopee,
   contaDoLinkShopee,
   ehRascunhoShopee,
   lerLogisticaArmazenadaShopee,
@@ -20,6 +21,7 @@ import {
   logisticaDoAnuncioEditavelShopee,
   logisticaGravadaPeloErpShopee,
   mecanismosDaRecusaAnterior,
+  primeiraPublicacaoEhKitNativoShopee,
   pularPorRecusaAnterior,
   recusaEstoqueDoAnuncioShopeeLegivel,
   recusaEstoqueDoModeloShopeeLegivel,
@@ -999,6 +1001,74 @@ describe('lerLogisticaArmazenadaShopee — o leitor ÚNICO da lista armazenada (
     expect(
       ler([{ logistic_id: B, size_id: '' }, { logistic_id: B, size_id: '7' }, { logistic_id: A }]),
     ).toEqual([lida({ logisticId: B }), lida({ logisticId: B, sizeId: 7 }), lida()]);
+  });
+});
+
+describe('classeDoVinculoShopee — the link classes of the publish dispatcher', () => {
+  it.each([
+    ['a live native kit', { kitNativo: true, item_id: 11, estadoAnuncio: 'ativo' }, 'n'],
+    ['a removed native kit', { kitNativo: true, item_id: 11, estadoAnuncio: 'removido' }, 'x'],
+    [
+      'a superseded native kit',
+      { kitNativo: true, item_id: 11, substituidoPorLinkDocId: 'novo' },
+      'x',
+    ],
+    ['an item-less native link (residue, never a draft)', { kitNativo: true, item_id: null }, 'x'],
+    ['a draft', { kitNativo: false, item_id: null }, 'r'],
+    ['a removed draft is still a draft', { item_id: null, estadoAnuncio: 'removido' }, 'r'],
+    ['a live ordinary listing', { kitNativo: false, item_id: 22, estadoAnuncio: 'ativo' }, 'o'],
+    ['a corrupt item_id is ordinary (the recorded residue)', { item_id: 0 }, 'o'],
+    ['a removed ordinary listing', { item_id: 22, estadoAnuncio: 'removido' }, 'ro'],
+    [
+      'a superseded ordinary listing, removed or not',
+      { item_id: 22, estadoAnuncio: 'removido', substituidoPorLinkDocId: 'novo' },
+      'so',
+    ],
+    ["a stray 'true' kitNativo is NOT native", { kitNativo: 'true', item_id: 22 }, 'o'],
+  ] as const)('%s ⇒ %s', (_rotulo, raw, classe) => {
+    expect(classeDoVinculoShopee(raw)).toBe(classe);
+  });
+});
+
+describe('primeiraPublicacaoEhKitNativoShopee — the web offer of a FIRST native kit', () => {
+  const KIT: { paiId: string | null; ehKit: unknown; ehKitVirtual: unknown } = {
+    paiId: null,
+    ehKit: true,
+    ehKitVirtual: true,
+  };
+
+  it('a root virtual kit with no link, or only drafts / removed / superseded links ⇒ true', () => {
+    expect(primeiraPublicacaoEhKitNativoShopee({ produto: KIT, vinculosDaConta: [] })).toBe(true);
+    expect(
+      primeiraPublicacaoEhKitNativoShopee({
+        produto: KIT,
+        vinculosDaConta: [
+          { item_id: null },
+          { kitNativo: true, item_id: 11, estadoAnuncio: 'removido' },
+          { item_id: 22, estadoAnuncio: 'removido' },
+          { item_id: 23, substituidoPorLinkDocId: 'x' },
+        ],
+      }),
+    ).toBe(true);
+  });
+
+  it('⛔ near-misses: a live native kit, a live ordinary listing, a child, a non-virtual kit ⇒ false', () => {
+    const com = (vinculosDaConta: readonly Record<string, unknown>[], produto = KIT) =>
+      primeiraPublicacaoEhKitNativoShopee({ produto, vinculosDaConta });
+    expect(com([{ kitNativo: true, item_id: 11, estadoAnuncio: 'ativo' }])).toBe(false);
+    expect(com([{ item_id: 22, estadoAnuncio: 'ativo' }])).toBe(false);
+    expect(com([], { ...KIT, paiId: 'pai' })).toBe(false);
+    expect(com([], { ...KIT, ehKitVirtual: null })).toBe(false);
+    expect(com([], { ...KIT, ehKit: false })).toBe(false);
+  });
+
+  it('paiId ABSENT reads as a root (the schema default the server parses)', () => {
+    expect(
+      primeiraPublicacaoEhKitNativoShopee({
+        produto: { ehKit: true, ehKitVirtual: true },
+        vinculosDaConta: [],
+      }),
+    ).toBe(true);
   });
 });
 

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Firestore } from 'firebase/firestore';
+import { AfterSaveBlockedError } from '@delfrance/ui';
 
 /**
  * Which produtos a save writes (#1398).
@@ -80,12 +81,15 @@ describe('guarded kit status propagation', () => {
   const member = { nome: 'Kit', sku: 'KIT-UN', paiId: 'p1' };
   const change = { ehKit: true, ehKitVirtual: false, oldEhKit: false, oldEhKitVirtual: false };
 
-  function transactionFor(root: Record<string, unknown>, child: Record<string, unknown>) {
+  function transactionFor(
+    root: Record<string, unknown>,
+    children: Record<string, Record<string, unknown>>,
+  ) {
     const update = vi.fn();
-    const get = ({ __path }: { __path: string }) =>
-      Promise.resolve(
-        __path === 'produtos/p1' ? { id: 'p1', data: () => root } : { id: 'c1', data: () => child },
-      );
+    const get = ({ __path }: { __path: string }) => {
+      const id = __path.split('/').at(-1)!;
+      return Promise.resolve({ id, data: () => (id === 'p1' ? root : children[id]) });
+    };
     runTransactionMock.mockImplementationOnce(
       (
         _db: unknown,
@@ -96,7 +100,7 @@ describe('guarded kit status propagation', () => {
   }
 
   it('copies the latest recipe to an internal member', async () => {
-    const update = transactionFor(parent, member);
+    const update = transactionFor(parent, { c1: member });
     const port = createClientProdutoPort(db);
     await expect(port.commitKitStatus('p1', ['c1'], change)).resolves.toEqual(['c1']);
     expect(update).toHaveBeenCalledWith(
@@ -107,19 +111,47 @@ describe('guarded kit status propagation', () => {
     );
   });
 
-  it('keeps a genuine single variant’s recipe and drops a superseded kit change', async () => {
+  it('keeps a genuine single variant’s recipe and reports a superseded kit change', async () => {
     const port = createClientProdutoPort(db);
     const variant = { ...member, variacoesUid: ['documents/grupoDeVariacoes/t/variacoes/p'] };
-    const update = transactionFor(parent, variant);
+    const update = transactionFor(parent, { c1: variant });
     await port.commitKitStatus('p1', ['c1'], { ...change, membroUnicoId: 'c1' });
     expect(update).toHaveBeenCalledWith(docRef('produtos/c1'), {
       ehKit: true,
       ehKitVirtual: false,
     });
 
-    const stale = transactionFor({ ...parent, ehKit: false }, variant);
-    await expect(port.commitKitStatus('p1', ['c1'], change)).resolves.toEqual([]);
+    const stale = transactionFor({ ...parent, ehKit: false }, { c1: variant });
+    await expect(port.commitKitStatus('p1', ['c1'], change)).rejects.toBeInstanceOf(
+      AfterSaveBlockedError,
+    );
     expect(stale).not.toHaveBeenCalled();
+  });
+
+  it('clears the recipes of both current children and skips a child that moved families', async () => {
+    const update = transactionFor(
+      { ...parent, ehKit: false, filhoUnicoId: null },
+      { c1: member, c2: member, moved: { ...member, paiId: 'other-parent' } },
+    );
+    const port = createClientProdutoPort(db);
+    await expect(
+      port.commitKitStatus('p1', ['c1', 'c2', 'moved'], {
+        ...change,
+        oldEhKit: true,
+        ehKit: false,
+      }),
+    ).resolves.toEqual(['c1', 'c2']);
+
+    const cleared = {
+      ehKit: false,
+      ehKitVirtual: false,
+      componentesKit: null,
+      componentesKitKeys: null,
+    };
+    expect(update.mock.calls).toEqual([
+      [docRef('produtos/c1'), cleared],
+      [docRef('produtos/c2'), cleared],
+    ]);
   });
 });
 

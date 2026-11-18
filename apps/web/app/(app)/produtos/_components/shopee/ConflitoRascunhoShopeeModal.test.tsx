@@ -1,18 +1,25 @@
 import { describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
-import { CAMPO_RASCUNHO_SHOPEE, type CamposRascunhoShopee } from '@delfrance/schemas';
+import {
+  ALVO_EDICAO_SHOPEE,
+  CAMPO_RASCUNHO_SHOPEE,
+  type CamposRascunhoShopee,
+} from '@delfrance/schemas';
 
 import { MantineTestProvider } from '@/lib/testing/mantine';
 import {
+  FRASE_CONFLITO_ANUNCIO_SHOPEE,
   FRASE_CONFLITO_CRIACAO_RASCUNHO_SHOPEE,
   FRASE_CONFLITO_RASCUNHO_SHOPEE,
   FRASE_RASCUNHO_CARREGANDO_SHOPEE,
+  TITULO_CONFLITO_ANUNCIO_SHOPEE,
   TITULO_CONFLITO_RASCUNHO_SHOPEE,
 } from '@/lib/shopee/anuncioProduto';
 import { formularioDoRascunhoShopee, type EdicaoRascunhoShopee } from '@/lib/shopee/rascunho';
 
 import {
   ConflitoRascunhoShopeeModal,
+  FRASE_CONFLITO_RENOVADO_ANUNCIO_SHOPEE,
   FRASE_CONFLITO_RENOVADO_RASCUNHO_SHOPEE,
   textoDoValorDoRascunhoShopee,
   type ConflitoRascunhoShopeeAberto,
@@ -49,6 +56,7 @@ const EDICAO: EdicaoRascunhoShopee = {
   linkDocId: LINK,
   contaId: 'int-1',
   novo: false,
+  alvo: ALVO_EDICAO_SHOPEE.rascunho,
   base: BASE,
   atual: {
     ...formularioDoRascunhoShopee(BASE),
@@ -428,5 +436,37 @@ describe('ConflitoRascunhoShopeeModal — rows refreshed instead of a re-send (R
   it('NEAR-MISS: the 409’s own rows (no `renovado`) say nothing of the sort', () => {
     show();
     expect(screen.queryByTestId('shopee-rascunho-conflito-renovado')).toBeNull();
+  });
+});
+
+describe('ConflitoRascunhoShopeeModal — a PUBLISHED listing’s entry (alvo anuncio)', () => {
+  const ANUNCIO: EdicaoRascunhoShopee = { ...EDICAO, alvo: ALVO_EDICAO_SHOPEE.anuncio };
+
+  it('says «Anúncio alterado» and the listing alert — never the draft copy', () => {
+    show({ edicao: ANUNCIO });
+    expect(screen.getByText(TITULO_CONFLITO_ANUNCIO_SHOPEE)).toBeTruthy();
+    expect(screen.getByText(FRASE_CONFLITO_ANUNCIO_SHOPEE)).toBeTruthy();
+    expect(screen.queryByText(TITULO_CONFLITO_RASCUNHO_SHOPEE)).toBeNull();
+    expect(screen.queryByText(FRASE_CONFLITO_RASCUNHO_SHOPEE)).toBeNull();
+  });
+
+  it('NEAR-MISS: the same conflict on a DRAFT entry keeps the draft copy', () => {
+    show({ edicao: EDICAO });
+    expect(screen.getByText(TITULO_CONFLITO_RASCUNHO_SHOPEE)).toBeTruthy();
+    expect(screen.queryByText(TITULO_CONFLITO_ANUNCIO_SHOPEE)).toBeNull();
+  });
+
+  it('the renewed rows say the listing moved again, and nothing was sent', () => {
+    show({ edicao: ANUNCIO, conflito: { ...EDITADO, renovado: true } });
+    const aviso = screen.getByTestId('shopee-rascunho-conflito-renovado');
+    expect(aviso.textContent).toBe(FRASE_CONFLITO_RENOVADO_ANUNCIO_SHOPEE);
+    expect(aviso.textContent).not.toBe(FRASE_CONFLITO_RENOVADO_RASCUNHO_SHOPEE);
+  });
+
+  it('the resolving buttons are enabled and fire their callbacks', () => {
+    const cb = show({ edicao: ANUNCIO });
+    expect((botao('Salvar mesmo assim') as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(botao('Usar o que está salvo'));
+    expect(cb.onUsarOQueEstaSalvo).toHaveBeenCalledTimes(1);
   });
 });

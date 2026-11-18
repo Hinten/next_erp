@@ -18,6 +18,8 @@ import {
   MSG_CRIACAO_INCERTA_ADOTA_SEM_ATESTACAO,
   MSG_CRIACAO_INCERTA_ADOTA_SEM_LINK,
   MSG_LINK_EXIGE_UM_PRODUTO,
+  MSG_CRIAR_KIT_NATIVO_COM_OUTRA_ACAO,
+  MSG_CRIAR_KIT_NATIVO_INVALIDO,
   MSG_OPCOES_DE_KIT_EXCLUSIVAS,
   MSG_PRODUTO_ID_INVALIDO,
   MSG_RECRIAR_INVALIDO,
@@ -78,11 +80,48 @@ describe('lerCorpoPublicar', () => {
       principal: null,
       recriar: false,
       converterEmKit: false,
+      // #1912: ABSENT ⇒ false — no first-kit-create intent (the CLI's).
+      criarKitNativo: false,
       confirmarSegundoAnuncio: false,
       confirmarCriacaoIncerta: false,
       // #1911 batch-B review (§I1): ABSENT ⇒ null — the bare attestation.
       criacaoIncertaAdota: null,
     });
+  });
+
+  it('(#1912) criarKitNativo: true sozinho vale; junto com linkDocId, recriar ou converterEmKit é 400; não-booleano é 400', () => {
+    const so = lerCorpoPublicar({ integracaoId: INT_A, produtoId: PRODUTO, criarKitNativo: true });
+    expect(so.ok && so.valor.criarKitNativo).toBe(true);
+    for (const extra of [
+      { linkDocId: 'L1' },
+      { recriar: true, linkDocId: 'L1' },
+      { converterEmKit: true },
+    ]) {
+      const lido = lerCorpoPublicar({
+        integracaoId: INT_A,
+        produtoId: PRODUTO,
+        criarKitNativo: true,
+        ...extra,
+      });
+      expect(lido.ok, JSON.stringify(extra)).toBe(false);
+      if (!lido.ok) expect(lido.erro).toBe(MSG_CRIAR_KIT_NATIVO_COM_OUTRA_ACAO);
+    }
+    // NEAR-MISS: false beside a link is just "no intent".
+    expect(
+      lerCorpoPublicar({
+        integracaoId: INT_A,
+        produtoId: PRODUTO,
+        criarKitNativo: false,
+        linkDocId: 'L1',
+      }).ok,
+    ).toBe(true);
+    const ruim = lerCorpoPublicar({
+      integracaoId: INT_A,
+      produtoId: PRODUTO,
+      criarKitNativo: 'sim',
+    });
+    expect(ruim.ok).toBe(false);
+    if (!ruim.ok) expect(ruim.erro).toBe(MSG_CRIAR_KIT_NATIVO_INVALIDO);
   });
 
   it('um corpo que não é objeto simples é a MESMA frase do JSON malformado', () => {

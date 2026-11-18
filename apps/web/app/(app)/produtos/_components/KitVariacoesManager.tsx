@@ -1,10 +1,10 @@
 'use client';
 
 import { useEffect, useMemo, useState, type RefObject } from 'react';
-import { Button, Divider, Group, Paper, Stack, Text } from '@mantine/core';
+import { Button, Divider, Group, Modal, Paper, Stack, Text } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { FirebaseError } from 'firebase/app';
-import type { Firestore } from 'firebase/firestore';
+import { getDocFromServer, type Firestore } from 'firebase/firestore';
 import { useFormContext } from 'react-hook-form';
 import {
   generateKitForVariacoes,
@@ -12,11 +12,12 @@ import {
   type ComponentesKit,
   type GrupoComId,
 } from '@delfrance/schemas';
-import { saveChildrenComponentesKit } from '@delfrance/data/produto';
 import { buildQuery, whereEqual } from '@delfrance/data';
 import { useSnapshot } from '@delfrance/data/hooks';
+import { AfterSaveBlockedError } from '@delfrance/ui';
 import { produtoCollection } from '@/lib/data/produtoCollection';
-import { createClientProdutoPort, getVariationChildrenByParent } from '@/lib/produtos/clientPort';
+import { getVariationChildrenByParent } from '@/lib/produtos/clientPort';
+import { commitChildKitEdits, type ChildKitEdit } from '@/lib/produtos/kitChildren';
 import { KitManager, stripKitForSave } from './KitManager';
 import type { VariationRow } from './VariationManager';
 
@@ -30,6 +31,7 @@ import type { VariationRow } from './VariationManager';
 export type KitVariacoesFlush = (
   parentId: string,
   reusedByKey: Record<string, string>,
+  action?: 'save' | 'discard' | 'confirm-non-kit',
 ) => Promise<void>;
 
 export interface KitVariacoesManagerProps {
@@ -45,12 +47,12 @@ export interface KitVariacoesManagerProps {
    */
   rows: VariationRow[];
   disabled?: boolean;
+  resetRevisionRef: RefObject<number>;
   /** Registered with the page; invoked in `onAfterSave` (after the children flush). */
   flushRef: RefObject<KitVariacoesFlush | null>;
   /**
    * Publishes whether a per-variation composition is STAGED — held here, not
-   * yet written onto its child by the flush (`temComposicaoPendente`, the
-   * flush's own "nothing to write" test). Same shape and timing as
+   * yet written onto its child by the flush. Same shape and timing as
    * `VariationManager`'s `onPriceDirtyChange`: an effect on the derived flag,
    * no cleanup, so pass a stable setter. The page ORs it into the leave-guard
    * (`extraDirty`) and into a Shopee draft's «Publicar» gate — the publish
@@ -62,15 +64,13 @@ export interface KitVariacoesManagerProps {
   onDirtyChange?: (dirty: boolean) => void;
 }
 
-/**
- * Is anything staged for the flush to write? The ONE test both the flush and
- * the dirty report read, so the report can never say "clean" while the next
- * save would still write (or say "dirty" while it would write nothing). By
- * key, not by value: a map edited back to what is stored is still written by
- * the flush (a full overwrite), so it stays pending.
- */
-function temComposicaoPendente(staged: Record<string, ComponentesKit | null>): boolean {
-  return Object.keys(staged).length > 0;
+type SavedRecipes = Readonly<Record<string, ComponentesKit | null>>;
+
+interface RecipeDraft {
+  value: ComponentesKit | null;
+  // An unsaved variation can reuse another document's id when saved (#117).
+  // Capture the saved recipes together so that destination is guarded too.
+  baseline: SavedRecipes;
 }
 
 /**
@@ -82,9 +82,8 @@ function temComposicaoPendente(staged: Record<string, ComponentesKit | null>): b
  * "Gerar Variações" runs the pure matcher (`generateKitForVariacoes`) and
  * **merges** the result into each variation's components (old `addChildrenMap`
  * semantics). The maps are flushed onto each child produto doc in `onAfterSave`
- * (after the variation-children flush) — a variation still carrying `id: null`
- * at that point is matched to its child by `variacoesUid` via
- * `resolveStagedKitVariacoes`.
+ * (after the variation-children flush), using `resolveStagedKitVariacoes` to
+ * find each draft's final document id.
  */
 export function KitVariacoesManager({
   produtoId,
@@ -92,6 +91,7 @@ export function KitVariacoesManager({
   grupos,
   rows,
   disabled,
+  resetRevisionRef,
   flushRef,
   onDirtyChange,
 }: KitVariacoesManagerProps) {
@@ -121,8 +121,13 @@ export function KitVariacoesManager({
 
   // Staged per-variation maps, keyed by `VariationRow.key` — a doc id on both
   // sides of the save, so the flush below releases an entry by the id it wrote.
-  const [staged, setStaged] = useState<Record<string, ComponentesKit | null>>({});
+  const [staged, setStaged] = useState<Record<string, RecipeDraft>>({});
+  const [resetBaseline, setResetBaseline] = useState<SavedRecipes | null>(null);
+  const [confirmReset, setConfirmReset] = useState(false);
   const [gerando, setGerando] = useState(false);
+  const saving = form?.formState.isSubmitting === true;
+  const recipesReady =
+    !childrenSnap.loading && !childrenSnap.error && childrenSnap.fromCache !== true;
 
   // Report the staged state to the page (`onDirtyChange`). Above the early
   // `return null` below, so a grid hidden by «É kit» off still reports. No
@@ -130,33 +135,63 @@ export function KitVariacoesManager({
   // section today, but were it ever hidden under `<Activity>` (which unmounts
   // effects and KEEPS state), a cleanup reporting `false` would open the
   // page's gates while the staged maps are still here, waiting for the save.
-  const pendente = temComposicaoPendente(staged);
+  const pendente = resetBaseline !== null || Object.keys(staged).length > 0;
   useEffect(() => {
     onDirtyChange?.(pendente);
   }, [pendente, onDirtyChange]);
 
   // Register the flush; re-registers when staged/rows change so the closure is fresh.
   useEffect(() => {
-    flushRef.current = async (parentId, reusedByKey) => {
-      if (!temComposicaoPendente(staged)) return;
+    flushRef.current = async (parentId, reusedByKey, action = 'save') => {
+      if (action === 'confirm-non-kit') {
+        if (!pendente && !gerando) return;
+        const parent = (await getDocFromServer(produtoCollection.docRef(db, {}, parentId))).data();
+        if (parent?.ehKit !== false) {
+          throw new AfterSaveBlockedError(
+            'O status do kit mudou. Recarregue o produto antes de salvar.',
+          );
+        }
+      }
+      if (action !== 'save') {
+        resetRevisionRef.current += 1;
+        setGerando(false);
+        setStaged({});
+        setResetBaseline(null);
+        return;
+      }
+      if (gerando) {
+        throw new AfterSaveBlockedError('Aguarde a geração dos componentes e salve novamente.');
+      }
+      if (!pendente) return;
       // Children now exist (created in the variation flush) — re-read to learn
       // which ids are live; `reusedByKey` covers the rows written under another id.
       const byParent = await getVariationChildrenByParent(db, [parentId]);
+      const realChildren = byParent[parentId] ?? [];
       const { writes, unresolved, dropped } = resolveStagedKitVariacoes({
-        stagedByKey: staged,
+        stagedByKey: Object.fromEntries(
+          Object.entries(staged).map(([key, draft]) => [key, draft.value]),
+        ),
         rows,
-        realChildren: byParent[parentId] ?? [],
+        realChildren,
         resolvedByKey: reusedByKey,
       });
-      if (writes.length > 0) {
-        await saveChildrenComponentesKit(
-          createClientProdutoPort(db),
-          writes.map((w) => ({
-            id: w.id,
-            componentesKit: stripKitForSave(w.componentesKit ?? {}),
-          })),
-        );
+      const edits = new Map<string, ChildKitEdit>();
+      if (resetBaseline) {
+        for (const { id } of realChildren) {
+          edits.set(id, { id, componentesKit: null, baseline: resetBaseline[id] ?? null });
+        }
       }
+      for (const { key, id, componentesKit } of writes) {
+        edits.set(id, {
+          id,
+          componentesKit: stripKitForSave(componentesKit),
+          baseline: staged[key]!.baseline[id] ?? null,
+        });
+      }
+      await commitChildKitEdits(db, parentId, {
+        recipes: [...edits.values()],
+        mirrorSoleMember: resetBaseline !== null,
+      });
       // Release by the SOURCE key, not the written id — the two differ exactly
       // when the pairing redirected a row, and releasing by id would then strand
       // the entry. `dropped` must go too: a map whose variation was deleted is
@@ -167,6 +202,7 @@ export function KitVariacoesManager({
       setStaged((s) =>
         Object.fromEntries(Object.entries(s).filter(([key]) => !flushedKeys.has(key))),
       );
+      setResetBaseline(null);
       if (unresolved.length > 0) {
         // Never silent: the save reports success, so without this the operator
         // is told their components were written when they were not.
@@ -188,10 +224,18 @@ export function KitVariacoesManager({
     return () => {
       flushRef.current = null;
     };
-  }, [db, staged, rows, flushRef]);
+  }, [db, staged, resetBaseline, rows, gerando, pendente, flushRef, resetRevisionRef]);
+
+  const recomecar = () => {
+    resetRevisionRef.current += 1;
+    form?.setValue('componentesKit', null, { shouldDirty: true });
+    setStaged({});
+    setResetBaseline(savedKitById);
+    setConfirmReset(false);
+  };
 
   const gerar = async () => {
-    const parentKit = stripKitForSave(form?.watch('componentesKit')) ?? {};
+    const parentKit = stripKitForSave(form?.getValues('componentesKit')) ?? {};
     const componentes = Object.entries(parentKit).map(([id, k]) => ({
       produtoId: id,
       quantidade: k.quantidade,
@@ -204,12 +248,14 @@ export function KitVariacoesManager({
       });
       return;
     }
+    const requestRevision = resetRevisionRef.current;
     setGerando(true);
     try {
       const componentVariacoesByComponentId = await getVariationChildrenByParent(
         db,
         componentes.map((c) => c.produtoId),
       );
+      if (resetRevisionRef.current !== requestRevision) return;
       const { porFilho, warnings, errors } = generateKitForVariacoes({
         componentes,
         kitVariacoes: visibleRows.map((r) => ({ id: r.key, variacoesUid: r.variacoesUid })),
@@ -222,9 +268,12 @@ export function KitVariacoesManager({
         for (const row of visibleRows) {
           const generated = porFilho[row.key];
           if (!generated) continue;
-          const existing =
-            row.key in s ? (s[row.key] ?? {}) : row.id ? (savedKitById[row.id] ?? {}) : {};
-          next[row.key] = { ...existing, ...generated };
+          const draft = s[row.key];
+          const saved = row.id && resetBaseline === null ? savedKitById[row.id] : null;
+          next[row.key] = {
+            value: { ...(draft ? draft.value : saved), ...generated },
+            baseline: draft?.baseline ?? resetBaseline ?? savedKitById,
+          };
         }
         return next;
       });
@@ -245,6 +294,7 @@ export function KitVariacoesManager({
       }
     } catch (err: unknown) {
       if (err instanceof FirebaseError) {
+        if (resetRevisionRef.current !== requestRevision) return;
         notifications.show({
           color: 'red',
           message: `Falha ao gerar as variações: ${err.message}`,
@@ -253,31 +303,65 @@ export function KitVariacoesManager({
       }
       throw err;
     } finally {
-      setGerando(false);
+      if (resetRevisionRef.current === requestRevision) setGerando(false);
     }
   };
 
-  // Hidden until the produto is a kit with variations to generate for.
-  if (!ehKit || visibleRows.length === 0) return null;
+  if (!ehKit) return null;
+  const busy = disabled || saving || gerando || !recipesReady;
 
   return (
     <Stack gap="sm">
-      <Divider label="Componentes por variação" labelPosition="left" />
-      <Group justify="space-between" align="center">
-        <Text size="sm" c="dimmed">
-          Gere os componentes de cada variação do kit a partir dos componentes acima — cada variação
-          recebe a variação correspondente de cada componente.
-        </Text>
-        <Button onClick={gerar} loading={gerando} disabled={disabled} variant="light">
-          Gerar Variações
-        </Button>
-      </Group>
+      {!disabled && (
+        <Group justify="flex-end">
+          <Button
+            type="button"
+            variant="default"
+            disabled={busy}
+            onClick={() => setConfirmReset(true)}
+          >
+            Recomeçar cadastro do kit
+          </Button>
+          {visibleRows.length > 0 && (
+            <Button type="button" onClick={gerar} loading={gerando} disabled={busy} variant="light">
+              Gerar Variações
+            </Button>
+          )}
+        </Group>
+      )}
+      <Modal
+        opened={confirmReset}
+        onClose={() => setConfirmReset(false)}
+        title="Recomeçar cadastro do kit"
+      >
+        <Stack>
+          <Text size="sm">
+            Isso limpa os componentes deste produto e de todas as suas variações no formulário. As
+            alterações serão aplicadas ao salvar.
+          </Text>
+          <Group justify="flex-end">
+            <Button type="button" variant="default" onClick={() => setConfirmReset(false)}>
+              Cancelar
+            </Button>
+            <Button type="button" color="red" disabled={busy} onClick={recomecar}>
+              Limpar componentes
+            </Button>
+          </Group>
+        </Stack>
+      </Modal>
+      {visibleRows.length > 0 && <Divider label="Componentes por variação" labelPosition="left" />}
 
-      {visibleRows.map((row) => {
-        const value =
-          row.key in staged ? staged[row.key]! : row.id ? (savedKitById[row.id] ?? null) : null;
+      {visibleRows.map((row, index) => {
+        const draft = staged[row.key];
+        const saved = row.id && resetBaseline === null ? savedKitById[row.id] : null;
         return (
-          <Paper key={row.key} withBorder p="sm" radius="sm">
+          <Paper
+            key={row.key}
+            withBorder
+            p="sm"
+            radius="sm"
+            bg={index % 2 === 1 ? 'var(--mantine-color-default-hover)' : undefined}
+          >
             <Text fw={500} size="sm" mb="xs">
               {(row.sku || 'Sem SKU') + ' - ' + (row.nome || 'Sem nome')}
             </Text>
@@ -288,9 +372,18 @@ export function KitVariacoesManager({
               syncCustoToForm={false}
               syncPesoToForm={false}
               excludeIds={familyExcludeIds}
-              value={value}
-              onChange={(next) => setStaged((s) => ({ ...s, [row.key]: next }))}
-              disabled={disabled}
+              value={draft ? draft.value : (saved ?? null)}
+              onChange={(value) =>
+                setStaged((previous) => ({
+                  ...previous,
+                  [row.key]: {
+                    value,
+                    baseline: previous[row.key]?.baseline ?? resetBaseline ?? savedKitById,
+                  },
+                }))
+              }
+              disabled={busy}
+              resetRevisionRef={resetRevisionRef}
             />
           </Paper>
         );

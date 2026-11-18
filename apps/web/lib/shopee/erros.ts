@@ -18,6 +18,7 @@
  * that tripped the limit.
  */
 import {
+  CODIGO_CRIACAO_KIT_SHOPEE,
   CODIGO_RASCUNHO_SHOPEE,
   motivoRascunhoInvalidoShopeeSchema,
   type MotivoRascunhoInvalidoShopee,
@@ -123,15 +124,30 @@ export const CODIGO_FALHA_SHOPEE = {
   /**
    * 409 — the named link is not an editable PUBLISHED listing (a draft, a
    * native kit, a removed or superseded link): the per-listing «Descartar
-   * alterações não enviadas» refuses it.
+   * alterações não enviadas» refuses it, and so does the draft edit route when
+   * it is called with `alvo: 'anuncio'` (the published listing's save).
    */
   anuncioNaoEditavel: CODIGO_RASCUNHO_SHOPEE.anuncioNaoEditavel,
   /**
-   * 422 — an edit a PUBLISHED listing cannot take (a null brand, an empty
-   * attribute list over a stored one, «Automática» logistics): nothing was
-   * written.
+   * 422 — an edit a PUBLISHED listing cannot take; FIVE causes: a null brand,
+   * «Automática» logistics (`logistic_info: null`), a logistics edit over a
+   * list the ERP never stamped, an attribute list emptied over a stored one,
+   * and a category change over a stored list with no attributes sent.
+   * Nothing was written (every message ends «Nada foi gravado.»).
    */
   anuncioEdicaoInvalida: CODIGO_RASCUNHO_SHOPEE.anuncioEdicaoInvalida,
+  // ---- #1912: the native-kit create LEASE (every code: this request sent nothing). ----
+  /**
+   * 409 — another run (tab, operator, the CLI) is creating this kit on this
+   * conta, or an uncertain create's hold is still running. `detalhes.aguardarMs`.
+   */
+  kitCriacaoEmAndamento: CODIGO_CRIACAO_KIT_SHOPEE.emAndamento,
+  /** 409 — the scan or the send gate ran out of time, or the lease was taken over. */
+  kitCriacaoExpirada: CODIGO_CRIACAO_KIT_SHOPEE.expirada,
+  /** 409 — the lease was lost to concurrent writes on every attempt. */
+  kitCriacaoContencao: CODIGO_CRIACAO_KIT_SHOPEE.contencao,
+  /** 409 — a listing appeared: this is no longer a native kit's first create. */
+  kitCriacaoVinculosMudaram: CODIGO_CRIACAO_KIT_SHOPEE.vinculosMudaram,
 } as const satisfies Record<string, string>;
 
 /** Shopee's two rate-limit classes, as the backend's 502 body names them in `kind`. */

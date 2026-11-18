@@ -19,21 +19,29 @@ import { PERM } from '@delfrance/auth';
 import { parseIsoToMillis } from '@delfrance/core/datetime';
 import {
   ACAO_STATUS_ANUNCIO,
+  ALVO_EDICAO_SHOPEE,
   CAMPO_RASCUNHO_SHOPEE,
+  ESPERA_MAXIMA_CRIACAO_KIT_SHOPEE_MS,
   INTEGRACAO_TIPO,
   PRODUTO_EXTRA_DATA_DOC_ID,
+  anuncioShopeeEditavel,
+  edicaoErpPendenteShopee,
   ehKitVirtualEfetivo,
   ehRascunhoShopee,
   idDoRef,
   janelaDaCriacaoIncertaShopee,
   lerRefTabelaDeMedidas,
   naoDocId,
+  primeiraPublicacaoEhKitNativoShopee,
+  revisaoDeEdicaoErpShopee,
   vinculoShopeeEhDaConta,
   type AcaoStatusAnuncio,
+  type AlvoEdicaoShopee,
   type ArvoreAtributosShopee,
   type CamposRascunhoShopee,
   type EstadoPublicacaoRascunhoShopee,
   type Integracao,
+  type ProdutoShopeeLink,
 } from '@delfrance/schemas';
 import { buildQuery, limit, whereEqual } from '@delfrance/data';
 import { useDocSnapshot, useSnapshot } from '@delfrance/data/hooks';
@@ -47,15 +55,23 @@ import { produtoShopeeLinkCollection } from '@/lib/data/produtoShopeeLinkCollect
 import { tabelaDeMedidasCollection } from '@/lib/data/tabelaDeMedidasCollection';
 import {
   DIALOGO_DESCARTE_CRIACAO_INCERTA_SHOPEE,
+  FRASE_ANUNCIO_EDICAO_SALVA_SHOPEE,
+  FRASE_FORMULARIO_SUJO_BLOQUEIA_ACOES_SHOPEE,
+  FRASE_ANUNCIO_EDICAO_SEM_MUDANCA_SHOPEE,
+  FRASE_CONFIRMAR_DESCARTE_EDICOES_SHOPEE,
   FRASE_CONFIRMAR_DESCARTE_LOCAL_SHOPEE,
   FRASE_CONFIRMAR_DESCARTE_SHOPEE,
+  FRASE_EDICOES_DESCARTADAS_SHOPEE,
   FRASE_LIMITE_NA_CRIACAO_DE_KIT,
+  FRASE_NADA_A_DESCARTAR_SHOPEE,
   FRASE_RASCUNHO_CRIADO_SHOPEE,
   FRASE_RASCUNHO_DESCARTADO_INCERTO_SHOPEE,
   FRASE_RASCUNHO_DESCARTADO_SHOPEE,
   FRASE_RASCUNHO_SALVO_SHOPEE,
   FRASE_RASCUNHO_SEM_MUDANCA_SHOPEE,
+  ROTULO_CONFIRMAR_DESCARTE_EDICOES_SHOPEE,
   ROTULO_CONFIRMAR_SEGUNDO_ANUNCIO_SHOPEE,
+  TITULO_DESCARTAR_EDICOES_SHOPEE,
   TITULO_SEGUNDO_ANUNCIO_SHOPEE,
   criacaoDeKitIncerta,
   ehFraseDeTerminal,
@@ -103,6 +119,7 @@ import {
   estadoDoBlocoRascunhoShopee,
   existentesDosVinculosShopee,
   falhaDaPublicacaoDoRascunhoShopee,
+  falhaDoDescarteDasEdicoesShopee,
   falhaDoRascunhoShopee,
   fraseDoRascunhoJaPublicadoNaPublicacaoShopee,
   idDeCategoriaShopeeValido,
@@ -119,6 +136,7 @@ import {
   type DescarteDoRascunhoShopee,
   type EdicaoRascunhoShopee,
   type ExistentesNaContaShopee,
+  type FormularioDoAnuncioShopee,
   type FormularioRascunhoShopee,
   type PublicacaoDoRascunhoShopee,
   type SaidaDoProblemaShopee,
@@ -126,11 +144,13 @@ import {
 import { useReceitaKitShopee } from '@/lib/shopee/useReceitaKitShopee';
 import type { RespostaAtributosShopee } from '@/lib/shopee/wire';
 import { ContaTabs, type ContaTabItem } from '../marketplace/ContaTabs';
-import type {
-  AcaoDoAnuncioShopee,
-  AcoesShopee,
-  ArmaKitShopee,
-  IncertoKitNaTela,
+import {
+  chaveDaContaShopee,
+  type AcaoDoAnuncioShopee,
+  type AcoesShopee,
+  type ArmaKitShopee,
+  type EdicaoDoAnuncioNaTela,
+  type IncertoKitNaTela,
 } from './AcoesAnuncioShopee';
 import {
   TIPO_LEITURA_ATRIBUTOS_RASCUNHO_SHOPEE,
@@ -162,6 +182,8 @@ import type {
   AtributosDoRascunhoShopee,
   ConfirmacaoDePublicacaoShopee,
   FalhaDaLeituraDoRascunhoShopee,
+  PropsDoAnuncioShopee,
+  PropsDoFormularioShopee,
   RascunhoShopeeProps,
   ResultadoDoRascunhoShopee,
   TextosDoProdutoRascunhoShopee,
@@ -174,7 +196,9 @@ import type {
  * entry the produto's tabela de medidas holds for it (never what a publish
  * sent — residual 7), the storefront link, the native kit (its badge, the ERP
  * recipe and its warnings), on demand its models, and the actions on it: pause
- * / reactivate, re-verify, republish, recriar / converter em kit nativo — and
+ * / reactivate, re-verify, republish, recriar / converter em kit nativo, and a
+ * virtual kit's FIRST publish as a native kit («Publicar como kit nativo», a
+ * conta-level button offered by the dispatcher's own rule, #1912) — and
  * (#1911 P10) the listing DRAFTS of a first publish, authored here.
  *
  * NO CLIENT WRITE. Every listing document is written by apps/shopee — publish,
@@ -270,15 +294,35 @@ import type {
  *    `ShopeeTab`) and marks the conta's tab; the page blocks its own save's
  *    navigation on it (`exigirRascunhosShopeeSalvos`).
  *
+ * ## A PUBLISHED listing's content, edited here (PR3, save-only)
+ *
+ * A live link apps/shopee lets the ERP edit (`anuncioShopeeEditavel`) gets the
+ * SAME form in its `'anuncio'` mode — Título, Descrição, Categoria, Marca,
+ * Atributos and, over an ERP-stamped channel list, Logística — through the
+ * SAME machinery as a draft: one entry per link (its `alvo` fixed for life),
+ * the draft route's edit (`alvo: 'anuncio'` in the body, never on a draft's),
+ * the SAME conflict modal and lock. «Salvar» writes only the ERP-side copy:
+ * nothing reaches Shopee until the action row's «Republicar», which waits
+ * while this link's form is dirty. Such a block exists only while the operator
+ * may author it on a found conta — or while an entry for it is still held, so
+ * unsaved work is never invisible. It has no «Publicar», no «Descartar» and no
+ * pendências: `decisoesDePublicar` skips it, and the publish handlers then
+ * refuse it. «Descartar alterações não enviadas» (the action row, the
+ * listing's `edicaoErpPendenteEm`) sends the revision the operator SAW when
+ * the confirmation opened — a revision that moved meanwhile sends nothing.
+ *
  * ## One write at a time, and a kit create that may have happened
  *
  * Every write runs through `executar`, which holds a `useRef` lock set
  * SYNCHRONOUSLY before its first `await` and released in `finally` — two clicks
  * landing before a re-render (a double click on a confirm) send ONE request —
  * and every write button is disabled while it is held. That matters most for
- * the two kit CREATE arms: `add_kit_item` is not idempotent.
+ * the three kit CREATE arms: `add_kit_item` is not idempotent. The lock covers
+ * ONE browser tab; across tabs, operators and the CLI the server's create lease
+ * answers 409 `SHOPEE_KIT_CRIACAO_EM_ANDAMENTO` (#1912), which the tab waits
+ * out exactly like an uncertain create (the lease's own `aguardarMs`).
  *
- * A recriar / converter that ends without a definite answer — the 202, a
+ * A kit create (first create, recriar or converter) that ends without a definite answer — the 202, a
  * network error, a 2xx it cannot read, a 5xx other than a rate-limited 502
  * (`criacaoDeKitIncerta`) — may still have created the kit. It is UNCERTAIN,
  * never "falhou": the conta's kit buttons wait out `aguardarMs` (or the schemas'
@@ -493,13 +537,41 @@ interface DescarteAberto {
   readonly atestado: { readonly aviso: string | null } | null;
 }
 
+/**
+ * A published listing's «Descartar alterações não enviadas» confirmation while
+ * it is open — at most one (R2).
+ */
+interface DescarteDasEdicoesAberto {
+  readonly contaId: string;
+  readonly linkDocId: string;
+  /**
+   * The listing's `edicaoErpRevisao` when the confirmation OPENED — what the
+   * operator SAW, and what the route compares (critique #6). Never re-read at
+   * confirm: a newer edit saved meanwhile (another tab) would be discarded
+   * unseen. A live revision that differs at confirm sends nothing.
+   */
+  readonly revisao: number;
+}
+
+/**
+ * The confirmation closed with nothing sent: the listing changed while it was
+ * open (another save moved its revision, a «Republicar» left nothing pending,
+ * or it stopped being editable).
+ */
+export const FRASE_DESCARTE_EDICOES_ANUNCIO_MUDOU_SHOPEE =
+  'O anúncio mudou enquanto a confirmação estava aberta: nada foi descartado. Confira as ' +
+  'alterações e tente de novo.';
+
 /** A draft's «Publicar» confirmation while it is open — at most one (R2). */
 interface PublicacaoAberta {
   readonly linkDocId: string;
   readonly confirmacao: ConfirmacaoDePublicacaoShopee;
 }
 
-/** One draft block as this render decides it. */
+/**
+ * One draft block — or (PR3) one PUBLISHED listing's edit block, its
+ * `bloco.alvo` saying which — as this render decides it.
+ */
 interface BlocoDoEditor {
   readonly contaId: string;
   /** The stored document, or `null` for a local draft. */
@@ -662,16 +734,39 @@ export const FRASE_CONFIRMAR_DESCARTE_ATESTADO_SHOPEE =
   'O rascunho será excluído. O anúncio da tentativa continua na Shopee, vinculado no ERP — o ' +
   'descarte não o altera.';
 
+/**
+ * Why a VIRTUAL kit's conta shows no «Novo anúncio» (#2168), when the conta
+ * offers the native kit's first create (#1912): the button beside it.
+ */
+export const MOTIVO_KIT_VIRTUAL_COM_PRIMEIRO_KIT_SHOPEE =
+  'Este produto é um kit virtual: na Shopee ele é publicado como kit nativo — use «Publicar ' +
+  'como kit nativo».';
+
+/** The same, when the conta already holds a listing of it (no first create to offer). */
+export const MOTIVO_KIT_VIRTUAL_SHOPEE =
+  'Este produto é um kit virtual: na Shopee ele é publicado como kit nativo, não como um ' +
+  'anúncio comum.';
+
 /** A link that is not (or no longer) this conta's — the 404s of publish and re-verify. */
 const MENSAGEM_VINCULO_FORA_DA_CONTA =
   'Este vínculo não pertence mais a esta conta — a lista foi atualizada.';
 
 /** Which kit create arm a publish input is, or `null` for any other publish. */
 function armaDoPedido(pedido: PublicarShopeeInput | undefined): ArmaKitShopee | null {
+  if (pedido?.criarKitNativo === true) return 'criar';
   if (pedido?.recriar === true) return 'recriar';
   if (pedido?.converterEmKit === true) return 'converter';
   return null;
 }
+
+/**
+ * #1912: a first native-kit create refused because the conta now holds a live
+ * listing — often the very kit an earlier, uncertain attempt created and
+ * linked. Nothing was sent.
+ */
+export const FRASE_KIT_VINCULOS_MUDARAM_SHOPEE =
+  'Este produto já tem um anúncio ativo nesta conta — pode ser o kit criado pela tentativa ' +
+  'anterior. Nada foi enviado: confira o bloco do anúncio nesta aba.';
 
 /**
  * A failed action, worded for the operator. The publish 422s keep their rows
@@ -700,11 +795,13 @@ function desfechoDaFalha(
         etapa: detalhes.etapa,
         problemas: detalhes.problemas ?? [],
         mensagem: err.message,
-        pedidoKit:
-          arma === null || pedido?.linkDocId === undefined
-            ? null
-            : { arma, linkDocId: pedido.linkDocId },
+        // A first create (#1912) names no link: its `informar-principal` row
+        // re-opens the conta's confirmation.
+        pedidoKit: arma === null ? null : { arma, linkDocId: pedido?.linkDocId ?? null },
       };
+    }
+    if (code === CODIGO_FALHA_SHOPEE.kitCriacaoVinculosMudaram) {
+      return { tipo: 'falha', mensagem: FRASE_KIT_VINCULOS_MUDARAM_SHOPEE };
     }
     if (
       code === CODIGO_FALHA_SHOPEE.anuncioNaoEncontrado ||
@@ -1033,8 +1130,21 @@ function EditorShopee({
    * Republish an EXISTING link, named — with no kit option, ever: a plain
    * republish never reaches a create arm, so the uncertain-create rules do not
    * apply to it.
+   *
+   * Re-checked at the click (PR3): a published listing whose form holds
+   * UNSAVED changes is not republished — the republish sends the STORED copy,
+   * so the typed text would silently not go (the button is disabled too; a
+   * handler re-checks its gate, as every other one here does). Saved and
+   * awaiting its echo is fine: the server already holds the edit.
    */
   function republicar(contaId: string, linkDocId: string) {
+    const edicao = efetivas.get(linkDocId);
+    if (edicao !== undefined && edicaoRascunhoShopeeSuja(edicao)) {
+      // A step button of a refusal row can reach this while the form is
+      // dirty; it is never a silent no-op.
+      notifications.show({ color: 'orange', message: FRASE_FORMULARIO_SUJO_BLOQUEIA_ACOES_SHOPEE });
+      return;
+    }
     void executar(linkDocId, 'publicar', async (c) => {
       const resposta = await c.publicar({ integracaoId: contaId, produtoId, linkDocId });
       invalidarModelos();
@@ -1056,7 +1166,10 @@ function EditorShopee({
     });
   }, []);
   const [alvoDoKit, setAlvoDoKit] = useState<AlvoDoKitShopee | null>(null);
+  // Keyed by the link — or, for a first create (#1912), by the conta's key.
   const [principais, setPrincipais] = useState<ReadonlyMap<string, string | null>>(() => new Map());
+  /** «Criar pausado» of the first-create confirmation (#1912) — reset on every opening. */
+  const [kitPausado, setKitPausado] = useState(false);
   // The recipe the confirmation previews — read only while it is open.
   const receitaDoKit = useReceitaKitShopee({ db, produtoId, enabled: alvoDoKit !== null });
 
@@ -1129,7 +1242,10 @@ function EditorShopee({
    */
   function enviarKit(contaId: string, corpo: PublicarShopeeInput) {
     const arma = armaDoPedido(corpo);
-    const linkDocId = corpo.linkDocId;
+    // A first create (#1912) names no link: its outcome and spinner live under
+    // the conta's key. recriar / converter always name theirs.
+    const linkDocId =
+      corpo.linkDocId ?? (arma === 'criar' ? chaveDaContaShopee(contaId) : undefined);
     if (arma === null || linkDocId === undefined) return;
     // What the conta reads NOW — what a send that never left restores.
     const anterior = incertoGuardado(contaId);
@@ -1152,6 +1268,25 @@ function EditorShopee({
         try {
           resposta = await c.publicar(corpo);
         } catch (err) {
+          // #1912: another run (a second tab, another operator, the CLI) holds
+          // this kit's create lease — or an earlier uncertain create's hold is
+          // still running. NOTHING was sent, but a kit may be on its way: the
+          // conta waits the lease's own `aguardarMs`, and "Repetir" is offered
+          // after it, exactly like an uncertain create.
+          if (
+            err instanceof ShopeeClientHttpError &&
+            err.code === CODIGO_FALHA_SHOPEE.kitCriacaoEmAndamento
+          ) {
+            marcarIncerto(
+              contaId,
+              {
+                ate: Date.now() + (err.detalhes.aguardarMs ?? ESPERA_MAXIMA_CRIACAO_KIT_SHOPEE_MS),
+                corpo,
+              },
+              null,
+            );
+            return null;
+          }
           if (err instanceof ShopeeClientHttpError || err instanceof ShopeeClientNetworkError) {
             if (criacaoDeKitIncerta(err)) {
               marcarIncerto(
@@ -1192,20 +1327,61 @@ function EditorShopee({
     );
   }
 
-  /** The confirmation's send: the arm's flag, the link, and the principal only when one was picked. */
+  /**
+   * The confirmation's send: the arm's flag, the link (none for a first
+   * create), the principal only when one was picked, and — a first create only
+   * — `status: 'UNLIST'` when «Criar pausado» is ticked.
+   */
   function confirmarKit() {
     if (alvoDoKit === null) return;
     const { contaId, linkDocId, arma } = alvoDoKit;
-    const principal = principais.get(linkDocId) ?? null;
+    const principal = principais.get(linkDocId ?? chaveDaContaShopee(contaId)) ?? null;
+    const comPrincipal = principal === null ? {} : { principal };
     setAlvoDoKit(null);
+    if (arma === 'criar') {
+      enviarKit(contaId, {
+        integracaoId: contaId,
+        produtoId,
+        // #1912: never a link — the route refuses one beside this flag (400).
+        criarKitNativo: true,
+        ...(kitPausado ? { status: 'UNLIST' as const } : {}),
+        ...comPrincipal,
+      });
+      return;
+    }
+    if (linkDocId === null) return;
     enviarKit(contaId, {
       integracaoId: contaId,
       produtoId,
       linkDocId,
-      // Exactly ONE arm flag: the route refuses both together (400).
+      // Exactly ONE arm flag: the route refuses two together (400).
       ...(arma === 'recriar' ? { recriar: true as const } : { converterEmKit: true as const }),
-      ...(principal === null ? {} : { principal }),
+      ...comPrincipal,
     });
+  }
+
+  /**
+   * Whether the conta offers a native kit's FIRST create (#1912): the server
+   * dispatcher's own rule over the conta's links (`@delfrance/schemas`), on the
+   * STORED produto — never the form's unsaved flags.
+   */
+  function ofereceKitNativo(contaId: string, vinculos: readonly ProdutoShopeeLink[]): boolean {
+    void contaId;
+    if (produto == null) return false;
+    return primeiraPublicacaoEhKitNativoShopee({
+      produto: { paiId: produto.paiId, ehKit: produto.ehKit, ehKitVirtual: produto.ehKitVirtual },
+      vinculosDaConta: vinculos.map((v): Record<string, unknown> => ({ ...v })),
+    });
+  }
+
+  /** The same question asked of the LIVE snapshot — the open confirmation's gate. */
+  function ofereceKitNativoAgora(contaId: string): boolean {
+    return ofereceKitNativo(
+      contaId,
+      (linksSnap.data ?? [])
+        .filter((l) => vinculoShopeeEhDaConta(l.data, contaId))
+        .map((l) => l.data),
+    );
   }
 
   /** The conta's uncertain create as the buttons read it: still waiting while `relogio` is before `ate`. */
@@ -1254,12 +1430,16 @@ function EditorShopee({
       definirStatus(contaId, linkDocId, ACAO_STATUS_ANUNCIO.reativar),
     reverificar,
     republicar,
-    abrirKit: (contaId, linkDocId, arma, focarPrincipal = false) =>
-      setAlvoDoKit({ contaId, linkDocId, arma, focarPrincipal }),
+    abrirKit: (contaId, linkDocId, arma, focarPrincipal = false) => {
+      setKitPausado(false);
+      setAlvoDoKit({ contaId, linkDocId, arma, focarPrincipal });
+    },
+    ofereceKitNativo,
     incertoDe: incertoNaTela,
     repetirKit,
     kitAberto: (linkDocId) => kitAbertos.has(linkDocId),
     alternarKit,
+    pedirDescarteDasEdicoes,
   };
   /** A tab built from a link's conta ref alone names no conta the operator can act on. */
   const semAcoes: AcoesShopee = { ...acoes, permitidas: false };
@@ -1400,6 +1580,10 @@ function EditorShopee({
   );
   /** The «Publicar» confirmation being shown (#1911 P11) — at most one at a time. */
   const [publicacaoAberta, setPublicacaoAberta] = useState<PublicacaoAberta | null>(null);
+  /** A published listing's «Descartar alterações não enviadas» confirmation (PR3) — at most one. */
+  const [descarteDasEdicoes, setDescarteDasEdicoes] = useState<DescarteDasEdicoesAberto | null>(
+    null,
+  );
   // The clock the drafts' publish reading is taken against — re-read by the
   // timer below at the instant a reading changes (see the docblock).
   const [relogioRascunho, setRelogioRascunho] = useState(() => Date.now());
@@ -1458,6 +1642,7 @@ function EditorShopee({
     linkDocId: string,
     contaId: string,
     link: Record<string, unknown> | null,
+    alvo: AlvoEdicaoShopee,
   ): BlocoDoEditor => {
     // A tab built from a link's conta ref alone names no conta to write to.
     const conta = contaPorId.get(contaId);
@@ -1473,7 +1658,10 @@ function EditorShopee({
       !conta.carregando &&
       contaId !== CHAVE_SEM_CONTA &&
       idDeDocumentoLegivel(contaId);
-    const permiteDescarte = podeEditarRascunhos && (podeEditar || contaApagada);
+    // A published listing has no discard of its own (its unsent edits are
+    // dropped from the action row, `pedirDescarteDasEdicoes`).
+    const permiteDescarte =
+      alvo === ALVO_EDICAO_SHOPEE.rascunho && podeEditarRascunhos && (podeEditar || contaApagada);
     return {
       contaId,
       link,
@@ -1488,19 +1676,45 @@ function EditorShopee({
         podeEditar,
         permiteDescarte,
         ocupado,
+        alvo,
       }),
     };
   };
   for (const { conta, vinculos } of abas) {
     for (const v of vinculos) {
-      if (ehRascunhoShopee(v.data)) blocos.set(v.id, decidirBloco(v.id, conta.id, v.data));
+      if (ehRascunhoShopee(v.data)) {
+        blocos.set(v.id, decidirBloco(v.id, conta.id, v.data, ALVO_EDICAO_SHOPEE.rascunho));
+      } else if (
+        // A PUBLISHED listing apps/shopee lets the ERP edit (L1): only while
+        // the operator may author it on a found conta — or while an entry is
+        // still held for it, so unsaved work is never left invisible. Never
+        // while a dropped entry's notice is held for the link (a draft that
+        // got published mid-edit): a keystroke in the new form would replace
+        // that entry and erase the notice unseen — it opens once dismissed.
+        anuncioShopeeEditavel(v.data) &&
+        !avisosSobreBloco.has(v.id) &&
+        ((podeEditarRascunhos && conta.encontrada) || efetivas.has(v.id))
+      ) {
+        blocos.set(v.id, decidirBloco(v.id, conta.id, v.data, ALVO_EDICAO_SHOPEE.anuncio));
+      }
     }
   }
   for (const [linkDocId, edicao] of efetivas) {
     // A local draft just CREATED (saved, not `novo`) keeps its block — showing
-    // what was saved — until the snapshot brings the stored draft in.
-    if (vinculoPorId.has(linkDocId) || (!edicao.novo && edicao.salvo === null)) continue;
-    blocos.set(linkDocId, decidirBloco(linkDocId, edicao.contaId, null));
+    // what was saved — until the snapshot brings the stored draft in. A
+    // published listing's entry is never a local draft: with no document in
+    // the snapshot it has no block (its reconcile drops it on server truth).
+    if (
+      edicao.alvo === ALVO_EDICAO_SHOPEE.anuncio ||
+      vinculoPorId.has(linkDocId) ||
+      (!edicao.novo && edicao.salvo === null)
+    ) {
+      continue;
+    }
+    blocos.set(
+      linkDocId,
+      decidirBloco(linkDocId, edicao.contaId, null, ALVO_EDICAO_SHOPEE.rascunho),
+    );
     locais.set(edicao.contaId, [...(locais.get(edicao.contaId) ?? []), linkDocId]);
   }
 
@@ -1682,9 +1896,12 @@ function EditorShopee({
   // THE «Publicar» decision of every draft block, this render — the form's
   // button, the refusal rows' attestation exits and every handler below read
   // this one value (the handlers re-read it at click time: a reading can move
-  // while a confirmation is open).
+  // while a confirmation is open). A PUBLISHED listing's block gets none: it
+  // has no «Publicar» (its republish is the action row's), so every publish
+  // handler below — which asks `podePublicarAgora` — refuses it.
   const decisoesDePublicar = new Map<string, PublicacaoDoRascunhoShopee>();
   for (const [linkDocId, entrada] of blocos) {
+    if (entrada.bloco.alvo === ALVO_EDICAO_SHOPEE.anuncio) continue;
     decisoesDePublicar.set(
       linkDocId,
       publicacaoDoRascunhoShopee({
@@ -1767,15 +1984,18 @@ function EditorShopee({
    * no longer one (its entry dropped — the outcome lands on whatever block the
    * link still has, and a toast covers one that is gone), or the block's
    * sentence. Returns the link's outcome, for `executar` to record.
+   * `alvoDaEdicao` — the ENTRY's (a published listing's edit reads its own
+   * refusals: not editable any more, gone, the server's 422 sentence).
    */
   function aplicarFalhaDoRascunho(
     err: ShopeeClientHttpError | ShopeeClientNetworkError,
     operacao: OperacaoRascunhoShopee,
     alvo: { readonly contaId: string; readonly linkDocId: string },
     projecao: CamposRascunhoShopee | null,
+    alvoDaEdicao: AlvoEdicaoShopee,
   ): DesfechoAcaoShopee | null {
     const { contaId, linkDocId } = alvo;
-    const falha = falhaDoRascunhoShopee(err, operacao);
+    const falha = falhaDoRascunhoShopee(err, operacao, alvoDaEdicao);
     if (falha.tipo !== 'conflito') fecharConflito(linkDocId);
     switch (falha.tipo) {
       case 'conflito':
@@ -1853,7 +2073,13 @@ function EditorShopee({
           return null;
         } catch (err) {
           if (err instanceof ShopeeClientHttpError || err instanceof ShopeeClientNetworkError) {
-            return aplicarFalhaDoRascunho(err, 'criar', { contaId, linkDocId }, null);
+            return aplicarFalhaDoRascunho(
+              err,
+              'criar',
+              { contaId, linkDocId },
+              null,
+              ALVO_EDICAO_SHOPEE.rascunho,
+            );
           }
           if (err instanceof FirebaseError) return falhaDeSessao(linkDocId, err);
           throw err;
@@ -1864,24 +2090,41 @@ function EditorShopee({
 
     const corpo = corpoAtualizarRascunhoShopee(edicao, estado, { produtoId });
     if (corpo === null) return false;
+    // A PUBLISHED listing's save writes only the ERP-side copy: its toasts say
+    // so (nothing reached Shopee until «Republicar»).
+    const doAnuncio = edicao.alvo === ALVO_EDICAO_SHOPEE.anuncio;
     void executar(linkDocId, 'salvar-rascunho', async (c) => {
       definirResultado(linkDocId, null);
       try {
         const resposta = await c.atualizarRascunho(corpo);
         fecharConflito(linkDocId);
-        // `gravados: []`: the stored draft already held every value — nothing
-        // was written, so no echo will come.
+        // `gravados: []`: the stored document already held every value —
+        // nothing was written, so no echo will come.
         if (resposta.gravados.length === 0) {
           largarEdicao(linkDocId);
-          notifications.show({ color: 'blue', message: FRASE_RASCUNHO_SEM_MUDANCA_SHOPEE });
+          notifications.show({
+            color: 'blue',
+            message: doAnuncio
+              ? FRASE_ANUNCIO_EDICAO_SEM_MUDANCA_SHOPEE
+              : FRASE_RASCUNHO_SEM_MUDANCA_SHOPEE,
+          });
         } else {
           marcarSalvo(linkDocId, enviadoContra);
-          notifications.show({ color: 'green', message: FRASE_RASCUNHO_SALVO_SHOPEE });
+          notifications.show({
+            color: 'green',
+            message: doAnuncio ? FRASE_ANUNCIO_EDICAO_SALVA_SHOPEE : FRASE_RASCUNHO_SALVO_SHOPEE,
+          });
         }
         return null;
       } catch (err) {
         if (err instanceof ShopeeClientHttpError || err instanceof ShopeeClientNetworkError) {
-          return aplicarFalhaDoRascunho(err, 'atualizar', { contaId, linkDocId }, null);
+          return aplicarFalhaDoRascunho(
+            err,
+            'atualizar',
+            { contaId, linkDocId },
+            null,
+            edicao.alvo,
+          );
         }
         if (err instanceof FirebaseError) return falhaDeSessao(linkDocId, err);
         throw err;
@@ -1953,7 +2196,17 @@ function EditorShopee({
       return;
     }
     if (campo === CAMPO_RASCUNHO_SHOPEE.logisticInfo && !entrada.bloco.logisticaEditavel) return;
+    // «Automática» exists only on a draft: a published listing's channels are
+    // always a chosen list (the route refuses `logistic_info: null` there).
+    if (
+      campo === CAMPO_RASCUNHO_SHOPEE.logisticInfo &&
+      valor === null &&
+      entrada.bloco.alvo === ALVO_EDICAO_SHOPEE.anuncio
+    ) {
+      return;
+    }
     const { contaId, link } = entrada;
+    const { alvo } = entrada.bloco;
     const naRender = edicoes.get(linkDocId);
     const efetiva = efetivas.get(linkDocId) ?? null;
     setEdicoes((prev) => {
@@ -1963,7 +2216,9 @@ function EditorShopee({
         anterior !== undefined && anterior !== naRender
           ? anterior
           : (efetiva ??
-            (link === null ? null : edicaoDoRascunhoGuardadoShopee({ linkDocId, contaId, link })));
+            (link === null
+              ? null
+              : edicaoDoRascunhoGuardadoShopee({ linkDocId, contaId, link, alvo })));
       if (edicao === null) return prev;
       return new Map(prev).set(linkDocId, comCampoRascunhoShopee(edicao, campo, valor));
     });
@@ -1990,6 +2245,7 @@ function EditorShopee({
     if (arvore === null) return;
     const categoryId = entrada.bloco.valores.category_id;
     const { contaId, link } = entrada;
+    const { alvo } = entrada.bloco;
     const naRender = edicoes.get(linkDocId);
     const efetiva = efetivas.get(linkDocId) ?? null;
     setEdicoes((prev) => {
@@ -1999,7 +2255,9 @@ function EditorShopee({
         anterior !== undefined && anterior !== naRender
           ? anterior
           : (efetiva ??
-            (link === null ? null : edicaoDoRascunhoGuardadoShopee({ linkDocId, contaId, link })));
+            (link === null
+              ? null
+              : edicaoDoRascunhoGuardadoShopee({ linkDocId, contaId, link, alvo })));
       if (edicao === null) return prev;
       // A category picked since this render: the tree above is another category's.
       if (edicao.atual.category_id !== categoryId) return prev;
@@ -2135,7 +2393,15 @@ function EditorShopee({
   function descarteAindaOferecido(alvo: DescarteAberto | null): DescarteAberto | null {
     if (alvo === null) return null;
     const entrada = blocos.get(alvo.linkDocId);
-    if (entrada === undefined || entrada.bloco.publicacao.tipo === 'em-andamento') return null;
+    // A draft published meanwhile keeps a block now — a PUBLISHED listing's
+    // form — but its discard is no longer offered: the dialog closes.
+    if (
+      entrada === undefined ||
+      entrada.bloco.alvo !== ALVO_EDICAO_SHOPEE.rascunho ||
+      entrada.bloco.publicacao.tipo === 'em-andamento'
+    ) {
+      return null;
+    }
     if (alvo.tipo === 'local') return entrada.bloco.descarte === 'local' ? alvo : null;
     if (entrada.bloco.descarte === 'local') return null;
     if (alvo.tipo === 'confirmar' && entrada.bloco.descarte === 'atestar') {
@@ -2177,7 +2443,13 @@ function EditorShopee({
         return null;
       } catch (err) {
         if (err instanceof ShopeeClientHttpError || err instanceof ShopeeClientNetworkError) {
-          return aplicarFalhaDoRascunho(err, 'descartar', { contaId, linkDocId }, projecao);
+          return aplicarFalhaDoRascunho(
+            err,
+            'descartar',
+            { contaId, linkDocId },
+            projecao,
+            ALVO_EDICAO_SHOPEE.rascunho,
+          );
         }
         if (err instanceof FirebaseError) return falhaDeSessao(linkDocId, err);
         throw err;
@@ -2203,10 +2475,14 @@ function EditorShopee({
       };
     }
     if (kitVirtual) {
+      // #1912: a virtual kit is published as a NATIVE kit — from this tab when
+      // the conta offers its first create (the dispatcher's own rule), never as
+      // the ordinary listing a draft becomes.
       return {
         tipo: 'oculto',
-        motivo:
-          'Este produto é um kit virtual. A primeira publicação na Shopee é feita como kit nativo pelo terminal.',
+        motivo: ofereceKitNativoAgora(contaId)
+          ? MOTIVO_KIT_VIRTUAL_COM_PRIMEIRO_KIT_SHOPEE
+          : MOTIVO_KIT_VIRTUAL_SHOPEE,
       };
     }
     if (motivoEdicaoBloqueada !== null) {
@@ -2269,10 +2545,18 @@ function EditorShopee({
   // — both resolving buttons rebase on it, never on the 409's `conflitos`.
   const conflitoAberto =
     conflitoRascunho !== null && efetivas.has(conflitoRascunho.linkDocId) ? conflitoRascunho : null;
+  // A published listing's conflict rebases on the stored LISTING while it is
+  // still one the ERP may edit (a draft's, on the stored draft).
   const guardadoDoConflito =
     conflitoAberto === null ? undefined : vinculoPorId.get(conflitoAberto.linkDocId)?.data;
+  const conflitoNoAnuncio =
+    conflitoAberto !== null &&
+    efetivas.get(conflitoAberto.linkDocId)?.alvo === ALVO_EDICAO_SHOPEE.anuncio;
   const servidorDoConflito =
-    guardadoDoConflito !== undefined && ehRascunhoShopee(guardadoDoConflito)
+    guardadoDoConflito !== undefined &&
+    (conflitoNoAnuncio
+      ? anuncioShopeeEditavel(guardadoDoConflito)
+      : ehRascunhoShopee(guardadoDoConflito))
       ? guardadoDoConflito
       : null;
 
@@ -2513,10 +2797,14 @@ function EditorShopee({
     });
   }
 
-  /** A draft block's outcome inputs — `null` once the link is no draft this tab decides. */
+  /**
+   * A draft block's outcome inputs — `null` once the link is no draft this tab
+   * decides, and for a PUBLISHED listing's block (its refusal rows are a live
+   * listing's: no attestation exit, no draft wording).
+   */
   function desfechoDoRascunhoDe(linkDocId: string): DesfechoDoRascunhoShopee | null {
     const entrada = blocos.get(linkDocId);
-    if (entrada === undefined) return null;
+    if (entrada === undefined || entrada.bloco.alvo !== ALVO_EDICAO_SHOPEE.rascunho) return null;
     return {
       publicacao: entrada.bloco.publicacao,
       nowMs: relogioRascunho,
@@ -2532,14 +2820,26 @@ function EditorShopee({
     };
   }
 
-  /** ONE draft's form: its decision, the inputs it reads and its handlers. */
-  function propsDoRascunho(conta: ContaShopee, linkDocId: string): RascunhoShopeeProps | null {
+  /**
+   * ONE block's form: a draft's (its decision, the inputs it reads and its
+   * handlers) or — branched on the block's `alvo` BEFORE the publish decision
+   * is looked up, since a published listing has none (critique #1) — a
+   * PUBLISHED listing's, which shares every field and handler but «Publicar»,
+   * «Descartar» and the pendências.
+   */
+  function propsDoRascunho(conta: ContaShopee, linkDocId: string): PropsDoFormularioShopee | null {
     const entrada = blocos.get(linkDocId);
+    if (entrada === undefined) return null;
+    if (entrada.bloco.alvo === ALVO_EDICAO_SHOPEE.anuncio) {
+      return propsDoAnuncio(conta, linkDocId, entrada);
+    }
     const decisaoDePublicar = decisoesDePublicar.get(linkDocId);
-    if (entrada === undefined || decisaoDePublicar === undefined) return null;
+    if (decisaoDePublicar === undefined) return null;
     const { link, bloco, podeEditar, permiteDescarte } = entrada;
     const edicao = efetivas.get(linkDocId) ?? null;
-    return {
+    // Typed as the DRAFT's props (never the union): its handlers are contextually typed by it.
+    const props: RascunhoShopeeProps = {
+      modo: 'rascunho',
       db,
       // A tab whose conta document is not found (or not read yet) hands NO
       // conta: the pickers then read nothing apps/shopee could only 404.
@@ -2583,6 +2883,143 @@ function EditorShopee({
       onConfirmarPublicacao: (pausado) => confirmarPublicacao(linkDocId, pausado),
       onCancelarPublicacao: () => cancelarPublicacao(linkDocId),
     };
+    return props;
+  }
+
+  /**
+   * A PUBLISHED listing's form (PR3). Its `emVoo` maps ONLY its save: the
+   * action row's «Republicar» is `'publicar'` on this same link, and its
+   * spinner must never land on the form's «Salvar».
+   */
+  function propsDoAnuncio(
+    conta: ContaShopee,
+    linkDocId: string,
+    entrada: BlocoDoEditor,
+  ): PropsDoAnuncioShopee {
+    const { link, bloco, podeEditar } = entrada;
+    const edicao = efetivas.get(linkDocId) ?? null;
+    return {
+      modo: 'anuncio',
+      db,
+      contaId: conta.encontrada ? conta.id : null,
+      contaNome: conta.nome,
+      linkDocId,
+      produtoId,
+      revisaoDoProduto: produto?.ultimaModificacao ?? null,
+      bloco,
+      marcaGuardada: link === null ? null : projecaoGuardadaDoRascunhoShopee(edicao, link).marca,
+      limites: limitesDoBloco(entrada),
+      divergencias:
+        edicao === null || link === null ? [] : divergenciasDoServidorShopee(edicao, link),
+      podeEditar,
+      emVoo:
+        emVoo !== null && emVoo.linkDocId === linkDocId && emVoo.acao === 'salvar-rascunho'
+          ? 'salvar-rascunho'
+          : null,
+      resultado: resultadosRascunho.get(linkDocId) ?? null,
+      onCampo: <C extends CampoSimplesDoFormularioRascunhoShopee>(
+        campo: C,
+        valor: FormularioRascunhoShopee[C],
+      ) => definirCampo(linkDocId, campo, valor),
+      atributos: atributosDoBloco(entrada, edicao, conta.encontrada),
+      onAtributo: (attributeId, edicaoDoAtributo) =>
+        definirAtributo(linkDocId, attributeId, edicaoDoAtributo),
+      onSalvar: () => salvarDoBloco(linkDocId),
+      onDesfazer: () => desfazerRascunho(linkDocId),
+      revisaoDoDesfazer: desfeitos.get(linkDocId) ?? 0,
+    };
+  }
+
+  /** The published-listing block of `linkDocId` this render, or `undefined`. */
+  function blocoDoAnuncio(linkDocId: string): BlocoDoEditor | undefined {
+    const entrada = blocos.get(linkDocId);
+    return entrada?.bloco.alvo === ALVO_EDICAO_SHOPEE.anuncio ? entrada : undefined;
+  }
+
+  /** What a refusal row offers on a published listing's form — `null` with no such form. */
+  function formularioDoAnuncioDe(linkDocId: string): FormularioDoAnuncioShopee | null {
+    const entrada = blocoDoAnuncio(linkDocId);
+    return entrada === undefined
+      ? null
+      : { logisticaConfiavel: !entrada.bloco.logisticaPorImportar };
+  }
+
+  /** The published listing's ERP-side edit as its action row reads it — `null` with no such form. */
+  function edicaoDoAnuncioDe(linkDocId: string): EdicaoDoAnuncioNaTela | null {
+    const entrada = blocoDoAnuncio(linkDocId);
+    if (entrada === undefined) return null;
+    return {
+      suja: entrada.bloco.sujo,
+      aguardandoEco: (efetivas.get(linkDocId)?.salvo ?? null) !== null,
+    };
+  }
+
+  /**
+   * «Descartar alterações não enviadas»: its confirmation, holding the
+   * revision the operator SAW now (critique #6) — only on an editable listing
+   * that holds unsent edits with a readable revision, and never while its form
+   * is dirty or a save awaits its echo (the revision read here could be stale:
+   * the route would answer 409, and a dirty entry would sit over the reloaded
+   * content). Nothing is sent.
+   */
+  function pedirDescarteDasEdicoes(contaId: string, linkDocId: string) {
+    const link = vinculoPorId.get(linkDocId)?.data ?? null;
+    const revisao = revisaoDeEdicaoErpShopee(link);
+    if (revisao === null || !anuncioShopeeEditavel(link) || !edicaoErpPendenteShopee(link)) return;
+    const tela = edicaoDoAnuncioDe(linkDocId);
+    if (tela === null || tela.suja || tela.aguardandoEco) return;
+    setDescarteDasEdicoes({ contaId, linkDocId, revisao });
+  }
+
+  /**
+   * The unsent edits' discard confirmed: re-read against the LIVE listing — a
+   * listing that changed while the dialog was open (its revision moved, it
+   * holds nothing unsent, it stopped being editable) closes it with a notice
+   * and sends NOTHING; otherwise the CAPTURED revision goes to the route under
+   * the one-write lock. A 2xx is a toast (`descartado` or not); a refusal is
+   * the form's sentence (`falhaDoDescarteDasEdicoesShopee`: the route's own
+   * sentence, or «sem resposta confirmada» when nothing can be known).
+   */
+  function confirmarDescarteDasEdicoes() {
+    const aberto = descarteDasEdicoes;
+    setDescarteDasEdicoes(null);
+    if (aberto === null) return;
+    const { contaId, linkDocId, revisao } = aberto;
+    const link = vinculoPorId.get(linkDocId)?.data ?? null;
+    if (
+      !anuncioShopeeEditavel(link) ||
+      !edicaoErpPendenteShopee(link) ||
+      revisaoDeEdicaoErpShopee(link) !== revisao
+    ) {
+      notifications.show({ color: 'orange', message: FRASE_DESCARTE_EDICOES_ANUNCIO_MUDOU_SHOPEE });
+      return;
+    }
+    const tela = edicaoDoAnuncioDe(linkDocId);
+    if (tela === null || tela.suja || tela.aguardandoEco || bloqueadas) return;
+    void executar(linkDocId, 'descartar-edicoes', async (c) => {
+      definirResultado(linkDocId, null);
+      try {
+        const resposta = await c.descartarEdicoesAnuncio({
+          integracaoId: contaId,
+          produtoId,
+          linkDocId,
+          revisao,
+        });
+        notifications.show(
+          resposta.descartado
+            ? { color: 'green', message: FRASE_EDICOES_DESCARTADAS_SHOPEE }
+            : { color: 'blue', message: FRASE_NADA_A_DESCARTAR_SHOPEE },
+        );
+        return null;
+      } catch (err) {
+        if (err instanceof ShopeeClientHttpError || err instanceof ShopeeClientNetworkError) {
+          definirResultado(linkDocId, falhaDoDescarteDasEdicoesShopee(err));
+          return null;
+        }
+        if (err instanceof FirebaseError) return falhaDeSessao(linkDocId, err);
+        throw err;
+      }
+    });
   }
 
   const rascunhos: RascunhosShopee = {
@@ -2594,6 +3031,8 @@ function EditorShopee({
     avisosSemBlocoDe: (contaId) => avisosSemBloco.filter((a) => a.contaId === contaId),
     dispensarAviso: (linkDocId) => largarEdicao(linkDocId),
     desfechoDoRascunhoDe,
+    formularioDoAnuncioDe,
+    edicaoDoAnuncioDe,
     destinosDasSuperficies,
   };
 
@@ -2769,23 +3208,35 @@ function EditorShopee({
       <KitNativoShopeeModal
         alvo={alvoDoKit}
         link={
-          alvoDoKit === null
+          alvoDoKit === null || alvoDoKit.linkDocId === null
             ? null
             : (linksSnap.data.find((l) => l.id === alvoDoKit.linkDocId)?.data ?? null)
         }
         receita={receitaDoKit}
-        principal={alvoDoKit === null ? null : (principais.get(alvoDoKit.linkDocId) ?? null)}
+        principal={
+          alvoDoKit === null
+            ? null
+            : (principais.get(alvoDoKit.linkDocId ?? chaveDaContaShopee(alvoDoKit.contaId)) ?? null)
+        }
         onPrincipal={(principal) => {
           if (alvoDoKit === null) return;
-          setPrincipais((prev) => new Map(prev).set(alvoDoKit.linkDocId, principal));
+          const chave = alvoDoKit.linkDocId ?? chaveDaContaShopee(alvoDoKit.contaId);
+          setPrincipais((prev) => new Map(prev).set(chave, principal));
         }}
+        pausado={kitPausado}
+        onPausado={setKitPausado}
+        // Every kit create reads the SAVED produto and freezes its recipe.
+        produtoSujo={produtoSujo}
         // The link may have been rewritten since the arm opened this — the
-        // plain Set again, for the pause confirmation's reason.
+        // plain Set again, for the pause confirmation's reason. A first create
+        // (#1912) instead re-asks the dispatcher's rule of the live snapshot.
         bloqueado={
           bloqueadas ||
           (alvoDoKit !== null &&
             ((incertoNaTela(alvoDoKit.contaId)?.pendente ?? false) ||
-              !enderecaveis.has(alvoDoKit.linkDocId)))
+              (alvoDoKit.linkDocId === null
+                ? !ofereceKitNativoAgora(alvoDoKit.contaId)
+                : !enderecaveis.has(alvoDoKit.linkDocId))))
         }
         onConfirmar={confirmarKit}
         onFechar={() => setAlvoDoKit(null)}
@@ -2915,6 +3366,32 @@ function EditorShopee({
               </Group>
             </Stack>
           ))}
+      </Modal>
+      {/* A published listing's unsent ERP edits (PR3): the discard replaces
+          the stored content with Shopee's, so it is confirmed. The confirm
+          sends the revision captured when this opened. */}
+      <Modal
+        opened={descarteDasEdicoes !== null}
+        onClose={() => setDescarteDasEdicoes(null)}
+        title={TITULO_DESCARTAR_EDICOES_SHOPEE}
+        centered
+      >
+        <Stack gap="md" data-testid="shopee-descartar-edicoes-modal">
+          <Text size="sm">{FRASE_CONFIRMAR_DESCARTE_EDICOES_SHOPEE}</Text>
+          <Group justify="flex-end" gap="sm">
+            <Button type="button" variant="default" onClick={() => setDescarteDasEdicoes(null)}>
+              Cancelar
+            </Button>
+            <Button
+              type="button"
+              color="red"
+              disabled={bloqueadas}
+              onClick={confirmarDescarteDasEdicoes}
+            >
+              {ROTULO_CONFIRMAR_DESCARTE_EDICOES_SHOPEE}
+            </Button>
+          </Group>
+        </Stack>
       </Modal>
     </Stack>
   );

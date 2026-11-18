@@ -61,7 +61,8 @@
  * set below is a different question, answered by its own fingerprint).
  */
 import { contaIdFromRef } from '../../shared/outerRef';
-import { ESTADO_ANUNCIO_SHOPEE, ehVinculoSubstituido } from './shopeeLink';
+import { ehKitVirtualEfetivo } from '../pureLogic/familia';
+import { ESTADO_ANUNCIO_SHOPEE, ehKitNativoAtivo, ehVinculoSubstituido } from './shopeeLink';
 
 /* -------------------------------------------------------------------------- */
 /*                         The refusal reader (register 177)                   */
@@ -462,6 +463,74 @@ export function ehRascunhoShopee(
 ): boolean {
   if (link === null || link.kitNativo === true) return false;
   return link.item_id === null || link.item_id === undefined;
+}
+
+/* -------------------------------------------------------------------------- */
+/*            The publish dispatcher's link classes (moved from apps/shopee)   */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Which class of the publish dispatcher ONE `prodshopee` link of a conta
+ * belongs to — MOVED verbatim from `apps/shopee/lib/shopee/kits/armaDePublicacao.ts`
+ * (`classeDe`), which now imports it, so the web's «Publicar como kit nativo»
+ * offer and the server's arm can never disagree (#1369):
+ *
+ * - `n` — a live native kit (`ehKitNativoAtivo`);
+ * - `x` — every other native-kit link (`kitNativo === true`): removed,
+ *   superseded, or with no addressable `item_id`;
+ * - `r` — a DRAFT ({@link ehRascunhoShopee}), whatever its `estadoAnuncio`;
+ * - `so` — a superseded ordinary listing, removed or not;
+ * - `ro` — a removed ordinary listing that was not superseded;
+ * - `o` — everything else: a live ORDINARY listing. ⚠️ The `item_id` is NOT
+ *   checked, so a corrupt id (`0`, `'123'`) is `o` too — a recorded residual of
+ *   the dispatcher (`kits/README.md`, drafts).
+ *
+ * The draft test runs AFTER the native-kit one (an item-less native link is
+ * `x`) and BEFORE the superseded and removed ones: a draft has no listing, so
+ * neither reading can apply to it.
+ *
+ * Pure, total over `unknown`, no clock.
+ */
+export type ClasseDoVinculoShopee = 'n' | 'x' | 'r' | 'o' | 'ro' | 'so';
+
+export function classeDoVinculoShopee(raw: Record<string, unknown>): ClasseDoVinculoShopee {
+  if (raw.kitNativo === true) return ehKitNativoAtivo(raw) ? 'n' : 'x';
+  if (ehRascunhoShopee(raw)) return 'r';
+  if (ehVinculoSubstituido(raw)) return 'so';
+  return raw.estadoAnuncio === ESTADO_ANUNCIO_SHOPEE.removido ? 'ro' : 'o';
+}
+
+/**
+ * Would an UNNAMED publish of this produto on this conta be a native kit's
+ * FIRST create (the dispatcher's `kit-criar`)? The web offers «Publicar como
+ * kit nativo» exactly when this holds; the dispatcher reaches `kit-criar`
+ * exactly when it holds (`armaDePublicacao.test.ts` pins the equivalence):
+ *
+ * - a ROOT produto (`paiId` null — a family child or a família-de-um member
+ *   publishes through its parent, the dispatcher's `produto-e-filho`);
+ * - {@link ehKitVirtualEfetivo} (`ehKit` AND `ehKitVirtual`, strict `true`);
+ * - no link of class `n` (a live native kit ⇒ `kit-atualizar`) and none of
+ *   class `o` (a live ordinary listing ⇒ the item arm). Removed or superseded
+ *   links and drafts are left as they are and do not block.
+ *
+ * `paiId` absent reads as a root, like the schema's `.nullable().default(null)`
+ * the server's parsed produto carries.
+ */
+export function primeiraPublicacaoEhKitNativoShopee(a: {
+  readonly produto: {
+    readonly paiId?: unknown;
+    readonly ehKit?: unknown;
+    readonly ehKitVirtual?: unknown;
+  };
+  readonly vinculosDaConta: readonly Record<string, unknown>[];
+}): boolean {
+  const paiId = a.produto.paiId;
+  if (paiId !== null && paiId !== undefined) return false;
+  if (!ehKitVirtualEfetivo(a.produto)) return false;
+  return a.vinculosDaConta.every((raw) => {
+    const classe = classeDoVinculoShopee(raw);
+    return classe !== 'n' && classe !== 'o';
+  });
 }
 
 /* -------------------------------------------------------------------------- */

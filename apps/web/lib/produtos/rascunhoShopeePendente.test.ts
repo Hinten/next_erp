@@ -15,6 +15,7 @@ describe('exigirRascunhosShopeeSalvos', () => {
     expect(() => exigirRascunhosShopeeSalvos(true)).toThrow(AfterSaveBlockedError);
     expect(() => exigirRascunhosShopeeSalvos(true)).toThrow(MENSAGEM_RASCUNHO_SHOPEE_PENDENTE);
     expect(MENSAGEM_RASCUNHO_SHOPEE_PENDENTE).toContain('«Salvar rascunho»');
+    expect(MENSAGEM_RASCUNHO_SHOPEE_PENDENTE).toContain('«Salvar»');
     expect(MENSAGEM_RASCUNHO_SHOPEE_PENDENTE).toContain(
       'O que você alterou no produto já foi salvo.',
     );
