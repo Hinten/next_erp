@@ -33,6 +33,7 @@ import {
   superficieDoCampoShopee,
   textoDaPublicacaoParadaDoRascunhoShopee,
   type CampoDoFormularioRascunhoShopee,
+  type FormularioDoAnuncioShopee,
   type PublicacaoParadaDoRascunhoShopee,
   type SaidaDoProblemaShopee,
   type SuperficieDoCampoShopee,
@@ -310,6 +311,15 @@ export interface DesfechoAcaoShopeeProps {
    * Supplied by the editor.
    */
   rascunho: DesfechoDoRascunhoShopee | null;
+  /**
+   * The block is a PUBLISHED listing the ERP edits (`RascunhosShopee.formularioDoAnuncioDe`) —
+   * `superficieDoCampoShopee`'s `formularioDoAnuncio`: a refusal row of its content then routes
+   * to that form («Corrigir no anúncio: …»), never to the Seller Centre; `null` ⇒ the listing is
+   * not editable here (Seller Centre, as before). Optional — absent ⇒ `null` (owner's choice:
+   * every existing fixture is the Seller-Centre near-miss). It is no draft: no attestation exit
+   * is ever offered for it (those stay keyed on {@link rascunho}).
+   */
+  formularioDoAnuncio?: FormularioDoAnuncioShopee | null;
 }
 
 /**
@@ -345,6 +355,7 @@ export function DesfechoAcaoShopee({
   descricaoPropria,
   destinosDasSuperficies,
   rascunho,
+  formularioDoAnuncio = null,
 }: DesfechoAcaoShopeeProps) {
   return (
     <div data-testid={`shopee-desfecho-${linkDocId}`}>
@@ -370,6 +381,7 @@ export function DesfechoAcaoShopee({
           descricaoPropria={descricaoPropria}
           destinos={destinosDasSuperficies}
           rascunho={rascunho}
+          formularioDoAnuncio={formularioDoAnuncio}
         />
       )}
       {desfecho.tipo === 'falha' && (
@@ -847,6 +859,7 @@ function DesfechoRecusado({
   descricaoPropria,
   destinos,
   rascunho,
+  formularioDoAnuncio,
 }: {
   contaId: string;
   produtoId: string;
@@ -856,6 +869,7 @@ function DesfechoRecusado({
   descricaoPropria: boolean;
   destinos: DestinosDasSuperficiesShopee;
   rascunho: DesfechoDoRascunhoShopee | null;
+  formularioDoAnuncio: FormularioDoAnuncioShopee | null;
 }) {
   const ehRascunho = rascunho !== null;
   // A DRAFT row is worded by the block's facts NOW (§I1 / §I2, R8-copy#2/#5);
@@ -915,6 +929,8 @@ function DesfechoRecusado({
                   descricaoPropria,
                   // A listing never routes to a draft section, whatever it stores.
                   logisticaEscolhida: rascunho !== null && rascunho.logisticaEscolhida,
+                  // A published listing the form edits routes to ITS form («Corrigir no anúncio»).
+                  formularioDoAnuncio,
                 })}
                 destinos={destinos}
               />
@@ -966,6 +982,8 @@ function BotaoDaSuperficie({
           {rotuloDaSuperficieShopee(superficie, null)}
         </Text>
       );
+    // A published listing's form is the same form: same field ids, same focus.
+    case 'anuncio':
     case 'rascunho': {
       const { campo, aviso } = superficie;
       return (

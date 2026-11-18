@@ -110,20 +110,25 @@
  * ({@link marcarRascunhoShopeeSalvo}, {@link conciliarEdicaoRascunhoShopee}).
  */
 import {
+  ALVO_EDICAO_SHOPEE,
   CAMPO_RASCUNHO_SHOPEE,
   MOTIVO_RASCUNHO_INVALIDO_SHOPEE,
   TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE,
+  anuncioShopeeEditavel,
   camposDaBaseDoRascunhoShopee,
   camposDoRascunhoShopee,
   conteudoRascunhoShopeeSchema,
   ehRascunhoShopee,
   estadoPublicacaoRascunhoShopee,
+  logisticaDoAnuncioEditavelShopee,
   logisticaDoSistemaAnteriorShopee,
   marcaParaRascunhoShopee,
   mesmoValorDoRascunhoShopee,
   mesmoValorGravadoDoRascunhoShopee,
   pendenciasDoRascunhoShopee,
+  revisaoDeEdicaoErpShopee,
   vinculosQueExigemConfirmacaoShopee,
+  type AlvoEdicaoShopee,
   type ArgsPendenciasRascunhoShopee,
   type ArvoreAtributosShopee,
   type CampoRascunhoShopee,
@@ -138,8 +143,15 @@ import {
 
 import { newDocId } from '@/lib/data/newDocId';
 import {
+  FRASE_ANUNCIO_DEIXOU_DE_SER_EDITAVEL_DURANTE_EDICAO_SHOPEE,
+  FRASE_ANUNCIO_INEXISTENTE_SHOPEE,
+  FRASE_ANUNCIO_NAO_EDITAVEL_SHOPEE,
+  FRASE_ANUNCIO_SAIU_DURANTE_EDICAO_SHOPEE,
   FRASE_CATEGORIA_TRAVADA_SHOPEE,
+  FRASE_CONFLITO_ILEGIVEL_ANUNCIO_SHOPEE,
   FRASE_CONTA_NAO_ENCONTRADA_SHOPEE,
+  FRASE_DESCARTE_EDICOES_INCERTO_SHOPEE,
+  FRASE_SERVIDOR_SEM_EDICAO_DE_ANUNCIO_SHOPEE,
   FRASE_CORRIGIR_NO_SELLER_CENTRE_SHOPEE,
   FRASE_DESCARTE_EM_CONFLITO_SHOPEE,
   FRASE_LIMITE_NA_PUBLICACAO_DO_RASCUNHO_SHOPEE,
@@ -338,6 +350,14 @@ export interface EdicaoRascunhoShopee {
    * would repaint the PRE-save draft ({@link conciliarEdicaoRascunhoShopee}).
    */
   readonly salvo: SalvoDoRascunhoShopee | null;
+  /**
+   * What this entry edits: a DRAFT (`'rascunho'`) or a PUBLISHED listing's link
+   * (`'anuncio'`, saved to the ERP only — «Republicar» sends it). Fixed for the
+   * entry's life and NEVER derived from the live link: a draft that gains a
+   * listing mid-edit must still be reconciled as the draft it was
+   * ({@link conciliarEdicaoRascunhoShopee}).
+   */
+  readonly alvo: AlvoEdicaoShopee;
 }
 
 /** What a just-saved entry waits on (see {@link EdicaoRascunhoShopee.salvo}). */
@@ -349,7 +369,16 @@ export interface SalvoDoRascunhoShopee {
    * (raw: the draft route stamps every create and update with it) — or `null`
    * when the snapshot did not hold it (a create).
    */
-  readonly documento: { readonly ultimaModificacao: unknown } | null;
+  readonly documento: {
+    readonly ultimaModificacao: unknown;
+    /**
+     * A PUBLISHED edit only: the link's `edicaoErpRevisao` as read when the
+     * request left. Its presence (the KEY, even `null`) switches the echo
+     * check to the revision — a stock or price write-back moves
+     * `ultimaModificacao` but never the revision, so it is not this save's echo.
+     */
+    readonly edicaoErpRevisao?: number | null;
+  } | null;
 }
 
 /**
@@ -393,18 +422,22 @@ export function novaEdicaoRascunhoShopee(args: {
     atual: formularioDoRascunhoShopee(base),
     digitacoesAtributos: {},
     salvo: null,
+    alvo: ALVO_EDICAO_SHOPEE.rascunho,
   };
 }
 
 /**
- * The entry of a STORED draft, created by the first keystroke: `base` = the
- * projection of the snapshot document, the form = its fields. Call it only
- * under server truth (`BlocoRascunhoShopee.camposEditaveis` says when).
+ * The entry of a STORED draft (or, with `alvo: 'anuncio'`, of a PUBLISHED
+ * listing's link), created by the first keystroke: `base` = the projection of
+ * the snapshot document, the form = its fields. Call it only under server
+ * truth (`BlocoRascunhoShopee.camposEditaveis` says when). `alvo` absent ⇒ a
+ * draft.
  */
 export function edicaoDoRascunhoGuardadoShopee(args: {
   readonly linkDocId: string;
   readonly contaId: string;
   readonly link: Record<string, unknown>;
+  readonly alvo?: AlvoEdicaoShopee;
 }): EdicaoRascunhoShopee {
   const base = camposDoRascunhoShopee(args.link);
   return {
@@ -415,6 +448,7 @@ export function edicaoDoRascunhoGuardadoShopee(args: {
     atual: formularioDoRascunhoShopee(base),
     digitacoesAtributos: {},
     salvo: null,
+    alvo: args.alvo ?? ALVO_EDICAO_SHOPEE.rascunho,
   };
 }
 
@@ -574,8 +608,32 @@ export type ImpedimentoDoRascunhoShopee =
   | 'categoria-travada'
   /** The reading is `em-andamento`: every draft route answers 409 now. */
   | 'publicacao-em-andamento'
+  /**
+   * A PUBLISHED edit the route would refuse with a 422 («Nada foi gravado.»):
+   * see {@link BloqueioDaEdicaoDoAnuncioShopee} for the causes.
+   */
+  | 'edicao-invalida-no-anuncio'
   /** Just saved: waiting for the listener to bring the stored draft back. */
   | 'aguardando-servidor';
+
+/**
+ * Why a PUBLISHED listing's edit would be a 422 at the route — read from the
+ * plan so the tab says it BEFORE the click. The route's order is: null
+ * `marca`, `logistic_info: null`, a logistics edit over an unstamped list,
+ * an `attributes` list emptied over a non-empty RAW one — then (E-2) a
+ * category change over a non-empty raw list with no attributes sent. The web
+ * checks the PROJECTION's attributes, the route the RAW list: a legacy list
+ * that projects as empty can still answer a 422, whose sentence the tab shows.
+ */
+export type BloqueioDaEdicaoDoAnuncioShopee =
+  /** `marca` cleared to `null` («Sem marca» is a chosen pair, not this). */
+  | 'marca-vazia'
+  /** `logistic_info` set back to «Automática» (`null`): a listing needs chosen channels. */
+  | 'logistica-automatica'
+  /** `attributes` emptied (`[]`/`null`) over a non-empty held list, category unchanged. */
+  | 'atributos-esvaziados'
+  /** `category_id` changed over a non-empty held list with no attributes for the new one. */
+  | 'categoria-sem-atributos';
 
 /** What a save of one entry would send, or why it cannot. */
 export interface PlanoDoRascunhoShopee {
@@ -602,6 +660,13 @@ export interface PlanoDoRascunhoShopee {
   readonly sujo: boolean;
   /** `null` ⇔ the save can be sent. */
   readonly impedimento: ImpedimentoDoRascunhoShopee | null;
+  /**
+   * The 422 causes a PUBLISHED edit already holds — `[]` unless the entry's
+   * `alvo` is `'anuncio'` (and never for a `novo` one). Non-empty ⇒
+   * {@link impedimento} is `'edicao-invalida-no-anuncio'` (after the
+   * invalid-field and in-flight impediments).
+   */
+  readonly bloqueiosDoAnuncio: readonly BloqueioDaEdicaoDoAnuncioShopee[];
 }
 
 type Normalizado<C extends CampoDoFormularioRascunhoShopee> =
@@ -722,13 +787,52 @@ export function planoDoRascunhoShopee(
 
   const sujo =
     edicao.salvo === null && (edicao.novo || alterados.length > 0 || invalidos.length > 0);
+  const bloqueiosDoAnuncio = bloqueiosDaEdicaoDoAnuncio(edicao, patch, alterados);
   return {
     patch,
     alterados,
     invalidos,
     sujo,
-    impedimento: impedimentoDoPlano(edicao, estado, alterados, invalidos),
+    impedimento: impedimentoDoPlano(edicao, estado, alterados, invalidos, bloqueiosDoAnuncio),
+    bloqueiosDoAnuncio,
   };
+}
+
+/**
+ * The 422 causes of a PUBLISHED edit ({@link BloqueioDaEdicaoDoAnuncioShopee}),
+ * each with the write it is about. `[]` for a draft entry — the same edits are
+ * accepted there. Both attribute causes can hold at once on the server (it
+ * answers the emptied list first), but the web names ONE: a category change is
+ * the more useful sentence.
+ */
+function bloqueiosDaEdicaoDoAnuncio(
+  edicao: EdicaoRascunhoShopee,
+  patch: PatchDoRascunhoShopee,
+  alterados: readonly CampoDoFormularioRascunhoShopee[],
+): readonly BloqueioDaEdicaoDoAnuncioShopee[] {
+  if (edicao.alvo !== ALVO_EDICAO_SHOPEE.anuncio || edicao.novo) return [];
+  const bloqueios: BloqueioDaEdicaoDoAnuncioShopee[] = [];
+  if (alterados.includes(CAMPO_RASCUNHO_SHOPEE.marca) && patch.marca === null) {
+    bloqueios.push('marca-vazia');
+  }
+  if (alterados.includes(CAMPO_RASCUNHO_SHOPEE.logisticInfo) && patch.logistic_info === null) {
+    bloqueios.push('logistica-automatica');
+  }
+  const tinhaAtributos = (edicao.base.attributes?.length ?? 0) > 0;
+  if (
+    alterados.includes(CAMPO_RASCUNHO_SHOPEE.categoryId) &&
+    tinhaAtributos &&
+    (edicao.atual.attributes?.length ?? 0) === 0
+  ) {
+    bloqueios.push('categoria-sem-atributos');
+  } else if (
+    alterados.includes(CAMPO_RASCUNHO_SHOPEE.attributes) &&
+    (patch.attributes ?? []).length === 0 &&
+    tinhaAtributos
+  ) {
+    bloqueios.push('atributos-esvaziados');
+  }
+  return bloqueios;
 }
 
 /** The first reason, in this order, a plan cannot be sent — or `null`. */
@@ -737,10 +841,12 @@ function impedimentoDoPlano(
   estado: EstadoPublicacaoRascunhoShopee,
   alterados: readonly CampoDoFormularioRascunhoShopee[],
   invalidos: readonly CampoDoFormularioRascunhoShopee[],
+  bloqueiosDoAnuncio: readonly BloqueioDaEdicaoDoAnuncioShopee[],
 ): ImpedimentoDoRascunhoShopee | null {
   if (edicao.salvo !== null) return 'aguardando-servidor';
   if (estado.tipo === 'em-andamento') return 'publicacao-em-andamento';
   if (invalidos.length > 0) return 'campo-invalido';
+  if (bloqueiosDoAnuncio.length > 0) return 'edicao-invalida-no-anuncio';
   if (!edicao.novo && alterados.length === 0) return 'nada-a-salvar';
   // `incerta`: the uncertain attempt may have created the listing in the
   // STORED category, so the route refuses a change (a title edit still goes).
@@ -864,6 +970,9 @@ export function corpoAtualizarRascunhoShopee(
     linkDocId: edicao.linkDocId,
     base: recorteDaProjecao(edicao.base, camposDaBaseDoRascunhoShopee(plano.patch)),
     patch: plano.patch,
+    // Only a PUBLISHED edit names its target: a draft body stays byte-identical
+    // (a server older than the published edit would refuse the strict key).
+    ...(edicao.alvo === ALVO_EDICAO_SHOPEE.anuncio ? { alvo: ALVO_EDICAO_SHOPEE.anuncio } : {}),
   };
 }
 
@@ -948,7 +1057,15 @@ export function marcarRascunhoShopeeSalvo(
     atual,
     salvo: {
       snapshot,
-      documento: documento === null ? null : { ultimaModificacao: documento.ultimaModificacao },
+      documento:
+        documento === null
+          ? null
+          : edicao.alvo === ALVO_EDICAO_SHOPEE.anuncio
+            ? {
+                ultimaModificacao: documento.ultimaModificacao,
+                edicaoErpRevisao: revisaoDeEdicaoErpShopee(documento),
+              }
+            : { ultimaModificacao: documento.ultimaModificacao },
     },
   };
 }
@@ -1241,6 +1358,13 @@ export function conciliarEdicaoRascunhoShopee(
   if (edicao.salvo !== null) return conciliarSalvo(edicao.salvo, agora);
   const sujo = edicaoRascunhoShopeeSuja(edicao);
   const { link } = agora;
+  if (edicao.alvo === ALVO_EDICAO_SHOPEE.anuncio) {
+    return conciliarEdicaoDoAnuncio(
+      edicao,
+      { link, servidorConfirmado: agora.servidorConfirmado },
+      sujo,
+    );
+  }
   if (link !== undefined && !ehRascunhoShopee(link)) {
     return { acao: 'largar', aviso: sujo ? FRASE_RASCUNHO_PUBLICADO_DURANTE_EDICAO_SHOPEE : null };
   }
@@ -1248,6 +1372,35 @@ export function conciliarEdicaoRascunhoShopee(
   if (link === undefined) {
     if (!agora.servidorConfirmado) return MANTER;
     return { acao: 'largar', aviso: sujo ? FRASE_RASCUNHO_DESCARTADO_DURANTE_EDICAO_SHOPEE : null };
+  }
+  if (!sujo) return telaSoDaEntrada(edicao, link) ? MANTER : LARGAR;
+  return jaEstaGuardado(edicao, link) ? LARGAR : MANTER;
+}
+
+/**
+ * A PUBLISHED listing's entry against the current snapshot. It is dropped
+ * (with a notice when it held unsaved work) once the link stops being
+ * editable (removed, superseded, a native kit) or leaves the server-truth
+ * snapshot; otherwise the clean / dirty rules are the draft's.
+ */
+function conciliarEdicaoDoAnuncio(
+  edicao: EdicaoRascunhoShopee,
+  agora: {
+    readonly link: Record<string, unknown> | undefined;
+    readonly servidorConfirmado: boolean;
+  },
+  sujo: boolean,
+): ConciliacaoDaEdicaoShopee {
+  const { link } = agora;
+  if (link === undefined) {
+    if (!agora.servidorConfirmado) return MANTER;
+    return { acao: 'largar', aviso: sujo ? FRASE_ANUNCIO_SAIU_DURANTE_EDICAO_SHOPEE : null };
+  }
+  if (!anuncioShopeeEditavel(link)) {
+    return {
+      acao: 'largar',
+      aviso: sujo ? FRASE_ANUNCIO_DEIXOU_DE_SER_EDITAVEL_DURANTE_EDICAO_SHOPEE : null,
+    };
   }
   if (!sujo) return telaSoDaEntrada(edicao, link) ? MANTER : LARGAR;
   return jaEstaGuardado(edicao, link) ? LARGAR : MANTER;
@@ -1294,6 +1447,15 @@ function conciliarSalvo(
     return documento !== null && agora.servidorConfirmado ? LARGAR : MANTER;
   }
   if (documento === null) return LARGAR;
+  if ('edicaoErpRevisao' in documento) {
+    // A PUBLISHED edit: the echo is the edit REVISION moving (the route bumps
+    // it on every save). `ultimaModificacao` also moves on a stock or price
+    // write-back, which is not this save's echo. A link that stopped being
+    // editable never bumps it — drop, or the entry would wait invisibly.
+    if (!anuncioShopeeEditavel(link)) return LARGAR;
+    const antes = documento.edicaoErpRevisao ?? null;
+    return revisaoDeEdicaoErpShopee(link) === antes ? MANTER : LARGAR;
+  }
   return mesmoCarimbo(documento.ultimaModificacao, link.ultimaModificacao) ? MANTER : LARGAR;
 }
 
@@ -1570,6 +1732,7 @@ function mensagem(texto: string, incerto = false): FalhaDoRascunhoShopee {
 export function falhaDoRascunhoShopee(
   err: ShopeeClientHttpError | ShopeeClientNetworkError,
   operacao: OperacaoRascunhoShopee,
+  alvo: AlvoEdicaoShopee = ALVO_EDICAO_SHOPEE.rascunho,
 ): FalhaDoRascunhoShopee {
   if (err instanceof ShopeeClientNetworkError) {
     return mensagem(fraseDaRespostaIncertaDoRascunhoShopee(operacao), true);
@@ -1579,6 +1742,31 @@ export function falhaDoRascunhoShopee(
     return mensagem(fraseDaRespostaIlegivelDoRascunhoShopee(operacao), true);
   }
   const { code, detalhes, status } = err;
+  const doAnuncio = alvo === ALVO_EDICAO_SHOPEE.anuncio;
+  if (doAnuncio) {
+    // A PUBLISHED listing's edit: these answers mean the LISTING, never a draft.
+    switch (code) {
+      case CODIGO_FALHA_SHOPEE.anuncioNaoEditavel:
+        return { tipo: 'largar', mensagem: FRASE_ANUNCIO_NAO_EDITAVEL_SHOPEE };
+      // 422: the server's own sentence («… Nada foi gravado.»); the entry stays.
+      case CODIGO_FALHA_SHOPEE.anuncioEdicaoInvalida:
+        return mensagem(err.message);
+      case CODIGO_FALHA_SHOPEE.rascunhoInexistente:
+        return { tipo: 'largar', mensagem: FRASE_ANUNCIO_INEXISTENTE_SHOPEE };
+      case CODIGO_FALHA_SHOPEE.rascunhoConflito:
+        if (detalhes.conflitos === null) return mensagem(FRASE_CONFLITO_ILEGIVEL_ANUNCIO_SHOPEE);
+        break;
+      case null:
+        // The strict body's `alvo` refused by an apps/shopee older than the
+        // published edit — said ONLY when the sentence names `alvo`: the new
+        // server's own codeless 400s (a malformed body, an empty patch) are
+        // not "an older server".
+        if (status === 400 && err.message.includes('alvo')) {
+          return mensagem(FRASE_SERVIDOR_SEM_EDICAO_DE_ANUNCIO_SHOPEE);
+        }
+        break;
+    }
+  }
   switch (code) {
     case CODIGO_FALHA_SHOPEE.rascunhoConflito: {
       const { conflitos } = detalhes;
@@ -1642,6 +1830,40 @@ export function falhaDoRascunhoShopee(
   );
 }
 
+/**
+ * THE reading of a failed «Descartar alterações não enviadas» (a PUBLISHED
+ * listing's discard-edits route). `incerto` ⇔ the discard MAY have happened.
+ *
+ * - network / an unreadable 2xx / a 5xx WITHOUT a Shopee `kind` ⇒ uncertain;
+ * - a 502 carrying a `kind` (`burst`, `daily`, `reauth`, …) is a Shopee
+ *   failure: the route reads Shopee BEFORE it writes, so nothing was
+ *   discarded — the channel's ladder, `incerto: false`;
+ * - 404 / 409 `ANUNCIO_NAO_EDITAVEL` / 409 `CONFLITO` ⇒ the server's own
+ *   sentence. ⚠️ The route has TWO CONFLITO sentences (a stale revision, and
+ *   concurrency) and only they tell them apart — never
+ *   {@link fraseDoConflitoDeConcorrenciaShopee}.
+ */
+export function falhaDoDescarteDasEdicoesShopee(
+  err: ShopeeClientHttpError | ShopeeClientNetworkError,
+): { readonly mensagem: string; readonly incerto: boolean } {
+  const incerto = { mensagem: FRASE_DESCARTE_EDICOES_INCERTO_SHOPEE, incerto: true };
+  if (err instanceof ShopeeClientNetworkError) return incerto;
+  // A SUBCLASS of the HTTP error: read first.
+  if (err instanceof ShopeeClientRespostaInvalidaError) return incerto;
+  if (
+    err.code === CODIGO_FALHA_SHOPEE.rascunhoInexistente ||
+    err.code === CODIGO_FALHA_SHOPEE.anuncioNaoEditavel ||
+    err.code === CODIGO_FALHA_SHOPEE.rascunhoConflito
+  ) {
+    return { mensagem: err.message, incerto: false };
+  }
+  if (err.kind === null && err.status >= 500 && err.status !== 501) return incerto;
+  return {
+    mensagem: descreverFalhaShopee(err, { desconhecido: 'Falha ao falar com a Shopee.' }).mensagem,
+    incerto: false,
+  };
+}
+
 /* -------------------------------------------------------------------------- */
 /*                         What a draft block may do                           */
 /* -------------------------------------------------------------------------- */
@@ -1675,6 +1897,13 @@ export interface EntradaDoBlocoRascunhoShopee {
   readonly permiteDescarte?: boolean;
   /** A write of this tab is in flight. */
   readonly ocupado: boolean;
+  /**
+   * What the block edits — a draft or a PUBLISHED listing's link. Absent ⇒
+   * `'rascunho'`. On `'anuncio'` the produto's kit-virtual flag is ignored
+   * (an ordinary listing of a kit-virtual produto is editable), there is no
+   * discard, and logistics follow the link's trust stamp.
+   */
+  readonly alvo?: AlvoEdicaoShopee;
 }
 
 /** How "Descartar" proceeds. */
@@ -1788,6 +2017,25 @@ export interface BlocoRascunhoShopee {
   readonly logisticaInvalida: MotivoDaLogisticaInvalidaShopee | null;
   /** The block's notices, in order of importance. */
   readonly avisos: readonly string[];
+  /** What the block edits ({@link EntradaDoBlocoRascunhoShopee.alvo}, defaulted). */
+  readonly alvo: AlvoEdicaoShopee;
+  /** {@link PlanoDoRascunhoShopee.bloqueiosDoAnuncio}; `[]` on a draft or without an entry. */
+  readonly bloqueiosDoAnuncio: readonly BloqueioDaEdicaoDoAnuncioShopee[];
+  /**
+   * A PUBLISHED listing whose channel list the ERP never stamped
+   * (`!logisticaDoAnuncioEditavelShopee`): its channels are not editable until
+   * the listing is imported. Never on a draft.
+   */
+  readonly logisticaPorImportar: boolean;
+  /** A PUBLISHED listing stored with an extended description: a republish sends a plain one. */
+  readonly descricaoEstendida: boolean;
+  /**
+   * A PUBLISHED listing: the form drops an attribute the held list has, in the
+   * SAME category — the next «Republicar» stops sending it.
+   */
+  readonly atributosRemovidosDoAnuncio: boolean;
+  /** A PUBLISHED listing: the form's category is not the held one. */
+  readonly categoriaTrocadaNoAnuncio: boolean;
 }
 
 /** A block with neither a document nor an entry (never rendered by a correct tab) holds nothing. */
@@ -1826,6 +2074,10 @@ const VAZIO: CamposRascunhoShopee = {
  */
 export function estadoDoBlocoRascunhoShopee(e: EntradaDoBlocoRascunhoShopee): BlocoRascunhoShopee {
   const { link, edicao } = e;
+  const alvo = e.alvo ?? ALVO_EDICAO_SHOPEE.rascunho;
+  const anuncio = alvo === ALVO_EDICAO_SHOPEE.anuncio;
+  // L2: a kit-virtual produto's ORDINARY listing is editable (the route allows it).
+  const kitVirtual = anuncio ? false : e.kitVirtual;
   const publicacao: EstadoPublicacaoRascunhoShopee =
     link !== null && ehRascunhoShopee(link)
       ? estadoPublicacaoRascunhoShopee(link, e.nowMs)
@@ -1841,12 +2093,12 @@ export function estadoDoBlocoRascunhoShopee(e: EntradaDoBlocoRascunhoShopee): Bl
   const camposEditaveis =
     e.podeEditar &&
     !e.ocupado &&
-    !e.kitVirtual &&
+    !kitVirtual &&
     !emAndamento &&
     !salvo &&
     (edicao !== null || e.servidorConfirmado);
   const impedimento = plano === null ? 'nada-a-salvar' : plano.impedimento;
-  const podeSalvar = e.podeEditar && !e.ocupado && !e.kitVirtual && impedimento === null;
+  const podeSalvar = e.podeEditar && !e.ocupado && !kitVirtual && impedimento === null;
   const sujo = plano?.sujo === true;
   const CATEGORIA = CAMPO_RASCUNHO_SHOPEE.categoryId;
   const outraCategoria = !mesmoValorGravadoDoRascunhoShopee(
@@ -1858,9 +2110,16 @@ export function estadoDoBlocoRascunhoShopee(e: EntradaDoBlocoRascunhoShopee): Bl
   // (`guardado` is its prefill), so the button would put back nothing.
   const podeVoltarCategoria =
     camposEditaveis && publicacao.tipo === 'incerta' && edicao !== null && !novo && outraCategoria;
+  const logisticaPorImportar = anuncio && link !== null && !logisticaDoAnuncioEditavelShopee(link);
+  const atributosRemovidosDoAnuncio =
+    anuncio &&
+    !outraCategoria &&
+    (guardado.attributes ?? []).some(
+      (a) => !(valores.attributes ?? []).some((v) => v.attribute_id === a.attribute_id),
+    );
 
   const avisos: string[] = [];
-  if (e.kitVirtual) avisos.push(FRASE_RASCUNHO_EM_KIT_VIRTUAL_SHOPEE);
+  if (kitVirtual) avisos.push(FRASE_RASCUNHO_EM_KIT_VIRTUAL_SHOPEE);
   if (publicacao.tipo === 'em-andamento') {
     avisos.push(fraseDoRascunhoEmAndamentoShopee(publicacao, e.nowMs));
   } else if (publicacao.tipo === 'incerta') {
@@ -1881,7 +2140,7 @@ export function estadoDoBlocoRascunhoShopee(e: EntradaDoBlocoRascunhoShopee): Bl
     valores,
     campos: { ...guardado, ...valores },
     novo,
-    kitVirtual: e.kitVirtual,
+    kitVirtual,
     camposEditaveis,
     categoriaEditavel: camposEditaveis && publicacao.tipo !== 'incerta',
     categoriaGravada: guardado.category_id,
@@ -1893,6 +2152,7 @@ export function estadoDoBlocoRascunhoShopee(e: EntradaDoBlocoRascunhoShopee): Bl
     // Its own authority: a deleted conta still lets its draft go (the route
     // needs only the link) — every other action stays under `podeEditar`.
     podeDescartar:
+      !anuncio &&
       (e.permiteDescarte ?? e.podeEditar) &&
       !e.ocupado &&
       !emAndamento &&
@@ -1915,14 +2175,21 @@ export function estadoDoBlocoRascunhoShopee(e: EntradaDoBlocoRascunhoShopee): Bl
           ))),
     atributosGravadosForaDaCategoria:
       edicao !== null && !novo && (projecao?.attributes?.length ?? 0) > 0 && outraCategoria,
-    logisticaEditavel: camposEditaveis && !novo,
+    logisticaEditavel:
+      camposEditaveis && !novo && (!anuncio || (link !== null && !logisticaPorImportar)),
     logisticaGravada: guardado.logistic_info,
-    logisticaDoSistemaAnterior: link !== null && logisticaDoSistemaAnteriorShopee(link),
+    logisticaDoSistemaAnterior: !anuncio && link !== null && logisticaDoSistemaAnteriorShopee(link),
     logisticaInvalida:
       plano !== null && plano.invalidos.includes(CAMPO_RASCUNHO_SHOPEE.logisticInfo)
         ? motivoDaLogisticaInvalidaShopee(valores.logistic_info)
         : null,
     avisos,
+    alvo,
+    bloqueiosDoAnuncio: plano?.bloqueiosDoAnuncio ?? [],
+    logisticaPorImportar,
+    descricaoEstendida: anuncio && link?.description_type === 'extended',
+    atributosRemovidosDoAnuncio,
+    categoriaTrocadaNoAnuncio: anuncio && outraCategoria,
   };
 }
 
@@ -2452,11 +2719,30 @@ export type CampoDoProdutoShopee =
   | 'crossdocking'
   | 'extraData';
 
+/**
+ * What a PUBLISHED listing's edit form offers a refusal row. `null` on a
+ * listing with no form on this screen (not editable, or the operator may not
+ * author): its fields are fixed in Seller Centre.
+ */
+export interface FormularioDoAnuncioShopee {
+  /** The listing's channel list was stamped by the ERP: the logistics editor is offered. */
+  readonly logisticaConfiavel: boolean;
+}
+
 /** Where the operator fixes what a refusal row's `campo` names. */
 export type SuperficieDoCampoShopee =
   /** A field of THIS draft's form. `aviso`: a sentence shown with the button (a Shopee brand refusal). */
   | {
       readonly tipo: 'rascunho';
+      readonly campo: CampoDoFormularioRascunhoShopee;
+      readonly aviso: string | null;
+    }
+  /**
+   * A field of a PUBLISHED listing's own edit form (saved to the ERP; sent by
+   * the next «Republicar»). `aviso` as on the draft's.
+   */
+  | {
+      readonly tipo: 'anuncio';
       readonly campo: CampoDoFormularioRascunhoShopee;
       readonly aviso: string | null;
     }
@@ -2553,36 +2839,51 @@ export function superficieDoCampoShopee(
     readonly descricaoPropria: boolean;
     /** The STORED draft holds an ERP-chosen channel list (`logisticaEscolhidaNoRascunhoShopee`). */
     readonly logisticaEscolhida: boolean;
+    /**
+     * A PUBLISHED listing's edit form is on screen (`null` ⇒ none: its fields
+     * keep Seller Centre). REQUIRED, like `logisticaEscolhida`: a caller that
+     * forgets it fails typecheck, never routes an editable field to Seller Centre.
+     */
+    readonly formularioDoAnuncio: FormularioDoAnuncioShopee | null;
   },
 ): SuperficieDoCampoShopee | null {
   const { campo } = problema;
   if (campo === null) return null;
   const raiz = campo.split(/[[.]/, 1)[0] ?? '';
-  const { ehRascunho } = contexto;
+  const { ehRascunho, formularioDoAnuncio } = contexto;
+  // `ehRascunho` keeps precedence: a draft's own form is never a listing's.
+  const noAnuncio = !ehRascunho && formularioDoAnuncio !== null;
   const SELLER_CENTRE: SuperficieDoCampoShopee = { tipo: 'seller-centre' };
   const doRascunho = (
     c: CampoDoFormularioRascunhoShopee,
     aviso: string | null = null,
   ): SuperficieDoCampoShopee => ({ tipo: 'rascunho', campo: c, aviso });
+  const doAnuncio = (
+    c: CampoDoFormularioRascunhoShopee,
+    aviso: string | null = null,
+  ): SuperficieDoCampoShopee => ({ tipo: 'anuncio', campo: c, aviso });
+  /** The draft's field on a draft, the listing's on an editable listing, else Seller Centre. */
+  const doFormulario = (c: CampoDoFormularioRascunhoShopee): SuperficieDoCampoShopee =>
+    ehRascunho ? doRascunho(c) : noAnuncio ? doAnuncio(c) : SELLER_CENTRE;
 
   switch (raiz) {
     case 'item_name':
-      return ehRascunho ? doRascunho(CAMPO_RASCUNHO_SHOPEE.itemName) : SELLER_CENTRE;
+      return doFormulario(CAMPO_RASCUNHO_SHOPEE.itemName);
     case 'category_id':
-      return ehRascunho ? doRascunho(CAMPO_RASCUNHO_SHOPEE.categoryId) : SELLER_CENTRE;
+      return doFormulario(CAMPO_RASCUNHO_SHOPEE.categoryId);
     case 'description':
       if (!contexto.descricaoPropria) return { tipo: 'produto', campo: 'extraData' };
-      return ehRascunho ? doRascunho(CAMPO_RASCUNHO_SHOPEE.description) : SELLER_CENTRE;
+      return doFormulario(CAMPO_RASCUNHO_SHOPEE.description);
     case 'brand':
-      if (!ehRascunho) return SELLER_CENTRE;
-      return doRascunho(
+      if (!ehRascunho && !noAnuncio) return SELLER_CENTRE;
+      return (ehRascunho ? doRascunho : doAnuncio)(
         CAMPO_RASCUNHO_SHOPEE.marca,
         problema.motivo === MOTIVO_ANUNCIO_SHOPEE.marcaNaoEscolhida
           ? null
           : FRASE_MARCA_PODE_NAO_VALER_SHOPEE,
       );
     case 'attribute_list':
-      return ehRascunho ? doRascunho(CAMPO_RASCUNHO_SHOPEE.attributes) : SELLER_CENTRE;
+      return doFormulario(CAMPO_RASCUNHO_SHOPEE.attributes);
     case 'size_chart_info':
       return { tipo: 'medidas' };
     case 'logistic_info':
@@ -2598,6 +2899,11 @@ export function superficieDoCampoShopee(
       // #1911 P16: the channels the operator chose on this draft are the fix.
       if (ehRascunho && contexto.logisticaEscolhida) {
         return doRascunho(CAMPO_RASCUNHO_SHOPEE.logisticInfo);
+      }
+      // A PUBLISHED listing whose channels the ERP stamped: its own editor is the
+      // fix; an unstamped list is fixed by importing — the weight, as before.
+      if (!ehRascunho && formularioDoAnuncio?.logisticaConfiavel === true) {
+        return doAnuncio(CAMPO_RASCUNHO_SHOPEE.logisticInfo);
       }
       break;
   }
@@ -2626,6 +2932,8 @@ export function rotuloDaSuperficieShopee(
   switch (s.tipo) {
     case 'rascunho':
       return `Corrigir no rascunho: ${ROTULO_CAMPO_RASCUNHO_SHOPEE[s.campo]}`;
+    case 'anuncio':
+      return `Corrigir no anúncio: ${ROTULO_CAMPO_RASCUNHO_SHOPEE[s.campo]}`;
     case 'produto':
       return secaoDoProduto === null ? 'Abrir no produto' : `Abrir no produto: ${secaoDoProduto}`;
     case 'variacoes':

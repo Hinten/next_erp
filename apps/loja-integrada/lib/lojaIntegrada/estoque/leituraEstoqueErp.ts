@@ -65,6 +65,7 @@ import {
   GRUPO_VINCULO_LI,
   LIMITE_VINCULOS_LI,
 } from '../pedidos/vinculoProdutoLi';
+import { registroNoDepositoLi } from './planoEstoqueLi';
 import {
   type DocEstoqueLi,
   type ProdutoEstoqueLi,
@@ -124,12 +125,6 @@ function proprio(o: Readonly<Record<string, unknown>>, chave: string): unknown {
  */
 export { depositoDaContaLi, formasDoDepositoLi };
 
-/** Whether a record's stored depósito is one of the two forms. */
-function noDeposito(dados: Readonly<Record<string, unknown>>, formas: readonly string[]): boolean {
-  const deposito = proprio(dados, 'depositoOuterRef');
-  return typeof deposito === 'string' && formas.includes(deposito);
-}
-
 /** The produto, masked to {@link CAMPOS_PRODUTO_ESTOQUE_LI}, or `null` when it does not exist. */
 export async function lerProdutoEstoqueLi(
   db: Firestore,
@@ -171,7 +166,7 @@ export async function lerEstoqueProprioLi(
   if (hint !== null && hint === makeEstoqueUid(produtoId, depositoId)) {
     const snap = await estoqueCollection.docRef(db, { produtoId }, hint).get();
     const dados = snap.exists ? snap.data() : undefined;
-    if (dados !== undefined && noDeposito(dados, formas)) {
+    if (dados !== undefined && registroNoDepositoLi(dados, formas)) {
       return [{ caminho: estoqueCollection.docPath({ produtoId }, hint), dados }];
     }
   }
@@ -259,7 +254,7 @@ export async function lerComponentesNoDepositoLi(
     );
     for (const snap of snaps) {
       const dados = snap.exists ? snap.data() : undefined;
-      if (dados !== undefined && noDeposito(dados, formas)) {
+      if (dados !== undefined && registroNoDepositoLi(dados, formas)) {
         guardar({ caminho: snap.ref.path, dados }, todos);
       }
     }

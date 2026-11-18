@@ -44,6 +44,7 @@ export function shopeeClientFalso(metodos: Partial<ShopeeClient> = {}): ShopeeCl
     criarRascunho: naoEsperado('criarRascunho'),
     atualizarRascunho: naoEsperado('atualizarRascunho'),
     descartarRascunho: naoEsperado('descartarRascunho'),
+    descartarEdicoesAnuncio: naoEsperado('descartarEdicoesAnuncio'),
     recomendacaoCategoria: naoEsperado('recomendacaoCategoria'),
     limitesDoItem: naoEsperado('limitesDoItem'),
     atributos: naoEsperado('atributos'),
