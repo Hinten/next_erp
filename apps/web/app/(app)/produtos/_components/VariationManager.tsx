@@ -62,6 +62,7 @@ import {
   montarMembroUnico,
   parseFakePath,
   planejarMembroSobrevivente,
+  planejarSincronizacaoDoMembroUnico,
   skuDoMembroUnico,
   produtoSchema,
   derivarFilhoUnico,
@@ -233,6 +234,14 @@ function stagedRowKey(): string {
 
 /** No id reuse happened — the common case, shared so the exits stay cheap. */
 const NOTHING_REUSED: ChildrenFlushResult = { reusedByKey: {} };
+
+const INHERITED_MEASUREMENTS = [
+  'pesoLiquidoKg',
+  'pesoBrutoKg',
+  'alturaCm',
+  'larguraCm',
+  'profundidadeCm',
+] as const;
 
 /** Stable empty set, so releasing `absorbedKeys` can't schedule a re-render. */
 const EMPTY_KEYS: ReadonlySet<string> = new Set();
@@ -607,6 +616,9 @@ export function VariationManager({
 
     const pricesPropagate = values.propagatePriceToChildren !== false;
     const parentPrices = stripPrecosForSave(values.precos);
+    const editedMeasurements = INHERITED_MEASUREMENTS.filter(
+      (field) => values[field] !== undefined && form?.getFieldState(field).isDirty,
+    );
     const writes = conversionRows.map((row, ordem): TransactionWrite => {
       const inherits = row.key === target.key;
       const id = inherits ? source.id : row.key;
@@ -640,6 +652,18 @@ export function VariationManager({
         ehKit: values.ehKit === true,
         ehKitVirtual: ehKitVirtualEfetivo(values),
       });
+      // The converted row stops receiving the simple-product mirror after this
+      // commit. Apply the same three-way merge to measurements saved with it.
+      const inheritedMeasurements = inherits
+        ? planejarSincronizacaoDoMembroUnico(
+            source.parent,
+            {
+              ...source.parent,
+              ...Object.fromEntries(editedMeasurements.map((field) => [field, doc[field]])),
+            },
+            implicitMember.data,
+          )
+        : null;
       const guard = {
         baseline: inherits ? implicitMember.data : null,
         label: `Variação — ${row.nome}`,
@@ -656,7 +680,13 @@ export function VariationManager({
           if (
             !main ||
             !current ||
-            ['nome', 'sku', 'grupoDeVariacoesUid', 'variacoesUid'].some(
+            [
+              'nome',
+              'sku',
+              'grupoDeVariacoesUid',
+              'variacoesUid',
+              ...Object.keys(inheritedMeasurements ?? {}),
+            ].some(
               (field) =>
                 !valuesEqual(main[field], (source.parent as Record<string, unknown>)[field]),
             ) ||
@@ -682,6 +712,7 @@ export function VariationManager({
               grupoDeVariacoesUid: doc.grupoDeVariacoesUid,
               ordem,
               gtin: null,
+              ...inheritedMeasurements,
               ...(precos === undefined ? {} : { precos }),
             },
           }

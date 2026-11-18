@@ -107,6 +107,8 @@ test.describe.serial('Produtos variações e2e — Variações tab', () => {
     // Type the SKU in the editor but do NOT save yet — Gerar must pick it up
     // from the live form values.
     await fillField(page, 'SKU', sku);
+    await page.getByRole('tab', { name: 'Dimensões e peso' }).click();
+    await fillField(page, 'Altura (cm)', '14');
     await page.getByRole('tab', { name: 'Variações' }).click();
     await expect(page.getByRole('button', { name: 'Reconstituir variações' })).toBeDisabled();
     await expect(page.getByRole('button', { name: 'Nova variante' })).toHaveCount(0);
@@ -141,6 +143,7 @@ test.describe.serial('Produtos variações e2e — Variações tab', () => {
       .toBe(true);
     expect(await getProdutoIdBySku(`${sku}P`)).toBe(member);
     expect((await getProdutoData(id))?.filhoUnicoId).toBeNull();
+    expect((await getProdutoData(member))?.alturaCm).toBe(14);
     expect(await getProdutoEstoque(member, deposito.id)).toMatchObject({
       quantidade: 12,
       quantidadeReservada: 2,

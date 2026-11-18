@@ -1,6 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useState } from 'react';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  renderHook,
+  screen,
+  waitFor,
+} from '@testing-library/react';
 import type { Firestore } from 'firebase/firestore';
 import { Controller, FormProvider, useForm, type UseFormReturn } from 'react-hook-form';
 import { ZodError } from 'zod';
@@ -963,6 +971,66 @@ describe('VariationManager — the absorbed member drops the family barcode', ()
 });
 
 describe('VariationManager — the first real variants', () => {
+  it('applies edited inherited measurements and keeps the reused child’s overrides', () => {
+    const parent = {
+      nome: 'Camiseta',
+      sku: 'CAM',
+      filhoUnicoId: 'membro-1',
+      pesoLiquidoKg: 1,
+      alturaCm: 10,
+      larguraCm: 20 as number | null,
+      profundidadeCm: 30,
+    };
+    h.parent.current.data.data = parent;
+    const member = {
+      ...child('membro-1', parent.nome, 'CAM-UN', null, 0).data,
+      pesoLiquidoKg: 1,
+      alturaCm: 8,
+      larguraCm: 20,
+      profundidadeCm: 30,
+    };
+    h.setChildren([{ id: 'membro-1', data: member }]);
+    const { result } = renderHook(() => useForm({ defaultValues: parent }));
+    const conversionRef: React.MutableRefObject<VariationConversion | null> = { current: null };
+    render(
+      <MantineTestProvider>
+        <FormProvider {...result.current}>
+          <VariationManager
+            produtoId="p1"
+            db={db}
+            grupos={grupos()}
+            value={[uidP]}
+            onChange={() => undefined}
+            onGroupsChange={() => undefined}
+            flushRef={{ current: null }}
+            conversionRef={conversionRef}
+          />
+        </FormProvider>
+      </MantineTestProvider>,
+    );
+    act(() => {
+      result.current.setValue('pesoLiquidoKg', 2, { shouldDirty: true });
+      result.current.setValue('alturaCm', 15, { shouldDirty: true });
+      result.current.setValue('larguraCm', null, { shouldDirty: true });
+      result.current.setValue('profundidadeCm', 25);
+    });
+
+    fireEvent.click(screen.getByText('Gerar variações'));
+    const [write] = conversionRef.current!.prepare(result.current.getValues()).writes;
+    expect(write).toMatchObject({
+      type: 'update',
+      ref: { id: 'membro-1' },
+      data: { pesoLiquidoKg: 2, larguraCm: null },
+    });
+    if (write?.type !== 'update') throw new Error('Expected an update on the reused variant');
+    expect(write.data).not.toHaveProperty('alturaCm');
+    expect(write.data).not.toHaveProperty('profundidadeCm');
+    expect(() => write.guard?.assertCurrent?.(member, parent)).not.toThrow();
+    expect(() => write.guard?.assertCurrent?.(member, { ...parent, pesoLiquidoKg: 3 })).toThrow(
+      /outra sessão/,
+    );
+  });
+
   it('rebuilds generated options without treating shopee-UN as a size', async () => {
     const parent = { nome: 'Camiseta', sku: 'shopee', filhoUnicoId: 'membro-1' };
     h.parent.current.data.data = parent;
