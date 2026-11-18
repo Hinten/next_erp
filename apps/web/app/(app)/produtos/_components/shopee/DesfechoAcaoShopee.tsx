@@ -192,9 +192,13 @@ export type DesfechoAcaoShopee =
       readonly mensagem: string;
       /**
        * The kit create arm the refused request was — what an `informar-principal`
-       * row re-opens, on the same link; `null` for any other publish.
+       * row re-opens, on the same link (`null` for a first create, which names
+       * none, #1912); `null` for any other publish.
        */
-      readonly pedidoKit: { readonly arma: ArmaKitShopee; readonly linkDocId: string } | null;
+      readonly pedidoKit: {
+        readonly arma: ArmaKitShopee;
+        readonly linkDocId: string | null;
+      } | null;
     }
   | { readonly tipo: 'falha'; readonly mensagem: string }
   /**
@@ -701,12 +705,14 @@ function DesfechoKit({
 interface PassoShopee {
   readonly rotulo: string;
   /**
-   * The link the step sends, or whose kit confirmation it opens. ⚠️ Its button
-   * renders only while `AcoesShopee.enderecavel(alvo)` holds — a loaded link
+   * The link the step sends, or whose kit confirmation it opens — `null` for
+   * the conta's FIRST kit create (#1912), which names no link and is gated by
+   * the confirmation itself. ⚠️ Any other button renders only while
+   * `AcoesShopee.enderecavel(alvo)` holds — a loaded link
    * whose `item_id` addresses a listing: every step names its link by id alone,
    * and the outcome it sits in outlives a rewrite of that link.
    */
-  readonly alvo: string;
+  readonly alvo: string | null;
   readonly agir: () => void;
   /**
    * A native-kit CREATE (recriar / converter): it also waits out this conta's
@@ -744,7 +750,9 @@ function passosDoAvisoKit(
 ): readonly PassoShopee[] {
   const passos = new Map<string, PassoShopee>();
   const juntar = (p: PassoShopee) => {
-    if (acoes.enderecavel(p.alvo) && !passos.has(p.rotulo)) passos.set(p.rotulo, p);
+    if (p.alvo !== null && acoes.enderecavel(p.alvo) && !passos.has(p.rotulo)) {
+      passos.set(p.rotulo, p);
+    }
   };
   const recriar = (alvo: string): PassoShopee => ({
     rotulo: `Recriar o kit do vínculo ${alvo}`,
@@ -1097,7 +1105,7 @@ function BotaoDoProblema({
   if (acao === null || !acoes.permitidas) return null;
   const passo = passoDoProblema(contaId, linkDocId, acao, pedidoKit, acoes);
   // The docblock's ⚠️: the link the step would send must still address a listing.
-  if (passo === null || !acoes.enderecavel(passo.alvo)) return null;
+  if (passo === null || (passo.alvo !== null && !acoes.enderecavel(passo.alvo))) return null;
   return (
     <Group>
       <BotaoDoPasso contaId={contaId} passo={passo} acoes={acoes} />
