@@ -9,7 +9,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, render, screen } from '@testing-library/react';
 import { initializeApp } from 'firebase/app';
 import { getFirestore, queryEqual, type Query } from 'firebase/firestore';
-import { buildQuery, whereEqual } from '@delfrance/data';
+import { buildQuery, limit, whereEqual } from '@delfrance/data';
 import { AfterSaveBlockedError, type FieldConfig, type FieldRenderProps } from '@delfrance/ui';
 import { MantineTestProvider } from '@/lib/testing/mantine';
 import { MENSAGEM_RASCUNHO_SHOPEE_PENDENTE } from '@/lib/produtos/rascunhoShopeePendente';
@@ -37,6 +37,8 @@ import { MENSAGEM_RASCUNHO_SHOPEE_PENDENTE } from '@/lib/produtos/rascunhoShopee
  */
 
 interface Capturado {
+  canEdit?: boolean;
+  canDelete?: boolean;
   extraDirty?: boolean;
   fields?: Record<string, FieldConfig>;
   deriveOnSave?: (values: Record<string, unknown>) => Record<string, unknown>;
@@ -79,6 +81,8 @@ const h = vi.hoisted(() => ({
    * array (never mutate it) so the page's memo sees a new emission.
    */
   filhos: [] as { id: string; data: Record<string, unknown> }[],
+  parentChildren: [] as { id: string; data: Record<string, unknown> }[],
+  replace: vi.fn(),
 }));
 
 vi.mock('@delfrance/ui', async (importOriginal) => ({
@@ -90,7 +94,7 @@ vi.mock('@delfrance/ui', async (importOriginal) => ({
 }));
 vi.mock('next/navigation', () => ({
   useParams: () => ({ id: 'p1' }),
-  useRouter: () => ({ replace: vi.fn(), push: vi.fn() }),
+  useRouter: () => ({ replace: h.replace, push: vi.fn() }),
 }));
 vi.mock('@/lib/auth', () => ({
   useAuth: () => ({ user: { uid: 'u1' } }),
@@ -102,8 +106,17 @@ vi.mock('@/lib/firebase/client', () => ({
 }));
 vi.mock('@delfrance/data/hooks', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@delfrance/data/hooks')>()),
-  useSnapshot: (q: Query) => ({
-    data: queryEqual(q, consultaDosFilhos()) ? h.filhos : [],
+  useSnapshot: (q: Query | null) => ({
+    data:
+      q && queryEqual(q, consultaDosFilhos())
+        ? h.filhos
+        : q &&
+            queryEqual(
+              q,
+              buildQuery(produtoCollection.ref(db, {}), [whereEqual('paiId', 'root'), limit(2)]),
+            )
+          ? h.parentChildren
+          : [],
     loading: false,
     error: undefined,
   }),
@@ -208,6 +221,36 @@ beforeEach(() => {
   h.shopeeTab = null;
   h.mlTab = null;
   h.filhos = [];
+  h.parentChildren = [];
+  h.replace.mockClear();
+});
+
+describe('direct variation editing', () => {
+  const parent = { nome: 'Camiseta', sku: 'shopee', filhoUnicoId: 'p1', paiId: null };
+  const child = { nome: 'Camiseta', sku: 'shopee-UN', paiId: 'root' };
+
+  it('redirects a confirmed internal sellable record to the parent editor', () => {
+    h.docs.set('produtos/root', parent);
+    h.docs.set('produtos/p1', child);
+    h.parentChildren = [{ id: 'p1', data: child }];
+    montar();
+
+    expect(h.captured).toBeNull();
+    expect(h.replace).toHaveBeenCalledWith('/produtos/root/editar');
+    expect(screen.getByRole('link', { name: 'cadastro principal' })).toBeTruthy();
+  });
+
+  it('keeps a genuine single variation editable and reserves deletion for the parent', () => {
+    h.docs.set('produtos/root', parent);
+    h.docs.set('produtos/p1', {
+      ...child,
+      variacoesUid: ['documents/grupoDeVariacoes/t/variacoes/p'],
+    });
+    montar();
+
+    expect(h.replace).not.toHaveBeenCalled();
+    expect(capturado()).toMatchObject({ canEdit: true, canDelete: false });
+  });
 });
 
 describe('produtos/[id]/editar — «É kit virtual» needs «É kit» (step 19, O-8, M159)', () => {

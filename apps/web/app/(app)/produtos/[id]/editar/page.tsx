@@ -1,8 +1,9 @@
 'use client';
 
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
-import { Stack } from '@mantine/core';
+import { Alert, Anchor, Stack } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { z } from 'zod';
 import { type FieldConfig, ObjectView, stripMarkedForDeletion } from '@delfrance/ui';
@@ -19,6 +20,7 @@ import {
   camposDeKitDoPatch,
   deriveFotosArquivosIds,
   ehKitVirtualEfetivo,
+  ehMembroUnicoImplicito,
   idFromRefOrNull,
   normalizeVariacoesUid,
   parseFakePath,
@@ -63,6 +65,7 @@ import {
   VariationManager,
   type ChildrenFlush,
   type VariationPriceEdits,
+  type VariationConversion,
   type VariationRow,
 } from '../../_components/VariationManager';
 import {
@@ -160,6 +163,9 @@ export default function EditarProdutoPage() {
   // touched) and the staged-children flush, committed after the parent saves.
   const groupsRef = useRef<string[] | null>(null);
   const flushChildrenRef = useRef<ChildrenFlush | null>(null);
+  const conversionRef = useRef<VariationConversion | null>(null);
+  const preparedConversionRef = useRef<ReturnType<VariationConversion['prepare']> | null>(null);
+  const pendingKitReuse = useRef<Record<string, string>>({});
   const variationPriceEditsRef = useRef<VariationPriceEdits | null>(null);
   // Staged per-variation kit maps (the "Gerar Variações" grid), flushed AFTER
   // the variation-children flush so the child docs exist.
@@ -200,6 +206,7 @@ export default function EditarProdutoPage() {
   const [variationRows, setVariationRows] = useState<VariationRow[]>([]);
   const [divergentVariationCount, setDivergentVariationCount] = useState(0);
   const [variationPriceDirty, setVariationPriceDirty] = useState(false);
+  const [variationDraftDirty, setVariationDraftDirty] = useState(false);
   // A per-variation kit composition staged in the Kit tab's grid
   // («Componentes por variação»), reported by `KitVariacoesManager` and written
   // onto the child only by `flushKitVariacoesRef` in `onAfterSave`. Outside
@@ -207,6 +214,9 @@ export default function EditarProdutoPage() {
   // the leave-guard (`extraDirty`) and a Shopee draft's «Publicar» gate
   // (`produtoSujoForaDoFormularioShopee`, KNOWN #9 round 3).
   const [kitVariacoesDirty, setKitVariacoesDirty] = useState(false);
+  const produtoDocRef = useMemo(() => produtoCollection.docRef(db, {}, params.id), [db, params.id]);
+  const produtoSnap = useDocSnapshot(produtoDocRef);
+  const produto = produtoSnap.data?.data;
   const childrenQuery = useMemo(
     () => buildQuery(produtoCollection.ref(db, {}), [whereEqual('paiId', params.id)]),
     [db, params.id],
@@ -223,9 +233,16 @@ export default function EditarProdutoPage() {
           sku: r.data.sku ?? '',
           variacoesUid: r.data.variacoesUid ?? [],
           precos: r.data.precos ?? null,
+          implicitMember:
+            !!produto &&
+            ehMembroUnicoImplicito(
+              { ...produto, id: params.id },
+              { ...r.data, id: r.id },
+              childrenSnap.data?.length ?? 0,
+            ),
           deleteMark: false,
         })),
-    [childrenSnap.data],
+    [childrenSnap.data, produto, params.id],
   );
   const effectiveVariationRows = useMemo(
     () => (variationRows.length > 0 ? variationRows : savedVariationRows),
@@ -234,9 +251,17 @@ export default function EditarProdutoPage() {
   const kitExcludeIds = useMemo(
     () => [
       params.id,
-      ...effectiveVariationRows.map((r) => r.id).filter((id): id is string => id !== null),
+      ...new Set(
+        [...savedVariationRows, ...effectiveVariationRows]
+          .map((r) => r.id)
+          .filter((id): id is string => id !== null),
+      ),
     ],
-    [params.id, effectiveVariationRows],
+    [params.id, savedVariationRows, effectiveVariationRows],
+  );
+  const kitVariationRows = useMemo(
+    () => effectiveVariationRows.filter((row) => !row.implicitMember),
+    [effectiveVariationRows],
   );
   // KNOWN #9 (#1911 P11 review): unsaved produto edits OUTSIDE this form that a
   // Shopee draft's «Publicar» would silently miss — the publish reads the
@@ -259,6 +284,7 @@ export default function EditarProdutoPage() {
   );
   const produtoSujoForaDoFormularioShopee =
     variationPriceDirty ||
+    variationDraftDirty ||
     kitVariacoesDirty ||
     variationRows.some(
       (r) =>
@@ -267,11 +293,6 @@ export default function EditarProdutoPage() {
         filhoSalvoDivergeDoGravado(r, savedVariationRowsById.get(r.id)),
     );
 
-  // Live snapshot of this produto: feeds the parent-kit lookup below (`paiId`).
-  // Neither precos/custo history (server-owned now) nor the kit-status sync
-  // (read from the save transaction, see `kitPendente` below) diffs against it.
-  const produtoDocRef = useMemo(() => produtoCollection.docRef(db, {}, params.id), [db, params.id]);
-  const produtoSnap = useDocSnapshot(produtoDocRef);
   // Parent kit-status (#298): when this produto is a variation child (`paiId`
   // set), read its parent once so the page model can enforce "a kit parent ⟹
   // its children are kits" on the CHILD-edit direction. Null ref (a parent
@@ -283,6 +304,41 @@ export default function EditarProdutoPage() {
   );
   const paiSnap = useDocSnapshot(paiDocRef);
   const parentIsKit = paiSnap.data?.data.ehKit === true;
+  const possibleImplicitMember =
+    !!produto &&
+    !!paiSnap.data &&
+    ehMembroUnicoImplicito(
+      { ...paiSnap.data.data, id: paiSnap.data.id },
+      { ...produto, id: params.id },
+      null,
+    );
+  const parentChildrenQuery = useMemo(
+    () =>
+      possibleImplicitMember && paiId
+        ? buildQuery(produtoCollection.ref(db, {}), [whereEqual('paiId', paiId), limit(2)])
+        : null,
+    [db, paiId, possibleImplicitMember],
+  );
+  const parentChildrenSnap = useSnapshot(parentChildrenQuery);
+  const childFamilyUnverified =
+    !!paiId &&
+    (produtoSnap.fromCache === true ||
+      paiSnap.loading ||
+      paiSnap.fromCache === true ||
+      !!paiSnap.error ||
+      (possibleImplicitMember &&
+        (parentChildrenSnap.loading ||
+          parentChildrenSnap.fromCache === true ||
+          !!parentChildrenSnap.error)));
+  const redirectToParent =
+    !!paiId &&
+    possibleImplicitMember &&
+    !childFamilyUnverified &&
+    parentChildrenSnap.data?.length === 1 &&
+    parentChildrenSnap.data[0]?.id === params.id;
+  useEffect(() => {
+    if (redirectToParent) router.replace(`/produtos/${paiId}/editar`);
+  }, [redirectToParent, paiId, router]);
 
   // Shopee native kit (step 19, #1527, L4(1)): whether the kit ROOT (`paiId ??
   // id` — a family child's recipe is one model of its parent's listing) has an
@@ -453,8 +509,10 @@ export default function EditarProdutoPage() {
             onRowsChange={setVariationRows}
             onDivergentPriceCountChange={setDivergentVariationCount}
             onPriceDirtyChange={setVariationPriceDirty}
+            onDraftDirtyChange={setVariationDraftDirty}
             priceEditsRef={variationPriceEditsRef}
             flushRef={flushChildrenRef}
+            conversionRef={conversionRef}
             disabled={p.disabled}
           />
         ),
@@ -600,7 +658,7 @@ export default function EditarProdutoPage() {
               produtoId={params.id}
               db={db}
               grupos={grupos}
-              rows={effectiveVariationRows}
+              rows={kitVariationRows}
               disabled={p.disabled}
               flushRef={flushKitVariacoesRef}
               onDirtyChange={setKitVariacoesDirty}
@@ -618,6 +676,7 @@ export default function EditarProdutoPage() {
       listas,
       listasSnap.error?.message,
       effectiveVariationRows,
+      kitVariationRows,
       divergentVariationCount,
       produtoSnap.data?.data.filhoUnicoId,
       produtoSnap.data?.data.propagatePriceToChildren,
@@ -640,6 +699,7 @@ export default function EditarProdutoPage() {
   // error — e.g. a FirebaseError from the batch — propagates to ObjectView's
   // alert). Subcollection orphans are swept server-side (#136).
   async function handleDelete(id: string) {
+    if (paiId) return;
     try {
       await deleteProdutoCascade(port, id);
     } catch (err) {
@@ -657,9 +717,33 @@ export default function EditarProdutoPage() {
     router.replace('/produtos');
   }
 
+  if (redirectToParent && paiId) {
+    return (
+      <Alert color="blue">
+        Edite este produto no{' '}
+        <Anchor component={Link} href={`/produtos/${paiId}/editar`}>
+          cadastro principal
+        </Anchor>
+        .
+      </Alert>
+    );
+  }
+
   return (
     <ObjectView
-      title={<EditarProdutoHeader pending={isProdutoPending(produtoSnap)} />}
+      title={
+        <Stack gap="xs">
+          <EditarProdutoHeader pending={isProdutoPending(produtoSnap)} />
+          {paiId && (
+            <Anchor component={Link} href={`/produtos/${paiId}/editar`} size="sm">
+              Abrir produto pai
+            </Anchor>
+          )}
+          {childFamilyUnverified && (paiSnap.error || parentChildrenSnap.error) && (
+            <Alert color="red">Não foi possível confirmar a família deste produto.</Alert>
+          )}
+        </Stack>
+      }
       schema={produtoEditarSchema}
       collection={produtoCollection}
       db={db}
@@ -673,10 +757,16 @@ export default function EditarProdutoPage() {
       // Pending Mercado Livre, independent-variation-price, per-variation kit
       // composition and Shopee draft edits live outside this RHF form, so all
       // four must arm the shared leave guard.
-      extraDirty={mlDirty || variationPriceDirty || kitVariacoesDirty || shopeeDirty}
-      transactionWrites={(id, values, context) =>
-        buildProdutoTransactionWrites(db, id, values, 'editar', context)
+      extraDirty={
+        mlDirty || variationPriceDirty || variationDraftDirty || kitVariacoesDirty || shopeeDirty
       }
+      transactionWrites={(id, values, context) => {
+        preparedConversionRef.current = null;
+        const writes = buildProdutoTransactionWrites(db, id, values, 'editar', context);
+        const conversion = conversionRef.current?.prepare(values);
+        preparedConversionRef.current = conversion ?? null;
+        return conversion ? [...writes, ...conversion.writes] : writes;
+      }}
       // The kit invariant re-derived INSIDE the save transaction, over the doc
       // it read: `deriveOnSave` below compares against the FORM, so a form
       // painted from a stale cache copy and edited before server truth arrives
@@ -717,6 +807,7 @@ export default function EditarProdutoPage() {
         const gruposDerived = sortGrupoUids(groupsRef.current ?? implied, grupos);
         const variacoesDerived = normalizeVariacoesUid(uids, grupos);
         return {
+          ...(conversionRef.current ? { filhoUnicoId: conversionRef.current.filhoUnicoId } : {}),
           grupoDeVariacoesUid: gruposDerived.length > 0 ? gruposDerived : null,
           variacoesUid: variacoesDerived.length > 0 ? variacoesDerived : null,
           componentesKit,
@@ -763,6 +854,9 @@ export default function EditarProdutoPage() {
         return issues;
       }}
       onAfterSave={async (id, _values, committed) => {
+        const conversion = committed ? preparedConversionRef.current?.complete() : undefined;
+        preparedConversionRef.current = null;
+        if (conversion) pendingKitReuse.current = conversion.reusedByKey;
         // Precos/custo history + child-precos propagation used to be recorded
         // here (client-side, diffed against `lastSavedPrecos`/`lastSavedCusto`).
         // Both are now server-owned: the `onProdutoPrecoCustoChanged` Cloud
@@ -811,13 +905,17 @@ export default function EditarProdutoPage() {
         // The children flush runs before the kit-variation flush: it creates
         // any new children already carrying the parent's precos (plus their
         // initial history records).
-        const children = await flushChildrenRef.current?.(id);
+        const children = conversion ?? (await flushChildrenRef.current?.(id));
 
         // Then persist each kit-variation child's generated `componentesKit`
         // (from "Gerar Variações") — the child docs exist by now. The pairing is
         // handed over directly because it CANNOT travel through React state:
         // both awaits run in one microtask, so nothing re-renders in between.
-        await flushKitVariacoesRef.current?.(id, children?.reusedByKey ?? {});
+        await flushKitVariacoesRef.current?.(id, {
+          ...pendingKitReuse.current,
+          ...children?.reusedByKey,
+        });
+        pendingKitReuse.current = {};
 
         // Mercado Livre is the last WRITE: its link docs have six writers, so a
         // save here can lose a race and raise `AfterSaveBlockedError` (tier 3).
@@ -834,9 +932,9 @@ export default function EditarProdutoPage() {
         exigirRascunhosShopeeSalvos(shopeeDirtyRef.current);
       }}
       saveLabel="Salvar alterações"
-      canEdit={canWrite}
-      readOnly={!canWrite}
-      canDelete={canDelete}
+      canEdit={canWrite && !childFamilyUnverified && produtoSnap.loading !== true}
+      readOnly={!canWrite || childFamilyUnverified || produtoSnap.loading === true}
+      canDelete={canDelete && !paiId && produtoSnap.loading !== true}
       onDelete={handleDelete}
       deleteConfirmMessage="O produto e suas variações serão excluídos permanentemente. Esta ação não pode ser desfeita."
       onSaved={() => router.replace('/produtos')}
