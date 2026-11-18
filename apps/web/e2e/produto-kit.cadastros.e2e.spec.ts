@@ -9,7 +9,13 @@ import {
   seedKitEstoqueFixtures,
   seedKitParaGerar,
 } from './_helpers/seed-data';
-import { expectToast, fillField, selectFieldWithSearch } from './helpers/object-view';
+import {
+  clickSaveAndContinue,
+  expectToast,
+  fillField,
+  selectFieldWithSearch,
+  waitForServerSnapshot,
+} from './helpers/object-view';
 import { warmRoutes } from './helpers/warmup';
 
 /**
@@ -142,6 +148,14 @@ test.describe.serial('Produtos kit e2e — Gerar Variações (per-variation grid
   test('turning off a kit clears the family even when new variation recipes are staged', async ({
     page,
   }) => {
+    const saveAndConfirm = async () => {
+      await clickSaveAndContinue(page);
+      // This notification arrives after the child transactions finish.
+      await expect(page.getByRole('alert').filter({ hasText: 'Salvo.' }).first()).toBeVisible({
+        timeout: 20_000,
+      });
+    };
+
     // Precondition: the previous test left the size-P child carrying a kit map.
     await expect
       .poll(async () => (await getProdutoData(seed.varKitPId))?.componentesKit != null, {
@@ -154,13 +168,13 @@ test.describe.serial('Produtos kit e2e — Gerar Variações (per-variation grid
     await page.goto(`/produtos/${seed.kitId}/editar`);
     await page.getByRole('tab', { name: 'Kit' }).click();
     await page.getByRole('switch', { name: 'É kit virtual', exact: true }).click();
-    await page.getByRole('button', { name: 'Salvar alterações', exact: true }).click();
-    await expect(page).toHaveURL(/\/produtos(?:\?.*)?$/);
+    await saveAndConfirm();
     for (const id of familyIds) {
       expect(await getProdutoData(id)).toMatchObject({ ehKit: true, ehKitVirtual: true });
     }
 
     await page.goto(`/produtos/${seed.kitId}/editar`);
+    await waitForServerSnapshot(page);
     await page.getByRole('tab', { name: 'Kit' }).click();
 
     // The draft used to restore the child recipes after the status cleanup.
@@ -169,9 +183,8 @@ test.describe.serial('Produtos kit e2e — Gerar Variações (per-variation grid
 
     // Switch off only «É kit». The save must also clear «É kit virtual».
     await page.getByRole('switch', { name: 'É kit', exact: true }).click();
-    await page.getByRole('button', { name: 'Salvar alterações', exact: true }).click();
+    await saveAndConfirm();
 
-    await expect(page).toHaveURL(/\/produtos(?:\?.*)?$/);
     const cleared = {
       ehKit: false,
       ehKitVirtual: false,
