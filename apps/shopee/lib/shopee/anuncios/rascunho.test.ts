@@ -2236,7 +2236,7 @@ describe('atualizarRascunhoShopee — base conferida (nível 3) + update guardad
      * dropped that claim in round 4; the save and discard routes share THIS
      * builder, so both are pinned.
      */
-    it('a frase do 409 JA_PUBLICADO (salvar E descartar): o vínculo REGISTRA um anúncio — nunca «já existe na Shopee» —, o conteúdo não é editado aqui, recarregue, nada gravado', async () => {
+    it('a frase do 409 JA_PUBLICADO (salvar E descartar): o vínculo REGISTRA um anúncio — nunca «já existe na Shopee» —, edita-se como anúncio publicado, recarregue, nada gravado', async () => {
       const db = new FakeDb();
       const anuncio = rascunho({ item_id: ITEM_VIVO });
       db.seed(CAMINHO, anuncio);
@@ -2253,8 +2253,8 @@ describe('atualizarRascunhoShopee — base conferida (nível 3) + update guardad
       for (const err of [aoSalvar, aoDescartar]) {
         expect(err.code).toBe(CODIGO_RASCUNHO_SHOPEE.jaPublicado);
         expect(err.message).toBe(
-          `o vínculo ${RASCUNHO} já não é um rascunho: ele já registra um anúncio da Shopee, e o ` +
-            'conteúdo de um anúncio publicado não é editado aqui. Recarregue a aba. Nada foi gravado.',
+          `o vínculo ${RASCUNHO} já não é um rascunho: ele já registra um anúncio da Shopee, ` +
+            'que se edita como anúncio publicado. Recarregue a aba. Nada foi gravado.',
         );
         // ⛔ near-miss: the over-claim the round-4 reservation dropped stays gone here too.
         expect(err.message).not.toMatch(/já existe na Shopee|o anúncio já existe/);

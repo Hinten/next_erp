@@ -59,6 +59,10 @@ const {
   ROTULO_LOGISTICA_AUTOMATICA_SHOPEE,
   ROTULO_LOGISTICA_RASCUNHO_SHOPEE,
   ROTULO_TENTAR_DE_NOVO_CANAIS_SHOPEE,
+  FRASE_CANAIS_ESCOLHIDOS_ANUNCIO_SHOPEE,
+  FRASE_CANAL_DESLIGADO_NO_ANUNCIO_SHOPEE,
+  FRASE_LOGISTICA_ANUNCIO_IMPORTE_ANTES_SHOPEE,
+  FRASE_NENHUM_CANAL_LIGADO_ANUNCIO_SHOPEE,
   fraseDosCanaisForaDaLojaShopee,
   lerParaEscolherCanaisShopee,
   rotuloDoCanalLogisticaShopee,
@@ -66,8 +70,11 @@ const {
 const { idDoCampoRascunhoShopee } = await import('./DesfechoAcaoShopee');
 const { ShopeeClientHttpError, ShopeeClientNetworkError, ShopeeClientRespostaInvalidaError } =
   await import('@/lib/shopee/client');
-const { FRASE_LOGISTICA_RASCUNHO_SHOPEE, linhaDoCanalSomenteLeituraShopee } =
-  await import('@/lib/shopee/anuncioProduto');
+const {
+  FRASE_COMO_IMPORTAR_ANUNCIO_VINCULADO_SHOPEE,
+  FRASE_LOGISTICA_RASCUNHO_SHOPEE,
+  linhaDoCanalSomenteLeituraShopee,
+} = await import('@/lib/shopee/anuncioProduto');
 const { MOTIVO_DA_LOGISTICA_INVALIDA_SHOPEE, comCanalShopee, escolhaInicialShopee } =
   await import('@/lib/shopee/logisticaRascunho');
 type MotivoDaLogisticaInvalidaShopee =
@@ -179,6 +186,8 @@ interface Opcoes {
   onMudar?: (valor: readonly Canal[] | null) => void;
   /** Under `<Activity mode="hidden">` — the produto page hiding the Shopee tab. */
   oculta?: boolean;
+  /** `null` (default) = a draft; set = a published listing's edit. */
+  anuncio?: { readonly logisticaConfiavel: boolean } | null;
 }
 
 const novoQueryClient = () => new QueryClient({ defaultOptions: QUERY_DEFAULT_OPTIONS });
@@ -201,6 +210,7 @@ function show(inicial: Opcoes = {}, qc: QueryClient = novoQueryClient()) {
             logisticaInvalida={p.logisticaInvalida ?? null}
             editavel={p.editavel ?? true}
             onMudar={p.onMudar ?? onMudar}
+            anuncio={p.anuncio ?? null}
           />
         </Activity>
       </QueryClientProvider>
@@ -1462,5 +1472,112 @@ describe('LogisticaRascunhoShopee — as frases (design-C-LOG §5.3; P16 §7)', 
       'Nenhum canal ligado aceita o pacote hoje.',
     );
     expect(FRASE_NENHUM_CANAL_LIGADO_DISPONIVEL_SHOPEE).not.toContain('recusada');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                       A published listing's edit (PR3)                      */
+/* -------------------------------------------------------------------------- */
+
+describe('LogisticaRascunhoShopee — o editor de um anúncio PUBLICADO (PR3)', () => {
+  const TRUSTED = { logisticaConfiavel: true } as const;
+
+  it('⭐ a leitura carrega o `linkDocId` ⟷ NEAR-MISS: o rascunho segue com `{integracaoId, produtoId}` exatos', async () => {
+    const { unmount } = show({ valor: [on(A)], anuncio: TRUSTED });
+    await screen.findByTestId(idDaLinha(A));
+    await assentar();
+    expect(h.canais).toHaveBeenCalledTimes(1);
+    expect(h.canais).toHaveBeenCalledWith({
+      integracaoId: CONTA,
+      produtoId: PRODUTO,
+      linkDocId: LINK,
+    });
+    unmount();
+
+    h.canais.mockClear();
+    show({ valor: [on(A)] });
+    await screen.findByTestId(idDaLinha(A));
+    expect(h.canais).toHaveBeenCalledWith({ integracaoId: CONTA, produtoId: PRODUTO });
+  });
+
+  it('⭐ confiável: as linhas, o aviso de desligar e a introdução do anúncio, SEM «Automática» nem «Escolher canais» ⟷ NEAR-MISS: o rascunho mostra o seletor', async () => {
+    const { unmount } = show({ valor: [on(A), on(B)], anuncio: TRUSTED });
+    await screen.findByTestId(idDaLinha(A));
+
+    expect(screen.queryByRole('radio', { name: ROTULO_LOGISTICA_AUTOMATICA_SHOPEE })).toBeNull();
+    expect(screen.queryByRole('radio', { name: ROTULO_ESCOLHER_CANAIS_SHOPEE })).toBeNull();
+    expect(secao().textContent).toContain(FRASE_CANAIS_ESCOLHIDOS_ANUNCIO_SHOPEE);
+    expect(secao().textContent).not.toContain(FRASE_CANAIS_ESCOLHIDOS_SHOPEE);
+    expect(screen.getByTestId(`${RAIZ}-aviso-desligar`).textContent).toBe(
+      FRASE_CANAL_DESLIGADO_NO_ANUNCIO_SHOPEE,
+    );
+    unmount();
+
+    show({ valor: [on(A), on(B)] });
+    await screen.findByTestId(idDaLinha(A));
+    expect(radio(ROTULO_ESCOLHER_CANAIS_SHOPEE).checked).toBe(true);
+    expect(screen.queryByTestId(`${RAIZ}-aviso-desligar`)).toBeNull();
+  });
+
+  it('⭐ não confiável: a linha «importe antes» (com a receita da importação), as linhas guardadas somente-leitura e ZERO leituras ⟷ NEAR-MISS: `valor` null idem', async () => {
+    const { unmount } = show({ valor: [on(A)], anuncio: { logisticaConfiavel: false } });
+    await assentar();
+
+    const importe = screen.getByTestId(`${RAIZ}-importe-antes`);
+    expect(importe.textContent).toContain(FRASE_LOGISTICA_ANUNCIO_IMPORTE_ANTES_SHOPEE);
+    expect(importe.textContent).toContain(FRASE_COMO_IMPORTAR_ANUNCIO_VINCULADO_SHOPEE);
+    expect(secao().textContent).toContain(linhaDoCanalSomenteLeituraShopee(on(A)));
+    expect(screen.queryByRole('switch')).toBeNull();
+    expect(screen.queryByRole('radio')).toBeNull();
+    expect(h.canais).not.toHaveBeenCalled();
+    unmount();
+
+    show({ valor: null, anuncio: TRUSTED });
+    await assentar();
+    expect(screen.getByTestId(`${RAIZ}-importe-antes`)).toBeTruthy();
+    expect(secao().textContent).not.toContain(FRASE_LOGISTICA_RASCUNHO_SHOPEE);
+    expect(h.canais).not.toHaveBeenCalled();
+  });
+
+  it('nenhum canal ligado: «Ligue ao menos um canal.» (sem «Automática») ⟷ NEAR-MISS: o rascunho diz «ou volte para «Automática»»', async () => {
+    const { unmount } = show({
+      valor: [off(A), off(B)],
+      logisticaInvalida: MOTIVO_DA_LOGISTICA_INVALIDA_SHOPEE.semCanalLigado,
+      anuncio: TRUSTED,
+    });
+    await screen.findByTestId(idDaLinha(A));
+    expect(secao().textContent).toContain(FRASE_NENHUM_CANAL_LIGADO_ANUNCIO_SHOPEE);
+    expect(secao().textContent).not.toContain(FRASE_NENHUM_CANAL_LIGADO_SHOPEE);
+    unmount();
+
+    show({
+      valor: [off(A), off(B)],
+      logisticaInvalida: MOTIVO_DA_LOGISTICA_INVALIDA_SHOPEE.semCanalLigado,
+    });
+    await screen.findByTestId(idDaLinha(A));
+    expect(secao().textContent).toContain(FRASE_NENHUM_CANAL_LIGADO_SHOPEE);
+  });
+
+  it('⭐ desligar um canal mantém o canal gravado SEM linha (C fora da loja) como está ⟷ NEAR-MISS: no rascunho ele sai da lista', async () => {
+    const guardado = [on(A), on(B), on(C), on(E)];
+    const { unmount, onMudar } = show({ valor: guardado, anuncio: TRUSTED });
+    await screen.findByTestId(idDaLinha(A));
+
+    fireEvent.click(interruptor(A));
+
+    expect(onMudar).toHaveBeenCalledTimes(1);
+    const enviado = onMudar.mock.calls[0]?.[0] ?? [];
+    expect(enviado.find((c) => c.logistic_id === C)).toEqual(on(C));
+    expect(enviado.find((c) => c.logistic_id === A)).toEqual(off(A));
+    expect(secao().textContent).toContain(
+      fraseDosCanaisForaDaLojaShopee([{ logisticId: C, nome: 'Entrega C' }], true),
+    );
+    unmount();
+
+    const rascunho = show({ valor: guardado });
+    await screen.findByTestId(idDaLinha(A));
+    fireEvent.click(interruptor(A));
+    const doRascunho = rascunho.onMudar.mock.calls[0]?.[0] ?? [];
+    expect(doRascunho.some((c) => c.logistic_id === C)).toBe(false);
   });
 });

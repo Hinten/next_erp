@@ -17,7 +17,10 @@ import {
   type EstadoPublicacaoRascunhoShopee,
 } from '@delfrance/schemas';
 
-import { saidaPeloSellerCentreDoRascunhoShopee } from '@/lib/shopee/anuncioProduto';
+import {
+  FRASE_COMO_IMPORTAR_ANUNCIO_VINCULADO_SHOPEE,
+  saidaPeloSellerCentreDoRascunhoShopee,
+} from '@/lib/shopee/anuncioProduto';
 import {
   MOTIVO_DIGITACAO_ATRIBUTO_SHOPEE,
   MOTIVO_NAO_SUPORTADO_ATRIBUTO_SHOPEE,
@@ -39,10 +42,13 @@ import {
   FRASE_ATRIBUTOS_CATEGORIA_VAZIA_SHOPEE,
   FRASE_ATRIBUTOS_ILEGIVEIS_SHOPEE,
   FRASE_ATRIBUTOS_SEM_CATEGORIA_SHOPEE,
+  FRASE_OBRIGATORIO_NAO_SUPORTADO_NO_ANUNCIO_SHOPEE,
   ROTULO_OUTRO_VALOR_OPCAO_SHOPEE,
   TIPO_LEITURA_ATRIBUTOS_RASCUNHO_SHOPEE,
   ensaioDaAdicaoAtributoShopee,
   fraseDaDigitacaoDoAtributoShopee,
+  fraseDoAtributoNaoSuportadoShopee,
+  fraseDosAtributosGravadosShopee,
   fraseDoProblemaDoAtributoShopee,
   leituraDaRespostaDeAtributosShopee,
   type LeituraDosAtributosRascunhoShopee,
@@ -1742,5 +1748,38 @@ describe('a saída pelo Seller Centre tem UMA grafia (correção 7, #1369)', () 
 
   it('NEAR-MISS: a saída que a linha imprime CONTÉM a frase — vem do `anuncioProduto`', () => {
     expect(FRASE.test(saidaPeloSellerCentreDoRascunhoShopee(LIVRE))).toBe(true);
+  });
+});
+
+describe('a seção de um anúncio PUBLICADO — a redação própria (PR3)', () => {
+  const motivo = MOTIVO_NAO_SUPORTADO_ATRIBUTO_SHOPEE.data;
+
+  it('obrigatório e vazio: a saída é a importação — nunca «descarte este rascunho» — com o jeito de rodá-la', () => {
+    const texto = fraseDoAtributoNaoSuportadoShopee(motivo, true, true, LIVRE, true);
+    expect(texto).toContain(FRASE_OBRIGATORIO_NAO_SUPORTADO_NO_ANUNCIO_SHOPEE);
+    expect(texto).toContain(FRASE_COMO_IMPORTAR_ANUNCIO_VINCULADO_SHOPEE);
+    expect(texto).not.toContain(saidaPeloSellerCentreDoRascunhoShopee(LIVRE));
+  });
+
+  it('QUASE-PAR: o mesmo atributo num RASCUNHO mantém a saída do rascunho (o 5º argumento ausente = rascunho)', () => {
+    const texto = fraseDoAtributoNaoSuportadoShopee(motivo, true, true, LIVRE);
+    expect(texto).toContain(saidaPeloSellerCentreDoRascunhoShopee(LIVRE));
+    expect(texto).not.toContain(FRASE_OBRIGATORIO_NAO_SUPORTADO_NO_ANUNCIO_SHOPEE);
+  });
+
+  it('QUASE-PAR: opcional, ou obrigatório COM valor gravado, diz o mesmo nos dois modos', () => {
+    expect(fraseDoAtributoNaoSuportadoShopee(motivo, false, false, LIVRE, true)).toBe(
+      fraseDoAtributoNaoSuportadoShopee(motivo, false, false, LIVRE),
+    );
+    expect(fraseDoAtributoNaoSuportadoShopee(motivo, true, false, LIVRE, true)).toBe(
+      fraseDoAtributoNaoSuportadoShopee(motivo, true, false, LIVRE),
+    );
+  });
+
+  it('a contagem de gravados diz «neste anúncio» — e «neste rascunho» por padrão', () => {
+    expect(fraseDosAtributosGravadosShopee(3, true)).toBe(
+      '3 atributo(s) gravado(s) neste anúncio.',
+    );
+    expect(fraseDosAtributosGravadosShopee(3)).toBe('3 atributo(s) gravado(s) neste rascunho.');
   });
 });

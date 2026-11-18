@@ -21,6 +21,7 @@ import {
 } from '@delfrance/schemas';
 
 import {
+  FRASE_COMO_IMPORTAR_ANUNCIO_VINCULADO_SHOPEE,
   ehFraseDeTerminal,
   saidaPeloSellerCentreDoRascunhoShopee,
 } from '@/lib/shopee/anuncioProduto';
@@ -124,6 +125,8 @@ export interface AtributosRascunhoShopeeProps {
   onAtributo: (attributeId: number, edicao: EdicaoDoAtributoShopee) => void;
   /** The composer's dry run ({@link EnsaioDaAdicaoAtributoShopee}) — `ensaioDaAdicaoAtributoShopee(estado)` over the SAME state the rows were built from. */
   ensaiarAdicao: EnsaioDaAdicaoAtributoShopee;
+  /** The form edits a PUBLISHED listing (`bloco.alvo === 'anuncio'`): «neste anúncio» wording, and no draft «descarte» exit for a mandatory unsupported row. Optional — absent ⇒ `false`, a draft (owner's choice: draft fixtures stay untouched). */
+  anuncio?: boolean;
 }
 
 /**
@@ -194,8 +197,8 @@ export function fraseDoAvisoDaCategoriaShopee(warning: string): string {
 }
 
 /** No conta that can answer: the stored list is only counted. */
-export function fraseDosAtributosGravadosShopee(gravados: number): string {
-  return `${String(gravados)} atributo(s) gravado(s) neste rascunho.`;
+export function fraseDosAtributosGravadosShopee(gravados: number, anuncio = false): string {
+  return `${String(gravados)} atributo(s) gravado(s) neste ${anuncio ? 'anúncio' : 'rascunho'}.`;
 }
 
 const PLACEHOLDER_ESCOLHA = 'Escolha';
@@ -248,6 +251,16 @@ const ABERTURA_OBRIGATORIO_NAO_SUPORTADO =
 const FRASE_OPCIONAL_NAO_SUPORTADO = 'Ele é opcional: o anúncio pode ser publicado sem ele.';
 
 /**
+ * A PUBLISHED listing's MANDATORY, EMPTY unsupported attribute: never
+ * `saidaPeloSellerCentreDoRascunhoShopee` (its `livre` text says «descarte este
+ * rascunho»). The remedy is the import, so the one sentence that says how to run
+ * it (a linked listing is skipped otherwise) follows.
+ */
+export const FRASE_OBRIGATORIO_NAO_SUPORTADO_NO_ANUNCIO_SHOPEE =
+  'Ele é obrigatório e o ERP não consegue preenchê-lo: preencha-o no Seller Centre e importe o ' +
+  'anúncio de novo quando ele não tiver alterações não enviadas.';
+
+/**
  * A «não suportado» row's sentence: why the ERP cannot edit it, then its tail:
  *
  * - MANDATORY and EMPTY (`ausente`: the row carries the validator's
@@ -266,7 +279,14 @@ export function fraseDoAtributoNaoSuportadoShopee(
   obrigatorio: boolean,
   ausente: boolean,
   publicacao: EstadoPublicacaoRascunhoShopee,
+  anuncio = false,
 ): string {
+  if (ausente && anuncio) {
+    return (
+      `${FRASE_NAO_SUPORTADO[motivo]} ${FRASE_OBRIGATORIO_NAO_SUPORTADO_NO_ANUNCIO_SHOPEE} ` +
+      FRASE_COMO_IMPORTAR_ANUNCIO_VINCULADO_SHOPEE
+    );
+  }
   if (ausente) {
     return (
       `${FRASE_NAO_SUPORTADO[motivo]} ${ABERTURA_OBRIGATORIO_NAO_SUPORTADO}` +
@@ -453,6 +473,9 @@ const TITULO_SEM_LUGAR = 'Gravados, mas sem lugar nesta categoria';
 const FRASE_SEM_LUGAR =
   'A Shopee não mostra estes atributos com as escolhas atuais. Ao salvar uma alteração de ' +
   'atributos, o ERP os remove.';
+const FRASE_SEM_LUGAR_NO_ANUNCIO =
+  'A Shopee não mostra estes atributos com as escolhas atuais. Ao salvar uma alteração de ' +
+  'atributos, o ERP os tira da lista que o «Republicar» envia.';
 const ROTULO_MARCAR_PARA_REMOVER = 'Marcar para remover';
 const TITULO_REMOVIDOS_AO_SALVAR = 'Serão removidos ao salvar';
 const FRASE_DESFAZER_REMOCAO = 'Para mantê-los, use «Desfazer alterações».';
@@ -589,6 +612,7 @@ export function AtributosRascunhoShopee({
   editavel,
   onAtributo,
   ensaiarAdicao,
+  anuncio = false,
 }: AtributosRascunhoShopeeProps) {
   const raiz = `shopee-rascunho-atributos-${linkDocId}`;
   return (
@@ -600,11 +624,12 @@ export function AtributosRascunhoShopee({
       <Text size="sm" fw={500}>
         {ROTULO_ATRIBUTOS_RASCUNHO_SHOPEE}
       </Text>
-      <EstadoDaLeitura raiz={raiz} leitura={leitura} />
+      <EstadoDaLeitura raiz={raiz} leitura={leitura} anuncio={anuncio} />
       {linhas.map((linha) => (
         <LinhaDoAtributo
           key={linha.attributeId}
           linkDocId={linkDocId}
+          anuncio={anuncio}
           linha={linha}
           publicacao={publicacao}
           editavel={editavel}
@@ -618,7 +643,7 @@ export function AtributosRascunhoShopee({
             {TITULO_SEM_LUGAR}
           </Text>
           <Text size="xs" c="dimmed">
-            {FRASE_SEM_LUGAR}
+            {anuncio ? FRASE_SEM_LUGAR_NO_ANUNCIO : FRASE_SEM_LUGAR}
           </Text>
           <ItensDeAtributo itens={semLugar} riscados={false} />
           {editavel && semLugar[0] !== undefined && (
@@ -659,15 +684,17 @@ export function AtributosRascunhoShopee({
 function EstadoDaLeitura({
   raiz,
   leitura,
+  anuncio,
 }: {
   raiz: string;
   leitura: LeituraDosAtributosRascunhoShopee;
+  anuncio: boolean;
 }) {
   switch (leitura.tipo) {
     case TIPO_LEITURA_ATRIBUTOS_RASCUNHO_SHOPEE.semConta:
       return (
         <Text size="sm" data-testid={`${raiz}-sem-conta`}>
-          {fraseDosAtributosGravadosShopee(leitura.gravados)}
+          {fraseDosAtributosGravadosShopee(leitura.gravados, anuncio)}
         </Text>
       );
     case TIPO_LEITURA_ATRIBUTOS_RASCUNHO_SHOPEE.semCategoria:
@@ -777,6 +804,7 @@ interface PropsDaLinha {
   editavel: boolean;
   onAtributo: (attributeId: number, edicao: EdicaoDoAtributoShopee) => void;
   ensaiarAdicao: EnsaioDaAdicaoAtributoShopee;
+  anuncio: boolean;
 }
 
 function LinhaDoAtributo(props: PropsDaLinha) {
@@ -817,6 +845,7 @@ function ControleDaLinha(props: PropsDaLinha & { idDaLinha: string }) {
           linha={linha}
           motivo={linha.controle.motivo}
           publicacao={props.publicacao}
+          anuncio={props.anuncio}
         />
       );
     case TIPO_CONTROLE_ATRIBUTO_SHOPEE.listaUnica:
@@ -843,11 +872,13 @@ function NaoSuportado({
   linha,
   motivo,
   publicacao,
+  anuncio,
 }: {
   idDaLinha: string;
   linha: LinhaAtributoShopee;
   motivo: MotivoNaoSuportadoAtributoShopee;
   publicacao: EstadoPublicacaoRascunhoShopee;
+  anuncio: boolean;
 }) {
   const sobre = descricao(fraseDoPaiDoAtributoShopee(linha), linha.descricao);
   return (
@@ -866,6 +897,7 @@ function NaoSuportado({
           linha.obrigatorio,
           linha.problemas.some((p) => p.tipo === TIPO_PROBLEMA_ATRIBUTO_SHOPEE.obrigatorioAusente),
           publicacao,
+          anuncio,
         )}
       </Text>
       {linha.valores.map((valor, i) => (

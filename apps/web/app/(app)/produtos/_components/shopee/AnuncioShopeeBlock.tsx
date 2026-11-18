@@ -46,7 +46,10 @@ export interface AnuncioShopeeBlockProps {
  * A DRAFT (`ehRascunhoShopee`, `@delfrance/schemas` — #1911 P10; the editor
  * decides it, `RascunhosShopee.propsDe`) shows its editor (`RascunhoShopee`)
  * where the action row would be, and the size-chart
- * line reads the category the operator is EDITING, not the stored one. A
+ * line reads the category the operator is EDITING, not the stored one. An
+ * EDITABLE PUBLISHED listing (PR3) shows the same form in `modo: 'anuncio'`
+ * (save-only) ABOVE its action row — whose «Republicar» it gates while the form
+ * is dirty — and the size-chart line reads its edited category too. A
  * listing that was a draft being edited when it got published says so above
  * its state — the unsaved edits were not applied, and that is never silent.
  * The outcome panel gets what a draft's «Publicar» answers are read with
@@ -80,7 +83,10 @@ export function AnuncioShopeeBlock({
   // `null` unless the editor decided a DRAFT block for this link — by the
   // schemas' `ehRascunhoShopee`, ONE gate (#1369): a native-kit link with no
   // `item_id` is no draft and keeps the action row's "código inválido" line.
-  const rascunho = rascunhos.propsDe(conta, linkDocId);
+  const formulario = rascunhos.propsDe(conta, linkDocId);
+  const ehAnuncio = formulario?.modo === 'anuncio';
+  // The DRAFT's props only: its publish reading and its outcome inputs are a draft's.
+  const rascunho = formulario !== null && formulario.modo !== 'anuncio' ? formulario : null;
   const avisoDoRascunho = rascunhos.avisoDe(linkDocId);
   return (
     <Card withBorder padding="sm" data-testid={`shopee-anuncio-${linkDocId}`}>
@@ -112,8 +118,8 @@ export function AnuncioShopeeBlock({
         <TabelaMedidasShopeeResumo
           tabelaMedidas={tabelaMedidas}
           contaId={contaDoAnuncioLegivel ? conta.id : null}
-          // A draft: the category being EDITED — the one its publish would use.
-          categoryId={rascunho !== null ? rascunho.bloco.valores.category_id : link.category_id}
+          // A draft or an edited published listing: the category being EDITED — the one its publish would use.
+          categoryId={formulario !== null ? formulario.bloco.valores.category_id : link.category_id}
         />
         <KitAnuncioShopee
           db={db}
@@ -143,12 +149,19 @@ export function AnuncioShopeeBlock({
             descricaoPropria={textoUtilizavelShopee(link.description) !== null}
             destinosDasSuperficies={rascunhos.destinosDasSuperficies}
             rascunho={rascunhos.desfechoDoRascunhoDe(linkDocId)}
+            // A published listing the form edits: a refusal row routes to ITS form.
+            formularioDoAnuncio={rascunhos.formularioDoAnuncioDe(linkDocId)}
           />
         )}
-        {rascunho !== null ? (
-          <RascunhoShopee {...rascunho} />
-        ) : (
-          <AcoesAnuncioShopee contaId={conta.id} linkDocId={linkDocId} link={link} acoes={acoes} />
+        {formulario !== null && <RascunhoShopee {...formulario} />}
+        {(formulario === null || ehAnuncio) && (
+          <AcoesAnuncioShopee
+            contaId={conta.id}
+            linkDocId={linkDocId}
+            link={link}
+            acoes={acoes}
+            edicao={rascunhos.edicaoDoAnuncioDe(linkDocId)}
+          />
         )}
       </Stack>
     </Card>

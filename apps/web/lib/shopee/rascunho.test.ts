@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   AGUARDAR_ANUNCIO_INCERTO_SHOPEE_MS,
+  ALVO_EDICAO_SHOPEE,
   CAMPO_RASCUNHO_SHOPEE,
   CODIGO_RASCUNHO_SHOPEE,
   MAX_ITEM_NAME_RASCUNHO_SHOPEE,
@@ -24,6 +25,13 @@ import {
 } from '@delfrance/schemas';
 
 import {
+  FRASE_ANUNCIO_DEIXOU_DE_SER_EDITAVEL_DURANTE_EDICAO_SHOPEE,
+  FRASE_ANUNCIO_INEXISTENTE_SHOPEE,
+  FRASE_ANUNCIO_NAO_EDITAVEL_SHOPEE,
+  FRASE_ANUNCIO_SAIU_DURANTE_EDICAO_SHOPEE,
+  FRASE_CONFLITO_ILEGIVEL_ANUNCIO_SHOPEE,
+  FRASE_DESCARTE_EDICOES_INCERTO_SHOPEE,
+  FRASE_SERVIDOR_SEM_EDICAO_DE_ANUNCIO_SHOPEE,
   FRASE_CATEGORIA_TRAVADA_SHOPEE,
   FRASE_CONTA_NAO_ENCONTRADA_SHOPEE,
   FRASE_DESCARTE_EM_CONFLITO_SHOPEE,
@@ -103,6 +111,7 @@ import {
   edicaoRascunhoShopeeSuja,
   estadoDoBlocoRascunhoShopee,
   existentesDosVinculosShopee,
+  falhaDoDescarteDasEdicoesShopee,
   falhaDoRascunhoShopee,
   idDeCategoriaShopeeValido,
   idDeNovoRascunhoShopee,
@@ -3129,11 +3138,13 @@ describe('superficieDoCampoShopee — campo → the surface that fixes it (D17, 
     ehRascunho: true,
     descricaoPropria: false,
     logisticaEscolhida: false,
+    formularioDoAnuncio: null,
   } as const;
   const ANUNCIO = {
     ehRascunho: false,
     descricaoPropria: false,
     logisticaEscolhida: false,
+    formularioDoAnuncio: null,
   } as const;
   const linha = (
     campo: string | null,
@@ -3167,6 +3178,7 @@ describe('superficieDoCampoShopee — campo → the surface that fixes it (D17, 
         ehRascunho: true,
         descricaoPropria: true,
         logisticaEscolhida: false,
+        formularioDoAnuncio: null,
       }),
     ).toMatchObject({ tipo: 'rascunho', campo: 'description' });
     expect(superficieDoCampoShopee(linha('description'), RASCUNHO)).toEqual({
@@ -3178,6 +3190,7 @@ describe('superficieDoCampoShopee — campo → the surface that fixes it (D17, 
         ehRascunho: false,
         descricaoPropria: true,
         logisticaEscolhida: false,
+        formularioDoAnuncio: null,
       }),
     ).toEqual({ tipo: 'seller-centre' });
     expect(superficieDoCampoShopee(linha('description'), ANUNCIO)).toEqual({
@@ -4431,11 +4444,13 @@ describe('#1911 P13 — os atributos no rascunho: o quinto campo, a troca de cat
       ehRascunho: true,
       descricaoPropria: false,
       logisticaEscolhida: false,
+      formularioDoAnuncio: null,
     } as const;
     const ANUNCIO = {
       ehRascunho: false,
       descricaoPropria: false,
       logisticaEscolhida: false,
+      formularioDoAnuncio: null,
     } as const;
     const problema = (campo: string, motivo = 'atributo-obrigatorio') => ({
       campo,
@@ -4927,16 +4942,19 @@ describe('#1911 P16 — a logística no rascunho: o sexto campo do formulário',
       ehRascunho: true,
       descricaoPropria: false,
       logisticaEscolhida: true,
+      formularioDoAnuncio: null,
     } as const;
     const AUTOMATICA = {
       ehRascunho: true,
       descricaoPropria: false,
       logisticaEscolhida: false,
+      formularioDoAnuncio: null,
     } as const;
     const ANUNCIO_COM_FLAG = {
       ehRascunho: false,
       descricaoPropria: false,
       logisticaEscolhida: true,
+      formularioDoAnuncio: null,
     } as const;
     const PESO = { tipo: 'produto', campo: 'pesoBrutoKg' };
     const problema = (campo: string, motivo = 'logistica-sem-canal') => ({
@@ -4989,6 +5007,589 @@ describe('#1911 P16 — a logística no rascunho: o sexto campo do formulário',
       }
       // Never a prefix: `logistic_infos` routes nowhere.
       expect(superficieDoCampoShopee(problema('logistic_infos'), ESCOLHIDA)).toBeNull();
+    });
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*          Editing a PUBLISHED listing's content (alvo 'anuncio', save-only)   */
+/* -------------------------------------------------------------------------- */
+
+describe('a PUBLISHED listing’s edit (alvo anuncio) — each rule beside its draft near-miss', () => {
+  const ANUNCIO_ALVO = ALVO_EDICAO_SHOPEE.anuncio;
+  const ATR_A = { attribute_id: 10, attribute_value_list: [{ value_id: 5 }] };
+  const ATR_B = { attribute_id: 11, attribute_value_list: [{ value_id: 6 }] };
+  const ATR_NOVO = { attribute_id: 20, attribute_value_list: [{ value_id: 1 }] };
+  /** A stored PUBLISHED link (editable: positive item_id, not removed, not superseded, no native kit). */
+  const publicado = (extra: Record<string, unknown> = {}) =>
+    guardado({ item_id: 1000001, ...extra });
+  const edicaoDoAnuncio = (link: Record<string, unknown>, linkDocId = 'L1') =>
+    edicaoDoRascunhoGuardadoShopee({ linkDocId, contaId: CONTA, link, alvo: ANUNCIO_ALVO });
+  const comAtributos = (
+    e: EdicaoRascunhoShopee,
+    attributes: EdicaoRascunhoShopee['atual']['attributes'],
+  ): EdicaoRascunhoShopee => ({
+    ...e,
+    atual: { ...e.atual, attributes },
+  });
+  const sujar = (e: EdicaoRascunhoShopee) =>
+    comCampoRascunhoShopee(e, CAMPO_RASCUNHO_SHOPEE.itemName, 'Outro título');
+
+  describe('the entry', () => {
+    it('carries its alvo for life: anuncio when asked, rascunho by default and for a new draft', () => {
+      expect(edicaoDoAnuncio(publicado()).alvo).toBe('anuncio');
+      expect(edicaoDe(guardado()).alvo).toBe('rascunho');
+      expect(
+        novaEdicaoRascunhoShopee({ linkDocId: ID_NOVO, contaId: CONTA, nomeProduto: 'X' }).alvo,
+      ).toBe('rascunho');
+    });
+  });
+
+  describe('plan — the 422 causes, said before the click', () => {
+    it('marca cleared to null ⇒ marca-vazia ⟷ «Sem marca» (brand 0) passes ⟷ a draft with the same edit gets none', () => {
+      const vazio = comCampoRascunhoShopee(
+        edicaoDoAnuncio(publicado()),
+        CAMPO_RASCUNHO_SHOPEE.marca,
+        null,
+      );
+      const plano = planoDoRascunhoShopee(vazio, LIVRE);
+      expect(plano.bloqueiosDoAnuncio).toEqual(['marca-vazia']);
+      expect(plano.impedimento).toBe('edicao-invalida-no-anuncio');
+      expect(corpoAtualizarRascunhoShopee(vazio, LIVRE, { produtoId: PRODUTO })).toBeNull();
+      // sujo is unchanged: the field is still an edit.
+      expect(plano.sujo).toBe(true);
+
+      const semMarca = comCampoRascunhoShopee(
+        edicaoDoAnuncio(publicado()),
+        CAMPO_RASCUNHO_SHOPEE.marca,
+        MARCA_SEM_MARCA_RASCUNHO_SHOPEE,
+      );
+      expect(planoDoRascunhoShopee(semMarca, LIVRE).bloqueiosDoAnuncio).toEqual([]);
+      expect(planoDoRascunhoShopee(semMarca, LIVRE).impedimento).toBeNull();
+
+      const rascunho = comCampoRascunhoShopee(
+        edicaoDe(guardado()),
+        CAMPO_RASCUNHO_SHOPEE.marca,
+        null,
+      );
+      expect(planoDoRascunhoShopee(rascunho, LIVRE).bloqueiosDoAnuncio).toEqual([]);
+    });
+
+    it('logistic_info back to «Automática» (null) ⇒ logistica-automatica ⟷ a draft gets none', () => {
+      const lista = [canalLigado(CANAL_A)];
+      const automatica = comCampoRascunhoShopee(
+        edicaoDoAnuncio(comCanaisEscolhidos(lista, { item_id: 1000001 })),
+        CAMPO_RASCUNHO_SHOPEE.logisticInfo,
+        null,
+      );
+      expect(planoDoRascunhoShopee(automatica, LIVRE).bloqueiosDoAnuncio).toEqual([
+        'logistica-automatica',
+      ]);
+      const doRascunho = comCampoRascunhoShopee(
+        edicaoDe(comCanaisEscolhidos(lista)),
+        CAMPO_RASCUNHO_SHOPEE.logisticInfo,
+        null,
+      );
+      expect(planoDoRascunhoShopee(doRascunho, LIVRE).bloqueiosDoAnuncio).toEqual([]);
+    });
+
+    it('attributes emptied over a non-empty list ⇒ atributos-esvaziados ⟷ removing ONE of two passes ⟷ a draft gets none', () => {
+      const base = publicado({ attributes: [ATR_A, ATR_B] });
+      const esvaziado = comAtributos(edicaoDoAnuncio(base), []);
+      expect(planoDoRascunhoShopee(esvaziado, LIVRE).bloqueiosDoAnuncio).toEqual([
+        'atributos-esvaziados',
+      ]);
+      const umSo = comAtributos(edicaoDoAnuncio(base), [ATR_A]);
+      expect(planoDoRascunhoShopee(umSo, LIVRE).bloqueiosDoAnuncio).toEqual([]);
+      expect(planoDoRascunhoShopee(umSo, LIVRE).impedimento).toBeNull();
+      const doRascunho = comAtributos(edicaoDe(guardado({ attributes: [ATR_A, ATR_B] })), []);
+      expect(planoDoRascunhoShopee(doRascunho, LIVRE).bloqueiosDoAnuncio).toEqual([]);
+    });
+
+    it('a category change over a non-empty list with no attributes ⇒ categoria-sem-atributos ⟷ WITH new attributes passes ⟷ putting the held category back passes', () => {
+      const base = publicado({ attributes: [ATR_A] });
+      const trocada = comCampoRascunhoShopee(
+        edicaoDoAnuncio(base),
+        CAMPO_RASCUNHO_SHOPEE.categoryId,
+        100088,
+      );
+      expect(planoDoRascunhoShopee(trocada, LIVRE).bloqueiosDoAnuncio).toEqual([
+        'categoria-sem-atributos',
+      ]);
+      const comNovos = comAtributos(trocada, [ATR_NOVO]);
+      expect(planoDoRascunhoShopee(comNovos, LIVRE).bloqueiosDoAnuncio).toEqual([]);
+      const deVolta = comCampoRascunhoShopee(trocada, CAMPO_RASCUNHO_SHOPEE.categoryId, 100087);
+      const planoDeVolta = planoDoRascunhoShopee(deVolta, LIVRE);
+      expect(planoDeVolta.bloqueiosDoAnuncio).toEqual([]);
+      expect(planoDeVolta.sujo).toBe(false);
+    });
+
+    it('an in-flight publish outranks the 422 reading', () => {
+      const e = comCampoRascunhoShopee(
+        edicaoDoAnuncio(publicado()),
+        CAMPO_RASCUNHO_SHOPEE.marca,
+        null,
+      );
+      expect(planoDoRascunhoShopee(e, EM_ANDAMENTO).impedimento).toBe('publicacao-em-andamento');
+    });
+  });
+
+  describe('the body — alvo only for a published edit', () => {
+    it('an anuncio body names alvo (strict) ⟷ the draft body stays byte-identical, with no alvo key', () => {
+      const corpo = atualizacaoAceita(sujar(edicaoDoAnuncio(publicado())));
+      expect(corpo).toStrictEqual({
+        integracaoId: CONTA,
+        produtoId: PRODUTO,
+        linkDocId: 'L1',
+        base: { item_name: 'Camiseta' },
+        patch: { item_name: 'Outro título' },
+        alvo: 'anuncio',
+      });
+      const doRascunho = atualizacaoAceita(sujar(edicaoDe(guardado(), 'L1')));
+      expect(doRascunho).toStrictEqual({
+        integracaoId: CONTA,
+        produtoId: PRODUTO,
+        linkDocId: 'L1',
+        base: { item_name: 'Camiseta' },
+        patch: { item_name: 'Outro título' },
+      });
+      expect(doRascunho).not.toHaveProperty('alvo');
+    });
+  });
+
+  describe('reconcile — a published entry follows the LISTING', () => {
+    const agora = (link: Record<string, unknown> | undefined, over = {}) => ({
+      link,
+      snapshot: [],
+      servidorConfirmado: true,
+      ...over,
+    });
+
+    it('superseded, removed or a native kit ⇒ largar, with a notice only when it held work ⟷ still editable keeps', () => {
+      const sujo = sujar(edicaoDoAnuncio(publicado()));
+      const limpo = edicaoDoAnuncio(publicado());
+      for (const extra of [
+        { substituidoPorLinkDocId: 'L2' },
+        { estadoAnuncio: 'removido' },
+        { kitNativo: true },
+      ]) {
+        expect(conciliarEdicaoRascunhoShopee(sujo, agora(publicado(extra)))).toEqual({
+          acao: 'largar',
+          aviso: FRASE_ANUNCIO_DEIXOU_DE_SER_EDITAVEL_DURANTE_EDICAO_SHOPEE,
+        });
+        expect(conciliarEdicaoRascunhoShopee(limpo, agora(publicado(extra)))).toEqual({
+          acao: 'largar',
+          aviso: null,
+        });
+      }
+      expect(conciliarEdicaoRascunhoShopee(sujo, agora(publicado()))).toEqual({ acao: 'manter' });
+    });
+
+    it('the link gone from a SERVER snapshot ⇒ largar with the left-the-produto notice ⟷ a cache-served snapshot proves nothing', () => {
+      const sujo = sujar(edicaoDoAnuncio(publicado()));
+      expect(conciliarEdicaoRascunhoShopee(sujo, agora(undefined))).toEqual({
+        acao: 'largar',
+        aviso: FRASE_ANUNCIO_SAIU_DURANTE_EDICAO_SHOPEE,
+      });
+      expect(
+        conciliarEdicaoRascunhoShopee(sujo, agora(undefined, { servidorConfirmado: false })),
+      ).toEqual({ acao: 'manter' });
+    });
+
+    it('NEAR-MISS: a DRAFT entry over an editable published link is the draft arm — dropped with the published-meanwhile notice', () => {
+      const sujo = sujar(edicaoDe(guardado()));
+      expect(conciliarEdicaoRascunhoShopee(sujo, agora(publicado()))).toEqual({
+        acao: 'largar',
+        aviso: FRASE_RASCUNHO_PUBLICADO_DURANTE_EDICAO_SHOPEE,
+      });
+    });
+  });
+
+  describe('the save bridge waits on the edit REVISION', () => {
+    const linhas = (extra: Record<string, unknown>) => [{ id: 'L1', data: publicado(extra) }];
+    const salvo = () =>
+      marcarRascunhoShopeeSalvo(
+        sujar(edicaoDoAnuncio(publicado())),
+        linhas({ ultimaModificacao: 5, edicaoErpRevisao: 2 }),
+      );
+    const agora = (extra: Record<string, unknown>) => ({
+      link: publicado(extra),
+      snapshot: ['novo'],
+      servidorConfirmado: true,
+    });
+
+    it('records the revision as read when the request left ⟷ a draft records the stamp alone', () => {
+      expect(salvo().salvo?.documento).toStrictEqual({
+        ultimaModificacao: 5,
+        edicaoErpRevisao: 2,
+      });
+      const doRascunho = marcarRascunhoShopeeSalvo(
+        sujar(edicaoDe(guardado({ ultimaModificacao: 5 }), 'L1')),
+        [{ id: 'L1', data: guardado({ ultimaModificacao: 5 }) }],
+      );
+      expect(doRascunho.salvo?.documento).toStrictEqual({ ultimaModificacao: 5 });
+    });
+
+    it('a foreign write (stamp moved, revision equal) is NOT the echo ⟷ the revision moving is', () => {
+      expect(
+        conciliarEdicaoRascunhoShopee(
+          salvo(),
+          agora({ ultimaModificacao: 9, edicaoErpRevisao: 2 }),
+        ),
+      ).toEqual({ acao: 'manter' });
+      expect(
+        conciliarEdicaoRascunhoShopee(
+          salvo(),
+          agora({ ultimaModificacao: 9, edicaoErpRevisao: 3 }),
+        ),
+      ).toEqual({ acao: 'largar', aviso: null });
+    });
+
+    it('a never-edited link (no revision) is waited on until a revision appears', () => {
+      const e = marcarRascunhoShopeeSalvo(
+        sujar(edicaoDoAnuncio(publicado())),
+        linhas({ ultimaModificacao: 5 }),
+      );
+      expect(conciliarEdicaoRascunhoShopee(e, agora({ ultimaModificacao: 9 }))).toEqual({
+        acao: 'manter',
+      });
+      expect(
+        conciliarEdicaoRascunhoShopee(e, agora({ ultimaModificacao: 9, edicaoErpRevisao: 1 })),
+      ).toEqual({ acao: 'largar', aviso: null });
+    });
+
+    it('just saved, then the listing stops being editable ⇒ dropped (no revision will ever move)', () => {
+      expect(
+        conciliarEdicaoRascunhoShopee(
+          salvo(),
+          agora({ ultimaModificacao: 9, edicaoErpRevisao: 2, substituidoPorLinkDocId: 'L2' }),
+        ),
+      ).toEqual({ acao: 'largar', aviso: null });
+    });
+
+    it('NEAR-MISS: a draft entry still waits on ultimaModificacao alone', () => {
+      const e = marcarRascunhoShopeeSalvo(
+        sujar(edicaoDe(guardado({ ultimaModificacao: 5 }), 'L1')),
+        [{ id: 'L1', data: guardado({ ultimaModificacao: 5 }) }],
+      );
+      const doRascunho = (ultimaModificacao: number) => ({
+        link: guardado({ ultimaModificacao }),
+        snapshot: ['novo'],
+        servidorConfirmado: true,
+      });
+      expect(conciliarEdicaoRascunhoShopee(e, doRascunho(5))).toEqual({ acao: 'manter' });
+      expect(conciliarEdicaoRascunhoShopee(e, doRascunho(6))).toEqual({
+        acao: 'largar',
+        aviso: null,
+      });
+    });
+  });
+
+  describe('the block', () => {
+    const blocoDe = (over: Partial<EntradaDoBlocoRascunhoShopee> = {}) =>
+      estadoDoBlocoRascunhoShopee({
+        link: publicado(),
+        edicao: null,
+        nowMs: NOW,
+        kitVirtual: false,
+        servidorConfirmado: true,
+        podeEditar: true,
+        ocupado: false,
+        alvo: ANUNCIO_ALVO,
+        ...over,
+      });
+    const blocoDoRascunho = (over: Partial<EntradaDoBlocoRascunhoShopee> = {}) =>
+      blocoDe({ link: guardado(), alvo: undefined, ...over });
+
+    it('no discard for a published listing ⟷ a draft block may be discarded', () => {
+      expect(blocoDe().podeDescartar).toBe(false);
+      expect(blocoDe().alvo).toBe('anuncio');
+      expect(blocoDoRascunho().podeDescartar).toBe(true);
+      expect(blocoDoRascunho().alvo).toBe('rascunho');
+    });
+
+    it('kitVirtual is ignored on a published listing ⟷ it still locks a draft', () => {
+      const anuncio = blocoDe({ kitVirtual: true });
+      expect(anuncio.kitVirtual).toBe(false);
+      expect(anuncio.camposEditaveis).toBe(true);
+      expect(anuncio.avisos).not.toContain(FRASE_RASCUNHO_EM_KIT_VIRTUAL_SHOPEE);
+      const rascunho = blocoDoRascunho({ kitVirtual: true });
+      expect(rascunho.kitVirtual).toBe(true);
+      expect(rascunho.camposEditaveis).toBe(false);
+    });
+
+    it('an UNSTAMPED channel list is not editable and asks for the import ⟷ a stamped one is', () => {
+      const legado = blocoDe({ link: publicado({ logistic_info: [canalLigado(CANAL_A)] }) });
+      expect(legado.logisticaPorImportar).toBe(true);
+      expect(legado.logisticaEditavel).toBe(false);
+      const carimbado = blocoDe({
+        link: comCanaisEscolhidos([canalLigado(CANAL_A)], { item_id: 1000001 }),
+      });
+      expect(carimbado.logisticaPorImportar).toBe(false);
+      expect(carimbado.logisticaEditavel).toBe(true);
+      // A draft never asks for an import.
+      expect(blocoDoRascunho().logisticaPorImportar).toBe(false);
+    });
+
+    it('descricaoEstendida only for a published extended description', () => {
+      expect(
+        blocoDe({ link: publicado({ description_type: 'extended' }) }).descricaoEstendida,
+      ).toBe(true);
+      expect(blocoDe({ link: publicado({ description_type: 'normal' }) }).descricaoEstendida).toBe(
+        false,
+      );
+      expect(
+        blocoDoRascunho({ link: guardado({ description_type: 'extended' }) }).descricaoEstendida,
+      ).toBe(false);
+    });
+
+    it('a removed attribute (same category) and a changed category are flagged ⟷ their near-misses are not', () => {
+      const base = publicado({ attributes: [ATR_A, ATR_B] });
+      const removido = blocoDe({
+        link: base,
+        edicao: comAtributos(edicaoDoAnuncio(base), [ATR_A]),
+      });
+      expect(removido.atributosRemovidosDoAnuncio).toBe(true);
+      expect(removido.categoriaTrocadaNoAnuncio).toBe(false);
+      // Nothing removed (one added).
+      const acrescentado = blocoDe({
+        link: base,
+        edicao: comAtributos(edicaoDoAnuncio(base), [ATR_A, ATR_B, ATR_NOVO]),
+      });
+      expect(acrescentado.atributosRemovidosDoAnuncio).toBe(false);
+      // A category change empties the list: that is the category warning, not a removal.
+      const trocada = blocoDe({
+        link: base,
+        edicao: comCampoRascunhoShopee(
+          edicaoDoAnuncio(base),
+          CAMPO_RASCUNHO_SHOPEE.categoryId,
+          100088,
+        ),
+      });
+      expect(trocada.categoriaTrocadaNoAnuncio).toBe(true);
+      expect(trocada.atributosRemovidosDoAnuncio).toBe(false);
+      expect(trocada.bloqueiosDoAnuncio).toEqual(['categoria-sem-atributos']);
+      // A draft never flags either.
+      const linkDoRascunho = guardado({ attributes: [ATR_A, ATR_B] });
+      const doRascunho = blocoDoRascunho({
+        link: linkDoRascunho,
+        edicao: comAtributos(edicaoDe(linkDoRascunho), [ATR_A]),
+      });
+      expect(doRascunho.atributosRemovidosDoAnuncio).toBe(false);
+      expect(doRascunho.categoriaTrocadaNoAnuncio).toBe(false);
+    });
+  });
+
+  describe('failure of a published save (falhaDoRascunhoShopee with alvo anuncio)', () => {
+    const http = (
+      status: number,
+      code: string | null,
+      detalhes: Partial<DetalhesErroShopee> = {},
+      message = 'frase do servidor',
+    ) =>
+      new ShopeeClientHttpError(message, status, code, null, null, {
+        ...DETALHES_ERRO_SHOPEE_VAZIOS,
+        ...detalhes,
+      });
+    const F = CODIGO_FALHA_SHOPEE;
+    const falha = (err: ShopeeClientHttpError) =>
+      falhaDoRascunhoShopee(err, 'atualizar', ANUNCIO_ALVO);
+
+    it('409 ANUNCIO_NAO_EDITAVEL drops the entry; 404 says the listing is gone ⟷ the draft 404 keeps its sentence', () => {
+      expect(falha(http(409, F.anuncioNaoEditavel))).toEqual({
+        tipo: 'largar',
+        mensagem: FRASE_ANUNCIO_NAO_EDITAVEL_SHOPEE,
+      });
+      expect(falha(http(404, F.rascunhoInexistente))).toEqual({
+        tipo: 'largar',
+        mensagem: FRASE_ANUNCIO_INEXISTENTE_SHOPEE,
+      });
+      expect(falhaDoRascunhoShopee(http(404, F.rascunhoInexistente), 'atualizar')).toEqual({
+        tipo: 'largar',
+        mensagem: FRASE_RASCUNHO_INEXISTENTE_SHOPEE,
+      });
+    });
+
+    it('422 keeps the entry and shows the server sentence verbatim (never uncertain)', () => {
+      expect(
+        falha(http(422, F.anuncioEdicaoInvalida, {}, 'Marca obrigatória. Nada foi gravado.')),
+      ).toEqual({
+        tipo: 'mensagem',
+        mensagem: 'Marca obrigatória. Nada foi gravado.',
+        incerto: false,
+      });
+    });
+
+    it('CONFLITO: an unreadable list says so for the listing; [] stays the concurrency sentence; a field list opens the modal', () => {
+      expect(falha(http(409, F.rascunhoConflito, { conflitos: null }))).toEqual({
+        tipo: 'mensagem',
+        mensagem: FRASE_CONFLITO_ILEGIVEL_ANUNCIO_SHOPEE,
+        incerto: false,
+      });
+      expect(falha(http(409, F.rascunhoConflito, { conflitos: [] }))).toEqual({
+        tipo: 'mensagem',
+        mensagem: fraseDoConflitoDeConcorrenciaShopee('atualizar'),
+        incerto: false,
+      });
+      const conflitos = [{ campo: CAMPO_RASCUNHO_SHOPEE.itemName, atual: 'Deles' }];
+      expect(falha(http(409, F.rascunhoConflito, { conflitos }))).toEqual({
+        tipo: 'conflito',
+        conflitos,
+      });
+    });
+
+    it('a codeless 400 reads «older server» ONLY when its message names alvo ⟷ any other 400 is not that', () => {
+      expect(falha(http(400, null, {}, 'Unrecognized key: "alvo"'))).toEqual({
+        tipo: 'mensagem',
+        mensagem: FRASE_SERVIDOR_SEM_EDICAO_DE_ANUNCIO_SHOPEE,
+        incerto: false,
+      });
+      const outro = falha(http(400, null, {}, 'O patch está vazio.'));
+      expect(outro).toMatchObject({ tipo: 'mensagem', incerto: false });
+      expect(outro).not.toMatchObject({ mensagem: FRASE_SERVIDOR_SEM_EDICAO_DE_ANUNCIO_SHOPEE });
+      // The same sentence on a DRAFT's edit is not reinterpreted.
+      expect(
+        falhaDoRascunhoShopee(http(400, null, {}, 'Unrecognized key: "alvo"'), 'atualizar'),
+      ).not.toMatchObject({ mensagem: FRASE_SERVIDOR_SEM_EDICAO_DE_ANUNCIO_SHOPEE });
+    });
+  });
+
+  describe('falhaDoDescarteDasEdicoesShopee', () => {
+    const http = (
+      status: number,
+      code: string | null,
+      message = 'frase do servidor',
+      kind: string | null = null,
+    ) => new ShopeeClientHttpError(message, status, code, null, kind, DETALHES_ERRO_SHOPEE_VAZIOS);
+    const F = CODIGO_FALHA_SHOPEE;
+    const INCERTO = { mensagem: FRASE_DESCARTE_EDICOES_INCERTO_SHOPEE, incerto: true };
+
+    it('no trustworthy answer — network, an unreadable 2xx, a 5xx without a Shopee kind — is uncertain', () => {
+      expect(
+        falhaDoDescarteDasEdicoesShopee(new ShopeeClientNetworkError('rede', new TypeError('x'))),
+      ).toEqual(INCERTO);
+      expect(
+        falhaDoDescarteDasEdicoesShopee(new ShopeeClientRespostaInvalidaError('x', 200, ['a'])),
+      ).toEqual(INCERTO);
+      expect(falhaDoDescarteDasEdicoesShopee(http(500, null))).toEqual(INCERTO);
+      expect(falhaDoDescarteDasEdicoesShopee(http(503, null))).toEqual(INCERTO);
+    });
+
+    it('a 502 carrying a Shopee kind is a DEFINITE failure (the route reads Shopee before it writes) ⟷ the same 502 without a kind is uncertain', () => {
+      for (const kind of ['burst', 'daily', 'reauth']) {
+        const r = falhaDoDescarteDasEdicoesShopee(http(502, 'SHOPEE_HTTP_ERROR', 'x', kind));
+        expect(r.incerto, kind).toBe(false);
+        expect(r.mensagem, kind).not.toBe(FRASE_DESCARTE_EDICOES_INCERTO_SHOPEE);
+      }
+      expect(falhaDoDescarteDasEdicoesShopee(http(502, null))).toEqual(INCERTO);
+    });
+
+    it('404 / 409 NAO_EDITAVEL / 409 CONFLITO pass the server sentence through verbatim — the two CONFLITO sentences stay distinct', () => {
+      for (const [status, code] of [
+        [404, F.rascunhoInexistente],
+        [409, F.anuncioNaoEditavel],
+        [409, F.rascunhoConflito],
+      ] as const) {
+        expect(falhaDoDescarteDasEdicoesShopee(http(status, code, 'A revisão mudou.'))).toEqual({
+          mensagem: 'A revisão mudou.',
+          incerto: false,
+        });
+        expect(
+          falhaDoDescarteDasEdicoesShopee(http(status, code, 'Outra gravação em curso.')),
+        ).toEqual({ mensagem: 'Outra gravação em curso.', incerto: false });
+      }
+    });
+
+    it('anything else goes down the channel’s ladder, never uncertain', () => {
+      const r = falhaDoDescarteDasEdicoesShopee(http(400, null, 'Corpo inválido.'));
+      expect(r.incerto).toBe(false);
+      expect(r.mensagem.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('surfaces — an editable published listing routes to its own form', () => {
+    const M = MOTIVO_ANUNCIO_SHOPEE;
+    const linha = (campo: string | null, motivo = 'qualquer') => ({ campo, motivo, acao: null });
+    const ctx = (
+      formularioDoAnuncio: { readonly logisticaConfiavel: boolean } | null,
+      over: { ehRascunho?: boolean; descricaoPropria?: boolean } = {},
+    ) => ({
+      ehRascunho: false,
+      descricaoPropria: false,
+      logisticaEscolhida: false,
+      formularioDoAnuncio,
+      ...over,
+    });
+    const FORM = { logisticaConfiavel: true };
+
+    it('item_name, category_id and attribute_list ⇒ anuncio ⟷ with no form they keep Seller Centre', () => {
+      for (const campo of ['item_name', 'category_id', 'attribute_list[COLOR]']) {
+        expect(superficieDoCampoShopee(linha(campo), ctx(FORM)), campo).toMatchObject({
+          tipo: 'anuncio',
+        });
+        expect(superficieDoCampoShopee(linha(campo), ctx(null)), campo).toEqual({
+          tipo: 'seller-centre',
+        });
+      }
+    });
+
+    it('description follows descricaoPropria; brand carries the same warning rule as a draft', () => {
+      expect(
+        superficieDoCampoShopee(linha('description'), ctx(FORM, { descricaoPropria: true })),
+      ).toMatchObject({ tipo: 'anuncio', campo: 'description' });
+      expect(superficieDoCampoShopee(linha('description'), ctx(FORM))).toEqual({
+        tipo: 'produto',
+        campo: 'extraData',
+      });
+      expect(superficieDoCampoShopee(linha('brand'), ctx(FORM))).toEqual({
+        tipo: 'anuncio',
+        campo: 'marca',
+        aviso: FRASE_MARCA_PODE_NAO_VALER_SHOPEE,
+      });
+      expect(superficieDoCampoShopee(linha('brand', M.marcaNaoEscolhida), ctx(FORM))).toEqual({
+        tipo: 'anuncio',
+        campo: 'marca',
+        aviso: null,
+      });
+      expect(superficieDoCampoShopee(linha('brand'), ctx(null))).toEqual({
+        tipo: 'seller-centre',
+      });
+    });
+
+    it('logistics: a TRUSTED list ⇒ the form; an untrusted one ⇒ the weight; the import-remedy motivos ⇒ null first', () => {
+      expect(
+        superficieDoCampoShopee(linha('logistic_info', 'logistica-sem-canal'), ctx(FORM)),
+      ).toEqual({ tipo: 'anuncio', campo: 'logistic_info', aviso: null });
+      expect(
+        superficieDoCampoShopee(
+          linha('logistic_info', 'logistica-sem-canal'),
+          ctx({ logisticaConfiavel: false }),
+        ),
+      ).toEqual({ tipo: 'produto', campo: 'pesoBrutoKg' });
+      for (const motivo of [M.logisticaNaoConfirmada, M.logisticaSemValorGravado]) {
+        expect(superficieDoCampoShopee(linha('logistic_info', motivo), ctx(FORM))).toBeNull();
+      }
+    });
+
+    it('a draft keeps precedence over the listing form', () => {
+      expect(
+        superficieDoCampoShopee(linha('item_name'), ctx(FORM, { ehRascunho: true })),
+      ).toMatchObject({ tipo: 'rascunho' });
+    });
+
+    it('the button label names the listing', () => {
+      expect(
+        rotuloDaSuperficieShopee(
+          { tipo: 'anuncio', campo: CAMPO_RASCUNHO_SHOPEE.attributes, aviso: null },
+          null,
+        ),
+      ).toBe(`Corrigir no anúncio: ${ROTULO_CAMPO_RASCUNHO_SHOPEE.attributes}`);
+      expect(
+        rotuloDaSuperficieShopee(
+          { tipo: 'rascunho', campo: CAMPO_RASCUNHO_SHOPEE.attributes, aviso: null },
+          null,
+        ),
+      ).toBe(`Corrigir no rascunho: ${ROTULO_CAMPO_RASCUNHO_SHOPEE.attributes}`);
     });
   });
 });

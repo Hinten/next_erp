@@ -47,7 +47,11 @@
  * each `{logistic_id, enabled, is_free}`, sorted by the schemas' ordering —
  * never only the row that moved:
  *
- * - a stored channel the shop no longer offers (no selectable row) is DROPPED;
+ * - a stored channel the shop no longer offers (no selectable row) is DROPPED —
+ *   except on a PUBLISHED listing's edit ({@link OpcoesDaMudancaDoCanalShopee}
+ *   `manterForaDaLista`), where it is carried VERBATIM: the server appends
+ *   every stored channel a saved list omits as `enabled: false`, so dropping
+ *   it would switch it OFF at the next «Republicar»;
  * - an `obrigatorio` channel is written ON, whatever the value held (D16-3) —
  *   the switch says «fica sempre ligado», and every list this file builds
  *   keeps that true;
@@ -93,6 +97,13 @@
  * never refetches on focus, so a produto save must read the channels again
  * (D16-10) — and an answer read for another revision never becomes the
  * prefill ({@link mesmaChaveCanaisShopee}).
+ *
+ * ⚠️ Known residual: a PUBLISHED listing's verdicts also depend on the link's
+ * stored logistics (its trusted `size_id`/`shipping_fee`), which the key does
+ * NOT carry — the schemas say nothing reads the list's raw provenance stamp.
+ * After a discard or an import the mounted section keeps the verdicts
+ * of the list it read; they are read again at the next mount (`staleTime: 0`)
+ * or produto revision.
  */
 import {
   MSG_LOGISTICA_CANAL_REPETIDO_RASCUNHO_SHOPEE,
@@ -139,14 +150,18 @@ export function modoDaLogisticaShopee(valor: readonly Canal[] | null): ModoLogis
  * `['shopee','canais',contaId,produtoId,revisaoDoProduto]` — one answer per
  * conta, produto and STORED revision of that produto (`ultimaModificacao`, or
  * `null` while unknown): another revision is another key, so the channels are
- * read again after a produto save (D16-10).
+ * read again after a produto save (D16-10). A PUBLISHED listing's read adds a
+ * sixth element, its `linkDocId` (the verdicts depend on that link's stored
+ * logistics); omitted ⇒ the five-element key, byte-identical.
  */
 export function chaveCanaisShopee(
   contaId: string,
   produtoId: string,
   revisaoDoProduto: number | null,
+  linkDocId?: string,
 ): readonly unknown[] {
-  return ['shopee', 'canais', contaId, produtoId, revisaoDoProduto];
+  const base = ['shopee', 'canais', contaId, produtoId, revisaoDoProduto];
+  return linkDocId === undefined ? base : [...base, linkDocId];
 }
 
 /**
@@ -368,6 +383,17 @@ export interface MudancaDoCanalShopee {
   readonly freteGratis?: boolean;
 }
 
+/** Options of {@link comCanalShopee}. */
+export interface OpcoesDaMudancaDoCanalShopee {
+  /**
+   * `true` (a PUBLISHED listing's edit): every stored channel with NO row
+   * (not selectable, or absent from the answer) is carried VERBATIM, enabled
+   * state unchanged, once per id (the FIRST sighting). `false` (a draft): such
+   * a channel is dropped, as always.
+   */
+  readonly manterForaDaLista: boolean;
+}
+
 /**
  * The value after one interaction on the row `logisticId` — the FULL list of
  * the answer's selectable channels, sorted, each as its row shows it, with the
@@ -385,6 +411,7 @@ export function comCanalShopee(
   resposta: RespostaCanaisShopee,
   logisticId: number,
   mudanca: MudancaDoCanalShopee,
+  opcoes: OpcoesDaMudancaDoCanalShopee = { manterForaDaLista: false },
 ): readonly Canal[] {
   const canais = canaisSelecionaveis(resposta);
   const alvo = canais.find((canal) => canal.logisticsChannelId === logisticId);
@@ -396,18 +423,28 @@ export function comCanalShopee(
   if (mudanca.freteGratis === true && atual.bloqueiaFreteGratis) return valor;
   if (mudanca.freteGratis !== undefined && desligadaIndisponivel(atual)) return valor;
 
-  return ordenadosPorCanalLogisticaShopee(
-    canais.map((canal): Canal => {
-      const linha = linhaDoCanal(canal, entradas.get(canal.logisticsChannelId));
-      const ehAlvo = canal.logisticsChannelId === logisticId;
-      return {
-        logistic_id: canal.logisticsChannelId,
-        enabled: ehAlvo && mudanca.ligado !== undefined ? mudanca.ligado : linha.ligado,
-        is_free:
-          ehAlvo && mudanca.freteGratis !== undefined ? mudanca.freteGratis : linha.freteGratis,
-      };
-    }),
-  );
+  const daLoja = canais.map((canal): Canal => {
+    const linha = linhaDoCanal(canal, entradas.get(canal.logisticsChannelId));
+    const ehAlvo = canal.logisticsChannelId === logisticId;
+    return {
+      logistic_id: canal.logisticsChannelId,
+      enabled: ehAlvo && mudanca.ligado !== undefined ? mudanca.ligado : linha.ligado,
+      is_free:
+        ehAlvo && mudanca.freteGratis !== undefined ? mudanca.freteGratis : linha.freteGratis,
+    };
+  });
+  if (!opcoes.manterForaDaLista) return ordenadosPorCanalLogisticaShopee(daLoja);
+  // A published edit: the stored channels with no row stay exactly as stored
+  // (`entradas` already keeps the FIRST entry per id).
+  const comLinha = new Set(canais.map((canal) => canal.logisticsChannelId));
+  const foraDaLista: Canal[] = [];
+  for (const [id, entrada] of entradas) {
+    // `is_free` folded to a boolean (a trusted projection may hold `null`, which
+    // the strict write refuses): the server's own omitted-channel off does the
+    // same (`isFree ?? false`).
+    if (!comLinha.has(id)) foraDaLista.push({ ...entrada, is_free: entrada.is_free ?? false });
+  }
+  return ordenadosPorCanalLogisticaShopee([...daLoja, ...foraDaLista]);
 }
 
 /* -------------------------------------------------------------------------- */

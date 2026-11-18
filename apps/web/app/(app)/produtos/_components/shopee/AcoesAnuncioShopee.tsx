@@ -3,15 +3,20 @@
 import { Button, Group, Text } from '@mantine/core';
 import {
   ACAO_STATUS_ANUNCIO,
+  anuncioShopeeEditavel,
   anuncioShopeeVivo,
+  edicaoErpPendenteShopee,
   ehRascunhoShopee,
   ehVinculoSubstituido,
   podeMoverAnuncioShopee,
+  revisaoDeEdicaoErpShopee,
   type ProdutoShopeeLink,
 } from '@delfrance/schemas';
 
 import {
+  FRASE_FORMULARIO_SUJO_BLOQUEIA_ACOES_SHOPEE,
   FRASE_ITEM_ID_INVALIDO_SHOPEE,
+  ROTULO_DESCARTAR_EDICOES_SHOPEE,
   itemIdDoAnuncioShopee,
   type IncertoKitShopee,
 } from '@/lib/shopee/anuncioProduto';
@@ -33,6 +38,7 @@ export type AcaoDoAnuncioShopee =
   | 'reverificar'
   | 'publicar'
   | ArmaKitShopee
+  | 'descartar-edicoes'
   | AcaoDoBlocoRascunhoShopee;
 
 /**
@@ -44,6 +50,18 @@ export type AcaoDoAnuncioShopee =
 export interface IncertoKitNaTela extends IncertoKitShopee {
   readonly pendente: boolean;
   readonly fraseShopee: string | null;
+}
+
+/**
+ * The ERP-side edit of ONE published listing, as the action row needs it — the
+ * editor's `RascunhosShopee.edicaoDoAnuncioDe`; `null` for a link whose block
+ * holds no published-edit form.
+ */
+export interface EdicaoDoAnuncioNaTela {
+  /** The form holds unsaved changes (`bloco.sujo` of this link's anuncio block). */
+  readonly suja: boolean;
+  /** A save was accepted and the snapshot's echo has not landed (`entry.salvo !== null`). */
+  readonly aguardandoEco: boolean;
 }
 
 /**
@@ -77,6 +95,12 @@ export interface AcoesShopee {
   readonly pedirPausa: (contaId: string, linkDocId: string) => void;
   readonly reativar: (contaId: string, linkDocId: string) => void;
   readonly reverificar: (contaId: string, linkDocId: string) => void;
+  /**
+   * Opens the «Descartar alterações não enviadas» confirmation of a published
+   * listing; the editor captures the revision the operator SAW as it opens and
+   * sends only that one on confirm.
+   */
+  readonly pedirDescarteDasEdicoes: (contaId: string, linkDocId: string) => void;
   /** A publish of an EXISTING link, naming it — never a kit option. */
   readonly republicar: (contaId: string, linkDocId: string) => void;
   /**
@@ -104,6 +128,12 @@ export interface AcoesAnuncioShopeeProps {
   linkDocId: string;
   link: ProdutoShopeeLink;
   acoes: AcoesShopee;
+  /**
+   * This link's published-edit state ({@link EdicaoDoAnuncioNaTela}), or `null`
+   * when it has no such form. Optional — absent ⇒ `null` (owner's choice: the
+   * existing fixtures render the row without an edit, as before).
+   */
+  edicao?: EdicaoDoAnuncioNaTela | null;
 }
 
 /**
@@ -124,6 +154,13 @@ export interface AcoesAnuncioShopeeProps {
  *  - **Republicar** — a listing the ERP still publishes to: alive by
  *    `anuncioShopeeVivo` and not superseded (a superseded link is refused by the
  *    dispatcher, a removed one has nothing to update). Never with a kit option.
+ *    Disabled while THIS link's edit form holds unsaved changes (a disabled
+ *    button is not focusable, so the reason is visible text beside it).
+ *  - **Descartar alterações não enviadas** — only for a published listing with
+ *    a pending ERP-side edit (`edicaoErpPendenteShopee`) the server still lets
+ *    the operator edit (`anuncioShopeeEditavel`); disabled while the form is
+ *    dirty, while a save awaits its echo, and when the link carries no readable
+ *    revision (the server compares it, so there is nothing to send).
  *  - A DRAFT (`ehRascunhoShopee`, `@delfrance/schemas` — #1911 P10) renders
  *    NOTHING here: the block shows the draft editor (`RascunhoShopee`) where
  *    this row would be. ⚠️ The schemas' predicate, never a local
@@ -139,7 +176,13 @@ export interface AcoesAnuncioShopeeProps {
  * sit in the block's kit section (`KitAnuncioShopee`), with the uncertain
  * outcome a create can end in.
  */
-export function AcoesAnuncioShopee({ contaId, linkDocId, link, acoes }: AcoesAnuncioShopeeProps) {
+export function AcoesAnuncioShopee({
+  contaId,
+  linkDocId,
+  link,
+  acoes,
+  edicao = null,
+}: AcoesAnuncioShopeeProps) {
   // A draft's editor replaces this row (`AnuncioShopeeBlock`).
   if (ehRascunhoShopee(link)) return null;
   // The addressing gate, before every button (the docblock's ⚠️) — a native-kit
@@ -156,6 +199,9 @@ export function AcoesAnuncioShopee({ contaId, linkDocId, link, acoes }: AcoesAnu
   const pausavel = podeMoverAnuncioShopee(link, ACAO_STATUS_ANUNCIO.pausar).pode;
   const reativavel = podeMoverAnuncioShopee(link, ACAO_STATUS_ANUNCIO.reativar).pode;
   const republicavel = anuncioShopeeVivo(link) && !ehVinculoSubstituido(link);
+  const formularioSujo = edicao?.suja ?? false;
+  const descartavel =
+    edicao !== null && edicaoErpPendenteShopee(link) && anuncioShopeeEditavel(link);
 
   const carregando = (acao: AcaoDoAnuncioShopee) =>
     acoes.emVoo !== null && acoes.emVoo.linkDocId === linkDocId && acoes.emVoo.acao === acao;
@@ -167,11 +213,30 @@ export function AcoesAnuncioShopee({ contaId, linkDocId, link, acoes }: AcoesAnu
           type="button"
           size="xs"
           variant="light"
-          disabled={acoes.bloqueadas}
+          disabled={acoes.bloqueadas || formularioSujo}
           loading={carregando('publicar')}
           onClick={() => acoes.republicar(contaId, linkDocId)}
         >
           Republicar
+        </Button>
+      )}
+      {descartavel && edicao !== null && (
+        <Button
+          type="button"
+          size="xs"
+          variant="light"
+          color="red"
+          data-testid={`shopee-descartar-edicoes-${linkDocId}`}
+          disabled={
+            acoes.bloqueadas ||
+            edicao.suja ||
+            edicao.aguardandoEco ||
+            revisaoDeEdicaoErpShopee(link) === null
+          }
+          loading={carregando('descartar-edicoes')}
+          onClick={() => acoes.pedirDescarteDasEdicoes(contaId, linkDocId)}
+        >
+          {ROTULO_DESCARTAR_EDICOES_SHOPEE}
         </Button>
       )}
       <Button
@@ -209,6 +274,11 @@ export function AcoesAnuncioShopee({ contaId, linkDocId, link, acoes }: AcoesAnu
         >
           Reativar anúncio
         </Button>
+      )}
+      {formularioSujo && (
+        <Text size="xs" c="dimmed" data-testid={`shopee-acoes-sujo-${linkDocId}`}>
+          {FRASE_FORMULARIO_SUJO_BLOQUEIA_ACOES_SHOPEE}
+        </Text>
       )}
     </Group>
   );

@@ -309,8 +309,8 @@ function jaPublicado(linkDocId: string): RecusaDeRascunhoShopeeError {
     code: CODIGO_RASCUNHO_SHOPEE.jaPublicado,
     linkDocId,
     mensagem:
-      `o vínculo ${linkDocId} já não é um rascunho: ele já registra um anúncio da Shopee, e o ` +
-      'conteúdo de um anúncio publicado não é editado aqui. Recarregue a aba. Nada foi gravado.',
+      `o vínculo ${linkDocId} já não é um rascunho: ele já registra um anúncio da Shopee, ` +
+      'que se edita como anúncio publicado. Recarregue a aba. Nada foi gravado.',
   });
 }
 
