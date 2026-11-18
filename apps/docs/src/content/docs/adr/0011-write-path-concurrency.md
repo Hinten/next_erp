@@ -243,7 +243,7 @@ twice costs money or a credential. No transaction can enclose the external act,
 and OCC arbitrates writes, not calls to someone else's API, so the tiers alone
 let two runs both perform it.
 
-That shape exists three times today, and each is a lease:
+That shape exists four times today in the list below, and each is a lease:
 
 - **Shopee token refresh** (`apps/shopee/lib/shopee/core/tokenStore.ts`) — the
   refresh token is single-use and rotating, so two instances spending it can
@@ -254,6 +254,22 @@ That shape exists three times today, and each is a lease:
 - **The Melhor Envio label purchase** (`apps/melhor-envio/lib/freight/compraEtiqueta.ts`,
   #1677) — paying for a label twice spends wallet balance twice and leaves one
   label the pedido never learns about.
+- **The Shopee native-kit create** (`apps/shopee/lib/shopee/kits/criacaoKitEmCurso.ts`,
+  #1912) — `add_kit_item` is not idempotent, so two runs of one kit produto (two
+  tabs, two operators, the CLI) create two kits with one SKU. Mapped to the five
+  conditions below in `packages/schemas/src/produto/collection/kitCriacaoShopee.ts`:
+  a fixed `ateMs`; never renewed (the post-send grace is a fixed function of
+  what is stored); a corrupt, mis-sized or far-future lease reads as none; a
+  token check + `lastUpdateTime` stamp right before the send, and a link written
+  at an id derived from the `item_id` Shopee minted, so a holder that outlived
+  its lease can only write its own kit's link; a stamped lease held through the
+  listing lag. Its residual — a holder stalled at the send past the whole hold —
+  ends in two LINKED kits that every publish refuses `vinculos-ambiguos` on:
+  visible, never silent.
+
+The draft publish lock (`publicacaoEmCurso`, #1911, `apps/shopee/lib/shopee/anuncios/reservaRascunho.ts`)
+and Amazon's `feedsAmazonEmCurso` (`apps/amazon/lib/amazon/feeds/vezFeedFirestore.ts`) are
+leases of the same shape that predate this list's last update.
 
 A NEW lease must meet all five of these conditions, and is reviewed against
 them:

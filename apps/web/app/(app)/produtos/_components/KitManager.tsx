@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type RefObject } from 'react';
 import {
   ActionIcon,
   Badge,
@@ -305,6 +305,8 @@ export interface KitManagerProps {
   value: ComponentesKit | null;
   onChange: (next: Record<string, KitDraft> | null) => void;
   disabled?: boolean;
+  /** Invalidates component lookups started before a recipe reset. */
+  resetRevisionRef?: RefObject<number>;
   /**
    * Override the kit gating. Defaults to the form's `ehKit` (the parent kit on
    * its own Kit tab); pass `true` when reusing the manager for a variation child
@@ -348,6 +350,7 @@ export function KitManager({
   value,
   onChange,
   disabled,
+  resetRevisionRef,
   ehKit: ehKitProp,
   syncCustoToForm = true,
   syncPesoToForm = true,
@@ -550,6 +553,7 @@ export function KitManager({
 
   const addComponent = async (id: string | null) => {
     if (!id) return;
+    const revision = resetRevisionRef?.current;
     const lerProduto = async (pid: string) =>
       (await getDocFromServer(produtoCollection.docRef(db, {}, pid))).data();
 
@@ -627,7 +631,7 @@ export function KitManager({
             return rest;
           })()
         : { quantidade: 1, limitarEstoque: true, timestamp: null };
-      onChange(next);
+      if (revision === resetRevisionRef?.current) onChange(next);
     } catch (err) {
       if (err instanceof FirebaseError) {
         notifications.show({

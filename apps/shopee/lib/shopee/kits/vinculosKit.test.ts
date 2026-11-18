@@ -16,6 +16,7 @@ import {
 import { montarItemLido } from '../produtos/itemLido';
 import { FakeDb, asDb, grpc } from '../testing/fakeDb';
 import { idDaVariacaoDeKit, idDoVinculoDeKit } from './idsKit';
+import { vinculoDeKitRecente } from './planoKit';
 import {
   carimbarSubstituicao,
   escreverLeituraDoKit,
@@ -70,11 +71,17 @@ function lido() {
 describe('escreverVinculoDoKit — the ONE link write after add_kit_item (R-k tier 0)', () => {
   it('(M99) lands at idDoVinculoDeKit(integracaoId, itemId); two creates with two item ids ⇒ two docs', async () => {
     const db = new FakeDb();
-    const um = await escreverVinculoDoKit(deps(db), { produtoId: K, itemId: KIT, corpo: CORPO });
+    const um = await escreverVinculoDoKit(deps(db), {
+      produtoId: K,
+      itemId: KIT,
+      corpo: CORPO,
+      criadoEmMs: AGORA,
+    });
     const dois = await escreverVinculoDoKit(deps(db), {
       produtoId: K,
       itemId: KIT_2,
       corpo: CORPO,
+      criadoEmMs: AGORA,
     });
     expect(um).toBe(idDoVinculoDeKit('int-1', KIT));
     expect(dois).toBe(idDoVinculoDeKit('int-1', KIT_2));
@@ -84,7 +91,12 @@ describe('escreverVinculoDoKit — the ONE link write after add_kit_item (R-k ti
 
   it('(M76, R-1) writes the LITERAL kitNativo: true, the conta ref, item_id and step 11 #1 fields minus item-only keys', async () => {
     const db = new FakeDb();
-    const id = await escreverVinculoDoKit(deps(db), { produtoId: K, itemId: KIT, corpo: CORPO });
+    const id = await escreverVinculoDoKit(deps(db), {
+      produtoId: K,
+      itemId: KIT,
+      corpo: CORPO,
+      criadoEmMs: AGORA,
+    });
     const doc = db.store[`produtos/${K}/prodshopee/${id}`]?.data;
     expect(doc).toMatchObject({
       contaProdutoShopeeOuterRef: CONTA_REF,
@@ -107,6 +119,32 @@ describe('escreverVinculoDoKit — the ONE link write after add_kit_item (R-k ti
     expect(produtoShopeeLinkSchema.safeParse(doc).success).toBe(true);
   });
 
+  it('(B1, #2065) publicadoEm is the CREATION instant handed in — never the run start; every other stamp keeps the run clock', async () => {
+    const db = new FakeDb();
+    // A run that started at AGORA and spent 260 s on the scan and the photos
+    // before add_kit_item answered.
+    const criadoEmMs = AGORA + 260_000;
+    const id = await escreverVinculoDoKit(deps(db), {
+      produtoId: K,
+      itemId: KIT,
+      corpo: CORPO,
+      criadoEmMs,
+    });
+    const doc = db.store[`produtos/${K}/prodshopee/${id}`]?.data;
+    expect(doc?.publicadoEm).toBe(criadoEmMs);
+    // NEAR-MISS: the run's one clock still stamps everything else.
+    expect(doc).toMatchObject({
+      logisticaGravadaEm: AGORA,
+      ultimaPublicacao: { em: AGORA },
+      ultimaModificacao: AGORA,
+      dataCadastro: AGORA,
+    });
+    // So a run reading the link 10 s after the create sees a RECENT link —
+    // with the run-start stamp it would have read 270 s, i.e. not recent.
+    expect(vinculoDeKitRecente(doc ?? {}, criadoEmMs + 10_000)).toBe(true);
+    expect(vinculoDeKitRecente({ ...doc, publicadoEm: AGORA }, criadoEmMs + 10_000)).toBe(false);
+  });
+
   it('is a MERGE: an import that wrote the same doc first keeps its status keys (R-u race)', async () => {
     const db = new FakeDb();
     const id = idDoVinculoDeKit('int-1', KIT);
@@ -117,7 +155,12 @@ describe('escreverVinculoDoKit — the ONE link write after add_kit_item (R-k ti
       item_status: 'NORMAL',
       estadoAnuncio: 'ativo',
     });
-    await escreverVinculoDoKit(deps(db), { produtoId: K, itemId: KIT, corpo: CORPO });
+    await escreverVinculoDoKit(deps(db), {
+      produtoId: K,
+      itemId: KIT,
+      corpo: CORPO,
+      criadoEmMs: AGORA,
+    });
     expect(db.store[`produtos/${K}/prodshopee/${id}`]?.data).toMatchObject({
       item_status: 'NORMAL',
       estadoAnuncio: 'ativo',
@@ -144,7 +187,12 @@ describe('#2015 — logisticaGravadaEm rides the kit create, never #2', () => {
 
   it('the create writes the list AND the stamp in ONE patch, and the ONE predicate reads the doc as trusted', async () => {
     const db = new FakeDb();
-    await escreverVinculoDoKit(deps(db), { produtoId: K, itemId: KIT, corpo: CORPO });
+    await escreverVinculoDoKit(deps(db), {
+      produtoId: K,
+      itemId: KIT,
+      corpo: CORPO,
+      criadoEmMs: AGORA,
+    });
     const comLista = db.writes.filter((w) => 'logistic_info' in w.patch);
     expect(comLista).toHaveLength(1);
     expect(comLista[0]?.patch).toMatchObject({
@@ -160,7 +208,12 @@ describe('#2015 — logisticaGravadaEm rides the kit create, never #2', () => {
     const db = new FakeDb();
     db.seed(CAMINHO, LEGADO);
     expect(logisticaGravadaPeloErpShopee(db.store[CAMINHO]?.data ?? null)).toBe(false);
-    await escreverVinculoDoKit(deps(db), { produtoId: K, itemId: KIT, corpo: CORPO });
+    await escreverVinculoDoKit(deps(db), {
+      produtoId: K,
+      itemId: KIT,
+      corpo: CORPO,
+      criadoEmMs: AGORA,
+    });
     expect(db.store[CAMINHO]?.data).toMatchObject({
       logistic_info: CORPO.item_setting.logistic_info,
       logisticaGravadaEm: AGORA,
@@ -188,7 +241,12 @@ describe('#2015 — logisticaGravadaEm rides the kit create, never #2', () => {
 
   it('⛔ NEAR-MISS: #2 after a create keeps the create stamp — it neither re-stamps nor clears it', async () => {
     const db = new FakeDb();
-    await escreverVinculoDoKit(deps(db), { produtoId: K, itemId: KIT, corpo: CORPO });
+    await escreverVinculoDoKit(deps(db), {
+      produtoId: K,
+      itemId: KIT,
+      corpo: CORPO,
+      criadoEmMs: AGORA,
+    });
     await escreverLeituraDoKit(
       { db: asDb(db), nowMs: AGORA + 60_000 },
       { produtoId: K, linkDocId: ID, leitura: { kind: 'item', item: lido() } },

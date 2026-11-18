@@ -21,6 +21,7 @@ import {
   ACAO_STATUS_ANUNCIO,
   ALVO_EDICAO_SHOPEE,
   CAMPO_RASCUNHO_SHOPEE,
+  ESPERA_MAXIMA_CRIACAO_KIT_SHOPEE_MS,
   INTEGRACAO_TIPO,
   PRODUTO_EXTRA_DATA_DOC_ID,
   anuncioShopeeEditavel,
@@ -31,6 +32,7 @@ import {
   janelaDaCriacaoIncertaShopee,
   lerRefTabelaDeMedidas,
   naoDocId,
+  primeiraPublicacaoEhKitNativoShopee,
   revisaoDeEdicaoErpShopee,
   vinculoShopeeEhDaConta,
   type AcaoStatusAnuncio,
@@ -39,6 +41,7 @@ import {
   type CamposRascunhoShopee,
   type EstadoPublicacaoRascunhoShopee,
   type Integracao,
+  type ProdutoShopeeLink,
 } from '@delfrance/schemas';
 import { buildQuery, limit, whereEqual } from '@delfrance/data';
 import { useDocSnapshot, useSnapshot } from '@delfrance/data/hooks';
@@ -141,12 +144,13 @@ import {
 import { useReceitaKitShopee } from '@/lib/shopee/useReceitaKitShopee';
 import type { RespostaAtributosShopee } from '@/lib/shopee/wire';
 import { ContaTabs, type ContaTabItem } from '../marketplace/ContaTabs';
-import type {
-  AcaoDoAnuncioShopee,
-  AcoesShopee,
-  ArmaKitShopee,
-  EdicaoDoAnuncioNaTela,
-  IncertoKitNaTela,
+import {
+  chaveDaContaShopee,
+  type AcaoDoAnuncioShopee,
+  type AcoesShopee,
+  type ArmaKitShopee,
+  type EdicaoDoAnuncioNaTela,
+  type IncertoKitNaTela,
 } from './AcoesAnuncioShopee';
 import {
   TIPO_LEITURA_ATRIBUTOS_RASCUNHO_SHOPEE,
@@ -192,7 +196,9 @@ import type {
  * entry the produto's tabela de medidas holds for it (never what a publish
  * sent — residual 7), the storefront link, the native kit (its badge, the ERP
  * recipe and its warnings), on demand its models, and the actions on it: pause
- * / reactivate, re-verify, republish, recriar / converter em kit nativo — and
+ * / reactivate, re-verify, republish, recriar / converter em kit nativo, and a
+ * virtual kit's FIRST publish as a native kit («Publicar como kit nativo», a
+ * conta-level button offered by the dispatcher's own rule, #1912) — and
  * (#1911 P10) the listing DRAFTS of a first publish, authored here.
  *
  * NO CLIENT WRITE. Every listing document is written by apps/shopee — publish,
@@ -311,9 +317,12 @@ import type {
  * SYNCHRONOUSLY before its first `await` and released in `finally` — two clicks
  * landing before a re-render (a double click on a confirm) send ONE request —
  * and every write button is disabled while it is held. That matters most for
- * the two kit CREATE arms: `add_kit_item` is not idempotent.
+ * the three kit CREATE arms: `add_kit_item` is not idempotent. The lock covers
+ * ONE browser tab; across tabs, operators and the CLI the server's create lease
+ * answers 409 `SHOPEE_KIT_CRIACAO_EM_ANDAMENTO` (#1912), which the tab waits
+ * out exactly like an uncertain create (the lease's own `aguardarMs`).
  *
- * A recriar / converter that ends without a definite answer — the 202, a
+ * A kit create (first create, recriar or converter) that ends without a definite answer — the 202, a
  * network error, a 2xx it cannot read, a 5xx other than a rate-limited 502
  * (`criacaoDeKitIncerta`) — may still have created the kit. It is UNCERTAIN,
  * never "falhou": the conta's kit buttons wait out `aguardarMs` (or the schemas'
@@ -725,16 +734,39 @@ export const FRASE_CONFIRMAR_DESCARTE_ATESTADO_SHOPEE =
   'O rascunho será excluído. O anúncio da tentativa continua na Shopee, vinculado no ERP — o ' +
   'descarte não o altera.';
 
+/**
+ * Why a VIRTUAL kit's conta shows no «Novo anúncio» (#2168), when the conta
+ * offers the native kit's first create (#1912): the button beside it.
+ */
+export const MOTIVO_KIT_VIRTUAL_COM_PRIMEIRO_KIT_SHOPEE =
+  'Este produto é um kit virtual: na Shopee ele é publicado como kit nativo — use «Publicar ' +
+  'como kit nativo».';
+
+/** The same, when the conta already holds a listing of it (no first create to offer). */
+export const MOTIVO_KIT_VIRTUAL_SHOPEE =
+  'Este produto é um kit virtual: na Shopee ele é publicado como kit nativo, não como um ' +
+  'anúncio comum.';
+
 /** A link that is not (or no longer) this conta's — the 404s of publish and re-verify. */
 const MENSAGEM_VINCULO_FORA_DA_CONTA =
   'Este vínculo não pertence mais a esta conta — a lista foi atualizada.';
 
 /** Which kit create arm a publish input is, or `null` for any other publish. */
 function armaDoPedido(pedido: PublicarShopeeInput | undefined): ArmaKitShopee | null {
+  if (pedido?.criarKitNativo === true) return 'criar';
   if (pedido?.recriar === true) return 'recriar';
   if (pedido?.converterEmKit === true) return 'converter';
   return null;
 }
+
+/**
+ * #1912: a first native-kit create refused because the conta now holds a live
+ * listing — often the very kit an earlier, uncertain attempt created and
+ * linked. Nothing was sent.
+ */
+export const FRASE_KIT_VINCULOS_MUDARAM_SHOPEE =
+  'Este produto já tem um anúncio ativo nesta conta — pode ser o kit criado pela tentativa ' +
+  'anterior. Nada foi enviado: confira o bloco do anúncio nesta aba.';
 
 /**
  * A failed action, worded for the operator. The publish 422s keep their rows
@@ -763,11 +795,13 @@ function desfechoDaFalha(
         etapa: detalhes.etapa,
         problemas: detalhes.problemas ?? [],
         mensagem: err.message,
-        pedidoKit:
-          arma === null || pedido?.linkDocId === undefined
-            ? null
-            : { arma, linkDocId: pedido.linkDocId },
+        // A first create (#1912) names no link: its `informar-principal` row
+        // re-opens the conta's confirmation.
+        pedidoKit: arma === null ? null : { arma, linkDocId: pedido?.linkDocId ?? null },
       };
+    }
+    if (code === CODIGO_FALHA_SHOPEE.kitCriacaoVinculosMudaram) {
+      return { tipo: 'falha', mensagem: FRASE_KIT_VINCULOS_MUDARAM_SHOPEE };
     }
     if (
       code === CODIGO_FALHA_SHOPEE.anuncioNaoEncontrado ||
@@ -1132,7 +1166,10 @@ function EditorShopee({
     });
   }, []);
   const [alvoDoKit, setAlvoDoKit] = useState<AlvoDoKitShopee | null>(null);
+  // Keyed by the link — or, for a first create (#1912), by the conta's key.
   const [principais, setPrincipais] = useState<ReadonlyMap<string, string | null>>(() => new Map());
+  /** «Criar pausado» of the first-create confirmation (#1912) — reset on every opening. */
+  const [kitPausado, setKitPausado] = useState(false);
   // The recipe the confirmation previews — read only while it is open.
   const receitaDoKit = useReceitaKitShopee({ db, produtoId, enabled: alvoDoKit !== null });
 
@@ -1205,7 +1242,10 @@ function EditorShopee({
    */
   function enviarKit(contaId: string, corpo: PublicarShopeeInput) {
     const arma = armaDoPedido(corpo);
-    const linkDocId = corpo.linkDocId;
+    // A first create (#1912) names no link: its outcome and spinner live under
+    // the conta's key. recriar / converter always name theirs.
+    const linkDocId =
+      corpo.linkDocId ?? (arma === 'criar' ? chaveDaContaShopee(contaId) : undefined);
     if (arma === null || linkDocId === undefined) return;
     // What the conta reads NOW — what a send that never left restores.
     const anterior = incertoGuardado(contaId);
@@ -1228,6 +1268,25 @@ function EditorShopee({
         try {
           resposta = await c.publicar(corpo);
         } catch (err) {
+          // #1912: another run (a second tab, another operator, the CLI) holds
+          // this kit's create lease — or an earlier uncertain create's hold is
+          // still running. NOTHING was sent, but a kit may be on its way: the
+          // conta waits the lease's own `aguardarMs`, and "Repetir" is offered
+          // after it, exactly like an uncertain create.
+          if (
+            err instanceof ShopeeClientHttpError &&
+            err.code === CODIGO_FALHA_SHOPEE.kitCriacaoEmAndamento
+          ) {
+            marcarIncerto(
+              contaId,
+              {
+                ate: Date.now() + (err.detalhes.aguardarMs ?? ESPERA_MAXIMA_CRIACAO_KIT_SHOPEE_MS),
+                corpo,
+              },
+              null,
+            );
+            return null;
+          }
           if (err instanceof ShopeeClientHttpError || err instanceof ShopeeClientNetworkError) {
             if (criacaoDeKitIncerta(err)) {
               marcarIncerto(
@@ -1268,20 +1327,61 @@ function EditorShopee({
     );
   }
 
-  /** The confirmation's send: the arm's flag, the link, and the principal only when one was picked. */
+  /**
+   * The confirmation's send: the arm's flag, the link (none for a first
+   * create), the principal only when one was picked, and — a first create only
+   * — `status: 'UNLIST'` when «Criar pausado» is ticked.
+   */
   function confirmarKit() {
     if (alvoDoKit === null) return;
     const { contaId, linkDocId, arma } = alvoDoKit;
-    const principal = principais.get(linkDocId) ?? null;
+    const principal = principais.get(linkDocId ?? chaveDaContaShopee(contaId)) ?? null;
+    const comPrincipal = principal === null ? {} : { principal };
     setAlvoDoKit(null);
+    if (arma === 'criar') {
+      enviarKit(contaId, {
+        integracaoId: contaId,
+        produtoId,
+        // #1912: never a link — the route refuses one beside this flag (400).
+        criarKitNativo: true,
+        ...(kitPausado ? { status: 'UNLIST' as const } : {}),
+        ...comPrincipal,
+      });
+      return;
+    }
+    if (linkDocId === null) return;
     enviarKit(contaId, {
       integracaoId: contaId,
       produtoId,
       linkDocId,
-      // Exactly ONE arm flag: the route refuses both together (400).
+      // Exactly ONE arm flag: the route refuses two together (400).
       ...(arma === 'recriar' ? { recriar: true as const } : { converterEmKit: true as const }),
-      ...(principal === null ? {} : { principal }),
+      ...comPrincipal,
     });
+  }
+
+  /**
+   * Whether the conta offers a native kit's FIRST create (#1912): the server
+   * dispatcher's own rule over the conta's links (`@delfrance/schemas`), on the
+   * STORED produto — never the form's unsaved flags.
+   */
+  function ofereceKitNativo(contaId: string, vinculos: readonly ProdutoShopeeLink[]): boolean {
+    void contaId;
+    if (produto == null) return false;
+    return primeiraPublicacaoEhKitNativoShopee({
+      produto: { paiId: produto.paiId, ehKit: produto.ehKit, ehKitVirtual: produto.ehKitVirtual },
+      vinculosDaConta: vinculos.map((v): Record<string, unknown> => ({ ...v })),
+    });
+  }
+
+  /** The same question asked of the LIVE snapshot — the open confirmation's gate. */
+  function ofereceKitNativoAgora(contaId: string): boolean {
+    return ofereceKitNativo(
+      contaId,
+      (linksSnap.data ?? [])
+        .filter((l) => vinculoShopeeEhDaConta(l.data, contaId))
+        .map((l) => l.data),
+    );
   }
 
   /** The conta's uncertain create as the buttons read it: still waiting while `relogio` is before `ate`. */
@@ -1330,8 +1430,11 @@ function EditorShopee({
       definirStatus(contaId, linkDocId, ACAO_STATUS_ANUNCIO.reativar),
     reverificar,
     republicar,
-    abrirKit: (contaId, linkDocId, arma, focarPrincipal = false) =>
-      setAlvoDoKit({ contaId, linkDocId, arma, focarPrincipal }),
+    abrirKit: (contaId, linkDocId, arma, focarPrincipal = false) => {
+      setKitPausado(false);
+      setAlvoDoKit({ contaId, linkDocId, arma, focarPrincipal });
+    },
+    ofereceKitNativo,
     incertoDe: incertoNaTela,
     repetirKit,
     kitAberto: (linkDocId) => kitAbertos.has(linkDocId),
@@ -2372,10 +2475,14 @@ function EditorShopee({
       };
     }
     if (kitVirtual) {
+      // #1912: a virtual kit is published as a NATIVE kit — from this tab when
+      // the conta offers its first create (the dispatcher's own rule), never as
+      // the ordinary listing a draft becomes.
       return {
         tipo: 'oculto',
-        motivo:
-          'Este produto é um kit virtual. A primeira publicação na Shopee é feita como kit nativo pelo terminal.',
+        motivo: ofereceKitNativoAgora(contaId)
+          ? MOTIVO_KIT_VIRTUAL_COM_PRIMEIRO_KIT_SHOPEE
+          : MOTIVO_KIT_VIRTUAL_SHOPEE,
       };
     }
     if (motivoEdicaoBloqueada !== null) {
@@ -3101,23 +3208,35 @@ function EditorShopee({
       <KitNativoShopeeModal
         alvo={alvoDoKit}
         link={
-          alvoDoKit === null
+          alvoDoKit === null || alvoDoKit.linkDocId === null
             ? null
             : (linksSnap.data.find((l) => l.id === alvoDoKit.linkDocId)?.data ?? null)
         }
         receita={receitaDoKit}
-        principal={alvoDoKit === null ? null : (principais.get(alvoDoKit.linkDocId) ?? null)}
+        principal={
+          alvoDoKit === null
+            ? null
+            : (principais.get(alvoDoKit.linkDocId ?? chaveDaContaShopee(alvoDoKit.contaId)) ?? null)
+        }
         onPrincipal={(principal) => {
           if (alvoDoKit === null) return;
-          setPrincipais((prev) => new Map(prev).set(alvoDoKit.linkDocId, principal));
+          const chave = alvoDoKit.linkDocId ?? chaveDaContaShopee(alvoDoKit.contaId);
+          setPrincipais((prev) => new Map(prev).set(chave, principal));
         }}
+        pausado={kitPausado}
+        onPausado={setKitPausado}
+        // Every kit create reads the SAVED produto and freezes its recipe.
+        produtoSujo={produtoSujo}
         // The link may have been rewritten since the arm opened this — the
-        // plain Set again, for the pause confirmation's reason.
+        // plain Set again, for the pause confirmation's reason. A first create
+        // (#1912) instead re-asks the dispatcher's rule of the live snapshot.
         bloqueado={
           bloqueadas ||
           (alvoDoKit !== null &&
             ((incertoNaTela(alvoDoKit.contaId)?.pendente ?? false) ||
-              !enderecaveis.has(alvoDoKit.linkDocId)))
+              (alvoDoKit.linkDocId === null
+                ? !ofereceKitNativoAgora(alvoDoKit.contaId)
+                : !enderecaveis.has(alvoDoKit.linkDocId))))
         }
         onConfirmar={confirmarKit}
         onFechar={() => setAlvoDoKit(null)}

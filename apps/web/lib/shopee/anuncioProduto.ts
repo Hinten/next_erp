@@ -309,8 +309,9 @@ export const TEXTO_ACAO_SUGERIDA = {
 
 /**
  * A `republicar` that names no link: the refusal knew no successor. Never a
- * button — a publish naming no link can reach a FIRST create, which this step
- * does not offer.
+ * button — a publish naming no link can reach a FIRST create, which only
+ * «Publicar como kit nativo» sends (with its own confirmation, #1912), never a
+ * refusal row.
  */
 const FRASE_REPUBLICAR_SEM_VINCULO =
   'O vínculo não foi indicado: use "Republicar" no bloco do anúncio ativo desta conta.';
@@ -904,7 +905,7 @@ export function esperaDoKitIncerto(aguardarMs: number | undefined): number {
 }
 
 /**
- * Whether a FAILED native-kit create (recriar / converter) may still have
+ * Whether a FAILED native-kit create (the first create, recriar, converter) may still have
  * created the kit on Shopee — so the tab must call it UNCERTAIN, never
  * "falhou", and wait before the identical re-send. `add_kit_item` is not
  * idempotent: an operator told "falhou" re-clicks, and the second click is a
@@ -981,15 +982,21 @@ const incertoKitShopeeSchema = z.object({
     .object({
       integracaoId: z.string().min(1),
       produtoId: z.string().min(1),
-      linkDocId: z.string().min(1),
+      linkDocId: z.string().min(1).optional(),
       status: z.enum(['NORMAL', 'UNLIST']).optional(),
       categoryId: z.number().int().positive().optional(),
       principal: z.string().min(1).optional(),
       recriar: z.literal(true).optional(),
       converterEmKit: z.literal(true).optional(),
+      // #1912: a native kit's FIRST create — the one arm that names NO link.
+      criarKitNativo: z.literal(true).optional(),
     })
-    // Exactly ONE arm: `enviarKit` sends nothing for a body with neither.
-    .refine((c) => (c.recriar === true) !== (c.converterEmKit === true)),
+    // Exactly ONE arm: `enviarKit` sends nothing for a body with none.
+    .refine(
+      (c) => [c.recriar, c.converterEmKit, c.criarKitNativo].filter((f) => f === true).length === 1,
+    )
+    // …and the link rule of each: recriar/converter NAME one, a first create never does.
+    .refine((c) => (c.criarKitNativo === true) === (c.linkDocId === undefined)),
 });
 
 /** The `sessionStorage` key of one produto's uncertain kit create on one conta. */
@@ -1077,17 +1084,15 @@ export function gravarIncerto(
  * #1): on Shopee a virtual kit is published as a NATIVE kit, never as the
  * ordinary listing a draft becomes, so such a draft can only be discarded.
  *
- * ⚠️ It never tells the operator to publish the kit: this tab has no first
- * native-kit publish (its kit arms need a listed link, «Novo anúncio» is hidden
- * for a virtual kit, and every publish it sends names a link) — that first
- * publish is the terminal's. The server's own sentence ("descarte o rascunho e
- * publique o kit") is right for the CLI only. Amends §C row 1 (review
- * R8-copy#11; `design-DC-web.md`'s original wording).
+ * It names the tab's own way out (#1912): «Publicar como kit nativo», the
+ * conta's button for a native kit's first create, which a draft never blocks
+ * (a draft is neither a live listing nor a native kit). Never the server's
+ * CLI-shaped wording.
  */
 export const FRASE_RASCUNHO_EM_KIT_VIRTUAL_SHOPEE =
   'Este produto é kit virtual: na Shopee ele é publicado como kit nativo, e um rascunho de ' +
-  'anúncio comum não se aplica — descarte este rascunho. A primeira publicação de um kit ' +
-  'nativo não é feita por esta tela (é feita pelo terminal).';
+  'anúncio comum não se aplica — descarte este rascunho e use «Publicar como kit nativo» ' +
+  'nesta conta.';
 
 /**
  * The draft's "brand still to choose" — the pendência AND the copy of the
@@ -2208,14 +2213,12 @@ export const FRASE_RASCUNHO_DE_VARIACAO_SHOPEE =
   'Este produto é uma variação: o anúncio é do produto pai.';
 
 /**
- * 422 `rascunhoProdutoInvalido`, `motivo: 'kit-virtual'`. Never "publique o
- * kit": this tab has no first native-kit publish (see
- * {@link FRASE_RASCUNHO_EM_KIT_VIRTUAL_SHOPEE}).
+ * 422 `rascunhoProdutoInvalido`, `motivo: 'kit-virtual'`: points at the conta's
+ * «Publicar como kit nativo» (#1912; see {@link FRASE_RASCUNHO_EM_KIT_VIRTUAL_SHOPEE}).
  */
 export const FRASE_RASCUNHO_DE_KIT_VIRTUAL_SHOPEE =
-  'Este produto é kit virtual: na Shopee ele é publicado como kit nativo, cuja primeira ' +
-  'publicação não é feita por esta tela (é feita pelo terminal) — um rascunho de anúncio ' +
-  'comum não se aplica.';
+  'Este produto é kit virtual: na Shopee ele é publicado como kit nativo — use «Publicar como ' +
+  'kit nativo» nesta conta; um rascunho de anúncio comum não se aplica.';
 
 /** 404 `rascunhoInexistente` on a CREATE: it is the PRODUTO that is gone. */
 export const FRASE_PRODUTO_INEXISTENTE_SHOPEE = 'O produto não existe mais.';

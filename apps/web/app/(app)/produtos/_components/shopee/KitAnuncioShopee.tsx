@@ -172,6 +172,18 @@ const FRASE_REPETIR_KIT =
   'existe na Shopee sem vínculo, recusa e indica importá-lo; senão, cria o kit.';
 
 /**
+ * The same, for a native kit's FIRST create (#1912): the identical
+ * `criarKitNativo` body. A kit the earlier attempt created AND linked shows up
+ * as this conta's listing, and the re-send is refused with nothing sent (the
+ * first create no longer applies); one created without a link is named for
+ * import by the scan.
+ */
+const FRASE_REPETIR_PRIMEIRO_KIT =
+  'o ERP envia exatamente o mesmo pedido e não cria um segundo kit: se o kit já foi criado e ' +
+  'vinculado, ele aparece como anúncio desta conta e nada é enviado; se o kit existe na Shopee ' +
+  'sem vínculo, recusa e indica importá-lo; senão, cria o kit.';
+
+/**
  * A kit create the server could not confirm (`data-testid="shopee-kit-incerto-<contaId>"`):
  * what may have happened, until when to wait, and "Repetir" — the IDENTICAL
  * body, offered only once the wait is over. Exported so the conta panel can show
@@ -196,6 +208,8 @@ export function IncertoDoKit({
   acoes: AcoesShopee;
 }) {
   const ate = formatarInstanteShopee(incerto.ate);
+  const frase =
+    incerto.corpo.criarKitNativo === true ? FRASE_REPETIR_PRIMEIRO_KIT : FRASE_REPETIR_KIT;
   return (
     <Alert
       color="yellow"
@@ -207,8 +221,8 @@ export function IncertoDoKit({
         <Text size="sm">
           A resposta não confirmou se o kit foi criado.{' '}
           {incerto.pendente
-            ? `Aguarde${ate === null ? '' : ` até ${ate}`} e use "Repetir": ${FRASE_REPETIR_KIT}`
-            : `Use "Repetir": ${FRASE_REPETIR_KIT}`}
+            ? `Aguarde${ate === null ? '' : ` até ${ate}`} e use "Repetir": ${frase}`
+            : `Use "Repetir": ${frase}`}
         </Text>
         {incerto.fraseShopee !== null && (
           <Text size="sm" c="dimmed">

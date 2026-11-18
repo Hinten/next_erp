@@ -111,6 +111,7 @@ import {
   ArgumentoInvalidoError,
   USO_PUBLICAR_ANUNCIO,
   descreverErroPublicacao,
+  ehConflitoDeCriacaoDeKit,
   ehConflitoDeRascunho,
   lerArgsPublicar,
   renderizarEnsaioDeKit,
@@ -486,9 +487,14 @@ await main().catch((err: unknown) => {
   // Narrow enough to be useful and never wide enough to print a payload — the
   // whole table is `descreverErroPublicacao`, which is unit-tested.
   for (const linha of descreverErroPublicacao(err)) aviso(linha);
-  // A draft's lock refusal (#1911) sent NOTHING — its describer says so, and
-  // the "maybe created" warning below would contradict it.
-  if (!(err instanceof ArgumentoInvalidoError) && !ehConflitoDeRascunho(err)) {
+  // A draft's lock refusal (#1911) and a kit create lease's (#1912) sent
+  // NOTHING — their describers say so, and the "maybe created" warning below
+  // would contradict them.
+  if (
+    !(err instanceof ArgumentoInvalidoError) &&
+    !ehConflitoDeRascunho(err) &&
+    !ehConflitoDeCriacaoDeKit(err)
+  ) {
     aviso('');
     aviso(
       'Nada garante que nada foi criado: um erro DEPOIS do add_item (ou do add_kit_item) ' +

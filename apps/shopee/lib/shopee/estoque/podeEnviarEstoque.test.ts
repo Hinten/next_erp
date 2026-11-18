@@ -38,6 +38,7 @@ import {
   type LinkParaEstoque,
   type VereditoEnvioEstoque,
 } from './podeEnviarEstoque';
+import { aoVivoDeTeste } from '../kits/testing/reservaDeTeste';
 
 /* ---------------------------------- fixtures ------------------------------ */
 
@@ -880,6 +881,7 @@ function t5Deps(db: FakeDb, loja: T5Loja): KitDeps {
     depositoOuterRef: 'documents/depositos/dep-1',
     operacaoOuterRef: null,
     nowMs: T5_AGORA,
+    aoVivo: aoVivoDeTeste(T5_AGORA),
     esperar: () => Promise.resolve(),
     taxonomia: {
       integracaoId: T5_INTEGRACAO,

@@ -108,9 +108,11 @@ import {
 } from './aplicarKit';
 import {
   avisoReceitaNaoPublicavel,
+  kitVivoAusenteRecente,
   kitVivoRemovido,
   opcaoDoTierKit,
   planejarKit,
+  problemaKitAlvoRecente,
   problemaKitRemovido,
   problemasDePrecoDoKit,
   type LinhaDeReceitaDoKit,
@@ -612,6 +614,18 @@ export async function republicarKit(
   }
   const plano = planejarKit(ctx, fotos);
 
+  /* ---- (1a) no row for a kit created moments ago: a doubt, nothing written */
+  // #2065 on the republish: an absent row on a `recente` link may be Shopee's
+  // lag. Folding it to `removido` would make the next unnamed publish a SECOND
+  // `kit-criar` beside a live kit.
+  if (kitVivoAusenteRecente(ctx.vivo, alvo.raw, deps.nowMs)) {
+    throw new ShopeePublishBlockedError({
+      produtoId: ctx.produto.id,
+      itemId,
+      problemas: [problemaKitAlvoRecente({ itemId, linkDocId }), ...plano.problemas],
+    });
+  }
+
   /* ---- (1) the target reads deleted: the fact is written, nothing sent ---- */
   if (kitVivoRemovido(ctx.vivo, deps.nowMs)) {
     await escreverLeituraDoKit(deps, {
@@ -725,6 +739,7 @@ export async function republicarKit(
     chamadasShopee,
     recusa: null,
     comando: null,
+    aguardarMs: null,
   };
   registrarRepublicacao(resultado);
   return resultado;

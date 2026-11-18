@@ -53,6 +53,7 @@ function acoesBase(over: Partial<AcoesShopee> = {}): AcoesShopee {
     repetirKit: vi.fn(),
     kitAberto: () => false,
     alternarKit: vi.fn(),
+    ofereceKitNativo: () => false,
     ...over,
   };
 }

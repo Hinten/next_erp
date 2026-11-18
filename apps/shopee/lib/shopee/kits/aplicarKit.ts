@@ -20,7 +20,8 @@
  * A failed create goes through `recusaKit.ts`'s `desfechoDeCriacaoDeKit`:
  *
  * - `nao-criado` — our own guard, a rate limit, a dead grant, or a KNOWN
- *   permanent kit refusal. NOTHING is written. A Shopee refusal becomes a
+ *   permanent kit refusal. NOTHING is written, and the create lease (#1912) is
+ *   handed back to the arm's wrapper, which releases it. A Shopee refusal becomes a
  *   `ShopeePublishRejectedError` (422, etapa `add_kit_item`, its `problemas`
  *   from the kit classifier first, then step 11's) — the rejected class because
  *   the kit classifier's motivos are WIRE-only and may never ride a
@@ -28,7 +29,9 @@
  *   keep their own error class (and so their own HTTP mapping).
  * - `incerto` — anything that does not prove nothing was created (a transient,
  *   a network failure, an unknown refusal, a 2xx whose body did not parse).
- *   NOTHING is written; the result is `desfecho: 'incerto'` with `recusa`, and
+ *   Nothing is written but the KEPT create lease (#1912), which keeps every
+ *   other run out through Shopee's listing lag; the result is `desfecho:
+ *   'incerto'` with `recusa` and the lease's remaining `aguardarMs`, and
  *   Shopee's sentence is `console.warn`ed VERBATIM with ids only (registers
  *   281/287 settle on it). The re-run's SKU scan finds the kit if it exists and
  *   refuses "importe-o"; step 9's import then links it on the SAME produto.
@@ -113,6 +116,12 @@ import {
   vinculosNativosDoKit,
   type PlanoKit,
 } from './planoKit';
+import {
+  esperaDaReservaEnviada,
+  liberarParaEnvio,
+  liberarReserva,
+  type ReservaDeCriacaoDeKit,
+} from './criacaoKitEmCurso';
 import { classificarRecusaKit, desfechoDeCriacaoDeKit, problemasDaRecusaKit } from './recusaKit';
 import {
   comandoDeRetomada,
@@ -548,6 +557,8 @@ export interface GarantiaCumprida {
   readonly escrita: LeituraDoKitEscrita | null;
   /** Shopee calls the applier spent (`add_kit_item` + the read-back), per CALL. */
   readonly chamadasShopee: number;
+  /** MILLISECONDS the KEPT create lease holds others out — only on `incerto`, else `null`. */
+  readonly aguardarMs: number | null;
 }
 
 /**
@@ -562,11 +573,20 @@ export interface GarantiaCumprida {
  * `apagado`, #2065) gets `removido` on its link — a fact READ, not progress. On
  * `incerto` it writes nothing else and returns at once:
  * every applier stops there (V2R2-04).
+ *
+ * #1912 — the create LEASE (`criacaoKitEmCurso.ts`) is the run's, taken by the
+ * arm's wrapper before any link was read. Right before `add_kit_item` it is
+ * fenced and stamped ({@link liberarParaEnvio}: warm, gate, token check);
+ * `nao-criado` hands it back to the wrapper (`fase = 'tomada'`, released);
+ * `incerto` and any throw after the send KEEP it (it expires on its own); a
+ * created kit releases it right after the link write, before the read-back, so
+ * a read-back failure never holds it.
  */
 export async function garantirKitNovo(
   deps: KitDeps,
   ctx: ContextoKit,
   plano: PlanoKit,
+  reserva: ReservaDeCriacaoDeKit,
 ): Promise<GarantiaCumprida> {
   const kitNovo = plano.kitNovo;
   if (kitNovo === null) {
@@ -598,6 +618,7 @@ export async function garantirKitNovo(
       recusa: null,
       escrita: conclusao.escrita,
       chamadasShopee: conclusao.chamadasShopee,
+      aguardarMs: null,
     };
   }
 
@@ -606,23 +627,45 @@ export async function garantirKitNovo(
     throw new Error('[shopee/kits] plano de criação de kit sem corpo de add_kit_item');
   }
 
+  // #1912: the identity fence and the send gate, right before the ONE
+  // non-idempotent call — nothing is sent unless the lease is still ours and
+  // the send fits its time and the request's.
+  await liberarParaEnvio(deps.db, reserva, corpo.item_setting.item_sku ?? '');
+
   let itemId: number;
   try {
     // ⚠️ EXACTLY once per run, never retried in-call: not idempotent.
     const resposta = await deps.client.addKitItem(corpo);
     itemId = resposta.response.item_id;
   } catch (err) {
-    // A non-Shopee throw is our own bug — never folded into "maybe created".
+    // A non-Shopee throw is our own bug — never folded into "maybe created",
+    // and never into "certainly not" either: the lease is KEPT.
     if (!(err instanceof ShopeeError)) throw err;
-    if (desfechoDeCriacaoDeKit(err) === 'nao-criado') throw recusaDaCriacao(ctx, err);
-    return incerto(ctx, plano, err);
+    if (desfechoDeCriacaoDeKit(err) === 'nao-criado') {
+      // Shopee created nothing: the wrapper hands the lease back.
+      reserva.fase = 'tomada';
+      throw recusaDaCriacao(ctx, err);
+    }
+    // Maybe created: the lease is KEPT and expires on its own.
+    reserva.fase = 'encerrada';
+    return incerto(ctx, plano, err, esperaDaReservaEnviada(reserva));
   }
+  // The creation instant, read LIVE right after the 200 — the link's
+  // `publicadoEm`, which another run reads as the kit's age (#2065). `nowMs` is
+  // the run's START and can be minutes earlier.
+  const criadoEmMs = reserva.controles.agora();
 
+  // ⚠️ A throw here (the kit exists, its link is not written yet) KEEPS the
+  // lease: a re-send inside Shopee's listing lag would otherwise create a twin.
   const linkDocId = await escreverVinculoDoKit(deps, {
     produtoId: ctx.produto.id,
     itemId,
     corpo,
+    criadoEmMs,
   });
+  // The link now makes every later run of this produto a `completar` or a
+  // republish: the lease has done its job, released BEFORE the read-back.
+  await liberarReserva(deps.db, reserva);
   const conclusao = await completarKit(deps, ctx, plano, {
     linkDocId,
     itemId,
@@ -638,6 +681,7 @@ export async function garantirKitNovo(
     recusa: null,
     escrita: conclusao.escrita,
     chamadasShopee: 1 + conclusao.chamadasShopee,
+    aguardarMs: null,
   };
 }
 
@@ -720,8 +764,13 @@ function recusaDaCriacao(ctx: ContextoKit, err: ShopeeError): ShopeeError {
   return err;
 }
 
-/** An `incerto` create: nothing written, Shopee's own words kept for the operator and the register. */
-function incerto(ctx: ContextoKit, plano: PlanoKit, err: ShopeeError): GarantiaCumprida {
+/** An `incerto` create: nothing written (the lease is kept), Shopee's own words kept for the operator and the register. */
+function incerto(
+  ctx: ContextoKit,
+  plano: PlanoKit,
+  err: ShopeeError,
+  aguardarMs: number,
+): GarantiaCumprida {
   const api = err instanceof ShopeeApiError ? err : null;
   const recusa = {
     codigo: api?.code ?? err.name,
@@ -748,6 +797,7 @@ function incerto(ctx: ContextoKit, plano: PlanoKit, err: ShopeeError): GarantiaC
     recusa,
     escrita: null,
     chamadasShopee: 1,
+    aguardarMs,
   };
 }
 
@@ -758,15 +808,17 @@ function incerto(ctx: ContextoKit, plano: PlanoKit, err: ShopeeError): GarantiaC
 /**
  * The `kit-criar` applier = {@link garantirKitNovo} → the L4 aviso decision
  * (`reavaliarAvisoDeReceitaKit`, motivo `kit-recriado`, AFTER the stamps).
- * On `incerto` it returns the 202 shape at once — `recusa` + `comando`, ids
- * `null` — and writes nothing, the aviso decision included (V2R2-04).
+ * On `incerto` it returns the 202 shape at once — `recusa` + `comando` +
+ * `aguardarMs`, ids `null` — and writes nothing but the kept lease, the aviso
+ * decision included (V2R2-04).
  */
 export async function criarKit(
   deps: KitDeps,
   ctx: ContextoKit,
   plano: PlanoKit,
+  reserva: ReservaDeCriacaoDeKit,
 ): Promise<ResultadoPublicacaoKit> {
-  const garantia = await garantirKitNovo(deps, ctx, plano);
+  const garantia = await garantirKitNovo(deps, ctx, plano, reserva);
   const chamadasDaBusca = ctx.busca?.chamadas ?? 0;
 
   if (garantia.desfecho === 'incerto') {
@@ -795,6 +847,7 @@ export async function criarKit(
         // OP-9: a paused create's re-run must ask for a paused create again.
         ...(ctx.statusPedido === undefined ? {} : { status: ctx.statusPedido }),
       }),
+      aguardarMs: garantia.aguardarMs,
     };
     registrarCriacao(resultado);
     return resultado;
@@ -825,6 +878,7 @@ export async function criarKit(
     chamadasShopee: chamadasDaBusca + garantia.chamadasShopee,
     recusa: null,
     comando: null,
+    aguardarMs: null,
   };
   registrarCriacao(resultado);
   return resultado;

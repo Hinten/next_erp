@@ -355,7 +355,9 @@ async function preparar(
   ent: Partial<EntradaDeKit> = {},
   arma: ArmaDeKit = CRIAR,
 ) {
-  return await prepararKit(deps(db, loja), entrada(ent), arma, resolvedorFake(loja));
+  return await prepararKit(deps(db, loja), entrada(ent), arma, resolvedorFake(loja), {
+    podeContinuar: () => true,
+  });
 }
 
 async function recusaDe(p: Promise<unknown>): Promise<ShopeePublishBlockedError> {

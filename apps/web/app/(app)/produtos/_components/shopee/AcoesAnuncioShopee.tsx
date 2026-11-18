@@ -23,8 +23,22 @@ import {
 import type { DesfechoAcaoShopee } from './DesfechoAcaoShopee';
 import type { AcaoDoBlocoRascunhoShopee } from './RascunhoShopee';
 
-/** The two native-kit CREATE arms of a publish — each makes a NEW kit on Shopee. */
-export type ArmaKitShopee = 'recriar' | 'converter';
+/**
+ * The three native-kit CREATE arms of a publish — each makes a NEW kit on
+ * Shopee: `criar` is a native kit's FIRST publish (#1912, conta-level, it names
+ * no link); `recriar` and `converter` act on a listed link.
+ */
+export type ArmaKitShopee = 'criar' | 'recriar' | 'converter';
+
+/**
+ * The editor's key for what a LINK-LESS action of one conta records (the
+ * first native-kit create, #1912): its outcome and its spinner, in the same
+ * maps every link's use. A `/` can never appear in a Firestore document id, so
+ * it can never collide with a link's key.
+ */
+export function chaveDaContaShopee(contaId: string): string {
+  return `conta/${contaId}`;
+}
 
 /**
  * The writes a listing block can start — each one an apps/shopee route. A
@@ -104,16 +118,24 @@ export interface AcoesShopee {
   /** A publish of an EXISTING link, naming it — never a kit option. */
   readonly republicar: (contaId: string, linkDocId: string) => void;
   /**
-   * Opens the native-kit confirmation of one link — recriar or converter; the
-   * editor sends on confirm. `focarPrincipal` puts the cursor on the principal
-   * pick (a refusal that asked for one).
+   * Opens the native-kit confirmation — recriar or converter of one link, or
+   * the conta's FIRST create (`criar`, `linkDocId: null`, #1912); the editor
+   * sends on confirm. `focarPrincipal` puts the cursor on the principal pick
+   * (a refusal that asked for one).
    */
   readonly abrirKit: (
     contaId: string,
-    linkDocId: string,
+    linkDocId: string | null,
     arma: ArmaKitShopee,
     focarPrincipal?: boolean,
   ) => void;
+  /**
+   * Whether the conta offers «Publicar como kit nativo» (#1912): the produto
+   * is a root virtual kit and the conta holds no live native kit and no live
+   * ordinary listing — `@delfrance/schemas`' `primeiraPublicacaoEhKitNativoShopee`,
+   * the server dispatcher's own rule — and the operator may write.
+   */
+  readonly ofereceKitNativo: (contaId: string, vinculos: readonly ProdutoShopeeLink[]) => boolean;
   /** The conta's uncertain kit create from THIS browser tab, or `null`. */
   readonly incertoDe: (contaId: string) => IncertoKitNaTela | null;
   /** Re-sends the uncertain create's IDENTICAL body — once its wait is over. */

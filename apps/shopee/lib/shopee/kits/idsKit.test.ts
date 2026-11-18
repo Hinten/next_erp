@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { idProdutoPaiShopee } from '../produtos/produtoIds';
-import { idDaVariacaoDeKit, idDoVinculoDeKit } from './idsKit';
+import { idDaCriacaoDeKit, idDaVariacaoDeKit, idDoVinculoDeKit } from './idsKit';
 
 /** Fixture roles (step 19, D1): the kit listing and its first kit model. */
 const KIT_ITEM = 2500139870;
@@ -62,5 +62,26 @@ describe('idDaVariacaoDeKit — the kit model row id', () => {
   it('refuses `model_id: 0` — the "no model" sentinel is never a row', () => {
     expect(() => idDaVariacaoDeKit(LINK, 0)).toThrow(RangeError);
     expect(() => idDaVariacaoDeKit('', KIT_MODEL)).toThrow(RangeError);
+  });
+});
+
+describe('idDaCriacaoDeKit — the kit create lease id (#1912)', () => {
+  it('is the hex sha256 of `shopee-kit-criacao|<conta>|<produtoId>`, pinned', () => {
+    // Computed once with `node -e` over node:crypto and written down.
+    expect(idDaCriacaoDeKit('int-1', 'kit-k')).toBe(
+      '4937b8648900a1d5f56dffeed65a770c5d88e06e3d5ef072c6ce708250be6f4d',
+    );
+  });
+
+  it('⛔ NEAR-MISSES: another conta, another produto, and the pipes keep `(int-1, 2kit)` and `(int-12, kit)` apart', () => {
+    const id = idDaCriacaoDeKit('int-1', 'kit-k');
+    expect(idDaCriacaoDeKit('int-2', 'kit-k')).not.toBe(id);
+    expect(idDaCriacaoDeKit('int-1', 'kit-j')).not.toBe(id);
+    expect(idDaCriacaoDeKit('int-1', '2kit')).not.toBe(idDaCriacaoDeKit('int-12', 'kit'));
+  });
+
+  it('refuses an empty conta or produto', () => {
+    expect(() => idDaCriacaoDeKit('', 'kit-k')).toThrow(RangeError);
+    expect(() => idDaCriacaoDeKit('int-1', '')).toThrow(RangeError);
   });
 });
