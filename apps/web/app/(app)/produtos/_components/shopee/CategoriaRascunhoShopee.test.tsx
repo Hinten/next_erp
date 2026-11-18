@@ -42,6 +42,7 @@ const {
   FRASE_CATEGORIA_NAO_FOLHA_SHOPEE,
   FRASE_SEM_CATEGORIA_RASCUNHO_SHOPEE,
   FRASE_SEM_SUGESTOES_SHOPEE,
+  FRASE_TROCA_DE_CATEGORIA_NO_ANUNCIO_SHOPEE,
   FRASE_SUGESTAO_FORA_DA_ARVORE_SHOPEE,
   FRASE_SUGESTAO_NAO_FOLHA_SHOPEE,
   FRASE_SUGESTOES_NUNCA_APLICADAS_SHOPEE,
@@ -146,6 +147,8 @@ function show(
     voltarApagaAtributos?: boolean;
     /** `bloco.atributosGravadosForaDaCategoria` — the saved attributes come back with the saved category. */
     atributosGravadosForaDaCategoria?: boolean;
+    /** `bloco.alvo === 'anuncio'` — the pick-confirm sentence is the published listing's. */
+    anuncio?: boolean;
   } = {},
 ) {
   const qc = new QueryClient({ defaultOptions: QUERY_DEFAULT_OPTIONS });
@@ -165,6 +168,7 @@ function show(
           voltarApagaAtributos={p.voltarApagaAtributos ?? false}
           onEscolher={onEscolher}
           onVoltar={p.voltar === true ? onVoltar : null}
+          anuncio={p.anuncio}
         />
       </QueryClientProvider>
     </MantineTestProvider>
@@ -511,5 +515,23 @@ describe('CategoriaRascunhoShopee — no conta that can answer (R2-drafts#6)', (
   it('NEAR-MISS: the same id with a conta is read', async () => {
     show({ contaId: CONTA, categoryId: 100087, editavel: false });
     await waitFor(() => expect(h.categorias).toHaveBeenCalledTimes(1));
+  });
+});
+
+describe('CategoriaRascunhoShopee — a PUBLISHED listing’s pick confirmation (PR3)', () => {
+  it('says the listing’s sentence — the new category’s attributes must be filled in the same save — never the draft one', async () => {
+    show({ atributosPreenchidos: true, anuncio: true });
+    abrir();
+    const modal = await screen.findByTestId(`${RAIZ}-modal`);
+    expect(modal.textContent).toContain(FRASE_TROCA_DE_CATEGORIA_NO_ANUNCIO_SHOPEE);
+    expect(modal.textContent).not.toContain(FRASE_TROCA_DE_CATEGORIA_APAGA_ATRIBUTOS_SHOPEE);
+  });
+
+  it('NEAR-MISS: the same state on a DRAFT keeps the draft sentence', async () => {
+    show({ atributosPreenchidos: true, anuncio: false });
+    abrir();
+    const modal = await screen.findByTestId(`${RAIZ}-modal`);
+    expect(modal.textContent).toContain(FRASE_TROCA_DE_CATEGORIA_APAGA_ATRIBUTOS_SHOPEE);
+    expect(modal.textContent).not.toContain(FRASE_TROCA_DE_CATEGORIA_NO_ANUNCIO_SHOPEE);
   });
 });

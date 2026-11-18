@@ -249,9 +249,10 @@ export const CODIGO_RASCUNHO_SHOPEE = {
    */
   anuncioNaoEditavel: 'SHOPEE_ANUNCIO_NAO_EDITAVEL',
   /**
-   * 422 — an edit a PUBLISHED listing cannot take: a null brand, an empty
-   * attribute list over a stored one, «Automática» logistics. Nothing was
-   * written.
+   * 422 — an edit a PUBLISHED listing cannot take: a null brand, «Automática»
+   * logistics, a logistics edit over a list the ERP never wrote (import first),
+   * an empty attribute list over a stored one (explicitly or by a category
+   * change that sends none). Nothing was written.
    */
   anuncioEdicaoInvalida: 'SHOPEE_ANUNCIO_EDICAO_INVALIDA',
 } as const satisfies Record<string, string>;

@@ -11,7 +11,9 @@ import { FirebaseFunctionsError } from 'firebase-admin/functions';
 import {
   ORIGEM_TAREFA_ESTOQUE_LI,
   TIPO_TAREFA_ESTOQUE_LI,
+  type TarefaEstoqueKitsLi,
   type TarefaEstoqueLi,
+  tarefaEstoqueKitsLiSchema,
   tarefaEstoqueLiSchema,
 } from '@delfrance/schemas';
 
@@ -30,9 +32,12 @@ import {
   MARGEM_AGENDAMENTO_ESTOQUE_LI_MS,
   type OpcoesEnfileiramentoEstoqueLi,
   type TarefaEstoqueSemJanelaLi,
+  type TarefaEstoqueKitsSemJanelaLi,
   agendamentoEstoqueLi,
   criarAgendadorEstoqueLi,
+  enfileirarTarefaEstoqueKitsLi,
   enfileirarTarefaEstoqueLi,
+  idDaTarefaEstoqueKitsLi,
   idDaTarefaEstoqueLi,
   janelaEstoqueLi,
 } from './agendadorEstoque';
@@ -348,5 +353,229 @@ describe('enfileirarTarefaEstoqueLi: the clock at the enqueue, the strict parse,
 
   it('the queue is named after the function that serves it', () => {
     expect(FILA_ESTOQUE_LI).toBe('filaEstoqueLojaIntegrada');
+  });
+});
+
+describe('a BULK enqueue (PR 12-f): the window handed in, and a not-before bound', () => {
+  const kit: TarefaEstoqueSemJanelaLi = {
+    contaId: 'conta-li-est',
+    produtoId: 'kit-1',
+    origem: ORIGEM_TAREFA_ESTOQUE_LI.kit,
+    estoqueId: null,
+    apagado: false,
+    estoqueIds: { c1: 'est-c1-dep-1' },
+    geracao: 0,
+  };
+
+  function gravador() {
+    const enfileiradas: { tarefa: TarefaEstoqueLi; opcoes: OpcoesEnfileiramentoEstoqueLi }[] = [];
+    const agendador: AgendadorEstoqueLi = {
+      enfileirar: (t, o) => {
+        if (t.tipo !== TIPO_TAREFA_ESTOQUE_LI.estoque) throw new TypeError('só estoque aqui');
+        enfileiradas.push({ tarefa: t, opcoes: o });
+        return Promise.resolve();
+      },
+    };
+    return { agendador, enfileiradas };
+  }
+
+  const relogioProibido = () => {
+    throw new Error('teste: com a janela dada, o relógio não é lido');
+  };
+
+  it('`janela` NAMES the task — the clock is not read at all — and the window schedule follows it', async () => {
+    const g = gravador();
+    await enfileirarTarefaEstoqueLi(g.agendador, relogioProibido, kit, { janela: JANELA - 7 });
+    const [e] = g.enfileiradas;
+    expect(e?.tarefa.janela).toBe(JANELA - 7);
+    expect(e?.opcoes).toEqual({
+      id: idDaTarefaEstoqueLi({ ...kit, janela: JANELA - 7 }),
+      agendarParaMs: agendamentoEstoqueLi(JANELA - 7, 'kit-1'),
+    });
+  });
+
+  it('EQUAL pair: a retry that hands in the same window names the same task, whenever it runs', async () => {
+    const g = gravador();
+    await enfileirarTarefaEstoqueLi(g.agendador, () => JANELA * 60_000, kit, { janela: JANELA });
+    await enfileirarTarefaEstoqueLi(g.agendador, () => (JANELA + 9) * 60_000, kit, {
+      janela: JANELA,
+    });
+    expect(g.enfileiradas[0]?.opcoes.id).toBe(g.enfileiradas[1]?.opcoes.id);
+    // ⚠️ NEAR-MISS: named by the clock instead, the retry is another task (a doubled fan-out).
+    await enfileirarTarefaEstoqueLi(g.agendador, () => (JANELA + 9) * 60_000, kit);
+    expect(g.enfileiradas[2]?.opcoes.id).not.toBe(g.enfileiradas[0]?.opcoes.id);
+  });
+
+  it('`naoAntesDeMs` LATER than the window schedule ⇒ the schedule IS that instant', async () => {
+    const g = gravador();
+    const depois = agendamentoEstoqueLi(JANELA, 'kit-1') + 3_600_000;
+    await enfileirarTarefaEstoqueLi(g.agendador, () => JANELA * 60_000, kit, {
+      janela: JANELA,
+      naoAntesDeMs: depois,
+    });
+    expect(g.enfileiradas[0]?.opcoes.agendarParaMs).toBe(depois);
+  });
+
+  it('⚠️ NEAR-MISS: `naoAntesDeMs` EARLIER than the window schedule never wins — the window stays the floor', async () => {
+    const g = gravador();
+    const janelaDoAgendamento = agendamentoEstoqueLi(JANELA, 'kit-1');
+    await enfileirarTarefaEstoqueLi(g.agendador, () => JANELA * 60_000, kit, {
+      naoAntesDeMs: janelaDoAgendamento - 1,
+    });
+    expect(g.enfileiradas[0]?.opcoes.agendarParaMs).toBe(janelaDoAgendamento);
+    expect(g.enfileiradas[0]?.opcoes.agendarParaMs).toBeGreaterThanOrEqual(
+      (JANELA + 1) * JANELA_ESTOQUE_LI_MS + MARGEM_AGENDAMENTO_ESTOQUE_LI_MS,
+    );
+  });
+
+  it('no options ⇒ byte-identical to before: the clock’s window, the window schedule', async () => {
+    const g = gravador();
+    await enfileirarTarefaEstoqueLi(g.agendador, () => JANELA * 60_000 + 1, kit);
+    await enfileirarTarefaEstoqueLi(g.agendador, () => JANELA * 60_000 + 1, kit, {});
+    for (const e of g.enfileiradas) {
+      expect(e.opcoes).toEqual({
+        id: idDaTarefaEstoqueLi({ ...kit, janela: JANELA }),
+        agendarParaMs: agendamentoEstoqueLi(JANELA, 'kit-1'),
+      });
+    }
+  });
+
+  it('a handed-in window the strict schema refuses (negative) ⇒ ZodError, nothing enqueued', async () => {
+    const g = gravador();
+    await expect(
+      enfileirarTarefaEstoqueLi(g.agendador, relogioProibido, kit, { janela: -1 }),
+    ).rejects.toBeInstanceOf(ZodError);
+    expect(g.enfileiradas).toEqual([]);
+  });
+});
+
+describe('the fan-out task (estoque-kits): its own name, the same window and schedule', () => {
+  const kits = (over: Partial<TarefaEstoqueKitsLi> = {}): TarefaEstoqueKitsLi => ({
+    tipo: TIPO_TAREFA_ESTOQUE_LI.estoqueKits,
+    contaId: 'conta-li-est',
+    componenteId: 'prod-1',
+    janela: JANELA,
+    ...over,
+  });
+
+  it('golden value, and the preimage spelled out', () => {
+    expect(idDaTarefaEstoqueKitsLi(kits())).toBe(
+      'estoque-kits-201c5be3fe3c947a86bbffb7e8d5ce8aef6b49fc54326be6707f1f55076e32ca',
+    );
+    expect(idDaTarefaEstoqueKitsLi(kits())).toBe(
+      `estoque-kits-${sha(`estoque-kits:conta-li-est:prod-1:${String(JANELA)}`)}`,
+    );
+  });
+
+  it('EQUAL pair: the same conta, component and window ⇒ the same id', () => {
+    expect(idDaTarefaEstoqueKitsLi(kits())).toBe(idDaTarefaEstoqueKitsLi({ ...kits() }));
+  });
+
+  it.each([
+    ['conta', { contaId: 'conta-li-esu' }],
+    ['componente', { componenteId: 'prod-2' }],
+    ['janela', { janela: JANELA + 1 }],
+  ] as const)('⚠️ NEAR-MISS: another %s ⇒ another id', (_rotulo, over) => {
+    expect(idDaTarefaEstoqueKitsLi(kits(over))).not.toBe(idDaTarefaEstoqueKitsLi(kits()));
+  });
+
+  it('⚠️ DISTINCT from every send task of the same ids, whatever the origin (own prefix AND own tag)', () => {
+    const id = idDaTarefaEstoqueKitsLi(kits());
+    for (const origem of Object.values(ORIGEM_TAREFA_ESTOQUE_LI)) {
+      for (const apagado of [false, true]) {
+        expect(
+          idDaTarefaEstoqueLi(
+            tarefa({
+              origem,
+              apagado,
+              produtoId: 'prod-1',
+              geracao: origem === ORIGEM_TAREFA_ESTOQUE_LI.deriva ? 1 : 0,
+            }),
+          ),
+        ).not.toBe(id);
+      }
+    }
+    expect(id.startsWith('estoque-kits-')).toBe(true);
+    // The tag alone keeps the digests apart: the send preimage of the same parts is another one.
+    expect(id.slice('estoque-kits-'.length)).not.toBe(
+      sha(`estoque:conta-li-est:prod-1:${String(JANELA)}`),
+    );
+  });
+
+  it('inside Cloud Tasks’ task-id grammar, whatever the ids hold', () => {
+    for (const t of [kits(), kits({ componenteId: 'p ó~0', contaId: 'C_1-a' })]) {
+      expect(idDaTarefaEstoqueKitsLi(t)).toMatch(/^[A-Za-z0-9_-]{1,500}$/);
+    }
+  });
+
+  function gravador() {
+    const eventos: string[] = [];
+    const enfileiradas: { tarefa: unknown; opcoes: OpcoesEnfileiramentoEstoqueLi }[] = [];
+    const agendador: AgendadorEstoqueLi = {
+      enfileirar: (t, o) => {
+        eventos.push('enfileirar');
+        enfileiradas.push({ tarefa: t, opcoes: o });
+        return Promise.resolve();
+      },
+    };
+    return { agendador, eventos, enfileiradas };
+  }
+
+  const semJanela: TarefaEstoqueKitsSemJanelaLi = {
+    contaId: 'conta-li-est',
+    componenteId: 'prod-1',
+  };
+
+  it('enfileirarTarefaEstoqueKitsLi: the clock read right before the enqueue; parsed; named; scheduled over the component', async () => {
+    const g = gravador();
+    const relogio = () => {
+      g.eventos.push('relogio');
+      return JANELA * 60_000 + 59_999;
+    };
+    await enfileirarTarefaEstoqueKitsLi(g.agendador, relogio, semJanela);
+    expect(g.eventos).toEqual(['relogio', 'enfileirar']);
+    const esperada = kits();
+    expect(g.enfileiradas).toEqual([
+      {
+        tarefa: esperada,
+        opcoes: {
+          id: idDaTarefaEstoqueKitsLi(esperada),
+          agendarParaMs: agendamentoEstoqueLi(JANELA, 'prod-1'),
+        },
+      },
+    ]);
+    expect(tarefaEstoqueKitsLiSchema.safeParse(g.enfileiradas[0]?.tarefa).success).toBe(true);
+  });
+
+  it('an extra key (a quantity) is refused by the strict parse: ZodError, nothing enqueued', async () => {
+    const g = gravador();
+    const comQuantidade = {
+      ...semJanela,
+      disponivel: 0,
+    } as unknown as TarefaEstoqueKitsSemJanelaLi;
+    await expect(
+      enfileirarTarefaEstoqueKitsLi(g.agendador, () => JANELA * 60_000, comQuantidade),
+    ).rejects.toBeInstanceOf(ZodError);
+    expect(g.enfileiradas).toEqual([]);
+  });
+
+  it('rejects as the agendador does: the closed valve, a transient failure', async () => {
+    await expect(
+      enfileirarTarefaEstoqueKitsLi(
+        criarAgendadorEstoqueLi({ fila: fila().fila, desligado: true }),
+        () => JANELA * 60_000,
+        semJanela,
+      ),
+    ).rejects.toBeInstanceOf(LiTarefasDesligadasError);
+    await expect(
+      enfileirarTarefaEstoqueKitsLi(
+        criarAgendadorEstoqueLi({
+          fila: fila(falhaDoFunctions('unknown-error', 503)).fila,
+          desligado: false,
+        }),
+        () => JANELA * 60_000,
+        semJanela,
+      ),
+    ).rejects.toBeInstanceOf(LiTarefasTransitoriasError);
   });
 });

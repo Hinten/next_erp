@@ -1,0 +1,18 @@
+.grid[data-photo-drop-state] {
+  border-radius: var(--mantine-radius-sm);
+  outline-offset: 2px;
+}
+
+.grid[data-photo-drop-state='available'] {
+  outline: 1px solid color-mix(in srgb, var(--mantine-color-blue-outline) 55%, transparent);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--mantine-color-blue-outline) 25%, transparent);
+}
+
+.grid[data-photo-drop-state='target'] {
+  outline: 2px solid var(--mantine-color-blue-outline);
+  box-shadow: 0 0 14px color-mix(in srgb, var(--mantine-color-blue-outline) 45%, transparent);
+}
+
+.grid[data-photo-drop-state='reorder'] {
+  outline: 2px dashed var(--mantine-color-blue-4);
+}

@@ -2098,10 +2098,13 @@ export function fraseDaPublicacaoEmAndamentoShopee(
   );
 }
 
-/** 409 `rascunhoJaPublicado`: the draft became a listing meanwhile. */
+/**
+ * 409 `rascunhoJaPublicado`: the draft became a listing meanwhile. NEUTRAL on
+ * purpose — it answers a draft's edit, its discard AND its «Publicar», so it
+ * claims nothing about what was or was not written, only that nothing was done.
+ */
 export const FRASE_RASCUNHO_JA_PUBLICADO_SHOPEE =
-  'Este rascunho já virou anúncio na Shopee — recarregue a aba; o conteúdo de um anúncio ' +
-  'publicado não é editado aqui.';
+  'Este rascunho já virou anúncio na Shopee — recarregue a aba. Nada foi feito.';
 
 /**
  * 409 `rascunhoJaPublicado` answering an ATTESTED Publicar (§I4, review round
@@ -3086,5 +3089,64 @@ export const FRASE_MARCA_PODE_NAO_VALER_SHOPEE =
 
 export const ROTULO_ABRIR_VARIACOES_SHOPEE = 'Abrir Variações';
 export const ROTULO_ABRIR_TABELA_DE_MEDIDAS_SHOPEE = 'Abrir a tabela de medidas';
-/** A published listing's own content: fixed in Seller Centre (text, no link — D8). */
+/**
+ * A published listing's own content that this screen does NOT edit (not
+ * editable — removed, superseded, a native kit — or the operator may not
+ * author): fixed in Seller Centre (text, no link — D8). An EDITABLE published
+ * listing routes to its own form instead (`Corrigir no anúncio: …`).
+ */
 export const FRASE_CORRIGIR_NO_SELLER_CENTRE_SHOPEE = 'Corrigir no Seller Centre';
+
+/* ---- editing a PUBLISHED listing's content (saved to the ERP, sent by «Republicar») ---- */
+
+export const FRASE_ANUNCIO_EDICAO_SALVA_SHOPEE =
+  'Alterações salvas no ERP. Elas vão para a Shopee no próximo «Republicar».';
+export const FRASE_ANUNCIO_EDICAO_SEM_MUDANCA_SHOPEE =
+  'Nada a salvar: o anúncio já tinha esses valores no ERP.';
+/** 409 `anuncioNaoEditavel` on a save. */
+export const FRASE_ANUNCIO_NAO_EDITAVEL_SHOPEE =
+  'Este anúncio não pode mais ser editado aqui (foi removido, substituído ou virou kit nativo) — ' +
+  'recarregue a aba. Nada foi gravado.';
+/** 404 on a published listing's save: the link is gone from this produto (or belongs to another conta). */
+export const FRASE_ANUNCIO_INEXISTENTE_SHOPEE =
+  'O anúncio não existe mais neste produto (ou é de outra conta) — recarregue a aba. Nada foi gravado.';
+/** 409 `rascunhoConflito` with an unreadable list on a published listing's save. */
+export const FRASE_CONFLITO_ILEGIVEL_ANUNCIO_SHOPEE =
+  'Não foi possível gravar: o anúncio mudou em outra gravação. Nada foi gravado. ' +
+  'Recarregue a aba e tente de novo.';
+/** A codeless 400 naming `alvo`: an apps/shopee older than the published edit. */
+export const FRASE_SERVIDOR_SEM_EDICAO_DE_ANUNCIO_SHOPEE =
+  'O servidor da Shopee ainda não aceita editar anúncios publicados (versão anterior). ' +
+  'Nada foi gravado.';
+/** A DIRTY published entry dropped because the link stopped being editable. */
+export const FRASE_ANUNCIO_DEIXOU_DE_SER_EDITAVEL_DURANTE_EDICAO_SHOPEE =
+  'Este anúncio deixou de ser editável enquanto você editava (foi removido, substituído ou ' +
+  'virou kit nativo): as alterações não salvas não foram aplicadas.';
+/** A DIRTY published entry dropped because the link left this produto. */
+export const FRASE_ANUNCIO_SAIU_DURANTE_EDICAO_SHOPEE =
+  'Este anúncio saiu deste produto enquanto você editava: as alterações não salvas não foram aplicadas.';
+export const TITULO_CONFLITO_ANUNCIO_SHOPEE = 'Anúncio alterado';
+export const FRASE_CONFLITO_ANUNCIO_SHOPEE =
+  'Este anúncio foi alterado no ERP (em outra aba, por outra pessoa, por uma importação ou por ' +
+  'um «Republicar») depois que você começou a editar. Salvar vai sobrescrever os campos abaixo.';
+
+/* ---- discarding a published listing's UNSENT edits ---- */
+
+export const ROTULO_ALTERACOES_NAO_ENVIADAS_SHOPEE = 'Alterações não enviadas';
+export const ROTULO_DESCARTAR_EDICOES_SHOPEE = 'Descartar alterações não enviadas';
+export const TITULO_DESCARTAR_EDICOES_SHOPEE = 'Descartar alterações não enviadas?';
+export const FRASE_CONFIRMAR_DESCARTE_EDICOES_SHOPEE =
+  'O ERP relê o anúncio na Shopee e troca título, descrição, categoria, marca, atributos e ' +
+  'canais de envio guardados aqui pelo conteúdo atual da Shopee. As alterações salvas e ainda ' +
+  'não enviadas com «Republicar» se perdem.';
+export const ROTULO_CONFIRMAR_DESCARTE_EDICOES_SHOPEE = 'Descartar alterações';
+export const FRASE_EDICOES_DESCARTADAS_SHOPEE =
+  'Alterações não enviadas descartadas: o anúncio voltou ao conteúdo atual da Shopee.';
+export const FRASE_NADA_A_DESCARTAR_SHOPEE =
+  'Não havia alterações não enviadas: nada foi descartado.';
+/** The discard's answer was lost (network, an unreadable 2xx, a 5xx with no Shopee `kind`). */
+export const FRASE_DESCARTE_EDICOES_INCERTO_SHOPEE =
+  'Sem resposta confirmada do servidor: as alterações não enviadas podem ter sido descartadas ou ' +
+  'não. Aguarde a aba atualizar e confira.';
+export const FRASE_FORMULARIO_SUJO_BLOQUEIA_ACOES_SHOPEE =
+  'Salve ou desfaça as alterações do formulário antes de republicar ou descartar.';

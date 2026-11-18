@@ -24,6 +24,7 @@ import {
   respostaCanaisShopeeSchema as canaisCompartilhadaSchema,
   respostaCategoriasShopeeSchema as categoriasCompartilhadaSchema,
   respostaCriarRascunhoShopeeSchema as criarCompartilhadoSchema,
+  respostaDescartarEdicoesAnuncioShopeeSchema as descartarEdicoesCompartilhadoSchema,
   respostaDescartarRascunhoShopeeSchema as descartarCompartilhadoSchema,
   respostaItemIncertoShopeeSchema as itemIncertoCompartilhadoSchema,
   respostaLimitesDoItemShopeeSchema as limitesDoItemCompartilhadoSchema,
@@ -73,6 +74,7 @@ import {
   respostaCanaisShopeeSchema,
   respostaCategoriasShopeeSchema,
   respostaCriarRascunhoShopeeSchema,
+  respostaDescartarEdicoesAnuncioShopeeSchema,
   respostaDescartarRascunhoShopeeSchema,
   respostaItemIncertoShopeeSchema,
   respostaLimitesDoItemShopeeSchema,
@@ -2124,6 +2126,11 @@ describe('#1911 — every taxonomy and draft answer here IS the shared schema ob
       'respostaDescartarRascunhoShopeeSchema',
       respostaDescartarRascunhoShopeeSchema,
       descartarCompartilhadoSchema,
+    ],
+    [
+      'respostaDescartarEdicoesAnuncioShopeeSchema (PR3)',
+      respostaDescartarEdicoesAnuncioShopeeSchema,
+      descartarEdicoesCompartilhadoSchema,
     ],
     [
       'respostaItemIncertoShopeeSchema (P11)',
