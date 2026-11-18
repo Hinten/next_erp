@@ -19,9 +19,19 @@ import { FakeDb, asDb, grpc, increment } from '../testing/fakeDb';
 import { importarAnuncioShopee } from './importarAnuncio';
 import type { ImportarKitShopeeDeps, ItemLido } from './itemLido';
 import { importarKitShopee } from './kitShopee';
-import { TENTATIVAS_DA_ADOCAO, aplicarLinkDaListagem, aplicarLinkDaVariacao } from './links';
+import {
+  TENTATIVAS_DA_ADOCAO,
+  TENTATIVAS_DA_ESCRITA_GUARDADA,
+  aplicarLinkDaListagem,
+  aplicarLinkDaListagemComGuarda,
+  aplicarLinkDaVariacao,
+} from './links';
 import { caminhoDoLinkDaListagem, dadosLinkListagem, dadosLinkVariacao } from './mapeamento';
-import type { EscritaDeLink, EscritaDeLinkDaListagem } from './planoImportacao';
+import type {
+  EscritaDeLink,
+  EscritaDeLinkDaListagem,
+  EscritaDeLinkGuardada,
+} from './planoImportacao';
 import { idDoFilhoPlanejado, idDoPaiPlanejado } from './resolveProduto';
 
 /* ---------------------------------- fixtures ------------------------------ */
@@ -1090,5 +1100,265 @@ describe('importarAnuncioShopee — `logisticaGravadaEm` sobre um rascunho LEGAD
     // The other item's document keeps its legacy list and stays unvouched.
     expect(lerDoc(db, CAMINHO)).toEqual(antes);
     expect(logisticaGravadaPeloErpShopee(lerDoc(db, CAMINHO))).toBe(false);
+  });
+});
+
+/* ---- 6. PR1 — o merge GUARDADO: uma edição do ERP nunca é descartada em silêncio ---- */
+
+describe('aplicarLinkDaListagemComGuarda — merge-guardado (rule 7 tier 1)', () => {
+  const DOC = 'link-g';
+  const CAMINHO_G = `produtos/${PAI}/prodshopee/${DOC}`;
+  const AGORA_G = 1_760_000_000_000;
+
+  function guardada(
+    guarda: EscritaDeLinkGuardada['guarda'],
+    dados: Record<string, unknown> = {},
+    seAusentes: Record<string, unknown> = {},
+  ): EscritaDeLinkGuardada {
+    return {
+      acao: 'merge-guardado',
+      docId: DOC,
+      dados: {
+        item_name: 'da Shopee',
+        attributes: [{ attribute_id: 1 }],
+        item_status: 'NORMAL',
+        ...dados,
+      },
+      seAusentes,
+      guarda,
+    };
+  }
+
+  function semear(db: FakeDb, extra: Record<string, unknown> = {}): void {
+    db.seed(CAMINHO_G, {
+      contaProdutoShopeeOuterRef: REF_CONTA,
+      item_id: ITEM_ID,
+      item_name: 'editado no ERP',
+      attributes: [{ attribute_id: 9 }],
+      item_status: 'UNLIST',
+      ...extra,
+    });
+  }
+
+  it('importação sem edição pendente: o conteúdo entra', async () => {
+    const db = new FakeDb();
+    semear(db);
+    const r = await aplicarLinkDaListagemComGuarda(asDb(db), PAI, guardada({ tipo: 'importacao' }));
+    expect(r).toEqual({ docId: DOC, edicaoErpPreservada: false });
+    expect(lerDoc(db, CAMINHO_G)).toMatchObject({ item_name: 'da Shopee', item_status: 'NORMAL' });
+  });
+
+  it('importação com edição pendente: só o que não é conteúdo entra', async () => {
+    const db = new FakeDb();
+    semear(db, { edicaoErpPendenteEm: AGORA_G, edicaoErpRevisao: 2 });
+    const r = await aplicarLinkDaListagemComGuarda(asDb(db), PAI, guardada({ tipo: 'importacao' }));
+    expect(r.edicaoErpPreservada).toBe(true);
+    expect(lerDoc(db, CAMINHO_G)).toMatchObject({
+      item_name: 'editado no ERP',
+      attributes: [{ attribute_id: 9 }],
+      item_status: 'NORMAL',
+    });
+  });
+
+  it('write-back #1 com a revisão igual: conteúdo entra e a bandeira é limpa', async () => {
+    const db = new FakeDb();
+    semear(db, { edicaoErpRevisao: 3, edicaoErpPendenteEm: AGORA_G });
+    const r = await aplicarLinkDaListagemComGuarda(
+      asDb(db),
+      PAI,
+      guardada({ tipo: 'write-back-1', revisao: 3, nowMs: AGORA_G + 1 }),
+    );
+    expect(r.edicaoErpPreservada).toBe(false);
+    expect(lerDoc(db, CAMINHO_G)).toMatchObject({
+      item_name: 'da Shopee',
+      edicaoErpPendenteEm: null,
+    });
+  });
+
+  it('write-back #1 com a revisão movida: a edição sobrevive e a bandeira é posta (nowMs)', async () => {
+    const db = new FakeDb();
+    semear(db, { edicaoErpRevisao: 4 });
+    const r = await aplicarLinkDaListagemComGuarda(
+      asDb(db),
+      PAI,
+      guardada({ tipo: 'write-back-1', revisao: 3, nowMs: AGORA_G }),
+    );
+    expect(r.edicaoErpPreservada).toBe(true);
+    expect(lerDoc(db, CAMINHO_G)).toMatchObject({
+      item_name: 'editado no ERP',
+      edicaoErpPendenteEm: AGORA_G,
+      item_status: 'NORMAL',
+    });
+  });
+
+  it('write-back #2: revisão igual e nada pendente ⇒ conteúdo; movida ou pendente ⇒ só status', async () => {
+    const igual = new FakeDb();
+    semear(igual, { edicaoErpRevisao: 3 });
+    await aplicarLinkDaListagemComGuarda(
+      asDb(igual),
+      PAI,
+      guardada({ tipo: 'write-back-2', revisao: 3 }),
+    );
+    expect(lerDoc(igual, CAMINHO_G).item_name).toBe('da Shopee');
+
+    const movida = new FakeDb();
+    semear(movida, { edicaoErpRevisao: 4 });
+    await aplicarLinkDaListagemComGuarda(
+      asDb(movida),
+      PAI,
+      guardada({ tipo: 'write-back-2', revisao: 3 }),
+    );
+    expect(lerDoc(movida, CAMINHO_G)).toMatchObject({
+      item_name: 'editado no ERP',
+      item_status: 'NORMAL',
+    });
+
+    const pendente = new FakeDb();
+    semear(pendente, { edicaoErpRevisao: 3, edicaoErpPendenteEm: AGORA_G });
+    await aplicarLinkDaListagemComGuarda(
+      asDb(pendente),
+      PAI,
+      guardada({ tipo: 'write-back-2', revisao: 3 }),
+    );
+    expect(lerDoc(pendente, CAMINHO_G)).toMatchObject({
+      item_name: 'editado no ERP',
+      item_status: 'NORMAL',
+    });
+  });
+
+  it('seAusentes preenche só chave ausente ou nula', async () => {
+    const db = new FakeDb();
+    semear(db, { dataCadastro: 5, publicadoEm: null });
+    await aplicarLinkDaListagemComGuarda(
+      asDb(db),
+      PAI,
+      guardada({ tipo: 'importacao' }, {}, { dataCadastro: 99, publicadoEm: 77 }),
+    );
+    expect(lerDoc(db, CAMINHO_G)).toMatchObject({ dataCadastro: 5, publicadoEm: 77 });
+  });
+
+  it('precondição perdida: relê e RE-DECIDE (a edição chegou no meio)', async () => {
+    const db = new FakeDb();
+    semear(db);
+    const corrida = comEscritaConcorrente(db, CAMINHO_G, () =>
+      semear(db, { edicaoErpPendenteEm: AGORA_G, edicaoErpRevisao: 1 }),
+    );
+    const r = await aplicarLinkDaListagemComGuarda(
+      asDb(corrida),
+      PAI,
+      guardada({ tipo: 'importacao' }),
+    );
+    expect(r.edicaoErpPreservada).toBe(true);
+    expect(lerDoc(db, CAMINHO_G).item_name).toBe('editado no ERP');
+    expect(db.opLog.filter((o) => o.op === 'get' && o.path === CAMINHO_G)).toHaveLength(2);
+  });
+
+  it(`${String(TENTATIVAS_DA_ESCRITA_GUARDADA)} perdas ⇒ fallback (D-B): merge só do que não é conteúdo, sem relançar`, async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const db = new FakeDb();
+    semear(db);
+    const corrida = comEscritaConcorrente(
+      db,
+      CAMINHO_G,
+      (n) => semear(db, { edicaoErpRevisao: n }),
+      true,
+    );
+    const r = await aplicarLinkDaListagemComGuarda(
+      asDb(corrida),
+      PAI,
+      guardada({ tipo: 'write-back-1', revisao: null, nowMs: AGORA_G }),
+    );
+    expect(r.edicaoErpPreservada).toBe(true);
+    expect(lerDoc(db, CAMINHO_G)).toMatchObject({
+      item_name: 'editado no ERP',
+      item_status: 'NORMAL',
+      edicaoErpPendenteEm: AGORA_G,
+    });
+  });
+
+  it('⚠️ near-miss do D-B: um vínculo NUNCA editado que perde as 3 passadas NÃO ganha bandeira pendente (o descarte nunca a limparia)', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const db = new FakeDb();
+    semear(db, { dataCadastro: null });
+    const corrida = comEscritaConcorrente(
+      db,
+      CAMINHO_G,
+      () => semear(db, { item_status: 'BANNED', dataCadastro: null }),
+      true,
+    );
+    const r = await aplicarLinkDaListagemComGuarda(
+      asDb(corrida),
+      PAI,
+      guardada({ tipo: 'write-back-1', revisao: null, nowMs: AGORA_G }, {}, { dataCadastro: 42 }),
+    );
+    expect(r.edicaoErpPreservada).toBe(false);
+    const doc = lerDoc(db, CAMINHO_G);
+    expect(doc.edicaoErpPendenteEm).toBeUndefined();
+    expect(doc).toMatchObject({ item_status: 'NORMAL', dataCadastro: 42 });
+  });
+
+  it('a IMPORTAÇÃO que perde as 3 passadas relança (como a adoção) — nunca um merge sem conteúdo', async () => {
+    const db = new FakeDb();
+    semear(db);
+    const antes = structuredClone(lerDoc(db, CAMINHO_G));
+    const corrida = comEscritaConcorrente(db, CAMINHO_G, () => semear(db), true);
+    await expect(
+      aplicarLinkDaListagemComGuarda(asDb(corrida), PAI, guardada({ tipo: 'importacao' })),
+    ).rejects.toMatchObject({ code: 9 });
+    expect(lerDoc(db, CAMINHO_G)).toEqual(antes);
+  });
+
+  it('um erro que não é a precondição é relançado (regra 6)', async () => {
+    const db = new FakeDb();
+    semear(db);
+    db.falhasDeUpdate.set(CAMINHO_G, grpc(14, 'UNAVAILABLE'));
+    await expect(
+      aplicarLinkDaListagemComGuarda(asDb(db), PAI, guardada({ tipo: 'importacao' })),
+    ).rejects.toMatchObject({ code: 14 });
+  });
+
+  it('documento ausente: o merge cria (dados + seAusentes)', async () => {
+    const db = new FakeDb();
+    const r = await aplicarLinkDaListagemComGuarda(
+      asDb(db),
+      PAI,
+      guardada({ tipo: 'importacao' }, {}, { dataCadastro: 11 }),
+    );
+    expect(r.edicaoErpPreservada).toBe(false);
+    expect(lerDoc(db, CAMINHO_G)).toMatchObject({ item_name: 'da Shopee', dataCadastro: 11 });
+  });
+
+  it('D-A: o braço guardado escreve por update() (que SUBSTITUI um mapa aninhado; o set-merge o fundia)', async () => {
+    const db = new FakeDb();
+    semear(db, {
+      description_info: { extended_description: { field_list: [{ a: 1 }] }, antigo: true },
+    });
+    await aplicarLinkDaListagemComGuarda(
+      asDb(db),
+      PAI,
+      guardada(
+        { tipo: 'importacao' },
+        { description_info: { extended_description: { field_list: [] } } },
+      ),
+    );
+    expect(lerDoc(db, CAMINHO_G).description_info).toEqual({
+      extended_description: { field_list: [] },
+    });
+    // The fake's set-merge is shallow too, so the VERB is what discriminates:
+    // FakeDb records only `update` patches.
+    expect(db.patches.filter((p) => p.path === CAMINHO_G)).toHaveLength(1);
+  });
+
+  it('aplicarLinkDaListagem devolve o docId do braço guardado e o braço add segue igual', async () => {
+    const db = new FakeDb();
+    semear(db);
+    expect(await aplicarLinkDaListagem(asDb(db), PAI, guardada({ tipo: 'importacao' }))).toBe(DOC);
+    const novo = await aplicarLinkDaListagemComGuarda(asDb(db), PAI, {
+      acao: 'add',
+      docId: null,
+      dados: { contaProdutoShopeeOuterRef: REF_CONTA, item_id: 1, item_name: 'novo' },
+    });
+    expect(novo.edicaoErpPreservada).toBe(false);
+    expect(db.idsEm(`produtos/${PAI}/prodshopee`)).toContain(novo.docId);
   });
 });

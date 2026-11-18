@@ -135,6 +135,7 @@ import {
   precoDoFilhoNaTabela,
   propagaPrecoAosFilhos,
   rascunhoSemMarcaShopee,
+  revisaoDeEdicaoErpShopee,
   textoUtilizavelShopee,
   toOuterRef,
   varianteFakePath,
@@ -160,7 +161,7 @@ import {
   type MemoDeCategorias,
 } from '../produtos/itemLido';
 import { lerAnuncioShopee } from '../produtos/lerAnuncio';
-import { aplicarLinkDaListagem } from '../produtos/links';
+import { aplicarLinkDaListagem, aplicarLinkDaListagemComGuarda } from '../produtos/links';
 import { itemStatusDeLink } from '../produtos/mapeamento';
 import { avisoDeShopee, lerAtributos } from '../taxonomia/atributos';
 import { lerMarcasCached, type ShopeeTaxonomiaCtx } from '../taxonomia/cache';
@@ -817,6 +818,9 @@ export async function prepararPublicacao(
     grupos,
     link,
     linkDocId: linkResolvido?.linkDocId ?? null,
+    // From the SAME read that built the body (`linkResolvido.raw`), never the
+    // later `armazenado` re-read: the write-backs compare it with a fresh read.
+    revisaoDeEdicaoErp: linkResolvido === null ? null : revisaoDeEdicaoErpShopee(linkResolvido.raw),
     linksDeVariacao,
     limites,
     atributos,
@@ -1390,19 +1394,26 @@ type CorpoDeItem = ShopeeAddItemRequest | ShopeeUpdateItemRequest;
 /**
  * Write-back #1 — the §2.4 field set, AS SENT, the instant Shopee confirms.
  *
- * `merge`/`add` through `aplicarLinkDaListagem`, never `mergeIfExists`:
- * `ultimaPublicacao` is a NESTED object and `mergeIfExists` is `update()`, which
- * throws on one (C15) — and a first publish must CREATE the document anyway.
+ * Three targets, through `links.ts`:
+ *
+ *  - a DRAFT's create (#1911, `reserva` non-null) — the tier-1 CLAIM of
+ *    `reservaRascunho.ts`, its field set re-derived from the document each
+ *    attempt reads, never the `armazenado` read before the send;
+ *  - no link at all — the plain `add` (a first publish must CREATE it);
+ *  - an EXISTING link — the GUARDED field-wise `update()` (`merge-guardado`,
+ *    rule 7 tier 1): an ERP edit of a published link (`edicaoErpRevisao`) may
+ *    land between the read that built this body and now, so the content keys
+ *    go in only while the fresh read still holds the revision the body came
+ *    from — then `edicaoErpPendenteEm` is cleared, this publish sent the edit;
+ *    otherwise the edit survives and the flag is set. The nested
+ *    `ultimaPublicacao` is safe under `update()` because it is always written
+ *    WHOLE (C15's concern was `mergeIfExists` on a partial map).
  *
  * ⚠️ `publicadoEm` is written on the FIRST success only. A republish leaves the
  * stored value alone, so the field keeps meaning "when this listing first went
  * out" rather than "when it was last touched" — `ultimaPublicacao.em` is that.
- *
- * ⚠️ On a DRAFT's create (#1911, `reserva` non-null) this is the tier-1 CLAIM
- * of `reservaRascunho.ts` instead of the plain merge, and the field set is
- * re-derived from the document each attempt reads — never the `armazenado`
- * read before the send. Every other target keeps the plain merge/add above,
- * byte for byte.
+ * On the guarded target it and `dataCadastro` ride `seAusentes`, decided on the
+ * FRESH read (absent or `null` ⇒ stamped), never on `armazenado`.
  */
 async function escreverWriteBack1(
   deps: PublicarAnuncioDeps,
@@ -1414,6 +1425,8 @@ async function escreverWriteBack1(
     readonly corpo: CorpoDeItem;
     readonly etapa: EtapaPublicacao;
     readonly taxInfoOmitido: MotivoTaxInfoOmitido | null;
+    /** The `edicaoErpRevisao` the body was built from (`null`: none / a draft). */
+    readonly revisao?: number | null;
   },
   reserva: ReservaDeRascunhoShopee | null,
 ): Promise<string> {
@@ -1431,11 +1444,36 @@ async function escreverWriteBack1(
     return linkDocId;
   }
 
-  return await aplicarLinkDaListagem(deps.db, args.produtoId, {
-    acao: args.linkDocId === null ? 'add' : 'merge',
-    docId: args.linkDocId,
-    dados: montar(args.armazenado),
+  if (args.linkDocId === null) {
+    return await aplicarLinkDaListagem(deps.db, args.produtoId, {
+      acao: 'add',
+      docId: null,
+      dados: montar(args.armazenado),
+    });
+  }
+
+  // ⚠️ GUARDED (PR1, rule 7 tier 1): an ERP edit of a PUBLISHED link may land
+  // between the read that built this body and now. The content keys are written
+  // only when the fresh read still holds the revision the body came from;
+  // otherwise the edit survives and `edicaoErpPendenteEm` is set. The two
+  // first-time keys move to `seAusentes`, which the writer decides on the FRESH
+  // read — a stored map that already holds them suppresses them here.
+  const {
+    publicadoEm: _p,
+    dataCadastro: _d,
+    ...dados
+  } = dadosDoWriteBack1(deps, args, {
+    publicadoEm: 0,
+    dataCadastro: 0,
   });
+  const resultado = await aplicarLinkDaListagemComGuarda(deps.db, args.produtoId, {
+    acao: 'merge-guardado',
+    docId: args.linkDocId,
+    dados,
+    seAusentes: { publicadoEm: deps.nowMs, dataCadastro: deps.nowMs },
+    guarda: { tipo: 'write-back-1', revisao: args.revisao ?? null, nowMs: deps.nowMs },
+  });
+  return resultado.docId;
 }
 
 /**
@@ -1500,12 +1538,20 @@ export function dadosDoWriteBack1(
  * `null` for ever. An ordinary listing stores `false`, which is DATA: steps 12
  * and 13 read it as "not a native kit" exactly as they read an absent one.
  *
- * #2015: the read-back's `logistic_info` is always written (Shopee's array or
- * `null`, never absent), so its provenance stamp `logisticaGravadaEm` is
- * written beside it UNCONDITIONALLY. Like `falhaPublicacao` and
- * `ultimaModificacao` it is not a reading of Shopee: it records WHO wrote the
- * list. Write-back #1 already stamped the same document with the same
- * `deps.nowMs`; this one is the belt.
+ * #2015: the read-back's `logistic_info` (Shopee's array or `null`, never
+ * absent) and its provenance stamp `logisticaGravadaEm` ride ONE literal and
+ * share one condition. Like `falhaPublicacao` and `ultimaModificacao` the stamp
+ * is not a reading of Shopee: it records WHO wrote the list. Write-back #1
+ * already stamped the same document with the same `deps.nowMs`; this one is
+ * the belt.
+ *
+ * ⚠️ GUARDED (`merge-guardado`, write-back #2's guard): the CONTENT keys here —
+ * `attributes` (the read-back's own `attribute_list`, so the link holds what
+ * Shopee kept, e.g. an attribute an update left out), `original_brand_name`
+ * and the `logistic_info` + stamp pair — are written only while the link still
+ * holds the revision the body was built from AND no ERP edit is pending; an
+ * edit saved since keeps them, list and stamp withheld TOGETHER. The status
+ * keys are never content and always land.
  */
 async function escreverWriteBack2(
   deps: PublicarAnuncioDeps,
@@ -1515,19 +1561,29 @@ async function escreverWriteBack2(
     readonly item: ItemLido;
     readonly estado: EstadoAnuncioShopee;
     readonly deboost: boolean;
+    /** The `edicaoErpRevisao` the publish body was built from. */
+    readonly revisao?: number | null;
   },
 ): Promise<void> {
   const base = args.item.base;
+  // ⚠️ GUARDED (PR1): the content keys here (`attributes`, `original_brand_name`,
+  // `logistic_info` + its stamp) are the read-back of what THIS publish sent, so
+  // they are written only while the link still holds the revision it was built
+  // from and no edit is pending; the status keys are never content.
   await aplicarLinkDaListagem(deps.db, args.produtoId, {
-    acao: 'merge',
+    acao: 'merge-guardado',
     docId: args.linkDocId,
+    seAusentes: {},
+    guarda: { tipo: 'write-back-2', revisao: args.revisao ?? null },
     dados: {
+      attributes: base.attribute_list,
       item_status: itemStatusDeLink(args.item),
       estadoAnuncio: args.estado,
       deboost: args.deboost,
       original_brand_name: base.brand?.original_brand_name ?? null,
       logistic_info: base.logistic_info,
-      // Same patch, same condition (always) as the list above (#2015).
+      // Same patch, same condition as the list above (#2015) — both withheld
+      // together when the guard keeps an ERP edit.
       logisticaGravadaEm: deps.nowMs,
       kitNativo: ehKitDe(base),
       // A publish that got this far SUCCEEDED; leaving the last failure standing
@@ -1988,7 +2044,16 @@ export async function aplicarPublicacao(
     /* ---- (3) write-back #1 — a CLAIM on a draft. ------------------------ */
     linkDocId = await escreverWriteBack1(
       deps,
-      { produtoId, linkDocId, armazenado, itemId, corpo, etapa, taxInfoOmitido },
+      {
+        produtoId,
+        linkDocId,
+        armazenado,
+        itemId,
+        corpo,
+        etapa,
+        taxInfoOmitido,
+        revisao: plano.revisaoDeEdicaoErp ?? null,
+      },
       rascunho?.reserva ?? null,
     );
 
@@ -2044,6 +2109,7 @@ export async function aplicarPublicacao(
         item: leitura.item,
         estado: fold.estado,
         deboost: fold.deboost,
+        revisao: plano.revisaoDeEdicaoErp ?? null,
       });
 
       // ⚠️ The publisher makes no `get_item_violation_info` call, so "no

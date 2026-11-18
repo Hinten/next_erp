@@ -1,8 +1,17 @@
 /**
  * `POST /api/marketplace/shopee/rascunho/atualizar` — edit ONE Shopee listing
- * DRAFT (#1911, P4 — D1, D4, D8). Body (`corpoAtualizarRascunhoShopeeSchema`,
- * STRICT): `{ integracaoId, produtoId, linkDocId, base, patch }`. Requires
+ * DRAFT, or one PUBLISHED listing (#1911, P4 — D1, D4; D8 reversed by Lucas
+ * 2026-11-17). Body (`corpoAtualizarRascunhoShopeeSchema`, STRICT):
+ * `{ integracaoId, produtoId, linkDocId, base, patch, alvo? }`. Requires
  * `PERM.integracao.write`.
+ *
+ * `alvo` is `'rascunho'` (the default — a body without it is a draft edit, as
+ * before) or `'anuncio'`. A published listing is edited ONLY with `alvo:
+ * 'anuncio'`, and the edit is SAVE-ONLY: it writes the link and sends nothing to
+ * Shopee — «Republicar» sends. The published arm stamps `edicaoErpRevisao` (+1,
+ * from the snapshot that decided) and `edicaoErpPendenteEm` (`nowMs`) in the SAME
+ * update, so the unsent edit is never silently discarded; a draft edit never
+ * stamps, and a no-op (`gravados: []`) stamps nothing.
  *
  * `patch` is the write, through the draft whitelist (normalised); `base` is
  * what the operator SAW for exactly the fields `camposDaBaseDoRascunhoShopee(patch)`
@@ -43,16 +52,26 @@
  * bundle older than that rule gets on every attribute save: loud, and nothing
  * read or written) · 401/403 ·
  * 404 `INEXISTENTE` (no such draft, or another
- * conta's) · 409 `JA_PUBLICADO {linkDocId}` (the link is no longer a draft —
- * `ehRascunhoShopee` false: it RECORDS a listing, which Seller Centre may have
- * removed since; D8),
+ * conta's) · 409 `JA_PUBLICADO {linkDocId}` (`alvo` rascunho on a link that is no
+ * longer a draft — `ehRascunhoShopee` false: it RECORDS a listing, which Seller
+ * Centre may have removed since),
+ * `ANUNCIO_NAO_EDITAVEL {linkDocId}` (`alvo` anuncio on a link that is not an
+ * editable published listing — `anuncioShopeeEditavel` false: a draft, a native
+ * kit, a removed or superseded listing),
  * `EM_ANDAMENTO {aguardarMs}` (a publish holds the lock, its post-expiry grace
  * included), `CATEGORIA_TRAVADA` (a patch NAMING `category_id` — even the
  * stored value — while the last create is `incerta`: it may have made the
  * listing in the stored category),
  * `CONFLITO {conflitos}` (a stored value is not the operator's `base` — the
  * stored `category_id` under an attributes-only list included; `[]` when the
- * write lost its precondition on every attempt).
+ * write lost its precondition on every attempt) · 422
+ * `ANUNCIO_EDICAO_INVALIDA {linkDocId}` (`alvo` anuncio only; nothing written),
+ * four causes: a null brand («Sem marca» is `brand_id` 0, not null);
+ * `logistic_info` null («Automática» exists only on a draft); a logistics edit
+ * over a stored list the ERP never stamped (`logisticaDoAnuncioEditavelShopee`
+ * false — import the listing first); emptying a stored non-empty `attributes`
+ * list — `null`, `[]`, or a category change that names none. The publish lock is a
+ * draft concern: a published edit ignores `EM_ANDAMENTO` and `CATEGORIA_TRAVADA`.
  */
 import { NextResponse } from 'next/server';
 import { z } from 'zod';

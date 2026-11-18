@@ -61,7 +61,7 @@
  * set below is a different question, answered by its own fingerprint).
  */
 import { contaIdFromRef } from '../../shared/outerRef';
-import { ESTADO_ANUNCIO_SHOPEE } from './shopeeLink';
+import { ESTADO_ANUNCIO_SHOPEE, ehVinculoSubstituido } from './shopeeLink';
 
 /* -------------------------------------------------------------------------- */
 /*                         The refusal reader (register 177)                   */
@@ -303,6 +303,98 @@ export function anuncioShopeeVivo(link: Record<string, unknown> | null): boolean
 }
 
 /* -------------------------------------------------------------------------- */
+/*              ERP edits of a PUBLISHED listing (pending-edit guard)          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The link keys an operator's ERP edit owns: the content the product import and
+ * the publish write-backs would otherwise rewrite from Shopee's read or from the
+ * publish body. While an edit is pending (`edicaoErpPendenteEm`) these are
+ * written only by the edit itself or by the discard. ⚠️ `logisticaGravadaEm` is
+ * listed because it rides the SAME patch as `logistic_info` (#2015) — dropping
+ * one without the other would vouch for a list this app did not write. `apps/shopee`
+ * must go through this constant (and the two helpers below), never spell that
+ * stamp: its writer-site backstop pins the literal.
+ */
+export const CAMPOS_DE_EDICAO_ERP_SHOPEE = [
+  'item_name',
+  'description',
+  'description_type',
+  'description_info',
+  'category_id',
+  'attributes',
+  'brand_id',
+  'original_brand_name',
+  'logistic_info',
+  'logisticaGravadaEm',
+] as const;
+export type CampoDeEdicaoErpShopee = (typeof CAMPOS_DE_EDICAO_ERP_SHOPEE)[number];
+
+/**
+ * The stored edit revision, or `null` when the link was never edited: a safe
+ * positive integer only. `0`, negatives, fractions, `2**53`, strings and `null`
+ * all read "never edited" — the stamp is a counter this app writes, so anything
+ * else is not evidence of an edit.
+ */
+export function revisaoDeEdicaoErpShopee(link: Record<string, unknown> | null): number | null {
+  if (link === null) return null;
+  const v = link.edicaoErpRevisao;
+  return typeof v === 'number' && Number.isSafeInteger(v) && v > 0 ? v : null;
+}
+
+/**
+ * Whether an ERP edit is saved and not yet sent: `edicaoErpPendenteEm` is a
+ * finite number > 0 (a ms stamp). `0`, negatives, `NaN`, `Infinity`, strings and
+ * `null` are "nothing pending".
+ *
+ * ⚠️ Looser on purpose than {@link revisaoDeEdicaoErpShopee}: a malformed stamp
+ * that is still a positive finite number counts as PENDING, because a false
+ * "pending" costs one skipped content refresh while a false "none" silently
+ * discards an operator's edit.
+ */
+export function edicaoErpPendenteShopee(link: Record<string, unknown> | null): boolean {
+  if (link === null) return false;
+  const v = link.edicaoErpPendenteEm;
+  return typeof v === 'number' && Number.isFinite(v) && v > 0;
+}
+
+/**
+ * Whether the link is a PUBLISHED listing an operator may edit in the ERP: a
+ * positive safe-integer `item_id` (stricter than {@link anuncioShopeeVivo}, which
+ * lets `1.5` through), alive, not superseded (L8), and not a native kit — a kit's
+ * content is owned by its own arms.
+ */
+export function anuncioShopeeEditavel(link: Record<string, unknown> | null): boolean {
+  if (link === null) return false;
+  const itemId = link.item_id;
+  return (
+    typeof itemId === 'number' &&
+    Number.isSafeInteger(itemId) &&
+    itemId > 0 &&
+    anuncioShopeeVivo(link) &&
+    !ehVinculoSubstituido(link) &&
+    link.kitNativo !== true
+  );
+}
+
+/** A shallow copy of `dados` WITHOUT the {@link CAMPOS_DE_EDICAO_ERP_SHOPEE} keys. */
+export function semCamposDeEdicaoErpShopee(
+  dados: Record<string, unknown>,
+): Record<string, unknown> {
+  const fora = new Set<string>(CAMPOS_DE_EDICAO_ERP_SHOPEE);
+  return Object.fromEntries(Object.entries(dados).filter(([k]) => !fora.has(k)));
+}
+
+/**
+ * A shallow copy of `dados` holding ONLY the {@link CAMPOS_DE_EDICAO_ERP_SHOPEE}
+ * keys it OWNS — an absent key stays absent (never invented as `undefined`/`null`).
+ */
+export function soCamposDeEdicaoErpShopee(dados: Record<string, unknown>): Record<string, unknown> {
+  const dentro = new Set<string>(CAMPOS_DE_EDICAO_ERP_SHOPEE);
+  return Object.fromEntries(Object.entries(dados).filter(([k]) => dentro.has(k)));
+}
+
+/* -------------------------------------------------------------------------- */
 /*   The anchor's conta reader (MOVED from integracoesComProdutoShopee.ts)    */
 /* -------------------------------------------------------------------------- */
 
@@ -494,6 +586,142 @@ export function lerLogisticaArmazenadaShopee(
     });
   }
   return lidas;
+}
+
+/**
+ * The stored `logistic_info` of a link, but ONLY when the ERP wrote it: the
+ * array when `link.logistic_info` is one AND {@link logisticaGravadaPeloErpShopee}
+ * trusts the link, else `null`. It applies the ONE predicate the publisher
+ * (`publicarAnuncio.ts`, `kits/planoKit.ts`) and
+ * {@link mesclarLogisticaGravadaShopee} also call, so a list the publisher
+ * withholds (#2015: a legacy list is never re-sent without an import) is never
+ * read as trusted by the canais verdict either.
+ *
+ * Pure, total over `unknown`, no clock.
+ */
+export function logisticaArmazenadaConfiavelShopee(
+  link: Record<string, unknown> | null,
+): readonly unknown[] | null {
+  if (link === null || !logisticaGravadaPeloErpShopee(link)) return null;
+  const lista = link.logistic_info;
+  return Array.isArray(lista) ? (lista as readonly unknown[]) : null;
+}
+
+/**
+ * Whether the logistics of a PUBLISHED link may be EDITED in the ERP: only
+ * while its stored list is one the ERP wrote ({@link logisticaGravadaPeloErpShopee}).
+ *
+ * ⚠️ An edit is saved WITH the provenance stamp, and since the publisher sends a
+ * trusted list's offs on an update, an edit made over a DISTRUSTED (legacy, or
+ * absent) list would vouch for offs nobody chose — the channel editor, with no
+ * trusted size or fee to show, pre-fills every SIZE_SELECTION / CUSTOM_PRICE
+ * channel OFF, and «Republicar» would switch those live channels off at Shopee.
+ * Importing the listing first records what Shopee holds, stamped, and the edit
+ * then starts from it. The edit route refuses the rest (422).
+ *
+ * Pure, total over `unknown`, no clock.
+ */
+export function logisticaDoAnuncioEditavelShopee(link: Record<string, unknown> | null): boolean {
+  return link !== null && logisticaGravadaPeloErpShopee(link);
+}
+
+/**
+ * The operator's channel choice for a link's `logistic_info`, MERGED with what
+ * the link already stores (edit of a PUBLISHED listing). The write whitelist
+ * carries only `{logistic_id, enabled, is_free}` (strict — the draft chooses
+ * channels), but a published listing's stored entry may also hold the
+ * `size_id` / `shipping_fee` a Seller-Centre-configured channel needs; writing
+ * the bare choice back would drop them and the next «Republicar» would refuse
+ * that channel. So each new entry inherits those two keys, VERBATIM, from the
+ * FIRST stored entry that reads (through {@link paraInteiroWire}) as the SAME
+ * `logistic_id` — **only when the link's list is TRUSTED**
+ * ({@link logisticaGravadaPeloErpShopee}). ⚠️ The caller stamps
+ * `logisticaGravadaEm` on the same write, so carrying a DISTRUSTED legacy list's
+ * size/fee would launder it into a trusted one and the publisher would send
+ * values the ERP never chose (#2015). A distrusted or absent list ⇒ bare
+ * triples, nothing appended.
+ *
+ * - `null` ⇒ `null` («Automática» — nothing to merge).
+ * - Output order is `novos` order; each entry is `{logistic_id, enabled,
+ *   is_free}` (`is_free` verbatim, `null` included) plus the inherited keys. A
+ *   key is carried only when present and neither `null` nor `undefined` in the
+ *   stored entry; never invented.
+ * - `desligarOmitidos` (a published edit): EVERY trusted stored entry whose id
+ *   is not among `novos` is appended, in stored order, once per id, as
+ *   `{logistic_id, enabled: false, is_free: <its isFree ?? false>}` — an ON one
+ *   because the edit dropped the channel and Shopee must be told (the publisher
+ *   sends an off only from a stored `enabled: false`), an OFF one because it
+ *   may be an earlier edit's off not yet sent, and dropping it would leave the
+ *   channel ON at Shopee. Re-sending an off Shopee already applied is
+ *   idempotent. The appended off keeps that entry's `size_id` / `shipping_fee`
+ *   (the same carry as above), so switching the channel back on before a
+ *   republish still finds them.
+ * - **EQUAL (same channel):** `7` ≡ `'7'` ≡ `'07'` (the reader's digits-only
+ *   rule). **DISTINCT:** another id inherits nothing; `' 7'`, `'7.0'` and `0`
+ *   are not ids at all, so they match nothing.
+ * - Duplicate stored ids take the first.
+ *
+ * Pure, total over `unknown`, no clock.
+ */
+export function mesclarLogisticaGravadaShopee(
+  novos:
+    | readonly {
+        readonly logistic_id: number;
+        readonly enabled: boolean;
+        readonly is_free: boolean | null;
+      }[]
+    | null,
+  link: Record<string, unknown> | null,
+  opcoes: { readonly desligarOmitidos: boolean },
+): readonly Record<string, unknown>[] | null {
+  if (novos === null) return null;
+  const confiavel = link !== null && logisticaGravadaPeloErpShopee(link);
+  const bruto = confiavel ? link?.logistic_info : null;
+  const guardadas: { readonly id: number; readonly entrada: unknown }[] = [];
+  if (Array.isArray(bruto)) {
+    for (const entrada of bruto as readonly unknown[]) {
+      const id = paraInteiroWire(campo(entrada, 'logistic_id'));
+      if (id !== null) guardadas.push({ id, entrada });
+    }
+  }
+  // The stored `size_id` / `shipping_fee` of the FIRST trusted entry with that id.
+  const herdados = (id: number | null): Record<string, unknown> => {
+    const guardada = id === null ? undefined : guardadas.find((g) => g.id === id);
+    if (guardada === undefined) return {};
+    const saida: Record<string, unknown> = {};
+    for (const chave of ['size_id', 'shipping_fee'] as const) {
+      const valor = campo(guardada.entrada, chave);
+      if (valor !== null && valor !== undefined) saida[chave] = valor;
+    }
+    return saida;
+  };
+  const saidas = novos.map((novo) => ({
+    logistic_id: novo.logistic_id,
+    enabled: novo.enabled,
+    is_free: novo.is_free,
+    ...herdados(paraInteiroWire(novo.logistic_id)),
+  }));
+  if (!confiavel || !opcoes.desligarOmitidos) return saidas;
+  const vistos = new Set<number>();
+  for (const novo of novos) {
+    const id = paraInteiroWire(novo.logistic_id);
+    if (id !== null) vistos.add(id);
+  }
+  for (const lida of lerLogisticaArmazenadaShopee(bruto) ?? []) {
+    if (vistos.has(lida.logisticId)) continue;
+    vistos.add(lida.logisticId);
+    // The off KEEPS its stored size / fee, like an explicit off does: switching
+    // the channel back on before a republish must still find them (the edit
+    // whitelist cannot supply either). The wire's disable request is bare
+    // anyway (`construirLogistica` sends `{logistic_id, enabled: false}`).
+    saidas.push({
+      logistic_id: lida.logisticId,
+      enabled: false,
+      is_free: lida.isFree ?? false,
+      ...herdados(lida.logisticId),
+    });
+  }
+  return saidas;
 }
 
 /**

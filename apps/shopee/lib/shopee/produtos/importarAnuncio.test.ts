@@ -1245,6 +1245,47 @@ describe('importarAnuncioShopee — `kitNativo` no vínculo da listagem', () => 
     }
   });
 
+  it('⛔ uma edição do ERP PENDENTE no vínculo: o conteúdo fica, o resto do vínculo converge, e o resultado avisa', async () => {
+    const db = new FakeDb();
+    semearPaiComVinculo(db);
+    db.seed(`produtos/${PAI_EXISTENTE}/prodshopee/link-1`, {
+      item_id: ITEM_ID,
+      contaProdutoShopeeOuterRef: REF_CONTA,
+      item_name: 'Editado no ERP',
+      kitNativo: true,
+      edicaoErpRevisao: 2,
+      edicaoErpPendenteEm: AGORA - 1000,
+    });
+
+    const res = await importarAnuncioShopee(deps(db), anuncioSimples());
+
+    const vinculo = vinculosDe(db, PAI_EXISTENTE)[0]?.dados ?? {};
+    expect(res.edicaoErpPreservada).toBe(true);
+    expect(vinculo.item_name).toBe('Editado no ERP'); // content: left alone
+    expect(vinculo.kitNativo).toBe(false); // non-content: still converges
+    expect(vinculo.edicaoErpPendenteEm).toBe(AGORA - 1000); // the import never clears it
+    expect(vinculo.edicaoErpRevisao).toBe(2);
+  });
+
+  it('NEAR-MISS: sem edição pendente o import sobrescreve o conteúdo e NÃO marca a preservação', async () => {
+    for (const pendente of [null, 0]) {
+      const db = new FakeDb();
+      semearPaiComVinculo(db);
+      db.seed(`produtos/${PAI_EXISTENTE}/prodshopee/link-1`, {
+        item_id: ITEM_ID,
+        contaProdutoShopeeOuterRef: REF_CONTA,
+        item_name: 'Nome antigo',
+        edicaoErpRevisao: 2,
+        edicaoErpPendenteEm: pendente,
+      });
+
+      const res = await importarAnuncioShopee(deps(db), anuncioSimples());
+
+      expect(res.edicaoErpPreservada).toBeUndefined();
+      expect(vinculosDe(db, PAI_EXISTENTE)[0]?.dados.item_name).not.toBe('Nome antigo');
+    }
+  });
+
   it('um re-import byte-idêntico mantém `kitNativo: false`', async () => {
     const db = new FakeDb();
     const paiId = idDoPaiPlanejado(INTEGRACAO, ITEM_ID);

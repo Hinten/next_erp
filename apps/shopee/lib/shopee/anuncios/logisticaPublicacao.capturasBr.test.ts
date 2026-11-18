@@ -60,6 +60,7 @@ function argsBr(parcial: Partial<ArgsLogistica>): ArgsLogistica {
     pesoKg: 0.5,
     dimensaoCm: { package_height: 10, package_length: 10, package_width: 10 },
     ofereceFreteGratis: false,
+    enviarDesligados: false,
     ...parcial,
   };
 }

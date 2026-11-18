@@ -90,7 +90,7 @@ import {
   type PrepararImportacaoShopeeFn,
   type ResultadoImportacaoShopee,
 } from './itemLido';
-import { aplicarLinkDaListagem } from './links';
+import { aplicarLinkDaListagemComGuarda } from './links';
 import {
   planejarImportacaoShopee,
   type PlanoImportacaoShopee,
@@ -345,7 +345,11 @@ export async function aplicarImportacaoShopee(
   await aplicarEstoqueShopee(db, plano.estoquePai);
 
   // ---- 7. the parent link, before the children that point AT it ------------
-  const linkPaiId = await aplicarLinkDaListagem(db, produtoId, plano.linkPai);
+  const { docId: linkPaiId, edicaoErpPreservada } = await aplicarLinkDaListagemComGuarda(
+    db,
+    produtoId,
+    plano.linkPai,
+  );
 
   // ---- 8. the children, each in the same internal order --------------------
   let criadas = 0;
@@ -393,11 +397,13 @@ export async function aplicarImportacaoShopee(
       semLink: plano.resultado.variacoes.semLink,
     },
     fotos,
+    // Only when true, so every existing result keeps its exact shape.
+    ...(edicaoErpPreservada ? { edicaoErpPreservada: true } : {}),
   };
 }
 
 /* -------------------------------------------------------------------------- */
-/*  The whole thing                                                            */
+/*  The whole thing                                                           */
 /* -------------------------------------------------------------------------- */
 
 /** Did this failure mean "somebody else wrote first"? */

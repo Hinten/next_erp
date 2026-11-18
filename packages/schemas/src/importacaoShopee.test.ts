@@ -172,6 +172,8 @@ describe('importacaoShopeeSchema', () => {
       created: 0,
       skipped: 0,
       kits: 0,
+      // A report written before the counter existed still parses, at 0.
+      edicoesPreservadas: 0,
       failureCount: 0,
       failures: [],
       finishedAt: null,
@@ -201,6 +203,7 @@ describe('importacaoShopeeSchema', () => {
       created: 90,
       skipped: 40,
       kits: 2,
+      edicoesPreservadas: 4,
       failureCount: 3,
       failures: [{ itemId: 34_099, motivo: 'item-nao-retornado', mensagem: '' }],
       options: importacaoShopeeOptionsSchema.parse({}),
