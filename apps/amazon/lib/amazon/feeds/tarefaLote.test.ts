@@ -30,11 +30,14 @@ import {
   nomeEnvioFeed,
   nomeIncertoFeed,
   nomeNotificacaoFeed,
+  nomePaginaReconciliacao,
   nomeRecuperacaoFeed,
+  nomeRetomadaReconciliacao,
   origemResultadoFeedAmazonSchema,
   referenciaDaRecuperacaoFeed,
   referenciaVezFeed,
   tarefaLoteAmazonSchema,
+  tarefaPaginaReconciliacaoAmazonSchema,
   tarefaRecuperarFeedAmazonSchema,
   tipoTarefaLoteAmazonSchema,
 } from './tarefaLote';
@@ -486,5 +489,71 @@ describe('★ the names', () => {
     expect(() => f('conta/x')).toThrow(/contaId fora da gramática/);
     expect(() => f('a:b')).toThrow(RangeError);
     expect(() => f(CONTA)).not.toThrow();
+  });
+});
+
+describe('(12-f) the reconcile page: its payload and its names', () => {
+  const PAGINA = {
+    v: VERSAO_TAREFA_LOTE_AMAZON,
+    tipo: TIPO_TAREFA_LOTE_AMAZON.reconciliacao,
+    contaId: CONTA,
+    execucaoId: EXECUCAO,
+    pagina: 7,
+  };
+
+  it('parses unchanged; strict, versioned, a page a non-negative safe integer, the ids under their grammars', () => {
+    expect(tarefaPaginaReconciliacaoAmazonSchema.parse(PAGINA)).toEqual(PAGINA);
+    expect(aceita(PAGINA)).toBe(true);
+    expect(aceita({ ...PAGINA, pagina: 0 })).toBe(true);
+    for (const ruim of [
+      { ...PAGINA, skus: ['A'] },
+      { ...PAGINA, v: 2 },
+      { ...PAGINA, pagina: -1 },
+      { ...PAGINA, pagina: 1.5 },
+      { ...PAGINA, pagina: '7' },
+      { ...PAGINA, contaId: 'conta/x' },
+      { ...PAGINA, execucaoId: 'a:b' },
+    ]) {
+      expect(aceita(ruim), JSON.stringify(ruim)).toBe(false);
+    }
+    const { pagina: _pagina, ...semPagina } = PAGINA;
+    expect(aceita(semPagina)).toBe(false);
+  });
+
+  it('a page’s name is sha256Hex of rec:<conta>:<run>:<page>; the re-kick’s adds :retomada:<stall stamp>', () => {
+    expect(nomePaginaReconciliacao(CONTA, EXECUCAO, 7)).toBe(
+      sha256Hex(`rec:${CONTA}:${EXECUCAO}:7`),
+    );
+    expect(nomeRetomadaReconciliacao(CONTA, EXECUCAO, 7, T0)).toBe(
+      sha256Hex(`rec:${CONTA}:${EXECUCAO}:7:retomada:${String(T0)}`),
+    );
+  });
+
+  it('one name per (conta, run, page); a stall re-kicked twice is one name, a later stall another', () => {
+    const nomes = new Set([
+      nomePaginaReconciliacao(CONTA, EXECUCAO, 0),
+      nomePaginaReconciliacao(CONTA, EXECUCAO, 1),
+      nomePaginaReconciliacao(OUTRA_CONTA, EXECUCAO, 0),
+      nomePaginaReconciliacao(CONTA, 'c'.repeat(64), 0),
+      nomeRetomadaReconciliacao(CONTA, EXECUCAO, 0, T0),
+      nomeRetomadaReconciliacao(CONTA, EXECUCAO, 0, T0 + 1),
+      // NEAR-MISS: a feed send of the SAME run is a different name.
+      nomeEnvioFeed(CONTA, EXECUCAO),
+    ]);
+    expect(nomes.size).toBe(7);
+    expect(nomeRetomadaReconciliacao(CONTA, EXECUCAO, 0, T0)).toBe(
+      nomeRetomadaReconciliacao(CONTA, EXECUCAO, 0, T0),
+    );
+  });
+
+  it('an id, a page or a stamp outside its grammar throws a RangeError naming the rule only', () => {
+    expect(() => nomePaginaReconciliacao('conta/x', EXECUCAO, 0)).toThrow(
+      /contaId fora da gramática/,
+    );
+    expect(() => nomePaginaReconciliacao(CONTA, 'a:b', 0)).toThrow(/execucaoId fora da gramática/);
+    expect(() => nomePaginaReconciliacao(CONTA, EXECUCAO, -1)).toThrow(RangeError);
+    expect(() => nomePaginaReconciliacao(CONTA, EXECUCAO, 0.5)).toThrow(RangeError);
+    expect(() => nomeRetomadaReconciliacao(CONTA, EXECUCAO, 0, -1)).toThrow(RangeError);
+    expect(() => nomeRetomadaReconciliacao(CONTA, EXECUCAO, 0, 1.5)).toThrow(RangeError);
   });
 });

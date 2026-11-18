@@ -47,6 +47,7 @@
  */
 import {
   CANAL_MFN,
+  DADOS_LISTING_AMAZON,
   type ListingAmazon,
   MARKETPLACE_ID_BR,
 } from '@delfrance/integrations-amazon-sp-api';
@@ -57,6 +58,17 @@ import {
   MOTIVO_ESTOQUE_AMAZON,
   type RecusaListingEstoqueAmazon,
 } from './motivosEstoque';
+
+/**
+ * The datasets every live read of the stock sync asks for — the patch task's
+ * one listing read and a batch's searches and single reads alike: exactly what
+ * this gate reads (the BR summaries, the availability, the relationships).
+ */
+export const DADOS_LEITURA_ESTOQUE_AMAZON = [
+  DADOS_LISTING_AMAZON.resumos,
+  DADOS_LISTING_AMAZON.disponibilidade,
+  DADOS_LISTING_AMAZON.relacoes,
+] as const;
 
 /** The `ItemRelationship` types the gate reads, as the model spells them. */
 export const TIPO_RELACAO_LISTING_AMAZON = {

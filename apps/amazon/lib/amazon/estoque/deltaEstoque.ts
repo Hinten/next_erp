@@ -6,8 +6,8 @@
  * Amazon: it reads the window and enqueues named patch tasks, and the patch
  * task computes every quantity when it runs.
  *
- * Exported for the stock feed provider's recovery (PR 12-f), its one caller;
- * nothing calls it yet.
+ * Called by the stock feed provider's recovery (`provedorLoteEstoque.ts`, PR
+ * 12-f), its one caller, which binds the two hand-offs below.
  *
  * ## One recovery ({@link enviarDeltaEstoqueAmazon})
  *
@@ -22,36 +22,47 @@
  *  2. `descobrirJanelaEstoqueAmazon` at the depósito the caller names, under
  *     the caller's deadline: the conta's SKUs, each with its observation and
  *     whether it is forced. A truncated window (the page budget) or the
- *     deadline reached ⇒ a reconcile.
+ *     deadline reached ⇒ the reconcile hand-off.
  *  3. `destinoDoLoteDelta` over the n distinct SKUs: none ⇒ `nada`; 1–30 ⇒ ONE
  *     NAMED patch task per SKU, at most 16 in flight, the deadline asked before
  *     STARTING each — a FORCED SKU as `origem: 'catch-up'`, its reference the
  *     recovered feed's (it must run even when the tick already sent that
  *     observation), any other as `origem: 'delta'`, its reference its
  *     observation (a movement the tick already enqueued is the same name, and
- *     dedupes); 31–3,000 ⇒ a delta feed of the window; more ⇒ a reconcile. The
- *     deadline reached before the last task started ⇒ a reconcile. A SKU the
- *     task payload cannot carry (more than 40 code points, which no write path
- *     can send) is counted and dropped.
+ *     dedupes); 31–3,000 ⇒ the delta-feed hand-off; more ⇒ the reconcile
+ *     hand-off. The deadline reached before the last task started ⇒ the
+ *     reconcile hand-off. A SKU the task payload cannot carry (more than 40
+ *     code points, which no write path can send) is counted and dropped.
  *
  * Re-running a recovery over the same rows mints the same names: every task
  * it enqueued already is `ja-enfileirada`, never a second task.
  *
- * ## The hand-offs are not durable yet
+ * ## The two hand-offs ({@link RepassesDeltaEstoqueAmazon})
  *
- * Neither consumer exists in this PR: the delta feed and the reconcile are
- * WARNING placeholders on the recovery's line (`feed-necessario`,
- * `reconciliacao-necessaria`), and the answer carries what a caller needs to
- * make either durable — the window read, and why. The window's bounds and its
- * keep rule are all a delta feed carries: never its SKUs.
+ * The caller binds them, because only the caller knows the recovery's
+ * identity, its snapshot and which reconcile request it may make:
+ *
+ *  - `feed` (`feed-necessario`) — ONE window `feed-enviar` carrying the window
+ *    read: its bounds and its keep rule, never its SKUs (the send re-derives
+ *    them). Named by the recovery, so a retried recovery dedupes. It gets the
+ *    observations read too, and sends the batch in the form the stock valve
+ *    gives it: under a canary LIST, the canary's SKUs as patch tasks instead
+ *    (`so-patches`);
+ *  - `reconciliacao` (`reconciliacao-necessaria`) — ONE reconcile request.
+ *
+ * At most one of them runs per recovery, and its answer is a closed token on
+ * the line ({@link DesfechoRepasseDeltaEstoqueAmazon}). An automatic request
+ * the 24-h guard refused leaves the movement to the next daily run: that line
+ * is a WARNING.
  *
  * ## Failures
  *
  * Only the window planner's `RangeError` is contained. A Firestore error, a
  * rejection of the stock producer (the queue valve, a named transient, a
- * region, a raw Cloud Tasks failure) and a bug PROPAGATE: a recovery runs as a
- * queued task, whose retry re-runs it, and every name it mints is per
- * observation or per feed, so a retry enqueues only what is missing. A context
+ * region, a raw Cloud Tasks failure), a hand-off's failure and a bug
+ * PROPAGATE: a recovery runs as a queued task, whose retry re-runs it, and
+ * every name it mints is per observation, per feed or per recovery, so a retry
+ * enqueues only what is missing. A context
  * outside its grammar (the conta id, the depósito id, the deadline, the
  * reference a forcing recovery names its tasks by) is a `RangeError` thrown
  * before anything is read — a wiring bug, never contained.
@@ -66,8 +77,9 @@
  *
  * ## Rule 7
  *
- * No Firestore write. The enqueues are NAMED (tier 0): a catch-up by (conta,
- * the recovered feed's reference, SKU), a delta by (conta, observation, SKU).
+ * No Firestore write of its own. The enqueues are NAMED (tier 0): a catch-up
+ * by (conta, the recovered feed's reference, SKU), a delta by (conta,
+ * observation, SKU); the hand-offs write under their own tiers.
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import { CONTA_ID_AMAZON_REGEX, ID_LOTE_FEED_AMAZON_REGEX } from '@delfrance/schemas';
@@ -79,7 +91,11 @@ import {
   registrarEventoAmazon,
 } from '../core/log';
 import { FLUXO_AMAZON } from '../core/valvulas';
-import { type JanelaEstoqueAmazon, janelaDaRecuperacao } from './descobertaEstoque';
+import {
+  type JanelaEstoqueAmazon,
+  type ObservacaoEstoqueAmazon,
+  janelaDaRecuperacao,
+} from './descobertaEstoque';
 import {
   DESFECHO_DESCOBERTA_ESTOQUE_AMAZON,
   type EtapaDescobertaEstoqueAmazon,
@@ -100,10 +116,7 @@ import {
 /** The `fase` of the recovery's line. */
 export const FASE_DELTA_ESTOQUE_AMAZON = 'recuperacao';
 
-/**
- * A hand-off the recovery cannot make durable yet (module header): a WARNING
- * placeholder, and the answer says which.
- */
+/** Which hand-off the recovery made (module header): the answer says which. */
 export const REPASSE_DELTA_ESTOQUE_AMAZON = {
   /** 31–3,000 SKUs: one delta feed of the window. */
   feedNecessario: 'feed-necessario',
@@ -119,13 +132,41 @@ export const DESFECHO_DELTA_ESTOQUE_AMAZON = {
   nada: 'nada',
   /** Every task of the batch enqueued (or already held by Cloud Tasks). */
   enfileirado: 'enfileirado',
-  /** A hand-off placeholder: `repasse` names it. */
+  /** A hand-off: `repasse` names it, `entrega` what it answered. */
   repassado: 'repassado',
   /** The window planner refused an instant (a `RangeError`): nothing read. */
   janelaInvalida: 'janela-invalida',
 } as const;
 export type DesfechoDeltaEstoqueAmazon =
   (typeof DESFECHO_DELTA_ESTOQUE_AMAZON)[keyof typeof DESFECHO_DELTA_ESTOQUE_AMAZON];
+
+/**
+ * What a hand-off answered (closed): the delta feed's enqueue, its canary
+ * patches instead (`so-patches`: the stock valve's batch form under a canary
+ * LIST), or the reconcile request.
+ */
+export type DesfechoRepasseDeltaEstoqueAmazon =
+  | 'enfileirada'
+  | 'ja-enfileirada'
+  | 'so-patches'
+  | 'pedido'
+  | 'automatica-recusada'
+  | 'ja-pedido';
+
+/** The two hand-offs (module header), bound by the caller. */
+export interface RepassesDeltaEstoqueAmazon {
+  /**
+   * 31–3,000 SKUs: ONE window `feed-enviar` of `janela` (its bounds and keep
+   * rule), in the form the stock valve gives a batch — `observacoes` are what
+   * the recovery read, for a canary list's per-SKU sends; a feed never carries them.
+   */
+  readonly feed: (
+    janela: JanelaEstoqueAmazon,
+    observacoes: readonly ObservacaoEstoqueAmazon[],
+  ) => Promise<DesfechoRepasseDeltaEstoqueAmazon>;
+  /** More SKUs, a truncated window, or the deadline: ONE reconcile request. */
+  readonly reconciliacao: () => Promise<DesfechoRepasseDeltaEstoqueAmazon>;
+}
 
 /** Who recovers, for which conta, at which depósito, by which clock. */
 export interface ContextoDeltaEstoqueAmazon {
@@ -138,6 +179,8 @@ export interface ContextoDeltaEstoqueAmazon {
   readonly logger: LoggerAmazon;
   /** The stock queue's producer — built only when a batch is due. */
   readonly produtor: () => ProdutorEstoqueAmazon;
+  /** The two hand-offs (module header). */
+  readonly repassar: RepassesDeltaEstoqueAmazon;
 }
 
 /** The two instants a recovery window is planned from (module header, step 1). */
@@ -165,8 +208,10 @@ export interface ResultadoDeltaEstoqueAmazon {
   readonly desfecho: DesfechoDeltaEstoqueAmazon;
   /** The batch's form, in the stock sync's closed vocabulary. */
   readonly motivo: MotivoEstoqueAmazon | null;
-  /** The hand-off placeholder this recovery logged, if any. */
+  /** The hand-off this recovery made, if any. */
   readonly repasse: RepasseDeltaEstoqueAmazon | null;
+  /** What that hand-off answered. */
+  readonly entrega: DesfechoRepasseDeltaEstoqueAmazon | null;
   /**
    * The window this recovery read — bounds and keep rule, what a delta feed of
    * it carries; `null` when none was planned.
@@ -205,6 +250,7 @@ function resultado(
     desfecho,
     motivo: null,
     repasse: null,
+    entrega: null,
     janela: null,
     paginas: 0,
     linhas: 0,
@@ -224,35 +270,53 @@ function resultado(
   };
 }
 
-/** A hand-off placeholder (module header): the reason, and what was read. */
-function repassar(
-  contaId: string,
+/**
+ * ONE hand-off (module header): the delta feed of the window read, or the
+ * reconcile request; the answer names it and what it answered.
+ */
+async function repassar(
+  ctx: ContextoDeltaEstoqueAmazon,
   repasse: RepasseDeltaEstoqueAmazon,
-  extra: Partial<Omit<ResultadoDeltaEstoqueAmazon, 'contaId' | 'desfecho'>>,
-): ResultadoDeltaEstoqueAmazon {
-  const motivo =
-    repasse === REPASSE_DELTA_ESTOQUE_AMAZON.feedNecessario
-      ? MOTIVO_ESTOQUE_AMAZON.emFeed
-      : MOTIVO_ESTOQUE_AMAZON.emReconciliacao;
-  return resultado(contaId, DESFECHO_DELTA_ESTOQUE_AMAZON.repassado, { ...extra, motivo, repasse });
+  extra: Partial<Omit<ResultadoDeltaEstoqueAmazon, 'contaId' | 'desfecho'>> & {
+    readonly janela: JanelaEstoqueAmazon;
+  },
+  observacoes: readonly ObservacaoEstoqueAmazon[] = [],
+): Promise<ResultadoDeltaEstoqueAmazon> {
+  const feed = repasse === REPASSE_DELTA_ESTOQUE_AMAZON.feedNecessario;
+  const entrega = feed
+    ? await ctx.repassar.feed(extra.janela, observacoes)
+    : await ctx.repassar.reconciliacao();
+  const motivo = feed ? MOTIVO_ESTOQUE_AMAZON.emFeed : MOTIVO_ESTOQUE_AMAZON.emReconciliacao;
+  return resultado(ctx.contaId, DESFECHO_DELTA_ESTOQUE_AMAZON.repassado, {
+    ...extra,
+    motivo,
+    repasse,
+    entrega,
+  });
 }
 
-const DESFECHOS_EM_WARNING: ReadonlySet<DesfechoDeltaEstoqueAmazon> = new Set([
-  DESFECHO_DELTA_ESTOQUE_AMAZON.repassado,
-  DESFECHO_DELTA_ESTOQUE_AMAZON.janelaInvalida,
-]);
+/**
+ * WARNING for a window the planner refused, and for an automatic reconcile the
+ * 24-h guard refused (the movement waits for the next daily run); every other
+ * end, a hand-off included, is INFO.
+ */
+function severidadeDe(r: ResultadoDeltaEstoqueAmazon): SeveridadeAmazon {
+  if (r.desfecho === DESFECHO_DELTA_ESTOQUE_AMAZON.janelaInvalida) return 'WARNING';
+  return r.entrega === 'automatica-recusada' ? 'WARNING' : 'INFO';
+}
 
 /** The ONE line of a recovery: never a SKU, a reference or a value. */
 function registrar(
   ctx: ContextoDeltaEstoqueAmazon,
   r: ResultadoDeltaEstoqueAmazon,
 ): ResultadoDeltaEstoqueAmazon {
-  const severidade: SeveridadeAmazon = DESFECHOS_EM_WARNING.has(r.desfecho) ? 'WARNING' : 'INFO';
+  const severidade: SeveridadeAmazon = severidadeDe(r);
   const campos: Readonly<Record<string, CampoLogAmazon>> = {
     fase: FASE_DELTA_ESTOQUE_AMAZON,
     desfecho: r.desfecho,
     motivo: r.motivo,
     repasse: r.repasse,
+    entrega: r.entrega,
     paginas: r.paginas,
     linhas: r.linhas,
     produtos: r.produtos,
@@ -303,7 +367,7 @@ function exigirContexto(
 
 /**
  * One recovery delta (module header): the window, the conta's SKUs that moved
- * in it, and the batch they make — patch tasks, or a hand-off placeholder.
+ * in it, and the batch they make — patch tasks, or one of the two hand-offs.
  * Writes ONE `evento: 'estoque'` line (`fase: 'recuperacao'`).
  *
  * @throws {RangeError} a context outside its grammar (nothing read).
@@ -351,7 +415,7 @@ export async function enviarDeltaEstoqueAmazon(
   if (d.tipo === DESFECHO_DESCOBERTA_ESTOQUE_AMAZON.truncada) {
     return registrar(
       ctx,
-      repassar(contaId, REPASSE_DELTA_ESTOQUE_AMAZON.reconciliacaoNecessaria, {
+      await repassar(ctx, REPASSE_DELTA_ESTOQUE_AMAZON.reconciliacaoNecessaria, {
         ...lidos,
         truncada: true,
       }),
@@ -360,7 +424,7 @@ export async function enviarDeltaEstoqueAmazon(
   if (d.tipo === DESFECHO_DESCOBERTA_ESTOQUE_AMAZON.prazo) {
     return registrar(
       ctx,
-      repassar(contaId, REPASSE_DELTA_ESTOQUE_AMAZON.reconciliacaoNecessaria, {
+      await repassar(ctx, REPASSE_DELTA_ESTOQUE_AMAZON.reconciliacaoNecessaria, {
         ...lidos,
         prazo: d.etapa,
       }),
@@ -379,12 +443,12 @@ export async function enviarDeltaEstoqueAmazon(
     case DESTINO_LOTE_DELTA_ESTOQUE_AMAZON.feed:
       return registrar(
         ctx,
-        repassar(contaId, REPASSE_DELTA_ESTOQUE_AMAZON.feedNecessario, comSkus),
+        await repassar(ctx, REPASSE_DELTA_ESTOQUE_AMAZON.feedNecessario, comSkus, d.observacoes),
       );
     case DESTINO_LOTE_DELTA_ESTOQUE_AMAZON.reconciliacao:
       return registrar(
         ctx,
-        repassar(contaId, REPASSE_DELTA_ESTOQUE_AMAZON.reconciliacaoNecessaria, comSkus),
+        await repassar(ctx, REPASSE_DELTA_ESTOQUE_AMAZON.reconciliacaoNecessaria, comSkus),
       );
     case DESTINO_LOTE_DELTA_ESTOQUE_AMAZON.patches:
       break;
@@ -433,7 +497,7 @@ export async function enviarDeltaEstoqueAmazon(
   if (lote.naoTentadas > 0) {
     return registrar(
       ctx,
-      repassar(contaId, REPASSE_DELTA_ESTOQUE_AMAZON.reconciliacaoNecessaria, {
+      await repassar(ctx, REPASSE_DELTA_ESTOQUE_AMAZON.reconciliacaoNecessaria, {
         ...contados,
         orcamentoEsgotado: true,
       }),

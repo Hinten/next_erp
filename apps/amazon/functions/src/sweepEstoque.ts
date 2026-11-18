@@ -14,7 +14,10 @@ import {
   resumirTickEstoqueAmazon,
 } from '../../lib/amazon/estoque/sincronizacaoEstoque';
 import { sanitizarFalhaDaTarefaAmazon } from '../../lib/amazon/notificacoes/notificacao';
-import { criarProdutorEstoqueAmazonDoAmbiente } from './agendadorEstoque';
+import {
+  criarAgendadorLotesAmazonDoAmbiente,
+  criarProdutorEstoqueAmazonDoAmbiente,
+} from './agendadorEstoque';
 import { getDb } from './lib/admin';
 
 /**
@@ -33,9 +36,14 @@ import { getDb } from './lib/admin';
  *   (`./agendadorEstoque`: the queue valve read once, the region per enqueue,
  *   no default), passed as the THUNK, so a tick with nothing to enqueue builds
  *   none.
+ * - `agendador`: the JOBS queue's producer from the same root (its valve and
+ *   region alike), a THUNK too: the window `feed-enviar` of a delta feed, a
+ *   reconcile request's first page, the re-kick of a stalled run and the
+ *   stranded start's `vez` recovery go through it.
  * - `increment`: a tier-0 `FieldValue` for the aviso counter.
  * - `logger`: the app's ONE logger (`LOGGER_STDOUT_AMAZON`).
- * - `gerarExecucaoId`: the lease's holder id, fresh per conta run.
+ * - `gerarExecucaoId`: a fresh id — each conta run's lease holder, and the run a
+ *   reconcile request starts.
  */
 export function depsDoTickEstoqueAmazon(): DepsTickEstoqueAmazon {
   return {
@@ -43,6 +51,7 @@ export function depsDoTickEstoqueAmazon(): DepsTickEstoqueAmazon {
     ambiente: process.env,
     contas: LEITOR_DE_CONTAS_ESTOQUE_AMAZON,
     produtor: criarProdutorEstoqueAmazonDoAmbiente,
+    agendador: criarAgendadorLotesAmazonDoAmbiente,
     agora: () => Date.now(),
     logger: LOGGER_STDOUT_AMAZON,
     increment: (by: number) => FieldValue.increment(by),
@@ -53,10 +62,13 @@ export function depsDoTickEstoqueAmazon(): DepsTickEstoqueAmazon {
 /**
  * The FIVE-MINUTE STOCK TICK (master plan step 12, PR 12-e2): per active conta,
  * the estoque rows that moved at the conta's depósito since its durable cursor,
- * turned into the conta's SKUs and handed to the stock queue as one named patch
- * task per observation (`lib/amazon/estoque/sincronizacaoEstoque.ts` owns the
- * whole run, its lease and its cursor). It makes NO Amazon call and binds no
- * secret: every quantity is computed, and every PATCH sent, by the stock queue.
+ * turned into the conta's SKUs and handed off: 1 to 30 as one named patch task
+ * per observation onto the stock queue, 31 to 3,000 as ONE window `feed-enviar`
+ * onto the jobs queue, more as a reconcile request; and each conta's stalled
+ * reconcile run re-kicked, its stranded feed start recovered
+ * (`lib/amazon/estoque/sincronizacaoEstoque.ts` owns the whole run, its lease
+ * and its cursor). It makes NO Amazon call and binds no secret: every quantity
+ * is computed, and every write sent, by the queues.
  *
  * Two gates keep it inert until the window, each with ZERO Firestore
  * operations and ONE INFO line written by the body: the read switch

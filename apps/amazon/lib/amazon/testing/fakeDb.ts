@@ -160,8 +160,14 @@
  * 11. (step 12, PR 12-e2) `produtos/{id}/prodAmazon` · NO filter, NO order, NO
  *     limit — the stock discovery's listing of ONE produto's link partition (a
  *     `select` is allowed). Any filter, order or limit on it is refused: the
- *     same filter as a collection-group query is a scan per row (shape 6 is the
- *     only group query on `prodAmazon`).
+ *     same filter as a collection-group query is a scan per row (shapes 6 and
+ *     12 are the only group queries on `prodAmazon`);
+ * 12. (step 12, PR 12-f) the `prodAmazon` COLLECTION GROUP · `contaAmazonOuterRef
+ *     ==` · `orderBy(__name__ asc)` · `limit`, and `startAfter(ref)` (the
+ *     reconcile's walk of one conta ref form, paged by key; the declared
+ *     `prodAmazon (contaAmazonOuterRef ASC, __name__ ASC)` collection-group
+ *     index). An `in` over the ref forms, or any other order, is another shape,
+ *     refused.
  *
  * Semantics follow the server: `==` is strict equality on the stored value (a
  * missing field never matches); `in` is `===` against ANY of 1 to 30 values (an
@@ -188,7 +194,17 @@
  *    fake built, and seeks by its ordered VALUES plus its full PATH (two rows
  *    of equal stamp under different produtos page by path). A hand-built
  *    snapshot is refused there; on a collection query the snapshot's id is
- *    its key, as before.
+ *    its key, as before;
+ *  - (step 12, PR 12-f) `startAfter(ref)` with a document REFERENCE this fake
+ *    built is a KEY cursor, allowed only when every `orderBy` is `__name__`
+ *    (a cursor carried across dispatches as a stored path, rebuilt as a ref).
+ *
+ * ## Stored stamps (step 12, PR 12-f)
+ *
+ * A live `Timestamp`-shaped value (a stamp this fake issued, such as a read's
+ * `readTime` a caller stores as a clock) is kept AS a stamp: a read answers a
+ * live stamp of the same instant (to the µs), which `isEqual` compares. Two
+ * stored stamps of one instant are the same content.
  *
  * ## Stamps and read times
  *
@@ -242,6 +258,45 @@ function ehCarimbo(v: unknown): v is CarimboFake {
   );
 }
 
+/**
+ * A `Timestamp`-shaped value WITH its methods: a stamp this fake issued, or a
+ * read's `readTime` a caller stores back (module header, "Stored stamps").
+ */
+function ehCarimboVivo(v: unknown): v is CarimboFake {
+  return (
+    ehCarimbo(v) &&
+    typeof (v as { isEqual?: unknown }).isEqual === 'function' &&
+    typeof (v as { toMillis?: unknown }).toMillis === 'function'
+  );
+}
+
+/** A plain object literal (`{...}`), never a class instance, an array or `null`. */
+function ehObjetoSimples(v: unknown): v is Record<string, unknown> {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return false;
+  const proto: unknown = Object.getPrototypeOf(v);
+  return proto === Object.prototype || proto === null;
+}
+
+/**
+ * A stored value copied as the server keeps it (module header, "Stored
+ * stamps"): a live `Timestamp`-shaped stamp comes back a live stamp of the SAME
+ * instant (to the µs, the fake's grain), maps and arrays are copied member by
+ * member, and everything else goes through `structuredClone`, which still
+ * refuses a function anywhere else.
+ */
+function clonar<T>(valor: T): T {
+  if (ehCarimboVivo(valor)) {
+    return carimbo(valor.seconds * 1_000_000 + Math.floor(valor.nanoseconds / 1000)) as T;
+  }
+  if (Array.isArray(valor)) return valor.map((v: unknown) => clonar(v)) as T;
+  if (ehObjetoSimples(valor)) {
+    const saida: Record<string, unknown> = {};
+    for (const [chave, v] of Object.entries(valor)) saida[chave] = clonar(v);
+    return saida as T;
+  }
+  return structuredClone(valor);
+}
+
 /** An Admin-SDK-shaped failure: a plain `Error` carrying a numeric gRPC `code`. */
 export function grpc(code: number, message: string): Error {
   return Object.assign(new Error(message), { code });
@@ -256,10 +311,14 @@ export function increment(by: number): unknown {
  * Whether two stored documents hold the SAME content, as the server decides a
  * no-op write: the same keys, each value strictly equal, maps and arrays
  * compared member by member (key order is not content). Stored data here is
- * plain JSON-shaped (`structuredClone` refuses anything else).
+ * plain JSON-shaped, plus the `Timestamp`-shaped stamps this fake issues
+ * ({@link clonar}; `structuredClone` refuses anything else).
  */
 function mesmoConteudo(a: unknown, b: unknown): boolean {
   if (a === b) return true;
+  if (ehCarimboVivo(a) || ehCarimboVivo(b)) {
+    return ehCarimboVivo(a) && ehCarimboVivo(b) && a.isEqual(b);
+  }
   if (Array.isArray(a) || Array.isArray(b)) {
     return (
       Array.isArray(a) &&
@@ -475,6 +534,12 @@ const FORMAS_INDEXADAS: readonly {
     filtros: ['depositoOuterRef', 'ultimaModificacao >', 'ultimaModificacao <='],
     ordens: ['ultimaModificacao asc', `${CAMPO_NOME} asc`],
   },
+  {
+    colecao: 'prodAmazon',
+    grupo: true,
+    filtros: ['contaAmazonOuterRef'],
+    ordens: [`${CAMPO_NOME} asc`],
+  },
 ];
 
 /** Shape 7 (module header): ONE pedido's `nfev4` subcollection, by its full path. */
@@ -679,6 +744,16 @@ function caminhoDoCursorDeGrupo(ref: unknown): string {
   return caminho;
 }
 
+/** A document REFERENCE this fake built (it has no `data()`): a key cursor for `startAfter`. */
+function ehRefSemDados(v: unknown): v is { readonly id: string; readonly path: string } {
+  return (
+    typeof v === 'object' &&
+    v !== null &&
+    (v as { [MARCA_DO_REF]?: unknown })[MARCA_DO_REF] === true &&
+    typeof (v as { data?: unknown }).data !== 'function'
+  );
+}
+
 /** A `getAll` read-options object: a plain object that is no document ref (it has no `path`). */
 function ehOpcoesDeLeitura(v: unknown): v is Readonly<Record<string, unknown>> {
   return typeof v === 'object' && v !== null && !Array.isArray(v) && !('path' in v);
@@ -770,7 +845,7 @@ export class FakeDb {
   seed(caminho: string, data: DocData): CarimboFake {
     recusarIndefinido(data, caminho);
     const updateTime = this.proximoCarimbo();
-    this.store.set(caminho, { data: structuredClone(data), updateTime });
+    this.store.set(caminho, { data: clonar(data), updateTime });
     return updateTime;
   }
 
@@ -787,7 +862,7 @@ export class FakeDb {
   /** The stored document, or `undefined`. A copy: mutating it changes nothing. */
   ler(caminho: string): DocData | undefined {
     const atual = this.store.get(caminho);
-    return atual === undefined ? undefined : structuredClone(atual.data);
+    return atual === undefined ? undefined : clonar(atual.data);
   }
 
   /** The stored document's commit stamp, or `undefined` when absent. */
@@ -861,7 +936,7 @@ export class FakeDb {
     this.escritas.push({
       verbo,
       caminho,
-      dados: dados === null ? null : structuredClone(dados),
+      dados: dados === null ? null : clonar(dados),
       comPrecondicao,
       writeTime,
       ...(noLote === undefined ? {} : { lote: noLote.lote }),
@@ -870,13 +945,13 @@ export class FakeDb {
   }
 
   private aplicar(anterior: DocData | undefined, patch: DocData): DocData {
-    const saida: DocData = structuredClone(anterior ?? {});
+    const saida: DocData = clonar(anterior ?? {});
     for (const [chave, valor] of Object.entries(patch)) {
       if (ehIncremento(valor)) {
         const atual = saida[chave];
         saida[chave] = (typeof atual === 'number' ? atual : 0) + valor.__increment;
       } else {
-        saida[chave] = structuredClone(valor);
+        saida[chave] = clonar(valor);
       }
     }
     return saida;
@@ -927,7 +1002,7 @@ export class FakeDb {
    */
   private snapshot(caminho: string, readTime: CarimboFake, mascara: readonly string[] | null) {
     const atual = this.store.get(caminho);
-    const inteiro = atual === undefined ? undefined : structuredClone(atual.data);
+    const inteiro = atual === undefined ? undefined : clonar(atual.data);
     const dados = inteiro === undefined || mascara === null ? inteiro : projetar(inteiro, mascara);
     return {
       id: caminho.split('/').at(-1) ?? '',
@@ -959,7 +1034,7 @@ export class FakeDb {
         if (this.store.has(caminho)) throw grpc(6, 'ALREADY_EXISTS');
         validarCriacao(caminho, data);
         const writeTime = this.registrar('create', caminho, data);
-        this.store.set(caminho, { data: structuredClone(data), updateTime: writeTime });
+        this.store.set(caminho, { data: clonar(data), updateTime: writeTime });
         return { writeTime };
       },
       update: async (patch: DocData, precondicao?: PrecondicaoFake) => {
@@ -993,7 +1068,7 @@ export class FakeDb {
         return (async () => {
           await this.antesDeEscrever(caminho);
           const writeTime = this.registrar('set', caminho, data);
-          this.store.set(caminho, { data: structuredClone(data), updateTime: writeTime });
+          this.store.set(caminho, { data: clonar(data), updateTime: writeTime });
           return { writeTime };
         })();
       },
@@ -1073,14 +1148,14 @@ export class FakeDb {
       create: (ref: unknown, data: DocData) => {
         const caminho = caminhoDoRef(ref);
         validarCriacao(caminho, data);
-        enfileirar({ verbo: 'create', caminho, dados: structuredClone(data) });
+        enfileirar({ verbo: 'create', caminho, dados: clonar(data) });
         return lote;
       },
       update: (ref: unknown, patch: DocData, precondicao?: PrecondicaoFake) => {
         const caminho = caminhoDoRef(ref);
         validarAtualizacao(caminho, patch, precondicao);
         // The stamp object is kept as given: `isEqual` compares it at commit.
-        enfileirar({ verbo: 'update', caminho, dados: structuredClone(patch), precondicao });
+        enfileirar({ verbo: 'update', caminho, dados: clonar(patch), precondicao });
         return lote;
       },
       set: () => {
@@ -1113,7 +1188,7 @@ export class FakeDb {
           const comPrecondicao = e.verbo === 'update' && e.precondicao !== undefined;
           const anterior = e.verbo === 'create' ? undefined : this.store.get(e.caminho);
           const dados =
-            e.verbo === 'create' ? structuredClone(e.dados) : this.aplicar(anterior?.data, e.dados);
+            e.verbo === 'create' ? clonar(e.dados) : this.aplicar(anterior?.data, e.dados);
           // A content-identical update (a precondition carrier) changes nothing:
           // the document keeps its update time, and the write answers THAT
           // previous time as its `writeTime` (module header).
@@ -1169,6 +1244,18 @@ export class FakeDb {
       select: (...campos: unknown[]) =>
         derivar({ selecao: campos.map((campo) => validarCampo(campo, 'select()')) }),
       startAfter: (doc: { id: string; ref?: unknown; data: () => DocData | undefined }) => {
+        // (step 12, PR 12-f) a document REFERENCE this fake built is a KEY
+        // cursor: allowed only when every order is the key (module header,
+        // "Document keys"), as the server takes a reference for `__name__` alone.
+        if (ehRefSemDados(doc)) {
+          if (estado.ordens.length === 0 || estado.ordens.some((o) => o.campo !== CAMPO_NOME)) {
+            throw new Error(
+              'FakeDb: startAfter(ref) só é modelado sob orderBy(__name__) e nenhuma outra ordem',
+            );
+          }
+          const caminho = grupo ? caminhoDoCursorDeGrupo(doc) : `${colecao}/${doc.id}`;
+          return derivar({ apos: { id: grupo ? caminho : doc.id, caminho, data: {} } });
+        }
         if (
           typeof doc !== 'object' ||
           doc === null ||
@@ -1189,7 +1276,7 @@ export class FakeDb {
           }
         }
         return derivar({
-          apos: { id: grupo ? caminho : doc.id, caminho, data: structuredClone(data ?? {}) },
+          apos: { id: grupo ? caminho : doc.id, caminho, data: clonar(data ?? {}) },
         });
       },
       get: () => this.buscar(colecao, grupo, estado),
@@ -1258,7 +1345,7 @@ export class FakeDb {
     const limitados = limite === null ? aPartirDe : aPartirDe.slice(0, limite);
     const readTime = this.carimboDeLeitura();
     const docs = limitados.map(({ caminho, stored }) => {
-      const inteiro = structuredClone(stored.data);
+      const inteiro = clonar(stored.data);
       const dados = selecao === null ? inteiro : projetar(inteiro, selecao);
       const id = caminho.split('/').at(-1) ?? '';
       return {

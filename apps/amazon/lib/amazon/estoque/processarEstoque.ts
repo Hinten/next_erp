@@ -151,7 +151,6 @@ import {
   AmazonNetworkError,
   AmazonSchemaError,
   AmazonThrottleError,
-  DADOS_LISTING_AMAZON,
   type EnvioListingAmazon,
   OPERACAO_ENVIAR_LISTING,
   skuTemCaminhoAmazon,
@@ -205,7 +204,11 @@ import { STATUS_ENVIO_LISTING_AMAZON, envioDoPatch, envioIncerto } from './envio
 import { gravarEnvioEstoqueAmazon } from './envioEstoqueFirestore';
 import { depositoIdDaContaEstoqueAmazon, quantidadeEstoqueAmazon } from './familiaEstoque';
 import { lerFamiliaEstoqueAmazon } from './familiaEstoqueFirestore';
-import { type VeredictoListingEstoqueAmazon, avaliarListingEstoqueAmazon } from './gateListing';
+import {
+  DADOS_LEITURA_ESTOQUE_AMAZON,
+  type VeredictoListingEstoqueAmazon,
+  avaliarListingEstoqueAmazon,
+} from './gateListing';
 import {
   type ContadorEstoqueAmazon,
   MOTIVO_ESTOQUE_AMAZON,
@@ -252,13 +255,6 @@ export const ORCAMENTO_ANTES_DO_PATCH_MS = 200_000;
 /** The ONE lease field this task reads: the end of the conta's last stock feed that may have applied. */
 export const CAMPO_FEED_RECENTE_ESTOQUE_AMAZON =
   'ultimoFeedConcluidoEmMs' as const satisfies keyof typeof vezFeedAmazonSchema.shape;
-
-/** The datasets the live read asks for: the gate reads exactly these. */
-export const DADOS_LEITURA_ESTOQUE_AMAZON = [
-  DADOS_LISTING_AMAZON.resumos,
-  DADOS_LISTING_AMAZON.disponibilidade,
-  DADOS_LISTING_AMAZON.relacoes,
-] as const;
 
 /** The queue dispatch this run is: its 0-based attempt and its task id. */
 export interface RegistroEstoqueAmazon {

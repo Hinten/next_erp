@@ -81,11 +81,16 @@ import {
 } from './provedorLote';
 import { ABANDONO_FEED_MS, PRAZO_FEED_MS } from './registroFeed';
 import {
+  ACAO_ADOCAO_FEED,
   ACAO_RESULTADO_FEED,
+  ADOCAO_FEED_PARADO_MS,
   AmazonRegistroFeedEmConflitoError,
+  AmazonRegistroFeedInvalidoError,
   type DesfechoTerminalFeedAmazon,
   MAX_TENTATIVAS_REGISTRO_FEED,
   type ResultadoConsultaFeedAmazon,
+  adotarFeedParadoAmazon,
+  dataSaoPauloAmazon,
   processarResultadoFeedAmazon,
 } from './resultadoFeed';
 import {
@@ -576,6 +581,7 @@ function mundo() {
           throw new Error('teste: requisição fora do roteiro');
         },
         gerarCorrelationId: () => 'corr-lote-teste',
+        paginaReconciliacao: () => Promise.reject(new Error('teste: nenhuma página aqui')),
       };
     },
     resultado(t: TarefaResultadoFeedAmazon): Promise<ResultadoConsultaFeedAmazon> {
@@ -1707,5 +1713,157 @@ describe('★ the result side hands the provider NO lease (`ctx.vez`)', () => {
 
     expect(m.espiao.gravacoes).toHaveLength(1);
     expect(m.espiao.contextos).toEqual([{ vez: null, relogioVez: null }]);
+  });
+});
+
+describe('★ the daily backstop (adotarFeedParadoAmazon, step 12 PR 12-f)', () => {
+  const ALVO = { fluxo: FLUXO_FEED_AMAZON.estoque, contaId: CONTA } as const;
+  const backstop = (m: Mundo) =>
+    adotarFeedParadoAmazon(m.db, ALVO, { agora: () => m.relogio, agendador: m.deps().agendador });
+  /** 03:44 in São Paulo (06:44 UTC) of a fixed day: the scheduler's own instant. */
+  const MADRUGADA = Date.UTC(2027, 0, 15, 6, 44);
+  /** The feed was sent eight hours before (inside its 12-h deadline). */
+  const ENVIO = MADRUGADA - 8 * HORA;
+
+  it('★ an enviado lease whose record is 7 h stale ⇒ ONE adoption rung, named by the São Paulo date; that rung revives the chain (its successor named by the record’s rodadas + 1); a second backstop the same day is ALREADY_EXISTS', async () => {
+    const m = mundo();
+    m.relogio = MADRUGADA;
+    semear(
+      m,
+      registro({ rodadas: 4, antesDoEnvioMs: ENVIO, atualizadoEmMs: MADRUGADA - 7 * HORA }),
+      vez({ antesDoEnvioMs: ENVIO }),
+    );
+    const r = await backstop(m);
+    expect(r).toEqual({ acao: ACAO_ADOCAO_FEED.adotada, registro: null });
+    const [adocao] = daFila(m, TIPO_TAREFA_LOTE_AMAZON.resultado);
+    expect(adocao).toMatchObject({
+      tarefa: {
+        v: 1,
+        tipo: 'feed-resultado',
+        contaId: CONTA,
+        feedId: FEED,
+        rodada: 0,
+        origem: 'adocao',
+      },
+      nome: nomeConsultaFeed(CONTA, FEED, 'adocao:2027-01-15'),
+      atrasoS: 0,
+    });
+    // ZERO Amazon calls and no write of its own: the rung reads Amazon when it runs.
+    expect(m.chamadas).toEqual([]);
+    expect(m.fake.escritas).toEqual([]);
+
+    // The rung runs R1 like any adoption: its successor is the live chain's next name.
+    m.rotas.feed = [feedEm('IN_PROGRESS')];
+    const rung = await m.resultado(adocao?.tarefa as TarefaResultadoFeedAmazon);
+    expect(rung).toMatchObject({ rodada: 4, sucessor: 'enfileirada' });
+    expect(daFila(m, TIPO_TAREFA_LOTE_AMAZON.resultado)[1]?.nome).toBe(
+      nomeConsultaFeed(CONTA, FEED, 5),
+    );
+
+    // The record moved, but a re-run of the same day's backstop would mint nothing new anyway.
+    semear(
+      m,
+      registro({ rodadas: 4, antesDoEnvioMs: ENVIO, atualizadoEmMs: MADRUGADA - 7 * HORA }),
+      vez({ antesDoEnvioMs: ENVIO }),
+    );
+    expect(await backstop(m)).toEqual({ acao: ACAO_ADOCAO_FEED.jaAdotada, registro: null });
+    expect(daFila(m, TIPO_TAREFA_LOTE_AMAZON.resultado)).toHaveLength(2);
+  });
+
+  it.each([
+    ['5 h', 5 * HORA],
+    ['5 h 59 min', 6 * HORA - MIN],
+    ['EXACTLY 6 h', ADOCAO_FEED_PARADO_MS],
+  ])(
+    'NEAR-MISS: a record %s stale ⇒ viva: nothing enqueued, nothing written',
+    async (_c, idade) => {
+      const m = mundo();
+      m.relogio = MADRUGADA;
+      semear(
+        m,
+        registro({ antesDoEnvioMs: ENVIO, atualizadoEmMs: MADRUGADA - idade }),
+        vez({ antesDoEnvioMs: ENVIO }),
+      );
+      expect(await backstop(m)).toEqual({ acao: ACAO_ADOCAO_FEED.viva, registro: null });
+      expect(m.enfileiradas).toEqual([]);
+      expect(m.fake.escritas).toEqual([]);
+    },
+  );
+
+  it('★ a feed still processing 7 h after its send whose chain is ALIVE (every rung advanced atualizadoEmMs) ⇒ none', async () => {
+    const m = mundo();
+    m.relogio = MADRUGADA;
+    const antes = MADRUGADA - 7 * HORA;
+    semear(
+      m,
+      registro({
+        antesDoEnvioMs: antes,
+        status: STATUS_REGISTRO_FEED_AMAZON.processando,
+        rodadas: 9,
+        atualizadoEmMs: MADRUGADA - 40 * MIN,
+      }),
+      vez({ antesDoEnvioMs: antes }),
+    );
+    expect(await backstop(m)).toEqual({ acao: ACAO_ADOCAO_FEED.viva, registro: null });
+    expect(m.enfileiradas).toEqual([]);
+  });
+
+  it('★ an enviado lease whose record is MISSING ⇒ the record created from the LEASE’s fields first (the send’s own create), then the adoption rung', async () => {
+    const m = mundo();
+    m.relogio = MADRUGADA;
+    m.fake.seed(VEZ, vez({ antesDoEnvioMs: ENVIO }));
+    const r = await backstop(m);
+    expect(r).toEqual({ acao: ACAO_ADOCAO_FEED.adotada, registro: 'criado' });
+    expect(reg(m)).toMatchObject({
+      contaId: CONTA,
+      feedId: FEED,
+      execucaoId: EXEC,
+      status: STATUS_REGISTRO_FEED_AMAZON.enviado,
+      antesDoEnvioMs: ENVIO,
+      criadoEmMs: MADRUGADA,
+      atualizadoEmMs: MADRUGADA,
+    });
+    expect(m.fake.escritas.map((e) => [e.verbo, e.caminho])).toEqual([['create', REG()]]);
+    // The create landed BEFORE the rung that will read it.
+    expect(daFila(m, TIPO_TAREFA_LOTE_AMAZON.resultado)[0]?.registro).toMatchObject({
+      status: STATUS_REGISTRO_FEED_AMAZON.enviado,
+    });
+  });
+
+  it.each([
+    ['no lease at all', null],
+    ['a FREE lease', vez({ estado: ESTADO_VEZ_FEED_AMAZON.livre, feedId: null })],
+    ['a FREE lease that still names its last feed', vez({ estado: ESTADO_VEZ_FEED_AMAZON.livre })],
+    ['a lease still BUILDING', vez({ estado: ESTADO_VEZ_FEED_AMAZON.montando, feedId: null })],
+    [
+      'a lease SENDING with no feed known yet',
+      vez({ estado: ESTADO_VEZ_FEED_AMAZON.enviando, feedId: null }),
+    ],
+  ])('sem-feed: %s ⇒ nothing read past the lease, nothing enqueued', async (_c, v) => {
+    const m = mundo();
+    m.relogio = MADRUGADA;
+    if (v !== null) m.fake.seed(VEZ, v);
+    expect(await backstop(m)).toEqual({ acao: ACAO_ADOCAO_FEED.semFeed, registro: null });
+    expect(m.fake.leituras.filter((c) => c.startsWith('feedsAmazon/'))).toEqual([]);
+    expect(m.enfileiradas).toEqual([]);
+  });
+
+  it('a record that no longer parses throws its class (the caller contains it per conta)', async () => {
+    const m = mundo();
+    m.relogio = MADRUGADA;
+    m.fake.seed(REG(), { ...registro(), status: 'outro' });
+    m.fake.seed(VEZ, vez());
+    await expect(backstop(m)).rejects.toBeInstanceOf(AmazonRegistroFeedInvalidoError);
+    expect(m.enfileiradas).toEqual([]);
+  });
+
+  it('the backstop’s bound is six hours, literally', () => {
+    expect(ADOCAO_FEED_PARADO_MS).toBe(21_600_000);
+  });
+
+  it('the São Paulo date comes from the explicit −03:00 offset, never the process timezone: 02:59 UTC is still the day before', () => {
+    expect(dataSaoPauloAmazon(Date.UTC(2026, 10, 18, 3, 0))).toBe('2026-11-18');
+    expect(dataSaoPauloAmazon(Date.UTC(2026, 10, 18, 2, 59, 59, 999))).toBe('2026-11-17');
+    expect(dataSaoPauloAmazon(MADRUGADA)).toBe('2027-01-15');
   });
 });

@@ -437,9 +437,16 @@ describe('divergenciaEstoqueAmazonSchema', () => {
     expect(ttlExpiry().safeParse(ms).success).toBe(false);
   });
 
-  it('the field is the TTL field, and its policy is NOT declared yet (it lands with the blocks’ writer)', () => {
+  it('the field is the TTL field, and its policy is declared: one TTL_POLICIES row naming the group and its 7 days', () => {
     expect(TTL_FIELD in divergenciaEstoqueAmazonSchema.shape).toBe(true);
-    expect(TTL_POLICIES.map((p) => p.collectionGroup)).not.toContain('divergenciasEstoqueAmazon');
+    const linhas = TTL_POLICIES.filter((p) => p.collectionGroup === 'divergenciasEstoqueAmazon');
+    expect(linhas).toHaveLength(1);
+    expect(linhas[0]?.motivo).toMatch(/\b7 days\b/);
+    // The run document and its request are never stamped, so neither has a row.
+    expect(TTL_POLICIES.map((p) => p.collectionGroup)).not.toContain('reconciliacaoEstoqueAmazon');
+    expect(TTL_POLICIES.map((p) => p.collectionGroup)).not.toContain(
+      'pedidoReconciliacaoEstoqueAmazon',
+    );
   });
 
   it('the run and the tick documents are never TTL-stamped: a stray stamp is stripped', () => {

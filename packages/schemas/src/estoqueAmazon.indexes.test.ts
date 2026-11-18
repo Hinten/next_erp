@@ -2,7 +2,10 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { CAMPOS_INDICE_JANELA_ESTOQUE_AMAZON } from './estoqueAmazon';
+import {
+  CAMPOS_INDICE_JANELA_ESTOQUE_AMAZON,
+  CAMPOS_INDICE_VARREDURA_VINCULOS_AMAZON,
+} from './estoqueAmazon';
 
 /**
  * The Amazon stock sync's movement window (step 12, PR 12-e2) reads the
@@ -114,5 +117,60 @@ describe('the Amazon stock movement window’s index (step 12, PR 12-e2)', () =>
         ...CAMPOS_INDICE_JANELA_ESTOQUE_AMAZON,
       ]);
     }
+  });
+});
+
+/**
+ * The daily reconcile's WALK (step 12, PR 12-f) reads every link doc of one
+ * conta: a collection-group query `prodAmazon where contaAmazonOuterRef == <one
+ * ref form> order by __name__`, paged by a document cursor and projected. Its
+ * field is `CAMPOS_INDICE_VARREDURA_VINCULOS_AMAZON`. The existing
+ * `(contaAmazonOuterRef, sku)` entry orders the conta's rows by SKU, never by
+ * key, so it is another index; and Enterprise adds no implicit `__name__`, so
+ * the walk's own entry declares it. DEPLOYING it is migration-window work.
+ */
+const CAMPOS_DA_VARREDURA = [...CAMPOS_INDICE_VARREDURA_VINCULOS_AMAZON, '__name__'].map(
+  (fieldPath) => ({ fieldPath, order: 'ASCENDING' }),
+);
+
+function serveAVarredura(indice: IndiceDeclarado): boolean {
+  return (
+    indice.collectionGroup === 'prodAmazon' &&
+    indice.queryScope === 'COLLECTION_GROUP' &&
+    JSON.stringify(indice.fields) === JSON.stringify(CAMPOS_DA_VARREDURA)
+  );
+}
+
+describe('the Amazon stock reconcile walk’s index (step 12, PR 12-f)', () => {
+  it('★ exactly ONE declared index serves it: prodAmazon, COLLECTION_GROUP, the conta ref then __name__, all ASCENDING', () => {
+    const servem = indices.filter(serveAVarredura);
+    expect(servem).toHaveLength(1);
+    expect(servem[0]?.fields?.map((f) => f.fieldPath)).toEqual(['contaAmazonOuterRef', '__name__']);
+  });
+
+  it('★ NEAR-MISS: the order import’s (contaAmazonOuterRef, sku) entry does NOT satisfy the pin, nor the fields without __name__, a DESCENDING key or another scope', () => {
+    const doPedido = indices.filter(
+      (i) =>
+        i.collectionGroup === 'prodAmazon' &&
+        JSON.stringify(i.fields?.map((f) => f.fieldPath)) ===
+          JSON.stringify(['contaAmazonOuterRef', 'sku']),
+    );
+    // Positive first: that entry is really there to be refused.
+    expect(doPedido).toHaveLength(1);
+    expect(doPedido.filter(serveAVarredura)).toEqual([]);
+    const exato: IndiceDeclarado = {
+      collectionGroup: 'prodAmazon',
+      queryScope: 'COLLECTION_GROUP',
+      fields: CAMPOS_DA_VARREDURA,
+    };
+    expect(serveAVarredura(exato)).toBe(true);
+    expect(serveAVarredura({ ...exato, fields: CAMPOS_DA_VARREDURA.slice(0, -1) })).toBe(false);
+    expect(
+      serveAVarredura({
+        ...exato,
+        fields: CAMPOS_DA_VARREDURA.map((f, i) => (i === 1 ? { ...f, order: 'DESCENDING' } : f)),
+      }),
+    ).toBe(false);
+    expect(serveAVarredura({ ...exato, queryScope: 'COLLECTION' })).toBe(false);
   });
 });

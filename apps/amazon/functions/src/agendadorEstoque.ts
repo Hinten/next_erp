@@ -25,13 +25,17 @@ import { getAdminApp } from './lib/admin';
  *
  * - the jobs queue `processAmazonListingsJob`, whose consumers are the feed
  *   handlers' own enqueues (the poll rungs, the uncertain wait, the recoveries,
- *   the waits of a turned-away batch) and the feed providers' (`raiz`, bound by
- *   `./filaLotes`);
+ *   the waits of a turned-away batch), the feed providers' and the reconcile
+ *   pages' (`raiz`, bound by `./filaLotes`) and, since step 12, PR 12-f, the
+ *   stock tick's delta feeds, reconcile starts, re-kicks and `vez` recoveries
+ *   (`./sweepEstoque`)
+ *   and the daily reconcile's run starts and adoption rungs
+ *   (`./reconciliacaoEstoque`);
  * - the stock queue `processAmazonStockPatch`, whose consumers are the patch
  *   task's own enqueues (the read-back, the 429 pause, bound by
  *   `./filaEstoque`), the five-minute stock tick's per-SKU patch tasks (bound
- *   by `./sweepEstoque`, step 12, PR 12-e2) and the feed providers' per-SKU
- *   hand-offs (the same `raiz`).
+ *   by `./sweepEstoque`, step 12, PR 12-e2) and the feed providers' and the
+ *   reconcile's per-SKU hand-offs (the same `raiz`).
  *
  * What a rejection means, the names and the delay rules are the pure modules'
  * (`lib/amazon/feeds/agendadorLotes.ts`, `lib/amazon/estoque/produtorEstoque.ts`);

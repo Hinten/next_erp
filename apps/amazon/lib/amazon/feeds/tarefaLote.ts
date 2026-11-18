@@ -1,7 +1,7 @@
 /**
- * The feed core's JOBS-QUEUE contract (step 12a, PR 12-b): the payload union
- * of the four feed tasks and every task NAME the core mints. Unwired in 12-b:
- * the producers and the dispatcher arrive in 12-c.
+ * The JOBS-QUEUE contract (step 12a, PR 12-b; the reconcile page since step
+ * 12, PR 12-f): the payload union of the four feed tasks and the stock
+ * reconcile's page, and every task NAME they mint.
  *
  * ## The payloads: ids, closed tokens and numbers only
  *
@@ -33,6 +33,10 @@
  *    has no feed outcome: its `snapshotEmMs` and `janela` are `null` and its
  *    `pendenteDesdeMs` is REQUIRED; any other outcome carries the feed's
  *    snapshot. `janela` is the recovered feed's own window (a window batch).
+ *  - `reconciliacao` (step 12, PR 12-f) — ONE page of a stock reconcile run:
+ *    the conta, the run (`execucaoId`) and the page number. The page re-derives
+ *    from the run's document whether it is the page the run walks next, so a
+ *    duplicate dispatch does nothing.
  *
  * ## The names: every one carries the conta
  *
@@ -52,7 +56,11 @@
  *    pending start it folded): a retried tail that read the SAME start
  *    dedupes, one that read another start enqueues one more recovery instead
  *    of meeting the first one's tombstone. A payload's reference is
- *    {@link referenciaDaRecuperacaoFeed} (a `vez` recovery's is prefixed).
+ *    {@link referenciaDaRecuperacaoFeed} (a `vez` recovery's is prefixed);
+ *  - {@link nomePaginaReconciliacao} — (conta, run, page): every enqueue of
+ *    one page of one run is one task; {@link nomeRetomadaReconciliacao} —
+ *    (conta, run, page, the stalled run's last progress stamp): the re-kick of
+ *    a run that lost its next task, one per stall.
  *
  * A window batch's own `execucaoId` is minted from its PRODUCER's identity:
  * a tick's from its window ({@link execucaoIdDaJanelaFeed}: the same window
@@ -99,6 +107,7 @@ export const tipoTarefaLoteAmazonSchema = z.enum([
   'feed-resultado',
   'feed-incerto',
   'feed-recuperar',
+  'reconciliacao',
 ]);
 export type TipoTarefaLoteAmazon = z.infer<typeof tipoTarefaLoteAmazonSchema>;
 export const TIPO_TAREFA_LOTE_AMAZON = {
@@ -106,6 +115,7 @@ export const TIPO_TAREFA_LOTE_AMAZON = {
   resultado: 'feed-resultado',
   incerto: 'feed-incerto',
   recuperar: 'feed-recuperar',
+  reconciliacao: 'reconciliacao',
 } as const satisfies Record<string, TipoTarefaLoteAmazon>;
 
 /** Who enqueued a result rung: the ladder, a notification wake-up, or an adoption. */
@@ -262,12 +272,25 @@ export const tarefaRecuperarFeedAmazonSchema = z
   });
 export type TarefaRecuperarFeedAmazon = z.infer<typeof tarefaRecuperarFeedAmazonSchema>;
 
-/** Every jobs-queue payload of the feed core. */
+/** `reconciliacao` (module header): one page of one stock reconcile run. */
+export const tarefaPaginaReconciliacaoAmazonSchema = z
+  .object({
+    v: z.literal(VERSAO_TAREFA_LOTE_AMAZON),
+    tipo: z.literal(TIPO_TAREFA_LOTE_AMAZON.reconciliacao),
+    contaId: contaIdSchema(),
+    execucaoId: execucaoIdSchema(),
+    pagina: inteiroSeguro(),
+  })
+  .strict();
+export type TarefaPaginaReconciliacaoAmazon = z.infer<typeof tarefaPaginaReconciliacaoAmazonSchema>;
+
+/** Every jobs-queue payload: the feed core's four tasks and the reconcile page. */
 export const tarefaLoteAmazonSchema = z.discriminatedUnion('tipo', [
   tarefaEnviarFeedAmazonSchema,
   tarefaResultadoFeedAmazonSchema,
   tarefaIncertoFeedAmazonSchema,
   tarefaRecuperarFeedAmazonSchema,
+  tarefaPaginaReconciliacaoAmazonSchema,
 ]);
 export type TarefaLoteAmazon = z.infer<typeof tarefaLoteAmazonSchema>;
 
@@ -410,4 +433,36 @@ export function execucaoIdDaRecuperacaoFeed(
   exigir(CONTA_ID_AMAZON_REGEX, contaId, 'contaId');
   exigirReferencia(referencia);
   return sha256Hex(`recuperacao:${contaId}:${referencia}:${campoDoPendente(pendenteDesdeMs)}`);
+}
+
+/** A reconcile page's name: (conta, run, page). */
+export function nomePaginaReconciliacao(
+  contaId: string,
+  execucaoId: string,
+  pagina: number,
+): string {
+  exigir(CONTA_ID_AMAZON_REGEX, contaId, 'contaId');
+  exigir(ID_LOTE_FEED_AMAZON_REGEX, execucaoId, 'execucaoId');
+  return sha256Hex(`rec:${contaId}:${execucaoId}:${String(exigirMs(pagina, 'pagina'))}`);
+}
+
+/**
+ * The re-kick of a stalled run (module header): (conta, run, the page it
+ * walks next, the run's last progress stamp in ms). A run that stalls again
+ * after progressing has a new stamp, so a new name; the same stall re-kicked
+ * twice is one task.
+ */
+export function nomeRetomadaReconciliacao(
+  contaId: string,
+  execucaoId: string,
+  pagina: number,
+  marcoMs: number,
+): string {
+  exigir(CONTA_ID_AMAZON_REGEX, contaId, 'contaId');
+  exigir(ID_LOTE_FEED_AMAZON_REGEX, execucaoId, 'execucaoId');
+  return sha256Hex(
+    `rec:${contaId}:${execucaoId}:${String(exigirMs(pagina, 'pagina'))}:retomada:${String(
+      exigirMs(marcoMs, 'marcoMs'),
+    )}`,
+  );
 }

@@ -996,3 +996,148 @@ describe('step 12 (12-e2): ONE produto’s prodAmazon partition, listed whole �
     await expect(montar().get()).rejects.toThrow(/fora dos índices/);
   });
 });
+
+describe('step 12 (12-f): the reconcile walk — shape 12, a KEY cursor from a reference', () => {
+  const grupo = () => produtoAmazonLinkCollection.groupQuery(asDb(db));
+  const refVinculo = (produtoId: string, linkId: string) =>
+    produtoAmazonLinkCollection.docRef(asDb(db), { produtoId }, linkId);
+
+  beforeEach(() => {
+    db.seed('produtos/b/prodAmazon/l1', { contaAmazonOuterRef: 'integracao/c1', sku: 'B' });
+    db.seed('produtos/a-b/prodAmazon/l1', { contaAmazonOuterRef: 'integracao/c1', sku: 'AB' });
+    db.seed('produtos/a/prodAmazon/l2', { contaAmazonOuterRef: 'integracao/c1', sku: 'A2' });
+    db.seed('produtos/a/prodAmazon/l1', { contaAmazonOuterRef: 'integracao/c1', sku: 'A1' });
+    db.seed('produtos/c/prodAmazon/l1', { contaAmazonOuterRef: 'integracao/c2', sku: 'OUTRA' });
+  });
+
+  it('★ runs `contaAmazonOuterRef ==` · orderBy(__name__) · limit in KEY order, and resumes EXACTLY after a reference cursor', async () => {
+    const primeira = await grupo()
+      .where('contaAmazonOuterRef', '==', 'integracao/c1')
+      .orderBy('__name__')
+      .select('sku')
+      .limit(2)
+      .get();
+    expect(primeira.docs.map((d) => [d.ref.path, d.data()])).toEqual([
+      ['produtos/a/prodAmazon/l1', { sku: 'A1' }],
+      ['produtos/a/prodAmazon/l2', { sku: 'A2' }],
+    ]);
+    const segunda = await grupo()
+      .where('contaAmazonOuterRef', '==', 'integracao/c1')
+      .orderBy('__name__')
+      .startAfter(refVinculo('a', 'l2') as never)
+      .select('sku')
+      .limit(2)
+      .get();
+    expect(segunda.docs.map((d) => d.ref.path)).toEqual([
+      'produtos/a-b/prodAmazon/l1',
+      'produtos/b/prodAmazon/l1',
+    ]);
+    expect(db.consultas.at(-1)).toMatchObject({
+      colecao: 'prodAmazon',
+      grupo: true,
+      filtros: [['contaAmazonOuterRef', 'integracao/c1']],
+      ordens: [['__name__', 'asc']],
+      limite: 2,
+      apos: 'produtos/a/prodAmazon/l2',
+      selecao: ['sku'],
+    });
+  });
+
+  it('★ a reference cursor resumes after a doc that NO LONGER exists, by its key', async () => {
+    const snap = await grupo()
+      .where('contaAmazonOuterRef', '==', 'integracao/c1')
+      .orderBy('__name__')
+      .startAfter(refVinculo('a', 'l15') as never)
+      .limit(10)
+      .get();
+    expect(snap.docs.map((d) => d.ref.path)).toEqual([
+      'produtos/a/prodAmazon/l2',
+      'produtos/a-b/prodAmazon/l1',
+      'produtos/b/prodAmazon/l1',
+    ]);
+  });
+
+  it.each<[string, () => { get: () => Promise<unknown> }]>([
+    [
+      'an `in` over the ref forms',
+      () => grupo().where('contaAmazonOuterRef', 'in', ['integracao/c1']).orderBy('__name__'),
+    ],
+    ['no key order', () => grupo().where('contaAmazonOuterRef', '==', 'integracao/c1')],
+    [
+      'another order before the key',
+      () =>
+        grupo()
+          .where('contaAmazonOuterRef', '==', 'integracao/c1')
+          .orderBy('sku')
+          .orderBy('__name__'),
+    ],
+  ])('NEAR-MISS: REFUSES %s', async (_c, montar) => {
+    await expect(montar().get()).rejects.toThrow(/fora dos índices/);
+  });
+
+  it('NEAR-MISS: a reference cursor under any order but the key alone, or a reference no fake built, is refused', () => {
+    expect(() =>
+      grupo()
+        .where('contaAmazonOuterRef', '==', 'integracao/c1')
+        .orderBy('sku')
+        .startAfter(refVinculo('a', 'l1') as never),
+    ).toThrow(/orderBy\(__name__\)/);
+    expect(() =>
+      grupo()
+        .where('contaAmazonOuterRef', '==', 'integracao/c1')
+        .startAfter(refVinculo('a', 'l1') as never),
+    ).toThrow(/orderBy\(__name__\)/);
+    expect(() =>
+      grupo()
+        .where('contaAmazonOuterRef', '==', 'integracao/c1')
+        .orderBy('__name__')
+        .startAfter({ id: 'l1', path: 'produtos/a/prodAmazon/l1' } as never),
+    ).toThrow();
+  });
+});
+
+describe('step 12 (12-f): stored stamps', () => {
+  it('★ a stamp stored as a field (a read’s readTime) reads back as a LIVE stamp of the same instant', async () => {
+    const lido = await ref('a').get();
+    const relogio = lido.readTime;
+    await ref('a').create({ relogio, outro: { dentro: relogio }, lista: [relogio] });
+    const dados = (await ref('a').get()).data() as Record<string, unknown>;
+    const guardado = dados.relogio as { isEqual: (o: unknown) => boolean; toMillis: () => number };
+    expect(guardado.isEqual(relogio)).toBe(true);
+    expect(guardado.toMillis()).toBe(relogio.toMillis());
+    expect(guardado).not.toBe(relogio);
+    expect(
+      (
+        (dados.outro as Record<string, unknown>).dentro as { isEqual: (o: unknown) => boolean }
+      ).isEqual(relogio),
+    ).toBe(true);
+    expect(
+      ((dados.lista as unknown[])[0] as { isEqual: (o: unknown) => boolean }).isEqual(relogio),
+    ).toBe(true);
+  });
+
+  it('a stored stamp’s copy is detached (mutating a read changes nothing), and a Date stays a Date', async () => {
+    const data = new Date(Date.UTC(2027, 0, 1));
+    await ref('a').create({ quando: data });
+    const lido = (await ref('a').get()).data() as Record<string, unknown>;
+    expect(lido.quando).toBeInstanceOf(Date);
+    expect((lido.quando as Date).getTime()).toBe(data.getTime());
+    expect(lido.quando).not.toBe(data);
+  });
+
+  it('NEAR-MISS: a function anywhere else in a payload is still refused, as the SDK refuses it', async () => {
+    await expect(Promise.resolve().then(() => ref('a').create({ f: () => 1 }))).rejects.toThrow();
+  });
+
+  it('two stored stamps of one instant are the same content: a batch carrier re-writing one keeps the doc’s stamp', async () => {
+    const lido = await ref('a').get();
+    db.seed(CAMINHO, { relogio: lido.readTime });
+    const antes = db.carimboDe(CAMINHO);
+    const [r] = await db
+      .batch()
+      .update(ref('a'), { relogio: lido.readTime }, { lastUpdateTime: antes })
+      .commit();
+    expect(r?.writeTime).toBe(antes);
+    expect(db.carimboDe(CAMINHO)).toBe(antes);
+  });
+});

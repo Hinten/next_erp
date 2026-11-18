@@ -18,34 +18,50 @@
  * The producers stay THUNKS, built only when an enqueue is due, so binding
  * reads no environment and touches no SDK.
  *
- * Both rows are `null` in this PR: no provider exists yet. Stock (step 12)
- * fills `estoque`, price (step 13) fills `preco`. With a `null` row the
- * handlers do nothing a provider would have done: a send ends `sem-provedor`
- * before the lease is read (it takes and releases nothing), a result still
- * advances its record and logs that the write-back was skipped, a recovery
- * logs and ends.
+ * Stock fills `estoque` since step 12, PR 12-f (`criarProvedorLoteEstoqueAmazon`,
+ * `estoque/provedorLoteEstoque.ts`); price (step 13) fills `preco`, `null`
+ * until then. With a `null` row the handlers do nothing a provider would have
+ * done: a send ends `sem-provedor` before the lease is read (it takes and
+ * releases nothing), a result still advances its record and logs that the
+ * write-back was skipped, a recovery logs and ends.
  *
  * ⚠️ This table is the ONLY binding between the feed core and a fluxo: no
  * other module of `feeds/` imports a fluxo's own module (this one names the
- * stock producer's TYPE only, for {@link RaizLoteAmazon}), and the jobs root is
- * the only reader of this one. Tests that need a provider hand a fake one to
- * the handler directly, or a fake table to {@link vincularDestinosLoteAmazon};
- * they never edit this table.
+ * stock provider's factory, and the stock producer's TYPE for
+ * {@link RaizLoteAmazon}), and the jobs root is the only reader of this one.
+ * Tests that need a provider hand a fake one to the handler directly, or a
+ * fake table to {@link vincularDestinosLoteAmazon}; they never edit this table.
  */
 import { FLUXO_AMAZON, type FluxoComLoteAmazon } from '../core/valvulas';
+import type { AmbienteAmazon } from '../env';
 import type { ProdutorEstoqueAmazon } from '../estoque/produtorEstoque';
+import { criarProvedorLoteEstoqueAmazon } from '../estoque/provedorLoteEstoque';
 import type { AgendadorLotesAmazon } from './agendadorLotes';
 import type { ProvedorLoteAmazon } from './provedorLote';
 
 /**
- * What a provider factory receives: the producers the jobs root binds ONCE,
- * each a thunk the provider calls only when it enqueues.
+ * What a provider factory receives, bound ONCE by the jobs root: the producers,
+ * each a thunk the provider calls only when it enqueues, and the runtime pieces
+ * a provider's own reads and requests need.
  */
 export interface RaizLoteAmazon {
   /** The jobs queue's producer (a recovery's `feed-enviar`, a reconcile hand-off). */
   readonly agendadorLotes: () => AgendadorLotesAmazon;
   /** The stock queue's producer (one patch task per SKU handed to the per-SKU path). */
   readonly produtorEstoque: () => ProdutorEstoqueAmazon;
+  /** A sleep of `ms` milliseconds: the pacing between two Amazon reads of a build. */
+  readonly esperar: (ms: number) => Promise<void>;
+  /** `(by) => FieldValue.increment(by)`: the aviso counter. */
+  readonly increment: (by: number) => unknown;
+  /** A fresh run id, for the reconcile run a provider's request may start. */
+  readonly gerarExecucaoId: () => string;
+  /**
+   * The process environment, read when called (never at bind time): a
+   * provider's own producers read the fluxo's valve from it before they
+   * enqueue — a recovery under `off` does nothing, and a recovery's batch takes
+   * the form the valve gives it (`decidirLote`), as every producer's does.
+   */
+  readonly ambiente: () => AmbienteAmazon;
 }
 
 /**
@@ -70,7 +86,7 @@ export type ProvedoresLoteAmazon = {
 
 /** The seam (module header). */
 export const DESTINO_LOTE_AMAZON: DestinoLoteAmazon = {
-  estoque: null,
+  estoque: criarProvedorLoteEstoqueAmazon,
   preco: null,
 };
 

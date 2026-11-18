@@ -1,27 +1,48 @@
 /**
- * The five-minute stock tick (step 12, PR 12-e2), offline: T1–T9 against the
- * counting fake Firestore, the REAL stock producer over a recording queue that,
- * like Cloud Tasks, refuses a task id it already holds, and a clock the cases
- * drive. The real server's half (the idle cost and one active tick on the
- * emulator) is `sincronizacaoEstoque.firestore.test.ts`.
+ * The five-minute stock tick (step 12, PR 12-e2; its hand-offs durable since
+ * PR 12-f), offline: T1–T9 against the counting fake Firestore, the REAL stock
+ * and jobs producers over recording queues that, like Cloud Tasks, refuse a
+ * task id they already hold, the REAL reconcile request and Start, the REAL
+ * feed lease I/O, and a clock the cases drive. The real server's half (the idle
+ * cost and one active tick on the emulator) is
+ * `sincronizacaoEstoque.firestore.test.ts`; the delta feed the tick hands off,
+ * dispatched end to end, is `provedorLoteEstoque.test.ts`'s.
  *
  * No network: every `fetch` fails the case (the tick makes no Amazon call).
  *
  * PLACEHOLDERS ONLY (public repository).
  */
+import type { Firestore } from 'firebase-admin/firestore';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MissingRegionError } from '@delfrance/core/region';
 import {
+  FLUXO_FEED_AMAZON,
   INTEGRACAO_TIPO,
   LIMIAR_FEED_ESTOQUE_AMAZON,
   MAX_SKUS_FEED_DELTA_ESTOQUE_AMAZON,
   MOTIVO_CONTA_AMAZON,
+  idVezFeedAmazon,
   makeEstoqueUid,
 } from '@delfrance/schemas';
 
 import { chaveContaPrecisaAtencao, relogioDoDocumentoUs } from '../avisos/avisos';
 import { descreverFalhaDoSdkDeTarefasAmazon } from '../core/filaTarefas';
 import { type CamposLogAmazon, INVALIDO } from '../core/log';
+import { CANARIO_ENV_AMAZON, VALVULA_ENV_AMAZON } from '../core/valvulas';
+import {
+  AmazonLotesTarefasDesligadasError,
+  type FilaLotesAmazon,
+  criarAgendadorLotesAmazon,
+} from '../feeds/agendadorLotes';
+import {
+  type TarefaLoteAmazon,
+  execucaoIdDaJanelaFeed,
+  nomeEnvioFeed,
+  nomePaginaReconciliacao,
+  nomeRecuperacaoFeed,
+  nomeRetomadaReconciliacao,
+  referenciaVezFeed,
+} from '../feeds/tarefaLote';
 import { type DocData, FakeDb, asDb, grpc, increment } from '../testing/fakeDb';
 import {
   falhaDeConfiguracaoDoFunctions,
@@ -41,6 +62,7 @@ import {
   LARGURA_LOTE_ESTOQUE_AMAZON,
   criarProdutorEstoqueAmazon,
 } from './produtorEstoque';
+import { RETOMADA_RECONCILIACAO_MS } from './reconciliacaoEstoque';
 import {
   DESFECHO_TICK_ESTOQUE_AMAZON,
   type DepsTickEstoqueAmazon,
@@ -49,6 +71,7 @@ import {
   LEASE_TICK_ESTOQUE_AMAZON_MS,
   LEITOR_DE_CONTAS_ESTOQUE_AMAZON,
   ORCAMENTO_CONTA_ESTOQUE_AMAZON_MS,
+  ORIGEM_LOTE_TICK_ESTOQUE_AMAZON,
   ORCAMENTO_MINIMO_CONTA_ESTOQUE_AMAZON_MS,
   ORCAMENTO_TICK_ESTOQUE_AMAZON_MS,
   PORTAO_TICK_ESTOQUE_AMAZON,
@@ -98,6 +121,10 @@ const MOVEU = T0 - 60_000;
 const AMBIENTE = Object.freeze({ AMAZON_CHAMADAS: 'on', AMAZON_MODO_ESTOQUE: 'dry-run' });
 
 const sync = (id = CONTA) => `sincronizacaoEstoqueAmazon/${id}`;
+/** The conta's reconcile run, its request, and its stock feed lease. */
+const RUN = `reconciliacaoEstoqueAmazon/${CONTA}`;
+const PEDIDO = `pedidoReconciliacaoEstoqueAmazon/${CONTA}`;
+const VEZ = `feedsAmazonEmCurso/${idVezFeedAmazon(FLUXO_FEED_AMAZON.estoque, CONTA)}`;
 const avisoSemDeposito = (id = CONTA) =>
   caminhoAviso(chaveContaPrecisaAtencao(id, MOTIVO_CONTA_AMAZON.estoqueSemDeposito));
 
@@ -118,6 +145,11 @@ let enfileiradas: TarefaEstoqueAmazon[];
 /** Every enqueue the queue refused as already held. */
 let jaExistentes: TarefaEstoqueAmazon[];
 let execucoes: number;
+/** The JOBS queue: the ids it holds, and every task it accepted (its name and delay). */
+let idsDeLote: Set<string>;
+let lotes: { tarefa: TarefaLoteAmazon; id: string | null; atrasoS: number }[];
+/** Every jobs enqueue the queue refused as already held. */
+let lotesJaExistentes: TarefaLoteAmazon[];
 
 beforeEach(() => {
   planejador.falha = null;
@@ -128,6 +160,9 @@ beforeEach(() => {
   enfileiradas = [];
   jaExistentes = [];
   execucoes = 0;
+  idsDeLote = new Set();
+  lotes = [];
+  lotesJaExistentes = [];
 });
 
 afterEach(() => {
@@ -158,13 +193,38 @@ function produtorGravador(
   });
 }
 
+/** The REAL jobs producer over a recording queue (module header). */
+function agendadorGravador(
+  opcoes: { readonly desligado?: boolean; readonly falha?: () => unknown } = {},
+) {
+  return criarAgendadorLotesAmazon({
+    desligado: opcoes.desligado ?? false,
+    fila: (): FilaLotesAmazon => ({
+      enqueue: (tarefa, extras) => {
+        const erro = opcoes.falha?.();
+        if (erro !== undefined) return Promise.reject(erro);
+        const id = extras?.id;
+        if (id !== undefined && idsDeLote.has(id)) {
+          lotesJaExistentes.push(tarefa);
+          return Promise.reject(falhaDeTarefaJaExistente(id));
+        }
+        if (id !== undefined) idsDeLote.add(id);
+        lotes.push({ tarefa, id: id ?? null, atrasoS: extras?.scheduleDelaySeconds ?? 0 });
+        return Promise.resolve();
+      },
+    }),
+  });
+}
+
 function deps(over: Partial<DepsTickEstoqueAmazon> = {}): DepsTickEstoqueAmazon {
   const produtor = produtorGravador();
+  const agendador = agendadorGravador();
   return {
     db: asDb(fake),
     ambiente: AMBIENTE,
     contas: LEITOR_DE_CONTAS_ESTOQUE_AMAZON,
     produtor: () => produtor,
+    agendador: () => agendador,
     agora: () => agoraMs,
     logger: espiao.logger,
     increment,
@@ -258,6 +318,8 @@ const consultasDaJanela = () => fake.consultas.filter((q) => q.colecao === 'esto
 const listagens = () => fake.consultas.filter((q) => q.colecao.endsWith('/prodAmazon'));
 const leiturasEm = (prefixo: string) => fake.leituras.filter((c) => c.startsWith(prefixo));
 const escritasEm = (prefixo: string) => fake.escritas.filter((e) => e.caminho.startsWith(prefixo));
+/** The jobs queue's tasks of one tipo. */
+const doTipo = (tipo: TarefaLoteAmazon['tipo']) => lotes.filter((l) => l.tarefa.tipo === tipo);
 
 describe('the numbers', () => {
   it('budget 200 s < timeout 240 s < lease 270 s < the 300-s interval; the deadline keeps 20 s for the final write', () => {
@@ -345,7 +407,7 @@ describe('★ T1: the read switch and the stock valve gate the tick BEFORE any F
 });
 
 describe('★ the idle tick’s EXACT cost', () => {
-  it('switch on, valve dry-run, one conta with its depósito and semDeposito false: 1 conta list, 1 conta read, 1 sync read, 1 lease write, 2 empty window queries, 1 final write — nothing else', async () => {
+  it('★ switch on, valve dry-run, one conta with its depósito and semDeposito false: 1 conta list, 1 conta read, 1 sync read, 1 lease write, ONE getAll of the reconcile run and the stock lease, 2 empty window queries, 1 final write — nothing else', async () => {
     conta();
     sincronizacao();
     produto('P');
@@ -357,9 +419,21 @@ describe('★ the idle tick’s EXACT cost', () => {
       cursorAvancou: true,
       skus: 0,
       tarefas: 0,
+      retomada: null,
+      inicioRecuperado: false,
     });
-    expect(fake.contagem).toEqual({ leituras: 2, chamadasGetAll: 0, consultas: 3, escritas: 2 });
-    expect(fake.leituras).toEqual([caminhoConta(CONTA), sync()]);
+    // The 12-e2 pin (2 reads, 0 getAll) moved by EXACTLY one getAll of two documents.
+    expect(fake.contagem).toEqual({ leituras: 4, chamadasGetAll: 1, consultas: 3, escritas: 2 });
+    expect(fake.leituras).toEqual([caminhoConta(CONTA), sync(), RUN, VEZ]);
+    expect(
+      fake.leiturasDetalhadas
+        .filter((l) => l.via === 'getAll')
+        .map((l) => [l.caminho, l.chamada, l.mascara]),
+    ).toEqual([
+      [RUN, 1, null],
+      [VEZ, 1, null],
+    ]);
+    expect(lotes).toEqual([]);
     expect(fake.consultas.map((q) => q.colecao)).toEqual(['integracao', 'estoques', 'estoques']);
     expect(fake.escritas.map((e) => [e.verbo, e.caminho, e.comPrecondicao])).toEqual([
       ['update', sync(), true],
@@ -460,7 +534,7 @@ describe('★ T7: 1–30 SKUs ⇒ one NAMED patch task per observation', () => {
     });
   });
 
-  it('★ NEAR-MISS: 31 SKUs ⇒ ZERO tasks and the delta-feed hand-off (WARNING feed-necessario), the cursor KEPT', async () => {
+  it('★ NEAR-MISS: 31 SKUs ⇒ ZERO patch tasks and ONE window feed-enviar (the window, never the SKUs), named by the window, no delay; the cursor ADVANCED', async () => {
     conta();
     sincronizacao(CONTA, { falhasSeguidas: 2 });
     produtoComVinculos('P', LIMIAR_FEED_ESTOQUE_AMAZON + 1);
@@ -470,19 +544,67 @@ describe('★ T7: 1–30 SKUs ⇒ one NAMED patch task per observation', () => {
       desfecho: DESFECHO_TICK_ESTOQUE_AMAZON.repassado,
       repasse: REPASSE_TICK_ESTOQUE_AMAZON.feedNecessario,
       motivo: MOTIVO_ESTOQUE_AMAZON.emFeed,
+      entrega: 'enfileirada',
       skus: 31,
       tarefas: 0,
-      cursorAvancou: false,
+      cursorAvancou: true,
     });
-    // A placeholder is no failure: the counter is left as stored.
-    expect(fake.ler(sync())).toMatchObject({ cursorMs: CURSOR, vez: null, falhasSeguidas: 2 });
+    const desdeMs = CURSOR - SOBREPOSICAO_MS;
+    const execucaoId = execucaoIdDaJanelaFeed(CONTA, desdeMs, T0);
+    expect(lotes).toEqual([
+      {
+        tarefa: {
+          v: 1,
+          tipo: 'feed-enviar',
+          fluxo: 'estoque',
+          contaId: CONTA,
+          execucaoId,
+          origem: ORIGEM_LOTE_TICK_ESTOQUE_AMAZON,
+          lote: {
+            tipo: 'janela',
+            desdeMs,
+            ateMs: T0,
+            manterDesdeMs: desdeMs,
+            commitAposMs: null,
+            esperaAteMs: null,
+            depositoId: DEP,
+          },
+        },
+        id: nomeEnvioFeed(CONTA, execucaoId),
+        atrasoS: 0,
+      },
+    ]);
+    // The payload never carries a SKU: its size is the same whatever the batch's.
+    expect(JSON.stringify(lotes)).not.toContain('P-00');
+    // A durable hand-off is a clean end: the cursor at the window's end, the counter at 0.
+    expect(fake.ler(sync())).toMatchObject({ cursorMs: T0, vez: null, falhasSeguidas: 0 });
     expect(linhaDaConta()).toMatchObject({
-      nivel: 'warn',
-      meta: { repasse: 'feed-necessario', skus: 31 },
+      nivel: 'info',
+      meta: { repasse: 'feed-necessario', entrega: 'enfileirada', skus: 31 },
     });
   });
 
-  it('★ 3,000 SKUs ⇒ the delta-feed hand-off; 3,001 ⇒ the reconcile hand-off — cursor kept both times, zero tasks', async () => {
+  it('★ the same window handed off twice (a tick that crashed before its final write) is ONE batch: the second answers ALREADY_EXISTS', async () => {
+    conta();
+    sincronizacao();
+    produtoComVinculos('P', LIMIAR_FEED_ESTOQUE_AMAZON + 1);
+    // The first run's final write is lost: the cursor stays where it was.
+    fake.antesDaProximaEscrita(sync(), () => undefined); // the lease
+    fake.antesDaProximaEscrita(sync(), () => {
+      throw grpc(14, 'UNAVAILABLE');
+    });
+    expect(unica(await tick())).toMatchObject({ desfecho: 'erro-firestore' });
+    // The dead run's lease expires; the same window, the same clock.
+    const lease = fake.ler(sync())?.vez as { ateMs: number };
+    fake.seed(sync(), { ...fake.ler(sync()), vez: { ...lease, ateMs: T0 } });
+    const r = unica(await tick());
+    expect(r).toMatchObject({ repasse: 'feed-necessario', entrega: 'ja-enfileirada' });
+    expect(doTipo('feed-enviar')).toHaveLength(1);
+    expect(lotesJaExistentes).toHaveLength(1);
+    expect(fake.ler(sync())).toMatchObject({ cursorMs: T0 });
+  });
+
+  it('★ 3,000 SKUs ⇒ the delta-feed hand-off; 3,001 ⇒ the reconcile hand-off (a request, then Start) — the cursor advanced both times, zero patch tasks', async () => {
     conta();
     sincronizacao(CONTA, { falhasSeguidas: 2 });
     // 100 produtos × 30 links: 3,000 SKUs from 100 rows (no truncation).
@@ -492,18 +614,44 @@ describe('★ T7: 1–30 SKUs ⇒ one NAMED patch task per observation', () => {
       repasse: REPASSE_TICK_ESTOQUE_AMAZON.feedNecessario,
       skus: MAX_SKUS_FEED_DELTA_ESTOQUE_AMAZON,
       truncada: false,
+      cursorAvancou: true,
     });
+    expect(doTipo('feed-enviar')).toHaveLength(1);
+    // The next tick's window still holds every row (its overlap), plus one more produto.
+    for (let i = 0; i < 100; i += 1) linha(`P${String(i).padStart(3, '0')}`, T0 - 5_000);
     produtoComVinculos('PX', 1);
+    linha('PX', T0 + 60_000);
     agoraMs += INTERVALO_TICK_ESTOQUE_AMAZON_MS;
     const r2 = unica(await tick());
     expect(r2).toMatchObject({
+      desfecho: DESFECHO_TICK_ESTOQUE_AMAZON.repassado,
       repasse: REPASSE_TICK_ESTOQUE_AMAZON.reconciliacaoNecessaria,
       motivo: MOTIVO_ESTOQUE_AMAZON.emReconciliacao,
+      entrega: 'pedido',
       skus: MAX_SKUS_FEED_DELTA_ESTOQUE_AMAZON + 1,
       truncada: false,
+      cursorAvancou: true,
     });
     expect(enfileiradas).toEqual([]);
-    expect(fake.ler(sync())).toMatchObject({ cursorMs: CURSOR, falhasSeguidas: 2 });
+    expect(doTipo('feed-enviar')).toHaveLength(1);
+    expect(fake.ler(sync())).toMatchObject({ cursorMs: agoraMs, falhasSeguidas: 0 });
+    // The request, then Start: a run claimed at the conta's depósito, its page 0 named.
+    expect(fake.ler(PEDIDO)).toMatchObject({ pendente: false, pedidoEmMs: agoraMs });
+    const run = fake.ler(RUN) as { execucaoId: string };
+    expect(run).toMatchObject({ fase: 'varrendo', depositoOuterRef: CANONICA, proximaPagina: 0 });
+    expect(doTipo('reconciliacao')).toEqual([
+      {
+        tarefa: {
+          v: 1,
+          tipo: 'reconciliacao',
+          contaId: CONTA,
+          execucaoId: run.execucaoId,
+          pagina: 0,
+        },
+        id: nomePaginaReconciliacao(CONTA, run.execucaoId, 0),
+        atrasoS: 0,
+      },
+    ]);
   });
 
   it('a SKU the task payload cannot carry is COUNTED and left out; the others go, the cursor advances', async () => {
@@ -775,7 +923,7 @@ describe('★ T7’s deadline: the cursor moves only past a window that was whol
 });
 
 describe('★ T5–T6: a window the tick cannot map goes to a reconcile', () => {
-  it('★ a truncated window (3,001 rows) ⇒ ZERO produto reads and ZERO partition listings, the hand-off, the cursor kept', async () => {
+  it('★ a truncated window (3,001 rows) ⇒ ZERO produto reads and ZERO partition listings, ONE reconcile request, the cursor ADVANCED past the window', async () => {
     conta();
     sincronizacao(CONTA, { falhasSeguidas: 2 });
     for (let i = 0; i < TETO_PAGINAS_JANELA * LINHAS_POR_PAGINA_JANELA + 1; i += 1) {
@@ -786,14 +934,39 @@ describe('★ T5–T6: a window the tick cannot map goes to a reconcile', () => 
       desfecho: DESFECHO_TICK_ESTOQUE_AMAZON.repassado,
       repasse: REPASSE_TICK_ESTOQUE_AMAZON.reconciliacaoNecessaria,
       motivo: MOTIVO_ESTOQUE_AMAZON.emReconciliacao,
+      entrega: 'pedido',
       truncada: true,
       paginas: TETO_PAGINAS_JANELA,
       produtos: 0,
       sondas: 0,
+      cursorAvancou: true,
     });
     expect(listagens()).toEqual([]);
-    expect(fake.contagem.chamadasGetAll).toBe(0);
-    expect(fake.ler(sync())).toMatchObject({ cursorMs: CURSOR, vez: null, falhasSeguidas: 2 });
+    // The one getAll is T4b's (the run and the lease): no produto is read.
+    expect(leiturasEm('produtos/')).toEqual([]);
+    // A TICK's request: never the loop-guarded automatic one.
+    expect(fake.ler(PEDIDO)).toMatchObject({ pedidoEmMs: T0, reexecucaoAutomaticaEmMs: null });
+    expect(doTipo('reconciliacao')).toHaveLength(1);
+    expect(fake.ler(sync())).toMatchObject({ cursorMs: T0, vez: null, falhasSeguidas: 0 });
+  });
+
+  it('★ the reconcile request whose page-0 enqueue the jobs queue refuses ⇒ enfileiramento-falhou naming the class, the cursor KEPT (the next tick asks again)', async () => {
+    conta();
+    sincronizacao();
+    for (let i = 0; i < TETO_PAGINAS_JANELA * LINHAS_POR_PAGINA_JANELA + 1; i += 1) {
+      linha(`P${String(i).padStart(5, '0')}`, MOVEU);
+    }
+    const desligado = agendadorGravador({ desligado: true });
+    const r = unica(await tick({ agendador: () => desligado }));
+    expect(r).toMatchObject({
+      desfecho: DESFECHO_TICK_ESTOQUE_AMAZON.enfileiramentoFalhou,
+      repasse: REPASSE_TICK_ESTOQUE_AMAZON.reconciliacaoNecessaria,
+      erro: new AmazonLotesTarefasDesligadasError().name,
+      entrega: null,
+      cursorAvancou: false,
+    });
+    expect(fake.ler(sync())).toMatchObject({ cursorMs: CURSOR, vez: null, falhasSeguidas: 1 });
+    expect(linhaDaConta().nivel).toBe('warn');
   });
 
   it('★ a slow db (each listing 2 s) ⇒ the tick ends with the reconcile hand-off BEFORE its timeout, never killed by it', async () => {
@@ -805,19 +978,22 @@ describe('★ T5–T6: a window the tick cannot map goes to a reconcile', () => 
     expect(r).toMatchObject({
       repasse: REPASSE_TICK_ESTOQUE_AMAZON.reconciliacaoNecessaria,
       motivo: MOTIVO_ESTOQUE_AMAZON.emReconciliacao,
+      entrega: 'pedido',
       prazo: 'vinculos',
       tarefas: 0,
+      cursorAvancou: true,
     });
     expect(r.sondas).toBeLessThan(200);
     expect(fake.ler(sync())?.falhasSeguidas).toBe(0);
-    // The final write landed, inside the function's timeout.
-    expect(fake.ler(sync())).toMatchObject({ cursorMs: CURSOR, vez: null });
+    expect(fake.ler(PEDIDO)).toMatchObject({ pendente: false });
+    // The final write landed, inside the function's timeout; the cursor is the window's end.
+    expect(fake.ler(sync())).toMatchObject({ cursorMs: T0, vez: null });
     expect(fake.ler(sync())?.ultimoTickMs).toBeLessThan(
       T0 + TEMPO_LIMITE_TICK_ESTOQUE_AMAZON_S * 1000,
     );
   });
 
-  it('★ a cursor older than 24 hours (the clamp) ⇒ ZERO window queries, the reconcile hand-off, the cursor kept', async () => {
+  it('★ a cursor older than 24 hours (the clamp) ⇒ ZERO window queries, the reconcile hand-off, the cursor ADVANCED to now', async () => {
     conta();
     const antigo = T0 - 25 * 60 * 60 * 1000;
     sincronizacao(CONTA, { cursorMs: antigo, falhasSeguidas: 2 });
@@ -826,12 +1002,13 @@ describe('★ T5–T6: a window the tick cannot map goes to a reconcile', () => 
     expect(r).toMatchObject({
       repasse: REPASSE_TICK_ESTOQUE_AMAZON.reconciliacaoNecessaria,
       motivo: MOTIVO_ESTOQUE_AMAZON.emReconciliacao,
+      entrega: 'pedido',
       truncada: true,
       paginas: 0,
     });
     expect(consultasDaJanela()).toEqual([]);
     expect(listagens()).toEqual([]);
-    expect(fake.ler(sync())).toMatchObject({ cursorMs: antigo, vez: null, falhasSeguidas: 2 });
+    expect(fake.ler(sync())).toMatchObject({ cursorMs: T0, vez: null, falhasSeguidas: 0 });
   });
 
   it('★ the deadline BETWEEN window pages (T5) says the reads were slow, not how much moved: orcamento-esgotado at WARNING, the cursor kept, the counter + 1 — never a hand-off', async () => {
@@ -869,10 +1046,13 @@ describe('★ T5–T6: a window the tick cannot map goes to a reconcile', () => 
       desfecho: DESFECHO_TICK_ESTOQUE_AMAZON.repassado,
       repasse: REPASSE_TICK_ESTOQUE_AMAZON.reconciliacaoNecessaria,
       motivo: MOTIVO_ESTOQUE_AMAZON.emReconciliacao,
+      entrega: 'pedido',
       prazo: 'produtos',
       paginas: 2,
     });
-    expect(fake.ler(sync())).toMatchObject({ cursorMs: CURSOR, falhasSeguidas: 0 });
+    // The window's end is T0 (planned before the clock jumped), and it is durable in the request.
+    expect(fake.ler(sync())).toMatchObject({ cursorMs: T0, falhasSeguidas: 0 });
+    expect(fake.ler(PEDIDO)).toMatchObject({ pendente: false });
   });
 
   it('a cursor ahead of this clock by more than the overlap ⇒ nothing read, the cursor kept', async () => {
@@ -888,7 +1068,7 @@ describe('★ T5–T6: a window the tick cannot map goes to a reconcile', () => 
     });
   });
 
-  it('★ a FAR-FUTURE cursor (the planner’s RangeError) ends THAT conta with one line naming it; the next conta still runs', async () => {
+  it('★ a FAR-FUTURE cursor (the planner’s RangeError) ⇒ janela-invalida naming it, ONE reconcile request, the cursor RESET to now (below the stored one); the next conta still runs', async () => {
     const OUTRA = 'conta-amz-tick-b';
     conta();
     conta(OUTRA);
@@ -901,17 +1081,25 @@ describe('★ T5–T6: a window the tick cannot map goes to a reconcile', () => 
     const porConta = Object.fromEntries(r.contas.map((c) => [c.contaId, c]));
     expect(porConta[CONTA]).toMatchObject({
       desfecho: DESFECHO_TICK_ESTOQUE_AMAZON.janelaInvalida,
+      repasse: REPASSE_TICK_ESTOQUE_AMAZON.reconciliacaoNecessaria,
+      entrega: 'pedido',
       erro: 'RangeError',
-      cursorAvancou: false,
+      cursorAvancou: true,
     });
     expect(porConta[OUTRA]).toMatchObject({ desfecho: 'janela-vazia', cursorAvancou: true });
-    expect(fake.ler(sync())).toMatchObject({
-      cursorMs: T0 + 2 * 86_400_000,
-      vez: null,
-      falhasSeguidas: 1,
-    });
+    // NEAR-MISS: an advance-only write would keep the bad cursor, and every
+    // tick would refuse it again.
+    expect(fake.ler(sync())).toMatchObject({ cursorMs: T0, vez: null, falhasSeguidas: 1 });
+    // No window was planned for this conta: the two window queries are the other conta's.
+    expect(consultasDaJanela()).toHaveLength(2);
+    expect(fake.ler(PEDIDO)).toMatchObject({ pedidoEmMs: T0 });
     expect(linhaDaConta()).toMatchObject({ nivel: 'warn', meta: { erro: 'RangeError' } });
     expect(linhaDaConta(OUTRA).nivel).toBe('info');
+
+    // The next tick reads its window from the reset cursor.
+    agoraMs = T0 + INTERVALO_TICK_ESTOQUE_AMAZON_MS;
+    const r2 = await tick();
+    expect(r2.contas.find((c) => c.contaId === CONTA)?.desfecho).toBe('janela-vazia');
   });
 
   it('★ NEAR-MISS: a RangeError from the window READS is not the planner’s — never contained, the tick rejects with that very error', async () => {
@@ -956,34 +1144,55 @@ describe('★ T4: the first tick, the depósito of the cursor, and the lease', (
     });
   });
 
-  it('★ the conta’s depósito changed between two ticks ⇒ ZERO window queries from the old cursor, ONE WARNING, cursor and depositoDoCursor KEPT — each tick repeats it', async () => {
+  it('★ the conta’s depósito changed between two ticks ⇒ ZERO window queries from the old cursor, ONE reconcile request (a run at the NEW depósito), then the cursor and depositoDoCursor RESET there — once: the next tick reads its window', async () => {
     const ANTIGO = 'documents/depositos/dep-antigo';
     conta();
-    sincronizacao(CONTA, { depositoDoCursor: ANTIGO, falhasSeguidas: 2 });
+    // The old cursor sits ahead of now: the reset is not advance-only.
+    sincronizacao(CONTA, { cursorMs: T0 + 10_000, depositoDoCursor: ANTIGO, falhasSeguidas: 2 });
     produtoComVinculos('P', 1);
-    for (let i = 0; i < 2; i += 1) {
-      espiao = loggerEspiao();
-      const r = unica(await tick({ logger: espiao.logger }));
-      expect(r).toMatchObject({
-        desfecho: DESFECHO_TICK_ESTOQUE_AMAZON.repassado,
-        repasse: REPASSE_TICK_ESTOQUE_AMAZON.depositoDoCursorMudou,
-        motivo: MOTIVO_ESTOQUE_AMAZON.depositoMudou,
-        cursorAvancou: false,
-      });
-      expect(linhaDaConta()).toMatchObject({
-        nivel: 'warn',
-        meta: { repasse: 'deposito-do-cursor-mudou' },
-      });
-      agoraMs += INTERVALO_TICK_ESTOQUE_AMAZON_MS;
-    }
+    const r = unica(await tick());
+    expect(r).toMatchObject({
+      desfecho: DESFECHO_TICK_ESTOQUE_AMAZON.repassado,
+      repasse: REPASSE_TICK_ESTOQUE_AMAZON.reconciliacaoNecessaria,
+      motivo: MOTIVO_ESTOQUE_AMAZON.depositoMudou,
+      entrega: 'pedido',
+      cursorAvancou: true,
+    });
+    expect(linhaDaConta()).toMatchObject({
+      nivel: 'warn',
+      meta: { repasse: 'reconciliacao-necessaria', motivo: 'deposito-mudou' },
+    });
     expect(consultasDaJanela()).toEqual([]);
     expect(enfileiradas).toEqual([]);
+    expect(fake.ler(RUN)).toMatchObject({ fase: 'varrendo', depositoOuterRef: CANONICA });
+    expect(doTipo('reconciliacao')).toHaveLength(1);
     expect(fake.ler(sync())).toMatchObject({
-      cursorMs: CURSOR,
-      depositoDoCursor: ANTIGO,
+      cursorMs: T0,
+      depositoDoCursor: CANONICA,
       vez: null,
-      falhasSeguidas: 2,
+      falhasSeguidas: 0,
     });
+
+    // The next tick: the cursor's depósito is the conta's, a window is read, no second request.
+    agoraMs += INTERVALO_TICK_ESTOQUE_AMAZON_MS;
+    const r2 = unica(await tick());
+    expect(r2).toMatchObject({ desfecho: 'janela-vazia', repasse: null });
+    expect(consultasDaJanela()).toHaveLength(2);
+    expect(doTipo('reconciliacao')).toHaveLength(1);
+  });
+
+  it('NEAR-MISS: the depósito change whose request the jobs queue refuses KEEPS the cursor and the old depósito: the next tick asks again', async () => {
+    const ANTIGO = 'documents/depositos/dep-antigo';
+    conta();
+    sincronizacao(CONTA, { depositoDoCursor: ANTIGO });
+    const desligado = agendadorGravador({ desligado: true });
+    const r = unica(await tick({ agendador: () => desligado }));
+    expect(r).toMatchObject({
+      desfecho: DESFECHO_TICK_ESTOQUE_AMAZON.enfileiramentoFalhou,
+      motivo: MOTIVO_ESTOQUE_AMAZON.depositoMudou,
+      cursorAvancou: false,
+    });
+    expect(fake.ler(sync())).toMatchObject({ cursorMs: CURSOR, depositoDoCursor: ANTIGO });
   });
 
   it('NEAR-MISS: the conta holding the BARE form of the cursor’s depósito is the same depósito — one parse, the window is read', async () => {
@@ -1147,6 +1356,381 @@ describe('★ T4: the first tick, the depósito of the cursor, and the lease', (
   });
 });
 
+describe('★ T7: 31–3,000 SKUs in the form the stock valve gives a batch', () => {
+  const ligado = (canario: string | undefined) => ({
+    AMAZON_CHAMADAS: 'on',
+    [VALVULA_ENV_AMAZON.estoque]: 'on',
+    [CANARIO_ENV_AMAZON.estoque]: canario,
+  });
+
+  it('★ under a canary LIST ⇒ ONLY the canary’s SKUs, as named patch tasks per observation; the others counted, no feed-enviar; the cursor advanced', async () => {
+    conta();
+    sincronizacao();
+    produtoComVinculos('P', LIMIAR_FEED_ESTOQUE_AMAZON + 1);
+    const lista = `${CONTA}:P-0003,${CONTA}:P-0007,outra-conta:P-0001`;
+    const r = unica(await tick({ ambiente: ligado(lista) }));
+    expect(enfileiradas.map((t) => [t.sku, t.origem])).toEqual([
+      ['P-0003', 'delta'],
+      ['P-0007', 'delta'],
+    ]);
+    expect(lotes).toEqual([]);
+    expect(r).toMatchObject({
+      desfecho: DESFECHO_TICK_ESTOQUE_AMAZON.enfileirado,
+      motivo: MOTIVO_ESTOQUE_AMAZON.emPatches,
+      repasse: null,
+      skus: 31,
+      tarefas: 2,
+      foraDoCanario: 29,
+      cursorAvancou: true,
+    });
+    expect(linhaDaConta().meta).toMatchObject({ foraDoCanario: 29 });
+  });
+
+  it.each([
+    ['on with the canary exactly *', '*'],
+    ['on with no canary list (a dry-run of the batch)', undefined],
+  ])('NEAR-MISS: %s ⇒ the window feed-enviar, zero patch tasks', async (_c, canario) => {
+    conta();
+    sincronizacao();
+    produtoComVinculos('P', LIMIAR_FEED_ESTOQUE_AMAZON + 1);
+    const r = unica(await tick({ ambiente: ligado(canario) }));
+    expect(enfileiradas).toEqual([]);
+    expect(doTipo('feed-enviar')).toHaveLength(1);
+    expect(r).toMatchObject({ repasse: 'feed-necessario', foraDoCanario: 0, cursorAvancou: true });
+  });
+
+  it.each([
+    [
+      'the jobs queue’s valve',
+      () => agendadorGravador({ desligado: true }),
+      'AmazonLotesTarefasDesligadasError',
+    ],
+    [
+      'a named transient',
+      () => agendadorGravador({ falha: () => falhaDoFunctions('unavailable', 503) }),
+      'AmazonTarefasTransitoriasError',
+    ],
+    [
+      'a missing queue region',
+      () =>
+        agendadorGravador({
+          falha: () => new MissingRegionError('teste: sem região', ['AMAZON_TASKS_REGION']),
+        }),
+      'MissingRegionError',
+    ],
+    [
+      'a raw Cloud Tasks failure',
+      () => agendadorGravador({ falha: () => falhaDeConfiguracaoDoFunctions('projeto') }),
+      descreverFalhaDoSdkDeTarefasAmazon(falhaDeConfiguracaoDoFunctions('projeto')),
+    ],
+  ])(
+    '★ the delta feed’s enqueue refused (%s) ⇒ enfileiramento-falhou naming the class, the cursor KEPT, the lease released',
+    async (_c, criar, erro) => {
+      conta();
+      sincronizacao();
+      produtoComVinculos('P', LIMIAR_FEED_ESTOQUE_AMAZON + 1);
+      const agendador = criar();
+      const r = unica(await tick({ agendador: () => agendador }));
+      expect(r).toMatchObject({
+        desfecho: DESFECHO_TICK_ESTOQUE_AMAZON.enfileiramentoFalhou,
+        repasse: REPASSE_TICK_ESTOQUE_AMAZON.feedNecessario,
+        entrega: null,
+        erro,
+        cursorAvancou: false,
+      });
+      expect(fake.ler(sync())).toMatchObject({ cursorMs: CURSOR, vez: null, falhasSeguidas: 1 });
+      expect(linhaDaConta()).toMatchObject({ nivel: 'warn', meta: { erro } });
+    },
+  );
+
+  it('NEAR-MISS: an UNNAMED failure of the jobs producer (a bug) is not contained — the tick rejects', async () => {
+    conta();
+    sincronizacao();
+    produtoComVinculos('P', LIMIAR_FEED_ESTOQUE_AMAZON + 1);
+    const quebrado = agendadorGravador({ falha: () => new TypeError('bug') });
+    await expect(tick({ agendador: () => quebrado })).rejects.toBeInstanceOf(TypeError);
+  });
+});
+
+describe('★ T4b: the reconcile run re-kicked, the stranded start recovered', () => {
+  const MIN = 60_000;
+  /** A live run of the conta, its last progress `parado` ms ago. */
+  function runVivo(parado: number, over: DocData = {}): void {
+    fake.seed(RUN, {
+      execucaoId: 'run-velho',
+      fase: 'varrendo',
+      depositoOuterRef: CANONICA,
+      proximaPagina: 2,
+      paginas: 2,
+      progressoEmMs: T0 - parado,
+      iniciadaEmMs: T0 - 60 * MIN,
+      ...over,
+    });
+  }
+  /** The stock feed lease: `montando`, expiring at `ateMs`, holding `pendenteDesdeMs`. */
+  function vez(over: DocData = {}): void {
+    fake.seed(VEZ, {
+      estado: 'montando',
+      execucaoId: 'exec-morto',
+      ateMs: T0 - 1,
+      atualizadoEmMs: T0 - 11 * MIN,
+      pendenteDesdeMs: T0 - 30 * MIN,
+      ...over,
+    });
+  }
+
+  it('★ a live run 16 min without progress ⇒ its page proximaPagina RE-KICKED, named by the stall; a second tick over the same stall is ALREADY_EXISTS', async () => {
+    conta();
+    sincronizacao();
+    runVivo(16 * MIN);
+    const r = unica(await tick());
+    expect(r).toMatchObject({ desfecho: 'janela-vazia', retomada: 'retomada' });
+    expect(doTipo('reconciliacao')).toEqual([
+      {
+        tarefa: { v: 1, tipo: 'reconciliacao', contaId: CONTA, execucaoId: 'run-velho', pagina: 2 },
+        id: nomeRetomadaReconciliacao(CONTA, 'run-velho', 2, T0 - 16 * MIN),
+        atrasoS: 0,
+      },
+    ]);
+    // The re-kick writes nothing: the run is the page's to move.
+    expect(escritasEm(RUN)).toEqual([]);
+    agoraMs += INTERVALO_TICK_ESTOQUE_AMAZON_MS;
+    expect(unica(await tick())).toMatchObject({ retomada: 'ja-retomada' });
+    expect(doTipo('reconciliacao')).toHaveLength(1);
+    expect(lotesJaExistentes).toHaveLength(1);
+  });
+
+  it('★ a crash after the claim and before page 0’s enqueue (no progress yet) ⇒ the next tick ≥ 15 min later re-enqueues page 0, named by the claim', async () => {
+    conta();
+    sincronizacao();
+    runVivo(0, { proximaPagina: 0, paginas: 0, progressoEmMs: null, iniciadaEmMs: T0 - 16 * MIN });
+    expect(unica(await tick())).toMatchObject({ retomada: 'retomada' });
+    expect(doTipo('reconciliacao').map((l) => [l.tarefa, l.id])).toEqual([
+      [
+        { v: 1, tipo: 'reconciliacao', contaId: CONTA, execucaoId: 'run-velho', pagina: 0 },
+        nomeRetomadaReconciliacao(CONTA, 'run-velho', 0, T0 - 16 * MIN),
+      ],
+    ]);
+  });
+
+  it.each([
+    ['14 min stale', 14 * MIN, {}],
+    ['EXACTLY 15 min stale', RETOMADA_RECONCILIACAO_MS, {}],
+    ['ended (concluida), 3 h ago', 3 * 60 * MIN, { fase: 'concluida' }],
+  ])('NEAR-MISS: a run %s ⇒ no re-kick', async (_c, parado, over) => {
+    conta();
+    sincronizacao();
+    runVivo(parado, over);
+    expect(unica(await tick())).toMatchObject({ desfecho: 'janela-vazia', retomada: null });
+    expect(lotes).toEqual([]);
+  });
+
+  it('★ the stranded start: an EXPIRED montando lease holding a start ⇒ ONE named vez recovery FIRST, then the start cleared; a second tick does nothing', async () => {
+    conta();
+    sincronizacao();
+    vez();
+    let antesDaEscrita = -1;
+    fake.antesDaProximaEscrita(VEZ, () => {
+      antesDaEscrita = doTipo('feed-recuperar').length;
+    });
+    const r = unica(await tick());
+    expect(r).toMatchObject({ desfecho: 'janela-vazia', inicioRecuperado: true });
+    expect(doTipo('feed-recuperar')).toEqual([
+      {
+        tarefa: {
+          v: 1,
+          tipo: 'feed-recuperar',
+          fluxo: 'estoque',
+          contaId: CONTA,
+          desfecho: 'vez',
+          feedId: null,
+          execucaoId: 'exec-morto',
+          snapshotEmMs: null,
+          pendenteDesdeMs: T0 - 30 * MIN,
+          janela: null,
+        },
+        id: nomeRecuperacaoFeed(CONTA, referenciaVezFeed('exec-morto'), T0 - 30 * MIN),
+        atrasoS: 0,
+      },
+    ]);
+    // NEAR-MISS: a start cleared before its recovery is durable would be lost to a crash.
+    expect(antesDaEscrita).toBe(1);
+    expect(fake.ler(VEZ)).toMatchObject({
+      estado: 'montando',
+      execucaoId: 'exec-morto',
+      pendenteDesdeMs: null,
+      atualizadoEmMs: T0,
+    });
+    expect(escritasEm(VEZ).map((e) => [e.verbo, e.comPrecondicao])).toEqual([['update', true]]);
+    agoraMs += INTERVALO_TICK_ESTOQUE_AMAZON_MS;
+    expect(unica(await tick())).toMatchObject({ inicioRecuperado: false });
+    expect(doTipo('feed-recuperar')).toHaveLength(1);
+    expect(escritasEm(VEZ)).toHaveLength(1);
+  });
+
+  it('NEAR-MISS: a lease another holder took between T4b’s getAll and the lease I/O’s own re-read ⇒ nothing recovered, nothing written, inicioRecuperado false', async () => {
+    conta();
+    sincronizacao();
+    vez();
+    const base = asDb(fake) as unknown as Record<string | symbol, unknown>;
+    let tomada = false;
+    const db = new Proxy(base, {
+      get(t, prop) {
+        const v: unknown = Reflect.get(t, prop, t);
+        if (typeof v !== 'function') return v;
+        const f = v as (...a: unknown[]) => Promise<unknown>;
+        if (prop !== 'getAll') return f.bind(t);
+        return async (...a: unknown[]) => {
+          const r = await f.apply(t, a);
+          if (!tomada) {
+            tomada = true;
+            // Right after T4b's read: a live holder takes the lease over.
+            fake.seed(VEZ, {
+              estado: 'montando',
+              execucaoId: 'exec-novo',
+              ateMs: T0 + 10 * MIN,
+              atualizadoEmMs: T0,
+              pendenteDesdeMs: T0 - 30 * MIN,
+            });
+          }
+          return r;
+        };
+      },
+    }) as unknown as Firestore;
+    expect(unica(await tick({ db }))).toMatchObject({
+      desfecho: 'janela-vazia',
+      inicioRecuperado: false,
+    });
+    expect(doTipo('feed-recuperar')).toEqual([]);
+    expect(escritasEm(VEZ)).toEqual([]);
+  });
+
+  it('★ a re-run after the clearing write was lost ⇒ the recovery answers ALREADY_EXISTS and the start is cleared ONCE', async () => {
+    conta();
+    sincronizacao();
+    vez();
+    fake.antesDaProximaEscrita(VEZ, () => {
+      throw grpc(14, 'UNAVAILABLE');
+    });
+    expect(unica(await tick())).toMatchObject({ desfecho: 'erro-firestore', codigoGrpc: 14 });
+    expect(doTipo('feed-recuperar')).toHaveLength(1);
+    expect(fake.ler(VEZ)?.pendenteDesdeMs).toBe(T0 - 30 * MIN);
+    // The dead run's lease of the sync document expires; the next tick takes over.
+    agoraMs = T0 + INTERVALO_TICK_ESTOQUE_AMAZON_MS;
+    expect(unica(await tick())).toMatchObject({ inicioRecuperado: true });
+    expect(doTipo('feed-recuperar')).toHaveLength(1);
+    expect(lotesJaExistentes).toHaveLength(1);
+    expect(fake.ler(VEZ)?.pendenteDesdeMs).toBeNull();
+    expect(escritasEm(VEZ)).toHaveLength(1);
+  });
+
+  it.each([
+    ['an UNEXPIRED montando with a start (its holder may still release it)', { ateMs: T0 + 1 }],
+    ['an expired montando with NO start', { pendenteDesdeMs: null }],
+    [
+      'an expired enviando with a start (the uncertain path’s, never the tick’s)',
+      { estado: 'enviando', antesDoEnvioMs: T0 - 20 * MIN },
+    ],
+  ])('NEAR-MISS: %s ⇒ nothing enqueued, nothing written, the lease read ONCE', async (_c, over) => {
+    conta();
+    sincronizacao();
+    vez(over);
+    expect(unica(await tick())).toMatchObject({
+      desfecho: 'janela-vazia',
+      inicioRecuperado: false,
+    });
+    expect(lotes).toEqual([]);
+    expect(escritasEm(VEZ)).toEqual([]);
+    expect(leiturasEm(VEZ)).toHaveLength(1);
+  });
+
+  it('★ the jobs queue refusing T4b’s enqueue ⇒ enfileiramento-falhou naming the class, NO window read, the start KEPT, the lease released', async () => {
+    conta();
+    sincronizacao();
+    vez();
+    produtoComVinculos('P', 1);
+    const desligado = agendadorGravador({ desligado: true });
+    const r = unica(await tick({ agendador: () => desligado }));
+    expect(r).toMatchObject({
+      desfecho: DESFECHO_TICK_ESTOQUE_AMAZON.enfileiramentoFalhou,
+      erro: 'AmazonLotesTarefasDesligadasError',
+      inicioRecuperado: false,
+      cursorAvancou: false,
+    });
+    expect(consultasDaJanela()).toEqual([]);
+    expect(enfileiradas).toEqual([]);
+    expect(fake.ler(VEZ)?.pendenteDesdeMs).toBe(T0 - 30 * MIN);
+    expect(fake.ler(sync())).toMatchObject({ cursorMs: CURSOR, vez: null, falhasSeguidas: 1 });
+  });
+
+  it.each([
+    [
+      'the reconcile run',
+      () =>
+        fake.seed(RUN, {
+          execucaoId: 'run-velho',
+          fase: 'outra',
+          depositoOuterRef: CANONICA,
+          iniciadaEmMs: T0,
+        }),
+      'ReconciliacaoEstoqueDocumentoInvalidoError',
+      'fase',
+    ],
+    [
+      'the stock feed lease',
+      () => fake.seed(VEZ, { estado: 'livre' }),
+      'AmazonVezFeedInvalidaError',
+      'ateMs,atualizadoEmMs',
+    ],
+  ])(
+    'a stored %s that no longer parses costs ONLY its own step: named with its fields at WARNING, and the window is still read (NEAR-MISS: the delta path halted as documento-invalido); the other conta still runs',
+    async (_c, semear, erro, campos) => {
+      const OUTRA = 'conta-amz-tick-b';
+      conta();
+      conta(OUTRA);
+      sincronizacao();
+      sincronizacao(OUTRA);
+      semear();
+      const r = await tick();
+      const porConta = Object.fromEntries(r.contas.map((c) => [c.contaId, c]));
+      expect(porConta[CONTA]).toMatchObject({
+        desfecho: 'janela-vazia',
+        manutencaoInvalida: `${erro}:${campos}`,
+        retomada: null,
+        inicioRecuperado: false,
+        erro: null,
+      });
+      expect(porConta[CONTA]?.paginas).toBeGreaterThan(0);
+      expect(porConta[OUTRA]).toMatchObject({ desfecho: 'janela-vazia', manutencaoInvalida: null });
+      expect(linhaDaConta().nivel).toBe('warn');
+    },
+  );
+
+  it('a lease write that keeps losing its precondition ⇒ conflito (contained: the next tick re-derives); the other conta still runs', async () => {
+    const OUTRA = 'conta-amz-tick-b';
+    conta();
+    conta(OUTRA);
+    sincronizacao();
+    sincronizacao(OUTRA);
+    vez();
+    const tocar = () => {
+      fake.seed(VEZ, { ...fake.ler(VEZ), atualizadoEmMs: T0 - 10 * MIN });
+    };
+    fake.antesDaProximaEscrita(VEZ, tocar);
+    fake.antesDaProximaEscrita(VEZ, tocar);
+    fake.antesDaProximaEscrita(VEZ, tocar);
+    const r = await tick();
+    const porConta = Object.fromEntries(r.contas.map((c) => [c.contaId, c]));
+    expect(porConta[CONTA]).toMatchObject({
+      desfecho: DESFECHO_TICK_ESTOQUE_AMAZON.conflito,
+      erro: 'AmazonVezFeedEmConflitoError',
+    });
+    expect(porConta[OUTRA]).toMatchObject({ desfecho: 'janela-vazia' });
+    expect(fake.ler(VEZ)?.pendenteDesdeMs).toBe(T0 - 30 * MIN);
+    expect(linhaDaConta().nivel).toBe('warn');
+  });
+});
+
 describe('★ semDeposito: the aviso only on a TRANSITION, and before the flag', () => {
   it('★ false → true: the aviso RAISED once, clocked by the sync document’s read, before the flag is stored — and no window read', async () => {
     conta(CONTA, { deposito: null });
@@ -1184,7 +1768,8 @@ describe('★ semDeposito: the aviso only on a TRANSITION, and before the flag',
     expect(r).toMatchObject({ aviso: null, semDeposito: true });
     expect(leiturasEm('avisos/')).toEqual([]);
     expect(escritasEm('avisos/')).toEqual([]);
-    expect(fake.contagem).toEqual({ leituras: 2, chamadasGetAll: 0, consultas: 1, escritas: 2 });
+    // T4b's one getAll (the run and the lease) runs whatever the depósito.
+    expect(fake.contagem).toEqual({ leituras: 4, chamadasGetAll: 1, consultas: 1, escritas: 2 });
   });
 
   it('★ true → false: the aviso RESOLVED once, and the window is read', async () => {

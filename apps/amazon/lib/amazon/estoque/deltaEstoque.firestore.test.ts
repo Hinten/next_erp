@@ -125,6 +125,11 @@ const recuperar = (snapshotEmMs: number | null, pendenteDesdeMs: number | null) 
       agora: () => Date.now(),
       logger: loggerEspiao().logger,
       produtor: () => produtor,
+      // No case here reaches a hand-off: each refuses, so one that does fails.
+      repassar: {
+        feed: () => Promise.reject(new Error('teste: nenhum feed de recuperação aqui')),
+        reconciliacao: () => Promise.reject(new Error('teste: nenhuma reconciliação aqui')),
+      },
     },
     { snapshotEmMs, pendenteDesdeMs },
     { referencia: REF_FEED, prazoMs: Number.MAX_SAFE_INTEGER },

@@ -5,6 +5,9 @@
  * against the counting fake Firestore and the REAL stock producer over a
  * recording queue that, like Cloud Tasks, refuses a task id it already holds.
  *
+ * The two hand-offs are RECORDING doubles here (the delta feed, the reconcile
+ * request): the provider binds the real ones (`provedorLoteEstoque.test.ts`).
+ *
  * Commit times: the fake's clock moves one MICROSECOND per write, so every row
  * seeded before {@link avancarUmMs} commits in one millisecond and every row
  * seeded after it in a later one. The cases take the snapshot `S` so that
@@ -28,6 +31,7 @@ import { falhaDeTarefaJaExistente } from '../testing/falhaDeEnfileiramento';
 import { loggerEspiao } from '../testing/fixtures';
 import {
   ADIANTAMENTO_MAXIMO_MS,
+  type JanelaEstoqueAmazon,
   LINHAS_POR_PAGINA_JANELA,
   MARGEM_COMMIT_MS,
   TETO_PAGINAS_JANELA,
@@ -36,6 +40,7 @@ import {
 import {
   type ContextoDeltaEstoqueAmazon,
   DESFECHO_DELTA_ESTOQUE_AMAZON,
+  type DesfechoRepasseDeltaEstoqueAmazon,
   type EntradaDeltaEstoqueAmazon,
   FASE_DELTA_ESTOQUE_AMAZON,
   REPASSE_DELTA_ESTOQUE_AMAZON,
@@ -104,6 +109,13 @@ let idsNaFila: Set<string>;
 let enfileiradas: TarefaEstoqueAmazon[];
 /** How many times the producer thunk was called (it is built only when a batch is due). */
 let produtoresConstruidos: number;
+/** Every hand-off made, in order: the delta feed (with its window) or the reconcile request. */
+let repasses: (
+  | { readonly tipo: 'feed'; readonly janela: JanelaEstoqueAmazon }
+  | { readonly tipo: 'reconciliacao' }
+)[];
+/** What the reconcile hand-off answers. */
+let respostaDoPedido: DesfechoRepasseDeltaEstoqueAmazon;
 
 beforeEach(() => {
   planejador.falha = null;
@@ -113,6 +125,8 @@ beforeEach(() => {
   idsNaFila = new Set();
   enfileiradas = [];
   produtoresConstruidos = 0;
+  repasses = [];
+  respostaDoPedido = 'pedido';
 });
 
 afterEach(() => {
@@ -152,6 +166,16 @@ function ctx(over: Partial<ContextoDeltaEstoqueAmazon> = {}): ContextoDeltaEstoq
     produtor: () => {
       produtoresConstruidos += 1;
       return produtor;
+    },
+    repassar: {
+      feed: (janela) => {
+        repasses.push({ tipo: 'feed', janela });
+        return Promise.resolve('enfileirada');
+      },
+      reconciliacao: () => {
+        repasses.push({ tipo: 'reconciliacao' });
+        return Promise.resolve(respostaDoPedido);
+      },
     },
     ...over,
   };
@@ -421,7 +445,7 @@ describe('★ the catch-up: EXACTLY the rows committed after S − 20 s among th
   });
 });
 
-describe('★ the batch form: ≤ 30 as patches, 31–3,000 the delta-feed placeholder, more a reconcile', () => {
+describe('★ the batch form: ≤ 30 as patches, 31–3,000 the delta-feed hand-off, more a reconcile', () => {
   const P = 2_000_000;
   const entrada = { snapshotEmMs: null, pendenteDesdeMs: P };
 
@@ -440,9 +464,10 @@ describe('★ the batch form: ≤ 30 as patches, 31–3,000 the delta-feed place
       tarefas: LIMIAR_FEED_ESTOQUE_AMAZON,
     });
     expect(enfileiradas).toHaveLength(LIMIAR_FEED_ESTOQUE_AMAZON);
+    expect(repasses).toEqual([]);
   });
 
-  it(`NEAR-MISS ${String(LIMIAR_FEED_ESTOQUE_AMAZON + 1)} SKUs ⇒ ZERO tasks and the feed-necessario WARNING carrying the window`, async () => {
+  it(`NEAR-MISS ${String(LIMIAR_FEED_ESTOQUE_AMAZON + 1)} SKUs ⇒ ZERO tasks and ONE feed hand-off carrying the window, never the SKUs`, async () => {
     produtoComVinculos('K', LIMIAR_FEED_ESTOQUE_AMAZON + 1, P + 1);
 
     const r = await delta(entrada);
@@ -451,9 +476,12 @@ describe('★ the batch form: ≤ 30 as patches, 31–3,000 the delta-feed place
       desfecho: DESFECHO_DELTA_ESTOQUE_AMAZON.repassado,
       motivo: MOTIVO_ESTOQUE_AMAZON.emFeed,
       repasse: REPASSE_DELTA_ESTOQUE_AMAZON.feedNecessario,
+      entrega: 'enfileirada',
       skus: LIMIAR_FEED_ESTOQUE_AMAZON + 1,
       tarefas: 0,
     });
+    // The hand-off got the window read — bounds and keep rule only — once.
+    expect(repasses).toEqual([{ tipo: 'feed', janela: r.janela }]);
     // The window travels, never the SKUs: bounds and keep rule only.
     expect(r.janela).toEqual({ desdeMs: P, ateMs: agoraMs, manterDesdeMs: P, commitAposMs: null });
     // NEAR-MISS: the answer carries no list at all and names none of the batch's
@@ -465,11 +493,13 @@ describe('★ the batch form: ≤ 30 as patches, 31–3,000 the delta-feed place
     }
     expect(enfileiradas).toEqual([]);
     expect(produtoresConstruidos).toBe(0);
+    // A durable hand-off is an ordinary end: INFO, naming what it answered.
     expect(linhaUnica()).toMatchObject({
-      nivel: 'warn',
+      nivel: 'info',
       meta: {
         desfecho: 'repassado',
         repasse: 'feed-necessario',
+        entrega: 'enfileirada',
         motivo: 'em-feed',
         skus: LIMIAR_FEED_ESTOQUE_AMAZON + 1,
       },
@@ -480,6 +510,7 @@ describe('★ the batch form: ≤ 30 as patches, 31–3,000 the delta-feed place
     produtoComVinculos('K', MAX_SKUS_FEED_DELTA_ESTOQUE_AMAZON, P + 1);
     const noTeto = await delta(entrada);
     expect(noTeto).toMatchObject({ repasse: REPASSE_DELTA_ESTOQUE_AMAZON.feedNecessario });
+    expect(repasses.map((x) => x.tipo)).toEqual(['feed']);
 
     vinculo('K', 'l-extra', 'K-extra');
     const acima = await delta(entrada);
@@ -488,13 +519,15 @@ describe('★ the batch form: ≤ 30 as patches, 31–3,000 the delta-feed place
       desfecho: DESFECHO_DELTA_ESTOQUE_AMAZON.repassado,
       motivo: MOTIVO_ESTOQUE_AMAZON.emReconciliacao,
       repasse: REPASSE_DELTA_ESTOQUE_AMAZON.reconciliacaoNecessaria,
+      entrega: 'pedido',
       skus: MAX_SKUS_FEED_DELTA_ESTOQUE_AMAZON + 1,
       truncada: false,
     });
+    expect(repasses.map((x) => x.tipo)).toEqual(['feed', 'reconciliacao']);
     expect(enfileiradas).toEqual([]);
   });
 
-  it('★ a TRUNCATED window ⇒ the reconcile placeholder, with zero produto reads and zero partition listings', async () => {
+  it('★ a TRUNCATED window ⇒ ONE reconcile hand-off, with zero produto reads and zero partition listings', async () => {
     const n = (TETO_PAGINAS_JANELA - 1) * LINHAS_POR_PAGINA_JANELA;
     for (let i = 0; i < n; i += 1) linha(`T${String(i).padStart(5, '0')}`, P + 1);
 
@@ -508,6 +541,7 @@ describe('★ the batch form: ≤ 30 as patches, 31–3,000 the delta-feed place
       produtos: 0,
       sondas: 0,
     });
+    expect(repasses).toEqual([{ tipo: 'reconciliacao' }]);
     expect(fake.leituras).toEqual([]);
     expect(listagens()).toEqual([]);
     expect(produtoresConstruidos).toBe(0);
@@ -546,7 +580,7 @@ describe('★ the deadline', () => {
   const P = 3_000_000;
   const entrada = { snapshotEmMs: null, pendenteDesdeMs: P };
 
-  it('passed before the first window page ⇒ the reconcile placeholder naming the read it stopped before, nothing enqueued', async () => {
+  it('passed before the first window page ⇒ the reconcile hand-off, naming the read it stopped before, nothing enqueued', async () => {
     moveu('A', P + 1);
     agoraMs = P + 60_000;
 
@@ -558,11 +592,12 @@ describe('★ the deadline', () => {
       prazo: 'janela',
       paginas: 0,
     });
+    expect(repasses).toEqual([{ tipo: 'reconciliacao' }]);
     expect(fake.operacoes).toBe(0);
     expect(produtoresConstruidos).toBe(0);
   });
 
-  it('reached during the enqueues ⇒ the reconcile placeholder with what was never started; a re-run enqueues only the rest', async () => {
+  it('reached during the enqueues ⇒ the reconcile hand-off with what was never started; a re-run enqueues only the rest', async () => {
     produtoComVinculos('K', 20, P + 1);
     agoraMs = P + 60_000;
     const prazoMs = agoraMs + 1_000;
@@ -583,6 +618,7 @@ describe('★ the deadline', () => {
       orcamentoEsgotado: true,
       skus: 20,
     });
+    expect(repasses).toEqual([{ tipo: 'reconciliacao' }]);
     expect(r.tarefas + r.naoTentadas).toBe(20);
     expect(r.naoTentadas).toBeGreaterThan(0);
     const primeiras = enfileiradas.length;
@@ -617,6 +653,50 @@ describe('★ the deadline', () => {
 
     expect(r).toMatchObject({ tarefas: 0, naoTentadas: 3, orcamentoEsgotado: true });
     expect(enfileiradas).toEqual([]);
+  });
+});
+
+describe('★ the hand-offs: each runs once, its answer on the line, its failure propagates', () => {
+  const P = 3_500_000;
+  const entrada = { snapshotEmMs: null, pendenteDesdeMs: P };
+
+  it('an automatic request the 24-h guard refused ⇒ the WARNING line naming it (the movement waits for the next daily run)', async () => {
+    const n = (TETO_PAGINAS_JANELA - 1) * LINHAS_POR_PAGINA_JANELA;
+    for (let i = 0; i < n; i += 1) linha(`T${String(i).padStart(5, '0')}`, P + 1);
+    agoraMs = P + 60_000;
+    respostaDoPedido = 'automatica-recusada';
+
+    const r = await delta(entrada);
+
+    expect(r).toMatchObject({
+      repasse: 'reconciliacao-necessaria',
+      entrega: 'automatica-recusada',
+    });
+    expect(linhaUnica()).toMatchObject({
+      nivel: 'warn',
+      meta: { desfecho: 'repassado', entrega: 'automatica-recusada' },
+    });
+    // NEAR-MISS: a request already made by this recovery is an ordinary INFO end.
+    espiao.linhas.length = 0;
+    respostaDoPedido = 'ja-pedido';
+    await delta(entrada);
+    expect(linhaUnica()).toMatchObject({ nivel: 'info', meta: { entrega: 'ja-pedido' } });
+  });
+
+  it('a hand-off that throws propagates (the recovery queue retries it), with no line', async () => {
+    produtoComVinculos('K', LIMIAR_FEED_ESTOQUE_AMAZON + 1, P + 1);
+    agoraMs = P + 60_000;
+    const falha = grpc(14, 'indisponível');
+
+    await expect(
+      delta(entrada, {
+        repassar: {
+          feed: () => Promise.reject(falha),
+          reconciliacao: () => Promise.reject(new Error('teste: não chamado')),
+        },
+      }),
+    ).rejects.toBe(falha);
+    expect(linhasDoDelta()).toEqual([]);
   });
 });
 
@@ -787,6 +867,7 @@ describe('the ONE line', () => {
       desfecho: 'enfileirado',
       motivo: 'em-patches',
       repasse: null,
+      entrega: null,
       skus: 1,
       forcados: 1,
       tarefas: 1,

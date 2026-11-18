@@ -2,9 +2,10 @@
  * The feed core's PROVIDER SEAM (step 12a, PR 12-b): what a fluxo (stock in
  * step 12, price in step 13) hands the core to have its batch submitted as one
  * `JSON_LISTINGS_FEED`, plus the core's closed abort motivos and its timing
- * constants. TYPES and constants only: no provider exists yet, and the core
- * never imports a fluxo's module — the jobs root binds one per fluxo, through
- * the seam table's factories (`./destinosLote`).
+ * constants. TYPES and constants only: the stock provider lives with its
+ * fluxo (`estoque/provedorLoteEstoque.ts`, PR 12-f), and the core never
+ * imports a fluxo's module — the jobs root binds one per fluxo, through the
+ * seam table's factories (`./destinosLote`).
  *
  * ## The seam
  *
@@ -40,7 +41,10 @@
  *    of one fluxo;
  *  - {@link ESPERA_LOTE_EM_VEZ_S} — a waiting batch's re-enqueue delay;
  *  - {@link ESPERA_MAXIMA_LOTE_RECUPERACAO_MS} — how long a recovery-born
- *    window batch may wait for the lease before going per SKU.
+ *    window batch may wait for the lease before going per SKU;
+ *  - {@link ORCAMENTO_MONTAGEM_LOTE_MS} — the ONE build budget `membros` and
+ *    `montar` share: the send handler checks it after each answer, and a
+ *    provider checks it before each read batch of its own.
  */
 import type { MensagemListingsFeed } from '@delfrance/integrations-amazon-sp-api';
 import type {
@@ -89,6 +93,13 @@ export const ESPACO_MINIMO_ENTRE_FEEDS_MS = 120_000;
 
 /** How long a recovery-born window batch may wait for the lease (1 h). */
 export const ESPERA_MAXIMA_LOTE_RECUPERACAO_MS = 3_600_000;
+
+/**
+ * The ONE build budget `membros` and `montar` share, from the send's build
+ * start (240 s): past it the batch is `snapshot-lento`, nothing posted. With the
+ * submission's worst case on top it fits the jobs queue's 540-s timeout.
+ */
+export const ORCAMENTO_MONTAGEM_LOTE_MS = 240_000;
 
 /* ---------------------------------- the seam ---------------------------------- */
 

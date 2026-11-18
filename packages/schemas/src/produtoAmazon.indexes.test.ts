@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { CAMPOS_INDICE_VARREDURA_VINCULOS_AMAZON } from './estoqueAmazon';
 import { CAMPOS_INDICE_VINCULO_AMAZON } from './produto/collection/amazonLink';
 
 /**
@@ -19,6 +20,11 @@ import { CAMPOS_INDICE_VINCULO_AMAZON } from './produto/collection/amazonLink';
  *
  * ⚠️ No trailing `__name__`: Enterprise omits the implicit one, and an index
  * copied with it from Standard-edition docs is a different index.
+ *
+ * Since step 12 (PR 12-f) the group holds a SECOND entry, the stock reconcile
+ * walk's `(contaAmazonOuterRef, __name__)`, pinned by
+ * `estoqueAmazon.indexes.test.ts`; so this file selects the order import's
+ * entry by its fields, and pins the group to exactly those two.
  */
 
 function findRepoRoot(startDir: string): string {
@@ -40,20 +46,34 @@ const parsed = JSON.parse(readFileSync(resolve(repoRoot, 'firestore.indexes.json
 };
 
 const doProdAmazon = (parsed.indexes ?? []).filter((i) => i.collectionGroup === 'prodAmazon');
+const camposDe = (i: (typeof doProdAmazon)[number]) =>
+  JSON.stringify(i.fields?.map((f) => f.fieldPath) ?? []);
+const daImportacao = doProdAmazon.filter(
+  (i) => camposDe(i) === JSON.stringify([...CAMPOS_INDICE_VINCULO_AMAZON]),
+);
 
 describe('the Amazon link-doc index (Amazon step 5)', () => {
-  it('declares exactly one prodAmazon index, and it is COLLECTION_GROUP scope', () => {
-    expect(doProdAmazon).toHaveLength(1);
-    expect(doProdAmazon[0]?.queryScope).toBe('COLLECTION_GROUP');
+  it('declares exactly one prodAmazon index on the order import’s fields, and it is COLLECTION_GROUP scope', () => {
+    expect(daImportacao).toHaveLength(1);
+    expect(daImportacao[0]?.queryScope).toBe('COLLECTION_GROUP');
   });
 
   it('★ its fields are CAMPOS_INDICE_VINCULO_AMAZON, in that order, both ASCENDING, no __name__', () => {
-    expect(doProdAmazon[0]?.fields).toEqual(
+    expect(daImportacao[0]?.fields).toEqual(
       CAMPOS_INDICE_VINCULO_AMAZON.map((fieldPath) => ({ fieldPath, order: 'ASCENDING' })),
     );
-    expect(doProdAmazon[0]?.fields?.map((f) => f.fieldPath)).toEqual([
+    expect(daImportacao[0]?.fields?.map((f) => f.fieldPath)).toEqual([
       'contaAmazonOuterRef',
       'sku',
     ]);
+  });
+
+  it('the prodAmazon group holds exactly two entries: the order import’s and the stock reconcile walk’s', () => {
+    expect(doProdAmazon.map(camposDe).sort()).toEqual(
+      [
+        JSON.stringify([...CAMPOS_INDICE_VINCULO_AMAZON]),
+        JSON.stringify([...CAMPOS_INDICE_VARREDURA_VINCULOS_AMAZON, '__name__']),
+      ].sort(),
+    );
   });
 });

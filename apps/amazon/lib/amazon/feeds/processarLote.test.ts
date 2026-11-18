@@ -1,6 +1,7 @@
 /**
  * The jobs queue's DISPATCHER (step 12a, PR 12-c): P0 and the routing by
- * `tipo`. The four handlers are SPIED (each is proved end to end in its own
+ * `tipo`. The four feed handlers and the bound reconcile page are SPIED (each
+ * is proved end to end in its own
  * suite, and `resultadoFeed.test.ts` drives send → result → recovery through
  * this dispatcher with the real ones): here only what reaches which handler,
  * with which provider of the BOUND seam rows, and what a refused payload writes.
@@ -27,6 +28,7 @@ const espioes = vi.hoisted(() => ({
   resultado: vi.fn(),
   incerto: vi.fn(),
   recuperar: vi.fn(),
+  reconciliacao: vi.fn(),
 }));
 vi.mock('./enviarFeed', () => ({ enviarFeedAmazon: espioes.enviar }));
 vi.mock('./resultadoFeed', () => ({ processarResultadoFeedAmazon: espioes.resultado }));
@@ -76,6 +78,13 @@ const PAYLOADS = {
     pendenteDesdeMs: null,
     janela: null,
   },
+  reconciliacao: {
+    v: 1,
+    tipo: 'reconciliacao',
+    contaId: CONTA,
+    execucaoId: EXEC,
+    pagina: 3,
+  },
 } as const satisfies Record<TarefaLoteAmazon['tipo'], Record<string, unknown>>;
 
 function provedor<F extends 'estoque' | 'preco'>(fluxo: F): ProvedorLoteAmazon<F, unknown> {
@@ -110,6 +119,7 @@ function mundo() {
     provedores,
     registro: { tentativa: 2, idTarefa: 'tarefa-despacho-1' },
     fetch: () => Promise.reject(new Error('teste: nenhuma chamada de rede')),
+    paginaReconciliacao: espioes.reconciliacao,
   };
   return {
     fake,
@@ -256,6 +266,37 @@ describe('the routing on tipo, with the provider read from the BOUND seam rows',
       Record<string, unknown>,
     ];
     expect(deps.provedor).toBe(m.provedores.preco);
+  });
+
+  it('reconciliacao ⇒ the BOUND page handler, with this dispatch’s db, payload and deps whole', async () => {
+    const m = mundo();
+    const r = await m.rodar(PAYLOADS.reconciliacao);
+    expect(r).toEqual({ tipo: 'reconciliacao', r: { acao: 'espiado' } });
+    const [db, t, deps] = espioes.reconciliacao.mock.calls[0] as [unknown, unknown, unknown];
+    expect(db).toBe(asDb(m.fake));
+    expect(t).toEqual(PAYLOADS.reconciliacao);
+    expect(deps).toBe(m.deps);
+    // NEAR-MISS: no feed handler sees a page.
+    for (const espiao of [espioes.enviar, espioes.resultado, espioes.incerto, espioes.recuperar]) {
+      expect(espiao).not.toHaveBeenCalled();
+    }
+  });
+
+  it('a reconcile page with an unknown key or a negative page ⇒ payload-invalido naming the tipo, no handler', async () => {
+    const m = mundo();
+    expect(await m.rodar({ ...PAYLOADS.reconciliacao, extra: 1 })).toEqual({
+      tipo: null,
+      recusa: 'payload-invalido',
+    });
+    expect(await m.rodar({ ...PAYLOADS.reconciliacao, pagina: -1 })).toEqual({
+      tipo: null,
+      recusa: 'payload-invalido',
+    });
+    expect(m.log.linhas.at(-1)).toMatchObject({
+      nivel: 'error',
+      meta: { tipo: 'reconciliacao', campos: 'pagina' },
+    });
+    expect(espioes.reconciliacao).not.toHaveBeenCalled();
   });
 
   it('a null seam row is handed through as null (each handler answers it)', async () => {
