@@ -226,7 +226,7 @@ export function reconstructFromVariacoesUid(input: {
       return { ok: false, error: `variante não encontrada para ${uid}` };
     }
     nomes.push(variante.nome);
-    sku = `${sku}${variante.codigo ?? ''}`;
+    if (sku !== '') sku = `${sku}${variante.codigo ?? ''}`;
     sortKey.push(grupo.data.variacoes!.findIndex((v) => v.id === variante.id));
   }
   return {
@@ -366,37 +366,56 @@ export function reconstructFromSkuSuffix(input: {
   if (!input.childSku.startsWith(input.parentSku) || input.parentSku === '') {
     return { ok: false, error: `sku "${input.childSku}" não começa com o sku do pai` };
   }
-  let suffix = input.childSku.slice(input.parentSku.length);
-
+  const suffix = input.childSku.slice(input.parentSku.length);
   const gruposDesc = sortGruposByOrdem(input.grupos).reverse();
-  // Collected in reverse group order; flipped at the end.
-  const nomesDesc: string[] = [];
-  const uidsDesc: string[] = [];
-  const sortKeyDesc: number[] = [];
-
-  for (const grupo of gruposDesc) {
-    const variantes = grupo.data.variacoes ?? [];
-    const match = variantes.find(
-      (v) => v.codigo != null && v.codigo !== '' && suffix.endsWith(v.codigo),
-    );
-    if (!match) {
-      return {
-        ok: false,
-        error: `não foi possível encontrar a variante para o sku "${input.childSku}" na variação ${grupo.data.nome}`,
-      };
-    }
-    suffix = suffix.slice(0, suffix.length - match.codigo!.length);
-    nomesDesc.push(match.nome);
-    uidsDesc.push(varianteFakePath(grupo.id, match.id));
-    sortKeyDesc.push(variantes.findIndex((v) => v.id === match.id));
+  if (gruposDesc.length === 0) {
+    return { ok: false, error: 'selecione os grupos de variação para reconstituir pelo SKU' };
   }
 
+  type Opcao = { uid: string; nome: string; ordem: number };
+  // A suffix can end in several valid codes. Keep at most two full matches
+  // per state so overlap is resolved by the whole SKU and ties are reported.
+  const cache = new Map<string, Opcao[][]>();
+  function buscar(grupoIndex: number, fim: number): Opcao[][] {
+    const grupo = gruposDesc[grupoIndex];
+    if (!grupo) return fim === 0 ? [[]] : [];
+    const key = `${grupoIndex}:${fim}`;
+    const cached = cache.get(key);
+    if (cached) return cached;
+
+    const resultados: Opcao[][] = [];
+    for (const [ordem, opcao] of (grupo.data.variacoes ?? []).entries()) {
+      const codigo = opcao.codigo;
+      if (!codigo || !suffix.endsWith(codigo, fim)) continue;
+      for (const base of buscar(grupoIndex + 1, fim - codigo.length)) {
+        resultados.push([
+          ...base,
+          { uid: varianteFakePath(grupo.id, opcao.id), nome: opcao.nome, ordem },
+        ]);
+        if (resultados.length === 2) break;
+      }
+      if (resultados.length === 2) break;
+    }
+    cache.set(key, resultados);
+    return resultados;
+  }
+
+  const [match, outro] = buscar(0, suffix.length);
+  if (!match) {
+    return {
+      ok: false,
+      error: `não foi possível encontrar uma combinação completa para o SKU "${input.childSku}" nos grupos selecionados`,
+    };
+  }
+  if (outro) {
+    return { ok: false, error: `o SKU "${input.childSku}" corresponde a mais de uma combinação` };
+  }
   return {
     ok: true,
-    nome: `${input.parentNome} ${nomesDesc.reverse().join(' ')}`,
+    nome: `${input.parentNome} ${match.map((opcao) => opcao.nome).join(' ')}`,
     sku: input.childSku,
-    variacoesUid: uidsDesc.reverse(),
-    sortKey: sortKeyDesc.reverse(),
+    variacoesUid: match.map((opcao) => opcao.uid),
+    sortKey: match.map((opcao) => opcao.ordem),
   };
 }
 

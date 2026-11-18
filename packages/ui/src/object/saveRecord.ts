@@ -24,6 +24,8 @@ export interface TransactionDocumentGuard extends TransactionFormProjection {
   baseline: DocumentBaseline | undefined;
   label: string;
   ignoreFields?: ReadonlySet<string>;
+  /** A structural precondition that must hold even after a conflict is acknowledged. */
+  assertCurrent?: (document: DocumentBaseline, mainDocument: DocumentBaseline) => void;
   /**
    * More form fields that show this SAME document, for a document whose fields
    * several form fields edit. A rebase moves the baseline of the WHOLE
@@ -450,6 +452,7 @@ export async function saveRecord<
         const snap = await tx.get(write.ref);
         const data = snap.exists() ? (snap.data() as Record<string, unknown>) : null;
         siblingCurrent.set(write.ref.path, data);
+        write.guard!.assertCurrent?.(data, current);
         const changed = siblingConflictingFields(write, write.guard!.baseline!, data);
         if (changed.length > 0)
           documentConflicts.push({

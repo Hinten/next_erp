@@ -41,17 +41,20 @@ import {
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { FirebaseError } from 'firebase/app';
-import { type Firestore, writeBatch } from 'firebase/firestore';
+import { type DocumentReference, type Firestore, writeBatch } from 'firebase/firestore';
 import { ZodError } from 'zod';
 import { buildQuery, whereEqual } from '@delfrance/data';
 import { useFormContext } from 'react-hook-form';
 import { useDocSnapshot, useSnapshot } from '@delfrance/data/hooks';
+import { type TransactionWrite, valuesEqual } from '@delfrance/ui';
 import {
   type GrupoComId,
   type PrecosMap,
   type Produto,
   cartesianVariations,
   compareSortKeys,
+  ehKitVirtualEfetivo,
+  ehMembroUnicoImplicito,
   findDuplicateSkus,
   idFromRefOrNull,
   normalizeVariacoesUid,
@@ -67,6 +70,7 @@ import {
   reconstructFromVariacoesUid,
   samePrecos,
   sameCombo,
+  sortGrupoUids,
   varianteFakePath,
 } from '@delfrance/schemas';
 import { produtoCollection } from '@/lib/data/produtoCollection';
@@ -98,6 +102,7 @@ interface ChildRow {
   /** Empty string = no SKU (persisted as null). */
   sku: string;
   variacoesUid: string[];
+  grupoDeVariacoesUid?: string[] | null;
   /** Child price map, independently editable only when the parent opts out of propagation. */
   precos: PrecosMap;
   /** A locally authored child price must not be replaced by the parent's latest map on create. */
@@ -127,6 +132,7 @@ export interface VariationRow {
   priceDirty?: boolean;
   /** Comparison against the current canonical parent-price draft. */
   pricesDiverge?: boolean;
+  implicitMember?: boolean;
   deleteMark: boolean;
 }
 
@@ -144,6 +150,14 @@ export interface ChildrenFlushResult {
 
 /** The children flush the page invokes in `onAfterSave`. */
 export type ChildrenFlush = (parentId: string) => Promise<ChildrenFlushResult>;
+
+export interface VariationConversion {
+  filhoUnicoId: string | null;
+  prepare: (values: Record<string, unknown>) => {
+    writes: TransactionWrite[];
+    complete: () => ChildrenFlushResult;
+  };
+}
 
 /** Narrow bridge used by the pricing tab while this manager owns the staged patches. */
 export interface VariationPriceEdits {
@@ -191,6 +205,7 @@ export interface VariationManagerProps {
   onDivergentPriceCountChange?: (count: number) => void;
   /** Publishes independent-price drafts for ObjectView's unsaved-changes guard. */
   onPriceDirtyChange?: (dirty: boolean) => void;
+  onDraftDirtyChange?: (dirty: boolean) => void;
   /** Lets the pricing tab stage an edit without taking ownership of child state. */
   priceEditsRef?: React.MutableRefObject<VariationPriceEdits | null>;
   /**
@@ -198,6 +213,7 @@ export interface VariationManagerProps {
    * `onAfterSave` (children are written only when the parent saves).
    */
   flushRef: React.MutableRefObject<ChildrenFlush | null>;
+  conversionRef?: React.MutableRefObject<VariationConversion | null>;
   disabled?: boolean;
 }
 
@@ -228,6 +244,32 @@ const EMPTY_KEYS: ReadonlySet<string> = new Set();
  */
 function flushAbort(message: string): ZodError {
   return new ZodError([{ code: 'custom', path: [], message } as never]);
+}
+
+function assertUniqueVariationSkus(rows: ChildRow[]) {
+  const duplicates = findDuplicateSkus(rows);
+  if (duplicates.size > 0) {
+    throw flushAbort(
+      `SKU duplicado entre as variações: ${[...duplicates.keys()].join(', ')}. ` +
+        'Cada variação precisa de um SKU próprio — ajuste antes de salvar.',
+    );
+  }
+}
+
+function parseVariationDoc(row: ChildRow, data: Record<string, unknown>): Produto {
+  try {
+    return produtoSchema.parse(data);
+  } catch (err) {
+    if (err instanceof ZodError) {
+      throw new ZodError(
+        err.issues.map((issue) => ({
+          ...issue,
+          message: `variação "${row.nome || row.sku || '(sem nome)'}": ${issue.message}`,
+        })),
+      );
+    }
+    throw err;
+  }
 }
 
 /** Bare group ids referenced by a parent doc + its current variant selection. */
@@ -261,8 +303,10 @@ export function VariationManager({
   onRowsChange,
   onDivergentPriceCountChange,
   onPriceDirtyChange,
+  onDraftDirtyChange,
   priceEditsRef,
   flushRef,
+  conversionRef,
   disabled,
 }: VariationManagerProps) {
   const uids = useMemo(() => value ?? [], [value]);
@@ -283,6 +327,7 @@ export function VariationManager({
   // `useFormContext` is TYPED non-null but actually returns `null` outside a
   // provider (its context default), hence the optional chaining below.
   const form = useFormContext();
+  const editingDisabled = disabled || form?.formState.isSubmitting === true;
   // The page snapshot catches up only after save. Subscribe to the form as
   // well so a toggle changed in this session immediately opens/closes the child
   // editors, and the flush follows the value the operator is actually saving.
@@ -323,7 +368,7 @@ export function VariationManager({
     : ((parent?.precos as PrecosMap) ?? null);
   const liveParent = <K extends keyof Produto>(key: K): Produto[K] | null => {
     const live = form?.getValues(key as string) as Produto[K] | undefined;
-    if (live !== undefined && live !== null && live !== '') return live;
+    if (live !== undefined) return live;
     return (parent?.[key] ?? null) as Produto[K] | null;
   };
 
@@ -351,10 +396,39 @@ export function VariationManager({
   const [localOrder, setLocalOrder] = useState<string[] | null>(null);
   const [groupsTouched, setGroupsTouched] = useState<string[] | null>(null);
   const [actionError, setActionError] = useState<string[] | null>(null);
+  const [conversionSource, setConversionSource] = useState<{
+    id: string;
+    parent: Produto;
+  } | null>(null);
   // Rows with an in-flight reference check (the delete-guard lookup).
   const [checking, setChecking] = useState<Set<string>>(new Set());
 
   const groupsSelected = groupsTouched ?? impliedGroupIds(parent, uids);
+  const onlyChild = childrenSnap.data?.length === 1 ? childrenSnap.data[0] : undefined;
+  const implicitMember =
+    parent &&
+    produtoId &&
+    onlyChild &&
+    ehMembroUnicoImplicito(
+      {
+        ...parent,
+        id: produtoId,
+        filhoUnicoId: parent.filhoUnicoId === undefined ? membroUnicoId : parent.filhoUnicoId,
+      },
+      { ...onlyChild.data, id: onlyChild.id },
+      1,
+    )
+      ? onlyChild
+      : null;
+  const familyReady =
+    !!parent &&
+    !parentSnap.loading &&
+    !childrenSnap.loading &&
+    !!childrenSnap.data &&
+    !parentSnap.error &&
+    !childrenSnap.error &&
+    parentSnap.fromCache !== true &&
+    childrenSnap.fromCache !== true;
 
   const rows = useMemo<ChildRow[]>(() => {
     const server = [...(childrenSnap.data ?? [])]
@@ -367,6 +441,7 @@ export function VariationManager({
           nome: patch.nome ?? r.data.nome,
           sku: patch.sku ?? r.data.sku ?? '',
           variacoesUid: patch.variacoesUid ?? r.data.variacoesUid ?? [],
+          grupoDeVariacoesUid: r.data.grupoDeVariacoesUid,
           // `null` is a meaningful map value, so `??` cannot choose this fallback.
           precos: Object.hasOwn(patch, 'precos') ? (patch.precos ?? null) : (r.data.precos ?? null),
           priceDirty: patch.priceDirty === true,
@@ -397,24 +472,53 @@ export function VariationManager({
     return all.sort((a, b) => (pos.get(a.key) ?? Infinity) - (pos.get(b.key) ?? Infinity));
   }, [childrenSnap.data, patches, newRows, absorbedKeys, localOrder]);
 
+  const converting = conversionSource !== null && newRows.some((row) => !row.deleteMark);
+  const implicitKey = converting ? conversionSource.id : implicitMember?.id;
+  const variationRows = useMemo(
+    () => rows.filter((row) => row.key !== implicitKey),
+    [rows, implicitKey],
+  );
+  const conversionRows = converting
+    ? variationRows.filter((row) => row.id === null && !row.deleteMark)
+    : [];
+  const receivingRow = conversionRows[0];
+  const implicitRow = rows.find((row) => row.key === implicitKey);
+
   // One published projection feeds every sibling surface: the Kit grid, the
   // pricing tab, the re-enable confirmation and ObjectView's external-dirty
   // guard. Keeping the comparison here prevents each surface from inventing a
   // subtly different definition of "the parent's current price map".
   const publishedRows = useMemo<VariationRow[]>(
     () =>
-      rows.map((r) => ({
-        key: r.key,
-        id: r.id,
-        nome: r.nome,
-        sku: r.sku,
-        variacoesUid: r.variacoesUid,
-        precos: r.precos,
-        priceDirty: r.priceDirty,
-        pricesDiverge: !samePrecos(r.precos, parentPrecosForComparison),
-        deleteMark: r.deleteMark,
-      })),
-    [rows, parentPrecosForComparison],
+      rows
+        .filter((r) => !converting || r.key !== implicitKey)
+        .map((r) => {
+          const precos =
+            r.key === receivingRow?.key && !pricesPropagate && !r.priceDirty && implicitRow
+              ? implicitRow.precos
+              : r.precos;
+          return {
+            key: r.key,
+            id: r.id,
+            nome: r.nome,
+            sku: r.sku,
+            variacoesUid: r.variacoesUid,
+            precos,
+            priceDirty: r.priceDirty,
+            pricesDiverge: !samePrecos(precos, parentPrecosForComparison),
+            implicitMember: r.key === implicitKey,
+            deleteMark: r.deleteMark,
+          };
+        }),
+    [
+      rows,
+      converting,
+      implicitKey,
+      receivingRow?.key,
+      pricesPropagate,
+      implicitRow,
+      parentPrecosForComparison,
+    ],
   );
   const priceDivergenceByKey = useMemo(
     () => new Map(publishedRows.map((row) => [row.key, row.pricesDiverge === true])),
@@ -432,22 +536,27 @@ export function VariationManager({
     onRowsChange(publishedRows);
   }, [publishedRows, onRowsChange]);
 
-  const divergentPriceCount = useMemo(
-    () =>
-      publishedRows.filter((row) => row.id !== null && !row.deleteMark && row.pricesDiverge).length,
-    [publishedRows],
-  );
+  const divergentPriceCount = useMemo(() => {
+    const visible = publishedRows.filter(
+      (row) => row.id !== null && !row.deleteMark && row.pricesDiverge,
+    ).length;
+    return converting && implicitRow && !samePrecos(implicitRow.precos, parentPrecosForComparison)
+      ? visible + 1
+      : visible;
+  }, [publishedRows, converting, implicitRow, parentPrecosForComparison]);
   useEffect(() => {
     onDivergentPriceCountChange?.(divergentPriceCount);
   }, [divergentPriceCount, onDivergentPriceCountChange]);
 
-  const hasIndependentPriceDraft = useMemo(
-    () => publishedRows.some((row) => row.priceDirty),
-    [publishedRows],
-  );
+  const hasIndependentPriceDraft = useMemo(() => rows.some((row) => row.priceDirty), [rows]);
   useEffect(() => {
     onPriceDirtyChange?.(hasIndependentPriceDraft);
   }, [hasIndependentPriceDraft, onPriceDirtyChange]);
+  const hasVariationDraft =
+    Object.keys(patches).length > 0 || newRows.length > 0 || localOrder !== null;
+  useEffect(() => {
+    onDraftDirtyChange?.(hasVariationDraft);
+  }, [hasVariationDraft, onDraftDirtyChange]);
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
 
@@ -455,8 +564,8 @@ export function VariationManager({
   // get an inline error here and a hard gate in the flush — duplicates would
   // make the SKU-based id reuse (#117) ambiguous.
   const duplicateSkuKeys = useMemo(
-    () => new Set([...findDuplicateSkus(rows).values()].flat()),
-    [rows],
+    () => new Set([...findDuplicateSkus(variationRows).values()].flat()),
+    [variationRows],
   );
 
   /**
@@ -480,6 +589,116 @@ export function VariationManager({
     );
     setNewRows((prev) => prev.filter((r) => !handledStaged.has(r.key)));
     setLocalOrder(null);
+    setConversionSource(null);
+  }
+
+  function prepareConversion(
+    values: Record<string, unknown>,
+  ): ReturnType<VariationConversion['prepare']> {
+    const parentId = produtoId!;
+    const source = conversionSource!;
+    const target = receivingRow!;
+    const conflict = () =>
+      flushAbort(
+        'As variações do produto foram alteradas em outra sessão. Revise o produto antes de salvar.',
+      );
+    if (!familyReady || implicitMember?.id !== source.id || !implicitRow) throw conflict();
+    assertUniqueVariationSkus(conversionRows);
+
+    const pricesPropagate = values.propagatePriceToChildren !== false;
+    const parentPrices = stripPrecosForSave(values.precos);
+    const writes = conversionRows.map((row, ordem): TransactionWrite => {
+      const inherits = row.key === target.key;
+      const id = inherits ? source.id : row.key;
+      const ref = produtoCollection.docRef(db, {}, id) as DocumentReference<unknown>;
+      const variacoesUid = normalizeVariacoesUid(row.variacoesUid, grupos);
+      if (variacoesUid.length === 0)
+        throw flushAbort('Selecione opções para gerar as primeiras variações.');
+      const grupoDeVariacoesUid = sortGrupoUids(
+        variacoesUid.map((uid) => parseFakePath(uid)!.grupoId),
+        grupos,
+      );
+      const priceDraft = row.priceDirty ? row : inherits ? implicitRow : null;
+      const precos =
+        !pricesPropagate && priceDraft?.priceDirty
+          ? parsePrecosDaVariacao(row.nome || row.sku, priceDraft.precos)
+          : undefined;
+      const doc = parseVariationDoc(row, {
+        nome: row.nome,
+        sku: row.sku || null,
+        paiId: parentId,
+        ordem,
+        variacoesUid,
+        grupoDeVariacoesUid,
+        precos: precos === undefined ? parentPrices : precos,
+        codPai: values.codPai,
+        pesoLiquidoKg: values.pesoLiquidoKg,
+        pesoBrutoKg: values.pesoBrutoKg,
+        alturaCm: values.alturaCm,
+        larguraCm: values.larguraCm,
+        profundidadeCm: values.profundidadeCm,
+        ehKit: values.ehKit === true,
+        ehKitVirtual: ehKitVirtualEfetivo(values),
+      });
+      const guard = {
+        baseline: inherits ? implicitMember.data : null,
+        label: `Variação — ${row.nome}`,
+        formField: 'variacoesUid',
+        toFormValue: (_current: unknown, formValue: unknown) => formValue,
+        assertCurrent: (
+          current: Record<string, unknown> | null,
+          main: Record<string, unknown> | null,
+        ) => {
+          if (!inherits) {
+            if (current !== null) throw conflict();
+            return;
+          }
+          if (
+            !main ||
+            !current ||
+            ['nome', 'sku', 'grupoDeVariacoesUid', 'variacoesUid'].some(
+              (field) =>
+                !valuesEqual(main[field], (source.parent as Record<string, unknown>)[field]),
+            ) ||
+            !ehMembroUnicoImplicito(
+              { ...(main as Produto), id: parentId },
+              { ...(current as Produto), id },
+              1,
+            )
+          ) {
+            throw conflict();
+          }
+        },
+      };
+      return inherits
+        ? {
+            type: 'update',
+            ref,
+            guard,
+            data: {
+              nome: doc.nome,
+              sku: doc.sku,
+              variacoesUid: doc.variacoesUid,
+              grupoDeVariacoesUid: doc.grupoDeVariacoesUid,
+              ordem,
+              gtin: null,
+              ...(precos === undefined ? {} : { precos }),
+            },
+          }
+        : { type: 'set', ref, guard, data: doc };
+    });
+    const handledKeys = new Set(newRows.map((row) => row.key));
+    return {
+      writes,
+      complete: () => {
+        clearStagedState(handledKeys, new Set([source.id]));
+        notifications.show({
+          color: 'green',
+          message: `${writes.length} variação(ões) gravada(s) — registro original reaproveitado.`,
+        });
+        return { reusedByKey: { [target.key]: source.id } };
+      },
+    };
   }
 
   /**
@@ -520,7 +739,10 @@ export function VariationManager({
     if (Object.keys(patches).length === 0 && newRows.length === 0 && localOrder === null)
       return NOTHING_REUSED;
 
-    const { rows: reconciliadas, reusedIds } = reconcileStagedChildren(rows, membroUnicoId);
+    if (converting) {
+      throw flushAbort('Salve o produto para aplicar a conversão junto com suas variações.');
+    }
+    const { rows: reconciliadas, reusedIds } = reconcileStagedChildren(rows);
 
     // ⚠️ A family never loses its last child (#1398). The sellable unit IS a
     // child — it owns the estoque rows, a pedido line binds it, the ML family
@@ -622,13 +844,7 @@ export function VariationManager({
     // the reuse absorbed is no longer a second document. The #117 delete/create
     // pairing was already relying on that; it just got it for free, because
     // `findDuplicateSkus` skips delete-marked rows.
-    const duplicates = findDuplicateSkus(reconciled);
-    if (duplicates.size > 0) {
-      throw flushAbort(
-        `SKU duplicado entre as variações: ${[...duplicates.keys()].join(', ')}. ` +
-          'Cada variação precisa de um SKU próprio — ajuste antes de salvar.',
-      );
-    }
+    assertUniqueVariationSkus(reconciled);
 
     // Staged creates the reuse absorbed onto an existing doc: the batch issues
     // an UPDATE on that doc, never a `set` under the row's own key, so `rows`
@@ -693,39 +909,32 @@ export function VariationManager({
         !pricesPropagate && row.priceDirty
           ? parsePrecosDaVariacao(row.nome || row.sku || '(sem nome)', row.precos)
           : undefined;
-      if (!row.id) {
-        let docData: Produto;
-        try {
-          // Inherited fields read the live form values first — the flush runs
-          // right after the parent save, before its snapshot re-emits.
-          docData = produtoSchema.parse({
-            nome: row.nome,
-            sku: row.sku === '' ? null : row.sku,
-            paiId: parentId,
-            ordem,
-            variacoesUid: normalized.length > 0 ? normalized : null,
-            // A newly generated child starts at the current parent price. A locally
-            // edited independent map wins only when propagation is off.
-            precos: precosIndependentes !== undefined ? precosIndependentes : parentPrecos,
-            codPai: liveParent('codPai'),
-            pesoLiquidoKg: liveParent('pesoLiquidoKg'),
-            pesoBrutoKg: liveParent('pesoBrutoKg'),
-            alturaCm: liveParent('alturaCm'),
-            larguraCm: liveParent('larguraCm'),
-            profundidadeCm: liveParent('profundidadeCm'),
-          });
-        } catch (err) {
-          if (err instanceof ZodError) {
-            // Re-throw with the row identified so the form alert is actionable.
-            throw new ZodError(
-              err.issues.map((issue) => ({
-                ...issue,
-                message: `variação "${row.nome || row.sku || '(sem nome)'}": ${issue.message}`,
-              })),
-            );
-          }
-          throw err;
+      if (row.id && row.id === implicitMember?.id) {
+        if (precosIndependentes !== undefined) {
+          batch.update(produtoCollection.docRef(db, {}, row.id), { precos: precosIndependentes });
+          writes += 1;
         }
+        continue;
+      }
+      if (!row.id) {
+        // Inherited fields read the live form values first — the flush runs
+        // right after the parent save, before its snapshot re-emits.
+        const docData = parseVariationDoc(row, {
+          nome: row.nome,
+          sku: row.sku === '' ? null : row.sku,
+          paiId: parentId,
+          ordem,
+          variacoesUid: normalized.length > 0 ? normalized : null,
+          // A newly generated child starts at the current parent price. A locally
+          // edited independent map wins only when propagation is off.
+          precos: precosIndependentes !== undefined ? precosIndependentes : parentPrecos,
+          codPai: liveParent('codPai'),
+          pesoLiquidoKg: liveParent('pesoLiquidoKg'),
+          pesoBrutoKg: liveParent('pesoBrutoKg'),
+          alturaCm: liveParent('alturaCm'),
+          larguraCm: liveParent('larguraCm'),
+          profundidadeCm: liveParent('profundidadeCm'),
+        });
         // `row.key` IS this child's doc id — minted when the row was staged, so
         // re-running the flush before the ack overwrites the same document
         // rather than orphaning it under a fresh id. A row the reuse absorbed
@@ -766,7 +975,7 @@ export function VariationManager({
           ...(espelhoDoPai !== null &&
           sobrevivente.tipo === 'renomear' &&
           row.id === sobrevivente.id
-            ? espelhoDoPai
+            ? { ...espelhoDoPai, grupoDeVariacoesUid: null }
             : {}),
         } as never);
         writes += 1;
@@ -886,6 +1095,24 @@ export function VariationManager({
     };
   });
 
+  useEffect(() => {
+    if (!conversionRef) return;
+    conversionRef.current =
+      receivingRow && conversionSource
+        ? {
+            filhoUnicoId: derivarFilhoUnico(
+              conversionRows.map((row) => ({
+                id: row === receivingRow ? conversionSource.id : row.key,
+              })),
+            ),
+            prepare: prepareConversion,
+          }
+        : null;
+    return () => {
+      conversionRef.current = null;
+    };
+  });
+
   // The visual editor lives in "Preço e custo", but this persistent manager
   // remains the sole owner of staged child state. Refresh the bridge on every
   // render so its closure always sees the latest rows and propagation value.
@@ -894,10 +1121,11 @@ export function VariationManager({
     priceEditsRef.current = produtoId
       ? {
           setPrice: (rowKey, listaId, valor) => {
-            if (pricesPropagate) return;
+            if (pricesPropagate || editingDisabled) return;
             const row = rows.find((candidate) => candidate.key === rowKey);
             if (!row || row.deleteMark) return;
-            setChildPrice(row, listaId, valor);
+            const effective = publishedRows.find((candidate) => candidate.key === rowKey);
+            if (effective) setChildPrice({ ...row, precos: effective.precos }, listaId, valor);
           },
         }
       : null;
@@ -923,9 +1151,14 @@ export function VariationManager({
     }
   }
 
-  function changeGroups(ids: string[]) {
+  function stageGroups(ids: string[]) {
     setGroupsTouched(ids);
     onGroupsChange(ids);
+    form?.setValue('grupoDeVariacoesUid', ids.length > 0 ? ids : null, { shouldDirty: true });
+  }
+
+  function changeGroups(ids: string[]) {
+    stageGroups(ids);
     // Unselecting a group also drops its variant chips from the parent
     // selection (the old app left them dangling in a "no group" bucket).
     // Group ids the snapshot doesn't know are rendered as placeholder chips
@@ -957,9 +1190,12 @@ export function VariationManager({
       selectedUids: uids,
     });
     const fresh = combos.filter(
-      (c) => !rows.some((r) => !r.deleteMark && sameCombo(r.variacoesUid, c.variacoesUid)),
+      (c) => !variationRows.some((r) => !r.deleteMark && sameCombo(r.variacoesUid, c.variacoesUid)),
     );
     if (fresh.length > 0) {
+      if (implicitMember && parent && !conversionSource) {
+        setConversionSource({ id: implicitMember.id, parent });
+      }
       setNewRows((prev) => [
         ...prev,
         ...fresh.map(
@@ -978,6 +1214,10 @@ export function VariationManager({
         ),
       ]);
     }
+    if (combos.length === 0) {
+      setActionError(['Selecione ao menos uma opção para gerar variações.']);
+      return;
+    }
     notifications.show({
       color: fresh.length > 0 ? 'green' : 'gray',
       message:
@@ -989,7 +1229,7 @@ export function VariationManager({
     // would be rejected at save — warn right away so the user fixes the
     // códigos (or the SKUs) before hitting the flush gate.
     const dupAfterGen = findDuplicateSkus([
-      ...rows.map((r) => ({ key: r.key, sku: r.sku, deleteMark: r.deleteMark })),
+      ...variationRows,
       ...fresh.map((c, i) => ({ key: `gen-${i}`, sku: c.sku, deleteMark: false })),
     ]);
     if (dupAfterGen.size > 0) {
@@ -1004,43 +1244,91 @@ export function VariationManager({
   function reconstituir() {
     setActionError(null);
     const parentNome = liveParent('nome');
-    const parentSku = liveParent('sku');
-    if (!parentNome || !parentSku) {
-      setActionError(['Para reconstituir é necessário nome e SKU no produto pai.']);
+    const parentSku = liveParent('sku') ?? '';
+    if (!parentNome) {
+      setActionError(['Para reconstituir é necessário um nome no produto pai.']);
       return;
     }
     const ctx = { parentNome, parentSku, grupos };
+    const groupsById = new Map(grupos.map((group) => [group.id, group]));
     const errors: string[] = [];
-    const keyed: Array<{ key: string; sortKey: number[] }> = [];
-    for (const row of rows) {
+    const rebuilt: Array<{
+      row: ChildRow;
+      patch: Pick<ChildRow, 'nome' | 'sku' | 'variacoesUid'>;
+      sortKey: number[];
+    }> = [];
+    for (const row of variationRows) {
       if (row.deleteMark) continue;
+      const groupIds = row.grupoDeVariacoesUid?.length ? row.grupoDeVariacoesUid : groupsSelected;
+      const fallbackIds = sortGrupoUids(groupIds, grupos);
+      const fallbackGroups = fallbackIds
+        .map((id) => groupsById.get(id))
+        .filter((grupo): grupo is GrupoComId => grupo !== undefined);
+      if (
+        row.variacoesUid.length === 0 &&
+        (!parentSku || fallbackIds.length !== fallbackGroups.length)
+      ) {
+        errors.push(
+          `Variação "${row.sku || row.nome || '(sem nome)'}": informe o SKU do pai e carregue os grupos de variação aplicáveis.`,
+        );
+        continue;
+      }
       const result =
         row.variacoesUid.length > 0
           ? reconstructFromVariacoesUid({ childUids: row.variacoesUid, ...ctx })
-          : reconstructFromSkuSuffix({ childSku: row.sku, ...ctx });
+          : reconstructFromSkuSuffix({ childSku: row.sku, ...ctx, grupos: fallbackGroups });
       if (!result.ok) {
-        errors.push(result.error);
+        errors.push(`Variação "${row.sku || row.nome || '(sem nome)'}": ${result.error}.`);
         continue;
       }
-      keyed.push({ key: row.key, sortKey: result.sortKey });
-      patchRow(row, { nome: result.nome, sku: result.sku, variacoesUid: result.variacoesUid });
-    }
-    setActionError(errors.length > 0 ? errors : null);
-    if (errors.length === 0) {
-      // Apply the recovered Cartesian order — `flushStagedChildren` rewrites
-      // `ordem` from the final row order, so reordering here is what actually
-      // fixes a legacy child's position on save. Delete-marked rows keep
-      // their current place at the end.
-      const sorted = [...keyed]
-        .sort((a, b) => compareSortKeys(a.sortKey, b.sortKey))
-        .map((k) => k.key);
-      const deletedKeys = rows.filter((r) => r.deleteMark).map((r) => r.key);
-      setLocalOrder([...sorted, ...deletedKeys]);
-      notifications.show({
-        color: 'green',
-        message: 'Variações reconstituídas — salve para gravar.',
+      rebuilt.push({
+        row,
+        patch: {
+          nome: result.nome,
+          sku: parentSku ? result.sku : row.sku,
+          variacoesUid: result.variacoesUid,
+        },
+        sortKey: result.sortKey,
       });
     }
+    if (errors.length > 0) {
+      setActionError([...new Set(errors)]);
+      return;
+    }
+    for (const { row, patch } of rebuilt) {
+      if (
+        row.nome !== patch.nome ||
+        row.sku !== patch.sku ||
+        !valuesEqual(row.variacoesUid, patch.variacoesUid)
+      ) {
+        patchRow(row, patch);
+      }
+    }
+    const recovered = rebuilt.flatMap(({ patch }) => patch.variacoesUid);
+    const nextUids = normalizeVariacoesUid([...uids, ...recovered], grupos);
+    if (!valuesEqual(uids, nextUids)) onChange(nextUids);
+    const nextGroups = sortGrupoUids(
+      [...groupsSelected, ...recovered.map((uid) => parseFakePath(uid)!.grupoId)],
+      grupos,
+    );
+    if (!valuesEqual(sortGrupoUids(groupsSelected, grupos), nextGroups)) stageGroups(nextGroups);
+
+    const sorted = rebuilt
+      .sort((a, b) => compareSortKeys(a.sortKey, b.sortKey))
+      .map(({ row }) => row.key);
+    const deletedKeys = variationRows.filter((row) => row.deleteMark).map((row) => row.key);
+    const nextOrder = [...sorted, ...deletedKeys];
+    if (
+      !valuesEqual(
+        nextOrder,
+        variationRows.map((row) => row.key),
+      )
+    )
+      setLocalOrder(nextOrder);
+    notifications.show({
+      color: 'green',
+      message: 'Variações reconstituídas — salve para gravar.',
+    });
   }
 
   function addManual() {
@@ -1116,12 +1404,12 @@ export function VariationManager({
    * notification. Fail-closed: a lookup error marks nothing.
    */
   async function toggleDeleteAll() {
-    const target = !rows.every((r) => r.deleteMark);
+    const target = !variationRows.every((r) => r.deleteMark);
     if (!target) {
-      for (const row of rows) patchRow(row, { deleteMark: false });
+      for (const row of variationRows) patchRow(row, { deleteMark: false });
       return;
     }
-    const pending = rows.filter((r) => !r.deleteMark);
+    const pending = variationRows.filter((r) => !r.deleteMark);
     setChecking(new Set(pending.map((r) => r.key)));
     try {
       const refsById = await findManyProdutoReferences(
@@ -1163,7 +1451,7 @@ export function VariationManager({
   function handleDragEnd(event: DragEndEvent) {
     const { active, over } = event;
     if (!over || active.id === over.id) return;
-    const keys = rows.map((r) => r.key);
+    const keys = variationRows.map((r) => r.key);
     const from = keys.indexOf(String(active.id));
     const to = keys.indexOf(String(over.id));
     if (from < 0 || to < 0) return;
@@ -1192,7 +1480,7 @@ export function VariationManager({
         data={groupOptions}
         value={groupsSelected}
         onChange={changeGroups}
-        disabled={disabled}
+        disabled={editingDisabled || !familyReady}
         searchable
       />
 
@@ -1214,7 +1502,7 @@ export function VariationManager({
             }))}
             value={selectedIds.filter((id) => variantes.some((v) => v.id === id))}
             onChange={(ids) => changeVariantes(grupoId, ids)}
-            disabled={disabled}
+            disabled={editingDisabled || !familyReady}
             searchable
           />
         );
@@ -1227,10 +1515,18 @@ export function VariationManager({
             size="xs"
             leftSection={<IconRefresh size={14} />}
             onClick={reconstituir}
+            disabled={
+              editingDisabled || !familyReady || !variationRows.some((row) => !row.deleteMark)
+            }
           >
             Reconstituir variações
           </Button>
-          <Button size="xs" leftSection={<IconWand size={14} />} onClick={gerar}>
+          <Button
+            size="xs"
+            leftSection={<IconWand size={14} />}
+            onClick={gerar}
+            disabled={editingDisabled || !familyReady}
+          >
             Gerar variações
           </Button>
         </Group>
@@ -1249,19 +1545,31 @@ export function VariationManager({
       {childrenSnap.loading && <Loader size="sm" />}
       {childrenSnap.error && <Alert color="red">{childrenSnap.error.message}</Alert>}
 
-      {rows.length === 0 ? (
+      {receivingRow && (
+        <Alert color="blue" title="Variação que receberá o estoque do produto">
+          <strong>{receivingRow.nome || receivingRow.sku || 'Primeira variação'}</strong>
+          {
+            ' receberá o estoque, o histórico e os vínculos do registro original ao salvar. Revise os anúncios ativos após a conversão.'
+          }
+        </Alert>
+      )}
+
+      {variationRows.length === 0 ? (
         <Text size="sm" c="dimmed">
           Nenhuma variação. Selecione as variantes acima e clique em “Gerar variações”.
         </Text>
       ) : (
         <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-          <SortableContext items={rows.map((r) => r.key)} strategy={verticalListSortingStrategy}>
+          <SortableContext
+            items={variationRows.map((r) => r.key)}
+            strategy={verticalListSortingStrategy}
+          >
             <Stack gap="xs">
-              {rows.map((row) => (
+              {variationRows.map((row) => (
                 <SortableChild
                   key={row.key}
                   row={row}
-                  disabled={disabled}
+                  disabled={editingDisabled || !familyReady}
                   checkingRefs={checking.has(row.key)}
                   skuError={
                     duplicateSkuKeys.has(row.key) ? 'SKU duplicado entre as variações' : undefined
@@ -1279,20 +1587,24 @@ export function VariationManager({
 
       {!disabled && (
         <Group>
-          <Button
-            variant="light"
-            size="xs"
-            leftSection={<IconPlus size={14} />}
-            onClick={addManual}
-          >
-            Nova variante
-          </Button>
-          {rows.length > 0 && (
+          {!implicitMember && !converting && (
+            <Button
+              variant="light"
+              size="xs"
+              leftSection={<IconPlus size={14} />}
+              onClick={addManual}
+              disabled={editingDisabled || !familyReady}
+            >
+              Nova variante
+            </Button>
+          )}
+          {variationRows.length > 0 && (
             <Button
               variant="subtle"
               color="red"
               size="xs"
               onClick={() => void toggleDeleteAll()}
+              disabled={editingDisabled || !familyReady}
               loading={checking.size > 0}
             >
               Excluir/restaurar todas
