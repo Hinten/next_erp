@@ -18,6 +18,7 @@
  * that tripped the limit.
  */
 import {
+  CODIGO_CRIACAO_KIT_SHOPEE,
   CODIGO_RASCUNHO_SHOPEE,
   motivoRascunhoInvalidoShopeeSchema,
   type MotivoRascunhoInvalidoShopee,
@@ -120,6 +121,18 @@ export const CODIGO_FALHA_SHOPEE = {
    * knows which route it called.
    */
   rascunhoInexistente: CODIGO_RASCUNHO_SHOPEE.inexistente,
+  // ---- #1912: the native-kit create LEASE (every code: this request sent nothing). ----
+  /**
+   * 409 — another run (tab, operator, the CLI) is creating this kit on this
+   * conta, or an uncertain create's hold is still running. `detalhes.aguardarMs`.
+   */
+  kitCriacaoEmAndamento: CODIGO_CRIACAO_KIT_SHOPEE.emAndamento,
+  /** 409 — the scan or the send gate ran out of time, or the lease was taken over. */
+  kitCriacaoExpirada: CODIGO_CRIACAO_KIT_SHOPEE.expirada,
+  /** 409 — the lease was lost to concurrent writes on every attempt. */
+  kitCriacaoContencao: CODIGO_CRIACAO_KIT_SHOPEE.contencao,
+  /** 409 — a listing appeared: this is no longer a native kit's first create. */
+  kitCriacaoVinculosMudaram: CODIGO_CRIACAO_KIT_SHOPEE.vinculosMudaram,
 } as const satisfies Record<string, string>;
 
 /** Shopee's two rate-limit classes, as the backend's 502 body names them in `kind`. */

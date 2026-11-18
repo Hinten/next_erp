@@ -392,6 +392,14 @@ export interface PublicarShopeeInput {
   principal?: string;
   recriar?: true;
   converterEmKit?: true;
+  /**
+   * #1912: a native kit's FIRST create (the tab's «Publicar como kit nativo»),
+   * always with NO `linkDocId`. The route refuses 409
+   * `SHOPEE_KIT_CRIACAO_VINCULOS_MUDARAM` when the dispatcher would pick any
+   * other arm, so a click never republishes a listing that appeared meanwhile.
+   * ⚠️ Deploy order: apps/shopee first — an older backend IGNORES the key.
+   */
+  criarKitNativo?: true;
   confirmarSegundoAnuncio?: true;
   confirmarCriacaoIncerta?: true;
   criacaoIncertaAdota?: readonly number[];
@@ -1149,6 +1157,7 @@ function corpoDaPublicacao(p: PublicarShopeeInput): Record<string, unknown> {
     ...(p.principal === undefined ? {} : { principal: p.principal }),
     ...(p.recriar === undefined ? {} : { recriar: p.recriar }),
     ...(p.converterEmKit === undefined ? {} : { converterEmKit: p.converterEmKit }),
+    ...(p.criarKitNativo === undefined ? {} : { criarKitNativo: p.criarKitNativo }),
     ...(p.confirmarSegundoAnuncio === undefined
       ? {}
       : { confirmarSegundoAnuncio: p.confirmarSegundoAnuncio }),

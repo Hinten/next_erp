@@ -6,9 +6,13 @@ import { Alert, Badge, Button, Card, Group, Stack, Text } from '@mantine/core';
 import type { ProdutoShopeeLink } from '@delfrance/schemas';
 
 import { ordenarVinculosShopee } from '@/lib/shopee/anuncioProduto';
-import type { AcoesShopee } from './AcoesAnuncioShopee';
+import { chaveDaContaShopee, type AcoesShopee } from './AcoesAnuncioShopee';
 import { AnuncioShopeeBlock } from './AnuncioShopeeBlock';
-import type { DesfechoDoRascunhoShopee, DestinosDasSuperficiesShopee } from './DesfechoAcaoShopee';
+import {
+  DesfechoAcaoShopee,
+  type DesfechoDoRascunhoShopee,
+  type DestinosDasSuperficiesShopee,
+} from './DesfechoAcaoShopee';
 import { AvisoReceitaKitShopee } from './AvisoReceitaKitShopee';
 import { IncertoDoKit } from './KitAnuncioShopee';
 import { RascunhoShopee, type RascunhoShopeeProps } from './RascunhoShopee';
@@ -163,6 +167,18 @@ export function ContaShopeePanel({
     incerto !== null && !vinculos.some((v) => v.id === incerto.corpo.linkDocId) ? incerto : null;
   const locais = rascunhos.locaisDe(conta.id);
   const avisosSemBloco = rascunhos.avisosSemBlocoDe(conta.id);
+  // #1912: the conta's FIRST native-kit create — offered by the dispatcher's
+  // own rule, and its outcome kept under the conta's key (it names no link).
+  const chaveDaConta = chaveDaContaShopee(conta.id);
+  const ofereceKitNativo =
+    conta.encontrada &&
+    acoes.permitidas &&
+    acoes.ofereceKitNativo(
+      conta.id,
+      vinculos.map((v) => v.data),
+    );
+  const desfechoDaConta = acoes.desfechoDe(chaveDaConta);
+  const publicandoKit = acoes.emVoo?.linkDocId === chaveDaConta;
 
   return (
     <Card withBorder padding="md" data-testid={`shopee-conta-${conta.id}`}>
@@ -180,6 +196,21 @@ export function ContaShopeePanel({
               several listings on one conta — behind the second-listing
               confirmation. A click sends NOTHING: the draft exists only on
               this screen until «Salvar rascunho». */}
+          {ofereceKitNativo && (
+            <Button
+              type="button"
+              size="xs"
+              color="grape"
+              data-testid={`shopee-publicar-kit-${conta.id}`}
+              loading={publicandoKit}
+              // An uncertain earlier create waits out its hold: a second
+              // `add_kit_item` before Shopee lists the first is a second kit.
+              disabled={acoes.bloqueadas || (incerto?.pendente ?? false)}
+              onClick={() => acoes.abrirKit(conta.id, null, 'criar')}
+            >
+              Publicar como kit nativo
+            </Button>
+          )}
           {rascunhos.podeCriar(conta) && (
             <Button
               type="button"
@@ -210,6 +241,20 @@ export function ContaShopeePanel({
 
         {incertoSemBloco !== null && (
           <IncertoDoKit contaId={conta.id} incerto={incertoSemBloco} acoes={acoes} />
+        )}
+
+        {desfechoDaConta !== null && (
+          <DesfechoAcaoShopee
+            contaId={conta.id}
+            produtoId={produtoId}
+            linkDocId={chaveDaConta}
+            desfecho={desfechoDaConta}
+            acoes={acoes}
+            // A first kit create names no link: there is no stored listing text.
+            descricaoPropria={false}
+            destinosDasSuperficies={rascunhos.destinosDasSuperficies}
+            rascunho={null}
+          />
         )}
 
         {avisosSemBloco.map((a) => (

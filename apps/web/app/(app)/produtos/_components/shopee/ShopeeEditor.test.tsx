@@ -446,6 +446,7 @@ vi.mock('./ConflitoRascunhoShopeeModal', () => ({
 const {
   FRASE_CONFIRMAR_DESCARTE_ATESTADO_SHOPEE,
   FRASE_DESCRICAO_DO_PRODUTO_NAO_LIDA_SHOPEE,
+  FRASE_KIT_VINCULOS_MUDARAM_SHOPEE,
   FRASE_SESSAO_NAO_RENOVADA_SHOPEE,
   FRASE_SESSAO_SEM_CONEXAO_SHOPEE,
   ShopeeEditor,
@@ -1744,6 +1745,7 @@ describe('ShopeeEditor — republish an existing link, never a first publish', (
       repetirKit: vi.fn(),
       kitAberto: () => false,
       alternarKit: vi.fn(),
+      ofereceKitNativo: () => false,
     };
     const linha = (id: string, extra: Record<string, unknown>) =>
       link(id, { estadoAnuncio: null, ...extra }).data as ProdutoShopeeLink;
@@ -8332,5 +8334,268 @@ describe('ShopeeEditor — a logística do rascunho, o sexto campo (#1911 P16)',
     h.produto = { nome: 'Camiseta', paiId: null };
     rerenderEditor(rerender);
     expect(formDe('L-rasc').revisaoDoProduto).toBeNull();
+  });
+});
+
+/* ========================================================================== */
+/*  #1912 — «Publicar como kit nativo», a native kit's FIRST create            */
+/* ========================================================================== */
+
+describe('ShopeeEditor — «Publicar como kit nativo», the first native-kit create (#1912)', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** A root VIRTUAL kit (`ehKitVirtualEfetivo`), with the write bit. */
+  function comKitVirtual() {
+    comEscrita();
+    comKit();
+    h.produto = { ...h.produto, ehKitVirtual: true };
+  }
+  const publicarKit = () => screen.queryByTestId('shopee-publicar-kit-int-1');
+  const desfechoDaConta = () => within(screen.getByTestId('shopee-desfecho-conta/int-1'));
+
+  /** Opens the conta's first-create confirmation. */
+  function abrir() {
+    const botaoDaConta = publicarKit();
+    if (botaoDaConta === null) throw new Error('sem «Publicar como kit nativo»');
+    fireEvent.click(botaoDaConta);
+    return within(screen.getByRole('dialog', { name: 'Publicar como kit nativo' }));
+  }
+
+  it('is offered EXACTLY when the dispatcher would answer kit-criar — the shared schemas rule — and replaces «Novo anúncio»', () => {
+    comKitVirtual();
+    h.links = [];
+    let r = renderEditor();
+    expect(publicarKit()).not.toBeNull();
+    expect(screen.queryByTestId('shopee-novo-anuncio-int-1')).toBeNull();
+    r.unmount();
+
+    // A removed ordinary listing and a removed native kit do not block it.
+    h.links = [
+      link('L-rem', { estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.removido }),
+      linkKit('L-kit-rem', { item_id: 1000003, estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.removido }),
+    ];
+    r = renderEditor();
+    expect(publicarKit()).not.toBeNull();
+    r.unmount();
+
+    // NEAR-MISSES: a live ordinary listing, a live native kit…
+    for (const vivo of [link('L-comum'), linkKit('L-kit')]) {
+      h.links = [vivo];
+      r = renderEditor();
+      expect(publicarKit(), vivo.id).toBeNull();
+      r.unmount();
+    }
+    // …an OLD-model kit (not virtual), and no write permission.
+    comEscrita();
+    comKit();
+    h.links = [];
+    r = renderEditor();
+    expect(publicarKit()).toBeNull();
+    r.unmount();
+    comKitVirtual();
+    h.permitidos = new Set([PERM.integracao.read]);
+    renderEditor();
+    expect(publicarKit()).toBeNull();
+  });
+
+  it('confirms first, then sends {criarKitNativo} with NO link — principal and «Criar pausado» only when chosen; the 200 is the CONTA’s outcome', async () => {
+    comKitVirtual();
+    h.links = [];
+    const publicar = vi
+      .fn<ShopeeClient['publicar']>()
+      .mockResolvedValueOnce(
+        kitPublicado({ arma: 'kit-criar', antecessor: null, linkDocId: 'L-kit-novo' }),
+      );
+    h.client = shopeeClientFalso({ publicar });
+    renderEditor();
+
+    const dialogo = abrir();
+    // A create makes a NEW kit on Shopee: nothing is sent before the confirmation.
+    expect(publicar).not.toHaveBeenCalled();
+    expect(
+      dialogo.getByText(/não deixa alterar a composição de um kit depois de criado/),
+    ).toBeDefined();
+    fireEvent.click(dialogo.getByRole('combobox', { name: 'Componente principal' }));
+    fireEvent.click(await screen.findByRole('option', { name: 'Boné (c2)' }));
+    fireEvent.click(dialogo.getByRole('checkbox', { name: /Criar pausado/ }));
+    fireEvent.click(dialogo.getByRole('button', { name: 'Publicar kit nativo' }));
+
+    await waitFor(() =>
+      expect(desfechoDaConta().getByText('Kit nativo criado na Shopee')).toBeDefined(),
+    );
+    expect(publicar.mock.calls[0]?.[0]).toStrictEqual({
+      integracaoId: 'int-1',
+      produtoId: 'prod-1',
+      criarKitNativo: true,
+      status: 'UNLIST',
+      principal: 'c2',
+    });
+    expect(desfechoDaConta().getByText(/Kit novo: vínculo L-kit-novo/)).toBeDefined();
+  });
+
+  it('⛔ NEAR-MISS: nothing chosen ⇒ the bare body — no principal, no status — and «Criar pausado» starts unticked on every opening', async () => {
+    comKitVirtual();
+    h.links = [];
+    const publicar = vi
+      .fn<ShopeeClient['publicar']>()
+      .mockResolvedValue(kitPublicado({ arma: 'kit-criar', antecessor: null }));
+    h.client = shopeeClientFalso({ publicar });
+    renderEditor();
+
+    let dialogo = abrir();
+    fireEvent.click(dialogo.getByRole('checkbox', { name: /Criar pausado/ }));
+    fireEvent.click(dialogo.getByRole('button', { name: 'Cancelar' }));
+    dialogo = abrir();
+    expect(
+      (dialogo.getByRole('checkbox', { name: /Criar pausado/ }) as HTMLInputElement).checked,
+    ).toBe(false);
+    fireEvent.click(dialogo.getByRole('button', { name: 'Publicar kit nativo' }));
+    await waitFor(() => expect(publicar).toHaveBeenCalledTimes(1));
+    expect(publicar.mock.calls[0]?.[0]).toStrictEqual({
+      integracaoId: 'int-1',
+      produtoId: 'prod-1',
+      criarKitNativo: true,
+    });
+  });
+
+  it('(B4) an UNSAVED produto disables the confirm of EVERY kit create — the first create and Recriar alike — and says why', () => {
+    comKitVirtual();
+    h.links = [];
+    const r = renderEditor({ produtoSujoForaDoFormulario: true });
+    let dialogo = abrir();
+    expect(dialogo.getByTestId('shopee-kit-produto-sujo').textContent).toContain(
+      'Salve o produto antes',
+    );
+    expect(
+      dialogo.getByRole('button', { name: 'Publicar kit nativo' }).hasAttribute('disabled'),
+    ).toBe(true);
+    r.unmount();
+
+    comEscrita();
+    comKit();
+    h.links = [linkKit('L-kit')];
+    renderEditor({ produtoSujoForaDoFormulario: true });
+    fireEvent.click(kitDe('L-kit').getByRole('button', { name: 'Recriar kit' }));
+    dialogo = within(screen.getByRole('dialog', { name: 'Recriar kit nativo' }));
+    expect(dialogo.getByRole('button', { name: 'Recriar kit' }).hasAttribute('disabled')).toBe(
+      true,
+    );
+    expect(dialogo.getByTestId('shopee-kit-produto-sujo')).toBeDefined();
+  });
+
+  it('a 202 is UNCERTAIN at conta level: the first-create sentence, the wait, then «Repetir» re-sends the IDENTICAL link-less body; the button waits too', async () => {
+    vi.useFakeTimers({ now: AGORA });
+    comKitVirtual();
+    h.links = [];
+    const publicar = vi
+      .fn<ShopeeClient['publicar']>()
+      .mockResolvedValueOnce(kitIncerto({ arma: 'kit-criar', aguardarMs: 60_000 }))
+      .mockResolvedValueOnce(kitPublicado({ arma: 'kit-criar', antecessor: null }));
+    h.client = shopeeClientFalso({ publicar });
+    renderEditor();
+
+    fireEvent.click(abrir().getByRole('button', { name: 'Publicar kit nativo' }));
+    await assentar();
+    const incerto = within(incertoDaConta());
+    expect(
+      incerto.getByText(/ele aparece como anúncio desta conta e nada é enviado/),
+    ).toBeDefined();
+    expect(document.body.textContent).not.toMatch(/falhou/i);
+    // A second create before Shopee lists the first would be a second kit.
+    expect(publicarKit()?.hasAttribute('disabled')).toBe(true);
+    // The link-less body is what the tab keeps for the identical re-send.
+    const guardado: unknown = JSON.parse(
+      window.sessionStorage.getItem(chaveIncerto('int-1', 'prod-1')) ?? 'null',
+    );
+    expect(guardado).toStrictEqual({
+      ate: AGORA + 60_000,
+      corpo: { integracaoId: 'int-1', produtoId: 'prod-1', criarKitNativo: true },
+    });
+
+    act(() => {
+      vi.advanceTimersByTime(60_000);
+    });
+    fireEvent.click(incerto.getByRole('button', { name: 'Repetir' }));
+    await assentar();
+    expect(publicar).toHaveBeenCalledTimes(2);
+    expect(publicar.mock.calls[1]?.[0]).toStrictEqual(publicar.mock.calls[0]?.[0]);
+    expect(screen.queryByTestId('shopee-kit-incerto-int-1')).toBeNull();
+  });
+
+  it('a 409 «em andamento» (another tab, operator or the CLI holds the lease) waits the SERVER’s aguardarMs — never a failure, never an immediate re-send', async () => {
+    vi.useFakeTimers({ now: AGORA });
+    comKitVirtual();
+    h.links = [];
+    const publicar = vi
+      .fn<ShopeeClient['publicar']>()
+      .mockRejectedValueOnce(
+        new ShopeeClientHttpError(
+          'outra criação deste kit nativo nesta conta está em andamento',
+          409,
+          CODIGO_FALHA_SHOPEE.kitCriacaoEmAndamento,
+          null,
+          null,
+          { ...DETALHES_ERRO_SHOPEE_VAZIOS, aguardarMs: 300_000 },
+        ),
+      );
+    h.client = shopeeClientFalso({ publicar });
+    renderEditor();
+
+    fireEvent.click(abrir().getByRole('button', { name: 'Publicar kit nativo' }));
+    await assentar();
+    expect(incertoDaConta()).toBeDefined();
+    expect(publicarKit()?.hasAttribute('disabled')).toBe(true);
+    expect(screen.queryByTestId('shopee-desfecho-conta/int-1')).toBeNull();
+    const guardado = JSON.parse(
+      window.sessionStorage.getItem(chaveIncerto('int-1', 'prod-1')) ?? 'null',
+    ) as { ate: number };
+    expect(guardado.ate).toBe(AGORA + 300_000);
+  });
+
+  it('a 409 «vínculos mudaram» is DEFINITE: its own sentence at conta level, and no wait', async () => {
+    comKitVirtual();
+    h.links = [];
+    h.client = shopeeClientFalso({
+      publicar: () =>
+        Promise.reject(
+          new ShopeeClientHttpError(
+            'este produto passou a ter um anúncio ativo nesta conta',
+            409,
+            CODIGO_FALHA_SHOPEE.kitCriacaoVinculosMudaram,
+          ),
+        ),
+    });
+    renderEditor();
+    fireEvent.click(abrir().getByRole('button', { name: 'Publicar kit nativo' }));
+    await waitFor(() =>
+      expect(desfechoDaConta().getByText(FRASE_KIT_VINCULOS_MUDARAM_SHOPEE)).toBeDefined(),
+    );
+    expect(screen.queryByTestId('shopee-kit-incerto-int-1')).toBeNull();
+    expect(window.sessionStorage.getItem(chaveIncerto('int-1', 'prod-1'))).toBeNull();
+  });
+
+  it('a 422 «escolha o principal» re-opens the CONTA’s confirmation (no link to address)', async () => {
+    comKitVirtual();
+    h.links = [];
+    const problemas: ProblemaShopee[] = [
+      {
+        campo: 'principal',
+        motivo: 'principal-obrigatorio',
+        mensagem: 'os componentes estão em mais de um anúncio — informe --principal',
+        acao: { tipo: TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE.informarPrincipal },
+      },
+    ];
+    h.client = shopeeClientFalso({
+      publicar: () => Promise.reject(recusa422(problemas)),
+    });
+    renderEditor();
+    fireEvent.click(abrir().getByRole('button', { name: 'Publicar kit nativo' }));
+    const passo = await waitFor(() =>
+      desfechoDaConta().getByRole('button', { name: 'Escolher o componente principal' }),
+    );
+    fireEvent.click(passo);
+    expect(screen.getByRole('dialog', { name: 'Publicar como kit nativo' })).toBeDefined();
   });
 });

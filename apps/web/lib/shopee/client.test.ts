@@ -1983,6 +1983,32 @@ describe('step 21 — publicar sends exactly what the caller chose (C2)', () => 
     });
   });
 
+  it('(#1912) `criarKitNativo` goes out with NO link, beside the status and principal only when given', async () => {
+    const { c, pedidos } = gravador(JSON.stringify(PUBLICAR_ITEM_200));
+
+    await c.publicar({ integracaoId: 'int-1', produtoId: 'prod-1', criarKitNativo: true });
+    await c.publicar({
+      integracaoId: 'int-1',
+      produtoId: 'prod-1',
+      criarKitNativo: true,
+      status: 'UNLIST',
+      principal: 'c2',
+    });
+
+    expect(corpoEnviado(pedidos[0]?.init)).toStrictEqual({
+      integracaoId: 'int-1',
+      produtoId: 'prod-1',
+      criarKitNativo: true,
+    });
+    expect(corpoEnviado(pedidos[1]?.init)).toStrictEqual({
+      integracaoId: 'int-1',
+      produtoId: 'prod-1',
+      status: 'UNLIST',
+      principal: 'c2',
+      criarKitNativo: true,
+    });
+  });
+
   it('#1911 P11: a DRAFT’s publish sends its link and each confirmation flag only when given', async () => {
     const ambos = gravador(JSON.stringify(PUBLICAR_ITEM_200));
     await ambos.c.publicar({
