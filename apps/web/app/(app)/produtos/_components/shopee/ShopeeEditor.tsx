@@ -145,6 +145,7 @@ import {
   ContaShopeePanel,
   type AvisoDeRascunhoShopee,
   type ContaShopee,
+  type EstadoNovoAnuncioShopee,
   type RascunhosShopee,
   type TabelaMedidasDoProduto,
   type VinculoShopee,
@@ -669,6 +670,19 @@ export function fraseDaSessaoShopee(err: FirebaseError): string {
 export const FRASE_CONFIRMAR_DESCARTE_ATESTADO_SHOPEE =
   'O rascunho será excluído. O anúncio da tentativa continua na Shopee, vinculado no ERP — o ' +
   'descarte não o altera.';
+
+/**
+ * Why a VIRTUAL kit's conta shows no «Novo anúncio» (#2168), when the conta
+ * offers the native kit's first create (#1912): the button beside it.
+ */
+export const MOTIVO_KIT_VIRTUAL_COM_PRIMEIRO_KIT_SHOPEE =
+  'Este produto é um kit virtual: na Shopee ele é publicado como kit nativo — use «Publicar ' +
+  'como kit nativo».';
+
+/** The same, when the conta already holds a listing of it (no first create to offer). */
+export const MOTIVO_KIT_VIRTUAL_SHOPEE =
+  'Este produto é um kit virtual: na Shopee ele é publicado como kit nativo, não como um ' +
+  'anúncio comum.';
 
 /** A link that is not (or no longer) this conta's — the 404s of publish and re-verify. */
 const MENSAGEM_VINCULO_FORA_DA_CONTA =
@@ -1431,12 +1445,18 @@ function EditorShopee({
   const { allowed: podeEscreverProduto, loading: escritaProdutoCarregando } = usePermission(
     PERM.produto.write,
   );
-  const podeEditarRascunhos =
-    !escritaCarregando &&
-    podeEscrever &&
-    !escritaProdutoCarregando &&
-    podeEscreverProduto &&
-    disabled !== true;
+  let motivoEdicaoBloqueada: string | null = null;
+  if (escritaCarregando || escritaProdutoCarregando) {
+    motivoEdicaoBloqueada = 'Aguarde a verificação das permissões para criar um anúncio.';
+  } else if (!podeEscrever || !podeEscreverProduto) {
+    const permissoesAusentes = [];
+    if (!podeEscreverProduto) permissoesAusentes.push('editar produtos');
+    if (!podeEscrever) permissoesAusentes.push('editar integrações');
+    motivoEdicaoBloqueada = `Para criar um anúncio, solicite permissão para ${permissoesAusentes.join(' e ')}.`;
+  } else if (disabled) {
+    motivoEdicaoBloqueada = 'O formulário do produto está em modo somente leitura.';
+  }
+  const podeEditarRascunhos = motivoEdicaoBloqueada === null;
   /** A write of this tab is in flight, or there is no client to send one with. */
   const ocupado = client === null || emVoo !== null;
   const kitVirtual = produto != null && ehKitVirtualEfetivo(produto);
@@ -2268,9 +2288,51 @@ function EditorShopee({
     });
   }
 
-  /** «Novo anúncio» is offered on this conta (see `RascunhosShopee.podeCriar`). */
-  const podeCriarRascunho = (conta: ContaShopee | undefined): boolean =>
-    podeEditarRascunhos && conta?.encontrada === true && !kitVirtual;
+  function estadoNovoAnuncio(contaId: string): EstadoNovoAnuncioShopee {
+    const conta = contaPorId.get(contaId);
+    if (conta?.carregando) {
+      return {
+        tipo: 'oculto',
+        motivo: 'Aguarde o carregamento da conta Shopee para criar um anúncio.',
+      };
+    }
+    if (!conta?.encontrada) {
+      return {
+        tipo: 'oculto',
+        motivo:
+          contaId === CHAVE_SEM_CONTA
+            ? 'Estes anúncios não indicam uma conta Shopee legível para criar um anúncio.'
+            : 'Não é possível criar um anúncio nesta conta Shopee. Ela não está cadastrada ou você não tem acesso a ela.',
+      };
+    }
+    if (kitVirtual) {
+      // #1912: a virtual kit is published as a NATIVE kit — from this tab when
+      // the conta offers its first create (the dispatcher's own rule), never as
+      // the ordinary listing a draft becomes.
+      return {
+        tipo: 'oculto',
+        motivo: ofereceKitNativoAgora(contaId)
+          ? MOTIVO_KIT_VIRTUAL_COM_PRIMEIRO_KIT_SHOPEE
+          : MOTIVO_KIT_VIRTUAL_SHOPEE,
+      };
+    }
+    if (motivoEdicaoBloqueada !== null) {
+      return { tipo: 'oculto', motivo: motivoEdicaoBloqueada };
+    }
+    if (client === null) {
+      return {
+        tipo: 'desabilitado',
+        motivo: 'Sua sessão está indisponível. Entre novamente para criar um anúncio.',
+      };
+    }
+    if (emVoo !== null) {
+      return {
+        tipo: 'desabilitado',
+        motivo: 'Aguarde a conclusão da operação em andamento para criar um anúncio.',
+      };
+    }
+    return { tipo: 'habilitado' };
+  }
 
   /** A LOCAL draft: ONE id per click, reused by every retry of its create. Nothing is sent. */
   function abrirRascunhoLocal(contaId: string, segundoConfirmado: boolean) {
@@ -2281,7 +2343,7 @@ function EditorShopee({
   }
 
   function novoAnuncio(contaId: string) {
-    if (!podeCriarRascunho(contaPorId.get(contaId))) return;
+    if (estadoNovoAnuncio(contaId).tipo !== 'habilitado' || travaRef.current) return;
     // The set the draft route's create and the publish re-check refuse with
     // (a `removido` link is not in it), plus this screen's own local drafts.
     const existentes = segundoAnuncioNaContaShopee(vinculosLidos ?? [], contaId, efetivas.values());
@@ -2296,6 +2358,7 @@ function EditorShopee({
   function confirmarSegundoAnuncio() {
     if (segundoAnuncio === null) return;
     const { contaId, reenviar } = segundoAnuncio;
+    if (estadoNovoAnuncio(contaId).tipo !== 'habilitado' || travaRef.current) return;
     setSegundoAnuncio(null);
     if (reenviar === null) {
       abrirRascunhoLocal(contaId, true);
@@ -2630,8 +2693,7 @@ function EditorShopee({
   }
 
   const rascunhos: RascunhosShopee = {
-    podeCriar: podeCriarRascunho,
-    criarBloqueado: ocupado,
+    estadoNovoAnuncio,
     novoAnuncio,
     locaisDe: (contaId) => locais.get(contaId) ?? [],
     propsDe: propsDoRascunho,
@@ -2661,7 +2723,7 @@ function EditorShopee({
   );
 
   if (permLoading || (produtoSnap.data === undefined && produtoSnap.error == null)) {
-    return <Carregando />;
+    return <Carregando mensagem="Carregando o produto e as permissões da Shopee…" />;
   }
 
   if (produtoSnap.error) {
@@ -2704,7 +2766,9 @@ function EditorShopee({
   // ⚠️ The by-id lookup gates NOTHING: its key changes whenever a link names a
   // new off-page conta, and a spinner there would unmount `ContaTabs` (losing
   // the selected conta) on a data change. Its pending ids read "carregando…".
-  if (contasSnap.data === undefined || linksSnap.data === undefined) return <Carregando />;
+  if (contasSnap.data === undefined || linksSnap.data === undefined) {
+    return <Carregando mensagem="Carregando as contas e os anúncios da Shopee…" />;
+  }
 
   if (abas.length === 0) {
     return (
@@ -2729,6 +2793,8 @@ function EditorShopee({
   // A saved draft's discard is a write: held by the lock.
   const descarteBloqueado =
     descarteNaTela !== null && descarteNaTela.tipo !== 'local' && bloqueadas;
+  const estadoSegundoAnuncio =
+    segundoAnuncio === null ? null : estadoNovoAnuncio(segundoAnuncio.contaId);
 
   return (
     <Stack gap="sm">
@@ -2867,9 +2933,14 @@ function EditorShopee({
         title={TITULO_SEGUNDO_ANUNCIO_SHOPEE}
         centered
       >
-        {segundoAnuncio !== null && (
+        {segundoAnuncio !== null && estadoSegundoAnuncio !== null && (
           <Stack gap="md">
             <Text size="sm">{textoDoSegundoAnuncioShopee(segundoAnuncio.existentes)}</Text>
+            {estadoSegundoAnuncio.tipo !== 'habilitado' && (
+              <Text size="sm" c="dimmed">
+                {estadoSegundoAnuncio.motivo}
+              </Text>
+            )}
             <Group justify="flex-end" gap="sm">
               <Button type="button" variant="default" onClick={() => setSegundoAnuncio(null)}>
                 Cancelar
@@ -2877,8 +2948,7 @@ function EditorShopee({
               <Button
                 type="button"
                 color="orange"
-                // The re-send is a write; a new local draft is not.
-                disabled={segundoAnuncio.reenviar !== null && bloqueadas}
+                disabled={estadoSegundoAnuncio.tipo !== 'habilitado'}
                 onClick={confirmarSegundoAnuncio}
               >
                 {ROTULO_CONFIRMAR_SEGUNDO_ANUNCIO_SHOPEE}
@@ -2975,10 +3045,13 @@ const ROTULO_EM_LINHAS = {
   label: { whiteSpace: 'normal', textAlign: 'left' },
 } as const;
 
-function Carregando() {
+function Carregando({ mensagem }: { mensagem: string }) {
   return (
-    <Group justify="center" py="md">
+    <Group justify="center" py="md" role="status">
       <Loader size="sm" />
+      <Text size="sm" c="dimmed">
+        {mensagem}
+      </Text>
     </Group>
   );
 }

@@ -153,6 +153,7 @@ const h = vi.hoisted(() => ({
   /** The snapshot hooks' `loading` — a re-listen keeps `data` (R1). */
   carregando: false,
   permitidos: new Set<bigint>(),
+  permissoesCarregando: new Set<bigint>(),
   getDocs: vi.fn(),
   getDoc: vi.fn(),
   /** Every collection a live query was opened on — what the tab chose to READ. */
@@ -251,7 +252,10 @@ vi.mock('firebase/firestore', async (importOriginal) => ({
 }));
 
 vi.mock('@/lib/auth', () => ({
-  usePermission: (bit: bigint) => ({ allowed: h.permitidos.has(bit), loading: false }),
+  usePermission: (bit: bigint) => ({
+    allowed: h.permitidos.has(bit) && !h.permissoesCarregando.has(bit),
+    loading: h.permissoesCarregando.has(bit),
+  }),
 }));
 vi.mock('@/lib/data/integracaoCollection', () => ({
   integracaoCollection: {
@@ -448,6 +452,8 @@ const {
   FRASE_DESCRICAO_DO_PRODUTO_NAO_LIDA_SHOPEE,
   FRASE_KIT_VINCULOS_MUDARAM_SHOPEE,
   FRASE_SESSAO_NAO_RENOVADA_SHOPEE,
+  MOTIVO_KIT_VIRTUAL_COM_PRIMEIRO_KIT_SHOPEE,
+  MOTIVO_KIT_VIRTUAL_SHOPEE,
   FRASE_SESSAO_SEM_CONEXAO_SHOPEE,
   ShopeeEditor,
   fraseDaSessaoShopee,
@@ -517,6 +523,7 @@ beforeEach(() => {
   h.consultas = new Set();
   h.tabMediIds = [];
   h.permitidos = new Set([PERM.integracao.read]);
+  h.permissoesCarregando.clear();
   h.client = shopeeClientFalso();
   h.notify.mockReset();
   h.getDocs.mockReset();
@@ -3425,8 +3432,9 @@ const digitarTitulo = (linkDocId: string, valor: string) =>
   fireEvent.change(tituloDo(linkDocId), { target: { value: valor } });
 /** The LOCAL drafts' ids — forms rendered for an id no stored link has. */
 const idsLocais = () => [...h.rascunhos.keys()].filter((id) => !h.links.some((l) => l.id === id));
-const novoAnuncio = (contaId = 'int-1') =>
-  fireEvent.click(screen.getByTestId(`shopee-novo-anuncio-${contaId}`));
+const botaoNovoAnuncio = (contaId = 'int-1') =>
+  screen.getByTestId(`shopee-novo-anuncio-${contaId}`) as HTMLButtonElement;
+const novoAnuncio = (contaId = 'int-1') => fireEvent.click(botaoNovoAnuncio(contaId));
 /** A draft-route refusal, as the client builds it. */
 function recusaDoRascunho(
   status: number,
@@ -3507,6 +3515,12 @@ describe('ShopeeEditor — «Novo anúncio» and the create (#1911 P10)', () => 
     // The retry: the SAME id and body; a double click sends ONE request.
     fireEvent.click(botaoDoRascunho(id!, 'Salvar rascunho'));
     fireEvent.click(botaoDoRascunho(id!, 'Salvar rascunho'));
+    expect(botaoNovoAnuncio().disabled).toBe(true);
+    expect(
+      within(painel('int-1')).getByText(
+        'Aguarde a conclusão da operação em andamento para criar um anúncio.',
+      ),
+    ).toBeDefined();
     expect(criarRascunho).toHaveBeenCalledTimes(2);
     expect(criarRascunho.mock.calls[1]?.[0]).toStrictEqual(corpo);
     await act(async () => {
@@ -3518,6 +3532,7 @@ describe('ShopeeEditor — «Novo anúncio» and the create (#1911 P10)', () => 
       message: FRASE_RASCUNHO_CRIADO_SHOPEE,
     });
     expect(idsLocais()).toEqual([id]);
+    expect(botaoNovoAnuncio().disabled).toBe(false);
   });
 
   it('after the 2xx the draft shows what was saved, read-only, until the snapshot moves — then the STORED draft repaints its block', async () => {
@@ -3702,6 +3717,25 @@ describe('ShopeeEditor — «Novo anúncio» and the create (#1911 P10)', () => 
     expect(idsLocais()).toHaveLength(1);
   });
 
+  it('blocks a second local draft if editing permission is lost while confirming', () => {
+    comAutoria();
+    h.links = [link('L1')];
+    const { rerender } = renderEditor();
+    novoAnuncio();
+
+    h.permitidos.delete(PERM.produto.write);
+    rerenderEditor(rerender);
+
+    const dialogo = within(screen.getByRole('dialog', { name: TITULO_SEGUNDO_ANUNCIO_SHOPEE }));
+    expect(dialogo.getByText(/solicite permissão para editar produtos/)).toBeDefined();
+    const confirmar = dialogo.getByRole('button', {
+      name: ROTULO_CONFIRMAR_SEGUNDO_ANUNCIO_SHOPEE,
+    }) as HTMLButtonElement;
+    expect(confirmar.disabled).toBe(true);
+    fireEvent.click(confirmar);
+    expect(idsLocais()).toHaveLength(0);
+  });
+
   it('a 409 rascunhoContaJaTemAnuncio opens the SAME confirmation from detalhes.vinculos and re-sends the create with the flag', async () => {
     comAutoria();
     const criarRascunho = vi
@@ -3734,6 +3768,56 @@ describe('ShopeeEditor — «Novo anúncio» and the create (#1911 P10)', () => 
       ...criarRascunho.mock.calls[0]?.[0],
       confirmarSegundoAnuncio: true,
     });
+  });
+
+  it('explains why a virtual kit with no listings or drafts has no «Novo anúncio» — and points at «Publicar como kit nativo» (#1912), never the terminal', () => {
+    comAutoria();
+    h.produto = { nome: 'Kit', paiId: null, ehKit: true, ehKitVirtual: true };
+    const { rerender } = renderEditor();
+    const conta = within(painel('int-1'));
+    const motivo = MOTIVO_KIT_VIRTUAL_COM_PRIMEIRO_KIT_SHOPEE;
+
+    expect(conta.queryByRole('button', { name: 'Novo anúncio' })).toBeNull();
+    expect(conta.getByText(motivo)).toBeDefined();
+    expect(conta.getByRole('button', { name: 'Publicar como kit nativo' })).toBeDefined();
+    expect(painel('int-1').textContent).not.toMatch(/terminal/i);
+
+    h.produto = { nome: 'Kit', paiId: null, ehKit: true, ehKitVirtual: false };
+    rerenderEditor(rerender);
+    expect(botaoNovoAnuncio().disabled).toBe(false);
+    expect(conta.queryByText(motivo)).toBeNull();
+
+    h.produto = { nome: 'Camiseta', paiId: null };
+    rerenderEditor(rerender);
+    expect(botaoNovoAnuncio().disabled).toBe(false);
+    expect(conta.queryByText(motivo)).toBeNull();
+  });
+
+  it('(#1912) ⛔ near-miss: a virtual kit whose conta already holds a live native kit offers no first create — the reason names no button', () => {
+    comAutoria();
+    h.produto = { nome: 'Kit', paiId: null, ehKit: true, ehKitVirtual: true };
+    h.links = [link('L-kit', { kitNativo: true, item_id: 1000002 })];
+    renderEditor();
+    const conta = within(painel('int-1'));
+    expect(conta.getByText(MOTIVO_KIT_VIRTUAL_SHOPEE)).toBeDefined();
+    expect(conta.queryByRole('button', { name: 'Publicar como kit nativo' })).toBeNull();
+  });
+
+  it('shows a disabled button with a session explanation until the client is available', () => {
+    comAutoria();
+    const client = h.client;
+    h.client = null;
+    const { rerender } = renderEditor();
+
+    const motivo = 'Sua sessão está indisponível. Entre novamente para criar um anúncio.';
+    const mensagem = within(painel('int-1')).getByText(motivo);
+    expect(botaoNovoAnuncio().disabled).toBe(true);
+    expect(botaoNovoAnuncio().getAttribute('aria-describedby')).toBe(mensagem.id);
+
+    h.client = client;
+    rerenderEditor(rerender);
+    expect(botaoNovoAnuncio().disabled).toBe(false);
+    expect(screen.queryByText(motivo)).toBeNull();
   });
 
   it('a VIRTUAL-kit produto gets no «Novo anúncio», and a legacy draft of it says why — NEAR-MISS: a kit that is not virtual, and a plain produto, get the button', () => {
@@ -5048,27 +5132,59 @@ describe('ShopeeEditor — who may author a draft (#1911 P10, D6)', () => {
       'integracao.write without produto.write',
       [PERM.integracao.read, PERM.integracao.write],
       false,
+      'Para criar um anúncio, solicite permissão para editar produtos.',
     ],
-    ['produto.write without integracao.write', [PERM.integracao.read, PERM.produto.write], false],
+    [
+      'produto.write without integracao.write',
+      [PERM.integracao.read, PERM.produto.write],
+      false,
+      'Para criar um anúncio, solicite permissão para editar integrações.',
+    ],
+    [
+      'neither write permission',
+      [PERM.integracao.read],
+      true,
+      'Para criar um anúncio, solicite permissão para editar produtos e editar integrações.',
+    ],
     [
       'both, on a read-only produto form',
       [PERM.integracao.read, PERM.integracao.write, PERM.produto.write],
       true,
+      'O formulário do produto está em modo somente leitura.',
     ],
-  ])('%s ⇒ read-only fields, no draft button and no «Novo anúncio»', (_c, bits, disabled) => {
-    h.permitidos = new Set(bits);
-    h.links = [rascunho('L-rasc')];
-    renderEditor({ disabled });
-    // Positive first: the draft rendered.
-    expect(raizDoRascunho('L-rasc')).toBeDefined();
-    expect(tituloDo('L-rasc').readOnly).toBe(true);
-    for (const nome of ['Salvar rascunho', 'Desfazer alterações', 'Descartar']) {
-      expect(
-        within(raizDoRascunho('L-rasc')).queryByRole('button', { name: nome }),
-        nome,
-      ).toBeNull();
-    }
+  ])(
+    '%s ⇒ read-only fields, no draft button and no «Novo anúncio»',
+    (_c, bits, disabled, motivo) => {
+      h.permitidos = new Set(bits);
+      h.links = [rascunho('L-rasc')];
+      renderEditor({ disabled });
+      // Positive first: the draft rendered.
+      expect(raizDoRascunho('L-rasc')).toBeDefined();
+      expect(tituloDo('L-rasc').readOnly).toBe(true);
+      for (const nome of ['Salvar rascunho', 'Desfazer alterações', 'Descartar']) {
+        expect(
+          within(raizDoRascunho('L-rasc')).queryByRole('button', { name: nome }),
+          nome,
+        ).toBeNull();
+      }
+      expect(screen.queryByTestId('shopee-novo-anuncio-int-1')).toBeNull();
+      expect(within(painel('int-1')).getByText(motivo)).toBeDefined();
+    },
+  );
+
+  it('explains when write permissions are still loading', () => {
+    comAutoria();
+    h.permissoesCarregando.add(PERM.produto.write);
+    const { rerender } = renderEditor();
+
+    const motivo = 'Aguarde a verificação das permissões para criar um anúncio.';
     expect(screen.queryByTestId('shopee-novo-anuncio-int-1')).toBeNull();
+    expect(within(painel('int-1')).getByText(motivo)).toBeDefined();
+
+    h.permissoesCarregando.clear();
+    rerenderEditor(rerender);
+    expect(botaoNovoAnuncio().disabled).toBe(false);
+    expect(screen.queryByText(motivo)).toBeNull();
   });
 
   it('NEAR-MISS: both bits on an editable form ⇒ editable, the buttons, «Novo anúncio»', () => {
@@ -5149,17 +5265,24 @@ describe('ShopeeEditor — who may author a draft (#1911 P10, D6)', () => {
   });
 
   it.each([
-    ['the unreadable-ref tab', '', /Sem conta legível/, false],
-    ['a reserved id no document can carry', 'integracao/__x__', /Conta __x__/, false],
+    ['the unreadable-ref tab', '', /Sem conta legível/, false, /não indicam uma conta Shopee/],
+    [
+      'a reserved id no document can carry',
+      'integracao/__x__',
+      /Conta __x__/,
+      false,
+      /Ela não está cadastrada ou você não tem acesso a ela/,
+    ],
     [
       'a conta whose by-id read is still in flight',
       'documents/integracao/int-9',
       /carregando/,
       true,
+      /Aguarde o carregamento da conta Shopee para criar um anúncio/,
     ],
   ])(
     'NEAR-MISS: %s offers NO button and reads nothing for its conta',
-    async (_caso, ref, aba, pendente) => {
+    async (_caso, ref, aba, pendente, motivo) => {
       comAutoria();
       const limitesDoItemFn = vi.fn<ShopeeClient['limitesDoItem']>(async (input) =>
         limitesDoItem(input.categoryId),
@@ -5175,6 +5298,9 @@ describe('ShopeeEditor — who may author a draft (#1911 P10, D6)', () => {
       expect(formDe('L9').somenteDescartar).toBe(false);
       expect(formDe('L9').contaId).toBeNull();
       expect(limitesDoItemFn).not.toHaveBeenCalled();
+      const painelAtivo = within(screen.getByRole('tabpanel'));
+      expect(painelAtivo.queryByRole('button', { name: 'Novo anúncio' })).toBeNull();
+      expect(painelAtivo.getByText(motivo)).toBeDefined();
     },
   );
 
