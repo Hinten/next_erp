@@ -187,7 +187,8 @@ function entradaDoItem(
  * `[]` = a deliberate create) was read off a DRAFT's refusal, and only the
  * item arm's reservation (`reservaRascunho.ts`) can honour it — it is also
  * where round 4 refuses a named link that stopped being a draft. The kit arms
- * never reach that reservation, and they never read `deps.aoVivo`: a named
+ * never reach that reservation (they read only `deps.aoVivo.agora`, for the
+ * new link's creation stamp): a named
  * link the dispatcher sends to `kit-atualizar` / `kit-recriar` (a native kit,
  * live or not — the import can adopt a native-kit listing onto an ordinary
  * draft) or to `kit-converter` (a live ordinary listing) would otherwise run

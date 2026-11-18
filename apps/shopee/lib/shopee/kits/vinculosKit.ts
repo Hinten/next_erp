@@ -108,6 +108,16 @@ export type DepsDeVinculoKit = Pick<PublicarAnuncioDeps, 'db' | 'integracaoId' |
  * new by construction (its id derives from an `item_id` Shopee just minted). The
  * one exception is R-u's import race, where the two values are seconds apart.
  *
+ * ⚠️ `publicadoEm` is the ONE field here another run reads as a CLOCK: the
+ * create scan's and the republish's `recente` doubt (`vinculoDeKitRecente`,
+ * #2065) measure a link's age from it. So it is the instant the kit was
+ * CREATED ({@link criadoEmMs}, a live reading right after `add_kit_item`'s
+ * 200), never the run's start: a run that spent minutes on the scan and the
+ * photos would otherwise write a link that is already "old" the moment it
+ * lands, and a run that read it during Shopee's listing lag would fold the
+ * live kit to `removido` and create a second one. Every other stamp keeps the
+ * run's one clock.
+ *
  * @returns the link doc id — `idDoVinculoDeKit(integracaoId, itemId)`.
  */
 export async function escreverVinculoDoKit(
@@ -119,6 +129,8 @@ export async function escreverVinculoDoKit(
     readonly itemId: number;
     /** The body that was SENT — the values written are the ones Shopee accepted. */
     readonly corpo: ShopeeAddKitItemRequest;
+    /** MILLISECONDS — when `add_kit_item` answered its 200 (a live reading). */
+    readonly criadoEmMs: number;
   },
 ): Promise<string> {
   const linkDocId = idDoVinculoDeKit(deps.integracaoId, a.itemId);
@@ -139,7 +151,7 @@ export async function escreverVinculoDoKit(
     logisticaGravadaEm: deps.nowMs,
     ultimaPublicacao: { em: deps.nowMs, etapa: ETAPA_PUBLICACAO.addKitItem, itemId: a.itemId },
     ultimaModificacao: deps.nowMs,
-    publicadoEm: deps.nowMs,
+    publicadoEm: a.criadoEmMs,
     dataCadastro: deps.nowMs,
   });
   return linkDocId;
