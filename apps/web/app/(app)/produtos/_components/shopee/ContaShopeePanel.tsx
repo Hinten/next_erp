@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useId, useMemo } from 'react';
 import type { Firestore } from 'firebase/firestore';
 import { Alert, Badge, Button, Card, Group, Stack, Text } from '@mantine/core';
 import type { ProdutoShopeeLink } from '@delfrance/schemas';
@@ -60,6 +60,10 @@ export interface AvisoDeRascunhoShopee {
   readonly mensagem: string;
 }
 
+export type EstadoNovoAnuncioShopee =
+  | { readonly tipo: 'habilitado' }
+  | { readonly tipo: 'desabilitado' | 'oculto'; readonly motivo: string };
+
 /**
  * What the editor hands the conta panel and every block about the listing
  * DRAFTS (#1911 P10) — the `AcoesShopee` of the draft editor. The STATE (the
@@ -67,15 +71,7 @@ export interface AvisoDeRascunhoShopee {
  * editor (its rule R2); a panel and a block only render what this answers.
  */
 export interface RascunhosShopee {
-  /**
-   * «Novo anúncio» is offered on this conta: `integracao.write` ∧
-   * `produto.write` ∧ the produto form editable ∧ a conta the tab found ∧ the
-   * produto is not a VIRTUAL kit (`ehKitVirtualEfetivo` — the draft route
-   * refuses one: on Shopee it is published as a native kit).
-   */
-  readonly podeCriar: (conta: ContaShopee) => boolean;
-  /** «Novo anúncio» shows but is disabled: no client yet, or a write of this tab is in flight. */
-  readonly criarBloqueado: boolean;
+  readonly estadoNovoAnuncio: (contaId: string) => EstadoNovoAnuncioShopee;
   /**
    * «Novo anúncio»: a LOCAL draft at once — or, when the conta already holds
    * one of the produto's listings or drafts, the second-listing confirmation
@@ -163,6 +159,8 @@ export function ContaShopeePanel({
     incerto !== null && !vinculos.some((v) => v.id === incerto.corpo.linkDocId) ? incerto : null;
   const locais = rascunhos.locaisDe(conta.id);
   const avisosSemBloco = rascunhos.avisosSemBlocoDe(conta.id);
+  const estadoNovoAnuncio = rascunhos.estadoNovoAnuncio(conta.id);
+  const motivoNovoAnuncioId = useId();
 
   return (
     <Card withBorder padding="md" data-testid={`shopee-conta-${conta.id}`}>
@@ -180,13 +178,16 @@ export function ContaShopeePanel({
               several listings on one conta — behind the second-listing
               confirmation. A click sends NOTHING: the draft exists only on
               this screen until «Salvar rascunho». */}
-          {rascunhos.podeCriar(conta) && (
+          {estadoNovoAnuncio.tipo !== 'oculto' && (
             <Button
               type="button"
               size="xs"
               variant={vinculos.length === 0 && locais.length === 0 ? 'filled' : 'light'}
               data-testid={`shopee-novo-anuncio-${conta.id}`}
-              disabled={rascunhos.criarBloqueado}
+              disabled={estadoNovoAnuncio.tipo === 'desabilitado'}
+              aria-describedby={
+                estadoNovoAnuncio.tipo === 'desabilitado' ? motivoNovoAnuncioId : undefined
+              }
               onClick={() => rascunhos.novoAnuncio(conta.id)}
             >
               Novo anúncio
@@ -194,13 +195,9 @@ export function ContaShopeePanel({
           )}
         </Group>
 
-        {!conta.encontrada && (
-          <Text size="sm" c="dimmed">
-            {conta.carregando
-              ? 'Carregando a conta Shopee destes anúncios…'
-              : contaDoAnuncioLegivel
-                ? 'Estes anúncios apontam para uma conta Shopee que não está cadastrada (ou que você não pode ver).'
-                : 'Estes anúncios não indicam uma conta Shopee legível.'}
+        {estadoNovoAnuncio.tipo !== 'habilitado' && (
+          <Text id={motivoNovoAnuncioId} size="sm" c="dimmed">
+            {estadoNovoAnuncio.motivo}
           </Text>
         )}
 
