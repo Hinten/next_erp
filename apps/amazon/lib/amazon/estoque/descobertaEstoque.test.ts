@@ -1,8 +1,8 @@
 /**
- * The discovery planner: the tick's window and the recovery's window with its
- * keep rule (the 5-minute range, the 20-s commit margin, the pending start),
- * forcing, the units, and the path from estoque rows to the conta's SKUs with
- * their observations.
+ * The discovery planner: the tick's window and the recovery's window with their
+ * keep rule (the 5-minute reach-back, the 20-s commit margin, the tick's 20-s
+ * overlap, the pending start), forcing, the units, and the path from estoque
+ * rows to the conta's SKUs with their observations.
  */
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -83,23 +83,75 @@ describe('the constants', () => {
   });
 });
 
+/** The tick's window of a cursor at S, read at S + 5 min. */
+function tickEmS(): JanelaEstoqueAmazon {
+  const j = janelaDoTick({ cursorMs: S, agoraMs: S + 5 * MIN });
+  if (j === null) throw new Error('fixture: janela esperada');
+  return j;
+}
+
 describe('★ the tick’s window', () => {
-  it('is (cursorMs − 20 s, agoraMs], keeps every row, and is not truncated', () => {
-    const j = janelaDoTick({ cursorMs: S, agoraMs: S + 5 * MIN });
-    expect(j).toEqual({
-      desdeMs: S - 20 * SEG,
+  it('is (cursor − 5 min, agora], keeps a row stamped OR committed after cursor − 20 s, never forces, and is not truncated', () => {
+    expect(janelaDoTick({ cursorMs: S, agoraMs: S + 5 * MIN })).toEqual({
+      desdeMs: S - 5 * MIN,
       ateMs: S + 5 * MIN,
       manterDesdeMs: S - 20 * SEG,
-      commitAposMs: null,
+      commitAposMs: S - 20 * SEG,
+      forcarPorCommit: false,
       truncada: false,
     });
-    if (j === null) throw new Error('janela esperada');
-    // Every row in range is kept, however old its commit; the bounds are (desde, ate].
+    const j = tickEmS();
+    // Stamped after cursor − 20 s: kept, however old its commit; the bounds are (desde, ate].
     expect(manterLinha(linha('P', S - 19 * SEG, S - 10 * MIN), j)).toBe(true);
     expect(manterLinha(linha('P', S + 5 * MIN), j)).toBe(true);
     expect(manterLinha(linha('P', S - 20 * SEG), j)).toBe(false);
     expect(manterLinha(linha('P', S + 5 * MIN + 1), j)).toBe(false);
     expect(forcarSku([linha('P', S + MIN)], j)).toBe(false);
+  });
+
+  it('★ the commit lag: stamped cursor − 30 s, COMMITTED after the tick that read at the cursor (cursor + 1 s) ⇒ kept', () => {
+    const tarde = linha('P', S - 30 * SEG, S + SEG);
+    expect(manterLinha(tarde, tickEmS())).toBe(true);
+    // NEAR-MISS: the same row committed at cursor − 21 s was there for the
+    // previous tick's query (it ran after its clock read the cursor): dropped.
+    expect(manterLinha(linha('P', S - 30 * SEG, S - 21 * SEG), tickEmS())).toBe(false);
+  });
+
+  it('★ the regression: the old 20-s window, `(cursor − 20 s, agora]` keeping by stamp alone, drops that late-committed row', () => {
+    const antiga: JanelaEstoqueAmazon = {
+      desdeMs: S - 20 * SEG,
+      ateMs: S + 5 * MIN,
+      manterDesdeMs: S - 20 * SEG,
+      commitAposMs: null,
+      forcarPorCommit: false,
+    };
+    const tarde = linha('P', S - 30 * SEG, S + SEG);
+    expect(manterLinha(tarde, antiga)).toBe(false);
+    expect(manterLinha(tarde, tickEmS())).toBe(true);
+  });
+
+  it('the commit test’s edge: committed EXACTLY at cursor − 20 s is dropped, 1 ms later is kept', () => {
+    expect(manterLinha(linha('P', S - 60 * SEG, S - 20 * SEG), tickEmS())).toBe(false);
+    expect(manterLinha(linha('P', S - 60 * SEG, S - 20 * SEG + 1), tickEmS())).toBe(true);
+    // Between the margin and the cursor itself: kept (the 20 s are the skew allowance).
+    expect(manterLinha(linha('P', S - 60 * SEG, S - SEG), tickEmS())).toBe(true);
+  });
+
+  it('★ the residue: a late commit stamped cursor − 6 min is OUT of the range; stamped cursor − 4 min 59 s it is kept', () => {
+    expect(manterLinha(linha('P', S - 6 * MIN, S + SEG), tickEmS())).toBe(false);
+    expect(manterLinha(linha('P', S - 4 * MIN - 59 * SEG, S + SEG), tickEmS())).toBe(true);
+    // The range is exclusive below: EXACTLY cursor − 5 min is out, 1 ms later is in.
+    expect(manterLinha(linha('P', S - 5 * MIN, S + SEG), tickEmS())).toBe(false);
+    expect(manterLinha(linha('P', S - 5 * MIN + 1, S + SEG), tickEmS())).toBe(true);
+  });
+
+  it('★ the residue under the full skew: the previous tick’s clock read the cursor 20 s AHEAD of Firestore’s, so its query ran at cursor − 20 s; a lag of 4 min 50 s + 1 ms is OUT, the same lag with no skew is kept', () => {
+    // The previous query ran at Firestore time S − 20 s; the row committed 1 ms after it.
+    const comSkew = linha('P', S - 20 * SEG - 4 * MIN - 50 * SEG, S - 20 * SEG + 1);
+    expect(manterLinha(comSkew, tickEmS())).toBe(false);
+    // NEAR-MISS: no skew (that query ran at S itself): the same lag is inside the reach-back.
+    const semSkew = linha('P', S - 4 * MIN - 50 * SEG, S + 1);
+    expect(manterLinha(semSkew, tickEmS())).toBe(true);
   });
 
   it('a cursor older than 24 h is clamped to agora − 24 h, and truncada', () => {
@@ -108,24 +160,57 @@ describe('★ the tick’s window', () => {
     expect(j).toMatchObject({
       desdeMs: agoraMs - JANELA_MAXIMA_MS,
       ateMs: agoraMs,
+      manterDesdeMs: agoraMs - JANELA_MAXIMA_MS,
       truncada: true,
     });
   });
 
-  it('NEAR-MISS: a cursor exactly 24 h − 20 s old is not clamped', () => {
-    const agoraMs = S - 20 * SEG + JANELA_MAXIMA_MS;
-    expect(janelaDoTick({ cursorMs: S, agoraMs })).toMatchObject({
-      desdeMs: S - 20 * SEG,
+  it('★ the truncada edge: a cursor EXACTLY 24 h − 5 min old is not clamped; 1 ms older it is', () => {
+    const agoraMs = S + 30 * 60 * MIN;
+    const naBorda = agoraMs - JANELA_MAXIMA_MS + 5 * MIN;
+    expect(janelaDoTick({ cursorMs: naBorda, agoraMs })).toMatchObject({
+      desdeMs: naBorda - 5 * MIN,
+      manterDesdeMs: naBorda - 20 * SEG,
+      truncada: false,
+    });
+    expect(janelaDoTick({ cursorMs: naBorda - 1, agoraMs })).toMatchObject({
+      desdeMs: agoraMs - JANELA_MAXIMA_MS,
+      manterDesdeMs: naBorda - 1 - 20 * SEG,
+      truncada: true,
+    });
+  });
+
+  it('★ the clamp now fires 4 min 40 s sooner: a cursor 24 h − 20 s old (uncut by a 20-s range) is truncada', () => {
+    expect(SOBREPOSICAO_CATCH_UP_MS - SOBREPOSICAO_MS).toBe(4 * MIN + 40 * SEG);
+    const agoraMs = S + 30 * 60 * MIN;
+    const cursorMs = agoraMs - JANELA_MAXIMA_MS + 20 * SEG;
+    expect(janelaDoTick({ cursorMs, agoraMs })).toMatchObject({
+      desdeMs: agoraMs - JANELA_MAXIMA_MS,
+      truncada: true,
+    });
+  });
+
+  it('★ the null edge: a cursor whose overlap floor (cursor − 20 s) EQUALS the clock ⇒ no window; 1 ms less ⇒ a window (the cursor never moves back)', () => {
+    expect(janelaDoTick({ cursorMs: S + 21 * SEG, agoraMs: S })).toBeNull();
+    expect(janelaDoTick({ cursorMs: S + 20 * SEG, agoraMs: S })).toBeNull();
+    expect(janelaDoTick({ cursorMs: S + 20 * SEG - 1, agoraMs: S })).toEqual({
+      desdeMs: S + 20 * SEG - 1 - 5 * MIN,
+      ateMs: S,
+      manterDesdeMs: S - 1,
+      commitAposMs: S - 1,
+      forcarPorCommit: false,
       truncada: false,
     });
   });
 
-  it('a cursor ahead of this clock by more than the overlap ⇒ no window (the cursor never moves back)', () => {
-    expect(janelaDoTick({ cursorMs: S + 21 * SEG, agoraMs: S })).toBeNull();
-    expect(janelaDoTick({ cursorMs: S + 20 * SEG, agoraMs: S })).toBeNull();
-    expect(janelaDoTick({ cursorMs: S + 19 * SEG, agoraMs: S })).toMatchObject({
-      desdeMs: S - SEG,
-      ateMs: S,
+  it('a cursor in the first 20 s of the epoch: every bound stays a non-negative ms instant', () => {
+    expect(janelaDoTick({ cursorMs: 5 * SEG, agoraMs: MIN })).toEqual({
+      desdeMs: 0,
+      ateMs: MIN,
+      manterDesdeMs: 0,
+      commitAposMs: 0,
+      forcarPorCommit: false,
+      truncada: false,
     });
   });
 
@@ -150,12 +235,13 @@ describe('★ the tick’s window', () => {
 });
 
 describe('★ the recovery window: a snapshot S and no pending start', () => {
-  it('reaches back 5 minutes and keeps only what COMMITTED after S − 20 s', () => {
+  it('reaches back 5 minutes, keeps only what COMMITTED after S − 20 s, and forces by commit', () => {
     expect(catchUp()).toEqual({
       desdeMs: S - 5 * MIN,
       ateMs: S + 10 * MIN,
       manterDesdeMs: null,
       commitAposMs: S - 20 * SEG,
+      forcarPorCommit: true,
     });
   });
 
@@ -209,6 +295,7 @@ describe('★ the recovery window with a pending start p', () => {
       ateMs: S + 10 * MIN,
       manterDesdeMs: p,
       commitAposMs: S - 20 * SEG,
+      forcarPorCommit: true,
     });
     expect(manterLinha(linha('P', p + 1, p + 1), janela())).toBe(true);
     expect(manterLinha(linha('P', S - 60 * SEG, S - 60 * SEG), janela())).toBe(true);
@@ -245,7 +332,13 @@ describe('★ the recovery window with a pending start p', () => {
 
   it('a vez recovery (snapshotEmMs null): the range is (p, agora], nothing forced', () => {
     const j = janelaDaRecuperacao({ snapshotEmMs: null, pendenteDesdeMs: p, agoraMs: S });
-    expect(j).toEqual({ desdeMs: p, ateMs: S, manterDesdeMs: p, commitAposMs: null });
+    expect(j).toEqual({
+      desdeMs: p,
+      ateMs: S,
+      manterDesdeMs: p,
+      commitAposMs: null,
+      forcarPorCommit: false,
+    });
     if (j === null) throw new Error('janela esperada');
     expect(manterLinha(linha('P', p + 1, S), j)).toBe(true);
     expect(forcarSku([linha('P', p + 1, S)], j)).toBe(false);
@@ -288,6 +381,53 @@ describe('★ the recovery window with a pending start p', () => {
   });
 });
 
+describe('★ forcing: only a window that forces by commit forces', () => {
+  /** SKU-P's observation (P probes itself); P's only row stamped S − 30 s, committed S + 1 s. */
+  function observacoesDeP(janela: JanelaEstoqueAmazon) {
+    const { produtos } = produtosDaJanela([linha('P', S - 30 * SEG, S + SEG)], janela);
+    return observacoesDaJanela({
+      produtos,
+      sondasPorProduto: new Map([['P', ['P']]]),
+      skusPorSonda: new Map([['P', ['SKU-P']]]),
+      janela,
+    }).map((o) => [o.sku, o.forcar]);
+  }
+
+  it('★ the tick: a SKU whose only kept row passed the commit test is NOT forced', () => {
+    expect(observacoesDeP(tickEmS())).toEqual([['SKU-P', false]]);
+  });
+
+  it('★ NEAR-MISS: the SAME row under a recovery with a snapshot IS forced', () => {
+    const j = janelaDaRecuperacao({ snapshotEmMs: S, pendenteDesdeMs: null, agoraMs: S + 5 * MIN });
+    if (j === null) throw new Error('janela esperada');
+    expect(observacoesDeP(j)).toEqual([['SKU-P', true]]);
+  });
+
+  it('forcarSku never forces a window with forcarPorCommit false; the same rows and keep rule with it true do', () => {
+    const linhas = [linha('P', S - 30 * SEG, S + SEG), linha('Q', S + MIN)];
+    expect(forcarSku(linhas, { ...catchUp(), forcarPorCommit: false })).toBe(false);
+    expect(forcarSku(linhas, catchUp())).toBe(true);
+  });
+
+  it('★ a null `commitAposMs` keeps NOTHING by commit and forces nothing, even with `forcarPorCommit` set and a stamp rule above the range start', () => {
+    const semCommit: JanelaEstoqueAmazon = {
+      desdeMs: S - 5 * MIN,
+      ateMs: S + 5 * MIN,
+      manterDesdeMs: S,
+      commitAposMs: null,
+      forcarPorCommit: true,
+    };
+    // In range, stamped below the stamp rule, committed after everything.
+    const tarde = linha('P', S - MIN, S + MIN);
+    expect(manterLinha(tarde, semCommit)).toBe(false);
+    expect(forcarSku([tarde], semCommit)).toBe(false);
+    // NEAR-MISS: the same window with a commit filter below that commit keeps and forces it.
+    const comCommit = { ...semCommit, commitAposMs: S - 20 * SEG };
+    expect(manterLinha(tarde, comCommit)).toBe(true);
+    expect(forcarSku([tarde], comCommit)).toBe(true);
+  });
+});
+
 describe('★ units: ms everywhere, ONE conversion', () => {
   it('★ a snapshot in µs is compared WITHOUT conversion: it is THROWN, and even forced into a window it excludes everything (the cross-unit trap, made visible)', () => {
     const emUs = S * 1_000;
@@ -314,6 +454,7 @@ describe('★ units: ms everywhere, ONE conversion', () => {
       ateMs: S + MIN,
       manterDesdeMs: null,
       commitAposMs: emUs - MARGEM_COMMIT_MS,
+      forcarPorCommit: true,
     };
     expect(manterLinha(linha('P', S, S + 30 * SEG), j)).toBe(false);
   });

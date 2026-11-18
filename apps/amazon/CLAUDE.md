@@ -522,7 +522,19 @@ the checkout print and the `/pedidos` row action), which needs this backend depl
   start whichever conta took it, so it is free by the next tick: no
   depósito ⇒ `semDeposito`; no cursor ⇒ the cursor stored at now, no window; a depósito other
   than `depositoDoCursor` (compared as ids) ⇒ no window, the WARNING `deposito-do-cursor-mudou`.
-  **T5–T6** `janelaDoTick` — its `RangeError` caught BY CLASS around that call alone
+  **T5–T6** `janelaDoTick` — `(max(cursor − 5 min, agora − 24 h), agora]`, keeping a row
+  stamped after `cursor − 20 s` or stamped further back but COMMITTED after `cursor − 20 s`
+  (the main estoque writer, `apps/functions/src/estoques/sincronizarEstoquePedido.ts`,
+  stamps BEFORE its transaction, so a row can commit after the tick that read past its
+  stamp), never forcing (`forcarPorCommit: false`); `truncada` once `cursor − 5 min` is
+  more than 24 h back; no window when the cursor is ahead of the clock by 20 s or more.
+  ⚠️ Residue: a commit lagging its stamp by more than about 5 minutes (as little as
+  4 min 40 s when the tick's clock runs the full 20-s skew ahead of Firestore's) across a
+  tick boundary is still missed (the SKU's next movement or the daily reconcile corrects
+  it). Cost: the rows stamped in the 4 min 40 s below `cursor − 20 s` are read again and
+  dropped unless committed late (a busy depósito reads each row about twice; the idle
+  tick's operation COUNT is unchanged), and they count toward the 10 × 300 page cap, so a
+  burst reaches `truncada` sooner. Its `RangeError` is caught BY CLASS around that call alone
   (`janela-invalida`, the cursor untouched, the next conta goes on) — then
   `descobrirJanelaEstoqueAmazon` (`descobertaFirestore.ts`, the ONE window reader): per depósito
   ref form ONE collection-group query (never `in`), `ultimaModificacao >` the start AND `<=` the
@@ -538,15 +550,28 @@ the checkout print and the `/pedidos` row action), which needs this backend depl
   write path sends) counted and dropped; 31–3,000 ⇒ a delta feed; more or a truncated window ⇒
   a reconcile. ⚠️ Neither hand-off has a consumer yet: each is a
   WARNING placeholder (`feed-necessario`, `reconciliacao-necessaria`) with the cursor KEPT.
+  ⚠️ The tick's window cannot be copied field for field into today's window batch:
+  `janelaDoTick`'s `commitAposMs` is never null, while `loteJanelaFeedAmazonSchema`
+  (`feeds/tarefaLote.ts`) pairs `commitAposMs` with `esperaAteMs` and `classeDoLote`
+  (`feeds/vezFeed.ts`) reads `commitAposMs === null` as tick-born (on a held lease a
+  tick-born batch records its start as the pending one, a recovery-born one waits, then
+  goes per SKU). The PR that makes the window feed durable must either (a) carry a tick
+  batch stamp-only from its RANGE start (`manterDesdeMs: desdeMs`, `commitAposMs: null`:
+  still tick-born, a superset of what the tick keeps, at the cost of the 4 min 40 s band's
+  SKUs joining the batch), or (b) add an explicit origin field (with `forcarPorCommit`) and
+  relax both rules. Never map the tick's `manterDesdeMs` alone without its `commitAposMs`,
+  and never record it as the pending start: a `vez` recovery keeps by stamp only, so either
+  reopens the late-commit gap.
   **T8** the aviso `estoque-sem-deposito` BEFORE the final write (clocked by T4's read time),
   on the flag's TRANSITION, and re-synced to the current condition by a run that took over an
   UNRELEASED lease (an earlier run may have landed its aviso and lost the flag); then the final
   write on the lease's `writeTime`, the cursor advance-only and moved only past a window whose
   every SKU the payload can carry was enqueued (or that had none).
   **T9** ONE `evento: 'estoque'` line
-  per conta (`fase: 'tick'`). A Firestore status error and an unparseable sync doc are contained
-  per conta; a named producer failure ⇒ `enfileiramento-falhou`, the cursor kept; anything
-  else fails the tick.
+  per conta (`fase: 'tick'`); its `linhas` counts every row the window query returned, the
+  reach-back's dropped re-reads included. A Firestore status error and an unparseable sync
+  doc are contained per conta; a named producer failure ⇒ `enfileiramento-falhou`, the
+  cursor kept; anything else fails the tick.
 - **The recovery delta** (PR 12-e2) `estoque/deltaEstoque.ts`, `enviarDeltaEstoqueAmazon`, with
   NO caller until the stock feed provider: `janelaDaRecuperacao` (its `RangeError` caught by
   class: `janela-invalida`, nothing read) → the same window reader → ≤ 30 SKUs as patch tasks
@@ -763,9 +788,13 @@ the checkout print and the `/pedidos` row action), which needs this backend depl
   included, or the conta's last stock feed's end, inside the documented 15-min lag; a `feed`
   outcome is never read per SKU; a forced catch-up drops ONLY the equality shortcut — and the
   batch form: ≤ 30 SKUs patches, 31+ one feed, a window batch above 3,000 a reconcile);
-  `descobertaEstoque.ts` (the tick's window, bounded both sides; the recovery's, `S − 5 min`
+  `descobertaEstoque.ts` (the tick's window, bounded both sides, reaching back to
+  `cursor − 5 min` (the commit lag of a writer that stamps before its transaction) and keeping
+  every row stamped after `cursor − 20 s` and every row COMMITTED after it, never forcing; the
+  recovery's, `S − 5 min`
   wide but keeping only rows COMMITTED after `S − 20 s`, plus every row past the pending start,
-  forced only by the commit test, the ONE `toMillis()`; rows → produtos by PATH → probes (the
+  forced only by the commit test and only there (`forcarPorCommit`); the commit test is the
+  ONE `toMillis()`; rows → produtos by PATH → probes (the
   parent too) → the conta's SKUs in both ref forms → per SKU its observation, the newest commit
   `updateTime`, compared as a `Timestamp`); `tarefaEstoque.ts` (the strict, quantity-free
   payload; the name `sha256Hex('estoque:<origem>:<conta>:<referencia>:<sku>')`, a delta's

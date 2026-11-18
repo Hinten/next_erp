@@ -9,30 +9,76 @@
  *
  * A window is a BOUNDED range of `estoques.ultimaModificacao` stamps at one
  * depósito, `(desdeMs, ateMs]` (the query reads `> desdeMs` and `<= ateMs`),
- * plus a KEEP RULE `{ manterDesdeMs, commitAposMs }` ({@link manterLinha}).
+ * plus a KEEP RULE `{ manterDesdeMs, commitAposMs }` ({@link manterLinha}) and
+ * whether that rule's commit test FORCES (`forcarPorCommit`, "Forcing" below).
  *
- *  - {@link janelaDoTick} — the 5-minute tick's: from its cursor less
- *    {@link SOBREPOSICAO_MS} (a writer's clock may trail the cursor's), never
- *    more than {@link JANELA_MAXIMA_MS} back (past it the window is clamped and
- *    `truncada`: a reconcile reads the rest), up to now. It keeps EVERY row.
+ * Both windows reach back {@link SOBREPOSICAO_CATCH_UP_MS} (5 minutes) below the
+ * instant they resume from, for ONE reason: the main estoque writer
+ * (`apps/functions/src/estoques/sincronizarEstoquePedido.ts`) takes its
+ * `ultimaModificacao` stamp BEFORE its transaction and keeps that stamp through
+ * the transaction's retries, so a row can COMMIT well after the instant its
+ * stamp names. A read that ran before that commit never saw the row, and its
+ * stamp sits below where the next read would otherwise start. Inside the
+ * reach-back only a LATE commit is kept: a row committed before that instant
+ * less {@link MARGEM_COMMIT_MS} (20 s, the skew allowed between our instance's
+ * clock and Firestore's) was there for the earlier read, so only a later commit
+ * can carry a movement that read missed.
+ *
+ *  - {@link janelaDoTick} — the 5-minute tick's, from its cursor `C`: the clock
+ *    the previous tick read BEFORE its own window query ran. The range is
+ *    `(max(C − 5 min, agora − 24 h), agora]`; a row STAMPED after `C − 20 s` is
+ *    kept (a writer's clock may trail the cursor's: the overlap,
+ *    {@link SOBREPOSICAO_MS}), and so is a row stamped further back but
+ *    COMMITTED after `C − 20 s`. Past {@link JANELA_MAXIMA_MS} the range is
+ *    clamped and `truncada` (a reconcile reads the rest): it is cut once
+ *    `C − 5 min` lies more than 24 h back, so a cursor more than 23 h 55 min
+ *    old is already truncated — 4 min 40 s sooner than a range starting at
+ *    `C − 20 s` would be. A cursor ahead of this clock by the overlap or more is no window.
+ *    There is NO first-tick case here: a sync document with no cursor stores
+ *    one at now and reads no window (`sincronizacaoEstoque.ts`, T4), and a
+ *    cursor removed by hand is that same first tick. Today nothing in the tick
+ *    resets a stored cursor (a depósito change and a refused cursor both keep
+ *    it); `sincronizacaoEstoqueAmazonSchema.cursorMs` documents a reset on a
+ *    depósito change once the reconcile hand-off is durable. Over ANY cursor
+ *    stored anew the reach-back keeps only what moved after it: rows stamped
+ *    after it less the overlap, and rows committed after it less the margin.
  *  - {@link janelaDaRecuperacao} — a feed's recovery (the catch-up), merged
  *    with the pending start of the window batches a held lease turned away.
- *    With a snapshot `S`, the range reaches back {@link SOBREPOSICAO_CATCH_UP_MS}
- *    (5 minutes: the main estoque writer takes its stamp BEFORE its transaction,
- *    whose retries can commit it well after `S` with a value below `S`), and
- *    inside it only the rows COMMITTED after `S − MARGEM_COMMIT_MS` are kept: a
- *    row committed before the snapshot's reads was read by them, so only a later
- *    commit can carry a value the feed missed. With a pending start `p`, every
- *    row stamped after `p` is kept too (those batches were never sent). Either
- *    input may be absent; both absent ⇒ no window.
+ *    With a snapshot `S`, the range reaches back to `S − 5 min`, and inside it
+ *    only the rows COMMITTED after `S − 20 s` are kept: a row committed before
+ *    the snapshot's reads was read by them. With a pending start `p`, every row
+ *    stamped after `p` is kept too (those batches were never sent). Either input
+ *    may be absent; both absent ⇒ no window.
+ *
+ * ### The residue and the cost
+ *
+ * A movement whose commit lags its stamp by more than about 5 minutes across a
+ * tick boundary is still missed by every tick: its stamp lies below every later
+ * range. Within the 20-s skew the margin allows, the bound is as low as
+ * 4 min 40 s: when the tick's clock read the cursor 20 s AHEAD of Firestore's,
+ * the previous query ran at `C − 20 s` on Firestore's clock, so a row stamped
+ * just below `C − 5 min` and committed just after that query is out of every
+ * later range. The SKU's next movement, or the daily reconcile, corrects it.
+ *
+ * The reach-back is paid mostly in rows: the rows stamped in the 4 min 40 s
+ * between `C − 5 min` and `C − 20 s` are returned by the window query again
+ * (projected to the stamp) and dropped here unless they committed late (no
+ * produto read follows a dropped row), so a busy depósito reads each row about
+ * twice. An idle tick runs the same queries as before; on a busy depósito the
+ * re-read rows can push a ref form past a page boundary (one more window query
+ * per page), and every one counts toward the window's page cap
+ * ({@link TETO_PAGINAS_JANELA} pages of {@link LINHAS_POR_PAGINA_JANELA}), so a
+ * burst reaches `truncada` — a reconcile — sooner.
  *
  * ## Forcing
  *
  * {@link forcarSku}: a SKU is FORCED (sent even when Amazon's live read already
- * shows its ERP value) when one of its kept rows passed the COMMIT test: the
- * feed may have read that row's old value and its message may still land after
- * the live read. A row kept only by the pending start is NOT forced: its live
- * read is trustworthy.
+ * shows its ERP value) only by a window whose `forcarPorCommit` is set — a
+ * recovery with a snapshot — and only when one of its kept rows passed the
+ * COMMIT test: the feed may have read that row's old value and its message may
+ * still land after the live read. A row kept only by the pending start is NOT
+ * forced: its live read is trustworthy. The TICK never forces: a row its commit
+ * test keeps raced no feed, so the patch task's live read stands.
  *
  * ## Units
  *
@@ -42,8 +88,9 @@
  * µs value) is THROWN, never read as an empty window. The ONE
  * conversion is the commit test's: a row's commit `updateTime` (a Firestore
  * `Timestamp`, Firestore's wall clock) becomes ms with `toMillis()` in
- * `commitAposMargem` alone, compared with `S − 20 s` (our instance's wall
- * clock), and the 20-s margin is the tick's own skew allowance. Everywhere else
+ * `commitAposMargem` alone, compared with the window's `commitAposMs` — the
+ * tick's cursor or a feed's snapshot less 20 s, our instance's wall clock — and
+ * the 20-s margin is the tick's own skew allowance. Everywhere else
  * an `updateTime` is an IDENTITY (the observation), compared as a `Timestamp`
  * (seconds, then the sub-second part, read by {@link partesDoCommit} alone),
  * never converted and never compared with a writer's ms stamp.
@@ -80,10 +127,20 @@ export const SOBREPOSICAO_MS = 20_000;
 /** The furthest back a tick reads: 24 hours. Past it the window is clamped and `truncada`. */
 export const JANELA_MAXIMA_MS = 86_400_000;
 
-/** How far below a feed's snapshot the recovery's RANGE reaches: 5 minutes (module header). */
+/**
+ * How far a writer's COMMIT may lag the stamp it took, and so how far BOTH
+ * windows reach back below the instant they resume from (the tick's cursor, a
+ * feed's snapshot): 5 minutes. Inside that reach-back a row is kept only when it
+ * committed after the instant less {@link MARGEM_COMMIT_MS}; a commit lagging
+ * its stamp by more than about this (as little as this less the margin, under
+ * the full clock skew) is missed (module header, "The residue and the cost").
+ */
 export const SOBREPOSICAO_CATCH_UP_MS = 300_000;
 
-/** The commit test's margin below the snapshot: the tick's own skew allowance. */
+/**
+ * The commit test's margin below the instant a window resumes from (the tick's
+ * cursor, a feed's snapshot): the tick's own skew allowance.
+ */
 export const MARGEM_COMMIT_MS = SOBREPOSICAO_MS;
 
 /**
@@ -118,11 +175,16 @@ export interface JanelaEstoqueAmazon {
   readonly ateMs: number;
   /** ms — keep a row STAMPED after it; `null` keeps none this way. */
   readonly manterDesdeMs: number | null;
-  /** ms — keep (and force) a row COMMITTED after it; `null` keeps none this way. */
+  /** ms — keep a row COMMITTED after it; `null` keeps none this way. */
   readonly commitAposMs: number | null;
+  /**
+   * Whether a kept row that passed the commit test FORCES its SKU (module
+   * header, "Forcing"): set for a recovery with a snapshot, never for the tick.
+   */
+  readonly forcarPorCommit: boolean;
 }
 
-/** The tick's window: it keeps every row, and says whether the 24-h clamp cut it. */
+/** The tick's window: it also says whether the 24-h clamp cut its range. */
 export interface JanelaTickEstoqueAmazon extends JanelaEstoqueAmazon {
   readonly truncada: boolean;
 }
@@ -148,10 +210,12 @@ function exigirNaoAdiantado(valor: number, agoraMs: number, campo: string): void
 }
 
 /**
- * The tick's window (module header): `(max(cursor − 20 s, agora − 24 h), agora]`,
- * keeping every row. `null` when the cursor is ahead of this clock by more than
- * the overlap (another instance's clock ran ahead): nothing to read, and the
- * tick keeps its cursor, which never moves back.
+ * The tick's window (module header): the range
+ * `(max(cursor − 5 min, agora − 24 h), agora]`, keeping a row stamped after
+ * `cursor − 20 s` or committed after `cursor − 20 s`, never forcing. `truncada`
+ * when the 24-h clamp cut the range. `null` when the cursor is ahead of this
+ * clock by the overlap or more (another instance's clock ran ahead): nothing any
+ * tick could still miss, and the tick keeps its cursor, which never moves back.
  *
  * @throws {RangeError} an instant outside a non-negative safe integer, or a
  *   cursor more than {@link ADIANTAMENTO_MAXIMO_MS} ahead (a µs value or
@@ -164,23 +228,28 @@ export function janelaDoTick(entrada: {
   const cursorMs = exigirMs(entrada.cursorMs, 'cursorMs');
   const agoraMs = exigirMs(entrada.agoraMs, 'agoraMs');
   exigirNaoAdiantado(cursorMs, agoraMs, 'cursorMs');
-  const pelaSobreposicao = cursorMs - SOBREPOSICAO_MS;
+  const pelaRecuperacao = cursorMs - SOBREPOSICAO_CATCH_UP_MS;
   const pelaJanelaMaxima = agoraMs - JANELA_MAXIMA_MS;
-  const desdeMs = Math.max(0, pelaSobreposicao, pelaJanelaMaxima);
-  if (desdeMs >= agoraMs) return null;
+  const desdeMs = Math.max(0, pelaRecuperacao, pelaJanelaMaxima);
+  const manterDesdeMs = Math.max(desdeMs, cursorMs - SOBREPOSICAO_MS);
+  // The cursor ahead of this clock by the overlap or more (the 24-h floor never
+  // reaches a clock, and 0 only a clock of 0): nothing any tick could still miss.
+  if (manterDesdeMs >= agoraMs) return null;
   return {
     desdeMs,
     ateMs: agoraMs,
-    manterDesdeMs: desdeMs,
-    commitAposMs: null,
-    truncada: pelaSobreposicao < pelaJanelaMaxima,
+    manterDesdeMs,
+    commitAposMs: Math.max(0, cursorMs - MARGEM_COMMIT_MS),
+    forcarPorCommit: false,
+    truncada: pelaRecuperacao < pelaJanelaMaxima,
   };
 }
 
 /**
  * A recovery's window (module header): `(min(S − 5 min, p), agora]`, keeping
- * every row stamped after `p` and every row committed after `S − 20 s`. `null`
- * when both `S` and `p` are absent, or when the range is empty.
+ * every row stamped after `p` and every row committed after `S − 20 s`, the
+ * latter forcing whenever there is a snapshot. `null` when both `S` and `p` are
+ * absent, or when the range is empty.
  *
  * @param snapshotEmMs ms — the recovered feed's snapshot; `null` when nothing
  *   of a feed may have applied (a `vez` release, a cancelled feed).
@@ -216,6 +285,7 @@ export function janelaDaRecuperacao(entrada: {
     ateMs: agoraMs,
     manterDesdeMs: pendenteDesdeMs,
     commitAposMs: snapshotEmMs === null ? null : Math.max(0, snapshotEmMs - MARGEM_COMMIT_MS),
+    forcarPorCommit: snapshotEmMs !== null,
   };
 }
 
@@ -247,11 +317,15 @@ export function manterLinha(linha: LinhaJanelaEstoqueAmazon, janela: JanelaEstoq
   return commitAposMargem(linha, janela);
 }
 
-/** A SKU is forced when one of its KEPT rows passed the commit test (module header). */
+/**
+ * A SKU is forced when the window forces by commit and one of its KEPT rows
+ * passed the commit test (module header, "Forcing").
+ */
 export function forcarSku(
   linhas: readonly LinhaJanelaEstoqueAmazon[],
   janela: JanelaEstoqueAmazon,
 ): boolean {
+  if (!janela.forcarPorCommit) return false;
   return linhas.some((l) => manterLinha(l, janela) && commitAposMargem(l, janela));
 }
 

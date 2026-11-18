@@ -310,6 +310,7 @@ describe('★ the catch-up: EXACTLY the rows committed after S − 20 s among th
       ateMs: agoraMs,
       manterDesdeMs: null,
       commitAposMs: s - MARGEM_COMMIT_MS,
+      forcarPorCommit: true,
     });
     expect(consultasDaJanela().map((q) => q.filtros)).toEqual(
       [CANONICA, NUA].map((forma) => [
@@ -338,6 +339,7 @@ describe('★ the catch-up: EXACTLY the rows committed after S − 20 s among th
       ateMs: agoraMs,
       manterDesdeMs: p,
       commitAposMs: s - MARGEM_COMMIT_MS,
+      forcarPorCommit: true,
     });
     // M1, M2 and P1 are kept by the start — and M1/M2 committed BEFORE the
     // margin, so not forced; P1 and X committed after it, so forced.
@@ -371,7 +373,13 @@ describe('★ the catch-up: EXACTLY the rows committed after S − 20 s among th
     const r = await delta({ snapshotEmMs: null, pendenteDesdeMs: p }, {}, { referencia: 'vez:x1' });
 
     expect(r).toMatchObject({ skus: 1, forcados: 0, tarefas: 1 });
-    expect(r.janela).toEqual({ desdeMs: p, ateMs: agoraMs, manterDesdeMs: p, commitAposMs: null });
+    expect(r.janela).toEqual({
+      desdeMs: p,
+      ateMs: agoraMs,
+      manterDesdeMs: p,
+      commitAposMs: null,
+      forcarPorCommit: false,
+    });
     const commit = fake.carimboDe(`produtos/A/estoques/${makeEstoqueUid('A', DEP)}`);
     if (commit === undefined) throw new Error('fixture');
     expect(enfileiradas).toEqual([
@@ -455,7 +463,13 @@ describe('★ the batch form: ≤ 30 as patches, 31–3,000 the delta-feed place
       tarefas: 0,
     });
     // The window travels, never the SKUs: bounds and keep rule only.
-    expect(r.janela).toEqual({ desdeMs: P, ateMs: agoraMs, manterDesdeMs: P, commitAposMs: null });
+    expect(r.janela).toEqual({
+      desdeMs: P,
+      ateMs: agoraMs,
+      manterDesdeMs: P,
+      commitAposMs: null,
+      forcarPorCommit: false,
+    });
     // NEAR-MISS: the answer carries no list at all and names none of the batch's
     // SKUs — a list beside the window would grow with the batch.
     expect(Object.values(r).filter((v) => Array.isArray(v))).toEqual([]);

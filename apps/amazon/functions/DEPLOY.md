@@ -305,8 +305,9 @@ are local builds; neither deploys anything.
 - **`sweepAmazonStock`** — `onSchedule('3,8,13,18,23,28,33,38,43,48,53,58 * * * *')`. The
   FIVE-MINUTE STOCK TICK (master plan step 12, PR 12-e2;
   `lib/amazon/estoque/sincronizacaoEstoque.ts`): per active conta, the `estoques` rows stamped
-  at the conta's depósito since the durable cursor in `sincronizacaoEstoqueAmazon/{contaId}`
-  (one collection-group window query per depósito ref form, at most ten pages), their
+  at the conta's depósito from 5 minutes below the durable cursor in
+  `sincronizacaoEstoqueAmazon/{contaId}`, a row kept when stamped or committed after
+  cursor − 20 s (one collection-group window query per depósito ref form, at most ten pages), their
   produtos' `prodAmazon` partitions, and — for 1 to 30 moved SKUs — ONE patch task per SKU
   onto `processAmazonStockPatch`, NAMED by its observation (the newest commit time among the
   SKU's rows), so a re-read window dedupes. 31 to 3,000 SKUs (a delta feed), more, a
@@ -315,7 +316,8 @@ are local builds; neither deploys anything.
   KEPT. ⚠️ Until the stock feed and the reconcile exist (PR 12-f) to make those hand-offs
   durable, keep `AMAZON_MODO_ESTOQUE` `off` wherever the read switch is `on`: a placeholder
   never moves the cursor, so every tick re-reads the growing window (up to ten pages, about
-  2,700 masked produto reads and their partition listings) for up to 24 h, and past 24 h the
+  2,700 masked produto reads and their partition listings) for up to 23 h 55 min (the window
+  reaches 5 minutes below the cursor), and past that the
   window is clamped to a reconcile placeholder: every tick then reads nothing and the cursor
   never moves again. Two gates with ZERO Firestore operations: the read switch, then the stock valve
   `AMAZON_MODO_ESTOQUE` (`off` while unset), each ONE INFO line. A conta with no depósito
@@ -647,7 +649,8 @@ below stays COMMENTED OUT until the window:**
 # falls back to the queue's own retry (one attempt spent). The stock tick's
 # patch tasks too: the tick ends the conta `enfileiramento-falhou` and KEEPS its
 # cursor, so every tick while the valve stays closed re-reads the whole, growing
-# window, and once the cursor is 24 h old the window is clamped to a reconcile
+# window, and once the cursor is more than 23 h 55 min old (the window reaches
+# 5 minutes below it) the window is clamped to a reconcile
 # hand-off (a WARNING placeholder until PR 12-f: see `sweepAmazonStock`). Strict `=== '1'`:
 # unset, blank, `true` and `1 ` all leave enqueuing ON. Use it before the queue
 # IAM is granted.

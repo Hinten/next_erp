@@ -48,8 +48,19 @@
  * - **T5** — `janelaDoTick` over the stored cursor. A `RangeError` from it (a
  *   cursor too far ahead of the clock to be a ms instant) ends THIS conta with
  *   its line naming the class, the cursor untouched; the other contas go on. A
- *   `null` window (a cursor ahead of this clock by more than the overlap) reads
- *   nothing. Otherwise `descobrirJanelaEstoqueAmazon`: the window, paged, at
+ *   `null` window (a cursor ahead of this clock by the overlap or more) reads
+ *   nothing. The window reaches 5 minutes below the cursor and keeps a row
+ *   stamped after `cursor − 20 s`, or stamped further back but COMMITTED after
+ *   `cursor − 20 s`: the main estoque writer
+ *   (`apps/functions/src/estoques/sincronizarEstoquePedido.ts`) takes its stamp
+ *   before its transaction, so a row the previous tick's query could not see
+ *   yet can carry a stamp below the overlap. A kept row never forces its SKU
+ *   here. A commit lagging its stamp by more than about 5 minutes (as little as
+ *   4 min 40 s when this clock runs the full 20-s skew ahead of Firestore's)
+ *   across a tick boundary is still missed (the SKU's next movement or the
+ *   daily reconcile corrects it), and the rows of the reach-back are read
+ *   again and dropped unless committed late (`descobertaEstoque.ts`, "The
+ *   residue and the cost"). Then `descobrirJanelaEstoqueAmazon`: the window, paged, at
  *   most ten pages over both ref forms. Truncated (the page cap or the 24-hour
  *   clamp) ⇒ T6 is skipped and the window goes to a reconcile. The deadline
  *   reached before or between WINDOW pages says only that the reads were slow,
@@ -88,7 +99,9 @@
  *   re-applied.
  * - **T9** — ONE `evento: 'estoque'` line per conta run (`fase: 'tick'`): the
  *   outcome, the batch form, the hand-off, the rows, produtos, probes, SKUs and
- *   tasks, `truncada`, `orcamentoEsgotado`; never a SKU, a ref or a value.
+ *   tasks, `truncada`, `orcamentoEsgotado`; never a SKU, a ref or a value. The
+ *   rows (`linhas`) are every row the window query RETURNED, the reach-back's
+ *   re-read rows the keep rule dropped included, never only the ones that moved.
  *
  * ## The hand-offs are not durable yet
  *
@@ -97,7 +110,10 @@
  * yet, so each is a WARNING placeholder (`feed-necessario`,
  * `reconciliacao-necessaria`, `deposito-do-cursor-mudou`) and the cursor is
  * KEPT: a hand-off that is not durable never moves it, so the window stays
- * readable until a durable hand-off replaces the line.
+ * readable until a durable hand-off replaces the line. The tick's window always
+ * carries a commit filter (`commitAposMs`, never null) and, unless clamped, a
+ * stamp keep rule above its range start: what carrying it into a durable window
+ * feed must preserve is in `apps/amazon/CLAUDE.md` (the tick's T7).
  *
  * ## A conta that fails
  *
@@ -249,7 +265,7 @@ export const DESFECHO_TICK_ESTOQUE_AMAZON = {
   enfileirado: 'enfileirado',
   /** The conta's first tick: the cursor stored at now, no window read. */
   primeiroTick: 'primeiro-tick',
-  /** The cursor is ahead of this clock by more than the overlap: nothing to read. */
+  /** The cursor is ahead of this clock by the overlap or more: nothing to read. */
   cursorAdiantado: 'cursor-adiantado',
   /** A hand-off placeholder (`repasse` names it): the cursor kept. */
   repassado: 'repassado',

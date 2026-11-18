@@ -13,6 +13,11 @@
  *    time; the overlap re-reading the row answers "already enqueued"; a rewrite
  *    that leaves `ultimaModificacao` unchanged (a writer whose clock lost the
  *    maximum) still moves the commit time, so the next tick mints a NEW task;
+ *  - ★ the commit lag on the server's REAL commit times: a row stamped below
+ *    `cursor − 20 s` but committed after it is kept (ONE task), one stamped
+ *    below the 5-minute reach-back is not, whatever its commit, and one stamped
+ *    inside the reach-back but committed before `cursor − 20 s` is returned and
+ *    dropped;
  *  - ★ the lease and the final write under the server's own preconditions: a
  *    held lease writes nothing, and a write landing between the lease and the
  *    final write is refused, the re-derive keeping the newer cursor;
@@ -75,8 +80,15 @@ const CAMINHO_PRODUTO = `produtos/${PRODUTO}`;
 const CAMINHO_ESTOQUE = `${CAMINHO_PRODUTO}/estoques/${makeEstoqueUid(PRODUTO, DEP)}`;
 const CAMINHO_SYNC = `sincronizacaoEstoqueAmazon/${CONTA}`;
 const SKU = `${P}SKU-1`;
-/** The tick's clock: an arbitrary ms instant (the window compares it with seeded stamps only). */
+/**
+ * The tick's clock in every case but the commit lag's: an arbitrary ms instant
+ * years AHEAD of the emulator's real commit times, so the window's commit test
+ * (a commit after `cursor − 20 s`) keeps no row there and the seeded stamps
+ * alone decide. The commit-lag case runs on the real clock instead.
+ */
 const T0 = 2_000_000_000_000;
+/** How far the tick's window reaches below its cursor, written out (the five minutes). */
+const CINCO_MINUTOS_MS = 300_000;
 
 /** The ONE place the switch is on: an object literal (module header). */
 const AMBIENTE = Object.freeze({ AMAZON_CHAMADAS: 'on', AMAZON_MODO_ESTOQUE: 'dry-run' });
@@ -278,8 +290,8 @@ describe.skipIf(!EMULATED)('the stock tick on real Firestore (emulator)', () => 
     await semearConta();
     await semearSync();
     await semearProduto();
-    // Just below the window: the window's lower bound excludes it.
-    await linha(T0 - INTERVALO_TICK_ESTOQUE_AMAZON_MS - 20_000);
+    // Just below the window's reach-back: the window's lower bound excludes it.
+    await linha(T0 - INTERVALO_TICK_ESTOQUE_AMAZON_MS - CINCO_MINUTOS_MS);
     const contagem: Contagem = { leituras: [], consultas: [], escritas: [] };
     const r = await tick(T0, contando(db(), contagem));
     expect(r).toMatchObject({
@@ -325,15 +337,15 @@ describe.skipIf(!EMULATED)('the stock tick on real Firestore (emulator)', () => 
       [SKU, 'delta', referenciaDaObservacao(commitA)],
     ]);
 
-    // The overlap re-reads the row (the cursor is t1, the window starts at
-    // t1 − 20 s): the same observation, already enqueued.
+    // The overlap re-reads the row (the cursor is t1, the window keeps every
+    // row stamped after t1 − 20 s): the same observation, already enqueued.
     const t2 = t1 + 10_000;
     expect(await tick(t2)).toMatchObject({ tarefas: 0, jaEnfileiradas: 1 });
     expect(enfileiradas).toHaveLength(1);
 
     // The second write keeps `ultimaModificacao` (its clock lost the maximum) but changes the
-    // row: the commit moves, so the observation is new (the window starts at
-    // t2 − 20 s, still below the row's stamp).
+    // row: the commit moves, so the observation is new (the window keeps every
+    // row stamped after t2 − 20 s, still below the row's stamp).
     const commitB = await linha(t1 - 5_000, 2);
     expect(commitB.isEqual(commitA)).toBe(false);
     const t3 = t2 + 5_000;
@@ -343,6 +355,65 @@ describe.skipIf(!EMULATED)('the stock tick on real Firestore (emulator)', () => 
       referenciaDaObservacao(commitB),
     ]);
     expect(await sincronizacao()).toMatchObject({ cursorMs: t3, vez: null });
+  });
+
+  it('★ the commit lag on REAL commit times: a row stamped below cursor − 20 s but committed after it ⇒ ONE task; NEAR-MISS: stamped below the 5-minute reach-back ⇒ none', async () => {
+    await semearConta();
+    await semearProduto();
+    // The real clock: the server's commit times are compared with this cursor.
+    const base = Date.now();
+    const cursorMs = base - 60_000;
+
+    // NEAR-MISS first: stamped base − 7 min, below cursor − 5 min, committed now.
+    await semearSync({ cursorMs });
+    await linha(base - 7 * 60_000);
+    expect(await tick(Date.now())).toMatchObject({
+      desfecho: DESFECHO_TICK_ESTOQUE_AMAZON.janelaVazia,
+      linhas: 0,
+      tarefas: 0,
+    });
+    expect(enfileiradas).toEqual([]);
+
+    // The same cursor again, the row rewritten stamped base − 100 s: below
+    // cursor − 20 s (base − 80 s), so only its real commit, now, keeps it.
+    await semearSync({ cursorMs });
+    const commit = await linha(base - 100_000, 2);
+    expect(commit.toMillis()).toBeGreaterThan(cursorMs - 20_000);
+    const agora = Date.now();
+    expect(await tick(agora)).toMatchObject({
+      desfecho: DESFECHO_TICK_ESTOQUE_AMAZON.enfileirado,
+      linhas: 1,
+      skus: 1,
+      tarefas: 1,
+    });
+    expect(enfileiradas.map((t) => [t.sku, t.origem, t.referencia])).toEqual([
+      [SKU, 'delta', referenciaDaObservacao(commit)],
+    ]);
+    expect(await sincronizacao()).toMatchObject({ cursorMs: agora, vez: null });
+  });
+
+  it('★ the commit test DROPS on REAL commit times: a row stamped inside the reach-back but committed before cursor − 20 s is returned and dropped, no produto read, no task', async () => {
+    await semearConta();
+    await semearProduto();
+    const base = Date.now();
+    const commit = await linha(base - 60_000);
+    // The cursor 21 s after the row's real commit: the commit test (after
+    // cursor − 20 s) drops it, while its stamp (about commit − 60 s) is above
+    // cursor − 5 min and below cursor − 20 s.
+    const cursorMs = commit.toMillis() + 21_000;
+    expect(base - 60_000).toBeGreaterThan(cursorMs - CINCO_MINUTOS_MS);
+    await semearSync({ cursorMs });
+    const contagem: Contagem = { leituras: [], consultas: [], escritas: [] };
+    const r = await tick(cursorMs + INTERVALO_TICK_ESTOQUE_AMAZON_MS, contando(db(), contagem));
+    expect(r).toMatchObject({
+      desfecho: DESFECHO_TICK_ESTOQUE_AMAZON.janelaVazia,
+      linhas: 1,
+      produtos: 0,
+      skus: 0,
+      tarefas: 0,
+    });
+    expect(enfileiradas).toEqual([]);
+    expect(contagem.leituras.filter((c) => c.startsWith('produtos/'))).toEqual([]);
   });
 
   it('★ the lease and the final write under the REAL preconditions: a held lease writes nothing; a write landing between the lease and the final write is refused by the server, and the re-derive keeps the newer cursor', async () => {
