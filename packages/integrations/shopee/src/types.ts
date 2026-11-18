@@ -1994,6 +1994,14 @@ export type ShopeeItemList = z.infer<typeof shopeeItemListPayloadSchema>;
 export const shopeeItemListSchema = wrappedOp(shopeeItemListPayloadSchema);
 export type ShopeeItemListResponse = z.infer<typeof shopeeItemListSchema>;
 
+const shopeeSearchItemPayloadSchema = z.object({
+  item_id_list: z.array(wireInt().refine((id) => id > 0)),
+  next_offset: z.string().nullable().default(null),
+});
+
+export type ShopeeSearchItem = z.infer<typeof shopeeSearchItemPayloadSchema>;
+export const shopeeSearchItemSchema = wrappedOp(shopeeSearchItemPayloadSchema);
+
 /* --------------------------- get_item_base_info --------------------------- */
 
 /** One value of an item's attribute. `value_unit` is the unit the seller picked. */
