@@ -114,7 +114,11 @@ function enviar(o: {
   });
 }
 
-/** A TICK-born window batch (no commit filter). */
+/**
+ * A TICK-born window batch, the tick's shape: its range from `desdeMs`, a stamp
+ * rule and a commit filter 4 min 40 s above it (the cursor less 20 s), never
+ * forcing, no wait.
+ */
 const janelaDoTick = (desdeMs = AGORA_MS - 10 * MIN, execucaoId = EXEC) =>
   enviar({
     execucaoId,
@@ -122,14 +126,15 @@ const janelaDoTick = (desdeMs = AGORA_MS - 10 * MIN, execucaoId = EXEC) =>
       tipo: 'janela',
       desdeMs,
       ateMs: desdeMs + 5 * MIN,
-      manterDesdeMs: desdeMs,
-      commitAposMs: null,
+      manterDesdeMs: desdeMs + 280_000,
+      commitAposMs: desdeMs + 280_000,
+      forcarPorCommit: false,
       esperaAteMs: null,
       depositoId: 'deposito-teste',
     },
   });
 
-/** A RECOVERY-born window batch (a commit filter, a bounded wait). */
+/** A RECOVERY-born window batch (a commit filter that forces, a bounded wait). */
 const janelaDaRecuperacao = (esperaAteMs: number, execucaoId = EXEC) =>
   enviar({
     execucaoId,
@@ -140,6 +145,7 @@ const janelaDaRecuperacao = (esperaAteMs: number, execucaoId = EXEC) =>
       ateMs: AGORA_MS - 1,
       manterDesdeMs: AGORA_MS - 20 * MIN,
       commitAposMs: AGORA_MS - 15 * MIN,
+      forcarPorCommit: true,
       esperaAteMs,
       depositoId: 'deposito-teste',
     },
@@ -183,6 +189,7 @@ const enviadoDe = (idadeMs: number, campos: Partial<VezFeedAmazon> = {}) =>
       ateMs: AGORA_MS - idadeMs - 5 * MIN,
       manterDesdeMs: AGORA_MS - idadeMs - 10 * MIN,
       commitAposMs: null,
+      forcarPorCommit: false,
       depositoId: 'deposito-teste',
     },
     ultimoEnvioMs: AGORA_MS - idadeMs,
@@ -207,6 +214,7 @@ const incertaDe = (idadeMs: number, campos: Partial<VezFeedAmazon> = {}) =>
       ateMs: AGORA_MS - idadeMs - 5 * MIN,
       manterDesdeMs: AGORA_MS - idadeMs - 10 * MIN,
       commitAposMs: null,
+      forcarPorCommit: false,
       depositoId: 'deposito-teste',
     },
     ultimoEnvioMs: AGORA_MS - idadeMs,
@@ -636,12 +644,14 @@ describe('★ the happy path: the order of every write around createFeed', () =>
       mensagens: SKUS.length,
       prazoEmMs: AGORA_MS + PRAZO_FEED_MS,
       origem: 'delta',
-      // The batch's own window, copied from the lease (a failed feed's members are re-sent from it).
+      // The batch's own window, copied from the lease (a failed feed's members are
+      // re-sent from it): its keep rule whole, the commit filter and forcarPorCommit included.
       janela: {
         desdeMs: AGORA_MS - 10 * MIN,
         ateMs: AGORA_MS - 5 * MIN,
-        manterDesdeMs: AGORA_MS - 10 * MIN,
-        commitAposMs: null,
+        manterDesdeMs: AGORA_MS - 10 * MIN + 280_000,
+        commitAposMs: AGORA_MS - 10 * MIN + 280_000,
+        forcarPorCommit: false,
         depositoId: 'deposito-teste',
       },
     });
@@ -659,6 +669,30 @@ describe('★ the happy path: the order of every write around createFeed', () =>
     // a rung that outran a failing create would find no record and end the chain).
     expect(rodadas[0]?.registros).toBe(1);
   });
+
+  it.each<[string, () => TarefaEnviarFeedAmazon]>([
+    ['the tick’s batch (a commit filter that does not force)', () => janelaDoTick()],
+    [
+      'a forcing recovery’s batch (a commit filter that forces)',
+      () => janelaDaRecuperacao(AGORA_MS + HORA),
+    ],
+  ])(
+    '★ the lease and the record store the batch’s window WHOLE, forcarPorCommit included: %s',
+    async (_caso, tarefa) => {
+      const c = cenario();
+      const t = tarefa();
+      if (t.lote.tipo !== 'janela') throw new Error('teste: um lote de janela');
+      const { desdeMs, ateMs, manterDesdeMs, commitAposMs, forcarPorCommit, depositoId } = t.lote;
+      const janela = { desdeMs, ateMs, manterDesdeMs, commitAposMs, forcarPorCommit, depositoId };
+      const r = await c.rodar(t);
+      expect(r).toMatchObject({ acao: ACAO_ENVIO_FEED.enviado, registro: 'criado' });
+      // toEqual, not toMatchObject: the flag is compared exactly, never as a subset.
+      expect(lease(c)?.janela).toEqual(janela);
+      expect((c.fake.ler(registroDe(FEED)) as { janela?: unknown } | undefined)?.janela).toEqual(
+        janela,
+      );
+    },
+  );
 
   it('ONE dispatch line: evento estoque, fase envio, never a SKU or a document URL', async () => {
     const c = cenario();
@@ -1367,6 +1401,7 @@ describe('★ E4 — the run’s OWN lease resumes its own state', () => {
                 ateMs: t.lote.ateMs,
                 manterDesdeMs: t.lote.manterDesdeMs,
                 commitAposMs: t.lote.commitAposMs,
+                forcarPorCommit: t.lote.forcarPorCommit,
                 depositoId: t.lote.depositoId,
               }
             : null,

@@ -43,6 +43,7 @@ import {
   nomeRetomadaReconciliacao,
   referenciaVezFeed,
 } from '../feeds/tarefaLote';
+import { CLASSE_DO_LOTE, classeDoLote } from '../feeds/vezFeed';
 import { type DocData, FakeDb, asDb, grpc, increment } from '../testing/fakeDb';
 import {
   falhaDeConfiguracaoDoFunctions,
@@ -50,7 +51,7 @@ import {
   falhaDoFunctions,
 } from '../testing/falhaDeEnfileiramento';
 import { AGORA_MS, caminhoAviso, caminhoConta, loggerEspiao } from '../testing/fixtures';
-import { LINHAS_POR_PAGINA_JANELA, TETO_PAGINAS_JANELA } from './descobertaEstoque';
+import { LINHAS_POR_PAGINA_JANELA, TETO_PAGINAS_JANELA, janelaDoTick } from './descobertaEstoque';
 import { MOTIVO_ESTOQUE_AMAZON } from './motivosEstoque';
 import {
   AmazonEstoqueRegiaoDaFilaInvalidaError,
@@ -551,7 +552,10 @@ describe('★ T7: 1–30 SKUs ⇒ one NAMED patch task per observation', () => {
       tarefas: 0,
       cursorAvancou: true,
     });
-    const desdeMs = CURSOR - SOBREPOSICAO_MS;
+    // The tick's window WHOLE, written out: the range from 5 min below the
+    // cursor, the stamp rule and the commit filter at cursor − 20 s, never
+    // forcing, no wait — named by (conta, that range).
+    const desdeMs = CURSOR - CINCO_MINUTOS_MS;
     const execucaoId = execucaoIdDaJanelaFeed(CONTA, desdeMs, T0);
     expect(lotes).toEqual([
       {
@@ -566,8 +570,9 @@ describe('★ T7: 1–30 SKUs ⇒ one NAMED patch task per observation', () => {
             tipo: 'janela',
             desdeMs,
             ateMs: T0,
-            manterDesdeMs: desdeMs,
-            commitAposMs: null,
+            manterDesdeMs: CURSOR - 20_000,
+            commitAposMs: CURSOR - 20_000,
+            forcarPorCommit: false,
             esperaAteMs: null,
             depositoId: DEP,
           },
@@ -576,6 +581,22 @@ describe('★ T7: 1–30 SKUs ⇒ one NAMED patch task per observation', () => {
         atrasoS: 0,
       },
     ]);
+    // The payload is the planner's own window, field for field (bounds and keep rule).
+    const planejada = janelaDoTick({ cursorMs: CURSOR, agoraMs: T0 });
+    const [enviado] = lotes;
+    if (planejada === null || enviado?.tarefa.tipo !== 'feed-enviar') throw new Error('fixture');
+    expect(enviado.tarefa.lote).toEqual({
+      tipo: 'janela',
+      desdeMs: planejada.desdeMs,
+      ateMs: planejada.ateMs,
+      manterDesdeMs: planejada.manterDesdeMs,
+      commitAposMs: planejada.commitAposMs,
+      forcarPorCommit: planejada.forcarPorCommit,
+      esperaAteMs: null,
+      depositoId: DEP,
+    });
+    // NEAR-MISS: the batch's class is the tick's (it records a bare start), commit filter and all.
+    expect(classeDoLote(enviado.tarefa.lote)).toBe(CLASSE_DO_LOTE.janelaDoTick);
     // The payload never carries a SKU: its size is the same whatever the batch's.
     expect(JSON.stringify(lotes)).not.toContain('P-00');
     // A durable hand-off is a clean end: the cursor at the window's end, the counter at 0.
@@ -931,7 +952,8 @@ describe('★ the commit lag: a row stamped below the overlap but COMMITTED afte
       skus: 0,
       cursorAvancou: true,
     });
-    expect(fake.contagem).toEqual({ leituras: 2, chamadasGetAll: 0, consultas: 3, escritas: 2 });
+    // EXACTLY the idle tick's count (its T4b getAll of the run and the lease included).
+    expect(fake.contagem).toEqual({ leituras: 4, chamadasGetAll: 1, consultas: 3, escritas: 2 });
     expect(leiturasEm('produtos/')).toEqual([]);
     expect(listagens()).toEqual([]);
   });
@@ -949,11 +971,13 @@ describe('★ the commit lag: a row stamped below the overlap but COMMITTED afte
     const r = unica(await tick());
     expect(r).toMatchObject({
       repasse: REPASSE_TICK_ESTOQUE_AMAZON.reconciliacaoNecessaria,
+      entrega: 'pedido',
       truncada: true,
       paginas: TETO_PAGINAS_JANELA,
       produtos: 0,
     });
-    expect(fake.ler(sync())).toMatchObject({ cursorMs: CURSOR });
+    // The reconcile hand-off is durable, so the cursor moves past the window.
+    expect(fake.ler(sync())).toMatchObject({ cursorMs: T0 });
   });
 });
 

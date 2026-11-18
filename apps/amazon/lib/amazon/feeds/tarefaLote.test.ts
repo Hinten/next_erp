@@ -26,6 +26,7 @@ import {
   desfechoRecuperacaoFeedAmazonSchema,
   execucaoIdDaJanelaFeed,
   execucaoIdDaRecuperacaoFeed,
+  loteJanelaFeedAmazonSchema,
   nomeConsultaFeed,
   nomeEnvioFeed,
   nomeIncertoFeed,
@@ -54,23 +55,41 @@ const BLOCOS = {
   esperaAteMs: T0 + 6 * 3_600_000,
 };
 
-/** A TICK-born window batch: its keep rule is its start; no commit filter, no wait. */
+/** The tick's cursor: 5 minutes before T0. */
+const CURSOR = T0 - 300_000;
+
+/**
+ * A TICK-born window batch, the tick's shape for {@link CURSOR}: the range from
+ * the cursor less 5 minutes, a row kept when stamped OR committed after the
+ * cursor less 20 s — a commit filter that never forces — and no wait.
+ */
 const JANELA_DO_TICK = {
   tipo: TIPO_LOTE_FEED_AMAZON.janela,
-  desdeMs: T0 - 300_000,
+  desdeMs: CURSOR - 300_000,
   ateMs: T0,
-  manterDesdeMs: T0 - 300_000,
-  commitAposMs: null,
+  manterDesdeMs: CURSOR - 20_000,
+  commitAposMs: CURSOR - 20_000,
+  forcarPorCommit: false,
   esperaAteMs: null,
   depositoId: 'deposito-1',
 };
 
-/** A RECOVERY-born window batch: its commit filter, and how long it may wait. */
+/** A RECOVERY-born window batch: its commit filter, which forces, and how long it may wait. */
 const JANELA_DA_RECUPERACAO = {
   ...JANELA_DO_TICK,
   manterDesdeMs: T0 - 900_000,
   commitAposMs: T0 - 20_000,
+  forcarPorCommit: true,
   esperaAteMs: T0 + 3_600_000,
+};
+
+/** A recovery's window with no snapshot (a `vez` recovery): stamp-only, not forcing, no wait. */
+const JANELA_SEM_SNAPSHOT = {
+  ...JANELA_DO_TICK,
+  manterDesdeMs: T0 - 600_000,
+  commitAposMs: null,
+  forcarPorCommit: false,
+  esperaAteMs: null,
 };
 
 function enviar(lote: Record<string, unknown>) {
@@ -116,7 +135,8 @@ const RECUPERAR = {
     desdeMs: JANELA_DO_TICK.desdeMs,
     ateMs: JANELA_DO_TICK.ateMs,
     manterDesdeMs: JANELA_DO_TICK.manterDesdeMs,
-    commitAposMs: null,
+    commitAposMs: JANELA_DO_TICK.commitAposMs,
+    forcarPorCommit: false,
     depositoId: 'deposito-1',
   },
 };
@@ -167,6 +187,7 @@ describe('the payloads (.strict(), v: 1)', () => {
       enviar(BLOCOS),
       enviar(JANELA_DO_TICK),
       enviar(JANELA_DA_RECUPERACAO),
+      enviar(JANELA_SEM_SNAPSHOT),
       RESULTADO,
       { ...RESULTADO, contaId: null, rodada: 0, origem: ORIGEM_RESULTADO_FEED_AMAZON.notificacao },
       INCERTO,
@@ -232,14 +253,48 @@ describe('the payloads (.strict(), v: 1)', () => {
     });
 
     it('refuses a batch whose keep fields are both null', () => {
-      expect(aceita(enviar({ ...JANELA_DO_TICK, manterDesdeMs: null }))).toBe(false);
+      expect(aceita(enviar({ ...JANELA_DO_TICK, manterDesdeMs: null, commitAposMs: null }))).toBe(
+        false,
+      );
     });
 
-    it('refuses commitAposMs without esperaAteMs, and the reverse (NEAR-MISS: both, or neither, parse)', () => {
+    it('★ a TICK-born batch — a commit filter, forcarPorCommit false, no esperaAteMs — parses unchanged', () => {
+      expect(JANELA_DO_TICK.commitAposMs).not.toBeNull();
+      expect(tarefaLoteAmazonSchema.parse(enviar(JANELA_DO_TICK))).toEqual(enviar(JANELA_DO_TICK));
+      expect(loteJanelaFeedAmazonSchema.parse(JANELA_DO_TICK)).toEqual(JANELA_DO_TICK);
+    });
+
+    it('★ esperaAteMs is set EXACTLY when the batch forces (NEAR-MISS: the commit filter alone decides nothing)', () => {
+      // Forcing without a wait bound, and a wait bound without forcing: refused.
       expect(aceita(enviar({ ...JANELA_DA_RECUPERACAO, esperaAteMs: null }))).toBe(false);
       expect(aceita(enviar({ ...JANELA_DO_TICK, esperaAteMs: T0 + 3_600_000 }))).toBe(false);
+      // A forcing batch with its bound, and a non-forcing one without, parse —
+      // commit filter or not.
       expect(aceita(enviar(JANELA_DA_RECUPERACAO))).toBe(true);
       expect(aceita(enviar(JANELA_DO_TICK))).toBe(true);
+      expect(aceita(enviar(JANELA_SEM_SNAPSHOT))).toBe(true);
+      expect(aceita(enviar({ ...JANELA_SEM_SNAPSHOT, esperaAteMs: T0 + 3_600_000 }))).toBe(false);
+      const r = loteJanelaFeedAmazonSchema.safeParse({ ...JANELA_DO_TICK, esperaAteMs: T0 });
+      expect(r.error?.issues.map((i) => i.path)).toEqual([['esperaAteMs']]);
+    });
+
+    it('refuses a forcing batch with no commit filter (only the commit test forces)', () => {
+      expect(
+        aceita(
+          enviar({
+            ...JANELA_SEM_SNAPSHOT,
+            forcarPorCommit: true,
+            esperaAteMs: T0 + 3_600_000,
+          }),
+        ),
+      ).toBe(false);
+    });
+
+    it('refuses a batch without forcarPorCommit, or with one that is not a boolean', () => {
+      const { forcarPorCommit: _f, ...semFlag } = JANELA_DO_TICK;
+      expect(aceita(enviar(semFlag))).toBe(false);
+      expect(aceita(enviar({ ...JANELA_DO_TICK, forcarPorCommit: 'false' }))).toBe(false);
+      expect(aceita(enviar({ ...JANELA_DO_TICK, forcarPorCommit: null }))).toBe(false);
     });
 
     it('a recovery-born batch may keep by commit alone (no stamp rule)', () => {
@@ -292,9 +347,28 @@ describe('the payloads (.strict(), v: 1)', () => {
 
     it('refuses a recovered window that is reversed or keeps nothing', () => {
       expect(aceita({ ...RECUPERAR, janela: { ...RECUPERAR.janela, ateMs: 1 } })).toBe(false);
-      expect(aceita({ ...RECUPERAR, janela: { ...RECUPERAR.janela, manterDesdeMs: null } })).toBe(
-        false,
-      );
+      expect(
+        aceita({
+          ...RECUPERAR,
+          janela: { ...RECUPERAR.janela, manterDesdeMs: null, commitAposMs: null },
+        }),
+      ).toBe(false);
+    });
+
+    it('★ the recovered window carries forcarPorCommit: kept as given, required (NEAR-MISS: the tick’s window with it parses)', () => {
+      expect(tarefaRecuperarFeedAmazonSchema.parse(RECUPERAR).janela).toEqual(RECUPERAR.janela);
+      const forcando = { ...RECUPERAR.janela, forcarPorCommit: true };
+      expect(
+        tarefaRecuperarFeedAmazonSchema.parse({ ...RECUPERAR, janela: forcando }).janela,
+      ).toEqual(forcando);
+      const { forcarPorCommit: _f, ...semFlag } = RECUPERAR.janela;
+      expect(aceita({ ...RECUPERAR, janela: semFlag })).toBe(false);
+      expect(
+        aceita({
+          ...RECUPERAR,
+          janela: { ...RECUPERAR.janela, commitAposMs: null, forcarPorCommit: true },
+        }),
+      ).toBe(false);
     });
   });
 

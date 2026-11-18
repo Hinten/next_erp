@@ -135,11 +135,17 @@
  *
  *  - the DELTA FEED (`feed-necessario`, 31–3,000 SKUs): ONE window
  *    `feed-enviar` onto the jobs queue — the window's bounds, its keep rule
- *    WHOLE (`manterDesdeMs`, `commitAposMs`, `forcarPorCommit: false`) and
- *    the depósito, never its SKUs (the send re-derives exactly the tick's
- *    rows) — NAMED
- *    `nomeEnvioFeed(conta, execucaoIdDaJanelaFeed(conta, desdeMs, ateMs))`, so
- *    the same window twice is one batch; no delay;
+ *    WHOLE (`manterDesdeMs`, `commitAposMs`, `forcarPorCommit: false`), no
+ *    `esperaAteMs`, and the depósito, never its SKUs (the send re-derives the
+ *    window under exactly the tick's keep rule, its late commits kept and
+ *    unforced; the set may differ by what moved in between) — NAMED
+ *    `nomeEnvioFeed(conta, execucaoIdDaJanelaFeed(conta, desdeMs, ateMs))`
+ *    with the window's own `desdeMs` (cursor − 5 min: a clamped window is a
+ *    reconcile, never a feed), so the same window
+ *    twice is one batch; no delay. Turned away on `ocupada` or
+ *    `incerta-recuperar`, the batch records its RANGE start as the pending
+ *    one; behind a slow, uncertain, overdue or expired holder, or an open
+ *    breaker, it goes per SKU (the table in `feeds/vezFeed.ts`);
  *  - the RECONCILE (`reconciliacao-necessaria`: more than 3,000 SKUs, a
  *    truncated window, a window not mapped in time, a depósito change, a
  *    cursor no window can be planned from): `solicitarReconciliacaoEstoqueAmazon`
@@ -974,8 +980,13 @@ async function pedirReconciliacao(
 
 /**
  * The delta-feed hand-off (module header): ONE window `feed-enviar` carrying
- * the window's bounds, its keep rule and the depósito — never its SKUs —
- * NAMED by (conta, window), no delay.
+ * the window's bounds, its keep rule WHOLE (`manterDesdeMs`, `commitAposMs`
+ * and `forcarPorCommit`, which the tick's window always sets `false`) and the
+ * depósito — never its SKUs — NAMED by (conta, window), no delay. A batch that
+ * does not force waits on no lease (`esperaAteMs: null`): turned away on
+ * `ocupada` or `incerta-recuperar`, its range start is recorded instead; behind
+ * a slow, uncertain, overdue or expired holder, or an open breaker, it goes per
+ * SKU (`feeds/vezFeed.ts`, `classeDoLote` and `destinoDoLoteRecusado`).
  */
 function enfileirarFeedDoTick(
   contaId: string,
@@ -997,6 +1008,7 @@ function enfileirarFeedDoTick(
       ateMs: janela.ateMs,
       manterDesdeMs: janela.manterDesdeMs,
       commitAposMs: janela.commitAposMs,
+      forcarPorCommit: janela.forcarPorCommit,
       esperaAteMs: null,
       depositoId,
     },

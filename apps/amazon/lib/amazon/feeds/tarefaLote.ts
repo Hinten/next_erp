@@ -17,13 +17,18 @@
  *      later run can never change what this send reads); `esperaAteMs` bounds
  *      how long a batch turned away by a held lease keeps re-enqueuing itself;
  *    - a WINDOW batch `{ tipo: 'janela', desdeMs, ateMs, manterDesdeMs,
- *      commitAposMs, esperaAteMs, depositoId }`: the bounded movement window
- *      `(desdeMs, ateMs]` and its keep rule; the provider re-derives the
- *      members from it at send. `commitAposMs` set marks a RECOVERY-born batch
- *      (its commit filter cannot be folded into a bare start, so it waits, up to
- *      `esperaAteMs`); a TICK-born one carries neither. Refused when
- *      `desdeMs ≥ ateMs`, when both keep fields are `null`, or when exactly
- *      one of `commitAposMs` and `esperaAteMs` is set.
+ *      commitAposMs, forcarPorCommit, esperaAteMs, depositoId }`: the bounded
+ *      movement window `(desdeMs, ateMs]` and its keep rule WHOLE; the provider
+ *      re-derives the members from it at send, under the very rule its
+ *      producer kept rows by. `forcarPorCommit` marks a recovery-born batch
+ *      that forces (its forcing cannot be folded into a bare start, so it
+ *      waits, up to `esperaAteMs`); a tick-born batch carries the tick's commit
+ *      filter, `forcarPorCommit: false`, and no `esperaAteMs` (a recovery's
+ *      with no snapshot carries `forcarPorCommit: false` and no `esperaAteMs`
+ *      too, keeping by stamp alone). Refused when
+ *      `desdeMs ≥ ateMs`, when both keep fields are `null`, when it forces with
+ *      no commit filter, or unless `esperaAteMs` is set exactly when
+ *      `forcarPorCommit` is true.
  *  - `feed-resultado` — one poll rung, a notification wake-up or an adoption:
  *    `contaId` is `null` only for a wake-up (the notification names a seller,
  *    not a conta); `rodada` is the rung's index.
@@ -32,7 +37,8 @@
  *    turned-away batches pending: `vez`) leaves to recover. A `vez` recovery
  *    has no feed outcome: its `snapshotEmMs` and `janela` are `null` and its
  *    `pendenteDesdeMs` is REQUIRED; any other outcome carries the feed's
- *    snapshot. `janela` is the recovered feed's own window (a window batch).
+ *    snapshot. `janela` is the recovered feed's own window (a window batch),
+ *    its keep rule whole, `forcarPorCommit` included.
  *  - `reconciliacao` (step 12, PR 12-f) — ONE page of a stock reconcile run:
  *    the conta, the run (`execucaoId`) and the page number. The page re-derives
  *    from the run's document whether it is the page the run walks next, so a
@@ -157,16 +163,20 @@ export const loteJanelaFeedAmazonSchema = z
   .object({
     tipo: z.literal(TIPO_LOTE_FEED_AMAZON.janela),
     ...camposJanelaFeedAmazon(),
-    /** ms — null for a tick-born batch; a recovery-born one waits until then. */
+    /**
+     * ms — set exactly when the batch forces (`forcarPorCommit`: a recovery's,
+     * with a snapshot), which waits behind a held lease until then; null for a
+     * batch that does not force (the tick's, or a recovery's with no snapshot).
+     */
     esperaAteMs: inteiroSeguro().nullable(),
   })
   .strict()
   .superRefine((lote, ctx) => {
     verificarJanelaFeedAmazon(lote, ctx);
-    if ((lote.commitAposMs === null) !== (lote.esperaAteMs === null)) {
+    if (lote.forcarPorCommit !== (lote.esperaAteMs !== null)) {
       ctx.addIssue({
         code: 'custom',
-        message: 'commitAposMs e esperaAteMs andam juntos: ambos null ou ambos definidos',
+        message: 'esperaAteMs é definido exatamente quando forcarPorCommit é true',
         path: ['esperaAteMs'],
       });
     }

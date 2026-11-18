@@ -56,14 +56,30 @@ const JANELA = {
   ateMs: AGORA_MS - 25 * MIN,
   manterDesdeMs: AGORA_MS - 30 * MIN,
   commitAposMs: null,
+  forcarPorCommit: false,
   depositoId: 'deposito-teste',
+};
+type JanelaRecuperada = NonNullable<TarefaRecuperarFeedAmazon['janela']>;
+/** The tick's window: a stamp rule and a commit filter 4 min 40 s above its start, never forcing. */
+const JANELA_DO_TICK: JanelaRecuperada = {
+  ...JANELA,
+  manterDesdeMs: JANELA.desdeMs + 280_000,
+  commitAposMs: JANELA.desdeMs + 280_000,
+  forcarPorCommit: false,
+};
+/** A recovery's window with a snapshot: no stamp rule, a commit filter that FORCES. */
+const JANELA_QUE_FORCA: JanelaRecuperada = {
+  ...JANELA,
+  manterDesdeMs: null,
+  commitAposMs: JANELA.desdeMs + 280_000,
+  forcarPorCommit: true,
 };
 
 function recuperar(campos: {
   desfecho: DesfechoRecuperacaoFeedAmazon;
   feedId?: string | null;
   pendenteDesdeMs?: number | null;
-  janela?: typeof JANELA | null;
+  janela?: JanelaRecuperada | null;
   fluxo?: FluxoFeedAmazon;
 }): TarefaRecuperarFeedAmazon {
   const vez = campos.desfecho === DESFECHO_RECUPERACAO_FEED_AMAZON.vez;
@@ -167,6 +183,19 @@ describe('what the provider receives', () => {
     expect(m.vendedores).toEqual([SPID_A]);
     expect(r).toMatchObject({ acao: ACAO_RECUPERACAO_FEED.recuperado, resposta: 'nada' });
   });
+
+  it.each<[string, JanelaRecuperada]>([
+    ['the tick’s (a commit filter that does not force)', JANELA_DO_TICK],
+    ['a forcing recovery’s (a commit filter that forces)', JANELA_QUE_FORCA],
+  ])(
+    '★ the provider receives the payload’s window WHOLE, forcarPorCommit included: %s',
+    async (_caso, janela) => {
+      const m = mundo();
+      await m.rodar(recuperar({ desfecho: DESFECHO_RECUPERACAO_FEED_AMAZON.abandonado, janela }));
+      // toEqual, not toMatchObject: the flag is compared exactly, never as a subset.
+      expect(m.chamadas[0]?.janela).toEqual(janela);
+    },
+  );
 
   it('the uncertain path’s recovery (no feed) ⇒ the run is the reference', async () => {
     const m = mundo();

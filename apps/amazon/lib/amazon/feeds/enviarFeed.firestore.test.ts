@@ -191,7 +191,11 @@ async function vezArmazenada(): Promise<VezFeedAmazon | undefined> {
   return (await db().doc(CAMINHO_VEZ).get()).data() as VezFeedAmazon | undefined;
 }
 
-/** A TICK-born window batch. */
+/**
+ * A TICK-born window batch, the tick's shape: its range from `desdeMs`, a stamp
+ * rule and a commit filter 4 min 40 s above it (the cursor less 20 s), never
+ * forcing, no wait.
+ */
 function janelaDoTick(execucaoId = EXEC, desdeMs = AGORA_MS - 10 * MIN): TarefaEnviarFeedAmazon {
   return tarefaEnviarFeedAmazonSchema.parse({
     v: 1,
@@ -204,8 +208,9 @@ function janelaDoTick(execucaoId = EXEC, desdeMs = AGORA_MS - 10 * MIN): TarefaE
       tipo: 'janela',
       desdeMs,
       ateMs: desdeMs + 5 * MIN,
-      manterDesdeMs: desdeMs,
-      commitAposMs: null,
+      manterDesdeMs: desdeMs + 280_000,
+      commitAposMs: desdeMs + 280_000,
+      forcarPorCommit: false,
       esperaAteMs: null,
       depositoId: 'deposito-ci',
     },

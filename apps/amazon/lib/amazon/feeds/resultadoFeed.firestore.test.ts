@@ -99,6 +99,7 @@ const JANELA = {
   ateMs: ANTES - 5 * MIN,
   manterDesdeMs: ANTES - 10 * MIN,
   commitAposMs: null,
+  forcarPorCommit: false,
   depositoId: 'deposito-ci',
 };
 const RELATORIO = {

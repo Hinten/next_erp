@@ -56,6 +56,7 @@ const ENVIAR = tarefaLoteAmazonSchema.parse({
     ateMs: 2_000,
     manterDesdeMs: 1_000,
     commitAposMs: null,
+    forcarPorCommit: false,
     esperaAteMs: null,
     depositoId: 'deposito-1',
   },

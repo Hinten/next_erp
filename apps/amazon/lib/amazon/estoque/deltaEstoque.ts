@@ -43,8 +43,11 @@
  * identity, its snapshot and which reconcile request it may make:
  *
  *  - `feed` (`feed-necessario`) — ONE window `feed-enviar` carrying the window
- *    read: its bounds and its keep rule, never its SKUs (the send re-derives
- *    them). Named by the recovery, so a retried recovery dedupes. It gets the
+ *    read: its bounds and its keep rule WHOLE, never its SKUs (the send
+ *    re-derives them), `forcarPorCommit` included: true exactly when a
+ *    snapshot was given, the one thing that tells the feed core a batch that
+ *    forces from one that may be folded into a bare start. Named by the
+ *    recovery, so a retried recovery dedupes. It gets the
  *    observations read too, and sends the batch in the form the stock valve
  *    gives it: under a canary LIST, the canary's SKUs as patch tasks instead
  *    (`so-patches`);
@@ -156,8 +159,9 @@ export type DesfechoRepasseDeltaEstoqueAmazon =
 /** The two hand-offs (module header), bound by the caller. */
 export interface RepassesDeltaEstoqueAmazon {
   /**
-   * 31–3,000 SKUs: ONE window `feed-enviar` of `janela` (its bounds and keep
-   * rule), in the form the stock valve gives a batch — `observacoes` are what
+   * 31–3,000 SKUs: ONE window `feed-enviar` of `janela` (its bounds and its
+   * keep rule whole, `forcarPorCommit` included), in the form the stock valve
+   * gives a batch — `observacoes` are what
    * the recovery read, for a canary list's per-SKU sends; a feed never carries them.
    */
   readonly feed: (

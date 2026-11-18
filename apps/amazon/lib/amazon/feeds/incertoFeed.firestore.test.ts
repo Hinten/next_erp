@@ -152,6 +152,7 @@ function incerta(campos: Partial<VezFeedAmazon> = {}): VezFeedAmazon {
       ateMs: ANTES - 15 * MIN,
       manterDesdeMs: ANTES - 20 * MIN,
       commitAposMs: null,
+      forcarPorCommit: false,
       depositoId: 'deposito-ci',
     },
     pendenteDesdeMs: null,

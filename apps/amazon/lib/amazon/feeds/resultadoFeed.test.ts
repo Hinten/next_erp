@@ -35,6 +35,7 @@ import {
   ESTADO_VEZ_FEED_AMAZON,
   FLUXO_FEED_AMAZON,
   type FluxoFeedAmazon,
+  type JanelaFeedAmazon,
   MOTIVO_CONTA_AMAZON,
   type RegistroFeedAmazon,
   STATUS_REGISTRO_FEED_AMAZON,
@@ -136,7 +137,22 @@ const JANELA = {
   ateMs: ANTES - 5 * MIN,
   manterDesdeMs: ANTES - 10 * MIN,
   commitAposMs: null,
+  forcarPorCommit: false,
   depositoId: 'deposito-teste',
+};
+/** The tick's window: a stamp rule and a commit filter 4 min 40 s above its start, never forcing. */
+const JANELA_DO_TICK: JanelaFeedAmazon = {
+  ...JANELA,
+  manterDesdeMs: JANELA.desdeMs + 280_000,
+  commitAposMs: JANELA.desdeMs + 280_000,
+  forcarPorCommit: false,
+};
+/** A recovery's window with a snapshot: no stamp rule, a commit filter that FORCES. */
+const JANELA_QUE_FORCA: JanelaFeedAmazon = {
+  ...JANELA,
+  manterDesdeMs: null,
+  commitAposMs: JANELA.desdeMs + 280_000,
+  forcarPorCommit: true,
 };
 
 /** A processing report: two SKUs attributed (one with spaces, exactly as written), one feed-level issue. */
@@ -343,6 +359,7 @@ function janelaDoTick(execucaoId: string, fluxo: FluxoFeedAmazon = FLUXO_FEED_AM
       ateMs: AGORA_MS - MIN,
       manterDesdeMs: AGORA_MS - 4 * MIN,
       commitAposMs: null,
+      forcarPorCommit: false,
       esperaAteMs: null,
       depositoId: 'deposito-teste',
     },
@@ -1331,6 +1348,62 @@ describe('R7 — DONE / FATAL, the report', () => {
     expect(reg(m)).toMatchObject({ status: 'concluido', skusComProblema: 2 });
     expect(avisoDe(m)).toBeUndefined();
     expect(daFila(m, TIPO_TAREFA_LOTE_AMAZON.recuperar)).toHaveLength(1);
+  });
+});
+
+describe('★ the tail’s recovery carries the feed’s stored window WHOLE, forcarPorCommit included', () => {
+  const FIMS: readonly [string, (m: Mundo, janela: JanelaFeedAmazon) => Promise<unknown>][] = [
+    [
+      'DONE',
+      (m, janela) => {
+        semear(m, registro({ janela }), vez({ janela }));
+        m.rotas.feed = [feedEm('DONE')];
+        return m.resultado(rodada(0));
+      },
+    ],
+    [
+      'FATAL',
+      (m, janela) => {
+        semear(m, registro({ janela }), vez({ janela }));
+        m.rotas.feed = [feedEm('FATAL')];
+        return m.resultado(rodada(0));
+      },
+    ],
+    [
+      'CANCELLED',
+      (m, janela) => {
+        semear(m, registro({ janela }), vez({ janela }));
+        m.rotas.feed = [feedEm('CANCELLED')];
+        return m.resultado(rodada(0));
+      },
+    ],
+    [
+      'the 48-h abandonment',
+      (m, janela) => {
+        semear(
+          m,
+          registro({ janela, rodadas: 50, status: STATUS_REGISTRO_FEED_AMAZON.processando }),
+          vez({ janela }),
+        );
+        m.relogio = ANTES + ABANDONO_FEED_MS;
+        return m.resultado(rodada(50));
+      },
+    ],
+  ];
+  const CASOS = FIMS.flatMap(([fim, rodar]) => [
+    [fim, 'the tick’s (a commit filter that does not force)', JANELA_DO_TICK, rodar] as const,
+    [fim, 'a forcing recovery’s (a commit filter that forces)', JANELA_QUE_FORCA, rodar] as const,
+  ]);
+
+  it.each(CASOS)('%s, %s window', async (_fim, _caso, janela, rodar) => {
+    const m = mundo();
+    await rodar(m, janela);
+    const [recuperacao] = daFila(m, TIPO_TAREFA_LOTE_AMAZON.recuperar);
+    expect(recuperacao?.tarefa).toMatchObject({ feedId: FEED, execucaoId: EXEC });
+    // toEqual, not toMatchObject: the flag is compared exactly, never as a subset.
+    expect(recuperacao?.tarefa.tipo === 'feed-recuperar' && recuperacao.tarefa.janela).toEqual(
+      janela,
+    );
   });
 });
 

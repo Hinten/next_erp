@@ -48,13 +48,33 @@
  *
  * ## A batch the lease turns away ({@link destinoDoLoteRecusado})
  *
- * Three batch classes ({@link classeDoLote}): a BLOCK batch; a TICK-born window
- * batch (no commit filter: its keep rule IS its start, so recording the start
- * loses nothing); a RECOVERY-born window batch (a commit filter that forces the
- * SKUs committed after its predecessor's snapshot, which a bare start cannot
- * express, so it is never recorded).
+ * Three batch classes ({@link classeDoLote}), keyed on `forcarPorCommit`, the
+ * one thing that decides whether a turned-away window batch can be folded into
+ * a bare pending start:
  *
- * | Classification | Tick-born window | Recovery-born window | Block |
+ *  - a BLOCK batch;
+ *  - a window batch of the TICK class — any window that does not force
+ *    (`forcarPorCommit: false`: the tick's, commit filter and all, or a
+ *    recovery's with no snapshot). Recorded as the pending start, its RANGE
+ *    start `desdeMs` keeps by stamp every row the batch's own keep rule keeps
+ *    (a superset: every row of its range), and unforced, as the batch was, so
+ *    recording it loses no row. The superset has a price: a tick's start sits
+ *    5 minutes below its cursor, so the recovery that folds it keeps by stamp
+ *    the whole reach-back, the rows the tick dropped as committed early (the
+ *    previous tick handed them off) included. Those SKUs are read live again,
+ *    count toward that recovery's 30- and 3,000-SKU switches and its page cap,
+ *    and inside the 15-minute lag after a feed ended one Amazon already shows
+ *    at its ERP value is sent anyway (`feed-recente`). Recording `manterDesdeMs`
+ *    instead would lose the late commits;
+ *  - a window batch of the RECOVERY class — a window that forces
+ *    (`forcarPorCommit: true`, a recovery's with a snapshot): its commit test
+ *    forces the SKUs committed after its predecessor's snapshot, and a bare
+ *    start forces nothing, so it is never recorded.
+ *
+ * A commit filter alone (`commitAposMs`) decides nothing here: the tick's
+ * window carries one and still folds.
+ *
+ * | Classification | Window, tick class (does not force) | Window, recovery class (forces) | Block |
  * |---|---|---|---|
  * | `ocupada` | `registrar-pendente` | `aguardar` until `esperaAteMs`, then patches | `aguardar` until `esperaAteMs`, then `lote-expirado` |
  * | `ocupada-lenta`, `incerta-aguardar`, `ocupada-vencida`, `adotar-resultado` | patches | patches | as on `ocupada` |
@@ -95,9 +115,10 @@
  *
  * ## The pending start
  *
- * `pendenteDesdeMs` is the earliest window start of the tick-born window
- * batches turned away while the lease was held: MIN-merged
- * ({@link registrarPendenteVez}), kept by a take, and CONSUMED from the READ by
+ * `pendenteDesdeMs` is the earliest RANGE start (`desdeMs`, never
+ * `manterDesdeMs`) of the window batches of the tick class turned away while
+ * the lease was held: MIN-merged ({@link registrarPendenteVez}), kept by a take, and
+ * CONSUMED from the READ by
  * the next release, the uncertain outcome, the slow and overdue rungs, a
  * repasse to patches, or the check of an expired `montando`
  * ({@link consumirPendenteVez}). Every consuming write answers the start it
@@ -347,14 +368,19 @@ export const CLASSE_DO_LOTE = {
 export type ClasseDoLoteFeed = (typeof CLASSE_DO_LOTE)[keyof typeof CLASSE_DO_LOTE];
 
 /**
- * A batch's class: a block batch; a window batch WITHOUT a commit filter
- * (tick-born); one WITH it (recovery-born).
+ * A batch's class (module header): a block batch; a window batch that does not
+ * force (`forcarPorCommit: false`, the tick class: the tick's, or a recovery's
+ * with no snapshot); one that forces (the recovery class: a recovery's with a
+ * snapshot).
+ * Keyed on the flag, never on `commitAposMs`: the class decides whether a
+ * turned-away batch can be folded into a bare pending start. A non-forcing
+ * window can, because its RANGE start keeps by stamp every row its own rule
+ * keeps (a superset, unforced), commit filter or not; a forcing one cannot,
+ * because a bare start forces nothing.
  */
 export function classeDoLote(lote: LoteFeedAmazon): ClasseDoLoteFeed {
   if (lote.tipo === TIPO_LOTE_FEED_AMAZON.blocos) return CLASSE_DO_LOTE.blocos;
-  return lote.commitAposMs === null
-    ? CLASSE_DO_LOTE.janelaDoTick
-    : CLASSE_DO_LOTE.janelaDaRecuperacao;
+  return lote.forcarPorCommit ? CLASSE_DO_LOTE.janelaDaRecuperacao : CLASSE_DO_LOTE.janelaDoTick;
 }
 
 /** What a batch does about the lease. */
@@ -401,14 +427,14 @@ function repassar(motivo: MotivoRepasseLote): DestinoDoLoteFeed {
 }
 
 /**
- * A block or recovery-born batch behind a held lease: re-enqueued every
- * {@link ESPERA_LOTE_EM_VEZ_S} while `agoraMs < esperaAteMs`; then a block
- * batch expires (the next daily run re-walks) and a recovery-born one goes
- * per SKU (its forced SKUs are recorded nowhere else).
+ * A block batch, or a window batch that forces, behind a held lease:
+ * re-enqueued every {@link ESPERA_LOTE_EM_VEZ_S} while `agoraMs < esperaAteMs`;
+ * then a block batch expires (the next daily run re-walks) and a forcing one
+ * goes per SKU (its forced SKUs are recorded nowhere else).
  */
 function esperarPelaVez(lote: LoteFeedAmazon, agoraMs: number): DestinoDoLoteFeed {
-  // A recovery-born batch always carries its bound (the payload pairs it with
-  // the commit filter); one without it has no wait left.
+  // A forcing window batch always carries its bound (the payload sets it exactly
+  // when `forcarPorCommit` is true); one without it has no wait left.
   const esperaAteMs = lote.esperaAteMs ?? 0;
   if (agoraMs < esperaAteMs)
     return { tipo: DESTINO_DO_LOTE.aguardar, atrasoS: ESPERA_LOTE_EM_VEZ_S };
@@ -536,6 +562,7 @@ function janelaDoLote(lote: LoteFeedAmazon): JanelaFeedAmazon | null {
     ateMs: lote.ateMs,
     manterDesdeMs: lote.manterDesdeMs,
     commitAposMs: lote.commitAposMs,
+    forcarPorCommit: lote.forcarPorCommit,
     depositoId: lote.depositoId,
   };
 }
@@ -599,9 +626,9 @@ export function mesclarPendente(armazenado: number | null, desdeMs: number): num
 }
 
 /**
- * A turned-away TICK-born window batch records its start: ONLY when its route
- * is `registrar-pendente`. MIN-merged, never overwritten; `nada` when the
- * stored start already covers it (nothing to write).
+ * A turned-away window batch of the tick class records its RANGE start (`desdeMs`):
+ * ONLY when its route is `registrar-pendente`. MIN-merged, never overwritten;
+ * `nada` when the stored start already covers it (nothing to write).
  */
 export function registrarPendenteVez(
   armazenada: VezFeedAmazon | null,
@@ -621,6 +648,11 @@ export function registrarPendenteVez(
   ) {
     return recusa(RECUSA_DA_VEZ.outraRota);
   }
+  // The RANGE start, never `manterDesdeMs`: a recovery that folds this start
+  // (a `vez` recovery, or a feed's tail) keeps the rows past it by STAMP alone,
+  // so a start at `manterDesdeMs` would lose the rows this batch keeps by
+  // commit only (stamped below it, committed late) — the late-commit gap the
+  // tick's window closes, reopened.
   const pendenteDesdeMs = mesclarPendente(armazenada.pendenteDesdeMs, lote.desdeMs);
   if (pendenteDesdeMs === armazenada.pendenteDesdeMs) return { tipo: 'nada', pendenteDesdeMs };
   return {

@@ -543,7 +543,9 @@ the checkout print and the `/pedidos` row action), which needs this backend depl
   it). Cost: the rows stamped in the 4 min 40 s below `cursor − 20 s` are read again and
   dropped unless committed late (a busy depósito reads each row about twice; the idle
   tick's operation COUNT is unchanged), and they count toward the 10 × 300 page cap, so a
-  burst reaches `truncada` sooner. Its `RangeError` is caught BY CLASS around that call alone
+  burst reaches `truncada` sooner. A window batch's send (T7) re-reads that same range, band
+  included (in the feed regime a row can be read about four times), under the same cap the
+  tick passed, so its `janela-grande` moves only with what moved in between. Its `RangeError` is caught BY CLASS around that call alone
   (`janela-invalida`: a reconcile request, then the cursor RESET to now; the next conta goes
   on) — then
   `descobrirJanelaEstoqueAmazon` (`descobertaFirestore.ts`, the ONE window reader): per depósito
@@ -563,11 +565,16 @@ the checkout print and the `/pedidos` row action), which needs this backend depl
   no delay; under a canary LIST only the canary's SKUs as patch tasks (`decidirLote`); more,
   a truncated window or T6's deadline ⇒ `solicitarReconciliacaoEstoqueAmazon(…, 'tick')`. Both
   hand-offs are durable before the cursor moves (`repasse`, `entrega` on the line).
-  ⚠️ The window batch carries the tick's keep rule whole, so the send re-derives exactly the
-  tick's rows; `forcarPorCommit` (not `commitAposMs`) is what marks a recovery-born batch
-  (`esperaAteMs` set exactly then; `classeDoLote`), and a turned-away tick-born batch records
-  its RANGE start (`desdeMs`) as the pending start, never `manterDesdeMs`: a `vez` recovery
-  keeps by stamp only, so recording `manterDesdeMs` would reopen the late-commit gap.
+  ⚠️ The window batch carries the tick's keep rule whole, so the send re-derives the window
+  under exactly the tick's keep rule (the set may differ by what moved in between);
+  `forcarPorCommit` (not `commitAposMs`) is what marks a batch that FORCES (a recovery's with
+  a snapshot, class `janela-recuperacao`; `esperaAteMs` set exactly then; `classeDoLote`), and
+  a turned-away batch of the tick class records its RANGE start (`desdeMs`) as the pending
+  start, never `manterDesdeMs`: a `vez` recovery keeps by stamp only, so recording
+  `manterDesdeMs` would reopen the late-commit gap. The price: that start sits 5 min below the
+  batch's cursor, so the recovery that folds it re-keeps by stamp the 4 min 40 s the previous
+  tick already handed off — read live again, counted toward its 30- and 3,000-SKU switches and
+  page cap, and inside the 15-min `feed-recente` lag sent even when Amazon already agrees.
   **T8** the aviso `estoque-sem-deposito` BEFORE the final write (clocked by T4's read time),
   on the flag's TRANSITION, and re-synced to the current condition by a run that took over an
   UNRELEASED lease (an earlier run may have landed its aviso and lost the flag); then the final
@@ -623,7 +630,9 @@ the checkout print and the `/pedidos` row action), which needs this backend depl
   the ERP side (the depósito first, the units masked, gone or varied units dropped, converged
   SKUs dropped); a WINDOW batch takes its snapshot FIRST, re-derives the window at the
   payload's depósito (`deposito-mudou`, or > 3,000 SKUs ⇒ a `'feed'` request and
-  `janela-grande`), then runs the reconcile's own evaluator (≤ 60 GETs) and
+  `janela-grande`) with the payload's keep rule whole — its `forcarPorCommit` included, never
+  a value of the provider's: a tick-born batch keeps its late commits unforced, a forcing
+  recovery's forces them — then runs the reconcile's own evaluator (≤ 60 GETs) and
   `planejarEstoqueAmazon` with the lease's `ultimoFeedConcluidoEmMs` (a 429 ⇒ the members to
   patches, zero messages). One 240-s budget
   (`ORCAMENTO_MONTAGEM_LOTE_MS`, `feeds/provedorLote.ts`): past it ⇒ `snapshot-lento`, a window
@@ -632,9 +641,13 @@ the checkout print and the `/pedidos` row action), which needs this backend depl
   `estoque-recusado-pela-amazon` once (clocked by its last link-doc read). A recovery reads the
   stock valve FIRST through the root's `ambiente` (`off` ⇒ nothing read): the delta over the
   feed's snapshot (`null` for `cancelado` and `vez`), its feed hand-off named by the recovery
-  (`execucaoIdDaRecuperacaoFeed`), delayed to the snapshot + 40 s, in the valve's batch form (a
+  (`execucaoIdDaRecuperacaoFeed`), carrying `janelaDaRecuperacao`'s window whole
+  (`forcarPorCommit` true exactly with a snapshot) and an hour's `esperaAteMs` exactly when it
+  forces, delayed to the snapshot + 40 s, in the valve's batch form (a
   canary LIST ⇒ the canary's SKUs as patches); after `falhou`/`abandonado`/`incerto`/`cancelado`, a window
-  batch's own window as patches, a block batch's drift as ONE guarded `'automatica'` request (at
+  batch's own window (as the recovered feed's stored window carries it — the record's, the
+  lease's for `incerto` — `forcarPorCommit` included) as patches, a block
+  batch's drift as ONE guarded `'automatica'` request (at
   most one request per such recovery).
 - The fake db (`testing/fakeDb.ts`) models the window exactly: `>` / `<=` numeric bounds only,
   `orderBy('__name__')` and EVERY query's implicit tie as the full PATH compared segment by
@@ -781,14 +794,17 @@ the checkout print and the `/pedidos` row action), which needs this backend depl
   terminal status, which is the tail's last write); `escadaFeed.ts` (the poll ladder);
   `relatorioFeed.ts` (the report reduced: attribution by `sku` only, the link issue shape, at
   most 200 SKUs written back); `tarefaLote.ts` (the strict jobs-queue payload union — a block
-  or a window batch — and every task name, each carrying the conta (the notification wake-up's
-  carries the seller)); `provedorLote.ts`
+  or a window batch, the latter carrying its keep rule whole, `forcarPorCommit` included, with
+  `esperaAteMs` set exactly when it forces — and every task name, each carrying the conta (the
+  notification wake-up's carries the seller)); `provedorLote.ts`
   (the provider seam's TYPES, the closed abort motivos, the timing constants); and
   `vezFeed.ts` (the lease's state machine: `decidirTomadaDaVez` classifies a read, a known
   `feedId` is never submitted over and an uncertain `enviando` is never taken over before its
-  12 h; `destinoDoLoteRecusado` routes a batch the lease turns away — a tick-born window
-  batch records its start, MIN-merged, a recovery-born one waits then goes per SKU, a block
-  batch waits; the breaker and its hourly half-open probe; the 120-s submission floor on a
+  12 h; `destinoDoLoteRecusado` routes a batch the lease turns away by `classeDoLote`, keyed
+  on `forcarPorCommit` (never on `commitAposMs`) — a window batch of the tick class (one that
+  does not force: the tick's, commit filter and all, or a recovery's with no snapshot) records
+  its RANGE start `desdeMs`, never `manterDesdeMs`, MIN-merged, one of the recovery class
+  (one that forces) waits then goes per SKU, a block batch waits; the breaker and its hourly half-open probe; the 120-s submission floor on a
   take only; and every write's exact field patch, each refused, writing nothing, unless its
   HOLDER — the `execucaoId`, or the `feedId` once known — still holds the lease. A take keeps
   `pendenteDesdeMs`, `falhasSeguidas`, `ultimaFalhaEmMs`, `ultimoEnvioMs` and

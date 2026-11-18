@@ -73,6 +73,7 @@ import {
   type TarefaLoteAmazon,
   execucaoIdDaJanelaFeed,
   execucaoIdDaRecuperacaoFeed,
+  loteJanelaFeedAmazonSchema,
   nomeEnvioFeed,
   tarefaEnviarFeedAmazonSchema,
 } from '../feeds/tarefaLote';
@@ -92,7 +93,12 @@ import {
 } from '../testing/fixtures';
 import * as avaliacao from './avaliacaoLoteEstoque';
 import { INTERVALO_GETS_ESTOQUE_AMAZON_MS, MAX_GETS_LOTE_JANELA } from './avaliacaoLoteEstoque';
-import { ESPACO_ENTRE_SNAPSHOTS_MS, MARGEM_COMMIT_MS } from './descobertaEstoque';
+import * as descoberta from './descobertaEstoque';
+import {
+  ESPACO_ENTRE_SNAPSHOTS_MS,
+  MARGEM_COMMIT_MS,
+  janelaDoTick as planejarJanelaDoTick,
+} from './descobertaEstoque';
 import {
   RETENCAO_DIVERGENCIA_ESTOQUE_AMAZON_DIAS,
   gravarBlocoDivergenciaEstoqueAmazon,
@@ -121,6 +127,16 @@ import {
 vi.mock('./avaliacaoLoteEstoque', async (original) => {
   const real = await original<typeof import('./avaliacaoLoteEstoque')>();
   return { ...real, avaliarSkusEstoqueAmazon: vi.fn(real.avaliarSkusEstoqueAmazon) };
+});
+
+/**
+ * The recovery's window planner, real behind a spy: one case hands the
+ * recovery's feed a window shape no snapshot yields today (a commit filter
+ * that does not force), to pin what keys the hand-off's wait.
+ */
+vi.mock('./descobertaEstoque', async (original) => {
+  const real = await original<typeof import('./descobertaEstoque')>();
+  return { ...real, janelaDaRecuperacao: vi.fn(real.janelaDaRecuperacao) };
 });
 
 /* ---------------------------------- constants ---------------------------------- */
@@ -558,7 +574,11 @@ function enviar(
   }) as TarefaEnviarFeedAmazon & { readonly fluxo: 'estoque' };
 }
 
-/** A TICK-born window batch: no commit filter, keeps every stamped row. */
+/**
+ * A window batch of the tick's class that keeps every row STAMPED in its range:
+ * no commit filter, never forcing, no wait. The tick's own shape (its commit
+ * filter, its stamp rule above its range start) is the tick end-to-end cases'.
+ */
 function janelaDoTick(desdeMs: number, ateMs: number, depositoId = DEP) {
   return enviar({
     tipo: 'janela',
@@ -566,12 +586,13 @@ function janelaDoTick(desdeMs: number, ateMs: number, depositoId = DEP) {
     ateMs,
     manterDesdeMs: desdeMs,
     commitAposMs: null,
+    forcarPorCommit: false,
     esperaAteMs: null,
     depositoId,
   });
 }
 
-/** A RECOVERY-born window batch: a commit filter (forcing) and a bounded wait. */
+/** A RECOVERY-born window batch: a commit filter that forces, and a bounded wait. */
 function janelaDaRecuperacao(
   desdeMs: number,
   ateMs: number,
@@ -585,6 +606,7 @@ function janelaDaRecuperacao(
       ateMs,
       manterDesdeMs: desdeMs,
       commitAposMs,
+      forcarPorCommit: true,
       esperaAteMs: AGORA_MS + HORA,
       depositoId: DEP,
     },
@@ -1229,6 +1251,7 @@ describe('★ recuperar: the recovery delta, and a failed feed’s OWN members',
       ateMs: s - MIN,
       manterDesdeMs: s - 5 * MIN,
       commitAposMs: null,
+      forcarPorCommit: false,
       depositoId: DEP,
     };
     /** A SKU's observation: its row's commit, as a delta task names it. */
@@ -1448,6 +1471,7 @@ describe('★ recuperar: the recovery delta, and a failed feed’s OWN members',
         ateMs: s - 6 * MIN,
         manterDesdeMs: s - 10 * MIN,
         commitAposMs: null,
+        forcarPorCommit: false,
         depositoId: DEP,
       },
     });
@@ -1538,6 +1562,8 @@ describe('★ recuperar: the recovery delta, and a failed feed’s OWN members',
       lote: {
         tipo: 'janela',
         commitAposMs: s1 - MARGEM_COMMIT_MS,
+        // A snapshot: the window FORCES, so it waits (an hour) behind a held lease.
+        forcarPorCommit: true,
         esperaAteMs: s1 + 10_000 + HORA,
         depositoId: DEP,
       },
@@ -1563,6 +1589,86 @@ describe('★ recuperar: the recovery delta, and a failed feed’s OWN members',
       }),
     ).toEqual({ nada: true });
   });
+
+  it('★ a recovery’s FORCING window end to end: the hand-off carries forcarPorCommit true and its hour’s wait, and the send re-derives it with that flag — all 35 late-committed SKUs sent though Amazon already shows their ERP value (the paired NEAR-MISS is the tick’s LATE COMMIT end-to-end case, below: its non-forcing batch leaves the equal one out)', async () => {
+    const m = mundo();
+    const s1 = commitAgora(m) + MARGEM_COMMIT_MS - 1;
+    produto(m, 'K');
+    const skus = Array.from({ length: 35 }, (_v, i) => `K-${String(i).padStart(2, '0')}`);
+    for (const [i, sku] of skus.entries()) {
+      vinculo(m, 'K', `l${String(i)}`, sku);
+      m.amazon.set(sku, listing(sku, 2));
+    }
+    // Committed after S1 − 20 s, and Amazon already shows the ERP's 2.
+    linha(m, 'K', 2, s1 - MIN);
+    m.relogio = s1 + 10_000;
+
+    const r = await m.provedor.recuperar(await m.ctx(), {
+      desfecho: 'concluido',
+      snapshotEmMs: s1,
+      pendenteDesdeMs: null,
+      referencia: FEED,
+      janela: null,
+    });
+
+    expect(r).toEqual({ feed: execucaoIdDaRecuperacaoFeed(CONTA, FEED, null) });
+    const [envio] = doTipo(m, 'feed-enviar');
+    if (envio?.tarefa.tipo !== 'feed-enviar') throw new Error('sem feed-enviar');
+    expect(loteJanelaFeedAmazonSchema.parse(envio.tarefa.lote)).toMatchObject({
+      manterDesdeMs: null,
+      commitAposMs: s1 - MARGEM_COMMIT_MS,
+      forcarPorCommit: true,
+      esperaAteMs: s1 + 10_000 + HORA,
+    });
+
+    m.relogio = s1 + ESPACO_ENTRE_SNAPSHOTS_MS + 1_000;
+    const enviado = await m.despachar(envio.tarefa);
+
+    expect(enviado).toMatchObject({ tipo: 'feed-enviar', r: { acao: 'enviado', feedId: FEED } });
+    expect(m.documentos[0]?.messages.map((x) => x.sku)).toEqual(skus);
+    expect(m.fake.ler(VEZ)?.janela).toMatchObject({ forcarPorCommit: true });
+  });
+
+  it.each([
+    [false, null],
+    [true, HORA],
+  ] as const)(
+    '★ the recovery hand-off’s wait is keyed on forcarPorCommit, never on the commit filter: a commit-filtered window forcing %s ⇒ esperaAteMs %s after now',
+    async (forcar, espera) => {
+      const m = mundo();
+      const s1 = commitAgora(m) + MARGEM_COMMIT_MS - 1;
+      produto(m, 'K');
+      for (let i = 0; i < 35; i += 1)
+        vinculo(m, 'K', `l${String(i)}`, `K-${String(i).padStart(2, '0')}`);
+      linha(m, 'K', 2, s1 - MIN);
+      m.relogio = s1 + 10_000;
+      // The recovery's planner hands over a commit-filtered window, forcing or not.
+      vi.mocked(descoberta.janelaDaRecuperacao).mockImplementationOnce(({ agoraMs }) => ({
+        desdeMs: s1 - 5 * MIN,
+        ateMs: agoraMs,
+        manterDesdeMs: null,
+        commitAposMs: s1 - MARGEM_COMMIT_MS,
+        forcarPorCommit: forcar,
+      }));
+
+      await m.provedor.recuperar(await m.ctx(), {
+        desfecho: 'concluido',
+        snapshotEmMs: s1,
+        pendenteDesdeMs: null,
+        referencia: FEED,
+        janela: null,
+      });
+
+      const [envio] = doTipo(m, 'feed-enviar');
+      expect(envio?.tarefa).toMatchObject({
+        lote: {
+          commitAposMs: s1 - MARGEM_COMMIT_MS,
+          forcarPorCommit: forcar,
+          esperaAteMs: espera === null ? null : s1 + 10_000 + espera,
+        },
+      });
+    },
+  );
 
   it('★ a row committed WHILE membros re-derived the window is forced by the recovery from membros’ snapshot (NEAR-MISS: a snapshot taken after the mapping leaves it to the daily run)', async () => {
     const m = mundo();
@@ -1641,7 +1747,13 @@ describe('★ recuperar: the recovery delta, and a failed feed’s OWN members',
     expect(envio?.atrasoS).toBe(0);
     expect(envio?.tarefa).toMatchObject({
       origem: 'recuperacao',
-      lote: { tipo: 'janela', commitAposMs: null, esperaAteMs: null, depositoId: DEP },
+      lote: {
+        tipo: 'janela',
+        commitAposMs: null,
+        forcarPorCommit: false,
+        esperaAteMs: null,
+        depositoId: DEP,
+      },
     });
   });
 
@@ -1835,7 +1947,10 @@ describe('★ end to end: the REAL send, result and recovery handlers, a scripte
       cursorAvancou: true,
     });
     const envios = doTipo(m, 'feed-enviar');
-    const execucaoId = execucaoIdDaJanelaFeed(CONTA, AGORA_MS - 5 * MIN - 20_000, AGORA_MS);
+    // The tick's window whole: the range from the cursor (AGORA − 5 min) less
+    // 5 minutes, the stamp rule and the commit filter at the cursor less 20 s,
+    // never forcing, no wait.
+    const execucaoId = execucaoIdDaJanelaFeed(CONTA, AGORA_MS - 10 * MIN, AGORA_MS);
     expect(envios).toEqual([
       {
         tarefa: {
@@ -1847,10 +1962,11 @@ describe('★ end to end: the REAL send, result and recovery handlers, a scripte
           origem: 'delta',
           lote: {
             tipo: 'janela',
-            desdeMs: AGORA_MS - 5 * MIN - 20_000,
+            desdeMs: AGORA_MS - 10 * MIN,
             ateMs: AGORA_MS,
             manterDesdeMs: AGORA_MS - 5 * MIN - 20_000,
-            commitAposMs: null,
+            commitAposMs: AGORA_MS - 5 * MIN - 20_000,
+            forcarPorCommit: false,
             esperaAteMs: null,
             depositoId: DEP,
           },
@@ -1883,6 +1999,135 @@ describe('★ end to end: the REAL send, result and recovery handlers, a scripte
       [ultimo, 'delta'],
     ]);
     expect(doTipo(m, 'feed-enviar')).toHaveLength(1);
+  });
+
+  /**
+   * The tick's LATE COMMIT carried end to end: a conta whose cursor is
+   * `cursorMs`, two SKUs whose rows are stamped `cursor − 30 s` and COMMIT in
+   * the fake's next millisecond (SKU-L-IGUAL, which Amazon already shows at its
+   * ERP value, and SKU-L-DIFERE), seeded FIRST, then 31 SKUs stamped after the
+   * cursor (kept by stamp, each differing from Amazon). The clock is one tick
+   * interval after the cursor. Returns the world, the tick and its one
+   * `feed-enviar`.
+   */
+  async function tickComCommitTardio(posicaoDoCommit: (proximoCommitMs: number) => number) {
+    const m = mundo();
+    const cursorMs = posicaoDoCommit(commitAgora(m));
+    const tardios = ['SKU-L-DIFERE', 'SKU-L-IGUAL'];
+    const caminhos = tardios.map((sku) =>
+      simples(m, sku, {
+        erp: 5,
+        amazon: sku === 'SKU-L-IGUAL' ? 5 : 1,
+        carimbo: cursorMs - 30_000,
+      }),
+    );
+    const outros = Array.from({ length: 31 }, (_v, i) => `SKU-S-${String(i).padStart(2, '0')}`);
+    for (const [i, sku] of outros.entries()) {
+      simples(m, sku, { erp: 5, amazon: 1, carimbo: cursorMs + MIN + i });
+    }
+    m.fake.seed(`sincronizacaoEstoqueAmazon/${CONTA}`, {
+      cursorMs,
+      depositoDoCursor: CANONICA,
+      vez: null,
+      ultimoTickMs: null,
+      falhasSeguidas: 0,
+      semDeposito: false,
+    });
+    m.relogio = cursorMs + 5 * MIN;
+    const agoraMs = m.relogio;
+    const tick = await executarTickEstoqueAmazon({
+      db: m.db,
+      ambiente: m.ambiente,
+      contas: LEITOR_DE_CONTAS_ESTOQUE_AMAZON,
+      produtor: m.raiz.produtorEstoque,
+      agendador: m.raiz.agendadorLotes,
+      agora: m.agora,
+      logger: m.log.logger,
+      increment,
+      gerarExecucaoId: () => 'tick-commit-tardio',
+    });
+    const envios = doTipo(m, 'feed-enviar');
+    expect(envios).toHaveLength(1);
+    const [envio] = envios;
+    if (envio?.tarefa.tipo !== 'feed-enviar') throw new Error('sem feed-enviar');
+    const commits = caminhos.map((c) => m.fake.carimboDe(c)?.toMillis() ?? Number.NaN);
+    return { m, cursorMs, agoraMs, tick, envio: envio.tarefa, commits, outros };
+  }
+
+  it('★ the tick’s LATE COMMIT end to end: janelaDoTick’s window, carried WHOLE through the real hand-off and parsed by the batch schema, is re-derived by the send with ITS keep rule — a row stamped cursor − 30 s and committed after the cursor is a member and NOT forced (sent only when Amazon’s live read differs)', async () => {
+    const { m, cursorMs, agoraMs, tick, envio, commits, outros } = await tickComCommitTardio(
+      (proximo) => proximo - 1_000,
+    );
+    // Both late rows committed AFTER the cursor (the previous tick's query could not see them).
+    for (const c of commits) expect(c).toBeGreaterThan(cursorMs);
+    expect(tick.contas[0]).toMatchObject({
+      desfecho: 'repassado',
+      repasse: 'feed-necessario',
+      entrega: 'enfileirada',
+      skus: 33,
+      tarefas: 0,
+    });
+
+    // The payload IS the planner's window: bounds and keep rule, field for field.
+    const planejada = planejarJanelaDoTick({ cursorMs, agoraMs });
+    if (planejada === null) throw new Error('sem janela');
+    expect(planejada).toMatchObject({
+      desdeMs: cursorMs - 5 * MIN,
+      manterDesdeMs: cursorMs - 20_000,
+      commitAposMs: cursorMs - 20_000,
+      forcarPorCommit: false,
+    });
+    const lote = loteJanelaFeedAmazonSchema.parse(envio.lote);
+    expect(lote).toEqual({
+      tipo: 'janela',
+      desdeMs: planejada.desdeMs,
+      ateMs: planejada.ateMs,
+      manterDesdeMs: planejada.manterDesdeMs,
+      commitAposMs: planejada.commitAposMs,
+      forcarPorCommit: planejada.forcarPorCommit,
+      esperaAteMs: null,
+      depositoId: DEP,
+    });
+    expect(envio.execucaoId).toBe(execucaoIdDaJanelaFeed(CONTA, planejada.desdeMs, agoraMs));
+
+    // The send, a minute later: the late rows are members (read live), the
+    // equal one is NOT forced into the document, the differing one is sent.
+    m.relogio += MIN;
+    const r = await m.despachar(envio);
+    expect(r).toMatchObject({ tipo: 'feed-enviar', r: { acao: 'enviado', feedId: FEED } });
+    const lidos = buscas(m).flatMap((b) => b.skus);
+    expect(lidos).toEqual(expect.arrayContaining(['SKU-L-DIFERE', 'SKU-L-IGUAL']));
+    expect(lidos).toHaveLength(33);
+    expect(m.documentos).toHaveLength(1);
+    expect(m.documentos[0]?.messages.map((x) => x.sku)).toEqual(['SKU-L-DIFERE', ...outros]);
+    expect(m.tarefasEstoque).toEqual([]);
+    // The lease the send wrote kept the window whole: the flag included, still false.
+    expect(m.fake.ler(VEZ)?.janela).toEqual({
+      desdeMs: planejada.desdeMs,
+      ateMs: planejada.ateMs,
+      manterDesdeMs: planejada.manterDesdeMs,
+      commitAposMs: planejada.commitAposMs,
+      forcarPorCommit: false,
+      depositoId: DEP,
+    });
+  });
+
+  it('★ NEAR-MISS: the same rows committed BEFORE cursor − 20 s (the previous tick read them) ⇒ the tick hands off 31 SKUs, and the send re-derives neither late row', async () => {
+    const { m, cursorMs, tick, envio, commits, outros } = await tickComCommitTardio(
+      (proximo) => proximo + 21_000,
+    );
+    for (const c of commits) expect(c).toBeLessThan(cursorMs - 20_000);
+    expect(tick.contas[0]).toMatchObject({
+      desfecho: 'repassado',
+      repasse: 'feed-necessario',
+      skus: 31,
+    });
+
+    m.relogio += MIN;
+    expect(await m.despachar(envio)).toMatchObject({ r: { acao: 'enviado' } });
+    const lidos = buscas(m).flatMap((b) => b.skus);
+    expect(lidos).toEqual(outros);
+    expect(m.documentos[0]?.messages.map((x) => x.sku)).toEqual(outros);
   });
 
   it('★ a block feed whose conta changed depósito between the decide and the send ⇒ abortado deposito-mudou, NOTHING posted, estoque-deposito-sem-linhas raised', async () => {
@@ -2001,7 +2246,12 @@ describe('★ end to end: the REAL send, result and recovery handlers, a scripte
     expect(envios).toHaveLength(1);
     expect(envios[0]?.tarefa).toMatchObject({
       origem: ORIGEM_LOTE_RECUPERACAO_ESTOQUE_AMAZON,
-      lote: { tipo: 'janela', manterDesdeMs: desde, commitAposMs: snapshot - MARGEM_COMMIT_MS },
+      lote: {
+        tipo: 'janela',
+        manterDesdeMs: desde,
+        commitAposMs: snapshot - MARGEM_COMMIT_MS,
+        forcarPorCommit: true,
+      },
     });
     // NEAR-MISS: the turned-away batch never became a reconcile request.
     expect(m.fake.ler(PEDIDO)).toBeUndefined();
@@ -2222,8 +2472,45 @@ describe('★ a failed WINDOW feed whose own members cannot be handed over whole
     ateMs: s - 6 * MIN,
     manterDesdeMs: s - 10 * MIN,
     commitAposMs: null,
+    forcarPorCommit: false,
     depositoId: DEP,
   });
+
+  it.each([
+    [false, 'delta'],
+    [true, 'catch-up'],
+  ] as const)(
+    '★ its own window is re-derived with the STORED forcarPorCommit (%s): the row it keeps by commit alone goes as a %s',
+    async (forcar, origem) => {
+      const m = mundo();
+      const marco = commitAgora(m);
+      const s = marco + MARGEM_COMMIT_MS;
+      // Stamped below the window's stamp rule, committed after its commit filter.
+      const caminho = simples(m, 'SKU-F', { erp: 1, carimbo: s - 8 * MIN });
+      m.relogio = AGORA_MS;
+      const commit = m.fake.carimboDe(caminho);
+      if (commit === undefined) throw new Error('fixture');
+
+      const r = await m.provedor.recuperar(await m.ctx(), {
+        desfecho: 'falhou',
+        snapshotEmMs: s,
+        pendenteDesdeMs: null,
+        referencia: FEED,
+        janela: {
+          ...janelaPropria(s),
+          manterDesdeMs: s - 7 * MIN,
+          commitAposMs: marco - 1_000,
+          forcarPorCommit: forcar,
+        },
+      });
+
+      // Outside the delta's own range (S − 5 min): only the failed window finds it.
+      expect(r).toEqual({ tarefas: 1 });
+      expect(tarefasEstoque(m)).toEqual([
+        ['SKU-F', origem, forcar ? FEED : referenciaDaObservacao(commit)],
+      ]);
+    },
+  );
 
   it('its own window re-derives TRUNCATED ⇒ exactly ONE guarded request, and none of its members per SKU', async () => {
     const m = mundo();

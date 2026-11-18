@@ -19,8 +19,11 @@
  *    snapshot and the recovery forces it. Then the conta's depósito (the
  *    context's conta, the ONE parse) must be the payload's — else
  *    `deposito-mudou`, no aviso (the tick's depósito hand-off re-reconciles) —
- *    and the window is re-derived there with the payload's keep rule
- *    (`descobrirJanelaEstoqueAmazon`, the tick's own reader). A truncated window,
+ *    and the window is re-derived there with the payload's keep rule WHOLE
+ *    (`descobrirJanelaEstoqueAmazon`, the tick's own reader), its
+ *    `forcarPorCommit` never replaced: a tick-born batch keeps the rows its
+ *    tick kept by commit and forces none, a forcing recovery's forces them
+ *    again. A truncated window,
  *    or more than `MAX_SKUS_FEED_DELTA_ESTOQUE_AMAZON` SKUs ⇒ one reconcile
  *    request (`'feed'`), then `janela-grande`. The re-derived set may differ
  *    from what the producer counted; the form stays the producer's.
@@ -89,8 +92,9 @@
  * are bound here: the delta feed is ONE window `feed-enviar` (`origem:
  * 'recuperacao'`) named by the recovery's identity (its reference and the
  * folded start: a retried recovery meets its own first batch), delayed until
- * at least `S + ESPACO_ENTRE_SNAPSHOTS_MS` (40 s), and carrying `esperaAteMs`
- * one hour on when its window has a commit filter — in the form the valve
+ * at least `S + ESPACO_ENTRE_SNAPSHOTS_MS` (40 s), carrying the delta's window
+ * whole (`forcarPorCommit` included) and `esperaAteMs` one hour on exactly when
+ * that window forces (a snapshot: `janelaDaRecuperacao`) — in the form the valve
  * gives a batch (`decidirLote`): under a canary LIST, the canary's SKUs as
  * patch tasks instead (a forced one a catch-up of the recovered feed), no
  * feed; the reconcile is one request. A window the planner refuses (`janela-invalida`: a stored instant a
@@ -99,7 +103,10 @@
  *
  * For an end that may not have applied (`falhou`, `abandonado`, `incerto`,
  * `cancelado`), also the failed feed's OWN members: a window batch's window
- * re-derived with its own keep rule and handed to the per-SKU path (no
+ * re-derived with its own keep rule, as the recovered feed's stored window
+ * carries it (the record's; the lease's for `incerto`, which has no record),
+ * `forcarPorCommit` included: a forced SKU a catch-up of the recovered feed,
+ * and handed to the per-SKU path (no
  * request; a window that cannot be re-derived whole ⇒ the request); a block
  * batch's drift through one request. Such a recovery makes AT MOST ONE
  * request, always the 24-h-guarded `'automatica'` — its delta's truncation
@@ -136,6 +143,7 @@ import {
 } from '@delfrance/integrations-amazon-sp-api';
 import {
   type ItemDivergenciaEstoqueAmazon,
+  type JanelaFeedAmazon,
   MAX_SKUS_FEED_DELTA_ESTOQUE_AMAZON,
   MOTIVO_CONTA_AMAZON,
   RESULTADO_ENVIO_ESTOQUE_AMAZON,
@@ -310,15 +318,25 @@ const ABORTO_LENTO: AbortoLoteAmazon = {
   aviso: MOTIVO_CONTA_AMAZON.feedEstoqueFalhou,
 };
 
-/** The window batch's keep rule and bounds, as the payload carries them. */
-function janelaDoLote(
-  lote: Extract<TarefaEnviarFeedAmazon['lote'], { readonly tipo: 'janela' }>,
+/**
+ * A window as a payload (a window batch) or a stored record (a failed feed's
+ * own window) carries it, for the window reader: the bounds and the keep rule
+ * WHOLE, `forcarPorCommit` included, never a value of our own. So a tick-born
+ * batch re-derives its late-committed rows unforced, and a forcing recovery's
+ * re-derivation forces them, as each producer kept them.
+ */
+function janelaDoEstoque(
+  janela: Pick<
+    JanelaFeedAmazon,
+    'desdeMs' | 'ateMs' | 'manterDesdeMs' | 'commitAposMs' | 'forcarPorCommit'
+  >,
 ): JanelaEstoqueAmazon {
   return {
-    desdeMs: lote.desdeMs,
-    ateMs: lote.ateMs,
-    manterDesdeMs: lote.manterDesdeMs,
-    commitAposMs: lote.commitAposMs,
+    desdeMs: janela.desdeMs,
+    ateMs: janela.ateMs,
+    manterDesdeMs: janela.manterDesdeMs,
+    commitAposMs: janela.commitAposMs,
+    forcarPorCommit: janela.forcarPorCommit,
   };
 }
 
@@ -424,7 +442,7 @@ async function membrosDaJanela(
   if (lote.tipo !== TIPO_LOTE_FEED_AMAZON.janela) {
     throw new TypeError('provedorLoteEstoque.ts: membros de janela sem janela');
   }
-  const janela = janelaDoLote(lote);
+  const janela = janelaDoEstoque(lote);
   const contaId = ctx.contexto.integracaoId;
   const depositoDaConta = depositoIdDaContaEstoqueAmazon(ctx.contexto.conta.depositoOuterRef);
   if (depositoDaConta !== lote.depositoId) {
@@ -968,7 +986,7 @@ async function membrosDoFeedQueFalhou(
   const contaId = ctx.contexto.integracaoId;
   const d = await descobrirJanelaEstoqueAmazon(
     { db: ctx.db, contaId, depositoId: r.janela.depositoId, agora: ctx.agora },
-    r.janela,
+    janelaDoEstoque(r.janela),
     { prazoMs: e.prazoMs },
   );
   if (d.tipo !== DESFECHO_DESCOBERTA_ESTOQUE_AMAZON.completa) {
@@ -989,8 +1007,10 @@ async function membrosDoFeedQueFalhou(
 
 /**
  * The recovery delta's feed hand-off (module header): ONE window `feed-enviar`
- * named by the recovery, delayed until `S + ESPACO_ENTRE_SNAPSHOTS_MS`, waiting
- * at most an hour behind a held lease when its window has a commit filter.
+ * of the recovery's window WHOLE (`forcarPorCommit` included), named by the
+ * recovery, delayed until `S + ESPACO_ENTRE_SNAPSHOTS_MS`, and waiting at most
+ * an hour behind a held lease exactly when its window forces (a forcing batch
+ * cannot be folded into a bare start; `feeds/vezFeed.ts`, `classeDoLote`).
  */
 async function enfileirarFeedDaRecuperacao(
   ctx: ContextoLoteAmazon,
@@ -1021,10 +1041,13 @@ async function enfileirarFeedDaRecuperacao(
     origem: ORIGEM_LOTE_RECUPERACAO_ESTOQUE_AMAZON,
     lote: {
       tipo: TIPO_LOTE_FEED_AMAZON.janela,
-      ...e.janela,
+      desdeMs: e.janela.desdeMs,
+      ateMs: e.janela.ateMs,
+      manterDesdeMs: e.janela.manterDesdeMs,
+      commitAposMs: e.janela.commitAposMs,
+      forcarPorCommit: e.janela.forcarPorCommit,
       depositoId: e.depositoId,
-      esperaAteMs:
-        e.janela.commitAposMs === null ? null : agoraMs + ESPERA_MAXIMA_LOTE_RECUPERACAO_MS,
+      esperaAteMs: e.janela.forcarPorCommit ? agoraMs + ESPERA_MAXIMA_LOTE_RECUPERACAO_MS : null,
     },
   });
   return raiz.agendadorLotes().enfileirarLote(tarefa, {
