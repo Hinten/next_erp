@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   ESTADO_ANUNCIO_SHOPEE,
   TIPO_ACAO_SUGERIDA_PUBLICACAO_SHOPEE,
+  primeiraPublicacaoEhKitNativoShopee,
   toOuterRef,
 } from '@delfrance/schemas';
 import { integracaoCollection } from '@delfrance/data/admin/collections';
@@ -1032,5 +1033,80 @@ describe('(M145) sobre documentos GRAVADOS: o despacho escolhe o MESMO id que o 
       doDespacho: { arma: 'item', linkDocId: 'b-canonico' },
       doResolvedor: 'b-canonico',
     });
+  });
+});
+
+/* ========================================================================== */
+/*  The web's «Publicar como kit nativo» offer ≡ this dispatcher's kit-criar    */
+/* ========================================================================== */
+
+describe('primeiraPublicacaoEhKitNativoShopee (@delfrance/schemas) ≡ o kit-criar deste despachante', () => {
+  const PRODUTOS: readonly ProdutoDoDespacho[] = [
+    KIT_EFETIVO,
+    KIT_ANTIGO,
+    NAO_KIT,
+    { id: K, paiId: null, ehKit: false, ehKitVirtual: true },
+    { id: K, paiId: null, ehKit: true, ehKitVirtual: 'true' },
+    { id: 'filho-1', paiId: K, ehKit: true, ehKitVirtual: true },
+  ];
+  // Every link class, and the corrupt-id ordinary residue (class O).
+  const UM_DE_CADA: readonly VinculoDaConta[] = [
+    nativo('n-vivo', KIT_1),
+    nativo('x-removido', KIT_2, REMOVIDO),
+    nativo('x-substituido', KIT_2, substituidoPor('n-vivo')),
+    rascunho('r-rascunho'),
+    comum('o-vivo', COMUM_1),
+    comum('o-corrompido', 0),
+    comum('ro-removido', COMUM_2, REMOVIDO),
+    comum('so-substituido', COMUM_2, substituidoPor('n-vivo')),
+  ];
+  // Every subset of up to two of them, plus none.
+  const CONJUNTOS: readonly (readonly VinculoDaConta[])[] = [
+    [],
+    ...UM_DE_CADA.map((v) => [v]),
+    ...UM_DE_CADA.flatMap((a, i) => UM_DE_CADA.slice(i + 1).map((b) => [a, b])),
+  ];
+
+  it('para TODO produto × conjunto de vínculos: o predicado vale exatamente quando o despacho sem nome é kit-criar', () => {
+    let casosKitCriar = 0;
+    for (const produto of PRODUTOS) {
+      for (const vinculos of CONJUNTOS) {
+        const r = despachar(produto, vinculos);
+        const ehKitCriar = r !== null && r.ok && r.arma.arma === 'kit-criar';
+        if (ehKitCriar) casosKitCriar += 1;
+        const rotulo = `${produto.id}/${String(produto.ehKit)}/${String(produto.ehKitVirtual)} × [${vinculos.map((v) => v.id).join(', ')}]`;
+        expect(
+          primeiraPublicacaoEhKitNativoShopee({
+            produto,
+            vinculosDaConta: vinculos.map((v) => v.raw),
+          }),
+          rotulo,
+        ).toBe(ehKitCriar);
+      }
+    }
+    // The table is not vacuous: it reaches kit-criar, and it reaches the other arms too.
+    expect(casosKitCriar).toBeGreaterThan(5);
+  });
+
+  it('⛔ quase-pares: um rascunho, um removido ou um substituído NÃO bloqueiam; um comum de id corrompido BLOQUEIA (classe O, o resíduo registrado)', () => {
+    const vale = (vinculos: readonly VinculoDaConta[]) =>
+      primeiraPublicacaoEhKitNativoShopee({
+        produto: KIT_EFETIVO,
+        vinculosDaConta: vinculos.map((v) => v.raw),
+      });
+    expect(vale([])).toBe(true);
+    expect(vale([rascunho('r')])).toBe(true);
+    expect(vale([nativo('x', KIT_1, REMOVIDO)])).toBe(true);
+    expect(vale([comum('so', COMUM_1, substituidoPor('x'))])).toBe(true);
+    expect(vale([comum('ro', COMUM_1, REMOVIDO)])).toBe(true);
+    expect(vale([comum('o', 0)])).toBe(false);
+    expect(vale([nativo('n', KIT_1)])).toBe(false);
+    // `paiId` ABSENT reads as a root — the schema default the server parses.
+    expect(
+      primeiraPublicacaoEhKitNativoShopee({
+        produto: { ehKit: true, ehKitVirtual: true },
+        vinculosDaConta: [],
+      }),
+    ).toBe(true);
   });
 });
