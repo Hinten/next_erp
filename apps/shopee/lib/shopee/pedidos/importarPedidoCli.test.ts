@@ -4,6 +4,7 @@ import {
   FORMA_PAGAMENTO_LABELS,
   STATUS_PAGAMENTO,
   STATUS_PAGAMENTO_LABELS,
+  cpfCnpjUtilizavel,
 } from '@delfrance/schemas';
 import {
   shopeeOrderDetailRowSchema,
@@ -11,7 +12,14 @@ import {
 } from '@delfrance/integrations-shopee';
 
 import { FIXTURE_ORDER_DETAIL_QTY2_SG, lerPedidoDetalhe } from '../fixtures/wireCorpus';
-import { avaliarCapturaComprador } from './comprador';
+import {
+  cpfComDvErrado,
+  gerarCnpj,
+  gerarCpf,
+  pontuarCnpj,
+  pontuarCpf,
+} from '../testing/documentos';
+import { FONTE_CPF_SIMULADO, avaliarCapturaComprador, cpfDeTesteUtilizavel } from './comprador';
 import {
   ArgumentoInvalidoError,
   SimulacaoCompradorRecusadaError,
@@ -23,6 +31,7 @@ import {
   exigirPedidoSemCapturaTerminal,
   exigirPedidoSemVinculoAlheio,
   exigirProjetoDoModoComprador,
+  linhaDoCompradorNoPreambulo,
   parseArgsImportarPedido,
   projetoDaCredencial,
   renderCompradorGravado,
@@ -699,6 +708,8 @@ describe('o int_frete da conta e o endereço de entrega no resumo (2026-11-18)',
 
 const NOME_TESTE = 'Pessoa Ficticia Sandbox';
 const CEP_TESTE = '93847261';
+/** Built at RUN time from a 9-digit base — never a committed DV-valid literal. */
+const CPF_TESTE = gerarCpf('418209375');
 
 describe('parseArgsImportarPedido — o modo comprador de TESTE', () => {
   it('--importar-cliente sozinho liga o modo, sem endereço e sem substitutos', () => {
@@ -706,6 +717,7 @@ describe('parseArgsImportarPedido — o modo comprador de TESTE', () => {
     expect(cmd.kind === 'importar' && cmd.args.comprador).toEqual({
       nomeTeste: null,
       cepTeste: null,
+      cpfTeste: null,
       importarEndereco: false,
     });
   });
@@ -722,6 +734,7 @@ describe('parseArgsImportarPedido — o modo comprador de TESTE', () => {
     expect(cmd.kind === 'importar' && cmd.args.comprador).toEqual({
       nomeTeste: NOME_TESTE,
       cepTeste: CEP_TESTE,
+      cpfTeste: null,
       importarEndereco: true,
     });
     const inline = parseArgsImportarPedido([
@@ -741,6 +754,8 @@ describe('parseArgsImportarPedido — o modo comprador de TESTE', () => {
     ['--importar-endereco', ['--importar-endereco']],
     ['--nome-teste', ['--nome-teste', NOME_TESTE]],
     ['--cep-teste', ['--cep-teste', CEP_TESTE]],
+    ['--cpf-teste', ['--cpf-teste', CPF_TESTE]],
+    ['--cpf-teste', [`--cpf-teste=${pontuarCpf(CPF_TESTE)}`]],
   ])('recusa %s SEM --importar-cliente — sozinho seria inerte', (flag, extra) => {
     expect(() => parseArgsImportarPedido([...OBRIGATORIOS, ...extra])).toThrow(
       new ArgumentoInvalidoError(`${flag} exige --importar-cliente.`),
@@ -787,9 +802,57 @@ describe('parseArgsImportarPedido — o modo comprador de TESTE', () => {
   });
 
   it('uma grafia parecida continua sendo «Opção desconhecida»', () => {
-    for (const grafia of ['--importCliente', '--importar-clientes', '--nomeTeste']) {
+    for (const grafia of ['--importCliente', '--importar-clientes', '--nomeTeste', '--cpfTeste']) {
       expect(() => parseArgsImportarPedido([...OBRIGATORIOS, grafia])).toThrow(
         `Opção desconhecida: ${grafia}`,
+      );
+    }
+  });
+
+  it('⚠️ a recusa de uma opção desconhecida NUNCA repete um valor — nem inline, nem solto', () => {
+    for (const cpf of [CPF_TESTE, pontuarCpf(CPF_TESTE)]) {
+      // A typo in the flag name, inline value: only the NAME is echoed.
+      const inline = mensagemDe(() =>
+        parseArgsImportarPedido([...OBRIGATORIOS, '--importar-cliente', `--cpf-test=${cpf}`]),
+      );
+      expect(inline).toBe('Opção desconhecida: --cpf-test=…');
+      // A CPF typed without its flag: refused, and not repeated either.
+      const solto = mensagemDe(() =>
+        parseArgsImportarPedido([...OBRIGATORIOS, '--importar-cliente', cpf]),
+      );
+      expect(solto).toMatch(/^Argumento solto, sem flag/);
+      for (const m of [inline, solto]) {
+        expect(m).not.toContain(cpf);
+        expect(m).not.toContain(CPF_TESTE.slice(0, 9));
+      }
+    }
+    // QUASE-ERRO: a flag-shaped unknown token without `=` is still named whole.
+    expect(mensagemDe(() => parseArgsImportarPedido([...OBRIGATORIOS, '--forcar']))).toBe(
+      'Opção desconhecida: --forcar',
+    );
+  });
+
+  it('⚠️ um CPF com um traço perdido na frente é VALOR, não flag — e não é repetido', () => {
+    const pontuado = pontuarCpf(CPF_TESTE);
+    for (const token of [
+      `-${pontuado}`,
+      `--${CPF_TESTE}`,
+      `-${CPF_TESTE}`,
+      `--${CPF_TESTE}=x`,
+      `--cpf${CPF_TESTE}`,
+    ]) {
+      const m = mensagemDe(() =>
+        parseArgsImportarPedido([...OBRIGATORIOS, '--importar-cliente', token]),
+      );
+      expect(m).toMatch(/^Argumento solto, sem flag \(o valor não é repetido aqui\)/);
+      expect(m).not.toContain(CPF_TESTE);
+      expect(m).not.toContain(pontuado);
+      expect(m).not.toContain(CPF_TESTE.slice(0, 9));
+    }
+    // QUASE-ERRO: a flag made of letters and hyphens, single dash included, is still named.
+    for (const flag of ['-x', '--cpf-test', '--Importar-Cliente']) {
+      expect(mensagemDe(() => parseArgsImportarPedido([...OBRIGATORIOS, flag]))).toBe(
+        `Opção desconhecida: ${flag}`,
       );
     }
   });
@@ -803,16 +866,237 @@ describe('parseArgsImportarPedido — o modo comprador de TESTE', () => {
     });
   });
 
-  it('a ajuda nomeia as quatro flags e não carrega o separador do pnpm', () => {
+  it('a ajuda nomeia as cinco flags e não carrega o separador do pnpm', () => {
     for (const flag of [
       '--importar-cliente',
       '--importar-endereco',
       '--nome-teste',
       '--cep-teste',
+      '--cpf-teste <cpf>',
     ]) {
       expect(USO_IMPORTAR_PEDIDO).toContain(flag);
     }
     expect(USO_IMPORTAR_PEDIDO).not.toMatch(/ -- /);
+    // The staging note and the shell-history warning ride the help itself.
+    expect(USO_IMPORTAR_PEDIDO).toContain('No staging o CPF falso já pertence');
+    expect(USO_IMPORTAR_PEDIDO).toContain('histórico');
+    // ⚠️ …and so does pnpm's own echo of the command line, with the way out:
+    // the help must not promise that NO output repeats the digits.
+    expect(USO_IMPORTAR_PEDIDO).toContain('o pnpm repete a linha de comando');
+    expect(USO_IMPORTAR_PEDIDO).toContain('pnpm -s');
+    expect(USO_IMPORTAR_PEDIDO).not.toContain('Nenhuma saída repete');
+  });
+
+  it.each([
+    ['--nome-teste', `--nome-teste=${NOME_TESTE}`, { nomeTeste: NOME_TESTE }],
+    ['--cep-teste', `--cep-teste=${CEP_TESTE}`, { cepTeste: CEP_TESTE }],
+    ['--cpf-teste', `--cpf-teste=${pontuarCpf(CPF_TESTE)}`, { cpfTeste: CPF_TESTE }],
+  ])(
+    'QUASE-ERRO: %s=<valor> NÃO come a flag seguinte — a forma inline é UM token só',
+    (_flag, inline, esperado) => {
+      // The inline form NOT in last position: the next flag must still be read.
+      const cmd = parseArgsImportarPedido([
+        ...OBRIGATORIOS,
+        '--importar-cliente',
+        inline,
+        '--importar-endereco',
+        '--json',
+      ]);
+      expect(cmd.kind === 'importar' && cmd.args.comprador).toMatchObject({
+        ...esperado,
+        importarEndereco: true,
+      });
+      expect(cmd.kind === 'importar' && cmd.args.json).toBe(true);
+    },
+  );
+});
+
+describe('linhaDoCompradorNoPreambulo — o que o script diz ANTES de ler qualquer coisa', () => {
+  const NADA = { nomeTeste: null, cepTeste: null, cpfTeste: null, importarEndereco: false };
+
+  it('diz SE cada substituto foi dado, e cada um vira SÓ a sua palavra', () => {
+    expect(linhaDoCompradorNoPreambulo(NADA)).toBe(
+      '  comprador ....... TESTE — endereço=não nome-teste=não cep-teste=não cpf-teste=não',
+    );
+    expect(
+      linhaDoCompradorNoPreambulo({
+        nomeTeste: NOME_TESTE,
+        cepTeste: CEP_TESTE,
+        cpfTeste: CPF_TESTE,
+        importarEndereco: true,
+      }),
+    ).toBe('  comprador ....... TESTE — endereço=sim nome-teste=sim cep-teste=sim cpf-teste=sim');
+    for (const [over, palavra] of [
+      [{ importarEndereco: true }, 'endereço=sim'],
+      [{ nomeTeste: NOME_TESTE }, 'nome-teste=sim'],
+      [{ cepTeste: CEP_TESTE }, 'cep-teste=sim'],
+      [{ cpfTeste: CPF_TESTE }, 'cpf-teste=sim'],
+    ] as const) {
+      const linha = linhaDoCompradorNoPreambulo({ ...NADA, ...over });
+      expect(linha).toContain(palavra);
+      // Exactly ONE `sim` — the others stay `não`.
+      expect(linha.match(/=sim\b/g)).toHaveLength(1);
+    }
+  });
+
+  it('⚠️ nunca carrega um VALOR — nem os dígitos do --cpf-teste, nem o nome, nem o CEP', () => {
+    for (const cpf of [CPF_TESTE, pontuarCpf(CPF_TESTE)]) {
+      const linha = linhaDoCompradorNoPreambulo({
+        nomeTeste: NOME_TESTE,
+        cepTeste: CEP_TESTE,
+        cpfTeste: cpf,
+        importarEndereco: true,
+      });
+      // Anchor: the line was built, with the flag named.
+      expect(linha).toContain('cpf-teste=sim');
+      for (const valor of [cpf, CPF_TESTE, CPF_TESTE.slice(0, 9), NOME_TESTE, CEP_TESTE]) {
+        expect(linha).not.toContain(valor);
+      }
+    }
+  });
+});
+
+/** The message of a synchronous throw — the parser's refusals are all `ArgumentoInvalidoError`. */
+function mensagemDe(fn: () => unknown): string {
+  try {
+    fn();
+  } catch (err) {
+    if (err instanceof ArgumentoInvalidoError) return err.message;
+    throw err;
+  }
+  throw new Error('esperava uma recusa de argumento');
+}
+
+describe('parseArgsImportarPedido — --cpf-teste', () => {
+  const comCpf = (...extra: string[]) =>
+    parseArgsImportarPedido([...OBRIGATORIOS, '--importar-cliente', ...extra]);
+  const cpfTesteDe = (cmd: ReturnType<typeof parseArgsImportarPedido>) =>
+    cmd.kind === 'importar' ? cmd.args.comprador?.cpfTeste : undefined;
+
+  it('aceita os 11 dígitos puros e o formato 000.000.000-00 — ambos viram a forma CANÔNICA', () => {
+    for (const grafia of [CPF_TESTE, pontuarCpf(CPF_TESTE), `  ${pontuarCpf(CPF_TESTE)} `]) {
+      expect(cpfTesteDe(comCpf('--cpf-teste', grafia))).toBe(CPF_TESTE);
+      // The inline form, exactly like --nome-teste's.
+      expect(cpfTesteDe(comCpf(`--cpf-teste=${grafia}`))).toBe(CPF_TESTE);
+    }
+    // Beside the other substitutes, nothing else moves.
+    const cmd = comCpf('--nome-teste', NOME_TESTE, '--cpf-teste', CPF_TESTE);
+    expect(cmd.kind === 'importar' && cmd.args.comprador).toEqual({
+      nomeTeste: NOME_TESTE,
+      cepTeste: null,
+      cpfTeste: CPF_TESTE,
+      importarEndereco: false,
+    });
+  });
+
+  it('recusa um valor vazio, só de espaços, ausente ou que é outra flag — como --nome-teste', () => {
+    for (const extra of [
+      ['--cpf-teste', ''],
+      ['--cpf-teste', '   '],
+      ['--cpf-teste='],
+      ['--cpf-teste'],
+      ['--cpf-teste', '--live'],
+    ]) {
+      expect(() => comCpf(...extra)).toThrow(
+        new ArgumentoInvalidoError('--cpf-teste exige um valor.'),
+      );
+    }
+  });
+
+  it('⚠️ recusa dígitos verificadores errados — o validador canônico decide, não o formato', () => {
+    const errado = cpfComDvErrado(CPF_TESTE);
+    // The anchor: the near-miss is shaped exactly like the accepted one.
+    expect(errado).toMatch(/^\d{11}$/);
+    expect(errado).not.toBe(CPF_TESTE);
+    expect(cpfDeTesteUtilizavel(errado)).toBeNull();
+    for (const grafia of [errado, pontuarCpf(errado)]) {
+      expect(() => comCpf('--cpf-teste', grafia)).toThrow(/dígitos verificadores não conferem/);
+    }
+  });
+
+  it('recusa 11 dígitos IGUAIS — mod-11 os aceitaria, o validador não', () => {
+    for (const d of ['0', '1', '9']) {
+      const repetido = d.repeat(11);
+      // The anchor: the check digits alone DO accept it — the validator's own
+      // degenerate-input rule is what refuses.
+      expect(gerarCpf(d.repeat(9))).toBe(repetido);
+      expect(cpfDeTesteUtilizavel(repetido)).toBeNull();
+      expect(() => comCpf('--cpf-teste', repetido)).toThrow(/todos iguais/);
+      expect(() => comCpf('--cpf-teste', pontuarCpf(repetido))).toThrow(/todos iguais/);
+    }
+  });
+
+  it.each([
+    ['10 dígitos', CPF_TESTE.slice(0, 10)],
+    ['12 dígitos', `${CPF_TESTE}0`],
+    ['letras', `${CPF_TESTE.slice(0, 10)}A`],
+    ['só letras', 'abcdefghijk'],
+    ['pontuação incompleta', `${CPF_TESTE.slice(0, 9)}-${CPF_TESTE.slice(9)}`],
+    ['barra no lugar do traço', pontuarCpf(CPF_TESTE).replace('-', '/')],
+    ['espaços no meio', `${CPF_TESTE.slice(0, 3)} ${CPF_TESTE.slice(3)}`],
+  ])('recusa %s — a grafia é 11 dígitos, puros ou 000.000.000-00', (_rotulo, grafia) => {
+    expect(() => comCpf('--cpf-teste', grafia)).toThrow(
+      new ArgumentoInvalidoError(
+        '--cpf-teste exige um CPF de 11 dígitos, puros ou no formato 000.000.000-00.',
+      ),
+    );
+  });
+
+  it('⚠️ recusa um CNPJ VÁLIDO, puro ou pontuado — a flag é de PESSOA FÍSICA', () => {
+    const cnpj = gerarCnpj('434567890001');
+    // The anchor: the capture predicate WOULD accept it — the narrowing is ours.
+    expect(cpfCnpjUtilizavel(cnpj)).toBe(cnpj);
+    expect(cpfDeTesteUtilizavel(cnpj)).toBeNull();
+    for (const grafia of [cnpj, pontuarCnpj(cnpj)]) {
+      expect(() => comCpf('--cpf-teste', grafia)).toThrow(
+        new ArgumentoInvalidoError(
+          '--cpf-teste aceita só CPF (pessoa física, 11 dígitos), nunca CNPJ.',
+        ),
+      );
+    }
+  });
+
+  it('QUASE-ERRO: 14 caracteres que NÃO são um CNPJ válido levam a mensagem de FORMA, não «nunca CNPJ»', () => {
+    const cnpj = gerarCnpj('434567890001');
+    const dvErrado = `${cnpj.slice(0, 13)}${String((Number(cnpj[13]) + 1) % 10)}`;
+    // The anchors: same shape as the valid one, and the canonical predicate refuses it.
+    expect(dvErrado).toMatch(/^\d{14}$/);
+    expect(cpfCnpjUtilizavel(dvErrado)).toBeNull();
+    for (const grafia of [dvErrado, pontuarCnpj(dvErrado), 'abcdefghijklmn']) {
+      expect(() => comCpf('--cpf-teste', grafia)).toThrow(
+        new ArgumentoInvalidoError(
+          '--cpf-teste exige um CPF de 11 dígitos, puros ou no formato 000.000.000-00.',
+        ),
+      );
+    }
+  });
+
+  it('⚠️ NENHUMA recusa de --cpf-teste repete o valor — nem puro, nem pontuado', () => {
+    const errado = cpfComDvErrado(CPF_TESTE);
+    const cnpj = gerarCnpj('434567890001');
+    const recusados = [
+      errado,
+      pontuarCpf(errado),
+      `${errado}0`,
+      cnpj,
+      pontuarCnpj(cnpj),
+      '2'.repeat(11),
+    ];
+    for (const valor of recusados) {
+      for (const argv of [
+        [...OBRIGATORIOS, '--importar-cliente', '--cpf-teste', valor],
+        [...OBRIGATORIOS, '--importar-cliente', `--cpf-teste=${valor}`],
+        // …and the dependent refusal, BEFORE the value is even judged.
+        [...OBRIGATORIOS, '--cpf-teste', valor],
+      ]) {
+        const m = mensagemDe(() => parseArgsImportarPedido(argv));
+        expect(m).not.toContain(valor);
+        expect(m).not.toContain(valor.replace(/\D/g, ''));
+        // What the operator sees: the message, then the whole help.
+        const saida = descreverErro(new ArgumentoInvalidoError(m)).join('\n');
+        expect(saida).not.toContain(valor.replace(/\D/g, ''));
+      }
+    }
   });
 });
 
@@ -1041,26 +1325,99 @@ describe('decidirColisaoDeDocumento — a dobra é normalizeNome e NADA mais', (
     );
   });
 
-  it('a recusa nomeia os ids e o caminho de saída — NUNCA o nome gravado', () => {
-    const decisao = decidirColisaoDeDocumento(
-      [{ clienteId: 'seed-1', nome: 'Cliente Dev Pessoa Fisica' }],
-      NOME_TESTE,
-    );
-    let mensagem = '';
+  /** The refusal `exigirDocumentoSemColisao` raises for one source, as text. */
+  function recusaDaColisao(
+    decisao: Parameters<typeof exigirDocumentoSemColisao>[0],
+    fonte: Parameters<typeof exigirDocumentoSemColisao>[1],
+  ): string {
     try {
-      exigirDocumentoSemColisao(decisao);
+      exigirDocumentoSemColisao(decisao, fonte);
     } catch (err) {
-      if (!(err instanceof SimulacaoCompradorRecusadaError)) throw err;
-      mensagem = err.message;
+      if (err instanceof SimulacaoCompradorRecusadaError) return err.message;
+      throw err;
     }
-    expect(mensagem).toContain('seed-1');
-    expect(mensagem).toContain('--nome-teste');
-    expect(mensagem).not.toContain('Cliente Dev');
-    expect(mensagem).not.toContain(NOME_TESTE);
+    throw new Error('esperava uma recusa de colisão');
+  }
+
+  const SEED = decidirColisaoDeDocumento(
+    [{ clienteId: 'seed-1', nome: 'Cliente Dev Pessoa Fisica' }],
+    NOME_TESTE,
+  );
+
+  it('a recusa nomeia os ids e o caminho de saída — NUNCA o nome gravado, em TODA fonte', () => {
+    for (const fonte of Object.values(FONTE_CPF_SIMULADO)) {
+      const mensagem = recusaDaColisao(SEED, fonte);
+      expect(mensagem).toContain('seed-1');
+      expect(mensagem).toContain('--nome-teste');
+      expect(mensagem).toContain('Nada foi gravado.');
+      expect(mensagem).not.toContain('Cliente Dev');
+      expect(mensagem).not.toContain(NOME_TESTE);
+      // QUASE-ERRO: the two non-colliding answers never refuse, whatever the source.
+      expect(() =>
+        exigirDocumentoSemColisao({ kind: 'mesmo-nome', clienteIds: ['c'] }, fonte),
+      ).not.toThrow();
+      expect(() => exigirDocumentoSemColisao({ kind: 'livre' }, fonte)).not.toThrow();
+    }
+  });
+
+  it('o CPF FALSO colide (o staging de hoje) ⇒ sugere --cpf-teste PRIMEIRO, depois --nome-teste e apagar', () => {
+    const m = recusaDaColisao(SEED, FONTE_CPF_SIMULADO.cpfFalso);
+    expect(m).toMatch(/^o CPF falso do repo, que o modo de teste usaria, já pertence/);
+    const cpf = m.indexOf('--cpf-teste <outro CPF de teste>');
+    const nome = m.indexOf('--nome-teste');
+    const apagar = m.indexOf('apague esse cliente');
+    expect(cpf).toBeGreaterThan(-1);
+    expect(nome).toBeGreaterThan(cpf);
+    expect(apagar).toBeGreaterThan(nome);
+    // Where the holders come from is said right: the NF-e live lane and dev
+    // seeds — no e2e spec writes the fake.
+    expect(m).toContain('o NF-e live do CI e seeds de dev gravam clientes com o CPF falso');
+    expect(m).not.toContain('e2e');
+    // The ten ids of a staging collision all ride the message, ids only.
+    const dez = Array.from({ length: 10 }, (_, i) => `ci-${String(i)}-cliente`);
+    const muitos = recusaDaColisao(
+      decidirColisaoDeDocumento(
+        dez.map((clienteId) => ({ clienteId, nome: 'Outro' })),
+        NOME_TESTE,
+      ),
+      FONTE_CPF_SIMULADO.cpfFalso,
+    );
+    for (const id of dez) expect(muitos).toContain(id);
+  });
+
+  it('um --cpf-teste que colide diz que ESSE documento já tem dono — e pede outro', () => {
+    const m = recusaDaColisao(SEED, FONTE_CPF_SIMULADO.cpfTeste);
+    expect(m).toMatch(/^o CPF informado em --cpf-teste já pertence a outro cliente \(seed-1\)/);
+    expect(m).toContain('Passe outro --cpf-teste');
+    // QUASE-ERRO: it does not blame the repo's fake, nor send the operator to the seed.
+    expect(m).not.toContain('CPF falso');
+    expect(m).not.toContain('seed de dev');
+  });
+
+  it('⚠️ uma fonte FORA da união (um chamador JS, um cast) ainda RECUSA — nunca passa como livre', () => {
+    const estranha = 'outra-fonte' as unknown as Parameters<typeof exigirDocumentoSemColisao>[1];
+    const m = recusaDaColisao(SEED, estranha);
+    expect(m).toMatch(
+      /^o documento que o modo de teste usaria já pertence a outro cliente \(seed-1\)/,
+    );
+    expect(m).toContain('--nome-teste');
+    expect(m).toContain('Nada foi gravado.');
+    // It names no source it cannot vouch for, and never the source value itself.
+    expect(m).not.toContain('outra-fonte');
+    expect(m).not.toContain('CPF falso');
+    // QUASE-ERRO: the two non-colliding answers still pass with that same source.
     expect(() =>
-      exigirDocumentoSemColisao({ kind: 'mesmo-nome', clienteIds: ['c'] }),
+      exigirDocumentoSemColisao({ kind: 'mesmo-nome', clienteIds: ['c'] }, estranha),
     ).not.toThrow();
-    expect(() => exigirDocumentoSemColisao({ kind: 'livre' })).not.toThrow();
+    expect(() => exigirDocumentoSemColisao({ kind: 'livre' }, estranha)).not.toThrow();
+  });
+
+  it('o documento da SHOPEE colide ⇒ diz que ele vence o --cpf-teste, e não o sugere', () => {
+    const m = recusaDaColisao(SEED, FONTE_CPF_SIMULADO.shopee);
+    expect(m).toMatch(/^o documento que a Shopee mandou já pertence/);
+    expect(m).toContain('ele vence o --cpf-teste');
+    expect(m).not.toContain('Passe outro --cpf-teste');
+    expect(m).not.toContain('<outro CPF de teste>');
   });
 });
 
@@ -1089,6 +1446,7 @@ describe('o resumo do comprador GRAVADO (--live)', () => {
         compradorDeTeste: {
           cliente: { clienteId: 'cli-9', criado: false, matchedBy: 'cpf_cnpj' },
           enderecoOuterRef: 'documents/clientes/cli-9/enderecos/end-7',
+          fonteDoCpf: FONTE_CPF_SIMULADO.cpfTeste,
         },
       },
       depois,
@@ -1099,10 +1457,12 @@ describe('o resumo do comprador GRAVADO (--live)', () => {
       criado: false,
       matchedBy: 'cpf_cnpj',
       enderecoId: 'end-7',
+      fonteDoCpf: FONTE_CPF_SIMULADO.cpfTeste,
       limpeza: ['pedidos/ped-1', 'clientes/cli-9/enderecos/end-7', 'clientes/cli-9'],
     });
     const texto = renderCompradorGravado(gravado).join('\n');
     expect(texto).toContain('cli-9   criado=não   matchedBy=cpf_cnpj');
+    expect(texto).toContain('CPF de teste aplicado ... sim (informado em --cpf-teste)');
     expect(texto).toContain(
       'limpeza (no console) .... pedidos/ped-1, clientes/cli-9/enderecos/end-7, clientes/cli-9',
     );
@@ -1113,13 +1473,39 @@ describe('o resumo do comprador GRAVADO (--live)', () => {
       criado: null,
       matchedBy: null,
       enderecoId: null,
+      fonteDoCpf: null,
       limpeza: [],
     });
     // QUASE-ERRO: sem vínculo gravado a limpeza é só o pedido; sem pedido, nem o bloco sai.
     expect(resumoDoCompradorGravado(base, {}).limpeza).toEqual(['pedidos/ped-1']);
-    expect(renderCompradorGravado(resumoDoCompradorGravado(base, null)).join('\n')).not.toContain(
-      'limpeza',
-    );
+    const semEscrita = renderCompradorGravado(resumoDoCompradorGravado(base, null)).join('\n');
+    expect(semEscrita).not.toContain('limpeza');
+    // Without the write half there is no source to report — a dash, never a guess.
+    expect(semEscrita).toContain('CPF de teste aplicado ... —');
+  });
+
+  it('a linha «CPF de teste aplicado» do --live diz a FONTE, como a do dry-run', () => {
+    const rotulos = {
+      [FONTE_CPF_SIMULADO.cpfTeste]: 'sim (informado em --cpf-teste)',
+      [FONTE_CPF_SIMULADO.cpfFalso]: 'sim (o CPF falso do repo)',
+      [FONTE_CPF_SIMULADO.shopee]: 'não — vale o da Shopee',
+    };
+    for (const fonte of Object.values(FONTE_CPF_SIMULADO)) {
+      const texto = renderCompradorGravado({
+        pedidoId: 'ped-1',
+        clienteId: 'cli-9',
+        criado: true,
+        matchedBy: null,
+        enderecoId: null,
+        fonteDoCpf: fonte,
+        limpeza: [],
+      }).join('\n');
+      expect(texto).toContain(`  CPF de teste aplicado ... ${rotulos[fonte]}`);
+      // QUASE-ERRO: no other source's label rides along.
+      for (const outra of Object.values(FONTE_CPF_SIMULADO).filter((f) => f !== fonte)) {
+        expect(texto).not.toContain(rotulos[outra]);
+      }
+    }
   });
 });
 

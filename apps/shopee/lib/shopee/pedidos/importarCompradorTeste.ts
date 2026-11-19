@@ -16,7 +16,8 @@
  *  1. The importer's own READ-ONLY half, with the simulation — which re-checks
  *     the sandbox override and the order's real region itself.
  *  2. The COLLISION check, outside any transaction: who already holds the
- *     document the run would use. `findOrCreateCliente`'s first leg matches ANY
+ *     document the run would use (Shopee's usable one, else `--cpf-teste`, else
+ *     the repo's fake). `findOrCreateCliente`'s first leg matches ANY
  *     holder (the run sends no other strong key, so none can contradict), so a
  *     holder with another name means the test buyer would be linked to a
  *     stranger. Both places a holder can be found are read — the
@@ -140,16 +141,19 @@ export async function importarPedidoComCompradorDeTeste(
   const { preparo } = preparado;
 
   // 2. The collision check. No cliente would be created when the name or the
-  // document refuses, and then there is nobody to collide with.
-  const campos =
-    preparo.simulacao === null ? null : clienteDeShopee(preparo.simulacao.detalheComprador);
+  // document refuses, and then there is nobody to collide with. The document is
+  // the one the simulated row CARRIES (Shopee's usable one, else `--cpf-teste`,
+  // else the repo's fake — `simularCompradorShopee`'s precedence), read off
+  // `clienteDeShopee` exactly as `findOrCreateCliente` will receive it.
+  const simulado = preparo.simulacao;
+  const campos = simulado === null ? null : clienteDeShopee(simulado.detalheComprador);
   let colisao: ColisaoDeDocumento | null = null;
-  if (campos !== null && campos.cpf_cnpj !== null) {
+  if (simulado !== null && campos !== null && campos.cpf_cnpj !== null) {
     colisao = decidirColisaoDeDocumento(
       await lerDonosDoDocumento(db, campos.cpf_cnpj),
       campos.nome,
     );
-    exigirDocumentoSemColisao(colisao);
+    exigirDocumentoSemColisao(colisao, simulado.fonteDoCpf);
   }
 
   // 3. A stored link that is not the test buyer's.

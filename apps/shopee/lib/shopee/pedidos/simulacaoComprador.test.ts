@@ -14,7 +14,7 @@ import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } fr
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
 import { clienteIdentidadeId } from '@delfrance/data/admin/clientes';
 import { integracaoCollection } from '@delfrance/data/admin/collections';
-import { INTEGRACAO_TIPO, TIPO_CLIENTE } from '@delfrance/schemas';
+import { INTEGRACAO_TIPO, TIPO_CLIENTE, cpfCnpjUtilizavel } from '@delfrance/schemas';
 import {
   SHOPEE_PROD_API_HOST,
   type ShopeeClient,
@@ -24,9 +24,17 @@ import {
 } from '@delfrance/integrations-shopee';
 
 import { FIXTURE_ORDER_DETAIL_QTY2_SG, lerPedidoDetalhe } from '../fixtures/wireCorpus';
+import {
+  cpfComDvErrado,
+  gerarCnpj,
+  gerarCpf,
+  pontuarCnpj,
+  pontuarCpf,
+} from '../testing/documentos';
 import { FakeDb, asDb, type DocData } from '../testing/fakeDb';
 import {
   CPF_FALSO_DE_TESTE,
+  FONTE_CPF_SIMULADO,
   SimulacaoCompradorRecusadaError,
   clienteDeShopee,
   exigirRegiaoForaDoBrasilParaSimulacao,
@@ -44,6 +52,8 @@ import {
   type PreparoPedidoShopee,
 } from './importarPedido';
 import {
+  descreverErro,
+  parseArgsImportarPedido,
   renderCompradorGravado,
   renderCompradorSimulado,
   renderResumoPedido,
@@ -70,8 +80,11 @@ const CEP_TESTE = '93847261';
 /** The SG sandbox's postal code is SIX digits; the committed fixture's is the redactor's `00000000`. */
 const ZIP_SG = '739281';
 const ENDERECO_SG = 'Avenida Inventada 777, Bloco Z';
-/** A second check-digit-valid fake, already the repo's (`pagamentoMapping.test.ts`). */
-const CPF_DA_SHOPEE = '52998224725';
+/**
+ * A second check-digit-valid fake (the one `pagamentoMapping.test.ts` spells),
+ * built at RUN time from its base like every other document here.
+ */
+const CPF_DA_SHOPEE = gerarCpf('529982247');
 
 /** The SG order as the sandbox sends it: masked name, clear street, 6-digit zip. */
 function detalheSG(patch: Record<string, unknown> = {}): ShopeeOrderDetailRow {
@@ -84,8 +97,13 @@ function detalheSG(patch: Record<string, unknown> = {}): ShopeeOrderDetailRow {
 }
 
 function simulacao(over: Partial<SimulacaoCompradorShopee> = {}): SimulacaoCompradorShopee {
-  return { nomeTeste: null, cepTeste: null, importarEndereco: false, ...over };
+  return { nomeTeste: null, cepTeste: null, cpfTeste: null, importarEndereco: false, ...over };
 }
+
+/** `--cpf-teste`, built at RUN time from a 9-digit base — never a committed DV-valid literal. */
+const CPF_TESTE = gerarCpf('418209375');
+/** A second one, for "another free --cpf-teste". */
+const CPF_TESTE_B = gerarCpf('730164829');
 
 const COMPLETA = simulacao({ nomeTeste: NOME_TESTE, cepTeste: CEP_TESTE, importarEndereco: true });
 
@@ -219,6 +237,96 @@ describe('simularCompradorShopee — reescreve SÓ o que o adaptador do comprado
       simulacao({ nomeTeste: NOME_TESTE, cepTeste: CEP_TESTE }),
     );
     expect(linha.recipient_address).toBeNull();
+  });
+});
+
+describe('--cpf-teste na simulação — a precedência é Shopee > --cpf-teste > o CPF falso', () => {
+  it('sem CPF da Shopee, o --cpf-teste entra NO LUGAR do falso — e a fonte diz qual', () => {
+    const r = simularCompradorShopee(detalheSG(), simulacao({ cpfTeste: CPF_TESTE }));
+    expect(r.linha.buyer_cpf_id).toBe(CPF_TESTE);
+    expect(r.fonteDoCpf).toBe(FONTE_CPF_SIMULADO.cpfTeste);
+    expect(r.cpfDeTesteAplicado).toBe(true);
+    // QUASE-ERRO: without the flag the repo's fake is still the answer.
+    const semFlag = simularCompradorShopee(detalheSG(), simulacao());
+    expect(semFlag.linha.buyer_cpf_id).toBe(CPF_FALSO_DE_TESTE);
+    expect(semFlag.fonteDoCpf).toBe(FONTE_CPF_SIMULADO.cpfFalso);
+    expect(semFlag.cpfDeTesteAplicado).toBe(true);
+  });
+
+  it('⚠️ o CPF UTILIZÁVEL da Shopee vence o --cpf-teste — o dado real ganha, como hoje', () => {
+    const r = simularCompradorShopee(
+      detalheSG({ buyer_cpf_id: CPF_DA_SHOPEE }),
+      simulacao({ cpfTeste: CPF_TESTE }),
+    );
+    expect(r.linha.buyer_cpf_id).toBe(CPF_DA_SHOPEE);
+    expect(r.fonteDoCpf).toBe(FONTE_CPF_SIMULADO.shopee);
+    expect(r.cpfDeTesteAplicado).toBe(false);
+    // QUASE-ERRO: a MASKED Shopee CPF is not usable, so --cpf-teste wins over it.
+    const mascarado = simularCompradorShopee(
+      detalheSG({ buyer_cpf_id: '***********' }),
+      simulacao({ cpfTeste: CPF_TESTE }),
+    );
+    expect(mascarado.linha.buyer_cpf_id).toBe(CPF_TESTE);
+    expect(mascarado.fonteDoCpf).toBe(FONTE_CPF_SIMULADO.cpfTeste);
+  });
+
+  it('o --cpf-teste não mexe em mais nada: um recipient_address nulo continua nulo', () => {
+    const r = simularCompradorShopee(
+      detalheSG({ recipient_address: null }),
+      simulacao({ cpfTeste: CPF_TESTE, nomeTeste: NOME_TESTE }),
+    );
+    expect(r.linha.recipient_address).toBeNull();
+    expect(r.linha.buyer_cpf_id).toBe(CPF_TESTE);
+    expect(r).toMatchObject({ nomeTesteAplicado: false, cepTesteAplicado: false });
+    // …and with a block, the block is Shopee's, field by field.
+    const real = detalheSG();
+    expect(
+      simularCompradorShopee(real, simulacao({ cpfTeste: CPF_TESTE })).linha.recipient_address,
+    ).toEqual(real.recipient_address);
+  });
+
+  it('um valor PONTUADO que chegue por outro caminho vira a forma canônica', () => {
+    const r = simularCompradorShopee(detalheSG(), simulacao({ cpfTeste: pontuarCpf(CPF_TESTE) }));
+    expect(r.linha.buyer_cpf_id).toBe(CPF_TESTE);
+  });
+
+  it('⚠️ um --cpf-teste inválido RECUSA — nunca cai em silêncio para o CPF falso', () => {
+    for (const ruim of [cpfComDvErrado(CPF_TESTE), '1'.repeat(11), CPF_TESTE.slice(0, 10), '']) {
+      let mensagem = '';
+      try {
+        simularCompradorShopee(detalheSG(), simulacao({ cpfTeste: ruim }));
+      } catch (err) {
+        if (!(err instanceof SimulacaoCompradorRecusadaError)) throw err;
+        mensagem = err.message;
+      }
+      expect(mensagem).toContain('--cpf-teste não é um CPF utilizável');
+      if (ruim !== '') expect(mensagem).not.toContain(ruim);
+    }
+    // Even when Shopee's usable document would win: a bad input is refused, not ignored.
+    expect(() =>
+      simularCompradorShopee(
+        detalheSG({ buyer_cpf_id: CPF_DA_SHOPEE }),
+        simulacao({ cpfTeste: cpfComDvErrado(CPF_TESTE) }),
+      ),
+    ).toThrow(SimulacaoCompradorRecusadaError);
+  });
+
+  it('⚠️ um CNPJ VÁLIDO como cpfTeste também RECUSA aqui — a defesa não depende do parser', () => {
+    const cnpj = gerarCnpj('434567890001');
+    // The anchor: the capture predicate WOULD take it — the PF narrowing is what refuses.
+    expect(cpfCnpjUtilizavel(cnpj)).toBe(cnpj);
+    for (const grafia of [cnpj, pontuarCnpj(cnpj)]) {
+      expect(() => simularCompradorShopee(detalheSG(), simulacao({ cpfTeste: grafia }))).toThrow(
+        new SimulacaoCompradorRecusadaError(
+          '--cpf-teste não é um CPF utilizável (11 dígitos, dígitos verificadores válidos). ' +
+            'Nada foi gravado.',
+        ),
+      );
+    }
+    // QUASE-ERRO: a valid CPF in the same position is accepted.
+    expect(simularCompradorShopee(detalheSG(), simulacao({ cpfTeste: CPF_TESTE })).fonteDoCpf).toBe(
+      FONTE_CPF_SIMULADO.cpfTeste,
+    );
   });
 });
 
@@ -537,6 +645,86 @@ describe('o que sai no STDOUT e no --json — nunca CPF, nome, rua nem os dígit
   });
 });
 
+/** Every spelling of a document an output must never carry. */
+function grafiasDe(cpf: string): string[] {
+  return [cpf, pontuarCpf(cpf)];
+}
+
+describe('--cpf-teste no dry-run — a FONTE sai, os dígitos nunca', () => {
+  it('a linha «CPF de teste aplicado» diz de onde veio: --cpf-teste, o falso do repo, ou a Shopee', async () => {
+    for (const [detalhe, sim, linha, fonte] of [
+      [
+        detalheSG(),
+        simulacao({ cpfTeste: CPF_TESTE }),
+        'CPF de teste aplicado ... sim (informado em --cpf-teste)',
+        FONTE_CPF_SIMULADO.cpfTeste,
+      ],
+      [
+        detalheSG(),
+        simulacao(),
+        'CPF de teste aplicado ... sim (o CPF falso do repo)',
+        FONTE_CPF_SIMULADO.cpfFalso,
+      ],
+      [
+        detalheSG({ buyer_cpf_id: CPF_DA_SHOPEE }),
+        simulacao({ cpfTeste: CPF_TESTE }),
+        'CPF de teste aplicado ... não — vale o da Shopee',
+        FONTE_CPF_SIMULADO.shopee,
+      ],
+    ] as const) {
+      const p = await preparar(cenario(detalhe), sim);
+      expect(p.simulacao!.fonteDoCpf).toBe(fonte);
+      const r = resumoDe(p);
+      expect(r.fonteDoCpf).toBe(fonte);
+      expect(r.cpfDeTesteAplicado).toBe(fonte !== FONTE_CPF_SIMULADO.shopee);
+      expect(renderCompradorSimulado(r).join('\n')).toContain(linha);
+    }
+  });
+
+  it('com --cpf-teste e --nome-teste o veredito simulado é capturado SOB o --cpf-teste', async () => {
+    const p = await preparar(cenario(), simulacao({ cpfTeste: CPF_TESTE, nomeTeste: NOME_TESTE }));
+    expect(p.captura).toEqual({ estado: 'capturado', camposRecusados: [] });
+    expect(clienteDeShopee(p.simulacao!.detalheComprador)).toMatchObject({
+      tipo: TIPO_CLIENTE.pessoaFisica,
+      cpf_cnpj: CPF_TESTE,
+    });
+    // The REAL row is untouched — the substitute lives only on the buyer row.
+    expect(p.linha.buyer_cpf_id).toBeNull();
+  });
+
+  it('⚠️ nem o stdout, nem o --json, nem o bloco de VALORES do stderr carregam os dígitos', async () => {
+    for (const sim of [
+      simulacao({ cpfTeste: CPF_TESTE }),
+      simulacao({ ...COMPLETA, cpfTeste: CPF_TESTE }),
+    ]) {
+      const p = await preparar(cenario(), sim);
+      const r = resumoDe(p);
+      const resumoPedido = resumoDoPedidoMapeado(
+        p.pedidoId,
+        mapearPreparoPedidoShopee(p, {
+          clienteOuterRef: null,
+          enderecoOuterRef: null,
+          camposRecusadosExtra: [],
+        }),
+      );
+      const saidas = {
+        stdout: [...renderResumoPedido(resumoPedido), ...renderCompradorSimulado(r)].join('\n'),
+        json: JSON.stringify({ resumo: resumoPedido, comprador: r }),
+        stderr: valoresEnviadosPelaShopee({ overrideSandboxAtivo: true, preparo: p }).join('\n'),
+      };
+      // Anchors: each surface is non-empty, and the stderr block really printed values.
+      expect(saidas.stdout).toContain('informado em --cpf-teste');
+      expect(saidas.json).toContain('"fonteDoCpf":"cpf-teste"');
+      expect(saidas.stderr).toContain(JSON.stringify(ENDERECO_SG));
+      for (const [onde, texto] of Object.entries(saidas)) {
+        for (const grafia of grafiasDe(CPF_TESTE)) {
+          expect(texto, `${onde} carrega o --cpf-teste`).not.toContain(grafia);
+        }
+      }
+    }
+  });
+});
+
 /* -------------------------------------------------------------------------- */
 /*                         the importer's own defence                          */
 /* -------------------------------------------------------------------------- */
@@ -672,6 +860,7 @@ describe('--live com o comprador de TESTE', () => {
     expect(r.resultado.compradorDeTeste).toEqual({
       cliente: { clienteId, criado: true, matchedBy: null },
       enderecoOuterRef: `documents/clientes/${clienteId}/enderecos/${enderecoId}`,
+      fonteDoCpf: FONTE_CPF_SIMULADO.cpfFalso,
     });
     expect(r.colisao).toEqual({ kind: 'livre' });
 
@@ -711,6 +900,9 @@ describe('--live com o comprador de TESTE', () => {
     const { gravado, texto } = saidaDoLive(c, r.resultado);
     expect(texto).toContain(`${clienteId}   criado=sim`);
     expect(texto).toContain(enderecoId);
+    // The --live block names the SOURCE too, as the dry run does.
+    expect(gravado.fonteDoCpf).toBe(FONTE_CPF_SIMULADO.cpfFalso);
+    expect(texto).toContain('CPF de teste aplicado ... sim (o CPF falso do repo)');
     expect(gravado.limpeza).toEqual([
       PEDIDO_PATH,
       `clientes/${clienteId}/enderecos/${enderecoId}`,
@@ -727,8 +919,10 @@ describe('--live com o comprador de TESTE', () => {
     if (r.kind !== 'importado') throw new Error('esperava importado');
     const clienteId = r.resultado.compradorDeTeste!.cliente!.clienteId;
     expect(c.db.store[`clientes/${clienteId}`]!.data.cpf_cnpj).toBe(CPF_DA_SHOPEE);
-    const { texto } = saidaDoLive(c, r.resultado);
+    const { gravado, texto } = saidaDoLive(c, r.resultado);
     expect(texto).toContain(clienteId);
+    expect(gravado.fonteDoCpf).toBe(FONTE_CPF_SIMULADO.shopee);
+    expect(texto).toContain('CPF de teste aplicado ... não — vale o da Shopee');
     for (const literal of [CPF_DA_SHOPEE, CPF_FALSO_DE_TESTE, NOME_TESTE, ENDERECO_SG, CEP_TESTE]) {
       expect(texto).not.toContain(literal);
     }
@@ -779,6 +973,7 @@ describe('--live com o comprador de TESTE', () => {
     expect(b.resultado.compradorDeTeste).toEqual({
       cliente: { clienteId, criado: false, matchedBy: 'cpf_cnpj' },
       enderecoOuterRef: a.resultado.compradorDeTeste!.enderecoOuterRef,
+      fonteDoCpf: FONTE_CPF_SIMULADO.cpfFalso,
     });
     expect(c.db.idsEm('clientes')).toEqual([clienteId]);
     expect(c.db.idsEm(`clientes/${clienteId}/enderecos`)).toHaveLength(1);
@@ -927,6 +1122,186 @@ describe('--live com o comprador de TESTE', () => {
   });
 });
 
+/** Every `console.info` / `console.warn` payload of the run, as one string. */
+function logsDoRun(): string {
+  return JSON.stringify([...infoSpy.mock.calls, ...vi.mocked(console.warn).mock.calls]);
+}
+
+/** The values the run's `cpf_cnpj ==` queries asked for — the document the collision check used. */
+function documentosConsultados(c: Cenario): unknown[] {
+  return c.db.consultas.flatMap((q) =>
+    q.clausulas.filter(([campo]) => campo === 'cpf_cnpj').map(([, valor]) => valor),
+  );
+}
+
+/** A cliente holding the repo's fake CPF under another name — staging's NF-e live / dev-seed leftovers. */
+function seedDoCpfFalso(c: Cenario): void {
+  c.db.seed('clientes/ci-seed-cliente', {
+    tipo: TIPO_CLIENTE.pessoaFisica,
+    nome: 'Cliente Dev Pessoa Fisica',
+    cpf_cnpj: CPF_FALSO_DE_TESTE,
+  });
+}
+
+describe('--live com --cpf-teste', () => {
+  const COM_CPF = simulacao({ ...COMPLETA, cpfTeste: CPF_TESTE });
+
+  it('cria o cliente SOB o --cpf-teste e o vincula — e nenhuma saída, nem log, carrega os dígitos', async () => {
+    const c = cenario();
+    const r = await live(c, COM_CPF);
+    if (r.kind !== 'importado') throw new Error('esperava importado');
+    expect(r.colisao).toEqual({ kind: 'livre' });
+    const clienteId = r.resultado.compradorDeTeste!.cliente!.clienteId;
+    expect(r.resultado.compradorDeTeste!.cliente!.criado).toBe(true);
+    expect(c.db.store[`clientes/${clienteId}`]!.data).toMatchObject({
+      tipo: TIPO_CLIENTE.pessoaFisica,
+      nome: NOME_TESTE,
+      cpf_cnpj: CPF_TESTE,
+    });
+    const pedido = c.db.store[PEDIDO_PATH]!.data;
+    expect(pedido.clientePedidoOuterRef).toBe(`documents/clientes/${clienteId}`);
+    expect(pedido.capturaComprador).toMatchObject({ estado: 'capturado' });
+    // The collision check asked about the --cpf-teste document — never the fake.
+    expect(documentosConsultados(c)).toContain(CPF_TESTE);
+    expect(documentosConsultados(c)).not.toContain(CPF_FALSO_DE_TESTE);
+
+    const { gravado, texto } = saidaDoLive(c, r.resultado);
+    expect(texto).toContain(clienteId);
+    // The --live block (and its --json) names the SOURCE the cliente was created under.
+    expect(gravado.fonteDoCpf).toBe(FONTE_CPF_SIMULADO.cpfTeste);
+    expect(texto).toContain('CPF de teste aplicado ... sim (informado em --cpf-teste)');
+    expect(texto).toContain('"fonteDoCpf":"cpf-teste"');
+    const logs = logsDoRun();
+    // Anchor: the importer DID log its line.
+    expect(logs).toContain('pedido importado');
+    for (const grafia of grafiasDe(CPF_TESTE)) {
+      expect(texto).not.toContain(grafia);
+      expect(logs).not.toContain(grafia);
+    }
+  });
+
+  it('⚠️ o cliente do CPF FALSO (o staging de hoje) NÃO bloqueia um --cpf-teste livre', async () => {
+    const c = cenario();
+    seedDoCpfFalso(c);
+    const r = await live(c, COM_CPF);
+    if (r.kind !== 'importado') throw new Error('esperava importado');
+    expect(r.colisao).toEqual({ kind: 'livre' });
+    const clienteId = r.resultado.compradorDeTeste!.cliente!.clienteId;
+    expect(clienteId).not.toBe('ci-seed-cliente');
+    expect(c.db.store[`clientes/${clienteId}`]!.data.cpf_cnpj).toBe(CPF_TESTE);
+    // The holder of the fake is left exactly as it was.
+    expect(c.db.store['clientes/ci-seed-cliente']!.data.cpf_cnpj).toBe(CPF_FALSO_DE_TESTE);
+
+    // QUASE-ERRO: the SAME seed without --cpf-teste refuses, and points at the flag first.
+    const sem = cenario();
+    seedDoCpfFalso(sem);
+    const mensagem = await recusaDe(live(sem, COMPLETA));
+    expect(mensagem).toMatch(/^o CPF falso do repo/);
+    expect(mensagem).toContain('ci-seed-cliente');
+    expect(mensagem.indexOf('--cpf-teste')).toBeLessThan(mensagem.indexOf('--nome-teste'));
+    expect(sem.db.writes).toEqual([]);
+  });
+
+  it('⚠️ um cliente que JÁ tem o --cpf-teste, com outro nome, bloqueia — ZERO escritas, ids só', async () => {
+    const c = cenario();
+    c.db.seed('clientes/dono-1', {
+      tipo: TIPO_CLIENTE.pessoaFisica,
+      nome: 'Outra Pessoa Qualquer',
+      cpf_cnpj: CPF_TESTE,
+    });
+    const mensagem = await recusaDe(live(c, COM_CPF));
+    expect(mensagem).toMatch(
+      /^o CPF informado em --cpf-teste já pertence a outro cliente \(dono-1\)/,
+    );
+    expect(c.db.writes).toEqual([]);
+    expect(c.db.store[PEDIDO_PATH]).toBeUndefined();
+    expect(documentosConsultados(c)).toEqual([CPF_TESTE]);
+    // What the operator sees: the refusal line — no name, no digits.
+    const saida = descreverErro(new SimulacaoCompradorRecusadaError(mensagem)).join('\n');
+    expect(saida).not.toContain('Outra Pessoa');
+    for (const grafia of grafiasDe(CPF_TESTE)) expect(saida).not.toContain(grafia);
+  });
+
+  it('um dono que só o ÍNDICE conhece (o --cpf-teste gravado PONTUADO) também bloqueia', async () => {
+    const c = cenario();
+    c.db.seed('clientes/legado-2', { nome: 'Outro Nome', cpf_cnpj: pontuarCpf(CPF_TESTE) });
+    c.db.seed(`clienteIdentidades/${clienteIdentidadeId('cpf_cnpj', CPF_TESTE)}`, {
+      tipo: 'cpf_cnpj',
+      clienteIds: ['legado-2'],
+      ultimaModificacao: 1,
+    });
+    const mensagem = await recusaDe(live(c, COM_CPF));
+    expect(mensagem).toContain('legado-2');
+    expect(c.db.writes).toEqual([]);
+  });
+
+  it('QUASE-ERRO: o MESMO nome sob o --cpf-teste converge numa order nova — matchedBy cpf_cnpj', async () => {
+    const c = cenario();
+    const a = await live(c, COM_CPF);
+    const b = await live(c, COM_CPF, ORDER_SN_B);
+    if (a.kind !== 'importado' || b.kind !== 'importado') throw new Error('esperava importado');
+    const clienteId = a.resultado.compradorDeTeste!.cliente!.clienteId;
+    expect(b.colisao).toEqual({ kind: 'mesmo-nome', clienteIds: [clienteId] });
+    expect(b.resultado.compradorDeTeste!.cliente).toEqual({
+      clienteId,
+      criado: false,
+      matchedBy: 'cpf_cnpj',
+    });
+    // QUASE-ERRO: ANOTHER free --cpf-teste with the same name is another cliente.
+    const outro = await live(
+      c,
+      simulacao({ ...COMPLETA, cpfTeste: CPF_TESTE_B }),
+      '260910KJBHUJDP',
+    );
+    if (outro.kind !== 'importado') throw new Error('esperava importado');
+    expect(outro.colisao).toEqual({ kind: 'livre' });
+    expect(outro.resultado.compradorDeTeste!.cliente!.clienteId).not.toBe(clienteId);
+  });
+
+  it('⚠️ o CPF utilizável da SHOPEE ainda vence no --live: um dono do --cpf-teste não importa', async () => {
+    const c = cenario(detalheSG({ buyer_cpf_id: CPF_DA_SHOPEE }));
+    c.db.seed('clientes/dono-1', { nome: 'Outra Pessoa Qualquer', cpf_cnpj: CPF_TESTE });
+    const r = await live(c, COM_CPF);
+    if (r.kind !== 'importado') throw new Error('esperava importado');
+    expect(r.colisao).toEqual({ kind: 'livre' });
+    const clienteId = r.resultado.compradorDeTeste!.cliente!.clienteId;
+    expect(c.db.store[`clientes/${clienteId}`]!.data.cpf_cnpj).toBe(CPF_DA_SHOPEE);
+    expect(documentosConsultados(c)).not.toContain(CPF_TESTE);
+    // …and a holder of SHOPEE's document says so, without suggesting --cpf-teste.
+    const d = cenario(detalheSG({ buyer_cpf_id: CPF_DA_SHOPEE }));
+    d.db.seed('clientes/dono-2', { nome: 'Outra Pessoa Qualquer', cpf_cnpj: CPF_DA_SHOPEE });
+    const mensagem = await recusaDe(live(d, COM_CPF));
+    expect(mensagem).toMatch(
+      /^o documento que a Shopee mandou já pertence a outro cliente \(dono-2\)/,
+    );
+    expect(d.db.writes).toEqual([]);
+  });
+
+  it('o parser e o --live falam a MESMA forma: o valor pontuado da linha de comando grava canônico', async () => {
+    const cmd = parseArgsImportarPedido([
+      '--integracao',
+      INT,
+      '--order-sn',
+      ORDER_SN,
+      '--importar-cliente',
+      '--importar-endereco',
+      '--nome-teste',
+      NOME_TESTE,
+      '--cep-teste',
+      CEP_TESTE,
+      `--cpf-teste=${pontuarCpf(CPF_TESTE)}`,
+    ]);
+    if (cmd.kind !== 'importar' || cmd.args.comprador === undefined) {
+      throw new Error('esperava o modo comprador');
+    }
+    const c = cenario();
+    const r = await live(c, cmd.args.comprador);
+    if (r.kind !== 'importado') throw new Error('esperava importado');
+    const clienteId = r.resultado.compradorDeTeste!.cliente!.clienteId;
+    expect(c.db.store[`clientes/${clienteId}`]!.data.cpf_cnpj).toBe(CPF_TESTE);
+  });
+});
+
 /* -------------------------------------------------------------------------- */
 /*                 the option never reaches a production caller                */
 /* -------------------------------------------------------------------------- */
@@ -1007,6 +1382,38 @@ describe('a opção de teste não chega a nenhum chamador de produção', () => 
       /for \(const linha of valoresEnviadosPelaShopee\(\{[^}]*\}\)\) \{\s*aviso\(linha\);\s*\}/,
     );
     expect(fonte.match(/valoresEnviadosPelaShopee\(/g)).toHaveLength(1);
+  });
+
+  it('o script nunca toca no --cpf-teste: o preâmbulo vem pronto da metade testada', () => {
+    // `scripts/` is outside vitest, so the preamble line is built — and tested
+    // with the digits as input — in `importarPedidoCli.ts`; the script only
+    // hands it the comprador.
+    const fonte = fontesDoApp().get(SCRIPT)!;
+    expect(fonte).not.toMatch(/cpfTeste/);
+    const preambulo = fonte.match(/\blinhaDoCompradorNoPreambulo\(comprador\)/g) ?? [];
+    expect(preambulo).toHaveLength(1);
+  });
+
+  it('o script: o comprador (com os dígitos dentro) só vai para lugares CONHECIDOS', () => {
+    // ⚠️ An alias is how the digits would leak without naming `cpfTeste` —
+    // `aviso(JSON.stringify(comprador))`, `const c = comprador`, a template.
+    // So every use of the VARIABLE is one of the allowed shapes, counted.
+    const fonte = fontesDoApp().get(SCRIPT)!;
+    const usos = fonte.match(/(?<![.\w])comprador\b(?!\s*:)/g) ?? [];
+    const permitidos = [
+      /const comprador = comando\.args\.comprador \?\? null;/g,
+      /(?<![.\w])comprador [!=]== null\b/g,
+      /\blinhaDoCompradorNoPreambulo\(comprador\)/g,
+      /\{ simulacaoComprador: comprador \}/g,
+      /\bimportarPedidoComCompradorDeTeste\(db, alvo, comprador, projeto\)/g,
+    ].map((padrao) => (fonte.match(padrao) ?? []).length);
+    // Anchors: every allowed shape is really there — a pattern that matched
+    // nothing would let the count pass vacuously.
+    for (const n of permitidos) expect(n).toBeGreaterThan(0);
+    expect(usos.length).toBe(permitidos.reduce((a, b) => a + b, 0));
+    // …and the parsed args and the raw argv are read once each, never printed.
+    expect(fonte.match(/\bcomando\.args\b/g) ?? []).toHaveLength(2);
+    expect(fonte.match(/\bprocess\.argv\b/g) ?? []).toHaveLength(1);
   });
 
   it('nenhuma rota, gatilho, varredura ou braço de notificação nomeia o modo', () => {

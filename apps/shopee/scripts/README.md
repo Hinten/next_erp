@@ -236,17 +236,45 @@ whether the buyer and the address land, keeping the rest of Shopee's data:
 pnpm --filter @delfrance/shopee-app importar:pedido --integracao int-1 --order-sn 220810QSK8S7BX --importar-cliente --importar-endereco --nome-teste "Comprador Sandbox" --cep-teste 01001000
 ```
 
-| flag                      | effect                                                                                                                                                                                    |
-| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--importar-cliente`      | the buyer adapter reads a SIMULATED row: region `BR`, Shopee's own CPF when usable, else the repo's fake `12345678909`. The real capture path creates (or matches) and links the cliente. |
-| `--importar-endereco`     | also writes the endereço. Without it the cliente is linked and no endereço is written.                                                                                                    |
-| `--nome-teste <nome>`     | replaces ONLY `recipient_address.name`. Non-empty.                                                                                                                                        |
-| `--cep-teste <8 dígitos>` | replaces ONLY `recipient_address.zipcode`. Exactly 8 digits, no hyphen.                                                                                                                   |
+| flag                      | effect                                                                                                                                                                                                                                                                                                                                                                                                     |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--importar-cliente`      | the buyer adapter reads a SIMULATED row: region `BR` and the document by precedence — Shopee's own CPF when usable, else `--cpf-teste`, else the repo's fake `12345678909`. The real capture path creates (or matches) and links the cliente.                                                                                                                                                              |
+| `--importar-endereco`     | also writes the endereço. Without it the cliente is linked and no endereço is written.                                                                                                                                                                                                                                                                                                                     |
+| `--nome-teste <nome>`     | replaces ONLY `recipient_address.name`. Non-empty.                                                                                                                                                                                                                                                                                                                                                         |
+| `--cep-teste <8 dígitos>` | replaces ONLY `recipient_address.zipcode`. Exactly 8 digits, no hyphen.                                                                                                                                                                                                                                                                                                                                    |
+| `--cpf-teste <cpf>`       | the test CPF to use INSTEAD of the repo's fake — never instead of a usable CPF Shopee sent (the real data wins). 11 digits, bare or as `000.000.000-00`, with valid check digits (`validateCpfCnpj`, through the capture's own `cpfCnpjUtilizavel`); an all-same-digit CPF, a CNPJ (the mode simulates a PF), 10/12 digits, letters or partial punctuation are refused. Stored canonical (11 bare digits). |
 
-The last three are refused without `--importar-cliente`. What stays REAL: the
+The last four are refused without `--importar-cliente`. What stays REAL: the
 order-level region still drives `paisId` (the endereço's `pais` is `SG`),
 `bloquearEmissaoNFe` (still `true`) and every fiscal flag, and the order status
 still decides the capture window.
+
+⚠️ **On staging the repo's fake CPF is already taken.** Test clientes hold
+`12345678909`: the NF-e live CI lane's homologação tests write a
+`ci-<run>-cliente` with it, and their leftovers stay on staging; dev seeds
+write one too (`seed-pedidos-dev`'s `dev-pedidos-cliente`; staging's
+`dev-frete-me-cliente` is older than the Melhor Envio seed's current document,
+which is no longer the fake). So a `--live` without `--cpf-teste` is refused by the collision
+check below (the refusal lists their ids), and new holders keep appearing.
+Pass `--cpf-teste` with a test CPF no cliente holds:
+
+```bash
+pnpm -s --filter @delfrance/shopee-app importar:pedido --integracao int-1 --order-sn 220810QSK8S7BX --importar-cliente --nome-teste "Comprador Sandbox" --cpf-teste "<um CPF de teste>" --live --project <staging-project>
+```
+
+⚠️ **You type the CPF, so it lands in your shell history.** Use a
+TEST CPF from a generator — never a real person's. The script repeats it
+nowhere: the preamble says `cpf-teste=sim`, `CPF de teste aplicado` says
+`sim (informado em --cpf-teste)` in the dry run AND in the `--live` block,
+`--json` carries `fonteDoCpf: "cpf-teste"` in both modes (inside `comprador`),
+and every refusal names the flag, never the digits. ⚠️ **pnpm does repeat it**:
+without `-s` it prints the command line, arguments included, in its
+`$ dotenv … tsx scripts/importar-pedido.ts …` banner and again in its
+`ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL` block when the script exits 1 — exactly the
+transcript that gets pasted. `pnpm -s` (`--silent`, before `--filter`) drops
+both and keeps the script's own stdout, stderr and exit code (verified on the
+pinned pnpm 11.2.2). The `--live` collision check runs on that document, so a
+cliente holding the fake no longer stands in the way.
 
 **Refused — exit 1, before any buyer or pedido write** (the importer re-checks
 the first two itself, in its read half AND its write half):
@@ -261,10 +289,18 @@ the first two itself, in its read half AND its write half):
   (`FIREBASE_SERVICE_ACCOUNT` / `FIREBASE_SERVICE_ACCOUNT_PATH`) issued for it
   (`tools/migrations`' rule). Application default credentials (a gcloud login)
   name no project and are refused;
-- in `--live`, when the document already belongs to a cliente with ANOTHER name.
-  The refusal prints that cliente's id. The dev seed's cliente holds
-  `12345678909`: pass `--nome-teste "<that cliente's name>"` to reuse it, or
-  delete it. A holder with the SAME name (trimmed and whitespace-collapsed,
+- on the command line, a `--cpf-teste` that is not a check-digit-valid CPF (the
+  shapes above) — before anything is opened;
+- in `--live`, when the document the run would use (Shopee's, `--cpf-teste`'s
+  or the fake — the precedence above) already belongs to a cliente with ANOTHER
+  name. The refusal prints that cliente's id, never a name or the digits, and
+  its way out depends on the source: over the FAKE (the NF-e live lane's
+  `ci-*-cliente` and the dev seeds' clientes hold `12345678909`) pass
+  `--cpf-teste <outro CPF de teste>`
+  first, or `--nome-teste "<that cliente's name>"` to reuse it, or delete it;
+  over a `--cpf-teste`, pass another one (or `--nome-teste`); over Shopee's own
+  document `--cpf-teste` changes nothing, since Shopee's wins — reuse or
+  delete. A holder with the SAME name (trimmed and whitespace-collapsed,
   nothing else folded) converges — an idempotent re-run; note that
   `findOrCreateCliente` may then rewrite that cliente's `nome` to the
   collapsed form (bumping its `ultimaModificacao`) when the stored spelling
@@ -289,7 +325,7 @@ SIMULATED verdict, what this run would store — plus the buyer block:
 | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `veredito real`         | what a normal import stores, e.g. `expirado regiao:nao-br`                                                                                                 |
 | `veredito simulado`     | what this run stores: `capturado`, or `pendente nome:mascarado`                                                                                            |
-| `CPF de teste aplicado` | `sim` / `não` — never the digits                                                                                                                           |
+| `CPF de teste aplicado` | `sim (informado em --cpf-teste)`, `sim (o CPF falso do repo)` or `não — vale o da Shopee` — the source, never the digits (`--json`: `fonteDoCpf`)          |
 | `endereço`              | `ok`, `sem-cep`, `uf-desconhecida — … seria recuperada pelo ViaCEP em --live`, or `não construído (<campo>:<veredito>)`                                    |
 | `CEP` / `UF` / `país`   | the CEP's DIGIT COUNT (`sem-cep — CEP precisa de 8 dígitos; veio com 6`), the UF and whether it is the builder's `AC` default because Shopee sent no state |
 | `fallbacks`             | the fields the builder filled: `numero=S/N`, `bairro=SEM BAIRRO`, `cidade=NAO INFORMADA`                                                                   |
@@ -305,9 +341,11 @@ refusals checked and spends `get_order_detail` + `get_escrow_detail` once —
 `findOrCreateCliente`, `ensureEndereco` and the pedido transaction's fill-once
 guards link `clientePedidoOuterRef`, `enderecoFiscalOuterRef` and
 `freteInicial.enderecoFreteOuterReference` (on create, or on the first fiscal
-fill). It adds the cliente id, `criado` and `matchedBy`, the endereço id, the
+fill). It adds the cliente id, `criado` and `matchedBy`, the
+`CPF de teste aplicado` source (the dry run's three values — which document the
+cliente was created or matched under, never its digits), the endereço id, the
 pedido id and a `limpeza` line with the document paths the pedido now links —
-ids and paths only. ViaCEP runs only on `uf-desconhecida`, as in any import.
+ids, sources and paths only. ViaCEP runs only on `uf-desconhecida`, as in any import.
 
 **Expected on the SG order:**
 

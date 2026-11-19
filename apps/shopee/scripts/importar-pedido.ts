@@ -39,12 +39,18 @@
  *
  * The SG sandbox order captures no buyer (region not BR, name masked, a 6-digit
  * postal code), so this mode lets a human see the buyer and the address land:
- * the buyer adapter reads a simulated row (Shopee's CPF when usable, else the
- * repo's fake one; `--nome-teste` / `--cep-teste` replace only those two
- * fields) while the REAL row drives everything else. Refused (exit 1, before
- * any buyer or pedido write) without the sandbox override, on a BR order, and
- * in `--live` without an explicit `--project` matching the admin app under a
- * service account issued for it. The dry run adds the real-vs-simulated
+ * the buyer adapter reads a simulated row (Shopee's CPF when usable, else
+ * `--cpf-teste`, else the repo's fake one; `--nome-teste` / `--cep-teste`
+ * replace only those two fields) while the REAL row drives everything else.
+ * `--cpf-teste`'s digits are printed nowhere by this script — the reports name
+ * the SOURCE of the document, and the preamble only whether one was given. ⚠️
+ * pnpm itself echoes the command line (its `$ …` banner, and the
+ * `ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL` block on exit 1), so the runbook runs
+ * `--cpf-teste` under `pnpm -s`, which keeps this script's own output and exit
+ * code and drops pnpm's. Refused (exit 1,
+ * before any buyer or pedido write) without the sandbox override, on a BR
+ * order, and in `--live` without an explicit `--project` matching the admin app
+ * under a service account issued for it. The dry run adds the real-vs-simulated
  * verdicts and the endereço preview to stdout, and the VALUES Shopee sent to
  * STDERR only; `--live` adds the project, collision, stored-link and
  * terminal-capture refusals (`lib/shopee/pedidos/importarCompradorTeste.ts`).
@@ -76,6 +82,7 @@ import {
   USO_IMPORTAR_PEDIDO,
   descreverErro,
   exigirSandboxParaSimulacao,
+  linhaDoCompradorNoPreambulo,
   parseArgsImportarPedido,
   projetoDaCredencial,
   renderCompradorGravado,
@@ -156,13 +163,9 @@ async function main(): Promise<void> {
   );
   aviso(`  integracao ...... ${integracaoId}`);
   aviso(`  order_sn ........ ${orderSn}`);
-  if (comprador !== null) {
-    aviso(
-      `  comprador ....... TESTE — endereço=${comprador.importarEndereco ? 'sim' : 'não'} ` +
-        `nome-teste=${comprador.nomeTeste === null ? 'não' : 'sim'} ` +
-        `cep-teste=${comprador.cepTeste === null ? 'não' : 'sim'}`,
-    );
-  }
+  // Whether each substitute was GIVEN — never a value. Built by the tested lib
+  // half, so this file never touches `--cpf-teste`'s digits.
+  if (comprador !== null) aviso(linhaDoCompradorNoPreambulo(comprador));
 
   const db = getAdminFirestore();
 

@@ -616,7 +616,9 @@ SG sandbox order can never exercise the buyer path (region `SG`, masked name,
 `simulacaoComprador`, that only the script passes — a test greps every route,
 trigger, sweep and the notification arm. It swaps ONLY the row the buyer adapter
 reads (`simularCompradorShopee` in `comprador.ts`: region `BR`, Shopee's usable
-CPF or the fake `CPF_FALSO_DE_TESTE`, the optional name/zip substitutes); the
+CPF, else the CLI's `--cpf-teste`, else the fake `CPF_FALSO_DE_TESTE` — only
+the SOURCE is ever reported, `fonteDoCpf` — and the optional name/zip
+substitutes); the
 REAL row keeps `paisId`, `bloquearEmissaoNFe` and every fiscal flag. The
 importer re-checks the sandbox override from its own environment and the real
 region from the order it read — in the read half and again in the write half,
