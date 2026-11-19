@@ -24,6 +24,18 @@
  *    assumption here, unproven until the first canary write: no engine outcome
  *    depends on it, since the engine compares only the four leaves it writes.
  *
+ * And the store's stock LIST, `GET /v1/produto_estoque?limit=&offset=` (the
+ * daily reconcile's walk, PR 12-g): the rows of `estado.lista` in order — at
+ * start, the `estoque` rows, the very objects the detail answers, so a PUT moves
+ * both — one page per call, `meta` as the owner's stock captures show it
+ * (`limit`, `offset`, `total_count`, and `next` =
+ * `/api/v1/produto_estoque?limit=<same>&offset=<offset + limit>` before the last
+ * page, `null` on it and past it). A test edits the list in place: a row
+ * inserted at the front mid-walk shifts every row after it
+ * ({@link inserirNaListaLi}), a row the store deleted leaves both
+ * ({@link removerDaLojaLi}), and a raw row that is not a stock row at all can be
+ * pushed straight into `estado.lista` (the list answers it; no detail does).
+ *
  * Only the no-slash form is modelled, though the store answers the slash GET
  * identically: the engine never asks it, so a path regression answers 500 here.
  *
@@ -42,8 +54,13 @@ export interface RequisicaoLi {
   readonly corpo: unknown;
 }
 
+/** A request as the routes and the overrides see it: with its query, as sent (`''` when none). */
+export interface RequisicaoComBuscaLi extends RequisicaoLi {
+  readonly busca: string;
+}
+
 /** A one-shot answer for the first request it claims (a non-null result). */
-export type SobrescritaLi = (r: RequisicaoLi) => Response | Error | null;
+export type SobrescritaLi = (r: RequisicaoComBuscaLi) => Response | Error | null;
 
 export function respostaJson(status: number, corpo: unknown, tipo = 'application/json'): Response {
   return new Response(corpo === undefined ? '' : JSON.stringify(corpo), {
@@ -109,6 +126,14 @@ function produtoDaLinha(linha: DocData): number | null {
 
 const ESTOQUE_DETALHE = /^\/v1\/produto_estoque\/([1-9][0-9]*)$/;
 
+/** The stock list (no slash), as the reconcile's walk asks it. */
+export const CAMINHO_LISTA_ESTOQUE_LI = '/v1/produto_estoque';
+
+/** `GET /v1/produto_estoque?limit=<limite>&offset=<offset>`, as `chamadasComBusca` records it. */
+export function chamadaDaListaLi(offset: number, limite: number): string {
+  return `GET ${CAMINHO_LISTA_ESTOQUE_LI}?limit=${String(limite)}&offset=${String(offset)}`;
+}
+
 export interface OpcoesPlataformaEscritaLi {
   /** The order's situação codigo at start. */
   readonly codigo?: string;
@@ -130,7 +155,12 @@ export function criarPlataformaEscritaLi(o: OpcoesPlataformaEscritaLi = {}) {
     if (produtoId === null) throw new TypeError('plataforma: linha de estoque sem produto');
     estoque.set(produtoId, structuredClone(linha));
   }
-  const estado: { pedido: DocData; historico: DocData[]; estoque: Map<number, DocData> } = {
+  const estado: {
+    pedido: DocData;
+    historico: DocData[];
+    estoque: Map<number, DocData>;
+    lista: DocData[];
+  } = {
     pedido,
     historico: [
       {
@@ -142,9 +172,12 @@ export function criarPlataformaEscritaLi(o: OpcoesPlataformaEscritaLi = {}) {
       },
     ],
     estoque,
+    lista: [...estoque.values()],
   };
   let proximaLinha = 2;
   const requisicoes: RequisicaoLi[] = [];
+  /** Each request's query, in step with `requisicoes`. */
+  const buscas: string[] = [];
   const textosDosPuts: string[] = [];
   const eventos: string[] = [];
   const fila: SobrescritaLi[] = [];
@@ -166,7 +199,7 @@ export function criarPlataformaEscritaLi(o: OpcoesPlataformaEscritaLi = {}) {
     proximaLinha += 1;
   }
 
-  function padrao(r: RequisicaoLi): Response {
+  function padrao(r: RequisicaoComBuscaLi): Response {
     if (r.metodo === 'GET' && r.caminho === CAMINHO_PEDIDO_LI) {
       return respostaJson(200, estado.pedido);
     }
@@ -197,6 +230,29 @@ export function criarPlataformaEscritaLi(o: OpcoesPlataformaEscritaLi = {}) {
       mover((r.corpo as { codigo: string }).codigo);
       return respostaJson(200, estado.pedido.situacao);
     }
+    if (r.metodo === 'GET' && r.caminho === CAMINHO_LISTA_ESTOQUE_LI) {
+      const busca = new URLSearchParams(r.busca);
+      const limite = Number(busca.get('limit'));
+      const offset = Number(busca.get('offset'));
+      if (!Number.isSafeInteger(limite) || limite < 1 || !Number.isSafeInteger(offset)) {
+        return respostaJson(400, { erro: 'limit/offset' });
+      }
+      const total = estado.lista.length;
+      const fim = offset + limite;
+      return respostaJson(200, {
+        meta: {
+          limit: limite,
+          offset,
+          total_count: total,
+          next:
+            fim < total
+              ? `/api/v1/produto_estoque?limit=${String(limite)}&offset=${String(fim)}`
+              : null,
+          previous: null,
+        },
+        objects: estado.lista.slice(offset, fim),
+      });
+    }
     const estoqueDetalhe = ESTOQUE_DETALHE.exec(r.caminho);
     if (estoqueDetalhe !== null && (r.metodo === 'GET' || r.metodo === 'PUT')) {
       const linha = estado.estoque.get(Number(estoqueDetalhe[1]));
@@ -218,13 +274,15 @@ export function criarPlataformaEscritaLi(o: OpcoesPlataformaEscritaLi = {}) {
   const fetch: typeof globalThis.fetch = (input, init) => {
     const url = new URL(String(input));
     const metodo = init?.method ?? 'GET';
-    const r: RequisicaoLi = {
+    const registrada: RequisicaoLi = {
       metodo,
       caminho: url.pathname,
       corpo: typeof init?.body === 'string' ? (JSON.parse(init.body) as unknown) : null,
     };
+    const r: RequisicaoComBuscaLi = { ...registrada, busca: url.search };
     if (metodo === 'PUT' && typeof init?.body === 'string') textosDosPuts.push(init.body);
-    requisicoes.push(r);
+    requisicoes.push(registrada);
+    buscas.push(url.search);
     eventos.push(`${metodo} ${url.pathname}`);
     const primeira = fila[0];
     const sobrescrita = primeira === undefined ? null : primeira(r);
@@ -243,8 +301,28 @@ export function criarPlataformaEscritaLi(o: OpcoesPlataformaEscritaLi = {}) {
     return Promise.resolve();
   };
 
-  /** The requests, as `METODO caminho` (no waits). */
+  /** The requests, as `METODO caminho` (no waits; the list's query in {@link chamadasComBusca}). */
   const chamadas = () => requisicoes.map((r) => `${r.metodo} ${r.caminho}`);
+  /** The requests, as `METODO caminho?busca`. */
+  const chamadasComBusca = () =>
+    requisicoes.map((r, n) => `${r.metodo} ${r.caminho}${buscas[n] ?? ''}`);
+
+  /**
+   * A row inserted into the store's list at `indice` (0 = the front): every row after it shifts
+   * one place, as a product created mid-walk does. A row naming a product also answers its detail.
+   */
+  function inserirNaListaLi(indice: number, linha: DocData): void {
+    estado.lista.splice(indice, 0, linha);
+    const produtoId = produtoDaLinha(linha);
+    if (produtoId !== null) estado.estoque.set(produtoId, linha);
+  }
+
+  /** The store deleted a product: its row leaves the list, and its detail answers 404. */
+  function removerDaLojaLi(produtoId: number): void {
+    const linha = estado.estoque.get(produtoId);
+    estado.estoque.delete(produtoId);
+    estado.lista = estado.lista.filter((l) => l !== linha);
+  }
   const puts = () => requisicoes.filter((r) => r.metodo === 'PUT');
 
   return {
@@ -257,6 +335,9 @@ export function criarPlataformaEscritaLi(o: OpcoesPlataformaEscritaLi = {}) {
     esperar,
     esperas,
     chamadas,
+    chamadasComBusca,
+    inserirNaListaLi,
+    removerDaLojaLi,
     puts,
     mover,
     codigoAtual,

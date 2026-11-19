@@ -108,11 +108,25 @@ export function cabeNoOrcamentoLi(decorridoMs: number, unidade: UnidadeImportaca
   if (!Object.hasOwn(PIOR_CASO_UNIDADE_IMPORTACAO_LI_MS, unidade)) {
     throw new TypeError(`orcamento: unidade sem pior caso (${String(unidade)})`);
   }
+  return cabeNoOrcamentoMsLi(decorridoMs, PIOR_CASO_UNIDADE_IMPORTACAO_LI_MS[unidade]);
+}
+
+/**
+ * The ONE spelling of the rule {@link cabeNoOrcamentoLi} applies, for any unit table on the reads
+ * queue: a unit whose worst case is `piorCasoMs` may START after `decorridoMs` only when it ends
+ * inside {@link ORCAMENTO_DESPACHO_IMPORTACAO_LI_MS} (`≤`). A negative elapsed time reads as 0; a
+ * non-finite one fits nothing. The daily stock reconcile's slices share the import's budget
+ * through it (`estoque/reconcile/orcamentoReconcile.ts`).
+ *
+ * @throws {RangeError} for a worst case that is not a finite, non-negative number (a table bug).
+ */
+export function cabeNoOrcamentoMsLi(decorridoMs: number, piorCasoMs: number): boolean {
+  if (!Number.isFinite(piorCasoMs) || piorCasoMs < 0) {
+    throw new RangeError(`orcamento: pior caso inválido (${String(piorCasoMs)})`);
+  }
   if (!Number.isFinite(decorridoMs)) return false;
   const decorrido = Math.max(0, decorridoMs);
-  return (
-    decorrido + PIOR_CASO_UNIDADE_IMPORTACAO_LI_MS[unidade] <= ORCAMENTO_DESPACHO_IMPORTACAO_LI_MS
-  );
+  return decorrido + piorCasoMs <= ORCAMENTO_DESPACHO_IMPORTACAO_LI_MS;
 }
 
 /** One dispatch's budget, bound to its clock and its start. */

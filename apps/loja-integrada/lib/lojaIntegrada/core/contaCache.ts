@@ -23,6 +23,10 @@
  *  - `negativeTtlMs: 0` — absence is never cached: a conta created a second ago
  *    must be found by the very next call.
  *
+ * The one eviction outside tests is a READ's, never a write's: a reconcile stock
+ * send that carries its run's depósito and finds a cached copy naming another
+ * evicts it here and reads once more (`estoque/processarEstoque.ts`, step 4).
+ *
  * `sampleEvery: 0` — the built-in sampler logs through `console.warn`, the wrong
  * severity for a metric.
  */

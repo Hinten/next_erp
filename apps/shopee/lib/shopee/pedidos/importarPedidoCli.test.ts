@@ -14,9 +14,20 @@ import { FIXTURE_ORDER_DETAIL_QTY2_SG, lerPedidoDetalhe } from '../fixtures/wire
 import { avaliarCapturaComprador } from './comprador';
 import {
   ArgumentoInvalidoError,
+  SimulacaoCompradorRecusadaError,
+  USO_IMPORTAR_PEDIDO,
+  capturaTerminalDoPedido,
+  decidirColisaoDeDocumento,
   descreverErro,
+  exigirDocumentoSemColisao,
+  exigirPedidoSemCapturaTerminal,
+  exigirPedidoSemVinculoAlheio,
+  exigirProjetoDoModoComprador,
   parseArgsImportarPedido,
+  projetoDaCredencial,
+  renderCompradorGravado,
   renderResumoPedido,
+  resumoDoCompradorGravado,
   resumoDoPedidoArmazenado,
   resumoDoPedidoMapeado,
   resumoDosPagamentosArmazenados,
@@ -607,5 +618,515 @@ describe('renderResumoPedido — a seção de pagamentos', () => {
     // Duas verdades diferentes: "não perguntei" e "perguntei, e não há nenhum".
     expect(renderResumoPedido(resumo).join('\n')).not.toContain('### pagamentos');
     expect(renderResumoPedido(resumo, []).join('\n')).toContain('### pagamentos (0)');
+  });
+});
+
+describe('o int_frete da conta e o endereço de entrega no resumo (2026-11-18)', () => {
+  const REF_CONTA = 'documents/int_frete/shopee-int-1';
+  const ENTREGA = 'documents/clientes/cli-1/enderecos/end-1';
+
+  /** The mapped pedido with the conta's ref stamped on its block, as the importer hands it. */
+  function mapeadoComRef(ref: string | null): ReturnType<typeof mapearPedidoShopee> {
+    const { mapeado } = mapeadoComPii();
+    return {
+      ...mapeado,
+      dados: {
+        ...mapeado.dados,
+        freteInicial: { ...mapeado.dados.freteInicial, integracaoFreteOuterRef: ref },
+      },
+    };
+  }
+
+  it('o resumo MAPEADO lê as duas refs do bloco mapeado — a entrega é a fiscal', () => {
+    const resumo = resumoDoPedidoMapeado('ped-sha256', mapeadoComRef(REF_CONTA));
+    expect(resumo.frete?.integracaoFreteOuterRef).toBe(REF_CONTA);
+    // `mapearPedidoShopee` copies the fiscal ref into the block.
+    expect(resumo.frete?.enderecoFreteOuterReference).toBe(ENTREGA);
+    expect(resumo.enderecoFiscalOuterRef).toBe(ENTREGA);
+  });
+
+  it('o render MAPEADO mostra a linha `int_frete da conta`, e diz quando não há doc ativo', () => {
+    const comRef = renderResumoPedido(
+      resumoDoPedidoMapeado('ped-sha256', mapeadoComRef(REF_CONTA)),
+    );
+    expect(comRef.find((l) => l.includes('int_frete da conta'))).toContain(REF_CONTA);
+    expect(comRef.find((l) => l.includes('int_frete da conta'))).toContain('só um pedido NOVO');
+    expect(comRef.find((l) => l.includes('endereço de entrega'))).toContain(ENTREGA);
+    // The dry-run caveat names the delivery address too: it is the fiscal one,
+    // which a dry run never resolves.
+    expect(comRef).toContain(
+      '     O endereço de entrega do `freteInicial` é o fiscal, então sai nulo também.',
+    );
+
+    // QUASE-ERRO: no active doc reads as a sentence, never as a blank or a guess.
+    const semRef = renderResumoPedido(resumoDoPedidoMapeado('ped-sha256', mapeadoComRef(null)));
+    expect(semRef.find((l) => l.includes('int_frete da conta'))).toContain(
+      'nenhum ativo — o pedido fica sem ref',
+    );
+  });
+
+  it('o resumo ARMAZENADO lê as duas refs do documento, e o render as mostra', () => {
+    const resumo = resumoDoPedidoArmazenado('ped-sha256', {
+      numero: ORDER_SN,
+      freteInicial: {
+        estado: 'iniciado',
+        integracaoFreteOuterRef: REF_CONTA,
+        enderecoFreteOuterReference: ENTREGA,
+      },
+    });
+    expect(resumo.frete?.integracaoFreteOuterRef).toBe(REF_CONTA);
+    expect(resumo.frete?.enderecoFreteOuterReference).toBe(ENTREGA);
+    const texto = renderResumoPedido(resumo);
+    expect(texto.find((l) => l.includes('integracaoFreteOuterRef'))).toContain(REF_CONTA);
+    expect(texto.find((l) => l.includes('endereço de entrega'))).toContain(ENTREGA);
+    // The stored summary never claims what the CONTA has — only what the pedido holds.
+    expect(texto.join('\n')).not.toContain('int_frete da conta');
+    expect(texto.join('\n')).not.toContain('então sai nulo também');
+  });
+
+  it('QUASE-ERRO: uma ref gravada que não é string vira NULA, sem inventar valor', () => {
+    const resumo = resumoDoPedidoArmazenado('ped-sha256', {
+      freteInicial: { integracaoFreteOuterRef: 42, enderecoFreteOuterReference: { id: 'x' } },
+    });
+    expect(resumo.frete?.integracaoFreteOuterRef).toBeNull();
+    expect(resumo.frete?.enderecoFreteOuterReference).toBeNull();
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*             o modo comprador de TESTE — argumentos e guardas                */
+/* -------------------------------------------------------------------------- */
+
+const NOME_TESTE = 'Pessoa Ficticia Sandbox';
+const CEP_TESTE = '93847261';
+
+describe('parseArgsImportarPedido — o modo comprador de TESTE', () => {
+  it('--importar-cliente sozinho liga o modo, sem endereço e sem substitutos', () => {
+    const cmd = parseArgsImportarPedido([...OBRIGATORIOS, '--importar-cliente']);
+    expect(cmd.kind === 'importar' && cmd.args.comprador).toEqual({
+      nomeTeste: null,
+      cepTeste: null,
+      importarEndereco: false,
+    });
+  });
+
+  it('aceita cada flag dependente junto de --importar-cliente, nas duas grafias', () => {
+    const cmd = parseArgsImportarPedido([
+      ...OBRIGATORIOS,
+      '--importar-cliente',
+      '--importar-endereco',
+      '--nome-teste',
+      NOME_TESTE,
+      `--cep-teste=${CEP_TESTE}`,
+    ]);
+    expect(cmd.kind === 'importar' && cmd.args.comprador).toEqual({
+      nomeTeste: NOME_TESTE,
+      cepTeste: CEP_TESTE,
+      importarEndereco: true,
+    });
+    const inline = parseArgsImportarPedido([
+      ...OBRIGATORIOS,
+      '--importar-cliente',
+      `--nome-teste=${NOME_TESTE}`,
+    ]);
+    expect(inline.kind === 'importar' && inline.args.comprador?.nomeTeste).toBe(NOME_TESTE);
+  });
+
+  it('QUASE-ERRO: sem o modo, a chave `comprador` NÃO existe — nem como null', () => {
+    const cmd = parseArgsImportarPedido([...OBRIGATORIOS, '--live', '--project', 'demo-erp']);
+    expect(cmd.kind === 'importar' && 'comprador' in cmd.args).toBe(false);
+  });
+
+  it.each([
+    ['--importar-endereco', ['--importar-endereco']],
+    ['--nome-teste', ['--nome-teste', NOME_TESTE]],
+    ['--cep-teste', ['--cep-teste', CEP_TESTE]],
+  ])('recusa %s SEM --importar-cliente — sozinho seria inerte', (flag, extra) => {
+    expect(() => parseArgsImportarPedido([...OBRIGATORIOS, ...extra])).toThrow(
+      new ArgumentoInvalidoError(`${flag} exige --importar-cliente.`),
+    );
+  });
+
+  it('recusa um --nome-teste vazio ou só de espaços', () => {
+    for (const vazio of ['', '   ']) {
+      expect(() =>
+        parseArgsImportarPedido([...OBRIGATORIOS, '--importar-cliente', '--nome-teste', vazio]),
+      ).toThrow(/--nome-teste exige um valor/);
+    }
+  });
+
+  it.each(['1234567', '123456789', '0100100A', '01001-000', 'abcdefgh'])(
+    'recusa --cep-teste %s — exatamente 8 dígitos',
+    (cep) => {
+      expect(() =>
+        parseArgsImportarPedido([...OBRIGATORIOS, '--importar-cliente', '--cep-teste', cep]),
+      ).toThrow(/--cep-teste exige exatamente 8 dígitos/);
+    },
+  );
+
+  it.each(['--live', '--dry-run', '--json', '--importar-cliente', '--importar-endereco'])(
+    'recusa um valor inline numa flag booleana: %s=false NÃO liga nem desliga nada',
+    (flag) => {
+      const extra = flag === '--importar-endereco' ? ['--importar-cliente'] : [];
+      for (const valor of ['false', 'nao', '']) {
+        expect(() =>
+          parseArgsImportarPedido([...OBRIGATORIOS, ...extra, `${flag}=${valor}`]),
+        ).toThrow(new ArgumentoInvalidoError(`${flag} não aceita valor.`));
+      }
+      // QUASE-ERRO: a flag nua continua aceita.
+      expect(() => parseArgsImportarPedido([...OBRIGATORIOS, ...extra, flag])).not.toThrow();
+    },
+  );
+
+  it('QUASE-ERRO: --live=false recusa em vez de rodar LIVE; --live nu roda', () => {
+    expect(() => parseArgsImportarPedido([...OBRIGATORIOS, '--live=false'])).toThrow(
+      ArgumentoInvalidoError,
+    );
+    const cmd = parseArgsImportarPedido([...OBRIGATORIOS, '--live']);
+    expect(cmd.kind === 'importar' && cmd.args.live).toBe(true);
+  });
+
+  it('uma grafia parecida continua sendo «Opção desconhecida»', () => {
+    for (const grafia of ['--importCliente', '--importar-clientes', '--nomeTeste']) {
+      expect(() => parseArgsImportarPedido([...OBRIGATORIOS, grafia])).toThrow(
+        `Opção desconhecida: ${grafia}`,
+      );
+    }
+  });
+
+  it('--help continua respondendo PRIMEIRO, mesmo ao lado de uma flag dependente solta', () => {
+    expect(parseArgsImportarPedido(['--help', '--nome-teste', NOME_TESTE])).toEqual({
+      kind: 'ajuda',
+    });
+    expect(parseArgsImportarPedido([...OBRIGATORIOS, '--cep-teste', '1', '-h'])).toEqual({
+      kind: 'ajuda',
+    });
+  });
+
+  it('a ajuda nomeia as quatro flags e não carrega o separador do pnpm', () => {
+    for (const flag of [
+      '--importar-cliente',
+      '--importar-endereco',
+      '--nome-teste',
+      '--cep-teste',
+    ]) {
+      expect(USO_IMPORTAR_PEDIDO).toContain(flag);
+    }
+    expect(USO_IMPORTAR_PEDIDO).not.toMatch(/ -- /);
+  });
+});
+
+describe('exigirProjetoDoModoComprador — o --live grava, então o projeto é NOMEADO', () => {
+  const ok = {
+    projetoPedido: 'demo-erp',
+    projetoResolvido: 'demo-erp',
+    projetoDaCredencial: 'demo-erp',
+  };
+
+  it('passa com --project igual ao resolvido E uma conta de serviço desse projeto', () => {
+    expect(() => exigirProjetoDoModoComprador(ok)).not.toThrow();
+  });
+
+  it('⚠️ recusa credenciais padrão do ambiente — elas não dizem de qual projeto são', () => {
+    expect(() => exigirProjetoDoModoComprador({ ...ok, projetoDaCredencial: null })).toThrow(
+      SimulacaoCompradorRecusadaError,
+    );
+    expect(() => exigirProjetoDoModoComprador({ ...ok, projetoDaCredencial: null })).toThrow(
+      /exige uma conta de serviço \(FIREBASE_SERVICE_ACCOUNT ou FIREBASE_SERVICE_ACCOUNT_PATH\)/,
+    );
+  });
+
+  it('recusa sem --project', () => {
+    expect(() => exigirProjetoDoModoComprador({ ...ok, projetoPedido: null })).toThrow(
+      SimulacaoCompradorRecusadaError,
+    );
+    expect(() => exigirProjetoDoModoComprador({ ...ok, projetoPedido: null })).toThrow(
+      /exige --project/,
+    );
+  });
+
+  it('recusa um --project diferente do resolvido, e um resolvido ausente', () => {
+    expect(() => exigirProjetoDoModoComprador({ ...ok, projetoResolvido: 'outro' })).toThrow(
+      /não é o projeto que o admin resolveu/,
+    );
+    expect(() => exigirProjetoDoModoComprador({ ...ok, projetoResolvido: null })).toThrow(
+      SimulacaoCompradorRecusadaError,
+    );
+  });
+
+  it('recusa uma credencial emitida para OUTRO projeto (a regra de tools/migrations)', () => {
+    expect(() => exigirProjetoDoModoComprador({ ...ok, projetoDaCredencial: 'outro' })).toThrow(
+      /credencial de serviço é do projeto outro/,
+    );
+  });
+});
+
+describe('projetoDaCredencial', () => {
+  it('lê o projectId de um cert() e responde null para tudo o mais', () => {
+    expect(projetoDaCredencial({ projectId: 'demo-erp', privateKey: 'x' })).toBe('demo-erp');
+    for (const outro of [undefined, null, {}, { projectId: 42 }, { projectId: '' }, 'demo-erp']) {
+      expect(projetoDaCredencial(outro)).toBeNull();
+    }
+  });
+});
+
+describe('a captura TERMINAL de um pedido existente', () => {
+  const CLIENTE = 'documents/clientes/cli-1';
+  const ENDERECO = 'documents/clientes/cli-1/enderecos/end-1';
+  const capturado = (extra: Record<string, unknown> = {}) => ({
+    capturaComprador: { estado: 'capturado' },
+    clientePedidoOuterRef: CLIENTE,
+    ...extra,
+  });
+
+  it('expirado é terminal sempre; pendente, ausente e lixo nunca', () => {
+    for (const importarEndereco of [false, true]) {
+      expect(
+        capturaTerminalDoPedido({ capturaComprador: { estado: 'expirado' } }, importarEndereco),
+      ).toBe('expirado');
+      expect(
+        capturaTerminalDoPedido({ capturaComprador: { estado: 'pendente' } }, importarEndereco),
+      ).toBeNull();
+      expect(capturaTerminalDoPedido({}, importarEndereco)).toBeNull();
+      expect(capturaTerminalDoPedido(null, importarEndereco)).toBeNull();
+      expect(
+        capturaTerminalDoPedido({ capturaComprador: 'expirado' }, importarEndereco),
+      ).toBeNull();
+    }
+  });
+
+  it('capturado só é terminal quando não resta NADA a preencher', () => {
+    // Cliente e endereço vinculados: nada a fazer, com ou sem --importar-endereco.
+    const completo = capturado({ enderecoFiscalOuterRef: ENDERECO });
+    expect(capturaTerminalDoPedido(completo, true)).toBe('capturado');
+    expect(capturaTerminalDoPedido(completo, false)).toBe('capturado');
+    // Sem endereço e sem --importar-endereco: nada a fazer também.
+    expect(capturaTerminalDoPedido(capturado(), false)).toBe('capturado');
+    expect(capturaTerminalDoPedido(capturado({ enderecoFiscalOuterRef: '' }), false)).toBe(
+      'capturado',
+    );
+  });
+
+  it('⚠️ QUASE-ERRO: capturado SEM endereço + --importar-endereco NÃO é terminal — o endereço ainda grava', () => {
+    expect(capturaTerminalDoPedido(capturado(), true)).toBeNull();
+    expect(capturaTerminalDoPedido(capturado({ enderecoFiscalOuterRef: null }), true)).toBeNull();
+    // …e um capturado sem cliente vinculado também tem o que preencher.
+    expect(
+      capturaTerminalDoPedido({ capturaComprador: { estado: 'capturado' } }, false),
+    ).toBeNull();
+  });
+
+  it('a recusa diz o estado e manda usar um pedido novo', () => {
+    expect(() =>
+      exigirPedidoSemCapturaTerminal({ capturaComprador: { estado: 'expirado' } }, true),
+    ).toThrow(
+      'o pedido já existe e a captura do comprador já terminou (expirado); use um pedido de teste novo.',
+    );
+    expect(() => exigirPedidoSemCapturaTerminal(null, true)).not.toThrow();
+    // Capturado sem endereço e sem a flag: a recusa diz como gravá-lo.
+    expect(() => exigirPedidoSemCapturaTerminal(capturado(), false)).toThrow(
+      /\(capturado\) \(o endereço ainda não foi gravado: passe --importar-endereco para gravá-lo\)/,
+    );
+    // QUASE-ERRO: com o endereço vinculado a dica não aparece.
+    expect(() =>
+      exigirPedidoSemCapturaTerminal(capturado({ enderecoFiscalOuterRef: ENDERECO }), false),
+    ).toThrow(
+      'o pedido já existe e a captura do comprador já terminou (capturado); use um pedido de teste novo.',
+    );
+  });
+});
+
+describe('exigirPedidoSemVinculoAlheio — um vínculo que NÃO é o do comprador de teste', () => {
+  const CLIENTE = 'documents/clientes/cli-1';
+  const mesmoNome = { kind: 'mesmo-nome', clienteIds: ['cli-1'] } as const;
+
+  it('sem pedido, ou sem vínculo nenhum, segue', () => {
+    expect(() => exigirPedidoSemVinculoAlheio(null, null)).not.toThrow();
+    expect(() =>
+      exigirPedidoSemVinculoAlheio(
+        { clientePedidoOuterRef: null, enderecoFiscalOuterRef: '' },
+        null,
+      ),
+    ).not.toThrow();
+  });
+
+  it('o cliente vinculado É o comprador de teste (mesmo documento, mesmo nome) — segue', () => {
+    expect(() =>
+      exigirPedidoSemVinculoAlheio({ clientePedidoOuterRef: CLIENTE }, mesmoNome),
+    ).not.toThrow();
+    expect(() =>
+      exigirPedidoSemVinculoAlheio(
+        {
+          clientePedidoOuterRef: CLIENTE,
+          enderecoFiscalOuterRef: `${CLIENTE}/enderecos/end-1`,
+        },
+        mesmoNome,
+      ),
+    ).not.toThrow();
+  });
+
+  it('⚠️ um cliente que o operador vinculou à mão recusa — o id sai, nunca um nome', () => {
+    for (const colisao of [
+      null,
+      { kind: 'livre' } as const,
+      { kind: 'mesmo-nome', clienteIds: ['outro'] } as const,
+    ]) {
+      expect(() =>
+        exigirPedidoSemVinculoAlheio({ clientePedidoOuterRef: CLIENTE }, colisao),
+      ).toThrow(
+        'o pedido já tem cliente/endereço vinculado (cliente cli-1) que não é o comprador de ' +
+          'teste desta execução; use um pedido de teste novo. Nada foi gravado.',
+      );
+    }
+  });
+
+  it('um endereço vinculado SEM cliente também recusa', () => {
+    expect(() =>
+      exigirPedidoSemVinculoAlheio(
+        { enderecoFiscalOuterRef: 'documents/clientes/x/enderecos/e' },
+        mesmoNome,
+      ),
+    ).toThrow(/\(cliente —\)/);
+  });
+});
+
+describe('decidirColisaoDeDocumento — a dobra é normalizeNome e NADA mais', () => {
+  it('ninguém com o documento ⇒ livre', () => {
+    expect(decidirColisaoDeDocumento([], NOME_TESTE)).toEqual({ kind: 'livre' });
+  });
+
+  it('PAR IGUAL: espaços nas pontas e repetidos dobram — a re-execução converge', () => {
+    expect(
+      decidirColisaoDeDocumento(
+        [{ clienteId: 'c-1', nome: '  Pessoa   Ficticia Sandbox ' }],
+        NOME_TESTE,
+      ),
+    ).toEqual({ kind: 'mesmo-nome', clienteIds: ['c-1'] });
+  });
+
+  it('⚠️ QUASE-ERRO: caixa, acento ou uma letra a mais NÃO dobram — é outra pessoa', () => {
+    for (const nome of [
+      'pessoa ficticia sandbox',
+      'Pessoa Fictícia Sandbox',
+      'Pessoa Ficticia Sandboxx',
+    ]) {
+      expect(decidirColisaoDeDocumento([{ clienteId: 'c-1', nome }], NOME_TESTE)).toEqual({
+        kind: 'colisao',
+        clienteIds: ['c-1'],
+      });
+    }
+  });
+
+  it('um dono com outro nome entre vários basta, e só ELE é nomeado; um nome não-texto é colisão', () => {
+    expect(
+      decidirColisaoDeDocumento(
+        [
+          { clienteId: 'c-2', nome: NOME_TESTE },
+          { clienteId: 'c-1', nome: 'Cliente Dev Pessoa Fisica' },
+          { clienteId: 'c-3', nome: null },
+        ],
+        NOME_TESTE,
+      ),
+    ).toEqual({ kind: 'colisao', clienteIds: ['c-1', 'c-3'] });
+  });
+
+  it('um nome de comprador que não dobra (só espaços) colide com QUALQUER dono', () => {
+    expect(decidirColisaoDeDocumento([{ clienteId: 'c-1', nome: null }], '   ')).toEqual({
+      kind: 'colisao',
+      clienteIds: ['c-1'],
+    });
+    // QUASE-ERRO: com um nome que dobra, o dono de nome igual converge.
+    expect(decidirColisaoDeDocumento([{ clienteId: 'c-1', nome: NOME_TESTE }], NOME_TESTE)).toEqual(
+      { kind: 'mesmo-nome', clienteIds: ['c-1'] },
+    );
+  });
+
+  it('a recusa nomeia os ids e o caminho de saída — NUNCA o nome gravado', () => {
+    const decisao = decidirColisaoDeDocumento(
+      [{ clienteId: 'seed-1', nome: 'Cliente Dev Pessoa Fisica' }],
+      NOME_TESTE,
+    );
+    let mensagem = '';
+    try {
+      exigirDocumentoSemColisao(decisao);
+    } catch (err) {
+      if (!(err instanceof SimulacaoCompradorRecusadaError)) throw err;
+      mensagem = err.message;
+    }
+    expect(mensagem).toContain('seed-1');
+    expect(mensagem).toContain('--nome-teste');
+    expect(mensagem).not.toContain('Cliente Dev');
+    expect(mensagem).not.toContain(NOME_TESTE);
+    expect(() =>
+      exigirDocumentoSemColisao({ kind: 'mesmo-nome', clienteIds: ['c'] }),
+    ).not.toThrow();
+    expect(() => exigirDocumentoSemColisao({ kind: 'livre' })).not.toThrow();
+  });
+});
+
+describe('o resumo do comprador GRAVADO (--live)', () => {
+  it('ids e veredito; sem a chave de teste no resultado, tudo vira nulo', () => {
+    const base = {
+      kind: 'pedido',
+      acao: 'criado',
+      orderSn: ORDER_SN,
+      pedidoId: 'ped-1',
+      orderStatus: 'READY_TO_SHIP',
+      itensSemProduto: 0,
+      acaoPagamentos: null,
+      pagamentosGravados: 0,
+      acaoFrete: null,
+      pacotesGravados: 0,
+      detail: 'criado',
+    } as const;
+    const depois = {
+      clientePedidoOuterRef: 'documents/clientes/cli-9',
+      enderecoFiscalOuterRef: 'documents/clientes/cli-9/enderecos/end-7',
+    };
+    const gravado = resumoDoCompradorGravado(
+      {
+        ...base,
+        compradorDeTeste: {
+          cliente: { clienteId: 'cli-9', criado: false, matchedBy: 'cpf_cnpj' },
+          enderecoOuterRef: 'documents/clientes/cli-9/enderecos/end-7',
+        },
+      },
+      depois,
+    );
+    expect(gravado).toEqual({
+      pedidoId: 'ped-1',
+      clienteId: 'cli-9',
+      criado: false,
+      matchedBy: 'cpf_cnpj',
+      enderecoId: 'end-7',
+      limpeza: ['pedidos/ped-1', 'clientes/cli-9/enderecos/end-7', 'clientes/cli-9'],
+    });
+    const texto = renderCompradorGravado(gravado).join('\n');
+    expect(texto).toContain('cli-9   criado=não   matchedBy=cpf_cnpj');
+    expect(texto).toContain(
+      'limpeza (no console) .... pedidos/ped-1, clientes/cli-9/enderecos/end-7, clientes/cli-9',
+    );
+    expect(texto).toContain('um cliente reaproveitado, como o do seed, fica');
+    expect(resumoDoCompradorGravado(base, null)).toEqual({
+      pedidoId: 'ped-1',
+      clienteId: null,
+      criado: null,
+      matchedBy: null,
+      enderecoId: null,
+      limpeza: [],
+    });
+    // QUASE-ERRO: sem vínculo gravado a limpeza é só o pedido; sem pedido, nem o bloco sai.
+    expect(resumoDoCompradorGravado(base, {}).limpeza).toEqual(['pedidos/ped-1']);
+    expect(renderCompradorGravado(resumoDoCompradorGravado(base, null)).join('\n')).not.toContain(
+      'limpeza',
+    );
+  });
+});
+
+describe('descreverErro — a recusa do modo de teste', () => {
+  it('é uma linha só, com o motivo — a recusa vem antes de qualquer gravação', () => {
+    expect(descreverErro(new SimulacaoCompradorRecusadaError('motivo X'))).toEqual([
+      '❌ Modo comprador de TESTE recusado: motivo X',
+    ]);
   });
 });

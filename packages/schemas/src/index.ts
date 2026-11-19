@@ -817,6 +817,7 @@ export {
   type ShopeeImportacaoFalha,
   type ImportacaoShopee,
 } from './importacaoShopee';
+export * from './importacaoAnuncioShopeeDto';
 
 export {
   // Admin-only / default-deny (NOT in ALL_DOMAINS) — the per-conta durable

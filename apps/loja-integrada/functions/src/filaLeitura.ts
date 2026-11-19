@@ -1,8 +1,16 @@
 import { logger } from 'firebase-functions/v2';
 import { onTaskDispatched } from 'firebase-functions/v2/tasks';
 
-import { TIPO_TAREFA_IMPORTACAO_LI, TIPO_TAREFA_LI } from '@delfrance/schemas';
+import {
+  TIPO_TAREFA_IMPORTACAO_LI,
+  TIPO_TAREFA_LI,
+  TIPO_TAREFA_RECONCILE_ESTOQUE_LI,
+} from '@delfrance/schemas';
 
+import {
+  camposDoRegistroDoReconcileLi,
+  despacharReconcileEstoqueLi,
+} from '../../lib/lojaIntegrada/estoque/reconcile/despachoReconcile';
 import {
   camposDoRegistroDaImportacaoLi,
   despacharImportacaoLi,
@@ -16,6 +24,7 @@ import {
 } from '../../lib/lojaIntegrada/notificacoes/notificacao';
 import { depsDeImportacaoLi } from './depsImportacao';
 import { depsDeLeituraLi } from './depsLeitura';
+import { depsDeReconcileEstoqueLi } from './depsReconcileEstoque';
 import { getDb } from './lib/admin';
 import { tasksInvokerOptions } from './tasksInvoker';
 
@@ -62,9 +71,11 @@ async function despacharNotificacao(
 /**
  * One dispatch, by the RAW `tipo`. `pedido` runs one notification through the
  * channel's pipeline (context, importer seam, disposition); `importacao` runs one
- * slice of a product import (master plan step 9, `importacao/despacho.ts`),
- * whose budget is measured from `inicioMs`; any other `tipo` — a payload with
- * none, or one a later step will add — is dropped.
+ * slice of a product import (master plan step 9, `importacao/despacho.ts`), and
+ * `estoque-reconcile` one slice of the daily stock reconcile (step 12, PR 12-g,
+ * `estoque/reconcile/despachoReconcile.ts`) — both budgeted from `inicioMs`, and
+ * neither ever a member of the persisted notification `tipo`; any other `tipo` —
+ * a payload with none, or one a later step will add — is dropped.
  */
 async function despachar(
   dados: unknown,
@@ -80,6 +91,14 @@ async function despachar(
     );
     return camposDoRegistroDaImportacaoLi(r, dados);
   }
+  if (tipoDaTarefa(dados) === TIPO_TAREFA_RECONCILE_ESTOQUE_LI) {
+    const r = await despacharReconcileEstoqueLi(
+      getDb(),
+      dados,
+      depsDeReconcileEstoqueLi({ tentativa: retryCount, idTarefa, inicioMs }),
+    );
+    return camposDoRegistroDoReconcileLi(r, dados);
+  }
   return despacharNotificacao(dados, retryCount, idTarefa);
 }
 
@@ -88,9 +107,12 @@ async function despachar(
  * ONE Cloud Tasks queue, auto-provisioned and named after it — for every read
  * task, dispatching on the task's `tipo`: order intake (`pedido`) and, since
  * master plan step 9, the product import (`importacao`, one time-boxed slice of
- * a job per task); the reconcile reads join it later. The order poller enqueues
- * onto it now, the import's job-creation trigger and each import slice's named
- * continuation too, the inbound webhook from step 4.
+ * a job per task) and, since step 12 (PR 12-g), the daily stock reconcile
+ * (`estoque-reconcile`, one time-boxed slice of the ONE chain that walks every
+ * conta). The order poller enqueues onto it now, the import's job-creation
+ * trigger and each import slice's named continuation too, the reconcile's
+ * nightly schedule and each of its slices' named continuation, the inbound
+ * webhook from step 4.
  *
  * ⚠️ The export name IS the deployed function AND queue name, and it must equal
  * `FILA_LEITURA_LI` — the producer targets that string. `index.ts` asserts the
@@ -120,6 +142,9 @@ async function despachar(
  *   budget plus its 30 s tail, `importacao/orcamento.ts`). With K contas
  *   importing at once an attempt may wait K slices: 3 × (300 + K × 100) +
  *   600, inside half the hour for K = 1 only and the whole hour up to K = 7.
+ *   The stock reconcile is ONE co-tenant whatever the number of contas (one
+ *   chain, its slices held to the same 100 s): alone it is K = 1, beside one
+ *   import K = 2.
  * - NO `secrets:`. The Loja Integrada token lives per conta in Firestore, and a
  *   declared secret missing from Secret Manager fails the whole deploy.
  * - `...tasksInvokerOptions()`: `roles/run.invoker` on this service and

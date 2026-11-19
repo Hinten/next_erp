@@ -251,6 +251,8 @@ describe('resolverIntFrete — reads the document when there is one, then applie
   // Review 2 (I3): the reader's half of the same-tipo pair. A reader that
   // skipped the `getDoc` under a marketplace block would still pass every
   // `bloco` row above — only a block WITH its own-tipo document tells it apart.
+  // Since 2026-11-18 this is also the shape of every Shopee pedido the importer
+  // CREATES for a conta with an active `int_frete` doc, not only a migrated one.
   it('a MIGRATED legacy Shopee pedido: a shopee block with a shopee document ⇒ doc, read once', async () => {
     const ref = { __ref: 'int_frete/int-1' };
     h.dereferenceOuterRef.mockReturnValue(ref);

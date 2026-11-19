@@ -36,6 +36,7 @@ vi.mock('./lib/admin', () => ({ getAdminApp: () => APP }));
 const {
   criarAgendadorImportacaoLiDoAmbiente,
   criarAgendadorLiDoAmbiente,
+  criarAgendadorReconcileEstoqueLiDoAmbiente,
   regiaoDaFilaLi,
   tarefasLiDesligadas,
 } = await import('./agendador');
@@ -281,6 +282,57 @@ describe('the product import’s producer (master plan step 9)', () => {
     h.enqueue.mockImplementationOnce(() => Promise.reject(falhaDoFunctions('unknown-error')));
     await expect(
       criarAgendadorImportacaoLiDoAmbiente().enfileirar(IMPORTACAO, { atrasoS: 2 }),
+    ).rejects.toBeInstanceOf(LiTarefasTransitoriasError);
+  });
+});
+
+describe('the daily stock reconcile’s producer (master plan step 12, PR 12-g)', () => {
+  const FATIA = {
+    tipo: 'estoque-reconcile' as const,
+    execucaoId: 'estoque-reconcile-20270115',
+    seq: 3,
+  };
+
+  it('enqueues onto the SAME reads queue, region-qualified, on the admin app — the payload WITH its derived name', async () => {
+    ambiente({ functionsRegion: 'southamerica-east1' });
+
+    await criarAgendadorReconcileEstoqueLiDoAmbiente().enfileirar(FATIA, { atrasoS: 2 });
+    await criarAgendadorReconcileEstoqueLiDoAmbiente().enfileirar(
+      { ...FATIA, seq: 0 },
+      { atrasoS: 0 },
+    );
+
+    expect(h.taskQueue).toHaveBeenCalledWith(
+      'locations/southamerica-east1/functions/filaLeituraLojaIntegrada',
+    );
+    expect(h.enqueue.mock.calls).toEqual([
+      [FATIA, { id: 'li-estoque-reconcile-20270115-3', scheduleDelaySeconds: 2 }],
+      [{ ...FATIA, seq: 0 }, { id: 'li-estoque-reconcile-20270115-0' }],
+    ]);
+  });
+
+  it('the SAME valve closes it before the SDK is touched; no region refuses it', async () => {
+    ambiente({ functionsRegion: 'southamerica-east1', desligado: '1' });
+    await expect(
+      criarAgendadorReconcileEstoqueLiDoAmbiente().enfileirar(FATIA, { atrasoS: 2 }),
+    ).rejects.toBeInstanceOf(LiTarefasDesligadasError);
+    expect(h.getFunctions).not.toHaveBeenCalled();
+
+    ambiente({});
+    await expect(
+      criarAgendadorReconcileEstoqueLiDoAmbiente().enfileirar(FATIA, { atrasoS: 2 }),
+    ).rejects.toBeInstanceOf(MissingRegionError);
+  });
+
+  it('an answered task-already-exists is success; a 503 is named transient', async () => {
+    ambiente({ functionsRegion: 'southamerica-east1' });
+    h.enqueue.mockImplementationOnce(() =>
+      Promise.reject(falhaDoFunctions('task-already-exists', 409)),
+    );
+    await criarAgendadorReconcileEstoqueLiDoAmbiente().enfileirar(FATIA, { atrasoS: 60 });
+    h.enqueue.mockImplementationOnce(() => Promise.reject(falhaDoFunctions('unknown-error')));
+    await expect(
+      criarAgendadorReconcileEstoqueLiDoAmbiente().enfileirar(FATIA, { atrasoS: 60 }),
     ).rejects.toBeInstanceOf(LiTarefasTransitoriasError);
   });
 });

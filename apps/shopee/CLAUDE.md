@@ -130,7 +130,7 @@ a page of the 3-day queue irreversibly.
   more under this same folder, see the two bullets below). See **Order import**
   below. ⚠️ `importarPedido.ts` is split in two on purpose:
   `prepararImportacaoPedidoShopee` is the READ-ONLY half (the two Shopee calls,
-  the produto cascade, the mappers, the stored-pedido read) and
+  the produto cascade, the mappers, the pedido and int_frete reads) and
   `mapearPreparoPedidoShopee` turns it into the four write groups;
   `importarPedidoShopee` is that pair plus the writes. The rehearsal script's
   dry-run calls the same two functions, so there is no second copy of the
@@ -233,8 +233,9 @@ a page of the 3-day queue irreversibly.
   transaction and converges its `int_frete` doc (tipo `shopee`) to it through
   `@delfrance/data/admin/frete` — no event clock, so delivery order cannot
   matter; ADOPTS the legacy doc by `contaShopeeFreteOuterRef`; deactivates,
-  never deletes; no secrets. No pedido this app imports points at it. It also
-  re-drives the shop's `sem-conta` pushes once `shop_id` resolves.
+  never deletes; no secrets. A pedido the importer CREATES points at it
+  (2026-11-18). It also re-drives the shop's `sem-conta` pushes once `shop_id`
+  resolves.
 - `app/api/marketplace/shopee/enviar-nfe/route.ts` — the NF-e re-drive,
   `PERM.pedido.write` (the only Shopee route not on `integracao.*`): strict
   `{ pedidoId, nfeId? }`, enqueue only, 202; 409 `SHOPEE_NFE_NAO_ELEGIVEL`,

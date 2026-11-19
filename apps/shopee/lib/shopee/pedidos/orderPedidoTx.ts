@@ -34,7 +34,12 @@
  *  - DROP with the named outcome `ignorado-obsoleto` when strictly older;
  *  - re-derive EVERY written value from that same snapshot: the estado through
  *    `estadoShopeeAplicavel`, the `hasUserInteraction` freeze, the fill-once
- *    refs, the item merge and the freight merge.
+ *    refs (the delivery address among them), the item merge and the freight
+ *    merge.
+ *
+ * The conta's `int_frete` ref is looked up BEFORE this transaction (an uncached
+ * query in `importarPedido.ts`) and rides the mapped freight block, so only a
+ * CREATE writes it; an update keeps whatever is stored.
  *
  * ⚠️ **The unit IS the guard.** `get_order_detail.update_time` is SECONDS and is
  * converted ONCE, by `microsDeSegundosShopee`. Never by `coerceToMicros`, which
@@ -66,6 +71,7 @@ import {
   CAPTURA_COMPRADOR_ESTADO,
   ESTADO_PEDIDO,
   flattenPedidoItens,
+  freteDoPedidoSchema,
   type CapturaComprador,
   type EstadoPedido,
   type FreteDoPedido,
@@ -75,6 +81,7 @@ import {
   type Volume,
 } from '@delfrance/schemas';
 
+import { validationPaths } from '../core/validationIssues';
 import { mesclarFreteInicialShopee } from './orderFreteMapping';
 import { maiorUs, vazio, type PedidoMapeadoShopee } from './orderMapping';
 import {
@@ -203,6 +210,15 @@ function mesmasDimensoes(a: Volume['dimensoes'], b: Volume['dimensoes']): boolea
  * is copied from `existente` by the spread and cannot differ. An eighth
  * refreshed field must be added in both places, and `orderFreteMapping.test.ts`
  * pins the set against the merge itself.
+ *
+ * ⚠️ The two refs a CREATE writes from the mapped block are not in that set, and
+ * that is a decision, not a gap. `integracaoFreteOuterRef` (the conta's
+ * `int_frete` doc): only NEW pedidos get it (Lucas, 2026-11-18, reversing step
+ * 20's "no pedido this app imports points at it"), so the spread KEEPS a stored
+ * ref or a stored `null`. `enderecoFreteOuterReference`: written by the
+ * fill-once arm below, only in the transaction that FIRST fills
+ * `enderecoFiscalOuterRef` — a write this comparison never has to see, because
+ * the fiscal fill already makes the patch non-empty.
  *
  * ⚠️ It is therefore BLIND to everything step 7 (#1515) owns — `estado`,
  * `codRastreio`, `prazoDespacho`, `externalOptionId`'s package fold and the
@@ -623,6 +639,56 @@ export async function salvarPedidoShopee(
     // CREATE only. The field is operator-owned and client-writable, and an
     // importer that also filled it later could not tell an operator's own block
     // apart from its own — see `orderMapping.ts`'s docblock.
+
+    // -- the DELIVERY address rides the FIRST fill of the fiscal one ----------
+    // (Lucas, 2026-11-18, Mercado Livre's rule: the delivery address IS the
+    // fiscal one.) Exactly one moment on the update path — THIS transaction is
+    // the one writing `enderecoFiscalOuterRef` for the first time (a BR order
+    // imported masked, then unmasked) — and only over an EMPTY stored delivery
+    // ref, both re-checked against this callback's own `tx.get` snapshot (rule
+    // 7). A pedido whose fiscal address was already set is never touched: no
+    // backfill. No stored block ⇒ nothing (a block is never fabricated for it).
+    // It sits OUTSIDE the `hasUserInteraction` freeze like the rest of this
+    // group, and it REBUILDS the whole `freteInicial` — `update()` masks at the
+    // top-level key (`freteTx.ts`'s rebuild) — over the block this transaction
+    // already holds: the merge's when the unfrozen arm wrote one, else the
+    // stored one, so a frozen pedido's freight money stays as stored.
+    //
+    // ⚠️ "No stored block" is read literally, and that leaves ONE known gap,
+    // kept on purpose until Lucas decides otherwise: an UNFROZEN pedido stored
+    // with `freteInicial: null` gets the merge's block in this same transaction,
+    // with the delivery ref `null` (the merge clears both create-only refs), and
+    // no later delivery is a first fill — so its delivery ref stays `null`, which
+    // is what every Shopee pedido carried before 2026-11-18 (the NF-e then
+    // reads the fiscal address).
+    //
+    // ⚠️ A rebuilt block that fails the freight schema (a legacy shape a frozen
+    // pedido never had rewritten) skips ONLY this fill, with one warn naming the
+    // paths: the `update()` below would otherwise throw the whole delivery —
+    // estado, marketplace, capture — away over a convenience ref.
+    const enderecoPreenchido = patch.enderecoFiscalOuterRef;
+    const blocoGravado = raw.freteInicial;
+    if (
+      typeof enderecoPreenchido === 'string' &&
+      typeof blocoGravado === 'object' &&
+      blocoGravado !== null &&
+      vazio((blocoGravado as Record<string, unknown>).enderecoFreteOuterReference)
+    ) {
+      const base = (patch.freteInicial as FreteDoPedido | undefined) ?? atual.freteInicial;
+      if (base != null) {
+        const reconstruido = { ...base, enderecoFreteOuterReference: enderecoPreenchido };
+        const lido = freteDoPedidoSchema.safeParse(reconstruido);
+        if (lido.success) {
+          patch.freteInicial = reconstruido;
+          grupos.add('preencher-uma-vez');
+        } else {
+          console.warn(
+            '[shopee/pedidos] endereço de entrega não preenchido — o bloco de frete gravado não valida',
+            { orderSn, pedidoId, campos: validationPaths(lido.error.issues) },
+          );
+        }
+      }
+    }
 
     if (Object.keys(patch).length === 0) {
       return {

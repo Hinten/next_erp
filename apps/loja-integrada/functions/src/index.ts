@@ -84,8 +84,16 @@ import { getDb } from './lib/admin';
  * depósito map, the produto's links and the kits header; it enqueues the send
  * runs and, for a component with more store kits than the eager ceiling, ONE
  * `estoque-kits` fan-out, which the stock queue now consumes (its only write is
- * the global stagger slot). Neither calls Loja Integrada. The reconcile comes
- * later.
+ * the global stagger slot). Neither calls Loja Integrada.
+ * Master plan step 12 (PR 12-g) adds the DAILY stock reconcile: a nightly
+ * schedule (`reconciliarEstoqueLojaIntegrada`, ./reconciliarEstoque) that reads
+ * nothing and enqueues the run's first slice onto the READS queue, which runs
+ * each slice (`tipo: estoque-reconcile`) — one chain for every conta — and
+ * enqueues the next one by name. With the stock valve `off`, or the read switch
+ * off, the schedule enqueues nothing. The conta trigger gains its depósito-change
+ * arm (an UPDATE re-pointing a Loja Integrada conta's depósito enqueues ONE full
+ * run at once, zero reads), and the run's queue phase enqueues its sends onto the
+ * STOCK queue at their reserved global-slot instants.
  *
  * Every export below is a Cloud Function name, and the names are unique across
  * codebases (`functions-export-names.test.js`): keep the exports explicit and
@@ -151,6 +159,12 @@ export { onHistoricoFreteLojaIntegrada } from './onHistoricoFreteLojaIntegrada';
 
 /** The writes queue's backstop timer: one in-queue `varredura` task per tick (master plan step 7). */
 export { varrerEscritasLojaIntegrada } from './varrerEscritas';
+
+/**
+ * The daily stock reconcile's nightly start (master plan step 12, PR 12-g): one
+ * named reads-queue task, no read (./reconciliarEstoque).
+ */
+export { reconciliarEstoqueLojaIntegrada } from './reconciliarEstoque';
 
 /** The 5-minute order poller: the queue's first producer (./pollPedidos). */
 export { pollLojaIntegradaPedidos } from './pollPedidos';

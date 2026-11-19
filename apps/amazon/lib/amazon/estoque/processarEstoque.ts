@@ -151,7 +151,6 @@ import {
   AmazonNetworkError,
   AmazonSchemaError,
   AmazonThrottleError,
-  DADOS_LISTING_AMAZON,
   type EnvioListingAmazon,
   OPERACAO_ENVIAR_LISTING,
   skuTemCaminhoAmazon,
@@ -160,9 +159,7 @@ import {
   type EnvioEstoqueAmazon,
   FLUXO_FEED_AMAZON,
   MOTIVO_CONTA_AMAZON,
-  idFromRefOrNull,
   idVezFeedAmazon,
-  naoDocId,
   type vezFeedAmazonSchema,
 } from '@delfrance/schemas';
 
@@ -205,9 +202,13 @@ import {
 } from '../pedidos/falhaLeituraAmazon';
 import { STATUS_ENVIO_LISTING_AMAZON, envioDoPatch, envioIncerto } from './envioEstoque';
 import { gravarEnvioEstoqueAmazon } from './envioEstoqueFirestore';
-import { formasRefDepositoEstoqueAmazon, quantidadeEstoqueAmazon } from './familiaEstoque';
+import { depositoIdDaContaEstoqueAmazon, quantidadeEstoqueAmazon } from './familiaEstoque';
 import { lerFamiliaEstoqueAmazon } from './familiaEstoqueFirestore';
-import { type VeredictoListingEstoqueAmazon, avaliarListingEstoqueAmazon } from './gateListing';
+import {
+  DADOS_LEITURA_ESTOQUE_AMAZON,
+  type VeredictoListingEstoqueAmazon,
+  avaliarListingEstoqueAmazon,
+} from './gateListing';
 import {
   type ContadorEstoqueAmazon,
   MOTIVO_ESTOQUE_AMAZON,
@@ -254,13 +255,6 @@ export const ORCAMENTO_ANTES_DO_PATCH_MS = 200_000;
 /** The ONE lease field this task reads: the end of the conta's last stock feed that may have applied. */
 export const CAMPO_FEED_RECENTE_ESTOQUE_AMAZON =
   'ultimoFeedConcluidoEmMs' as const satisfies keyof typeof vezFeedAmazonSchema.shape;
-
-/** The datasets the live read asks for: the gate reads exactly these. */
-export const DADOS_LEITURA_ESTOQUE_AMAZON = [
-  DADOS_LISTING_AMAZON.resumos,
-  DADOS_LISTING_AMAZON.disponibilidade,
-  DADOS_LISTING_AMAZON.relacoes,
-] as const;
 
 /** The queue dispatch this run is: its 0-based attempt and its task id. */
 export interface RegistroEstoqueAmazon {
@@ -862,18 +856,6 @@ async function falhaDeEscrita(
 /* -------------------------------------------------------------------------- */
 /*                                  the reads                                  */
 /* -------------------------------------------------------------------------- */
-
-/**
- * The conta's depósito id, from its stored ref in either form
- * (`documents/depositos/<id>` or `depositos/<id>`, `familiaEstoque.ts`'s two
- * forms, compared exactly), or `null` when it names no depósito.
- */
-export function depositoIdDaContaEstoqueAmazon(ref: unknown): string | null {
-  if (typeof ref !== 'string') return null;
-  const id = idFromRefOrNull(ref);
-  if (id === null || naoDocId(id)) return null;
-  return formasRefDepositoEstoqueAmazon(id).includes(ref) ? id : null;
-}
 
 /**
  * The end of the conta's last stock feed that may have applied (P6), ms, or

@@ -68,6 +68,12 @@ export interface BuscaListingsNaAmazon {
   readonly itens: readonly ListingAmazon[];
   /** The package's reading: a requested SKU absent from a truncated page is UNKNOWN. */
   readonly truncada: boolean;
+  /**
+   * The rate Amazon applied to this answer (`x-amzn-RateLimit-Limit`, requests
+   * per second), or `null` when the answer carried none: a caller pacing its
+   * searches logs it, so the plan Amazon really applies is observed.
+   */
+  readonly limiteTaxa: number | null;
 }
 
 /** Whether `err` is the SP-API's own 404 to `getListingsItem` (module header). */
@@ -102,8 +108,9 @@ export async function lerListingNaAmazon(
 
 /**
  * `searchListingsItems` of up to 20 SKUs, under the forced-refresh-once rule
- * (module header): the listings Amazon answered, and `truncada`. The package
- * refuses an invalid SKU list before anything is sent.
+ * (module header): the listings Amazon answered, `truncada`, and the rate the
+ * answer carried. The package refuses an invalid SKU list before anything is
+ * sent.
  */
 export async function buscarListingsNaAmazon(
   contexto: ContextoDosListingsAmazon,
@@ -112,7 +119,11 @@ export async function buscarListingsNaAmazon(
   const resposta = await executarComRenovacaoUnica(contexto, () =>
     buscarListingsAmazon(contexto.cliente, entrada),
   );
-  return { itens: resposta.dados.items ?? [], truncada: resposta.truncada };
+  return {
+    itens: resposta.dados.items ?? [],
+    truncada: resposta.truncada,
+    limiteTaxa: resposta.limiteTaxa,
+  };
 }
 
 /**

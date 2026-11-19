@@ -78,12 +78,23 @@ import { getDb } from './lib/admin';
  * wait after a lost `createFeed` answer, the recoveries), fed by its own
  * handlers through its own composition root (./agendadorEstoque); a feed is
  * submitted only behind the read switch, the fluxo's valve and a canary list of
- * exactly `*`, and the seam that names a fluxo's provider is empty for now.
+ * exactly `*`, and the seam that names a fluxo's provider holds the stock one
+ * since PR 12-f (the price row stays empty until step 13).
  * Step 12 (PR 12-e1) adds the STOCK queue (`processAmazonStockPatch`,
  * ./filaEstoque), the FIFTH task queue: one SKU's availability PATCH per task,
  * its quantity computed when the task runs, fed by its own read-back and 429
  * pause through the same stock root (./agendadorEstoque), which now binds two
  * queues; a PATCH needs the read switch, the stock valve and a canary hit.
+ * Step 12 (PR 12-e2) adds the five-minute stock TICK (`sweepAmazonStock`,
+ * ./sweepEstoque), the stock queue's producer for the SKUs whose estoque rows
+ * moved, through the same stock root; it makes no Amazon call and binds no
+ * secret, and it reads nothing unless the read switch is on and the stock
+ * valve is not off. Step 12 (PR 12-f) adds the daily stock RECONCILE
+ * (`reconcileAmazonStock`, ./reconciliacaoEstoque), at 03:44: per conta the
+ * stock feed's daily backstop, then the start of its reconcile run, whose pages
+ * the jobs queue carries; the drift leaves as patch tasks or ONE stock feed,
+ * and the tick now hands a larger window to a delta feed or to that run. Same
+ * root, same gates, no Amazon call of its own and no secret.
  *
  * ⚠️ ONE logger: every line goes through `LOGGER_STDOUT_AMAZON` /
  * `registrarEventoAmazon` (`lib/amazon/core/log.ts`). This file never imports
@@ -173,8 +184,9 @@ export { processAmazonEasyShipSchedule } from './filaAgendamento';
 
 /**
  * The jobs queue (step 12a, PR 12-c): the `JSON_LISTINGS_FEED` core's four
- * tasks, one at a time, behind the read switch, each fluxo's valve and its
- * canary; no fluxo has a provider yet.
+ * tasks and (PR 12-f) the stock reconcile's pages, one at a time, behind the
+ * read switch, each fluxo's valve and its canary; the stock fluxo has its
+ * provider since PR 12-f, the price one none yet.
  */
 export { processAmazonListingsJob } from './filaLotes';
 
@@ -187,6 +199,20 @@ export { processAmazonStockPatch } from './filaEstoque';
 
 /** The 15-minute backstop poll: the reads queue's second producer (./pollPedidos). */
 export { pollAmazonOrders } from './pollPedidos';
+
+/**
+ * The five-minute stock tick (step 12, PR 12-e2): one named patch task per
+ * moved SKU onto the stock queue, a delta feed or a reconcile request for a
+ * larger window (./sweepEstoque). No Amazon call, no secret.
+ */
+export { sweepAmazonStock } from './sweepEstoque';
+
+/**
+ * The daily stock reconcile (step 12, PR 12-f), 03:44: per conta, the stock
+ * feed's daily backstop, then the start of its reconcile run, whose pages run
+ * on the jobs queue (./reconciliacaoEstoque). No Amazon call here, no secret.
+ */
+export { reconcileAmazonStock } from './reconciliacaoEstoque';
 
 /** The conta trigger (step 20): each Amazon conta's `int_frete` doc follows the conta. */
 export { onIntegracaoAmazonChanged } from './onIntegracaoAmazonChanged';

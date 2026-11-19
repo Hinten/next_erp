@@ -183,6 +183,7 @@ const enviado = (campos: Partial<VezFeedAmazon> = {}) =>
       ateMs: AGORA - 25 * MIN,
       manterDesdeMs: AGORA - 30 * MIN,
       commitAposMs: null,
+      forcarPorCommit: false,
       depositoId: 'deposito-ci',
     },
     ultimoEnvioMs: AGORA - MIN,
@@ -199,7 +200,10 @@ async function lido() {
   return { dados: snap.data() as VezFeedAmazon, updateTime: snap.updateTime };
 }
 
-/** A TICK-born window batch of `execucaoId` starting at `desdeMs`. */
+/**
+ * A window batch of the tick class (it does not force) of `execucaoId`,
+ * starting at `desdeMs`: stamp-only, no commit filter, no wait.
+ */
 function janelaDoTick(execucaoId: string, desdeMs: number): TarefaEnviarFeedAmazon {
   return tarefaEnviarFeedAmazonSchema.parse({
     v: 1,
@@ -214,6 +218,7 @@ function janelaDoTick(execucaoId: string, desdeMs: number): TarefaEnviarFeedAmaz
       ateMs: desdeMs + 5 * MIN,
       manterDesdeMs: desdeMs,
       commitAposMs: null,
+      forcarPorCommit: false,
       esperaAteMs: null,
       depositoId: 'deposito-ci',
     },
@@ -229,7 +234,13 @@ function blocos(execucaoId: string): TarefaEnviarFeedAmazon {
     contaId: CONTA,
     execucaoId,
     origem: 'reconciliacao',
-    lote: { tipo: 'blocos', partes: 2, esperaAteMs: AGORA + 6 * 60 * MIN },
+    lote: {
+      tipo: 'blocos',
+      execucaoIdRun: 'run-teste',
+      parteInicial: 0,
+      partes: 2,
+      esperaAteMs: AGORA + 6 * 60 * MIN,
+    },
   });
 }
 

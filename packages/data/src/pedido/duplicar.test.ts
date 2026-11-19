@@ -275,6 +275,29 @@ describe('buildDuplicarPedidoSeed', () => {
     expect(frete.volumes).toHaveLength(1);
   });
 
+  it('a Shopee pedido carrying the conta’s int_frete ref (since 2026-11-18) duplicates with neither integração ref', async () => {
+    // The Shopee importer now stamps the conta's `int_frete` doc on every pedido
+    // it creates, beside the marketplace-owned block tipo. A duplicate that kept
+    // that ref would resolve a marketplace `int_frete` and lock its Frete tab —
+    // the dead end the ML case above describes — so both integração refs go,
+    // while the delivery address (the shipping intent) still carries.
+    const { values } = await seed({
+      freteInicial: {
+        ...origin.freteInicial,
+        externalOptionIntegracao: 'shopee',
+        integracaoFreteOuterRef: 'documents/int_frete/shopee-int-1',
+        integracaoTargetOuterRef: 'documents/int_frete/shopee-int-1',
+        enderecoFreteOuterReference: 'documents/clientes/cli-1/enderecos/end-1',
+      },
+    });
+    const frete = values.freteInicial as Record<string, unknown>;
+    expect(frete.integracaoFreteOuterRef).toBeNull();
+    expect(frete.integracaoTargetOuterRef).toBeNull();
+    expect(frete.externalOptionIntegracao).toBeNull();
+    expect(frete.estado).toBe('iniciado');
+    expect(frete.enderecoFreteOuterReference).toBe('documents/clientes/cli-1/enderecos/end-1');
+  });
+
   it('a Loja Integrada pedido still on its conta’s freight doc keeps that ref, and loses the mapa key', async () => {
     // The block tipo is null for a Loja Integrada pedido, so nothing here reads
     // it as marketplace-owned — before the router flip or after. The duplicate

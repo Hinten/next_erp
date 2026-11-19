@@ -12,3 +12,7 @@ export {
   type RejectedClienteCandidate,
 } from './findOrCreateCliente';
 export { otherOwnerOfMlId } from './otherOwnerOfMlId';
+// The side index's id and the document fold, for a READ of who owns a document
+// before a write (`apps/shopee`'s test buyer mode). Exported rather than
+// re-derived: a forked digest addresses a different index row and still works.
+export { clienteIdentidadeId, documentoNormalizado } from './clienteIdentidade';

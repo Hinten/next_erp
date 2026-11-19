@@ -4,6 +4,7 @@ import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
 import { MOTIVO_CONTA_AMAZON, idRegistroFeedAmazon } from '@delfrance/schemas';
 
 import { __setRelogioDoCacheParaTestes } from '../../lib/amazon/core/contaCache';
+import { criarProvedorLoteEstoqueAmazon } from '../../lib/amazon/estoque/provedorLoteEstoque';
 import { DESTINO_LOTE_AMAZON } from '../../lib/amazon/feeds/destinosLote';
 import type { ProvedorLoteAmazon } from '../../lib/amazon/feeds/provedorLote';
 import { FakeDb, asDb } from '../../lib/amazon/testing/fakeDb';
@@ -12,7 +13,8 @@ import { AGORA_MS, espiarStdout } from '../../lib/amazon/testing/fixtures';
 /**
  * The jobs queue's BODY (step 12a, PR 12-c): what the function binds (the live
  * environment, the app's ONE logger, the stock root's producer, the seam's rows
- * BOUND once per process to that root's two producers — step 12, PR 12-e1 —, a
+ * BOUND once per process to that root's two producers — step 12, PR 12-e1 —
+ * plus the real sleep, the aviso counter and a fresh run id — PR 12-f —, a
  * `fetch` read at call time), the dispatcher's one line for a refused payload,
  * and the sanitizing boundary of a throw. The declared options
  * live in `index.test.ts`; the handlers in `lib/amazon/feeds/*.test.ts`. No
@@ -31,7 +33,12 @@ vi.mock('./lib/admin', () => ({
 
 const {
   processAmazonListingsJob,
+  ambienteDoProcessoAmazon,
   depsDosLotesAmazon,
+  esperarMs,
+  incrementoAmazon,
+  novoExecucaoIdAmazon,
+  PAGINA_RECONCILIACAO_AMAZON,
   PROVEDORES_DOS_LOTES_AMAZON,
   RAIZ_DOS_LOTES_AMAZON,
   SEGREDOS_DOS_LOTES_AMAZON,
@@ -98,15 +105,115 @@ describe('processAmazonListingsJob — the body', () => {
     expect(SEGREDOS_DOS_LOTES_AMAZON).toEqual(['AMAZON_LWA_CLIENT_SECRET']);
   });
 
-  it('★ the seam’s root holds BOTH of the stock root’s producers, as thunks (never built at load)', () => {
-    expect(RAIZ_DOS_LOTES_AMAZON.agendadorLotes).toBe(criarAgendadorLotesAmazonDoAmbiente);
-    expect(RAIZ_DOS_LOTES_AMAZON.produtorEstoque).toBe(criarProdutorEstoqueAmazonDoAmbiente);
+  it('★ the seam’s root holds BOTH of the stock root’s producers, as thunks (never built at load), the real sleep, the aviso counter and a fresh run id', () => {
+    expect(RAIZ_DOS_LOTES_AMAZON).toEqual({
+      agendadorLotes: criarAgendadorLotesAmazonDoAmbiente,
+      produtorEstoque: criarProdutorEstoqueAmazonDoAmbiente,
+      esperar: esperarMs,
+      increment: incrementoAmazon,
+      gerarExecucaoId: novoExecucaoIdAmazon,
+      ambiente: ambienteDoProcessoAmazon,
+    });
+    // The environment as a THUNK, whole and live: what the call returns is the process's.
+    expect(ambienteDoProcessoAmazon()).toBe(process.env);
+    const [a, b] = [novoExecucaoIdAmazon(), novoExecucaoIdAmazon()];
+    expect(a).toMatch(/^[0-9a-f-]{36}$/);
+    expect(a).not.toBe(b);
   });
 
-  it('the seam is EMPTY in this PR: both fluxos bind to null', () => {
-    expect(DESTINO_LOTE_AMAZON).toEqual({ estoque: null, preco: null });
+  it('(12-f) binds the stock reconcile’s page; a page dispatch runs it, valve first: unset reads NOTHING', async () => {
+    const deps = depsDosLotesAmazon({ tentativa: 0, idTarefa: 'pagina-1' });
+    expect(deps.paginaReconciliacao).toBe(PAGINA_RECONCILIACAO_AMAZON);
+    vi.stubEnv('AMAZON_MODO_ESTOQUE', undefined);
+    await rodar({
+      data: { v: 1, tipo: 'reconciliacao', contaId: CONTA, execucaoId: 'exec-1', pagina: 0 },
+      id: 'pagina-1',
+    });
+    expect(fake.operacoes).toBe(0);
+    expect(linhas()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          evento: 'estoque',
+          fase: 'reconciliacao',
+          etapa: 'pagina',
+          acao: 'valvula-desligada',
+          conta: CONTA,
+        }),
+      ]),
+    );
+  });
+
+  it(
+    '(12-f) the bound page gets the dispatch’s deps WHOLE plus the stock root’s producer (a thunk), the real sleep and a fresh run id per call',
+    { timeout: 30_000 },
+    async () => {
+      vi.resetModules();
+      const espiao = vi.fn((_db: unknown, _t: unknown, _deps: unknown) =>
+        Promise.resolve({ acao: 'espiado' }),
+      );
+      vi.doMock('../../lib/amazon/estoque/reconciliacaoEstoque', async (importOriginal) => ({
+        ...(await importOriginal<typeof import('../../lib/amazon/estoque/reconciliacaoEstoque')>()),
+        processarPaginaReconciliacaoEstoqueAmazon: espiao,
+      }));
+      try {
+        const fila = await import('./filaLotes');
+        const raiz = await import('./agendadorEstoque');
+        const base = fila.depsDosLotesAmazon({ tentativa: 2, idTarefa: 't-9' });
+        const t = {
+          v: 1,
+          tipo: 'reconciliacao',
+          contaId: CONTA,
+          execucaoId: 'e1',
+          pagina: 3,
+        } as const;
+        expect(await fila.PAGINA_RECONCILIACAO_AMAZON(asDb(fake), t, base)).toEqual({
+          acao: 'espiado',
+        });
+        const [db, tarefa, deps] = espiao.mock.calls[0] as [
+          unknown,
+          unknown,
+          Record<string, unknown>,
+        ];
+        expect(db).toBe(asDb(fake));
+        expect(tarefa).toBe(t);
+        expect(deps).toMatchObject({ ...base });
+        expect(deps.produtorEstoque).toBe(raiz.criarProdutorEstoqueAmazonDoAmbiente);
+        expect(deps.esperar).toBe(fila.esperarMs);
+        const gerar = deps.gerarExecucaoId as () => string;
+        const [a, b] = [gerar(), gerar()];
+        expect(a).toMatch(/^[0-9a-f-]{36}$/);
+        expect(a).not.toBe(b);
+      } finally {
+        vi.doUnmock('../../lib/amazon/estoque/reconciliacaoEstoque');
+        vi.resetModules();
+      }
+    },
+  );
+
+  it('(12-f) the page’s sleep is a real one, of the asked milliseconds', async () => {
+    vi.useFakeTimers();
+    try {
+      let acordou = false;
+      const espera = esperarMs(334).then(() => {
+        acordou = true;
+      });
+      await vi.advanceTimersByTimeAsync(333);
+      expect(acordou).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await espera;
+      expect(acordou).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('(12-f) the stock row is BOUND to the stock provider; the price row is still null', () => {
+    expect(DESTINO_LOTE_AMAZON.estoque).toBe(criarProvedorLoteEstoqueAmazon);
+    expect(DESTINO_LOTE_AMAZON.preco).toBeNull();
     const deps = depsDosLotesAmazon({ tentativa: 0, idTarefa: null });
-    expect(deps.provedores).toEqual({ estoque: null, preco: null });
+    expect(deps.provedores.estoque?.fluxo).toBe('estoque');
+    expect(deps.provedores.estoque?.motivoFalha).toBe(MOTIVO_CONTA_AMAZON.feedEstoqueFalhou);
+    expect(deps.provedores.preco).toBeNull();
   });
 
   // Re-importing the root after `vi.resetModules()` loads the whole feed core again: CI headroom.
@@ -136,6 +243,10 @@ describe('processAmazonListingsJob — the body', () => {
         expect(fabrica.mock.calls[0]?.[0]).toEqual({
           agendadorLotes: raiz.criarAgendadorLotesAmazonDoAmbiente,
           produtorEstoque: raiz.criarProdutorEstoqueAmazonDoAmbiente,
+          esperar: fila.esperarMs,
+          increment: fila.incrementoAmazon,
+          gerarExecucaoId: fila.novoExecucaoIdAmazon,
+          ambiente: fila.ambienteDoProcessoAmazon,
         });
         const a = fila.depsDosLotesAmazon({ tentativa: 0, idTarefa: null });
         const b = fila.depsDosLotesAmazon({ tentativa: 1, idTarefa: 't-2' });
@@ -193,7 +304,31 @@ describe('processAmazonListingsJob — the body', () => {
     ]);
   });
 
-  it('a send under the empty seam ⇒ sem-provedor: the valve line, then ONE send line, the lease never read', async () => {
+  it('a send under the EMPTY price row ⇒ sem-provedor: the valve line, then ONE send line, the lease never read', async () => {
+    vi.stubEnv('AMAZON_MODO_PRECO', 'on');
+    await rodar({
+      data: {
+        v: 1,
+        tipo: 'feed-enviar',
+        fluxo: 'preco',
+        contaId: CONTA,
+        execucaoId: 'exec-fila-lotes',
+        origem: 'delta',
+        lote: {
+          tipo: 'blocos',
+          execucaoIdRun: 'run-teste',
+          parteInicial: 0,
+          partes: 1,
+          esperaAteMs: AGORA_MS,
+        },
+      },
+    });
+    expect(linhas().map((l) => l.evento)).toEqual(['valvula', 'preco']);
+    expect(linhas().at(-1)).toMatchObject({ fase: 'envio', acao: 'sem-provedor' });
+    expect(fake.operacoes).toBe(0);
+  });
+
+  it('(12-f) a STOCK send reaches the bound stock provider only past the context: the switch off ⇒ contexto-recusado, ZERO Firestore operations', async () => {
     vi.stubEnv('AMAZON_MODO_ESTOQUE', 'on');
     await rodar({
       data: {
@@ -203,11 +338,21 @@ describe('processAmazonListingsJob — the body', () => {
         contaId: CONTA,
         execucaoId: 'exec-fila-lotes',
         origem: 'delta',
-        lote: { tipo: 'blocos', partes: 1, esperaAteMs: AGORA_MS },
+        lote: {
+          tipo: 'blocos',
+          execucaoIdRun: 'run-teste',
+          parteInicial: 0,
+          partes: 1,
+          esperaAteMs: AGORA_MS,
+        },
       },
     });
-    expect(linhas().map((l) => l.evento)).toEqual(['valvula', 'estoque']);
-    expect(linhas().at(-1)).toMatchObject({ fase: 'envio', acao: 'sem-provedor' });
+    expect(linhas().map((l) => l.evento)).toEqual(['valvula', 'chamada-bloqueada', 'estoque']);
+    expect(linhas().at(-1)).toMatchObject({
+      fase: 'envio',
+      acao: 'contexto-recusado',
+      motivo: 'chamadas-desligadas',
+    });
     expect(fake.operacoes).toBe(0);
   });
 

@@ -17,7 +17,8 @@
  *  3. `get_escrow_detail`, **CONTAINED**: it refines PRICES, and losing a
  *     refinement must not lose the pedido;
  *  4. produto resolution, memoised per `(item_id, model_id)` across the order;
- *  5. the freight block, then the items (the items' cross-check log needs the
+ *  5. the conta's active `int_frete` doc (one uncached query), the freight block
+ *     stamped with its ref, then the items (the items' cross-check log needs the
  *     freight figure, and only the freight mapper knows a Shopee `0` from an
  *     absence);
  *  6. the buyer — `findOrCreateCliente` owns its identity-index transaction,
@@ -66,12 +67,15 @@ import { ensureEndereco } from '@delfrance/data/admin/enderecos';
 import {
   clienteCollection,
   integracaoCollection,
+  intFreteCollection,
   pedidoCollection,
 } from '@delfrance/data/admin/collections';
 import {
   idFromRef,
   recoverEnderecoFromCep,
   toOuterRef,
+  type ClienteMatchKey,
+  type EnderecoBuildOutcome,
   type EnderecoForcado,
   type FreteDoPedido,
   type Pedido,
@@ -92,12 +96,20 @@ import {
 import { resolverAvisosDeDespachoSeEncerrado } from '../avisos/despachoAutomatico';
 import { readConta } from '../core/contaCache';
 import { loadShopeeContext } from '../core/shopee';
+import { shopeeHosts, shopeeSandbox } from '../env';
+import { syncIntFreteShopee } from '../frete/intFrete';
 import { resolverAvisoNfeSeEncerrado } from '../nfe/avisoNfe';
 import {
   avaliarCapturaComprador,
   clienteDeShopee,
   enderecoDeShopee,
+  exigirRegiaoForaDoBrasilParaSimulacao,
+  exigirSandboxParaSimulacao,
+  portoesDoEnderecoShopee,
+  simularCompradorShopee,
   type CapturaComprador,
+  type PortoesEnderecoShopee,
+  type SimulacaoCompradorShopee,
 } from './comprador';
 import { registrarLinhasSemProduto, type LinhaSemProdutoShopee } from './incidentesProduto';
 import { mapearItensShopee, type ItensMapeadosShopee } from './itens';
@@ -189,6 +201,21 @@ export interface ResultadoImportacaoPedidoShopee {
    * order" without opening a document.
    */
   readonly detail: string;
+  /**
+   * What the buyer resolution did on a TEST buyer-mode run — the key is ABSENT
+   * on every real import (spread-or-nothing), so no caller but the CLI sees it.
+   */
+  readonly compradorDeTeste?: {
+    readonly cliente: ClienteResolvidoShopee | null;
+    readonly enderecoOuterRef: string | null;
+  };
+}
+
+/** `findOrCreateCliente`'s answer on one run, reduced to ids and verdicts. */
+export interface ClienteResolvidoShopee {
+  readonly clienteId: string;
+  readonly criado: boolean;
+  readonly matchedBy: ClienteMatchKey | null;
 }
 
 export interface ShopeeImportarPedidoDeps {
@@ -200,6 +227,17 @@ export interface ShopeeImportarPedidoDeps {
   readonly clientFor?: (db: Firestore, integracaoId: string) => Promise<ShopeeClient>;
   /** The ViaCEP client used to recover an unmappable UF. Shared per process. */
   readonly viaCep?: ViaCepClient;
+  /**
+   * ⚠️ TEST ONLY — the `importar:pedido` CLI's buyer mode, and nothing else may
+   * pass it (`simulacaoComprador.test.ts` greps every route, sweep, trigger and
+   * notification arm). It rewrites ONLY the row the buyer adapter reads
+   * (`simularCompradorShopee`); the real row still drives every other field.
+   * This module re-checks the CLI's two guards itself — the sandbox override
+   * from ITS OWN environment, the real region from the order it read — and
+   * throws before any buyer or pedido write when either fails (the write half,
+   * {@link gravarPreparoPedidoShopee}, checks both again).
+   */
+  readonly simulacaoComprador?: SimulacaoCompradorShopee;
 }
 
 /**
@@ -291,6 +329,20 @@ export interface CompradorResolvido {
   readonly clienteOuterRef: string | null;
   readonly enderecoOuterRef: string | null;
   readonly camposRecusadosExtra: readonly string[];
+  /** `findOrCreateCliente`'s answer, or `null` when it did not run. Reported, never mapped. */
+  readonly clienteResolvido?: ClienteResolvidoShopee | null;
+}
+
+/**
+ * The endereço the buyer block would build: the buyer row's address under the
+ * order's REAL region. ONE composition, read by {@link resolverComprador} and by
+ * the buyer-mode preview in the read-only half, so the two cannot disagree.
+ */
+function enderecoDoComprador(
+  detalheComprador: ShopeeOrderDetailRow,
+  regiaoDoPedido: string | null,
+): EnderecoBuildOutcome | null {
+  return enderecoDeShopee(detalheComprador.recipient_address, regiaoDoPedido);
 }
 
 /**
@@ -311,7 +363,12 @@ export interface CompradorResolvido {
 async function resolverComprador(
   db: Firestore,
   args: {
+    /** The row the buyer adapter reads — the real one, or its test-only simulation. */
     readonly detalhe: ShopeeOrderDetailRow;
+    /** The order's REAL region — the endereço's `paisId`, simulation or not. */
+    readonly regiaoDoPedido: string | null;
+    /** `false` only in buyer mode without `--importar-endereco`. */
+    readonly gravarEndereco: boolean;
     readonly armazenado: Record<string, unknown> | null;
     readonly nowMs: number;
     readonly viaCep: ViaCepClient;
@@ -320,6 +377,7 @@ async function resolverComprador(
   const { detalhe, armazenado, nowMs } = args;
   const orderSn = detalhe.order_sn;
   const camposRecusadosExtra: string[] = [];
+  let clienteResolvido: ClienteResolvidoShopee | null = null;
 
   const refClienteArmazenado =
     typeof armazenado?.clientePedidoOuterRef === 'string' ? armazenado.clientePedidoOuterRef : null;
@@ -337,6 +395,11 @@ async function resolverComprador(
       const resultado = await findOrCreateCliente(db, { fields: campos, nowMs });
       clienteId = resultado.clienteId;
       clienteOuterRef = toOuterRef(clienteCollection.docPath({}, resultado.clienteId));
+      clienteResolvido = {
+        clienteId: resultado.clienteId,
+        criado: resultado.created,
+        matchedBy: resultado.matchedBy,
+      };
       if (resultado.rejected.length > 0) {
         // A telefone/e-mail hit whose document contradicts this buyer's. Ids and
         // match KEYS only — never the values that were compared.
@@ -356,8 +419,8 @@ async function resolverComprador(
 
   // The endereço lives UNDER the cliente, so it needs one — either the stored
   // link or the one just resolved.
-  if (refEnderecoArmazenado == null && clienteId != null) {
-    const resultado = enderecoDeShopee(detalhe.recipient_address, detalhe.region);
+  if (refEnderecoArmazenado == null && clienteId != null && args.gravarEndereco) {
+    const resultado = enderecoDoComprador(detalhe, args.regiaoDoPedido);
     if (resultado != null) {
       let campos: EnderecoForcado | null = null;
       if (resultado.kind === 'sem-cep') {
@@ -390,12 +453,13 @@ async function resolverComprador(
           clienteOuterRef,
           enderecoOuterRef: toOuterRef(`clientes/${clienteId}/enderecos/${enderecoId}`),
           camposRecusadosExtra,
+          clienteResolvido,
         };
       }
     }
   }
 
-  return { clienteOuterRef, enderecoOuterRef: null, camposRecusadosExtra };
+  return { clienteOuterRef, enderecoOuterRef: null, camposRecusadosExtra, clienteResolvido };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -420,9 +484,10 @@ async function resolverComprador(
  * four writers on the pedido path (`findOrCreateCliente`, `ensureEndereco`,
  * `salvarPedidoShopee`, `registrarLinhasSemProduto`) are all called from
  * {@link importarPedidoShopee} and none of them appears in this body. The
- * `pedidoCollection` read below is a `.get()`; the produto cascade and
- * `readConta` are reads. Keep it that way — a write added here would silently
- * make `--dry-run` write.
+ * `pedidoCollection` read below is a `.get()`; the conta's `int_frete` lookup
+ * (`syncIntFreteShopee.buscarIntFreteDaConta`, with no transaction handle) is a
+ * query `.get()`; the produto cascade and `readConta` are reads. Keep it that
+ * way — a write added here would silently make `--dry-run` write.
  */
 export interface PreparoPedidoShopee {
   /** The reconciled `get_order_detail` row — the authority for every field. */
@@ -436,11 +501,43 @@ export interface PreparoPedidoShopee {
   readonly watermarkUs: number;
   /** The caller's ONE clock read, µs. */
   readonly nowUs: number;
+  /**
+   * The mapped freight block, `integracaoFreteOuterRef` already stamped with the
+   * conta's ACTIVE `int_frete` doc (`null` when it has none) — what a CREATE
+   * writes, and what the rehearsal prints.
+   */
   readonly frete: FreteDoPedido;
   readonly pesosObservados: readonly PesoBrutoObservado[];
   readonly mapeados: ItensMapeadosShopee;
+  /** The verdict a write stores — on the SIMULATED buyer row in buyer mode. */
   readonly captura: CapturaComprador;
   readonly conta: ContaBagShopee;
+  /** `null` on every real import; the TEST buyer mode's inputs and preview otherwise. */
+  readonly simulacao: SimulacaoAplicadaShopee | null;
+}
+
+/** What the TEST buyer mode changed, kept beside the real row it did not touch. */
+export interface SimulacaoAplicadaShopee {
+  readonly pedida: SimulacaoCompradorShopee;
+  /** The row the buyer adapter reads (`simularCompradorShopee`'s output). */
+  readonly detalheComprador: ShopeeOrderDetailRow;
+  /** The verdict on the REAL row — what a normal import would have stored. */
+  readonly capturaReal: CapturaComprador;
+  readonly cpfDeTesteAplicado: boolean;
+  /** The substitute was put into a block — `false` over a `null` `recipient_address`. */
+  readonly nomeTesteAplicado: boolean;
+  readonly cepTesteAplicado: boolean;
+  /**
+   * `enderecoDeShopee`'s gates over the buyer row — `null` when it carries no
+   * block. The SAME answer the builder below consumed, so the preview cannot
+   * name a refusal the import would not make.
+   */
+  readonly portoesEndereco: PortoesEnderecoShopee | null;
+  /**
+   * The endereço {@link resolverComprador} would build (before any ViaCEP
+   * recovery, which only a write runs) — or `null` when its gates refuse.
+   */
+  readonly endereco: EnderecoBuildOutcome | null;
 }
 
 export type PreparoImportacaoPedidoShopee =
@@ -461,6 +558,10 @@ export async function prepararImportacaoPedidoShopee(
   // values rather than from a clock. The four seams are listed in
   // `apps/shopee/CLAUDE.md`.
   const nowUs = millisToMicros(nowMs);
+
+  // TEST buyer mode, guard 1 of 2 — BEFORE any Shopee call, from THIS process's
+  // environment rather than the caller's word.
+  if (deps.simulacaoComprador !== undefined) await exigirSandboxDoAmbiente();
 
   const client = await clienteShopee(db, integracaoId, deps);
 
@@ -489,6 +590,12 @@ export async function prepararImportacaoPedidoShopee(
     return { kind: 'inexistente', resultado: inexistente(orderSn, 'ausente-no-order_list') };
   }
 
+  // TEST buyer mode, guard 2 of 2 — the REAL order-level region, read off the
+  // order itself. Before any buyer or pedido write: this whole half has none.
+  const pedida = deps.simulacaoComprador ?? null;
+  if (pedida !== null) exigirRegiaoForaDoBrasilParaSimulacao(linha.region);
+  const simulado = pedida === null ? null : simularCompradorShopee(linha, pedida);
+
   // The order clock, in µs — ONE named conversion from SECONDS. A zero-filled
   // `update_time` falls back to the wall clock, which is the same unit and the
   // honest "we saw it now" answer.
@@ -507,11 +614,41 @@ export async function prepararImportacaoPedidoShopee(
     });
   }
 
-  const { frete, pesosObservados } = mapearFreteInicialShopee({
+  // The conta's ACTIVE `int_frete` doc (Lucas, 2026-11-18 — reversing step 20's
+  // "no pedido this app imports points at it"), through the app's ONE binding:
+  // the same core lookup Mercado Livre, Amazon and Loja Integrada run, UNCACHED
+  // like Amazon's and Loja Integrada's (its answer feeds a write; Mercado Livre
+  // caches its own at a wrapper) — a plain query `.get()` outside any
+  // transaction, so this half stays write-free. None active — no doc yet, a
+  // deactivated one, or a conta the trigger left `incompleto` (no doc at all) —
+  // is `null`, and the pedido's `integracaoFreteOuterRef` is `null` as before
+  // the reversal. Never a derived `shopee-<id>`: a migrated conta's doc keeps
+  // its legacy auto id. The doc's `horarioDeCorte` is NOT read: the cut-off
+  // stays `HORARIO_DE_CORTE_PADRAO_SHOPEE` (`orderFreteMapping.ts`).
+  // Rule 7's accepted residual: the ref is decided HERE, before the pedido
+  // transaction, and re-applied verbatim on an OCC retry, so a doc deactivated
+  // or replaced between this read and the create is still stamped. Harmless —
+  // it is a pointer to a doc that is never deleted (deactivation keeps it), a
+  // concurrent create of the same order runs the same lookup, and no update
+  // ever rewrites it.
+  const intFrete = await syncIntFreteShopee.buscarIntFreteDaConta(db, integracaoId, {
+    apenasAtivo: true,
+  });
+  const { frete: freteMapeado, pesosObservados } = mapearFreteInicialShopee({
     detalhe: linha,
     escrow,
     watermarkUs,
   });
+  // Stamped on the mapped block right after the mapper (whose signature stays
+  // pure over the wire). Only a CREATE writes it — the whole mapped block lands
+  // there; an UPDATE refreshes seven OTHER fields over the stored spread
+  // (`mesclarFreteInicialShopee`), so a stored ref, or a stored null, is kept:
+  // only NEW pedidos get the ref (Lucas, 2026-11-18).
+  const frete: FreteDoPedido = {
+    ...freteMapeado,
+    integracaoFreteOuterRef:
+      intFrete === null ? null : toOuterRef(intFreteCollection.docPath({}, intFrete.id)),
+  };
   const mapeados = mapearItensShopee({
     detalhe: linha,
     escrow,
@@ -527,6 +664,11 @@ export async function prepararImportacaoPedidoShopee(
 
   const conta = await readConta(db, integracaoId);
 
+  const capturaReal = avaliarCapturaComprador({
+    detail: linha,
+    statusObservado: linha.order_status,
+  });
+
   return {
     kind: 'preparo',
     preparo: {
@@ -539,7 +681,31 @@ export async function prepararImportacaoPedidoShopee(
       frete,
       pesosObservados,
       mapeados,
-      captura: avaliarCapturaComprador({ detail: linha, statusObservado: linha.order_status }),
+      // The status is ALWAYS the real one: the simulation rewrites who the buyer
+      // is, never where the order stands in Shopee's unmask window.
+      captura:
+        simulado === null
+          ? capturaReal
+          : avaliarCapturaComprador({
+              detail: simulado.linha,
+              statusObservado: linha.order_status,
+            }),
+      simulacao:
+        pedida === null || simulado === null
+          ? null
+          : {
+              pedida,
+              detalheComprador: simulado.linha,
+              capturaReal,
+              cpfDeTesteAplicado: simulado.cpfDeTesteAplicado,
+              nomeTesteAplicado: simulado.nomeTesteAplicado,
+              cepTesteAplicado: simulado.cepTesteAplicado,
+              portoesEndereco:
+                simulado.linha.recipient_address == null
+                  ? null
+                  : portoesDoEnderecoShopee(simulado.linha.recipient_address, linha.region),
+              endereco: enderecoDoComprador(simulado.linha, linha.region),
+            },
       conta: {
         integracaoPedidoOuterRef: toOuterRef(integracaoCollection.docPath({}, integracaoId)),
         // ⚠️ A conta with no tabela/operação writes NULL rather than a guess — and
@@ -585,27 +751,64 @@ export function mapearPreparoPedidoShopee(
 /*                                 the importer                                */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * The TEST buyer mode's sandbox guard, read from THIS process's environment
+ * rather than the caller's word. The price module's override is loaded only
+ * here, so a real import's module graph does not grow.
+ */
+async function exigirSandboxDoAmbiente(): Promise<void> {
+  const { overrideDeSandboxAtivo } = await import('../precos/regiaoPreco');
+  exigirSandboxParaSimulacao(
+    overrideDeSandboxAtivo({ sandbox: shopeeSandbox(), hosts: shopeeHosts() }),
+  );
+}
+
 export async function importarPedidoShopee(
   db: Firestore,
   alvo: AlvoDeImportacaoShopee,
   deps: ShopeeImportarPedidoDeps = {},
 ): Promise<ResultadoImportacaoPedidoShopee> {
-  const { integracaoId, shopId, orderSn, nowMs } = alvo;
-
   const preparado = await prepararImportacaoPedidoShopee(db, alvo, deps);
   if (preparado.kind === 'inexistente') return preparado.resultado;
+  return gravarPreparoPedidoShopee(db, alvo, preparado.preparo, deps);
+}
+
+/**
+ * The WRITE half of {@link importarPedidoShopee}, over a preparo the caller
+ * already holds — so a caller that must decide something on the read-only
+ * half's answer (the CLI's TEST buyer mode refuses a collision first) writes
+ * exactly what it checked, with no second Shopee read in between.
+ *
+ * ⚠️ A preparo carrying a `simulacao` is re-checked HERE too, before any buyer
+ * or pedido write: the sandbox override from this process's environment and
+ * the REAL region off the preparo's own row.
+ */
+export async function gravarPreparoPedidoShopee(
+  db: Firestore,
+  alvo: AlvoDeImportacaoShopee,
+  preparo: PreparoPedidoShopee,
+  deps: Omit<ShopeeImportarPedidoDeps, 'simulacaoComprador'> = {},
+): Promise<ResultadoImportacaoPedidoShopee> {
+  const { integracaoId, shopId, orderSn, nowMs } = alvo;
   const { linha, escrow, pedidoId, armazenado, watermarkUs, nowUs, frete, pesosObservados } =
-    preparado.preparo;
-  const mapeados = preparado.preparo.mapeados;
+    preparo;
+  const mapeados = preparo.mapeados;
+  const simulacao = preparo.simulacao;
+  if (simulacao !== null) {
+    await exigirSandboxDoAmbiente();
+    exigirRegiaoForaDoBrasilParaSimulacao(linha.region);
+  }
 
   const comprador = await resolverComprador(db, {
-    detalhe: linha,
+    detalhe: simulacao?.detalheComprador ?? linha,
+    regiaoDoPedido: linha.region,
+    gravarEndereco: simulacao?.pedida.importarEndereco ?? true,
     armazenado,
     nowMs,
     viaCep: deps.viaCep ?? (viaCepPadrao ??= createViaCepClient()),
   });
 
-  const mapeado = mapearPreparoPedidoShopee(preparado.preparo, comprador);
+  const mapeado = mapearPreparoPedidoShopee(preparo, comprador);
 
   const resultado = await salvarPedidoShopee(db, { pedidoId, mapeado, watermarkUs, nowUs });
 
@@ -760,6 +963,9 @@ export async function importarPedidoShopee(
     valorCobrado: mapeado.dados.valorCobrado,
     freteCobrado: frete.valorCobrado,
     prazoDespachoUs: frete.prazoDespacho,
+    // Whether the conta's ACTIVE `int_frete` doc was found — a boolean, never the
+    // id, so "nenhum ativo" is diagnosable from the logs. Only a CREATE stores it.
+    intFreteAtivo: frete.integracaoFreteOuterRef !== null,
     // ⚠️ `parcel_chargeable_weight`'s unit is undocumented, so the RAW grams ride
     // beside the converted kilos for the first deliveries.
     pesos: pesosObservados,
@@ -806,6 +1012,9 @@ export async function importarPedidoShopee(
     // ── step 15b: the despacho avisos this import closed. A count and a boolean.
     despachoResolvidos,
     etiquetaResolvida,
+    // ── the CLI's TEST buyer mode: a boolean, present only when it ran, so a
+    // pedido whose buyer is a test fixture is traceable in the logs.
+    ...(simulacao === null ? {} : { compradorDeTeste: true }),
   });
 
   return {
@@ -820,6 +1029,14 @@ export async function importarPedidoShopee(
     acaoFrete: frete7?.acao ?? null,
     pacotesGravados: frete7?.acao === 'atualizado' ? frete7.pacotes : 0,
     detail: resultado.acao,
+    ...(simulacao === null
+      ? {}
+      : {
+          compradorDeTeste: {
+            cliente: comprador.clienteResolvido ?? null,
+            enderecoOuterRef: comprador.enderecoOuterRef,
+          },
+        }),
   };
 }
 

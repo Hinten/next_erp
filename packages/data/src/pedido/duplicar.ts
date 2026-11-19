@@ -175,15 +175,22 @@ function cloneItens(itens: unknown): unknown {
  * still wants.
  *
  * Ownership is read off `externalOptionIntegracao`, the same no-extra-read seam
- * `admin/pedidoReconcile.ts` uses. ⚠️ `FreteTab` locks on the RESOLVED
- * `int_frete.tipo` instead, so the two can disagree (its own comment flags
- * this). The two channels whose duplicates reach that lock are covered, each
- * its own way: `orderShipmentImport` always writes
+ * `admin/pedidoReconcile.ts` uses. ⚠️ `FreteTab` locks on the OR of that block
+ * tipo and the RESOLVED `int_frete.tipo` (over the marketplace-owned
+ * predicate), so the two still differ in one direction: a ref to a
+ * marketplace-owned doc under a block tipo that is not one survives here and
+ * would still lock the duplicate. The channels whose duplicates reach that lock
+ * are covered, each its own way: `orderShipmentImport` always writes
  * `externalOptionIntegracao: 'mercadoLivre'` on an ML-imported pedido, so its
- * refs go here; a Loja Integrada pedido carries a null block tipo and keeps its
- * ref to the conta's freight doc — a ROUTER, not an owner, whose Frete tab
- * renders a read-only body but leaves the header and the integração picker to
- * the estado lock, so the duplicate (back at `iniciado`) is re-pointed there.
+ * refs go here; the Shopee importer writes `externalOptionIntegracao: 'shopee'`
+ * on every pedido and, on one it creates since 2026-11-18, the conta's
+ * `int_frete` ref, so those refs go here too (a migrated legacy one's
+ * FreteShopee ref goes as well — its block is `'shopee'` too; a ref-less one
+ * has none to drop); a Loja Integrada pedido carries a null block tipo and
+ * keeps its ref to the conta's freight doc — a ROUTER, not an owner, whose
+ * Frete tab renders a read-only body but leaves the header and the integração
+ * picker to the estado lock, so the duplicate (back at `iniciado`) is
+ * re-pointed there.
  */
 function resetFreteInicial(freteInicial: unknown): unknown {
   if (freteInicial == null || typeof freteInicial !== 'object') return freteInicial;

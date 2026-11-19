@@ -225,6 +225,26 @@ describe('o caminho completo, sobre o FakeDb real e o importador real', () => {
     ]);
   });
 
+  it('imports the initial price and preserves the ERP price on a later import with overwrite disabled', async () => {
+    const options = { importarFotos: false, sobrescreverPreco: false };
+    const primeira = await POST(req(corpoValido({ options }), AUTORIZADO));
+    expect(primeira.status).toBe(200);
+    const { produtoId } = (await primeira.json()) as { produtoId: string };
+    const path = `produtos/${produtoId}`;
+    expect(db.store[path]?.data).toMatchObject({ precos: { 'tab-normal': { valor: 99.9 } } });
+
+    h.getItemBaseInfo.mockResolvedValue(
+      payload({
+        ...LINHA_SIMPLES,
+        price_info: [{ currency: 'BRL', original_price: 199.9, current_price: 149.9 }],
+      }),
+    );
+    const segunda = await POST(req(corpoValido({ options }), AUTORIZADO));
+    expect(segunda.status).toBe(200);
+    await expect(segunda.json()).resolves.toMatchObject({ produtoId, criado: false });
+    expect(db.store[path]?.data).toMatchObject({ precos: { 'tab-normal': { valor: 99.9 } } });
+  });
+
   it('⛔ a rota PASSA o memo de categorias — sem ele a perna de categoria some em silêncio', async () => {
     // `categorias` ausente não é um erro: a perna é pulada com uma linha de log
     // e o produto sai sem categoria nenhuma, o que se parece com um import

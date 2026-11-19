@@ -16,7 +16,13 @@
  *     decimal; anything else refuses EVERY run (`teto-invalido`, one ERROR line, zero reads) — a
  *     cap nobody can read is never guessed, and `0` would zero every row.
  *  4. The conta (the cached reader): gone, not a Loja Integrada conta, inactive, or no readable
- *     depósito ⇒ skipped.
+ *     depósito ⇒ skipped. A RECONCILE send carries the depósito its run diffed at (`depositoId`,
+ *     PR 12-g): a cached conta naming another is read once more past the cache
+ *     (`invalidarContaEmCache`, this instance), and a conta that still names another drops the
+ *     send (`deposito-mudou`, ONE WARNING) — its numbers were computed for a depósito the conta no
+ *     longer stocks from, and the depósito-change run computes the new ones. Equal (either stored
+ *     form, folded) costs nothing more. Within the cache's 15 minutes a re-point this instance has
+ *     not seen yet still sends at the old depósito: the staleness every send run has.
  *  5. The produto (masked) and its own links, together. No produto ⇒ skipped.
  *  6. The links alone (`planoDosVinculosEstoqueLi`): no counting child link, a parent's, a root
  *     with no grades, two store products, or the parity switch ⇒ skipped WITHOUT reading a stock
@@ -128,7 +134,7 @@ import {
   tarefaEstoqueLiSchema,
 } from '@delfrance/schemas';
 
-import { lerContaEmCache } from '../core/contaCache';
+import { invalidarContaEmCache, lerContaEmCache } from '../core/contaCache';
 import {
   type ContextoEscritaLojaIntegrada,
   loadLojaIntegradaContextoEscrita,
@@ -250,6 +256,8 @@ export type MotivoPuloEstoqueLi =
   | 'conta-inexistente'
   | 'conta-inativa'
   | 'conta-sem-deposito'
+  /** A reconcile send whose conta now names another depósito than its run's (module header). */
+  | 'deposito-mudou'
   | 'produto-inexistente'
   | 'sem-vinculo'
   | 'pai'
@@ -433,7 +441,13 @@ export async function processarTarefaEstoqueLi(
   }
 
   // 4. The conta and its depósito.
-  const conta = await lerContaEmCache(db, tarefa.contaId);
+  let conta = await lerContaEmCache(db, tarefa.contaId);
+  const depositoDoRun = tarefa.depositoId ?? null;
+  if (depositoDoRun !== null && conta !== null && depositoDaContaLi(conta) !== depositoDoRun) {
+    // A reconcile send whose cached conta names another depósito: read once more (module header).
+    invalidarContaEmCache(tarefa.contaId);
+    conta = await lerContaEmCache(db, tarefa.contaId);
+  }
   if (conta === null || conta.tipo !== INTEGRACAO_TIPO.lojaIntegrada) {
     return pulado('conta-inexistente');
   }
@@ -442,6 +456,10 @@ export async function processarTarefaEstoqueLi(
   if (depositoId === null) {
     linhas.aviso('conta-sem-deposito');
     return pulado('conta-sem-deposito');
+  }
+  if (depositoDoRun !== null && depositoId !== depositoDoRun) {
+    linhas.aviso('deposito-mudou');
+    return pulado('deposito-mudou');
   }
 
   // 5. The produto and its own links.

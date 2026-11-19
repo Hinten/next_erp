@@ -98,10 +98,12 @@ provider live in that README. Two traps are worth carrying here:
 - ⚠️ **Resolve the integração with `resolverIntFrete`** (`intFrete.ts`), never
   by requiring the `int_frete` document: a marketplace-owned tipo in
   `freteInicial.externalOptionIntegracao` dispatches with or without one
-  (`fonte: 'bloco'`). A pedido imported by THIS app carries no
-  `integracaoFreteOuterRef` (Shopee's step 5 sets none); a migrated legacy one
-  carries the legacy FreteShopee doc's ref and dispatches as `'doc'` when that
-  doc's tipo is `shopee` — the Shopee provider reads neither.
+  (`fonte: 'bloco'`). Since 2026-11-18 (Lucas reversed step 20's Q1 (a), "no
+  pedido this app imports points at it" — this skill used to say "Shopee's
+  step 5 sets none") a Shopee pedido the importer CREATES carries the conta's
+  active `int_frete` ref when the conta has one, and one created earlier keeps
+  its `null`; a migrated legacy one carries the legacy FreteShopee doc's ref. Either ref dispatches as `'doc'`
+  when that doc's tipo is `shopee` — the Shopee provider reads neither.
 
 ### The provider-neutral surface (what every category writes through)
 

@@ -183,7 +183,25 @@ describe('buscarListingsNaAmazon — up to 20 SKUs', () => {
     const { contexto: c } = await contexto({ status: 200, corpo: { numberOfResults: 3 } });
     await expect(
       buscarListingsNaAmazon(c, { sellerId: SPID_A, skus: [SKU], incluir: INCLUIR }),
-    ).resolves.toEqual({ itens: [], truncada: true });
+    ).resolves.toEqual({ itens: [], truncada: true, limiteTaxa: null });
+  });
+
+  it('★ the rate Amazon applied to the answer (x-amzn-RateLimit-Limit) is carried; none ⇒ null', async () => {
+    const c: ContextoDosListingsAmazon = {
+      cliente: {
+        get: () =>
+          Promise.resolve({
+            dados: { numberOfResults: 1, items: [LISTING] },
+            status: 200,
+            requestIdAmazon: null,
+            limiteTaxa: 4.5,
+          } as never),
+      },
+      obterAcesso: () => Promise.reject(new Error('teste: nenhuma renovação')),
+    };
+    await expect(
+      buscarListingsNaAmazon(c, { sellerId: SPID_A, skus: [SKU], incluir: INCLUIR }),
+    ).resolves.toMatchObject({ truncada: false, limiteTaxa: 4.5 });
   });
 
   it('a 404 of the SEARCH is thrown, never read as "nao-listado"', async () => {

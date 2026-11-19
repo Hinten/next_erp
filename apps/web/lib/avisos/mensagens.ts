@@ -210,6 +210,10 @@ const FRASE_MOTIVO_ESTOQUE_VINCULO_LI: Record<MotivoEstoqueVinculoLi, string> = 
   [MOTIVO_ESTOQUE_VINCULO_LI.estoqueAmbiguo]:
     'o produto tem dois registros de estoque no depósito da conta e nenhum é o principal; ' +
     'deixe um só registro nesse depósito',
+  [MOTIVO_ESTOQUE_VINCULO_LI.depositoSemRegistros]:
+    'eles têm estoque em outro depósito, mas nenhum registro no depósito da conta, e por ' +
+    'segurança a conferência diária não enviou o estoque de nenhum produto desta loja; confira ' +
+    'o depósito escolhido na conta ou cadastre o estoque desses produtos nele',
 };
 
 /** The motivo's sentence, or a neutral one — the {@link fraseMotivoImportacaoParada} contract. */

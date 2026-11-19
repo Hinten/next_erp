@@ -21,10 +21,12 @@
  * ## The two modes
  *
  * **`--dry-run` (the DEFAULT)** calls Shopee (`get_order_detail` +
- * `get_escrow_detail`), resolves the produto of every line, runs the mappers and
- * prints what a write WOULD store. It writes nothing, and that is structural
- * rather than a promise: it calls `prepararImportacaoPedidoShopee`, whose body
- * contains no writer at all (see its docblock).
+ * `get_escrow_detail`), resolves the produto of every line, looks up the
+ * conta's active `int_frete` doc, runs the mappers and prints what a write
+ * WOULD store. It writes nothing, and that is structural rather than a promise:
+ * it calls `prepararImportacaoPedidoShopee`, whose body contains no writer at all
+ * (see its docblock). The `int_frete` ref it prints is read off the mapped block
+ * that call returned — there is no second lookup here.
  *
  * **`--live`** calls `importarPedidoShopee` exactly as the code-3 task handler
  * does — same arguments, same default client seam, same clock shape — and then
@@ -32,6 +34,20 @@
  *
  * ⚠️ **Both modes reach Shopee.** A dry-run is not offline; it spends the same
  * two API calls and, in the sandbox, is subject to the same rate limits.
+ *
+ * ## The TEST buyer mode (`--importar-cliente`)
+ *
+ * The SG sandbox order captures no buyer (region not BR, name masked, a 6-digit
+ * postal code), so this mode lets a human see the buyer and the address land:
+ * the buyer adapter reads a simulated row (Shopee's CPF when usable, else the
+ * repo's fake one; `--nome-teste` / `--cep-teste` replace only those two
+ * fields) while the REAL row drives everything else. Refused (exit 1, before
+ * any buyer or pedido write) without the sandbox override, on a BR order, and
+ * in `--live` without an explicit `--project` matching the admin app under a
+ * service account issued for it. The dry run adds the real-vs-simulated
+ * verdicts and the endereço preview to stdout, and the VALUES Shopee sent to
+ * STDERR only; `--live` adds the project, collision, stored-link and
+ * terminal-capture refusals (`lib/shopee/pedidos/importarCompradorTeste.ts`).
  *
  * ## What it prints, and what it must never print
  *
@@ -56,14 +72,22 @@
  */
 import {
   ArgumentoInvalidoError,
+  SimulacaoCompradorRecusadaError,
   USO_IMPORTAR_PEDIDO,
   descreverErro,
+  exigirSandboxParaSimulacao,
   parseArgsImportarPedido,
+  projetoDaCredencial,
+  renderCompradorGravado,
+  renderCompradorSimulado,
   renderResumoPedido,
+  resumoDoCompradorGravado,
+  resumoDoCompradorSimulado,
   resumoDoPedidoArmazenado,
   resumoDoPedidoMapeado,
   resumoDosPagamentosArmazenados,
   resumoDosPagamentosMapeados,
+  valoresEnviadosPelaShopee,
 } from '../lib/shopee/pedidos/importarPedidoCli';
 
 /** stdout — the report. */
@@ -91,6 +115,9 @@ async function main(): Promise<void> {
     return;
   }
   const { integracaoId, orderSn, live, json, projectId } = comando.args;
+  // The TEST buyer mode, or `null`. Named once, and passed as the importer's
+  // `simulacaoComprador` only below.
+  const comprador = comando.args.comprador ?? null;
 
   // ⚠️ The dynamic imports are what make "`--help` touches no environment and no
   // Firestore" STRUCTURAL instead of a claim: nothing below this line has been
@@ -129,6 +156,13 @@ async function main(): Promise<void> {
   );
   aviso(`  integracao ...... ${integracaoId}`);
   aviso(`  order_sn ........ ${orderSn}`);
+  if (comprador !== null) {
+    aviso(
+      `  comprador ....... TESTE — endereço=${comprador.importarEndereco ? 'sim' : 'não'} ` +
+        `nome-teste=${comprador.nomeTeste === null ? 'não' : 'sim'} ` +
+        `cep-teste=${comprador.cepTeste === null ? 'não' : 'sim'}`,
+    );
+  }
 
   const db = getAdminFirestore();
 
@@ -139,6 +173,14 @@ async function main(): Promise<void> {
   const shopId = ctx.conta.shop_id;
   aviso(`  ambiente Shopee . ${ctx.config.sandbox ? 'SANDBOX' : 'PRODUÇÃO'}`);
   aviso(`  loja (shop_id) .. ${shopId == null ? '(nenhuma)' : String(shopId)}`);
+  // The TEST buyer mode runs only on the sandbox — refused BEFORE any Shopee
+  // call. The importer re-checks this from its own environment.
+  let overrideSandboxAtivo = false;
+  if (comprador !== null) {
+    const { overrideDeSandboxAtivo } = await import('../lib/shopee/precos/regiaoPreco');
+    overrideSandboxAtivo = overrideDeSandboxAtivo(ctx.config);
+    exigirSandboxParaSimulacao(overrideSandboxAtivo);
+  }
   if (shopId == null) {
     // Deliberately not a throw: it is a legitimate conta state (consent given by
     // main account), and the operator's next step is a re-consent, not a stack.
@@ -158,17 +200,25 @@ async function main(): Promise<void> {
   /* --------------------------------- dry-run -------------------------------- */
 
   if (!live) {
-    const preparado = await prepararImportacaoPedidoShopee(db, {
-      integracaoId,
-      shopId,
-      orderSn,
-      nowMs,
-    });
+    const preparado = await prepararImportacaoPedidoShopee(
+      db,
+      { integracaoId, shopId, orderSn, nowMs },
+      comprador === null ? {} : { simulacaoComprador: comprador },
+    );
     if (preparado.kind === 'inexistente') {
       relatarInexistente(preparado.resultado.detail, json, pedidoId, orderSn);
       return;
     }
     const preparo = preparado.preparo;
+    // What Shopee SENT, verbatim — stderr only, and empty unless buyer mode on
+    // the sandbox over a non-BR order (the function decides, not this call).
+    for (const linha of valoresEnviadosPelaShopee({ overrideSandboxAtivo, preparo })) {
+      aviso(linha);
+    }
+    const compradorSimulado =
+      preparo.simulacao === null
+        ? null
+        : resumoDoCompradorSimulado(preparo.simulacao, preparo.captura, preparo.armazenado);
     // The buyer is NOT resolved: `findOrCreateCliente` is a write. See
     // `mapearPreparoPedidoShopee`.
     const mapeado = mapearPreparoPedidoShopee(preparo, {
@@ -205,6 +255,7 @@ async function main(): Promise<void> {
             resumo,
             pagamentos,
             diagnosticosPagamento: mapeadosPag.diagnosticos,
+            ...(compradorSimulado === null ? {} : { comprador: compradorSimulado }),
           },
           null,
           2,
@@ -226,6 +277,12 @@ async function main(): Promise<void> {
       log(`    estado armazenado ..... ${antes.estadoArmazenado ?? '—'}`);
       log(`    lastMarketplaceUpdate . ${antes.lastMarketplaceUpdateUs ?? '—'}`);
       log(`    watermark desta leitura ${preparo.watermarkUs}`);
+      // ⚠️ Only a CREATE writes the conta's int_frete ref: an update KEEPS this
+      // one, whatever the `int_frete da conta` line below says was found.
+      log(
+        `    int_frete armazenado .. ${antes.frete?.integracaoFreteOuterRef ?? '—'}   (uma atualização o mantém)`,
+      );
+      log(`    entrega armazenada .... ${antes.frete?.enderecoFreteOuterReference ?? '—'}`);
     }
     log(
       `  linhas sem produto ...... ${preparo.mapeados.itens.filter((i) => i.produtoUid == null).length} de ${preparo.mapeados.itens.length}`,
@@ -234,6 +291,10 @@ async function main(): Promise<void> {
     logConferencia(preparo.mapeados.conferencia);
     log('');
     for (const linha of renderResumoPedido(resumo, pagamentos)) log(linha);
+    if (compradorSimulado !== null) {
+      log('');
+      for (const linha of renderCompradorSimulado(compradorSimulado)) log(linha);
+    }
     return;
   }
 
@@ -251,17 +312,40 @@ async function main(): Promise<void> {
     if (resumoAntes !== null) {
       log(`    estado ................ ${resumoAntes.estadoArmazenado ?? '—'}`);
       log(`    lastMarketplaceUpdate . ${resumoAntes.lastMarketplaceUpdateUs ?? '—'}`);
+      log(`    int_frete ............. ${resumoAntes.frete?.integracaoFreteOuterRef ?? '—'}`);
+      log(`    entrega ............... ${resumoAntes.frete?.enderecoFreteOuterReference ?? '—'}`);
     }
     log('');
   }
 
-  const resultado = await importarPedidoShopee(db, { integracaoId, shopId, orderSn, nowMs });
+  const alvo = { integracaoId, shopId, orderSn, nowMs };
+  // Buyer mode: the project, collision, stored-link and terminal-capture
+  // refusals run first, then the importer's write half over the SAME preparo.
+  // Otherwise the call the code-3 arm makes.
+  let resultado;
+  if (comprador === null) {
+    resultado = await importarPedidoShopee(db, alvo);
+  } else {
+    const { importarPedidoComCompradorDeTeste } =
+      await import('../lib/shopee/pedidos/importarCompradorTeste');
+    // A cliente under a fake document is a write that must name its project.
+    const projeto = {
+      projetoPedido: projectId,
+      projetoResolvido: app.options.projectId ?? null,
+      projetoDaCredencial: projetoDaCredencial(app.options.credential),
+    };
+    resultado = (await importarPedidoComCompradorDeTeste(db, alvo, comprador, projeto)).resultado;
+  }
 
   const pedidoIdFinal = resultado.pedidoId ?? pedidoId;
   const depois = await pedidoCollection.docRef(db, {}, pedidoIdFinal).get();
-  const resumoDepois = depois.exists
-    ? resumoDoPedidoArmazenado(pedidoIdFinal, (depois.data() ?? {}) as Record<string, unknown>)
+  const armazenadoDepois = depois.exists
+    ? ((depois.data() ?? {}) as Record<string, unknown>)
     : null;
+  const resumoDepois =
+    armazenadoDepois === null ? null : resumoDoPedidoArmazenado(pedidoIdFinal, armazenadoDepois);
+  const compradorGravado =
+    comprador === null ? null : resumoDoCompradorGravado(resultado, armazenadoDepois);
 
   // Step 6 — the pagamentos as Firestore holds them AFTER the import. Read back
   // rather than reported from the transaction's own result: what an operator
@@ -288,6 +372,7 @@ async function main(): Promise<void> {
           antes: resumoAntes,
           resumo: resumoDepois,
           pagamentos: pagamentosDepois,
+          ...(compradorGravado === null ? {} : { comprador: compradorGravado }),
         },
         null,
         2,
@@ -312,6 +397,10 @@ async function main(): Promise<void> {
     return;
   }
   for (const linha of renderResumoPedido(resumoDepois, pagamentosDepois)) log(linha);
+  if (compradorGravado !== null) {
+    log('');
+    for (const linha of renderCompradorGravado(compradorGravado)) log(linha);
+  }
 }
 
 /** `ignorado-inexistente` in either mode — an ANSWER, so the exit code stays 0. */
@@ -356,7 +445,11 @@ await main().catch((err: unknown) => {
   // Narrow enough to be useful and never wide enough to print a payload — the
   // whole table is `descreverErro`, which is unit-tested.
   for (const linha of descreverErro(err)) aviso(linha);
-  if (!(err instanceof ArgumentoInvalidoError)) {
+  // Both classes fire before any write — the footer would be a false alarm.
+  if (
+    !(err instanceof ArgumentoInvalidoError) &&
+    !(err instanceof SimulacaoCompradorRecusadaError)
+  ) {
     aviso('');
     aviso(
       'Nada garante que nada foi gravado: um erro DEPOIS da transação deixa o pedido no lugar.',

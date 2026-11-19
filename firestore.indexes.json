@@ -669,6 +669,20 @@
       ]
     },
     {
+      "collectionGroup": "prodAmazon",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        {
+          "fieldPath": "contaAmazonOuterRef",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "clientes",
       "queryScope": "COLLECTION",
       "fields": [
@@ -2053,6 +2067,24 @@
       ]
     },
     {
+      "collectionGroup": "estoques",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        {
+          "fieldPath": "depositoOuterRef",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "ultimaModificacao",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "produtoMercadoLivre",
       "queryScope": "COLLECTION",
       "fields": [
@@ -2868,6 +2900,12 @@
     },
     {
       "collectionGroup": "feedsAmazon",
+      "fieldPath": "expiraEm",
+      "ttl": true,
+      "indexes": []
+    },
+    {
+      "collectionGroup": "divergenciasEstoqueAmazon",
       "fieldPath": "expiraEm",
       "ttl": true,
       "indexes": []

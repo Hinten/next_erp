@@ -1,16 +1,16 @@
 /**
  * The feed core's provider seam table (step 12a, PR 12-c; FACTORY rows since
- * step 12, PR 12-e1): EMPTY in this PR — no provider exists until stock (step
- * 12) and price (step 13) fill their rows. Each row is the factory of its own
- * fluxo's provider, bound ONCE to the root's producers
- * (`vincularDestinosLoteAmazon`), and a price provider with no stock module fits
- * the price row and only that one. Who may import this module is
- * `estrutura.test.ts`'s.
+ * step 12, PR 12-e1): the stock row holds the stock provider's factory (PR
+ * 12-f), the price row stays empty until step 13. Each row is the factory of
+ * its own fluxo's provider, bound ONCE to the root (`vincularDestinosLoteAmazon`),
+ * and a price provider with no stock module fits the price row and only that
+ * one. Who may import this module is `estrutura.test.ts`'s.
  */
 import { MOTIVO_CONTA_AMAZON } from '@delfrance/schemas';
 import { describe, expect, expectTypeOf, it, vi } from 'vitest';
 
 import { FLUXOS_COM_LOTE, FLUXO_AMAZON } from '../core/valvulas';
+import { criarProvedorLoteEstoqueAmazon } from '../estoque/provedorLoteEstoque';
 import {
   DESTINO_LOTE_AMAZON,
   type DestinoLoteAmazon,
@@ -42,14 +42,44 @@ function raizQueRecusa() {
   const produtorEstoque = vi.fn((): never => {
     throw new Error('teste: o vínculo não constrói o produtor de estoque');
   });
-  const raiz: RaizLoteAmazon = { agendadorLotes, produtorEstoque };
-  return { raiz, agendadorLotes, produtorEstoque };
+  const esperar = vi.fn((): never => {
+    throw new Error('teste: o vínculo não espera');
+  });
+  const increment = vi.fn((): never => {
+    throw new Error('teste: o vínculo não incrementa');
+  });
+  const gerarExecucaoId = vi.fn((): never => {
+    throw new Error('teste: o vínculo não gera execução');
+  });
+  const ambiente = vi.fn((): never => {
+    throw new Error('teste: o vínculo não lê o ambiente');
+  });
+  const raiz: RaizLoteAmazon = {
+    agendadorLotes,
+    produtorEstoque,
+    esperar,
+    increment,
+    gerarExecucaoId,
+    ambiente,
+  };
+  /** Every piece of the root that was CALLED (none may be, at bind time). */
+  const chamados = () =>
+    Object.entries({
+      agendadorLotes,
+      produtorEstoque,
+      esperar,
+      increment,
+      gerarExecucaoId,
+      ambiente,
+    })
+      .filter(([, f]) => f.mock.calls.length > 0)
+      .map(([nome]) => nome);
+  return { raiz, agendadorLotes, produtorEstoque, chamados };
 }
 
 describe('DESTINO_LOTE_AMAZON — the seam the jobs root binds', () => {
-  it('★ is EXACTLY { estoque: null, preco: null } in this PR', () => {
-    expect(DESTINO_LOTE_AMAZON).toEqual({ estoque: null, preco: null });
-    expect(DESTINO_LOTE_AMAZON.estoque).toBeNull();
+  it('★ the stock row is the STOCK provider’s factory (PR 12-f); the price row is still null', () => {
+    expect(DESTINO_LOTE_AMAZON.estoque).toBe(criarProvedorLoteEstoqueAmazon);
     expect(DESTINO_LOTE_AMAZON.preco).toBeNull();
   });
 
@@ -59,14 +89,14 @@ describe('DESTINO_LOTE_AMAZON — the seam the jobs root binds', () => {
     expectTypeOf<keyof ProvedoresLoteAmazon>().toEqualTypeOf<(typeof FLUXOS_COM_LOTE)[number]>();
   });
 
-  it('★ the seam itself binds to { estoque: null, preco: null }, and binding builds NO producer', () => {
+  it('★ the seam itself binds the stock row to a STOCK provider whose failure aviso is the feed one, and binding calls NOTHING of the root', () => {
     const r = raizQueRecusa();
-    expect(vincularDestinosLoteAmazon(r.raiz, DESTINO_LOTE_AMAZON)).toEqual({
-      estoque: null,
-      preco: null,
-    });
-    expect(r.agendadorLotes).not.toHaveBeenCalled();
-    expect(r.produtorEstoque).not.toHaveBeenCalled();
+    const vinculados = vincularDestinosLoteAmazon(r.raiz, DESTINO_LOTE_AMAZON);
+    expect(vinculados.preco).toBeNull();
+    expect(vinculados.estoque?.fluxo).toBe(FLUXO_AMAZON.estoque);
+    // The real motivo, never the stand-in the core's own tests use.
+    expect(vinculados.estoque?.motivoFalha).toBe(MOTIVO_CONTA_AMAZON.feedEstoqueFalhou);
+    expect(r.chamados()).toEqual([]);
   });
 
   it('a price provider with no stock module fits the PRICE row, and never the stock row', () => {

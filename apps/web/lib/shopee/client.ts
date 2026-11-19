@@ -58,6 +58,13 @@ import type {
   corpoDescartarRascunhoShopeeSchema,
   importacaoShopeeOptionsSchema,
   MarcaRascunhoShopee,
+  ModoBuscaAnuncioShopee,
+  RespostaBuscaAnunciosShopee,
+  RespostaImportarAnuncioShopee,
+} from '@delfrance/schemas';
+import {
+  respostaBuscaAnunciosShopeeSchema,
+  respostaImportarAnuncioShopeeSchema,
 } from '@delfrance/schemas';
 
 import { envelopeDeErro, lerRespostaJson, resumirCampos } from '@delfrance/core/wire';
@@ -535,6 +542,18 @@ export interface DescartarRascunhoShopeeInput {
 }
 
 export interface ShopeeClient {
+  buscarAnuncios(input: {
+    integracaoId: string;
+    modo: ModoBuscaAnuncioShopee;
+    termo: string;
+    cursor?: string;
+    signal?: AbortSignal;
+  }): Promise<RespostaBuscaAnunciosShopee>;
+  importarAnuncio(input: {
+    integracaoId: string;
+    itemId: number;
+    options?: z.input<typeof importacaoShopeeOptionsSchema>;
+  }): Promise<RespostaImportarAnuncioShopee>;
   /** Mint the Shopee consent URL for an `integracao` conta (PERM.integracao.write). */
   oauthStart(integracaoId: string): Promise<ShopeeOauthStart>;
   /** Connection status — the two clocks. Always 200 (PERM.integracao.read). */
@@ -954,6 +973,8 @@ const PUBLICAR_PATH = '/api/marketplace/shopee/publicar';
 const REVERIFICAR_ANUNCIO_PATH = '/api/marketplace/shopee/reverificar-anuncio';
 
 /** The two account-wide jobs (#1529, step 21): the mass import and the price update. */
+const BUSCA_ANUNCIOS_PATH = '/api/marketplace/shopee/anuncios/busca';
+const IMPORTAR_PATH = '/api/marketplace/shopee/importar';
 const IMPORTAR_TODOS_PATH = '/api/marketplace/shopee/importar-todos';
 const IMPORTAR_TODOS_STATUS_PATH = '/api/marketplace/shopee/importar-todos/status';
 const IMPORTAR_TODOS_CANCELAR_PATH = '/api/marketplace/shopee/importar-todos/cancelar';
@@ -1657,6 +1678,15 @@ export function createShopeeClient(config: {
         produtoId: input.produtoId,
         ...(input.linkDocId ? { linkDocId: input.linkDocId } : {}),
       }),
+    buscarAnuncios: ({ integracaoId, modo, termo, cursor, signal }) =>
+      call(
+        `${BUSCA_ANUNCIOS_PATH}?${consulta({ integracaoId, modo, termo, cursor })}`,
+        respostaBuscaAnunciosShopeeSchema,
+        undefined,
+        signal,
+      ),
+    importarAnuncio: ({ integracaoId, itemId, options }) =>
+      call(IMPORTAR_PATH, respostaImportarAnuncioShopeeSchema, { integracaoId, itemId, options }),
     startMassImport: (input) =>
       call(IMPORTAR_TODOS_PATH, jobIdShopeeSchema, {
         integracaoId: input.integracaoId,

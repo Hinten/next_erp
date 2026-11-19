@@ -1,17 +1,22 @@
 /**
  * The jobs queue's DISPATCHER (step 12a, PR 12-c): the body of
  * `processAmazonListingsJob` (`functions/src/filaLotes.ts`). ONE queue carries
- * the feed core's four tasks, told apart by `tipo`:
+ * the feed core's four tasks and the stock reconcile's page, told apart by
+ * `tipo`:
  *
  *  - `feed-enviar` → `./enviarFeed` (build and submit one feed);
  *  - `feed-resultado` → `./resultadoFeed` (a poll rung, a wake-up, an adoption);
  *  - `feed-incerto` → `./incertoFeed` (the wait after a lost `createFeed` answer);
- *  - `feed-recuperar` → `./recuperarFeed` (what an end leaves to recover).
+ *  - `feed-recuperar` → `./recuperarFeed` (what an end leaves to recover);
+ *  - `reconciliacao` (step 12, PR 12-f) → the BOUND page handler
+ *    (`deps.paginaReconciliacao`): the jobs root binds the stock reconcile's
+ *    page, so this module imports no fluxo's own module (the seam table stays
+ *    the only binding between the feed core and a fluxo).
  *
  * **P0** — the payload goes through the strict union `tarefaLoteAmazonSchema`
  * (`./tarefaLote`): an unknown `tipo`, or a known one whose fields fail their
  * grammar, is ONE ERROR line and NO throw — the same bytes would fail the same
- * way on every retry, and the line names the `tipo` (when it is one of the four)
+ * way on every retry, and the line names the `tipo` (when it is one it knows)
  * and the top-level FIELDS Zod blamed, never a value.
  *
  * The provider comes from the BOUND seam (`deps.provedores`: the jobs root
@@ -46,10 +51,26 @@ import {
 import { type ResultadoConsultaFeedAmazon, processarResultadoFeedAmazon } from './resultadoFeed';
 import {
   TIPO_TAREFA_LOTE_AMAZON,
+  type TarefaPaginaReconciliacaoAmazon,
   type TipoTarefaLoteAmazon,
   tarefaLoteAmazonSchema,
   tipoTarefaLoteAmazonSchema,
 } from './tarefaLote';
+
+/** What the bound reconcile page answers: its closed outcome, which its own line names. */
+export interface ResultadoPaginaReconciliacaoLoteAmazon {
+  readonly acao: string;
+}
+
+/**
+ * The stock reconcile's page, as the jobs root BINDS it: this dispatch's deps
+ * are handed through, and the root adds what only the page needs.
+ */
+export type ProcessadorPaginaReconciliacaoAmazon = (
+  db: Firestore,
+  tarefa: TarefaPaginaReconciliacaoAmazon,
+  deps: DepsProcessarLoteAmazon,
+) => Promise<ResultadoPaginaReconciliacaoLoteAmazon>;
 
 /** Everything one jobs-queue dispatch needs — bound by the jobs root, doubles in the tests. */
 export interface DepsProcessarLoteAmazon {
@@ -68,6 +89,8 @@ export interface DepsProcessarLoteAmazon {
   /** REQUIRED, never defaulted: the context, the write client and both transfers take it. */
   readonly fetch: typeof globalThis.fetch;
   readonly gerarCorrelationId?: () => string;
+  /** The stock reconcile's page, bound by the jobs root (module header). */
+  readonly paginaReconciliacao: ProcessadorPaginaReconciliacaoAmazon;
 }
 
 /** P0's refusals (closed). */
@@ -94,9 +117,13 @@ export type DespachoLoteAmazon =
   | {
       readonly tipo: typeof TIPO_TAREFA_LOTE_AMAZON.recuperar;
       readonly r: ResultadoRecuperacaoFeedAmazon;
+    }
+  | {
+      readonly tipo: typeof TIPO_TAREFA_LOTE_AMAZON.reconciliacao;
+      readonly r: ResultadoPaginaReconciliacaoLoteAmazon;
     };
 
-/** The `tipo` a refused payload claims, when it is one of the four. */
+/** The `tipo` a refused payload claims, when it is one this queue knows. */
 function tipoDeclarado(dados: unknown): TipoTarefaLoteAmazon | null {
   const tipo = (dados as { readonly tipo?: unknown } | null)?.tipo;
   const lido = tipoTarefaLoteAmazonSchema.safeParse(tipo);
@@ -165,5 +192,7 @@ export async function processarLoteAmazon(
           provedor: provedorDe(t.fluxo),
         }),
       };
+    case TIPO_TAREFA_LOTE_AMAZON.reconciliacao:
+      return { tipo: t.tipo, r: await deps.paginaReconciliacao(db, t, deps) };
   }
 }

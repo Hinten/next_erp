@@ -135,7 +135,7 @@
  *     `sku ==` · no order · `limit` (the link lookup; the declared
  *     `(contaAmazonOuterRef, sku)` collection-group index). A group query matches
  *     every stored document whose LAST collection segment is the id, at any
- *     depth, and refuses `startAfter`;
+ *     depth (its cursor: "Document keys" below);
  *  7. (step 14, PR 14-c) `pedidos/{id}/nfev4` · NO filter, NO order, NO limit —
  *     the NF-e task's and the importer's ONE unfiltered listing of one pedido's
  *     NF-e documents: a subcollection read whole, never a scan of the
@@ -148,18 +148,63 @@
  *     limit — the stock family read's listing of ONE produto's estoque
  *     partition when its canonical row is absent (a `select` is allowed, as
  *     on every query). Any filter, order or limit on it is refused, and so is
- *     the `estoques` collection group.
+ *     the `estoques` collection group in any shape but 10;
+ * 10. (step 12, PR 12-e2) the `estoques` COLLECTION GROUP · `depositoOuterRef
+ *     ==`, `ultimaModificacao >`, `ultimaModificacao <=` ·
+ *     `orderBy(ultimaModificacao asc)`, `orderBy(__name__ asc)` · `limit`, and
+ *     `startAfter(snapshot)` (the stock movement window; the declared
+ *     `estoques (depositoOuterRef ASC, ultimaModificacao ASC, __name__ ASC)`
+ *     collection-group index). Both bounds, in that order, and the key order:
+ *     an `in` over the ref forms, a missing bound or a missing `__name__` order
+ *     is another shape, refused;
+ * 11. (step 12, PR 12-e2) `produtos/{id}/prodAmazon` · NO filter, NO order, NO
+ *     limit — the stock discovery's listing of ONE produto's link partition (a
+ *     `select` is allowed). Any filter, order or limit on it is refused: the
+ *     same filter as a collection-group query is a scan per row (shapes 6 and
+ *     12 are the only group queries on `prodAmazon`);
+ * 12. (step 12, PR 12-f) the `prodAmazon` COLLECTION GROUP · `contaAmazonOuterRef
+ *     ==` · `orderBy(__name__ asc)` · `limit`, and `startAfter(ref)` (the
+ *     reconcile's walk of one conta ref form, paged by key; the declared
+ *     `prodAmazon (contaAmazonOuterRef ASC, __name__ ASC)` collection-group
+ *     index). An `in` over the ref forms, or any other order, is another shape,
+ *     refused.
  *
  * Semantics follow the server: `==` is strict equality on the stored value (a
  * missing field never matches); `in` is `===` against ANY of 1 to 30 values (an
- * empty or longer list throws, as the SDK does); `<` takes a NUMBER bound only
- * and compares within that type (a `null`, a string or a missing field never
- * matches); the query log names an `==` filter by its bare field and any other
- * as `'<campo> <op>'`; `orderBy` drops a document LACKING the field
- * (a `null` is kept) and orders null < boolean < number < string, ties on the
- * id in the direction of the last `orderBy`; `startAfter(snapshot)` seeks by the
- * snapshot's VALUES captured when it is called, so a cursor document that has
- * since stopped matching pages on exactly as in production.
+ * empty or longer list throws, as the SDK does); `<`, `<=` and `>` take a
+ * NUMBER bound only and compare within that type (a `null`, a string or a
+ * missing field never matches; `>` excludes its bound and `<=` includes it);
+ * any other operator throws; the query log names an `==` filter by its bare
+ * field and any other as `'<campo> <op>'`; `orderBy` drops a document LACKING
+ * the field (a `null` is kept) and orders null < boolean < number < string,
+ * ties on the document's PATH in the direction of the last `orderBy`;
+ * `startAfter(snapshot)` seeks by the snapshot's VALUES captured when it is
+ * called, so a cursor document that has since stopped matching pages on
+ * exactly as in production.
+ *
+ * ## Document keys (step 12, PR 12-e2)
+ *
+ *  - `orderBy('__name__')` orders by the document's FULL path, compared
+ *    segment by segment (code-unit order within a segment, a shorter path
+ *    first on a common prefix), as the server orders document keys: the path
+ *    `produtos/a/…` comes before `produtos/a-b/…` although the raw string
+ *    `produtos/a-b/…` sorts first (`-` is below `/`). It needs no stored field,
+ *    so it drops no document. The implicit tie of every query is the same key;
+ *  - on a GROUP query, `startAfter(snapshot)` takes a snapshot whose `ref` THIS
+ *    fake built, and seeks by its ordered VALUES plus its full PATH (two rows
+ *    of equal stamp under different produtos page by path). A hand-built
+ *    snapshot is refused there; on a collection query the snapshot's id is
+ *    its key, as before;
+ *  - (step 12, PR 12-f) `startAfter(ref)` with a document REFERENCE this fake
+ *    built is a KEY cursor, allowed only when every `orderBy` is `__name__`
+ *    (a cursor carried across dispatches as a stored path, rebuilt as a ref).
+ *
+ * ## Stored stamps (step 12, PR 12-f)
+ *
+ * A live `Timestamp`-shaped value (a stamp this fake issued, such as a read's
+ * `readTime` a caller stores as a clock) is kept AS a stamp: a read answers a
+ * live stamp of the same instant (to the µs), which `isEqual` compares. Two
+ * stored stamps of one instant are the same content.
  *
  * ## Stamps and read times
  *
@@ -213,6 +258,45 @@ function ehCarimbo(v: unknown): v is CarimboFake {
   );
 }
 
+/**
+ * A `Timestamp`-shaped value WITH its methods: a stamp this fake issued, or a
+ * read's `readTime` a caller stores back (module header, "Stored stamps").
+ */
+function ehCarimboVivo(v: unknown): v is CarimboFake {
+  return (
+    ehCarimbo(v) &&
+    typeof (v as { isEqual?: unknown }).isEqual === 'function' &&
+    typeof (v as { toMillis?: unknown }).toMillis === 'function'
+  );
+}
+
+/** A plain object literal (`{...}`), never a class instance, an array or `null`. */
+function ehObjetoSimples(v: unknown): v is Record<string, unknown> {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return false;
+  const proto: unknown = Object.getPrototypeOf(v);
+  return proto === Object.prototype || proto === null;
+}
+
+/**
+ * A stored value copied as the server keeps it (module header, "Stored
+ * stamps"): a live `Timestamp`-shaped stamp comes back a live stamp of the SAME
+ * instant (to the µs, the fake's grain), maps and arrays are copied member by
+ * member, and everything else goes through `structuredClone`, which still
+ * refuses a function anywhere else.
+ */
+function clonar<T>(valor: T): T {
+  if (ehCarimboVivo(valor)) {
+    return carimbo(valor.seconds * 1_000_000 + Math.floor(valor.nanoseconds / 1000)) as T;
+  }
+  if (Array.isArray(valor)) return valor.map((v: unknown) => clonar(v)) as T;
+  if (ehObjetoSimples(valor)) {
+    const saida: Record<string, unknown> = {};
+    for (const [chave, v] of Object.entries(valor)) saida[chave] = clonar(v);
+    return saida as T;
+  }
+  return structuredClone(valor);
+}
+
 /** An Admin-SDK-shaped failure: a plain `Error` carrying a numeric gRPC `code`. */
 export function grpc(code: number, message: string): Error {
   return Object.assign(new Error(message), { code });
@@ -227,10 +311,14 @@ export function increment(by: number): unknown {
  * Whether two stored documents hold the SAME content, as the server decides a
  * no-op write: the same keys, each value strictly equal, maps and arrays
  * compared member by member (key order is not content). Stored data here is
- * plain JSON-shaped (`structuredClone` refuses anything else).
+ * plain JSON-shaped, plus the `Timestamp`-shaped stamps this fake issues
+ * ({@link clonar}; `structuredClone` refuses anything else).
  */
 function mesmoConteudo(a: unknown, b: unknown): boolean {
   if (a === b) return true;
+  if (ehCarimboVivo(a) || ehCarimboVivo(b)) {
+    return ehCarimboVivo(a) && ehCarimboVivo(b) && a.isEqual(b);
+  }
   if (Array.isArray(a) || Array.isArray(b)) {
     return (
       Array.isArray(a) &&
@@ -276,10 +364,21 @@ interface Stored {
 }
 
 /** The operators this fake models (module header). */
-type OperadorFake = '==' | '<' | 'in';
+type OperadorFake = '==' | '<' | '<=' | '>' | 'in';
+
+/** The range operators: each takes a NUMBER bound only (module header). */
+const OPERADORES_DE_INTERVALO: ReadonlySet<string> = new Set(['<', '<=', '>']);
+
+/** Whether `op` is one of the operators this fake models; any other throws in `where`. */
+function ehOperadorFake(op: string): op is OperadorFake {
+  return op === '==' || op === 'in' || OPERADORES_DE_INTERVALO.has(op);
+}
 
 /** The SDK's cap on an `in` filter's values. */
 const MAX_VALORES_IN = 30;
+
+/** The document key as a field path: what `orderBy('__name__')` names (module header). */
+const CAMPO_NOME = '__name__';
 
 interface Filtro {
   readonly campo: string;
@@ -292,9 +391,13 @@ function satisfaz(armazenado: unknown, f: Filtro): boolean {
   if (f.op === '==') return armazenado === f.valor;
   // `in`: equality with ANY of the values (`===`), so a missing field never matches.
   if (f.op === 'in') return (f.valor as readonly unknown[]).some((v) => armazenado === v);
-  // `<` (a number bound, checked in `where`): numbers only — a null, a string
-  // or a missing field never matches, as on the server.
-  return typeof armazenado === 'number' && armazenado < (f.valor as number);
+  // A range (a number bound, checked in `where`): numbers only — a null, a
+  // string or a missing field never matches, as on the server.
+  if (typeof armazenado !== 'number') return false;
+  const limite = f.valor as number;
+  if (f.op === '<') return armazenado < limite;
+  if (f.op === '<=') return armazenado <= limite;
+  return armazenado > limite;
 }
 
 /** A filter as the shape table and the query log name it: the bare field for `==`. */
@@ -425,6 +528,18 @@ const FORMAS_INDEXADAS: readonly {
   },
   { colecao: 'prodAmazon', grupo: true, filtros: ['contaAmazonOuterRef in', 'sku'], ordens: [] },
   { colecao: 'produtos', grupo: false, filtros: ['paiId'], ordens: ['nome asc'] },
+  {
+    colecao: 'estoques',
+    grupo: true,
+    filtros: ['depositoOuterRef', 'ultimaModificacao >', 'ultimaModificacao <='],
+    ordens: ['ultimaModificacao asc', `${CAMPO_NOME} asc`],
+  },
+  {
+    colecao: 'prodAmazon',
+    grupo: true,
+    filtros: ['contaAmazonOuterRef'],
+    ordens: [`${CAMPO_NOME} asc`],
+  },
 ];
 
 /** Shape 7 (module header): ONE pedido's `nfev4` subcollection, by its full path. */
@@ -433,6 +548,16 @@ const LISTAGEM_NFEV4 = /^pedidos\/[^/]+\/nfev4$/;
 /** Shape 9 (module header): ONE produto's `estoques` subcollection, by its full path. */
 const LISTAGEM_ESTOQUES = /^produtos\/[^/]+\/estoques$/;
 
+/** Shape 11 (module header): ONE produto's `prodAmazon` subcollection, by its full path. */
+const LISTAGEM_VINCULOS_AMAZON = /^produtos\/[^/]+\/prodAmazon$/;
+
+/** The listings read WHOLE (shapes 7, 9 and 11): one partition, no filter, order or limit. */
+const LISTAGENS_INTEIRAS: readonly RegExp[] = [
+  LISTAGEM_NFEV4,
+  LISTAGEM_ESTOQUES,
+  LISTAGEM_VINCULOS_AMAZON,
+];
+
 function formaIndexada(
   colecao: string,
   grupo: boolean,
@@ -440,7 +565,7 @@ function formaIndexada(
   ordens: readonly Ordem[],
   limite: number | null,
 ) {
-  if (!grupo && (LISTAGEM_NFEV4.test(colecao) || LISTAGEM_ESTOQUES.test(colecao))) {
+  if (!grupo && LISTAGENS_INTEIRAS.some((listagem) => listagem.test(colecao))) {
     return filtros.length === 0 && ordens.length === 0 && limite === null;
   }
   const f = filtros.map(rotuloDoFiltro).join(',');
@@ -472,16 +597,42 @@ function compararValores(a: unknown, b: unknown, campo: string): number {
 }
 
 interface Posicao {
+  /** What the query log names: the bare id, or a group query's full path. */
   readonly id: string;
+  /** The document's full path: its KEY, for `orderBy('__name__')` and the tie. */
+  readonly caminho: string;
   readonly data: DocData;
+}
+
+/** Code-unit order, never a locale's. */
+function compararTexto(a: string, b: string): number {
+  if (a < b) return -1;
+  return a > b ? 1 : 0;
+}
+
+/**
+ * Two document keys in the server's order (module header, "Document keys"):
+ * segment by segment, a shorter path first on a common prefix.
+ */
+function compararCaminhos(a: string, b: string): number {
+  const sa = a.split('/');
+  const sb = b.split('/');
+  for (let i = 0; i < Math.min(sa.length, sb.length); i += 1) {
+    const c = compararTexto(sa[i] ?? '', sb[i] ?? '');
+    if (c !== 0) return c;
+  }
+  return sa.length - sb.length;
 }
 
 function compararPosicoes(a: Posicao, b: Posicao, ordens: readonly Ordem[]): number {
   for (const { campo, direcao } of ordens) {
-    const c = compararValores(a.data[campo], b.data[campo], campo);
+    const c =
+      campo === CAMPO_NOME
+        ? compararCaminhos(a.caminho, b.caminho)
+        : compararValores(a.data[campo], b.data[campo], campo);
     if (c !== 0) return direcao === 'desc' ? -c : c;
   }
-  const c = a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  const c = compararCaminhos(a.caminho, b.caminho);
   return (ordens.at(-1)?.direcao ?? 'asc') === 'desc' ? -c : c;
 }
 
@@ -577,6 +728,32 @@ function caminhoDoRef(ref: unknown): string {
 /** Marks a document ref this fake built (a hand-built `{ path }` is refused). */
 const MARCA_DO_REF = Symbol('refDoFakeDb');
 
+/**
+ * A group query's cursor: the full path of a snapshot's `ref` THIS fake built
+ * (module header, "Document keys"). A hand-built snapshot throws, synchronously.
+ */
+function caminhoDoCursorDeGrupo(ref: unknown): string {
+  const caminho = (ref as { path?: unknown } | null | undefined)?.path;
+  const deste = (ref as { [MARCA_DO_REF]?: unknown } | null | undefined)?.[MARCA_DO_REF] === true;
+  if (!deste || typeof caminho !== 'string' || caminho === '') {
+    throw new Error(
+      'FakeDb: startAfter() numa consulta de grupo só aceita um snapshot deste fake ' +
+        '(o cursor é o caminho do documento)',
+    );
+  }
+  return caminho;
+}
+
+/** A document REFERENCE this fake built (it has no `data()`): a key cursor for `startAfter`. */
+function ehRefSemDados(v: unknown): v is { readonly id: string; readonly path: string } {
+  return (
+    typeof v === 'object' &&
+    v !== null &&
+    (v as { [MARCA_DO_REF]?: unknown })[MARCA_DO_REF] === true &&
+    typeof (v as { data?: unknown }).data !== 'function'
+  );
+}
+
 /** A `getAll` read-options object: a plain object that is no document ref (it has no `path`). */
 function ehOpcoesDeLeitura(v: unknown): v is Readonly<Record<string, unknown>> {
   return typeof v === 'object' && v !== null && !Array.isArray(v) && !('path' in v);
@@ -668,7 +845,7 @@ export class FakeDb {
   seed(caminho: string, data: DocData): CarimboFake {
     recusarIndefinido(data, caminho);
     const updateTime = this.proximoCarimbo();
-    this.store.set(caminho, { data: structuredClone(data), updateTime });
+    this.store.set(caminho, { data: clonar(data), updateTime });
     return updateTime;
   }
 
@@ -685,7 +862,7 @@ export class FakeDb {
   /** The stored document, or `undefined`. A copy: mutating it changes nothing. */
   ler(caminho: string): DocData | undefined {
     const atual = this.store.get(caminho);
-    return atual === undefined ? undefined : structuredClone(atual.data);
+    return atual === undefined ? undefined : clonar(atual.data);
   }
 
   /** The stored document's commit stamp, or `undefined` when absent. */
@@ -759,7 +936,7 @@ export class FakeDb {
     this.escritas.push({
       verbo,
       caminho,
-      dados: dados === null ? null : structuredClone(dados),
+      dados: dados === null ? null : clonar(dados),
       comPrecondicao,
       writeTime,
       ...(noLote === undefined ? {} : { lote: noLote.lote }),
@@ -768,13 +945,13 @@ export class FakeDb {
   }
 
   private aplicar(anterior: DocData | undefined, patch: DocData): DocData {
-    const saida: DocData = structuredClone(anterior ?? {});
+    const saida: DocData = clonar(anterior ?? {});
     for (const [chave, valor] of Object.entries(patch)) {
       if (ehIncremento(valor)) {
         const atual = saida[chave];
         saida[chave] = (typeof atual === 'number' ? atual : 0) + valor.__increment;
       } else {
-        saida[chave] = structuredClone(valor);
+        saida[chave] = clonar(valor);
       }
     }
     return saida;
@@ -825,7 +1002,7 @@ export class FakeDb {
    */
   private snapshot(caminho: string, readTime: CarimboFake, mascara: readonly string[] | null) {
     const atual = this.store.get(caminho);
-    const inteiro = atual === undefined ? undefined : structuredClone(atual.data);
+    const inteiro = atual === undefined ? undefined : clonar(atual.data);
     const dados = inteiro === undefined || mascara === null ? inteiro : projetar(inteiro, mascara);
     return {
       id: caminho.split('/').at(-1) ?? '',
@@ -857,7 +1034,7 @@ export class FakeDb {
         if (this.store.has(caminho)) throw grpc(6, 'ALREADY_EXISTS');
         validarCriacao(caminho, data);
         const writeTime = this.registrar('create', caminho, data);
-        this.store.set(caminho, { data: structuredClone(data), updateTime: writeTime });
+        this.store.set(caminho, { data: clonar(data), updateTime: writeTime });
         return { writeTime };
       },
       update: async (patch: DocData, precondicao?: PrecondicaoFake) => {
@@ -891,7 +1068,7 @@ export class FakeDb {
         return (async () => {
           await this.antesDeEscrever(caminho);
           const writeTime = this.registrar('set', caminho, data);
-          this.store.set(caminho, { data: structuredClone(data), updateTime: writeTime });
+          this.store.set(caminho, { data: clonar(data), updateTime: writeTime });
           return { writeTime };
         })();
       },
@@ -971,14 +1148,14 @@ export class FakeDb {
       create: (ref: unknown, data: DocData) => {
         const caminho = caminhoDoRef(ref);
         validarCriacao(caminho, data);
-        enfileirar({ verbo: 'create', caminho, dados: structuredClone(data) });
+        enfileirar({ verbo: 'create', caminho, dados: clonar(data) });
         return lote;
       },
       update: (ref: unknown, patch: DocData, precondicao?: PrecondicaoFake) => {
         const caminho = caminhoDoRef(ref);
         validarAtualizacao(caminho, patch, precondicao);
         // The stamp object is kept as given: `isEqual` compares it at commit.
-        enfileirar({ verbo: 'update', caminho, dados: structuredClone(patch), precondicao });
+        enfileirar({ verbo: 'update', caminho, dados: clonar(patch), precondicao });
         return lote;
       },
       set: () => {
@@ -1011,7 +1188,7 @@ export class FakeDb {
           const comPrecondicao = e.verbo === 'update' && e.precondicao !== undefined;
           const anterior = e.verbo === 'create' ? undefined : this.store.get(e.caminho);
           const dados =
-            e.verbo === 'create' ? structuredClone(e.dados) : this.aplicar(anterior?.data, e.dados);
+            e.verbo === 'create' ? clonar(e.dados) : this.aplicar(anterior?.data, e.dados);
           // A content-identical update (a precondition carrier) changes nothing:
           // the document keeps its update time, and the write answers THAT
           // previous time as its `writeTime` (module header).
@@ -1037,11 +1214,13 @@ export class FakeDb {
       this.consulta(colecao, grupo, { ...estado, ...mudanca });
     return {
       where: (campo: string, op: string, valor: unknown) => {
-        if (op !== '==' && op !== '<' && op !== 'in') {
+        if (!ehOperadorFake(op)) {
           throw new Error(`FakeDb: operador '${op}' em where('${campo}') não é modelado`);
         }
-        if (op === '<' && typeof valor !== 'number') {
-          throw new Error(`FakeDb: '<' em where('${campo}') só é modelado com um limite numérico`);
+        if (OPERADORES_DE_INTERVALO.has(op) && typeof valor !== 'number') {
+          throw new Error(
+            `FakeDb: '${op}' em where('${campo}') só é modelado com um limite numérico`,
+          );
         }
         if (
           op === 'in' &&
@@ -1064,8 +1243,19 @@ export class FakeDb {
       // The classic projection (module header): `select()` alone = the keys.
       select: (...campos: unknown[]) =>
         derivar({ selecao: campos.map((campo) => validarCampo(campo, 'select()')) }),
-      startAfter: (doc: { id: string; data: () => DocData | undefined }) => {
-        if (grupo) throw new Error('FakeDb: startAfter() numa consulta de grupo não é modelado');
+      startAfter: (doc: { id: string; ref?: unknown; data: () => DocData | undefined }) => {
+        // (step 12, PR 12-f) a document REFERENCE this fake built is a KEY
+        // cursor: allowed only when every order is the key (module header,
+        // "Document keys"), as the server takes a reference for `__name__` alone.
+        if (ehRefSemDados(doc)) {
+          if (estado.ordens.length === 0 || estado.ordens.some((o) => o.campo !== CAMPO_NOME)) {
+            throw new Error(
+              'FakeDb: startAfter(ref) só é modelado sob orderBy(__name__) e nenhuma outra ordem',
+            );
+          }
+          const caminho = grupo ? caminhoDoCursorDeGrupo(doc) : `${colecao}/${doc.id}`;
+          return derivar({ apos: { id: grupo ? caminho : doc.id, caminho, data: {} } });
+        }
         if (
           typeof doc !== 'object' ||
           doc === null ||
@@ -1074,15 +1264,20 @@ export class FakeDb {
         ) {
           throw new Error('FakeDb: startAfter só aceita um snapshot de documento');
         }
+        // A group query's cursor is the document's FULL path (module header,
+        // "Document keys"): only a snapshot whose ref this fake built carries it.
+        const caminho = grupo ? caminhoDoCursorDeGrupo(doc.ref) : `${colecao}/${doc.id}`;
         const data = doc.data();
         for (const { campo } of estado.ordens) {
-          if (data?.[campo] === undefined) {
+          if (campo !== CAMPO_NOME && data?.[campo] === undefined) {
             throw new Error(
               `FakeDb: startAfter — o snapshot '${doc.id}' não tem o campo '${campo}' do orderBy`,
             );
           }
         }
-        return derivar({ apos: { id: doc.id, data: structuredClone(data ?? {}) } });
+        return derivar({
+          apos: { id: grupo ? caminho : doc.id, caminho, data: clonar(data ?? {}) },
+        });
       },
       get: () => this.buscar(colecao, grupo, estado),
     };
@@ -1128,9 +1323,13 @@ export class FakeDb {
       // Strict equality, `in`, or a numeric `<`, on the stored value: a document
       // LACKING the field never matches.
       .filter(([, s]) => filtros.every((f) => satisfaz(s.data[f.campo], f)))
-      // `orderBy` filters for existence; a stored `null` is kept.
-      .filter(([, s]) => ordens.every((o) => s.data[o.campo] !== undefined))
-      // A group query ties on the FULL path (the server's order); a collection on the id.
+      // `orderBy` filters for existence; a stored `null` is kept. The key is
+      // no stored field: ordering by it drops nothing.
+      .filter(([, s]) =>
+        ordens.every((o) => o.campo === CAMPO_NOME || s.data[o.campo] !== undefined),
+      )
+      // Every query ties on the document's KEY, its full path (the server's
+      // order); the log names a group query's row by that path, a collection's by its id.
       .map(([p, stored]) => ({
         id: grupo ? p : p.slice(prefixo.length),
         caminho: p,
@@ -1146,7 +1345,7 @@ export class FakeDb {
     const limitados = limite === null ? aPartirDe : aPartirDe.slice(0, limite);
     const readTime = this.carimboDeLeitura();
     const docs = limitados.map(({ caminho, stored }) => {
-      const inteiro = structuredClone(stored.data);
+      const inteiro = clonar(stored.data);
       const dados = selecao === null ? inteiro : projetar(inteiro, selecao);
       const id = caminho.split('/').at(-1) ?? '';
       return {

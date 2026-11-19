@@ -4,6 +4,7 @@ import {
   depositoDaContaLi,
   estoqueNoDepositoLi,
   formasDoDepositoLi,
+  idsDosVinculosDaContaLi,
   segmentoDeCaminhoLi,
   vinculoDaContaLi,
 } from './estoqueErpLojaIntegrada';
@@ -153,5 +154,44 @@ describe('vinculoDaContaLi', () => {
     expect(vinculoDaContaLi('C1', [raiz({ grades: [1] }), raiz({})])).toEqual({
       tipo: 'nao-suportado',
     });
+  });
+});
+
+describe('idsDosVinculosDaContaLi — the ids vinculoDaContaLi decides over', () => {
+  const link = (id: unknown, extra: Record<string, unknown> = {}) => ({
+    contaLojaIntegrada: 'documents/integracao/C1',
+    id,
+    ...extra,
+  });
+
+  it('EQUAL: a number id and its canonical text are ONE id, roots and children alike', () => {
+    expect(
+      idsDosVinculosDaContaLi('C1', [
+        link(123, { paiProdutoIntegradaId: 9 }),
+        link('123', { contaLojaIntegrada: 'integracao/C1', grades: [1] }),
+      ]),
+    ).toEqual(['123']);
+  });
+
+  it('⚠️ NEAR-MISS: two ids stay two (sorted); another conta, the trash and non-canonical text name none', () => {
+    expect(idsDosVinculosDaContaLi('C1', [link(124), link(123)])).toEqual(['123', '124']);
+    expect(
+      idsDosVinculosDaContaLi('C1', [
+        link(5, { contaLojaIntegrada: 'documents/integracao/C2' }),
+        link(6, { removido: true }),
+        link('0123'),
+        'junk',
+      ]),
+    ).toEqual([]);
+  });
+
+  it('agrees with vinculoDaContaLi: two ids ⇔ vinculo-ambiguo, none ⇔ sem-vinculo', () => {
+    const casos = [[link(1)], [link(1), link(2)], [], [link(1, { removido: true })]];
+    for (const links of casos) {
+      const ids = idsDosVinculosDaContaLi('C1', links);
+      const v = vinculoDaContaLi('C1', links);
+      expect(ids.length > 1).toBe(v.tipo === 'vinculo-ambiguo');
+      expect(ids.length === 0).toBe(v.tipo === 'sem-vinculo');
+    }
   });
 });

@@ -200,4 +200,10 @@ export const TTL_POLICIES: readonly TtlPolicy[] = [
       'apps/amazon feeds: each submission record, 180 days after it is created. The ' +
       'in-flight lease (feedsAmazonEmCurso) is never stamped.',
   },
+  {
+    collectionGroup: 'divergenciasEstoqueAmazon',
+    motivo:
+      'apps/amazon stock reconcile: each drift block, 7 days after the page that wrote it. ' +
+      'The run document (reconciliacaoEstoqueAmazon) and its request are never stamped.',
+  },
 ];

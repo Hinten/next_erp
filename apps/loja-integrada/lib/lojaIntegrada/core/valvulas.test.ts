@@ -27,6 +27,7 @@ import {
   registrarChamadaBloqueadaLi,
   registrarValvulaLi,
   severidadeDaValvula,
+  valvulaLigadaParaContaLi,
 } from './valvulas';
 
 const FLUXOS = Object.values(FLUXO_LI);
@@ -542,5 +543,32 @@ describe('the names: one per flow, documented where the operator looks', () => {
   it('the flow values are what the log query filters on', () => {
     expect(FLUXOS).toEqual(['estoque', 'preco', 'anuncio', 'rastreio', 'webhook-registro']);
     expect(Object.values(MODO_LI)).toEqual(['off', 'dry-run', 'on']);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                      A conta as a whole (PR 12-g avisos)                    */
+/* -------------------------------------------------------------------------- */
+
+describe('valvulaLigadaParaContaLi — is the valve live for SOME target of the conta?', () => {
+  it('only under on: `*` admits every conta; a list admits a conta with an entry of its own', () => {
+    expect(valvulaLigadaParaContaLi(estoque('on', CANARIO_TODOS), 'c1')).toBe(true);
+    expect(valvulaLigadaParaContaLi(estoque('on', 'c1:10,c2:5'), 'c1')).toBe(true);
+    expect(valvulaLigadaParaContaLi(estoque('on', 'c1:10,c2:5'), 'c2')).toBe(true);
+  });
+
+  it('⚠️ NEAR-MISS: the conta part is compared WHOLE — an entry of c10 does not admit c1, nor c1 c10', () => {
+    expect(valvulaLigadaParaContaLi(estoque('on', 'c10:5'), 'c1')).toBe(false);
+    expect(valvulaLigadaParaContaLi(estoque('on', 'c1:5'), 'c10')).toBe(false);
+    expect(valvulaLigadaParaContaLi(estoque('on', 'xc1:5'), 'c1')).toBe(false);
+  });
+
+  it('dry-run, off, no list, a list with only malformed entries, a conta outside the grammar: never live', () => {
+    expect(valvulaLigadaParaContaLi(estoque('dry-run', CANARIO_TODOS), 'c1')).toBe(false);
+    expect(valvulaLigadaParaContaLi(estoque(undefined, CANARIO_TODOS), 'c1')).toBe(false);
+    expect(valvulaLigadaParaContaLi(estoque('on'), 'c1')).toBe(false);
+    expect(valvulaLigadaParaContaLi(estoque('on', 'c1:0,c1:abc'), 'c1')).toBe(false);
+    expect(valvulaLigadaParaContaLi(estoque('on', CANARIO_TODOS), 'c/1')).toBe(false);
+    expect(valvulaLigadaParaContaLi(lerValvula(FLUXO_LI.webhookRegistro, {}), 'c1')).toBe(false);
   });
 });

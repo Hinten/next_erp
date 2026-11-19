@@ -16,11 +16,15 @@ import { produtoLojaIntegradaLinkSchema } from './produto/collection/lojaIntegra
  * index is pinned here, against the link schema's own field names, until the
  * query that uses it lands with its own pin (PR 5-c).
  *
- * The group also carries a KEY-ONLY index, `produtolojaintegrada (__name__ ASC)`:
- * the Loja Integrada anchor census in `tools/migrations` walks every link doc by
- * document key, and that index is pinned there (`keyWalks.indexes.test.ts`,
- * `key-walks.json`). It is no composite and serves no filter, so it is left out
- * of the count below; any other index on the group still counts.
+ * The group also carries a KEY-ONLY index, `produtolojaintegrada (__name__ ASC)`,
+ * which is PERMANENT: the Loja Integrada daily stock reconcile walks every link
+ * doc by document key on it every night (master plan step 12,
+ * `apps/loja-integrada/lib/lojaIntegrada/estoque/reconcile/caminhadaVinculos.ts`,
+ * pinned by its `caminhadaVinculos.indexes.test.ts`), and the anchor census in
+ * `tools/migrations` re-runs on it (`keyWalks.indexes.test.ts`, `key-walks.json`,
+ * which lists it among the permanent ones). It is no composite and serves no
+ * filter, so it is left out of the count below; any other index on the group
+ * still counts.
  */
 
 function findRepoRoot(startDir: string): string {

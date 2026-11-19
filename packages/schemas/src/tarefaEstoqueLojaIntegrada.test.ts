@@ -15,6 +15,7 @@ import {
   tarefaEstoqueKitsLiSchema,
   tarefaEstoqueLiSchema,
   tarefaFilaEstoqueLiSchema,
+  idTarefaReconcileEstoqueLi,
   tarefaReconcileEstoqueLiSchema,
   tipoTarefaEstoqueLiSchema,
 } from './tarefaEstoqueLojaIntegrada';
@@ -140,6 +141,21 @@ describe('tarefaEstoqueLiSchema (one send run)', () => {
     expect(tarefaEstoqueLiSchema.safeParse({ ...deriva, geracao: 2 }).success).toBe(false);
   });
 
+  it('⚠️ PR 12-g amendment: a depósito is carried EXACTLY by a reconcile send — an id, never a quantity', () => {
+    const reconcile = { ...ESTOQUE, origem: ORIGEM_TAREFA_ESTOQUE_LI.reconcile, depositoId: 'd1' };
+    expect(tarefaEstoqueLiSchema.parse(reconcile)).toEqual(reconcile);
+    // NEAR-MISS: a reconcile send without its depósito (absent or null) would be sent wherever the
+    // conta now points; any other origin reads the conta's depósito when it runs.
+    const { depositoId: _semDeposito, ...semDeposito } = reconcile;
+    expect(tarefaEstoqueLiSchema.safeParse(semDeposito).success).toBe(false);
+    expect(tarefaEstoqueLiSchema.safeParse({ ...reconcile, depositoId: null }).success).toBe(false);
+    expect(tarefaEstoqueLiSchema.safeParse({ ...ESTOQUE, depositoId: 'd1' }).success).toBe(false);
+    expect(tarefaEstoqueLiSchema.safeParse({ ...ESTOQUE, depositoId: null }).success).toBe(true);
+    for (const depositoId of ['', 'a/b', '..', 5]) {
+      expect(tarefaEstoqueLiSchema.safeParse({ ...reconcile, depositoId }).success).toBe(false);
+    }
+  });
+
   it('the window is a non-negative safe integer', () => {
     for (const janela of [-1, 1.5, Number.NaN, 2 ** 53, '30000000']) {
       expect(tarefaEstoqueLiSchema.safeParse({ ...ESTOQUE, janela }).success, String(janela)).toBe(
@@ -259,5 +275,32 @@ describe('the stock queue’s union, and the reads-queue slice', () => {
       expect(temSchemaEMeta, nome).toBe(false);
       expect(Reflect.get(barrel, nome), nome).toBe(valor);
     }
+  });
+});
+
+describe('idTarefaReconcileEstoqueLi (the reads-queue task id of one slice)', () => {
+  it('is `li-<run>-<seq>`: the same slice always names the same task', () => {
+    expect(idTarefaReconcileEstoqueLi('estoque-reconcile-20271115', 0)).toBe(
+      'li-estoque-reconcile-20271115-0',
+    );
+    expect(idTarefaReconcileEstoqueLi('estoque-reconcile-20271115', 12)).toBe(
+      idTarefaReconcileEstoqueLi('estoque-reconcile-20271115', 12),
+    );
+  });
+
+  it('⚠️ NEAR-MISS: two slices, or two runs, never share a name', () => {
+    const run = 'estoque-reconcile-20271115';
+    expect(idTarefaReconcileEstoqueLi(run, 1)).not.toBe(idTarefaReconcileEstoqueLi(run, 10));
+    expect(idTarefaReconcileEstoqueLi(run, 1)).not.toBe(
+      idTarefaReconcileEstoqueLi('estoque-reconcile-20271116', 1),
+    );
+    expect(idTarefaReconcileEstoqueLi(run, 0)).not.toMatch(/^li-importacao-/);
+  });
+
+  it('refuses a run id outside its grammar and a seq that is not a non-negative safe integer', () => {
+    expect(() => idTarefaReconcileEstoqueLi('a b', 0)).toThrow(RangeError);
+    expect(() => idTarefaReconcileEstoqueLi('', 0)).toThrow(RangeError);
+    expect(() => idTarefaReconcileEstoqueLi('run', -1)).toThrow(RangeError);
+    expect(() => idTarefaReconcileEstoqueLi('run', 1.5)).toThrow(RangeError);
   });
 });

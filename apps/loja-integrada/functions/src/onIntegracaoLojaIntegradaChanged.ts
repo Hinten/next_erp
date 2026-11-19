@@ -2,7 +2,9 @@ import { logger } from 'firebase-functions/v2';
 import { onDocumentWritten } from 'firebase-functions/v2/firestore';
 import { integracaoMeta } from '@delfrance/schemas';
 
+import { agendarReconcileDoDepositoLi } from '../../lib/lojaIntegrada/estoque/reconcile/gatilhoDepositoLi';
 import { syncIntFreteLi } from '../../lib/lojaIntegrada/frete/intFrete';
+import { criarAgendadorReconcileEstoqueLiDoAmbiente } from './agendador';
 import { getDb } from './lib/admin';
 
 /**
@@ -34,10 +36,19 @@ import { getDb } from './lib/admin';
  * conta retyped FROM Loja Integrada passes the filter and pays the full reconcile, which
  * deactivates its freight doc.
  *
- * ONE arm, unlike Shopee's two: Shopee's second arm re-drives deferred pushes when a conta becomes
- * resolvable, and this channel already covers that case with the deferred lane (re-driven on its
- * one-day window by `reprocessLojaIntegradaNotifications`, which ticks every 30 minutes) and the
- * credential routes' re-drive on a token save (step 3).
+ * ---- Two arms ----
+ * (1) The freight doc, above. (2) Since master plan step 12 (PR 12-g), the DEPÓSITO change: a Loja
+ * Integrada conta re-pointed at another depósito (folded: one depósito in its two stored spellings
+ * is no change; a CREATE never fires — the nightly run bootstraps a new conta; a depósito removed
+ * never fires) enqueues ONE full stock reconcile at once, named after the after side's update time
+ * (`estoque-reconcile-deposito-<µs>`), with the stock valve not `off`. Its decision is the payload's
+ * and the environment's alone, so it costs ZERO reads, and it calls no Loja Integrada endpoint
+ * (`lib/lojaIntegrada/estoque/reconcile/gatilhoDepositoLi.ts`, which also says what happens when a
+ * reconcile already runs). The two arms are independent: one write can take both, and each logs at
+ * most its own one line. Neither re-drives deferred pushes the way Shopee's second arm does: this
+ * channel covers that with the deferred lane (re-driven on its one-day window by
+ * `reprocessLojaIntegradaNotifications`, which ticks every 30 minutes) and the credential routes'
+ * re-drive on a token save (step 3).
  *
  * ---- The database binding, and what the build define does and does not do ----
  * ⚠️ `database` is the repo's NAMED `default` database, never the `(default)` sentinel: a trigger
@@ -58,12 +69,14 @@ import { getDb } from './lib/admin';
  * construction, and a lost race (two first syncs contending on `lojaIntegrada-<id>`) is exactly
  * what the retry patches. NO `secrets:` — this trigger never calls Loja Integrada (D17), and a
  * needless binding is one more Secret Manager grant that can fail the deploy. No memory or
- * timeout of its own.
+ * timeout of its own. The depósito arm's task is NAMED by the write it answers, so a retry (or a
+ * redelivery) re-meets it.
  *
  * LOGS: the conta id and the core's disposition — the action plus field NAMES (`campos`,
  * `faltando`), never a value and never the conta's `nome` (`DisposicaoIntFrete`).
  *
- * No loop: it writes only `int_frete`, which has no trigger in this codebase.
+ * No loop: it writes only `int_frete`, which has no trigger in this codebase; the depósito arm
+ * writes nothing at all (it enqueues).
  */
 export const onIntegracaoLojaIntegradaChanged = onDocumentWritten(
   {
@@ -82,12 +95,23 @@ export const onIntegracaoLojaIntegradaChanged = onDocumentWritten(
       ? (event.data.after.data() as Record<string, unknown>)
       : null;
 
-    if (!syncIntFreteLi.deveReconciliar(before, after)) return; // 0 reads
+    if (syncIntFreteLi.deveReconciliar(before, after)) {
+      const disposicao = await syncIntFreteLi.reconciliarIntFreteDaConta(getDb(), integracaoId);
+      logger.info('[loja-integrada] onIntegracaoLojaIntegradaChanged', {
+        integracaoId,
+        ...disposicao,
+      });
+    }
 
-    const disposicao = await syncIntFreteLi.reconciliarIntFreteDaConta(getDb(), integracaoId);
-    logger.info('[loja-integrada] onIntegracaoLojaIntegradaChanged', {
+    // The depósito arm: 0 reads — the payload, then the valve, then at most ONE named enqueue.
+    await agendarReconcileDoDepositoLi({
       integracaoId,
-      ...disposicao,
+      before,
+      after,
+      atualizadoEm: event.data?.after.exists ? event.data.after.updateTime : undefined,
+      ambiente: process.env,
+      agendador: criarAgendadorReconcileEstoqueLiDoAmbiente,
+      logger,
     });
   },
 );

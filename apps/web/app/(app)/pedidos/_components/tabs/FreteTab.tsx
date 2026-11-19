@@ -214,13 +214,23 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
   const tipoDoBloco = freteInicial?.externalOptionIntegracao ?? null;
   // ⚠️ Ownership is declared in TWO places, and the resolved `int_frete` doc is
   // the WEAKER one. A marketplace block whose integração was never materialised
-  // — every Shopee pedido today: `apps/shopee/lib/shopee/pedidos/
-  // orderFreteMapping.ts` writes `externalOptionIntegracao: 'shopee'` and never
-  // an `integracaoFreteOuterRef` — resolves `tipo === undefined` and used to
-  // fall straight through to the EDITABLE generic body, where an operator could
-  // latch `hasUserInteraction` on the two fields the importer owns
-  // (`codRastreio` and the frete `estado`). Server-side the same question is
-  // already answered off the block itself — `pedidoReconcile` reads
+  // resolves `tipo === undefined` and used to fall straight through to the
+  // EDITABLE generic body, where an operator could latch `hasUserInteraction`
+  // on the two fields the importer owns (`codRastreio` and the frete
+  // `estado`). That shape is still live: the Shopee importer writes
+  // `externalOptionIntegracao: 'shopee'` on every pedido
+  // (`apps/shopee/lib/shopee/pedidos/orderFreteMapping.ts`), but stamps the
+  // conta's `integracaoFreteOuterRef` only on a CREATE, and only since
+  // 2026-11-18 (`importarPedido.ts`; Lucas reversed step 20's Q1 (a)), and only
+  // when its conta has an ACTIVE `int_frete` doc at that moment — so a Shopee
+  // pedido created while its conta had none stays ref-less for good (nothing
+  // backfills it), as does one the importer UPDATES over a stored
+  // `freteInicial: null` (`mesclarFreteInicialShopee` clears both refs then),
+  // and only the block half locks it. (One imported before 2026-11-18 is the
+  // same shape, on staging only: this app has never imported into production,
+  // and a migrated legacy one always carries the legacy FreteShopee ref.)
+  // Server-side the same question is already
+  // answered off the block itself — `pedidoReconcile` reads
   // `freteInicial.externalOptionIntegracao` so it needs no extra transaction
   // read — so reading it here too is what stops the two from disagreeing.
   //

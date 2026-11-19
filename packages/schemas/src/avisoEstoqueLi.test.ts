@@ -114,7 +114,7 @@ describe('the three stock-sync tipos (Loja Integrada step 12)', () => {
     expect(lido.params.status).toBe(422);
   });
 
-  it('a link row is per (conta, motivo): the five motivos are five rows', () => {
+  it('a link row is per (conta, motivo): the six motivos are six rows', () => {
     const chaves = motivoEstoqueVinculoLiSchema.options.map((motivo) =>
       chaveDeAviso({
         tipo: TIPO_AVISO.lojaIntegradaEstoqueVinculo,
@@ -122,7 +122,7 @@ describe('the three stock-sync tipos (Loja Integrada step 12)', () => {
         entidade: motivo,
       }),
     );
-    expect(new Set(chaves).size).toBe(5);
+    expect(new Set(chaves).size).toBe(6);
     expect(chaves).toContain('lojaIntegradaEstoqueVinculo:int-1:sem-linha-na-loja');
     const lido = linha(TIPO_AVISO.lojaIntegradaEstoqueVinculo, {
       loja: 'Conta A',
@@ -135,19 +135,28 @@ describe('the three stock-sync tipos (Loja Integrada step 12)', () => {
 });
 
 describe('MOTIVO_ESTOQUE_VINCULO_LI', () => {
-  it('is exactly the five reasons, each its own code', () => {
+  it('is exactly the six reasons, each its own code — the reconcile safety gate’s included (PR 12-g)', () => {
     expect(motivoEstoqueVinculoLiSchema.options).toEqual([
       'ambiguo',
       'duplicado',
       'sem-linha-na-loja',
       'ausente',
       'estoque-ambiguo',
+      'deposito-sem-registros',
     ]);
     expect(Object.values(MOTIVO_ESTOQUE_VINCULO_LI)).toEqual(motivoEstoqueVinculoLiSchema.options);
   });
 
   it('⚠️ NEAR-MISS: a near spelling is no motivo', () => {
-    for (const quase of ['ambíguo', 'sem_linha_na_loja', 'estoqueAmbiguo', 'Ausente', '']) {
+    for (const quase of [
+      'ambíguo',
+      'sem_linha_na_loja',
+      'estoqueAmbiguo',
+      'Ausente',
+      '',
+      'deposito-sem-registro',
+      'depositoSemRegistros',
+    ]) {
       expect(motivoEstoqueVinculoLiSchema.safeParse(quase).success, quase).toBe(false);
     }
   });

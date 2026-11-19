@@ -62,6 +62,14 @@ const PERMANENTES: ReadonlyArray<{ collection: string; scope: Escopo; leitor: st
     leitor: 'tools/cmun-table dump — re-export/seed of the CEP table, after the cutover too (#785)',
   },
   {
+    collection: 'produtolojaintegrada',
+    scope: 'COLLECTION_GROUP',
+    leitor:
+      'apps/loja-integrada daily stock reconcile — its nightly ERP walk of every link doc by key ' +
+      '(estoque/reconcile/caminhadaVinculos.ts, step 12; caminhadaVinculos.indexes.test.ts pins ' +
+      'the query); the anchor census re-runs on it too',
+  },
+  {
     collection: 'itens',
     scope: 'COLLECTION',
     leitor:

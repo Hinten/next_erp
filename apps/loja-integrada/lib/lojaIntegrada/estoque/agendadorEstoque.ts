@@ -4,8 +4,8 @@
  * and SCHEDULED. Shared by every producer of the queue: the send run's one `deriva` follow-up,
  * the stock trigger (an `estoque` task per child and per flagged kit, and the ONE `estoque-kits`
  * fan-out of a component with more store kits than the eager ceiling), that fan-out's consumer
- * (an `estoque` task per kit, paced on the global slot), and later the reconcile and the manual
- * push.
+ * (an `estoque` task per kit, paced on the global slot), the daily reconcile's queue phase (PR
+ * 12-g: an `estoque` task per candidate, paced on the same slot), and later the manual push.
  *
  * The queue itself is bound by a composition root in the functions codebase, never here: it
  * resolves the region-qualified queue path and reads the sweep-only valve, and passes both in
@@ -51,6 +51,17 @@
  *  - **`naoAntesDeMs`**, a not-before bound: the schedule is the LATER of the window's and this one,
  *    so the window's schedule stays a floor and the naming proof above keeps its margin. The
  *    fan-out passes the instants it reserved on the ONE global stagger slot (`slotEstoqueLi.ts`).
+ *
+ * **The daily reconcile** (PR 12-g, `reconcile/filaReconcile.ts`) passes both too, with ITS OWN
+ * proof: every send of one run is named by the RUN's window `J = ⌊iniciadoEmMs / 60 s⌋` (origin
+ * `reconcile`), and scheduled at the instant it reserved on the slot — always after the reservation
+ * (the slot's floor is `(⌊now / 60 s⌋ + 3) · 60 s + 30 s`), so after the run's own diff of that
+ * row. Only that run's queue phase ever enqueues a `reconcile` task of window `J`: two runs never
+ * START in one minute window (a second run's first slice is deferred — `adiar`,
+ * `reconcile/execucaoReconcile.ts`), and the origin names no other producer. So an answered
+ * already-exists on a reconcile send is THIS run's earlier enqueue of the same (conta, produto) —
+ * a retried slice re-meeting its own send — and nothing is lost or doubled; whether that earlier
+ * task already ran does not matter, since it ran after the same diff.
  *
  * Every other producer (the trigger, the `deriva` follow-up) passes neither: the clock names the
  * task, as above.
@@ -202,7 +213,7 @@ export type TarefaEstoqueSemJanelaLi = Omit<TarefaEstoqueLi, 'tipo' | 'janela'>;
 export interface OpcoesEnvioEstoqueLi {
   /**
    * The window that NAMES the task, in place of the clock's — then the clock is not read at all.
-   * Only the fan-out passes it: its own payload's window.
+   * Only the bulk producers pass it: the fan-out its own payload's window, the reconcile its run's.
    */
   readonly janela?: number;
   /** A not-before bound, in ms since the epoch: the schedule is the later of the window's and it. */

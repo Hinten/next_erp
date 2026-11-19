@@ -138,7 +138,7 @@ import {
   classificarFalhaDeLeituraAmazon,
 } from '../pedidos/falhaLeituraAmazon';
 import type { AgendadorLotesAmazon, ResultadoEnfileiramentoLoteAmazon } from './agendadorLotes';
-import { falhaDefinitivaDoDocumento } from './enviarFeed';
+import { criarRegistroDaVezFeed, falhaDefinitivaDoDocumento } from './enviarFeed';
 import { TIPO_CONSULTA_FEED, proximaConsultaFeed } from './escadaFeed';
 import { baixarRelatorioFeedNaAmazon, lerFeedNaAmazon } from './feedsAmazon';
 import { type RegistroLoteAmazon, enfileirarVezPeloAgendador } from './incertoFeed';
@@ -1118,4 +1118,106 @@ async function encerrar(
     aviso,
     semProvedor: e.provedor === null,
   });
+}
+
+/* ------------------------------ the daily backstop ------------------------------ */
+
+/**
+ * The daily backstop ({@link adotarFeedParadoAmazon}) re-adopts a chain whose
+ * record has not advanced for MORE than this (6 h): every rung advances
+ * `atualizadoEmMs`, so only a chain that could not read its record looks stale.
+ */
+export const ADOCAO_FEED_PARADO_MS = 6 * 3_600_000;
+
+/**
+ * São Paulo's offset from UTC, FIXED (the zone keeps no daylight saving): the
+ * adoption's calendar date is computed from it, never from the process
+ * timezone, so every instance names one day's adoption alike.
+ */
+const DESLOCAMENTO_SAO_PAULO_MS = -3 * 3_600_000;
+
+/** The São Paulo calendar date of `agoraMs`, `YYYY-MM-DD`, from the explicit offset above. */
+export function dataSaoPauloAmazon(agoraMs: number): string {
+  return new Date(agoraMs + DESLOCAMENTO_SAO_PAULO_MS).toISOString().slice(0, 10);
+}
+
+/** What the daily backstop found (closed). */
+export const ACAO_ADOCAO_FEED = {
+  /** The lease names no submitted feed (free, building, sending, or no lease at all). */
+  semFeed: 'sem-feed',
+  /** The feed's record advanced within the last six hours: its chain is alive. */
+  viva: 'viva',
+  /** The adoption rung enqueued. */
+  adotada: 'adotada',
+  /** Today's adoption rung of this feed is already held by Cloud Tasks. */
+  jaAdotada: 'ja-adotada',
+} as const;
+export type AcaoAdocaoFeedAmazon = (typeof ACAO_ADOCAO_FEED)[keyof typeof ACAO_ADOCAO_FEED];
+
+/** What one backstop check did. */
+export interface ResultadoAdocaoFeedAmazon {
+  readonly acao: AcaoAdocaoFeedAmazon;
+  /** The record was missing and was re-created from the lease first (`ja-registrado` when it raced one). */
+  readonly registro: 'criado' | 'ja-registrado' | null;
+}
+
+/**
+ * The DAILY BACKSTOP of one (fluxo, conta)'s feed chain — the daily stock
+ * reconcile's scheduler runs it before every Start; step 13 adds the same call
+ * for price. A poll chain advances its record on EVERY rung, so a chain is dead
+ * only when the record stopped moving:
+ *
+ *  1. ONE lease read: a lease that does not name a submitted feed (`enviado`,
+ *     the `feedId` known) ⇒ `sem-feed`, nothing more read;
+ *  2. ONE read of that feed's record: MISSING ⇒ it is created from the
+ *     lease's fields first (the send's `retomar-consulta` rule, through the
+ *     send's own create), and the chain is adopted (no rung ever advanced it);
+ *     `atualizadoEmMs` MORE than {@link ADOCAO_FEED_PARADO_MS} old ⇒ adopted;
+ *     otherwise `viva`;
+ *  3. the adoption: ONE `feed-resultado` rung (`origem: 'adocao'`) NAMED
+ *     `nomeConsultaFeed(conta, feed, 'adocao:<the São Paulo date>')` — at most
+ *     one a day. It runs R1–R8 like any rung, and its successor is named by
+ *     the record's `rodadas + 1`, the live chain's own next name, so it can
+ *     never fork a chain that was alive after all.
+ *
+ * A terminal record whose lease was never released is adopted the same way:
+ * its rung's R2 releases the lease.
+ *
+ * @throws {AmazonVezFeedInvalidaError} the lease, or
+ *   {@link AmazonRegistroFeedInvalidoError} the record, no longer parses.
+ * @throws Firestore's and the jobs producer's own failures, untouched.
+ */
+export async function adotarFeedParadoAmazon(
+  db: Firestore,
+  alvo: AlvoVezFeed,
+  deps: { readonly agora: () => number; readonly agendador: () => AgendadorLotesAmazon },
+): Promise<ResultadoAdocaoFeedAmazon> {
+  const { vez } = await lerVezFeed(db, alvo);
+  if (vez === null || vez.feedId === null || faseDaVez(vez) !== ESTADO_VEZ_FEED_AMAZON.enviado) {
+    return { acao: ACAO_ADOCAO_FEED.semFeed, registro: null };
+  }
+  const { feedId } = vez;
+  const lido = await lerRegistro(db, { contaId: alvo.contaId, feedId });
+  let registro: ResultadoAdocaoFeedAmazon['registro'] = null;
+  if (lido === null) {
+    registro = await criarRegistroDaVezFeed(db, alvo, vez, deps.agora());
+  } else if (deps.agora() - lido.registro.atualizadoEmMs <= ADOCAO_FEED_PARADO_MS) {
+    return { acao: ACAO_ADOCAO_FEED.viva, registro: null };
+  }
+  const agoraMs = deps.agora();
+  const enfileirada = await deps.agendador().enfileirarLote(
+    tarefaResultadoFeedAmazonSchema.parse({
+      v: VERSAO_TAREFA_LOTE_AMAZON,
+      tipo: TIPO_TAREFA_LOTE_AMAZON.resultado,
+      contaId: alvo.contaId,
+      feedId,
+      rodada: 0,
+      origem: ORIGEM_RESULTADO_FEED_AMAZON.adocao,
+    }),
+    { nome: nomeConsultaFeed(alvo.contaId, feedId, `adocao:${dataSaoPauloAmazon(agoraMs)}`) },
+  );
+  return {
+    acao: enfileirada === 'ja-enfileirada' ? ACAO_ADOCAO_FEED.jaAdotada : ACAO_ADOCAO_FEED.adotada,
+    registro,
+  };
 }

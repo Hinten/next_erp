@@ -143,11 +143,17 @@ describe('queries — only the indexed shapes', () => {
     await expect(q.get()).rejects.toThrow(/fora dos índices/);
   });
 
-  it('refuses any operator but ==, < and in, and a < with a bound that is not a number', () => {
-    expect(() => contas().where('tipo', '>', 1)).toThrow(/operador/);
-    expect(() => contas().where('tipo', '<=', 1)).toThrow(/operador/);
-    expect(() => contas().where('tipo', '<', '1')).toThrow(/numérico/);
-    expect(() => contas().where('tipo', '<', null)).toThrow(/numérico/);
+  it('refuses any operator but ==, in, <, <= and > (12-e2), and a range bound that is not a number', () => {
+    for (const op of ['>=', '!=', 'not-in', 'array-contains', 'array-contains-any', '=<', '=']) {
+      // Typed as the SDK's union on purpose: two of these are not even SDK operators.
+      expect(() => contas().where('tipo', op as never, 1), op).toThrow(/operador/);
+    }
+    for (const op of ['<', '<=', '>'] as const) {
+      expect(() => contas().where('tipo', op, '1'), op).toThrow(/numérico/);
+      expect(() => contas().where('tipo', op, null), op).toThrow(/numérico/);
+      // A modelled operator with a number bound builds; the SHAPE is judged at get().
+      expect(() => contas().where('tipo', op, 1), op).not.toThrow();
+    }
   });
 
   it('orderBy drops a doc LACKING the field and keeps a null; startAfter seeks by values', async () => {
@@ -756,5 +762,382 @@ describe('step 12 (12-e1): ONE produto’s estoques partition, listed whole — 
     ['the collection group', () => estoqueCollection.groupQuery(asDb(db))],
   ])('NEAR-MISS: REFUSES %s', async (_c, montar) => {
     await expect(montar().get()).rejects.toThrow(/fora dos índices/);
+  });
+});
+
+describe('step 12 (12-e2): the estoques movement window — shape 10', () => {
+  const FORMA = 'documents/depositos/d1';
+  const grupo = () => estoqueCollection.groupQuery(asDb(db));
+  /** The window's exact shape: the depósito, both bounds, the stamp order and the key order. */
+  const janela = (desde: number, ate: number) =>
+    grupo()
+      .where('depositoOuterRef', '==', FORMA)
+      .where('ultimaModificacao', '>', desde)
+      .where('ultimaModificacao', '<=', ate)
+      .orderBy('ultimaModificacao')
+      .orderBy('__name__');
+  const caminhosDe = (snap: { docs: { ref: { path: string } }[] }) =>
+    snap.docs.map((d) => d.ref.path);
+  const linha = (caminho: string, ultimaModificacao: unknown) =>
+    db.seed(caminho, { depositoOuterRef: FORMA, ultimaModificacao });
+
+  it('★ runs the window: `>` EXCLUDES its bound and `<=` INCLUDES its bound (a NEAR-MISS pair at each edge)', async () => {
+    linha('produtos/p1/estoques/a', 100);
+    linha('produtos/p2/estoques/a', 101);
+    linha('produtos/p3/estoques/a', 200);
+    linha('produtos/p4/estoques/a', 201);
+    const snap = await janela(100, 200).select('ultimaModificacao').limit(300).get();
+    expect(caminhosDe(snap)).toEqual(['produtos/p2/estoques/a', 'produtos/p3/estoques/a']);
+    expect(snap.docs.map((d) => d.data())).toEqual([
+      { ultimaModificacao: 101 },
+      { ultimaModificacao: 200 },
+    ]);
+    expect(db.consultas.at(-1)).toEqual({
+      colecao: 'estoques',
+      grupo: true,
+      filtros: [
+        ['depositoOuterRef', FORMA],
+        ['ultimaModificacao >', 100],
+        ['ultimaModificacao <=', 200],
+      ],
+      ordens: [
+        ['ultimaModificacao', 'asc'],
+        ['__name__', 'asc'],
+      ],
+      limite: 300,
+      apos: null,
+      selecao: ['ultimaModificacao'],
+    });
+  });
+
+  it('★ a range never matches a null, a string or a missing stamp, nor another depósito’s row or another collection’s', async () => {
+    linha('produtos/p1/estoques/a', null);
+    linha('produtos/p2/estoques/a', '150');
+    db.seed('produtos/p3/estoques/a', { depositoOuterRef: FORMA });
+    db.seed('produtos/p4/estoques/a', { depositoOuterRef: 'depositos/d1', ultimaModificacao: 150 });
+    linha('produtos/p5/historico/a', 150);
+    linha('produtos/p6/estoques/a', 150);
+    // Positive first: the one row that IS in the window comes back.
+    expect(caminhosDe(await janela(100, 200).get())).toEqual(['produtos/p6/estoques/a']);
+  });
+
+  it('★ the KEY order is the full path segment by segment, and drops nothing (NEAR-MISS: the raw string order)', async () => {
+    linha('produtos/a-b/estoques/x', 150);
+    linha('produtos/a/estoques/x', 150);
+    linha('produtos/a/estoques/w', 150);
+    linha('produtos/0/estoques/z', 149);
+    expect(caminhosDe(await janela(100, 200).get())).toEqual([
+      'produtos/0/estoques/z',
+      'produtos/a/estoques/w',
+      'produtos/a/estoques/x',
+      'produtos/a-b/estoques/x',
+    ]);
+    // The raw strings sort the other way round: `-` (0x2D) is below `/` (0x2F).
+    expect('produtos/a-b/estoques/x' < 'produtos/a/estoques/x').toBe(true);
+  });
+
+  it('★ every query TIES on the document key, whatever the insertion order: a group query by its full path segment by segment, a collection query by its id', async () => {
+    const grupoVinculos = () =>
+      produtoAmazonLinkCollection
+        .groupQuery(asDb(db))
+        .where('contaAmazonOuterRef', 'in', ['c'])
+        .where('sku', '==', 'S');
+    for (const p of ['b', 'a-b', 'a']) {
+      db.seed(`produtos/${p}/prodAmazon/l`, { contaAmazonOuterRef: 'c', sku: 'S' });
+    }
+    expect(caminhosDe(await grupoVinculos().get())).toEqual([
+      'produtos/a/prodAmazon/l',
+      'produtos/a-b/prodAmazon/l',
+      'produtos/b/prodAmazon/l',
+    ]);
+    for (const id of ['z', 'm', 'a']) db.seed(`integracao/${id}`, { tipo: 8, nome: 'igual' });
+    const snap = await contas().where('tipo', '==', 8).orderBy('nome').get();
+    expect(snap.docs.map((d) => d.id)).toEqual(['a', 'm', 'z']);
+  });
+
+  it('★ startAfter(snapshot) on the GROUP query resumes exactly after the cursor, an equal stamp split by PATH; the log names the cursor’s full path', async () => {
+    for (const p of ['p1', 'p2', 'p3']) linha(`produtos/${p}/estoques/a`, 150);
+    linha('produtos/p0/estoques/a', 160);
+    const base = janela(100, 200).select('ultimaModificacao').limit(2);
+    const p1 = await base.get();
+    expect(caminhosDe(p1)).toEqual(['produtos/p1/estoques/a', 'produtos/p2/estoques/a']);
+    const cursor = p1.docs.at(-1);
+    if (cursor === undefined) throw new Error('sem cursor');
+    const p2 = await base.startAfter(cursor).get();
+    expect(caminhosDe(p2)).toEqual(['produtos/p3/estoques/a', 'produtos/p0/estoques/a']);
+    expect(db.consultas.at(-1)?.apos).toBe('produtos/p2/estoques/a');
+    const ultimo = p2.docs.at(-1);
+    if (ultimo === undefined) throw new Error('sem cursor');
+    expect((await base.startAfter(ultimo).get()).empty).toBe(true);
+    // ★ The counter counts each page as one query, and a query reads no document by id.
+    expect(db.contagem).toEqual({ leituras: 0, chamadasGetAll: 0, consultas: 3, escritas: 0 });
+  });
+
+  it('★ NEAR-MISS: the group cursor refuses a hand-built snapshot, and one lacking the ordered stamp', async () => {
+    linha('produtos/p1/estoques/a', 150);
+    expect(() =>
+      janela(100, 200).startAfter({
+        id: 'a',
+        ref: { path: 'produtos/p1/estoques/a' },
+        data: () => ({ ultimaModificacao: 150 }),
+      } as never),
+    ).toThrow(/grupo/);
+    const [doc] = (await janela(100, 200).select().get()).docs;
+    if (doc === undefined) throw new Error('sem documento');
+    // A keys-only snapshot holds no stamp to seek by.
+    expect(() => janela(100, 200).startAfter(doc)).toThrow(/ultimaModificacao/);
+  });
+
+  it.each<[string, () => { get: () => Promise<unknown> }]>([
+    [
+      'an `in` over both ref forms',
+      () =>
+        grupo()
+          .where('depositoOuterRef', 'in', [FORMA, 'depositos/d1'])
+          .where('ultimaModificacao', '>', 1)
+          .where('ultimaModificacao', '<=', 2)
+          .orderBy('ultimaModificacao')
+          .orderBy('__name__'),
+    ],
+    [
+      'no upper bound',
+      () =>
+        grupo()
+          .where('depositoOuterRef', '==', FORMA)
+          .where('ultimaModificacao', '>', 1)
+          .orderBy('ultimaModificacao')
+          .orderBy('__name__'),
+    ],
+    [
+      'no lower bound',
+      () =>
+        grupo()
+          .where('depositoOuterRef', '==', FORMA)
+          .where('ultimaModificacao', '<=', 2)
+          .orderBy('ultimaModificacao')
+          .orderBy('__name__'),
+    ],
+    [
+      'no key order',
+      () =>
+        grupo()
+          .where('depositoOuterRef', '==', FORMA)
+          .where('ultimaModificacao', '>', 1)
+          .where('ultimaModificacao', '<=', 2)
+          .orderBy('ultimaModificacao'),
+    ],
+    [
+      'a `<` upper bound',
+      () =>
+        grupo()
+          .where('depositoOuterRef', '==', FORMA)
+          .where('ultimaModificacao', '>', 1)
+          .where('ultimaModificacao', '<', 2)
+          .orderBy('ultimaModificacao')
+          .orderBy('__name__'),
+    ],
+    [
+      'the same shape on ONE produto’s partition (not a group query)',
+      () =>
+        estoqueCollection
+          .ref(asDb(db), { produtoId: 'p1' })
+          .where('depositoOuterRef', '==', FORMA)
+          .where('ultimaModificacao', '>', 1)
+          .where('ultimaModificacao', '<=', 2)
+          .orderBy('ultimaModificacao')
+          .orderBy('__name__'),
+    ],
+  ])('NEAR-MISS: REFUSES %s', async (_c, montar) => {
+    await expect(montar().get()).rejects.toThrow(/fora dos índices/);
+    expect(db.consultas).toEqual([]);
+  });
+});
+
+describe('step 12 (12-e2): ONE produto’s prodAmazon partition, listed whole — shape 11', () => {
+  const vinculos = (produtoId: string) => produtoAmazonLinkCollection.ref(asDb(db), { produtoId });
+
+  it('★ lists the produto’s own link docs, projected by select — never another produto’s or a deeper one', async () => {
+    db.seed('produtos/p1/prodAmazon/l1', {
+      contaAmazonOuterRef: 'documents/integracao/c1',
+      sku: 'S1',
+      productDataJson: '{"grande":true}',
+    });
+    db.seed('produtos/p1/prodAmazon/l2', { contaAmazonOuterRef: 'integracao/c2', sku: 'S2' });
+    db.seed('produtos/p2/prodAmazon/l1', { contaAmazonOuterRef: 'integracao/c1', sku: 'S9' });
+    db.seed('produtos/p1/prodAmazon/l1/x/y', { sku: 'fundo' });
+    const snap = await vinculos('p1').select('contaAmazonOuterRef', 'sku').get();
+    expect(snap.docs.map((d) => [d.ref.path, d.data()])).toEqual([
+      ['produtos/p1/prodAmazon/l1', { contaAmazonOuterRef: 'documents/integracao/c1', sku: 'S1' }],
+      ['produtos/p1/prodAmazon/l2', { contaAmazonOuterRef: 'integracao/c2', sku: 'S2' }],
+    ]);
+    expect(db.consultas.at(-1)).toEqual({
+      colecao: 'produtos/p1/prodAmazon',
+      filtros: [],
+      ordens: [],
+      limite: null,
+      apos: null,
+      selecao: ['contaAmazonOuterRef', 'sku'],
+    });
+    expect(db.contagem).toEqual({ leituras: 0, chamadasGetAll: 0, consultas: 1, escritas: 0 });
+  });
+
+  it.each<[string, () => { get: () => Promise<unknown> }]>([
+    ['a filter', () => vinculos('p1').where('contaAmazonOuterRef', '==', 'integracao/c1')],
+    ['an order', () => vinculos('p1').orderBy('sku')],
+    ['a limit', () => vinculos('p1').limit(1)],
+    [
+      'the conta filter as a GROUP query (a scan per row)',
+      () =>
+        produtoAmazonLinkCollection
+          .groupQuery(asDb(db))
+          .where('contaAmazonOuterRef', '==', 'integracao/c1'),
+    ],
+  ])('NEAR-MISS: REFUSES %s', async (_c, montar) => {
+    await expect(montar().get()).rejects.toThrow(/fora dos índices/);
+  });
+});
+
+describe('step 12 (12-f): the reconcile walk — shape 12, a KEY cursor from a reference', () => {
+  const grupo = () => produtoAmazonLinkCollection.groupQuery(asDb(db));
+  const refVinculo = (produtoId: string, linkId: string) =>
+    produtoAmazonLinkCollection.docRef(asDb(db), { produtoId }, linkId);
+
+  beforeEach(() => {
+    db.seed('produtos/b/prodAmazon/l1', { contaAmazonOuterRef: 'integracao/c1', sku: 'B' });
+    db.seed('produtos/a-b/prodAmazon/l1', { contaAmazonOuterRef: 'integracao/c1', sku: 'AB' });
+    db.seed('produtos/a/prodAmazon/l2', { contaAmazonOuterRef: 'integracao/c1', sku: 'A2' });
+    db.seed('produtos/a/prodAmazon/l1', { contaAmazonOuterRef: 'integracao/c1', sku: 'A1' });
+    db.seed('produtos/c/prodAmazon/l1', { contaAmazonOuterRef: 'integracao/c2', sku: 'OUTRA' });
+  });
+
+  it('★ runs `contaAmazonOuterRef ==` · orderBy(__name__) · limit in KEY order, and resumes EXACTLY after a reference cursor', async () => {
+    const primeira = await grupo()
+      .where('contaAmazonOuterRef', '==', 'integracao/c1')
+      .orderBy('__name__')
+      .select('sku')
+      .limit(2)
+      .get();
+    expect(primeira.docs.map((d) => [d.ref.path, d.data()])).toEqual([
+      ['produtos/a/prodAmazon/l1', { sku: 'A1' }],
+      ['produtos/a/prodAmazon/l2', { sku: 'A2' }],
+    ]);
+    const segunda = await grupo()
+      .where('contaAmazonOuterRef', '==', 'integracao/c1')
+      .orderBy('__name__')
+      .startAfter(refVinculo('a', 'l2') as never)
+      .select('sku')
+      .limit(2)
+      .get();
+    expect(segunda.docs.map((d) => d.ref.path)).toEqual([
+      'produtos/a-b/prodAmazon/l1',
+      'produtos/b/prodAmazon/l1',
+    ]);
+    expect(db.consultas.at(-1)).toMatchObject({
+      colecao: 'prodAmazon',
+      grupo: true,
+      filtros: [['contaAmazonOuterRef', 'integracao/c1']],
+      ordens: [['__name__', 'asc']],
+      limite: 2,
+      apos: 'produtos/a/prodAmazon/l2',
+      selecao: ['sku'],
+    });
+  });
+
+  it('★ a reference cursor resumes after a doc that NO LONGER exists, by its key', async () => {
+    const snap = await grupo()
+      .where('contaAmazonOuterRef', '==', 'integracao/c1')
+      .orderBy('__name__')
+      .startAfter(refVinculo('a', 'l15') as never)
+      .limit(10)
+      .get();
+    expect(snap.docs.map((d) => d.ref.path)).toEqual([
+      'produtos/a/prodAmazon/l2',
+      'produtos/a-b/prodAmazon/l1',
+      'produtos/b/prodAmazon/l1',
+    ]);
+  });
+
+  it.each<[string, () => { get: () => Promise<unknown> }]>([
+    [
+      'an `in` over the ref forms',
+      () => grupo().where('contaAmazonOuterRef', 'in', ['integracao/c1']).orderBy('__name__'),
+    ],
+    ['no key order', () => grupo().where('contaAmazonOuterRef', '==', 'integracao/c1')],
+    [
+      'another order before the key',
+      () =>
+        grupo()
+          .where('contaAmazonOuterRef', '==', 'integracao/c1')
+          .orderBy('sku')
+          .orderBy('__name__'),
+    ],
+  ])('NEAR-MISS: REFUSES %s', async (_c, montar) => {
+    await expect(montar().get()).rejects.toThrow(/fora dos índices/);
+  });
+
+  it('NEAR-MISS: a reference cursor under any order but the key alone, or a reference no fake built, is refused', () => {
+    expect(() =>
+      grupo()
+        .where('contaAmazonOuterRef', '==', 'integracao/c1')
+        .orderBy('sku')
+        .startAfter(refVinculo('a', 'l1') as never),
+    ).toThrow(/orderBy\(__name__\)/);
+    expect(() =>
+      grupo()
+        .where('contaAmazonOuterRef', '==', 'integracao/c1')
+        .startAfter(refVinculo('a', 'l1') as never),
+    ).toThrow(/orderBy\(__name__\)/);
+    expect(() =>
+      grupo()
+        .where('contaAmazonOuterRef', '==', 'integracao/c1')
+        .orderBy('__name__')
+        .startAfter({ id: 'l1', path: 'produtos/a/prodAmazon/l1' } as never),
+    ).toThrow();
+  });
+});
+
+describe('step 12 (12-f): stored stamps', () => {
+  it('★ a stamp stored as a field (a read’s readTime) reads back as a LIVE stamp of the same instant', async () => {
+    const lido = await ref('a').get();
+    const relogio = lido.readTime;
+    await ref('a').create({ relogio, outro: { dentro: relogio }, lista: [relogio] });
+    const dados = (await ref('a').get()).data() as Record<string, unknown>;
+    const guardado = dados.relogio as { isEqual: (o: unknown) => boolean; toMillis: () => number };
+    expect(guardado.isEqual(relogio)).toBe(true);
+    expect(guardado.toMillis()).toBe(relogio.toMillis());
+    expect(guardado).not.toBe(relogio);
+    expect(
+      (
+        (dados.outro as Record<string, unknown>).dentro as { isEqual: (o: unknown) => boolean }
+      ).isEqual(relogio),
+    ).toBe(true);
+    expect(
+      ((dados.lista as unknown[])[0] as { isEqual: (o: unknown) => boolean }).isEqual(relogio),
+    ).toBe(true);
+  });
+
+  it('a stored stamp’s copy is detached (mutating a read changes nothing), and a Date stays a Date', async () => {
+    const data = new Date(Date.UTC(2027, 0, 1));
+    await ref('a').create({ quando: data });
+    const lido = (await ref('a').get()).data() as Record<string, unknown>;
+    expect(lido.quando).toBeInstanceOf(Date);
+    expect((lido.quando as Date).getTime()).toBe(data.getTime());
+    expect(lido.quando).not.toBe(data);
+  });
+
+  it('NEAR-MISS: a function anywhere else in a payload is still refused, as the SDK refuses it', async () => {
+    await expect(Promise.resolve().then(() => ref('a').create({ f: () => 1 }))).rejects.toThrow();
+  });
+
+  it('two stored stamps of one instant are the same content: a batch carrier re-writing one keeps the doc’s stamp', async () => {
+    const lido = await ref('a').get();
+    db.seed(CAMINHO, { relogio: lido.readTime });
+    const antes = db.carimboDe(CAMINHO);
+    const [r] = await db
+      .batch()
+      .update(ref('a'), { relogio: lido.readTime }, { lastUpdateTime: antes })
+      .commit();
+    expect(r?.writeTime).toBe(antes);
+    expect(db.carimboDe(CAMINHO)).toBe(antes);
   });
 });

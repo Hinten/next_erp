@@ -19,13 +19,20 @@ import {
   GRUPO_VINCULO_LI,
   LIMITE_ESTOQUE_PROPRIO_LI,
   LIMITE_VINCULOS_LI,
+  MAX_IDS_POR_CONSULTA_VINCULO_LI,
+  MAX_VALORES_IN_ESTOQUE_LI,
   componentesQueLimitamLi,
+  consultaVinculosDaContaPorIdsLi,
   depositoDaContaLi,
   formasDoDepositoLi,
   lerComponentesNoDepositoLi,
   lerEstoqueProprioLi,
+  MAX_PRODUTOS_POR_LEITURA_ESTOQUE_LI,
   lerProdutoEstoqueLi,
+  lerProdutosEstoqueLi,
+  lerRegistrosNoDepositoLi,
   lerVinculosDoProdutoLi,
+  quantidadesQueLimitamLi,
   sondarVinculoDuplicadoLi,
   temEstoqueEmQualquerDepositoLi,
 } from './leituraEstoqueErp';
@@ -140,6 +147,30 @@ describe('the indexes the run’s queries ride are declared (Enterprise full-sca
         limite: LIMITE_VINCULOS_LI,
         apos: null,
       })),
+    );
+  });
+
+  it('the ONE builder the probe and the reconcile lookup share: up to 15 ids, each as its number AND its text (30 values, the `in` cap); 0 or 16 ids refused', async () => {
+    expect(MAX_IDS_POR_CONSULTA_VINCULO_LI * 2).toBe(MAX_VALORES_IN_ESTOQUE_LI);
+    const db = new FakeDb();
+    const ids = Array.from({ length: MAX_IDS_POR_CONSULTA_VINCULO_LI }, (_, n) => String(10 + n));
+    await consultaVinculosDaContaPorIdsLi(asDb(db), `integracao/${CONTA}`, ids).get();
+    expect(db.consultas).toEqual([
+      {
+        colecao: GRUPO_VINCULO_LI,
+        grupo: true,
+        filtros: [
+          [CAMPOS_INDICE_VINCULO_LI[0], '==', `integracao/${CONTA}`],
+          [CAMPOS_INDICE_VINCULO_LI[1], 'in', ids.flatMap((id) => [Number(id), id])],
+        ],
+        ordens: [],
+        limite: null,
+        apos: null,
+      },
+    ]);
+    expect(() => consultaVinculosDaContaPorIdsLi(asDb(db), 'x', [])).toThrow(RangeError);
+    expect(() => consultaVinculosDaContaPorIdsLi(asDb(db), 'x', [...ids, '99'])).toThrow(
+      RangeError,
     );
   });
 });
@@ -495,5 +526,81 @@ describe('the hold’s listing and the duplicate probe', () => {
     );
     if (dados !== null) db.seed('produtos/p2/produtolojaintegrada/dele', dados);
     expect(await sondarVinculoDuplicadoLi(asDb(db), CONTA, '7001', 'p1')).toBe(false);
+  });
+});
+
+describe('the daily reconcile’s bulk readers share the send run’s (PR 12-g)', () => {
+  it('lerProdutosEstoqueLi reads many produtos with the SAME mask, one getAll per 300, absent ⇒ null', async () => {
+    const db = new FakeDb();
+    db.seed('produtos/p1', { ehKit: true, nome: 'fora da máscara', componentesKit: null });
+    const getAll = vi.spyOn(db, 'getAll');
+    const ids = Array.from({ length: MAX_PRODUTOS_POR_LEITURA_ESTOQUE_LI + 1 }, (_, i) =>
+      i === 0 ? 'p1' : `x${String(i)}`,
+    );
+    const lidos = await lerProdutosEstoqueLi(asDb(db), [...ids, 'p1']);
+    expect(getAll).toHaveBeenCalledTimes(2);
+    expect(getAll.mock.calls[0]?.at(-1)).toEqual({ fieldMask: [...CAMPOS_PRODUTO_ESTOQUE_LI] });
+    expect(lidos.get('p1')).toEqual(await lerProdutoEstoqueLi(asDb(db), 'p1'));
+    expect(lidos.get('x1')).toBeNull();
+    expect(lidos.size).toBe(MAX_PRODUTOS_POR_LEITURA_ESTOQUE_LI + 1);
+    expect(await lerProdutosEstoqueLi(asDb(db), [])).toEqual(new Map());
+  });
+
+  it('quantidadesQueLimitamLi names EXACTLY the components componentesQueLimitamLi reads, with their quantities', () => {
+    const produto = kit({
+      a: 2,
+      b: { quantidade: 1, limitarEstoque: false },
+      c: 0,
+      'd/e': 1,
+      f: 1.5,
+    });
+    expect(quantidadesQueLimitamLi(produto)).toEqual({ a: 2, f: 1.5 });
+    expect(Object.keys(quantidadesQueLimitamLi(produto))).toEqual(componentesQueLimitamLi(produto));
+    expect(quantidadesQueLimitamLi({ componentesKit: kit({ a: 1 }).componentesKit })).toEqual({});
+  });
+
+  it('⚠️ lerRegistrosNoDepositoLi with 20 at a time issues the SAME query set as one at a time, and finds the same records', async () => {
+    const semear = (db: FakeDb) => {
+      for (let i = 0; i < 35; i += 1) {
+        const p = `p${String(i).padStart(2, '0')}`;
+        if (i % 3 === 0)
+          seedEstoque(db, p, `est-${p}-${DEP}`, {
+            parentId: p,
+            depositoOuterRef: CANONICA,
+            quantidade: i,
+          });
+        else if (i % 3 === 1)
+          seedEstoque(db, p, 'legado', { parentId: p, depositoOuterRef: NUA, quantidade: i });
+        else seedEstoque(db, p, 'sem-pai', { depositoOuterRef: CANONICA, quantidade: i });
+      }
+    };
+    const ids = Array.from({ length: 35 }, (_, i) => `p${String(i).padStart(2, '0')}`);
+    const canonicos = Object.fromEntries(ids.map((p) => [p, `est-${p}-${DEP}`]));
+    const um = new FakeDb();
+    semear(um);
+    const vinte = new FakeDb();
+    semear(vinte);
+    const a = await lerRegistrosNoDepositoLi(asDb(um), ids, DEP, canonicos);
+    const b = await lerRegistrosNoDepositoLi(asDb(vinte), ids, DEP, canonicos, {
+      concorrencia: 20,
+    });
+    const chave = (c: { colecao: string; filtros: unknown }) =>
+      JSON.stringify([c.colecao, c.filtros]);
+    expect(vinte.consultas.map(chave).sort()).toEqual(um.consultas.map(chave).sort());
+    expect(b.map((r) => r.caminho).sort()).toEqual(a.map((r) => r.caminho).sort());
+    expect(a).toHaveLength(35);
+    // The send run's kit read IS this reader: the same queries for the same components.
+    const kitDb = new FakeDb();
+    semear(kitDb);
+    await lerComponentesNoDepositoLi(
+      asDb(kitDb),
+      kit(Object.fromEntries(ids.map((p) => [p, 1]))),
+      DEP,
+      null,
+    );
+    const direto = new FakeDb();
+    semear(direto);
+    await lerRegistrosNoDepositoLi(asDb(direto), ids, DEP, null);
+    expect(kitDb.consultas).toEqual(direto.consultas);
   });
 });

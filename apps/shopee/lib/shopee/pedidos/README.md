@@ -574,15 +574,63 @@ simply a stored value the ladder arbitrates — a hand-set `entregue` refuses a
 later `postado`, a hand-typed `codRastreio` is replaced by the first fold value.
 
 **The Frete tab now locks on the BLOCK.** `apps/web`'s `FreteTab` used to key
-`marketplaceOwned` on the resolved `int_frete` document alone, and no step sets
-an `integracaoFreteOuterRef` on a Shopee pedido (step 20 maintains the conta's
-`int_frete` document but stamps no pedido, #1528) — so a Shopee pedido rendered
-the editable generic body and a save latched `hasUserInteraction`. Ownership is
-now the OR of the two declarations over the marketplace-owned PREDICATE: a
-resolved document can WIDEN the lock and can never narrow it. ⚠️ One consequence
-worth knowing before someone reports it as a bug: `headerDisabled` also disables
-the `IntegracaoFreteSelect`, so an operator can no longer attach a different
-`int_frete` to a Shopee pedido by hand — the importer owns the block.
+`marketplaceOwned` on the resolved `int_frete` document alone, and when that was
+written no step set an `integracaoFreteOuterRef` on a Shopee pedido — so a
+Shopee pedido rendered the editable generic body and a save latched
+`hasUserInteraction`. Ownership is now the OR of the two declarations over the
+marketplace-owned PREDICATE: a resolved document can WIDEN the lock and can
+never narrow it. ⚠️ One consequence worth knowing before someone reports it as
+a bug: `headerDisabled` also disables the `IntegracaoFreteSelect`, so an
+operator can no longer attach a different `int_frete` to a Shopee pedido by
+hand — the importer owns the block.
+
+**Step 5, not this step: the conta's `int_frete` ref — step 20's "stamps no
+pedido" (Q1 (a), #1528) was REVERSED by Lucas on 2026-11-18.** It sits here
+because step 7's whole-block rebuild spreads the stored block and so carries
+both refs below. The order import (step 5's read-only half,
+`importarPedido.ts`) now looks up the conta's ACTIVE `int_frete` doc through the
+app's one binding (`lib/shopee/frete/intFrete.ts`,
+`buscarIntFreteDaConta(…, { apenasAtivo: true })` — one uncached query, before
+any transaction) and stamps `documents/int_frete/<id>` on the mapped block, as
+Mercado Livre, Amazon and Loja Integrada stamp theirs. Only a CREATE writes it —
+Lucas's deliberate departure from those channels (Amazon, for one, fills a
+stored `null` on update): an update's merge refreshes its seven fields over the
+stored spread, so a stored ref — a migrated legacy one, or `null` on a pedido
+imported before the reversal — is KEPT, and nothing is backfilled. No active doc
+⇒ the pedido's `integracaoFreteOuterRef` is `null`, as before. The doc is read
+for its id alone: the cut-off stays `HORARIO_DE_CORTE_PADRAO_SHOPEE`, never the
+doc's `horarioDeCorte`. Beside it the block gains the DELIVERY address
+(`enderecoFreteOuterReference`), Mercado Livre's rule — the fiscal endereço —
+written at exactly two moments: the CREATE, and the update transaction that
+FIRST fills `enderecoFiscalOuterRef` (a BR order imported masked, then
+unmasked), over an empty stored delivery ref, outside the `hasUserInteraction`
+freeze, by a whole-block rebuild; never on a pedido whose fiscal address was
+already set, never by fabricating a block that is absent (so an unfrozen pedido
+stored with no block keeps a `null` delivery ref — the documented gap in
+`orderPedidoTx.ts`), and skipped with one warn when the rebuilt block fails the
+freight schema.
+
+**Step 5 again: the TEST buyer mode (`importar:pedido --importar-cliente`).** The
+SG sandbox order can never exercise the buyer path (region `SG`, masked name,
+6-digit postcode), so the importer takes ONE optional, test-only dependency,
+`simulacaoComprador`, that only the script passes — a test greps every route,
+trigger, sweep and the notification arm. It swaps ONLY the row the buyer adapter
+reads (`simularCompradorShopee` in `comprador.ts`: region `BR`, Shopee's usable
+CPF or the fake `CPF_FALSO_DE_TESTE`, the optional name/zip substitutes); the
+REAL row keeps `paisId`, `bloquearEmissaoNFe` and every fiscal flag. The
+importer re-checks the sandbox override from its own environment and the real
+region from the order it read — in the read half and again in the write half,
+`gravarPreparoPedidoShopee` — and throws before any buyer or pedido write when
+either fails. The read-only half returns the preview as `preparo.simulacao`
+(real vs simulated verdict, the endereço gates' own `portoesDoEnderecoShopee`
+answer and the builder outcome before any ViaCEP; `null` on a real import), and
+the result gains `compradorDeTeste` (the key is absent on a real import). The
+`--live` refusals (no named project under a matching service account; a
+document held by a cliente with another name; a stored link that is not the
+test buyer's; a capture that leaves nothing to do) live in
+`importarCompradorTeste.ts`, script-only, which then hands the SAME preparo to
+`gravarPreparoPedidoShopee` — one Shopee read, no transaction of its own.
+Runbook: `scripts/README.md`, «Simulação do comprador».
 
 ⚠️ **Code 24 is not part of this step** (see the re-park note under **Inbound
 push**), and **`FREIGHT_TIPO_CAPS.shopee.canTrack` stays `false`** — step 7 did

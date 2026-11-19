@@ -187,12 +187,21 @@ export interface LeituraVezFeed {
   readonly readTime: Timestamp;
 }
 
-function refDaVez(db: Firestore, alvo: AlvoVezFeed): DocumentReference {
+/**
+ * The lease's document reference — for this module, and for the stock tick,
+ * which reads the lease in its own `getAll` (and parses it with
+ * {@link lerVezFeedDoSnapshot}); it writes the lease only through this module.
+ */
+export function refVezFeed(db: Firestore, alvo: AlvoVezFeed): DocumentReference {
   return vezFeedAmazonCollection.docRef(db, {}, idVezFeedAmazon(alvo.fluxo, alvo.contaId));
 }
 
-/** A snapshot, strictly parsed (module header). */
-function lerDoSnapshot(snap: DocumentSnapshot, alvo: AlvoVezFeed): LeituraVezFeed {
+/**
+ * A snapshot of the lease, strictly parsed (module header).
+ *
+ * @throws {AmazonVezFeedInvalidaError} a stored lease that no longer parses.
+ */
+export function lerVezFeedDoSnapshot(snap: DocumentSnapshot, alvo: AlvoVezFeed): LeituraVezFeed {
   if (!snap.exists) return { vez: null, updateTime: null, readTime: snap.readTime };
   const updateTime = snap.updateTime;
   if (updateTime === undefined) {
@@ -212,7 +221,7 @@ function lerDoSnapshot(snap: DocumentSnapshot, alvo: AlvoVezFeed): LeituraVezFee
  * @throws {AmazonVezFeedInvalidaError} a stored lease that no longer parses.
  */
 export async function lerVezFeed(db: Firestore, alvo: AlvoVezFeed): Promise<LeituraVezFeed> {
-  return lerDoSnapshot(await refDaVez(db, alvo).get(), alvo);
+  return lerVezFeedDoSnapshot(await refVezFeed(db, alvo).get(), alvo);
 }
 
 /* ------------------------------ the `vez` recovery ------------------------------ */
@@ -293,9 +302,9 @@ async function comPrecondicao<R>(
   alvo: AlvoVezFeed,
   decidir: (lida: LeituraVezFeed) => DecisaoVez<R>,
 ): Promise<R> {
-  const ref = refDaVez(db, alvo);
+  const ref = refVezFeed(db, alvo);
   for (let tentativa = 1; tentativa <= MAX_TENTATIVAS_VEZ_FEED; tentativa += 1) {
-    const lida = lerDoSnapshot(await ref.get(), alvo);
+    const lida = lerVezFeedDoSnapshot(await ref.get(), alvo);
     const decisao = decidir(lida);
     if (decisao.tipo === 'parar') return decisao.resultado;
     const { escrita } = decisao;

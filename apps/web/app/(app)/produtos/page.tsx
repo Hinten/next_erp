@@ -20,6 +20,7 @@ import {
 } from './_components/ProdutoListCells';
 import { IntegracoesColumnFilter } from './_components/IntegracoesColumnFilter';
 import { ImportarMercadoLivreModal } from './_components/ImportarMercadoLivreModal';
+import { ImportarShopeeModal } from './_components/ImportarShopeeModal';
 import { EnviarEstoqueDialog } from './_components/EnviarEstoqueDialog';
 import { EnviarPrecoDialog } from './_components/EnviarPrecoDialog';
 import { PausarAnunciosDialog } from './_components/PausarAnunciosDialog';
@@ -181,6 +182,7 @@ export default function ProdutosPage() {
   const { action: enviarPrecoAction, modal: enviarPrecoModal } = useEnviarPrecoAction();
   const { action: pausarAnunciosAction, modal: pausarAnunciosModal } = usePausarAnunciosAction();
   const [importOpen, setImportOpen] = useState(false);
+  const [importarShopeeAberto, setImportarShopeeAberto] = useState(false);
 
   // One read for the whole table, not one per row — see the hook. It serves
   // BOTH halves of the Preço column: the default lista's value inline and the
@@ -268,6 +270,13 @@ export default function ProdutosPage() {
   return (
     <Stack>
       <ImportarMercadoLivreModal db={db} opened={importOpen} onClose={() => setImportOpen(false)} />
+      {canWriteIntegracao && importarShopeeAberto && (
+        <ImportarShopeeModal
+          integracoes={integracoes}
+          status={integracoesStatus}
+          onClose={() => setImportarShopeeAberto(false)}
+        />
+      )}
 
       <TableView
         title="Produtos"
@@ -368,6 +377,11 @@ export default function ProdutosPage() {
             <Button fullWidth variant="default" onClick={() => setImportOpen(true)}>
               Importar do Mercado Livre
             </Button>
+            {canWriteIntegracao && (
+              <Button fullWidth variant="default" onClick={() => setImportarShopeeAberto(true)}>
+                Importar da Shopee
+              </Button>
+            )}
             {canWritePrecos && (
               <Menu withinPortal position="bottom-end" shadow="md">
                 <Menu.Target>
