@@ -142,12 +142,24 @@
  *    read, the outcome write-back, the producer and the patch task — loads
  *    EXACTLY the modules {@link E_S_EM_ESTOQUE} lists, and no pure module
  *    imports it; `estoque/` is imported by exactly
- *    {@link IMPORTADORES_DE_ESTOQUE}; under it only the write-back makes a
- *    Firestore WRITE call (its one precondition update);
+ *    {@link IMPORTADORES_DE_ESTOQUE}; under it only the write-back (its one
+ *    precondition update) and, since PR 12-e2, the tick (its lease and its
+ *    final write on the sync document) make a Firestore WRITE call;
  *    `listings/listingsAmazon.ts` is the ONE caller of the package's three
  *    listings helpers; the App Hosting union walk reaches none of
  *    {@link MODULOS_DE_ESTOQUE_FORA_DO_APP_HOSTING}; and the stock root
- *    (`functions/src/agendadorEstoque.ts`) binds the jobs and the stock queues.
+ *    (`functions/src/agendadorEstoque.ts`) binds the jobs and the stock queues;
+ *  - (step 12, PR 12-e2) the tick (`estoque/sincronizacaoEstoque.ts`), the
+ *    movement window's reads (`estoque/descobertaFirestore.ts`) and the
+ *    recovery delta (`estoque/deltaEstoque.ts`) join that I/O half and the App
+ *    Hosting forbidden list; the tick's schedule (`functions/src/sweepEstoque.ts`)
+ *    joins the importers of `estoque/` and of the stock root; the tick's own
+ *    write calls touch only its sync document (its aviso goes through the
+ *    avisos seam), whose handle no other module of `estoque/` names, and it
+ *    only READS the conta; a conta's depósito has ONE parse, in
+ *    `estoque/familiaEstoque.ts`; and no production module of `estoque/`
+ *    names the produto's `integracoesComProduto` (a SKU is found through the
+ *    link partition, never through that denormalised list).
  */
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, posix, relative, sep } from 'node:path';
@@ -996,6 +1008,11 @@ const MODULOS_DE_ESTOQUE_FORA_DO_APP_HOSTING = [
   'lib/amazon/estoque/resolverEstoque.ts',
   'lib/amazon/estoque/familiaEstoqueFirestore.ts',
   'lib/amazon/estoque/envioEstoqueFirestore.ts',
+  // (step 12, PR 12-e2) the movement window's reads, the tick, and the recovery
+  // delta (a feed's catch-up, enqueued as patch tasks).
+  'lib/amazon/estoque/descobertaFirestore.ts',
+  'lib/amazon/estoque/sincronizacaoEstoque.ts',
+  'lib/amazon/estoque/deltaEstoque.ts',
 ];
 
 /**
@@ -1043,7 +1060,9 @@ const MOTOR_DE_ESCRITA = 'lib/amazon/core/escrita.ts';
  * wiring ({@link MODULOS_DE_FEED_FORA_DO_APP_HOSTING}): a bundle that reaches a
  * handler, the lease I/O or the one caller of the feed helpers can submit a feed
  * outside the jobs queue; and since the stock queue (step 12, PR 12-e1), the
- * stock flow's wiring ({@link MODULOS_DE_ESTOQUE_FORA_DO_APP_HOSTING}).
+ * stock flow's wiring ({@link MODULOS_DE_ESTOQUE_FORA_DO_APP_HOSTING}), which
+ * since the tick (PR 12-e2) holds the tick, its window reads and the recovery
+ * delta too.
  */
 const PROIBIDOS_NO_APP_HOSTING = [
   SEAM_DO_IMPORTADOR,
@@ -3436,7 +3455,7 @@ describe('the step-12a feed core guards (12-b, 12-c)', () => {
     );
   });
 
-  it('(12-c, 12-e1) the stock root binds the jobs and the stock queues only, and only those two queues import it', () => {
+  it('(12-c, 12-e1, 12-e2) the stock root binds the jobs and the stock queues only, and only those two queues and the stock tick import it', () => {
     const raiz = lerDoApp(ARQUIVO_RAIZ_DO_AGENDADOR_ESTOQUE) ?? '';
     expect(chamaGetFunctions(raiz)).toBe(true);
     expect(filasDaRaiz(raiz)).toEqual(['caminhoDaFilaEstoqueAmazon', 'caminhoDaFilaLotesAmazon']);
@@ -3445,7 +3464,11 @@ describe('the step-12a feed core guards (12-b, 12-c)', () => {
       .filter(([, texto]) => especificadores(texto).includes('./agendadorEstoque'))
       .map(([arquivo]) => arquivo)
       .sort();
-    expect(importadores).toEqual(['functions/src/filaEstoque.ts', 'functions/src/filaLotes.ts']);
+    expect(importadores).toEqual([
+      'functions/src/filaEstoque.ts',
+      'functions/src/filaLotes.ts',
+      'functions/src/sweepEstoque.ts',
+    ]);
   });
 
   it('★ (12-c) under feeds/, ONLY the lease I/O and the record’s two writers make a Firestore WRITE call — each its own count; the lease handle is the lease I/O’s alone', () => {
@@ -3563,6 +3586,21 @@ const TIPOS_PERMITIDOS_EM_ESTOQUE = ['../pedidos/vinculoProdutoAmazon', '../core
  *   constants, the path check), the schemas, the avisos seam, the write engine,
  *   the task-SDK helpers, the logger, the redactor's code grammar, the valves,
  *   the ONE listings caller and the shared read-failure ladder.
+ * - `descobertaFirestore.ts` (PR 12-e2) — the movement window's reads: the
+ *   estoque, produto and link handles (the group window query, the masked
+ *   produto `getAll`, the projected partition listings) and the schemas (the
+ *   window's index-field tuple, the conta id grammar).
+ * - `sincronizacaoEstoque.ts` (PR 12-e2) — the five-minute tick: the avisos
+ *   seam (`estoque-sem-deposito` on its flag's transition), the conta reads
+ *   (the uncached list and the conta-id grammar), the task-SDK helpers and the
+ *   region error class (the producer's failures it contains), the logger, the
+ *   valves (the read switch and the stock valve), the conta and sync-document
+ *   handles, the gRPC class readers (its lease and its final write), and the
+ *   schemas.
+ * - `deltaEstoque.ts` (PR 12-e2) — the recovery delta: the logger (its one
+ *   line), the valves (the line's flow) and the schemas (the conta id and the
+ *   feed reference grammars); the window, the producer and the payload are
+ *   its siblings'.
  */
 const E_S_EM_ESTOQUE: Readonly<Record<string, readonly string[]>> = {
   'estoque/resolverEstoque.ts': [
@@ -3597,17 +3635,35 @@ const E_S_EM_ESTOQUE: Readonly<Record<string, readonly string[]>> = {
     '@delfrance/integrations-amazon-sp-api',
     '@delfrance/schemas',
   ],
+  'estoque/descobertaFirestore.ts': ['@delfrance/data/admin/collections', '@delfrance/schemas'],
+  'estoque/sincronizacaoEstoque.ts': [
+    '../avisos/avisos',
+    '../core/contas',
+    '../core/filaTarefas',
+    '../core/log',
+    '../core/valvulas',
+    '@delfrance/core/region',
+    '@delfrance/data/admin/collections',
+    '@delfrance/data/admin/grpcErrors',
+    '@delfrance/schemas',
+  ],
+  'estoque/deltaEstoque.ts': ['../core/log', '../core/valvulas', '@delfrance/schemas'],
 };
 
 /**
  * The ONLY files under `estoque/` that write Firestore, each with its writes
  * and why: the outcome write-back's ONE `update(…, { lastUpdateTime })` on the
- * masked link-doc read it decided from (rule 7 tier 1). The patch task writes
- * through it and through `avisos/avisos.ts`; the readers and the producer write
- * nothing. The scan is {@link ESCRITA_FIRESTORE_EM_FEEDS}, shape-only.
+ * masked link-doc read it decided from (rule 7 tier 1); and (PR 12-e2) the
+ * tick's THREE on its own sync document — the lease's `create`, the expired
+ * lease's `update(…, { lastUpdateTime })`, and the final write's
+ * `update(…, { lastUpdateTime })` on the lease's commit (rule 7 tier 1). The
+ * patch task writes through the write-back and through `avisos/avisos.ts`, the
+ * tick's aviso through the latter; the readers and the producer write nothing.
+ * The scan is {@link ESCRITA_FIRESTORE_EM_FEEDS}, shape-only.
  */
 const ESCRITORES_EM_ESTOQUE: Readonly<Record<string, number>> = {
   'estoque/envioEstoqueFirestore.ts': 1,
+  'estoque/sincronizacaoEstoque.ts': 3,
 };
 
 /**
@@ -3618,6 +3674,8 @@ const ESCRITORES_EM_ESTOQUE: Readonly<Record<string, number>> = {
  *   producer onto its queue (the payload contract by type);
  * - `functions/src/filaEstoque.ts` — the stock queue runs the patch task;
  * - `functions/src/index.ts` — the load-time assertion reads the queue's name;
+ * - `functions/src/sweepEstoque.ts` (PR 12-e2) — the stock tick's schedule runs
+ *   the tick;
  * - `lib/amazon/feeds/destinosLote.ts` — the seam's root names the stock
  *   producer's TYPE (a provider factory receives it), never a value.
  */
@@ -3625,6 +3683,7 @@ const IMPORTADORES_DE_ESTOQUE: Readonly<Record<string, readonly string[]>> = {
   'functions/src/agendadorEstoque.ts': ['estoque/produtorEstoque', 'estoque/tarefaEstoque'],
   'functions/src/filaEstoque.ts': ['estoque/processarEstoque'],
   'functions/src/index.ts': ['estoque/produtorEstoque'],
+  'functions/src/sweepEstoque.ts': ['estoque/sincronizacaoEstoque'],
   'lib/amazon/feeds/destinosLote.ts': ['estoque/produtorEstoque'],
 };
 
@@ -3657,7 +3716,9 @@ describe('the step-12 stock core guards (12-d)', () => {
 
   it('★ (1) estoque/ is Next-free, reads no process environment and never imports the @/ alias', () => {
     expect(estoque.map(rel).sort()).toEqual([
+      'estoque/deltaEstoque.ts',
       'estoque/descobertaEstoque.ts',
+      'estoque/descobertaFirestore.ts',
       'estoque/envioEstoque.ts',
       'estoque/envioEstoqueFirestore.ts',
       'estoque/familiaEstoque.ts',
@@ -3669,6 +3730,7 @@ describe('the step-12 stock core guards (12-d)', () => {
       'estoque/processarEstoque.ts',
       'estoque/produtorEstoque.ts',
       'estoque/resolverEstoque.ts',
+      'estoque/sincronizacaoEstoque.ts',
       'estoque/tarefaEstoque.ts',
       'estoque/vinculoEstoque.ts',
     ]);
@@ -3782,7 +3844,7 @@ describe('the step-12 stock core guards (12-d)', () => {
     );
   });
 
-  it('★ (3, 12-e1) estoque/ is WIRED by EXACTLY the stock root, the stock queue, the functions index and the seam’s root type — lib, app, functions and scripts', () => {
+  it('★ (3, 12-e1, 12-e2) estoque/ is WIRED by EXACTLY the stock root, the stock queue, the stock tick’s schedule, the functions index and the seam’s root type — lib, app, functions and scripts', () => {
     const fora = [
       ...fontesDoChamadorDeSearchOrders(),
       ...(existsSync(join(RAIZ_APP, 'proxy.ts')) ? [join(RAIZ_APP, 'proxy.ts')] : []),
@@ -3815,7 +3877,7 @@ describe('the step-12 stock core guards (12-d)', () => {
     );
   });
 
-  it('★ (5, 12-e1) under estoque/, ONLY the outcome write-back makes a Firestore WRITE call — exactly its one precondition update', () => {
+  it('★ (5, 12-e1, 12-e2) under estoque/, ONLY the outcome write-back and the tick make a Firestore WRITE call — the write-back’s one precondition update, the tick’s lease and final write', () => {
     const escritas = Object.fromEntries(
       estoque
         .map((p) => [rel(p), semComentarios(readFileSync(p, 'utf8'))] as const)
@@ -3832,6 +3894,14 @@ describe('the step-12 stock core guards (12-d)', () => {
     );
     expect(escritor).toMatch(/\.update\(/);
     expect(escritor).toMatch(/lastUpdateTime/);
+    // …and the tick's three ARE its lease's create, its lease's update and its
+    // final write, the two updates under a precondition.
+    const tick = semComentarios(
+      readFileSync(join(RAIZ_LIB, 'estoque', 'sincronizacaoEstoque.ts'), 'utf8'),
+    );
+    expect(tick.match(/\.create\(/g) ?? []).toHaveLength(1);
+    expect(tick.match(/\.update\(/g) ?? []).toHaveLength(2);
+    expect((tick.match(/lastUpdateTime/g) ?? []).length).toBeGreaterThanOrEqual(2);
   });
 
   it('★ (4) publicado is never a gate: under estoque/ only the family projection names it, and reads it once', () => {
@@ -3963,9 +4033,19 @@ describe('the step-12 patch path guards (12-e1)', () => {
       expect(PROIBIDOS_NO_APP_HOSTING, modulo).toContain(modulo);
       expect(fecho.arquivos, modulo).not.toContain(modulo);
     }
-    // …and the stock queue's functions root DOES reach every one of them, so the
-    // list is not vacuous: a bundle importing the queue's body would fail.
-    const fila = fechoDeImportacoes(['functions/src/filaEstoque.ts'], lerDoApp);
+    // …and the stock functions roots DO reach every one of them, so the list is
+    // not vacuous: a bundle importing the queue's body, or the tick's, would
+    // fail. The recovery delta (PR 12-e2) has no caller yet — the stock feed
+    // provider will be its root — so it enters the walk as its own entry until
+    // one does.
+    const fila = fechoDeImportacoes(
+      [
+        'functions/src/filaEstoque.ts',
+        'functions/src/sweepEstoque.ts',
+        'lib/amazon/estoque/deltaEstoque.ts',
+      ],
+      lerDoApp,
+    );
     expect(fila.arquivos).toEqual(expect.arrayContaining(MODULOS_DE_ESTOQUE_FORA_DO_APP_HOSTING));
     expect(violacoesDoAppHosting(fila)).toEqual(
       expect.arrayContaining(MODULOS_DE_ESTOQUE_FORA_DO_APP_HOSTING.map((m) => `reaches ${m}`)),
@@ -3985,6 +4065,118 @@ describe('the step-12 patch path guards (12-e1)', () => {
     expect(esperado).toContain('lib/amazon/estoque/processarEstoque.ts');
     expect([...MODULOS_DE_ESTOQUE_FORA_DO_APP_HOSTING].sort()).toEqual(esperado);
   });
+});
+
+/** The tick (step 12, PR 12-e2), relative to `lib/amazon`. */
+const ARQUIVO_DO_TICK_ESTOQUE = 'estoque/sincronizacaoEstoque.ts';
+
+describe('the step-12 tick guards (12-e2)', () => {
+  const estoque = arquivosTs(join(RAIZ_LIB, 'estoque')).filter((p) => !ehTeste(p));
+  const codigo = (p: string) => semComentarios(readFileSync(p, 'utf8'));
+
+  it('★ the tick’s own write calls are all on its sync document (its aviso goes through avisos.ts): the handle is the tick’s alone under estoque/, its three write calls are on the ONE ref it binds from that handle, and the conta is only read', () => {
+    // Under estoque/, the sync document's handle is named by the tick alone.
+    const nomeiam = estoque
+      .filter((p) => /\bsincronizacaoEstoqueAmazonCollection\b/.test(codigo(p)))
+      .map(rel);
+    expect(nomeiam).toEqual([ARQUIVO_DO_TICK_ESTOQUE]);
+    const fonte = readFileSync(join(RAIZ_LIB, ARQUIVO_DO_TICK_ESTOQUE), 'utf8');
+    const tick = semComentarios(fonte);
+    // Every write call the write scan counts in the tick is a `ref.` call…
+    const escritas = tick.match(ESCRITA_FIRESTORE_EM_FEEDS) ?? [];
+    expect(escritas).toHaveLength(ESCRITORES_EM_ESTOQUE[ARQUIVO_DO_TICK_ESTOQUE] ?? -1);
+    expect(tick.match(/\bref\s*\.\s*(?:create|update)\s*\(/g) ?? []).toHaveLength(escritas.length);
+    // …`ref` is bound ONCE, from the sync document's handle, and every helper
+    // that writes receives that binding as its first argument.
+    expect(tick.match(/\b(?:const|let|var)\s+ref\b[^;]*;/g) ?? []).toEqual([
+      expect.stringMatching(/^const ref = sincronizacaoEstoqueAmazonCollection\.docRef\(/),
+    ]);
+    const chamadas = tick.match(/\b(?:tomarLease|aplicarFinal|escreverFinal)\s*\([^,)]*/g) ?? [];
+    expect(chamadas.length).toBeGreaterThanOrEqual(6);
+    for (const chamada of chamadas) expect(chamada, chamada).toMatch(/\(ref(?::|$)/);
+    // The tick's collection handles are the conta's and the sync document's;
+    // every use of the conta's is a by-id READ.
+    expect(nomesImportadosDe(fonte, '@delfrance/data/admin/collections').sort()).toEqual([
+      'integracaoCollection',
+      'sincronizacaoEstoqueAmazonCollection',
+    ]);
+    // (The printer quotes the import's specifier with double quotes.)
+    const conta = tick.match(/\bintegracaoCollection\b[^;]*/g) ?? [];
+    const importacao = (u: string) =>
+      /\bfrom\s+["']@delfrance\/data\/admin\/collections["']$/.test(u);
+    expect(conta.filter(importacao)).toHaveLength(1);
+    const usos = conta.filter((u) => !importacao(u));
+    expect(usos.length).toBeGreaterThanOrEqual(1);
+    for (const uso of usos) {
+      expect(uso, uso).toMatch(/^integracaoCollection\.docRef\([^()]*\)\.get\(\)$/);
+    }
+  });
+
+  it('★ no production module of estoque/ names the produto’s integracoesComProduto: a SKU is found through the link partition, never through that denormalised list', () => {
+    expect(estoque.filter((p) => /\bintegracoesComProduto\b/.test(codigo(p))).map(rel)).toEqual([]);
+    // Anti-vacuity: the field is real (the produto schema declares it), and the
+    // window reader does list each probe's link partition through its handle.
+    const produto = readFileSync(
+      join(RAIZ_REPO, 'packages', 'schemas', 'src', 'produto', 'collection', 'produto.ts'),
+      'utf8',
+    );
+    expect(semComentarios(produto)).toMatch(/\bintegracoesComProduto\s*:/);
+    const descoberta = codigo(join(RAIZ_LIB, 'estoque', 'descobertaFirestore.ts'));
+    expect(descoberta).toMatch(/\bprodutoAmazonLinkCollection\s*\.\s*ref\s*\(/);
+  });
+
+  // An app-wide parse (8.2 s on a CI runner, #2157): CI headroom, not a budget.
+  it(
+    '★ a conta’s depósito has ONE parse: depositoIdDaContaEstoqueAmazon and its storable filter are declared in familiaEstoque.ts alone, and every production READ of a depositoOuterRef is the parse’s sole argument',
+    { timeout: 30_000 },
+    () => {
+      const PARSE_UNICO = 'lib/amazon/estoque/familiaEstoque.ts';
+      const producao = fontesDeProducaoDoApp().filter(
+        (p) => !relApp(p).startsWith('lib/amazon/testing/'),
+      );
+      for (const declaracao of [
+        /\b(?:function|const|let|var)\s+depositoIdDaContaEstoqueAmazon\b/,
+        /\b(?:function|const|let|var)\s+depositoIdGravavelDaContaEstoqueAmazon\b/,
+      ]) {
+        expect(
+          producao.filter((p) => declaracao.test(codigo(p))).map(relApp),
+          declaracao.source,
+        ).toEqual([PARSE_UNICO]);
+      }
+      // A READ of the field — a member access (`x.depositoOuterRef`,
+      // `x?.depositoOuterRef`, `x['depositoOuterRef']`) or a destructuring —
+      // outside the parse's own module (whose other read is an estoque ROW's
+      // ref) is only ever the parse's sole argument: a second parse (a copy, a
+      // split, a regex, a raw comparison of two refs) would read it bare. A
+      // stored ref read back off a stock document goes through the same parse,
+      // which takes either form. An object-literal KEY and a quoted field name
+      // are not reads: a stock document that stores its own `depositoOuterRef`
+      // (written from the parse's id) names the field so.
+      const leitura =
+        /(?:\?\.|\.)\s*depositoOuterRef\b|\[\s*(['"`])depositoOuterRef\1\s*\]|\b(?:const|let|var)\s*\{[^}]*\bdepositoOuterRef\b[^}]*\}\s*=/g;
+      const lidas = (texto: string) => (texto.match(leitura) ?? []).length;
+      // The scope, pinned on samples: reads count, a key and a quoted name do not.
+      expect(lidas('conta.depositoOuterRef === bloco.depositoOuterRef')).toBe(2);
+      expect(lidas("conta?.depositoOuterRef ?? conta['depositoOuterRef']")).toBe(2);
+      expect(lidas('const { depositoOuterRef } = conta;')).toBe(1);
+      expect(lidas("const doc = { depositoOuterRef: ref }; q.select('depositoOuterRef');")).toBe(0);
+      const chamada =
+        /\bdepositoId(?:Gravavel)?DaContaEstoqueAmazon\(\s*[\w.?]+\.depositoOuterRef\s*\)/g;
+      const leem: string[] = [];
+      for (const p of producao) {
+        if (relApp(p) === PARSE_UNICO) continue;
+        const texto = codigo(p);
+        const pelaChamada = texto.match(chamada) ?? [];
+        expect(lidas(texto), relApp(p)).toBe(pelaChamada.length);
+        if (pelaChamada.length > 0) leem.push(relApp(p));
+      }
+      // Anti-vacuity: the patch task (P2) and the tick (T3) both read it so.
+      expect(leem.sort()).toEqual([
+        'lib/amazon/estoque/processarEstoque.ts',
+        'lib/amazon/estoque/sincronizacaoEstoque.ts',
+      ]);
+    },
+  );
 });
 
 describe('the step-2b capture sanitizer guards', () => {

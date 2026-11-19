@@ -491,11 +491,12 @@ export const MARKETPLACE_TIPO_CAPS: Record<MarketplaceTipo, MarketplaceCapabilit
       suporte: 'sim',
       // ~20,000 SKUs on the one conta ⇒ the BULK path is JSON_LISTINGS_FEED: ≤ 25,000
       // messages and ≤ 10 MB per feed, 5 feeds / 5 min, the result in a processing
-      // report up to 8 h later (D:feeds-api-faq; "use the feed for operations that
-      // involve more than 1,500 items", D:building-listings-management-workflows-guide).
-      // Sale-driven DELTAS still go out as one synchronous patchListingsItem per SKU
-      // (5 rps, burst 5, D:listings-items-api-rate-limits). The feed needs a submission
-      // record plus a result poll (master-plan step 12a).
+      // report up to 8 h later (D:feeds-api-faq; Amazon's own guidance is the feed "for
+      // operations that involve more than 1,500 items",
+      // D:building-listings-management-workflows-guide). Deltas of ≤ 30 SKUs go out as
+      // one patchListingsItem per SKU (5 rps, burst 5, D:listings-items-api-rate-limits),
+      // 31 or more as one delta JSON_LISTINGS_FEED (a product decision of 2026-11-10).
+      // The feed needs a submission record plus a result poll (master-plan step 12a).
       protocolo: 'feed-assincrono',
       loteMax: 25000, // messages per JSON_LISTINGS_FEED document
       multiDeposito: 'nao', // Multi-Location Inventory is US-only (D:mli-integration-guide)

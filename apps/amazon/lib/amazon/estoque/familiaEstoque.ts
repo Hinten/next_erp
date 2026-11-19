@@ -40,6 +40,11 @@
  * smallest document id first when several match (rows under an auto-id); else
  * `null`, which the core reads as 0. A row at another depósito is never read.
  *
+ * Which depósito is the conta's: {@link depositoIdDaContaEstoqueAmazon}, the
+ * one parse of the conta's stored `depositoOuterRef` (either form) into the
+ * depósito id every read here takes; {@link depositoIdGravavelDaContaEstoqueAmazon}
+ * keeps that id only when the stock sync's own documents can store it.
+ *
  * ## `publicado` is carried, never read
  *
  * The core's member type has a `publicado` field; it is projected here because
@@ -63,7 +68,9 @@ import {
 } from '@delfrance/data/admin/estoque';
 import {
   type ComponentesKit,
+  ID_LOTE_FEED_AMAZON_REGEX,
   type estoqueProdutoSchema,
+  idFromRefOrNull,
   makeEstoqueUid,
   naoDocId,
   type produtoSchema,
@@ -146,6 +153,41 @@ function exigirDocId(valor: string, campo: string): void {
 export function formasRefDepositoEstoqueAmazon(depositoId: string): readonly [string, string] {
   exigirDocId(depositoId, 'depositoId');
   return [`documents/depositos/${depositoId}`, `depositos/${depositoId}`];
+}
+
+/**
+ * A conta's depósito id, from its stored `depositoOuterRef` in either form
+ * ({@link formasRefDepositoEstoqueAmazon}'s two, compared exactly: no trim, no
+ * case fold), or `null` when the value names no depósito (absent, not a string,
+ * another collection, a sub-path, an id that is not a document id).
+ *
+ * The ONE parse of a conta's depósito ref under `estoque/`: every stock surface
+ * that reads the conta's depósito calls it, so two of them can never read two
+ * depósitos off the same conta. Pure, so a surface that may not reach the
+ * patch task's I/O can call it too.
+ */
+export function depositoIdDaContaEstoqueAmazon(ref: unknown): string | null {
+  if (typeof ref !== 'string') return null;
+  const id = idFromRefOrNull(ref);
+  if (id === null || naoDocId(id)) return null;
+  return formasRefDepositoEstoqueAmazon(id).includes(ref) ? id : null;
+}
+
+/**
+ * The conta's depósito id as the stock sync's OWN documents can store it:
+ * {@link depositoIdDaContaEstoqueAmazon}, kept only when the id is inside the
+ * id grammar those documents hold (`ID_LOTE_FEED_AMAZON_REGEX`: the sync
+ * document's `depositoDoCursor`, the reconcile and drift documents'
+ * `depositoOuterRef`, a task payload's `depositoId`); `null` otherwise — a
+ * depósito the stock sync could never record is, to it, no depósito.
+ *
+ * The tick reads the conta's depósito through it (T3). Pure, beside the parse,
+ * so any other stock surface that records the depósito reads it the same way.
+ * The patch task (P2) reads the parse alone: it stores no depósito.
+ */
+export function depositoIdGravavelDaContaEstoqueAmazon(ref: unknown): string | null {
+  const id = depositoIdDaContaEstoqueAmazon(ref);
+  return id !== null && ID_LOTE_FEED_AMAZON_REGEX.test(id) ? id : null;
 }
 
 /** Whether a raw row sits at the depósito: its ref is one of the two forms, exactly. */

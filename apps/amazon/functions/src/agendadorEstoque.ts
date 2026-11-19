@@ -29,8 +29,9 @@ import { getAdminApp } from './lib/admin';
  *   `./filaLotes`);
  * - the stock queue `processAmazonStockPatch`, whose consumers are the patch
  *   task's own enqueues (the read-back, the 429 pause, bound by
- *   `./filaEstoque`) and the feed providers' per-SKU hand-offs (the same
- *   `raiz`).
+ *   `./filaEstoque`), the five-minute stock tick's per-SKU patch tasks (bound
+ *   by `./sweepEstoque`, step 12, PR 12-e2) and the feed providers' per-SKU
+ *   hand-offs (the same `raiz`).
  *
  * What a rejection means, the names and the delay rules are the pure modules'
  * (`lib/amazon/feeds/agendadorLotes.ts`, `lib/amazon/estoque/produtorEstoque.ts`);

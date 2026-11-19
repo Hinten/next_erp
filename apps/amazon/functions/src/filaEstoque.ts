@@ -73,7 +73,8 @@ export function depsDoEstoqueAmazon(registro: RegistroEstoqueAmazon): DepsProces
  * identities only: the quantity is computed when the task RUNS, from a fresh
  * read of the ERP, and compared with Amazon's live listing. Its producers, all
  * through the functions codebase's stock root (`./agendadorEstoque`): this
- * handler's own enqueues (the read-back, the 429 pause) and, as the stock flow
+ * handler's own enqueues (the read-back, the 429 pause), the five-minute stock
+ * tick's per-SKU patch tasks (`./sweepEstoque`, PR 12-e2) and, as the stock flow
  * grows, the feed providers' per-SKU hand-offs (`./filaLotes`' seam root). The
  * body is `lib/amazon/estoque/processarEstoque.ts` (P0–P10).
  *

@@ -13,6 +13,8 @@ import {
   CAMPOS_UNIDADE_ESTOQUE_AMAZON,
   type DocEstoqueLidoAmazon,
   type UnidadeLidaEstoqueAmazon,
+  depositoIdDaContaEstoqueAmazon,
+  depositoIdGravavelDaContaEstoqueAmazon,
   formasRefDepositoEstoqueAmazon,
   linhaEstoqueNoDepositoAmazon,
   membroParaEstoqueAmazon,
@@ -458,6 +460,77 @@ describe('the row at the depósito', () => {
     });
     expect(partesDoCaminhoEstoqueAmazon(`documents/produtos/P/estoques/${uid}`)).toBeNull();
   });
+});
+
+describe('depositoIdDaContaEstoqueAmazon — the conta’s depósito, in either stored form', () => {
+  it('★ both stored forms name the depósito (an EQUAL pair)', () => {
+    expect(depositoIdDaContaEstoqueAmazon(CANONICA)).toBe(DEP);
+    expect(depositoIdDaContaEstoqueAmazon(NUA)).toBe(DEP);
+  });
+
+  it('★ the id it answers is the one both ref forms are built from', () => {
+    for (const ref of formasRefDepositoEstoqueAmazon(DEP)) {
+      expect(formasRefDepositoEstoqueAmazon(depositoIdDaContaEstoqueAmazon(ref) ?? '')).toContain(
+        ref,
+      );
+    }
+  });
+
+  it('NEAR-MISS: no trim and no case fold — a changed id is ANOTHER depósito, never this one', () => {
+    expect(depositoIdDaContaEstoqueAmazon(`${CANONICA} `)).toBe(`${DEP} `);
+    expect(depositoIdDaContaEstoqueAmazon('depositos/DEP-1')).toBe('DEP-1');
+  });
+
+  it.each([
+    null,
+    undefined,
+    '',
+    DEP,
+    `documents/outra/${DEP}`,
+    `documents/depositos/${DEP}/sub/x`,
+    `/depositos/${DEP}`,
+    `documents/documents/depositos/${DEP}`,
+    ` depositos/${DEP}`,
+    'depositos/..',
+    'depositos/',
+    42,
+    { id: DEP },
+  ])('★ NEAR-MISS: %s names no depósito', (ref) => {
+    expect(depositoIdDaContaEstoqueAmazon(ref)).toBeNull();
+  });
+});
+
+describe('depositoIdGravavelDaContaEstoqueAmazon — the conta’s depósito, only as the stock documents can store it', () => {
+  it.each([
+    [CANONICA, DEP],
+    [NUA, DEP],
+    ['documents/depositos/Dep_9-x', 'Dep_9-x'],
+    [`depositos/${'a'.repeat(128)}`, 'a'.repeat(128)],
+  ])('★ %s ⇒ %s: the parse’s id, inside the documents’ grammar', (ref, id) => {
+    expect(depositoIdGravavelDaContaEstoqueAmazon(ref)).toBe(id);
+    expect(depositoIdDaContaEstoqueAmazon(ref)).toBe(id);
+  });
+
+  it.each([
+    'documents/depositos/dep.ponto',
+    'depositos/depó',
+    'depositos/dep 1',
+    `${CANONICA} `,
+    `depositos/${'a'.repeat(129)}`,
+  ])(
+    '★ NEAR-MISS: %s — a depósito the PARSE names, outside the grammar the stock documents store ⇒ null',
+    (ref) => {
+      expect(depositoIdDaContaEstoqueAmazon(ref)).not.toBeNull();
+      expect(depositoIdGravavelDaContaEstoqueAmazon(ref)).toBeNull();
+    },
+  );
+
+  it.each([null, undefined, '', DEP, `documents/outra/${DEP}`, 'depositos/..', 42])(
+    'a ref the parse refuses (%s) stays null',
+    (ref) => {
+      expect(depositoIdGravavelDaContaEstoqueAmazon(ref)).toBeNull();
+    },
+  );
 });
 
 describe('the member projection', () => {

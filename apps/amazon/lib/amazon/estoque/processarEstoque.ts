@@ -160,9 +160,7 @@ import {
   type EnvioEstoqueAmazon,
   FLUXO_FEED_AMAZON,
   MOTIVO_CONTA_AMAZON,
-  idFromRefOrNull,
   idVezFeedAmazon,
-  naoDocId,
   type vezFeedAmazonSchema,
 } from '@delfrance/schemas';
 
@@ -205,7 +203,7 @@ import {
 } from '../pedidos/falhaLeituraAmazon';
 import { STATUS_ENVIO_LISTING_AMAZON, envioDoPatch, envioIncerto } from './envioEstoque';
 import { gravarEnvioEstoqueAmazon } from './envioEstoqueFirestore';
-import { formasRefDepositoEstoqueAmazon, quantidadeEstoqueAmazon } from './familiaEstoque';
+import { depositoIdDaContaEstoqueAmazon, quantidadeEstoqueAmazon } from './familiaEstoque';
 import { lerFamiliaEstoqueAmazon } from './familiaEstoqueFirestore';
 import { type VeredictoListingEstoqueAmazon, avaliarListingEstoqueAmazon } from './gateListing';
 import {
@@ -862,18 +860,6 @@ async function falhaDeEscrita(
 /* -------------------------------------------------------------------------- */
 /*                                  the reads                                  */
 /* -------------------------------------------------------------------------- */
-
-/**
- * The conta's depósito id, from its stored ref in either form
- * (`documents/depositos/<id>` or `depositos/<id>`, `familiaEstoque.ts`'s two
- * forms, compared exactly), or `null` when it names no depósito.
- */
-export function depositoIdDaContaEstoqueAmazon(ref: unknown): string | null {
-  if (typeof ref !== 'string') return null;
-  const id = idFromRefOrNull(ref);
-  if (id === null || naoDocId(id)) return null;
-  return formasRefDepositoEstoqueAmazon(id).includes(ref) ? id : null;
-}
 
 /**
  * The end of the conta's last stock feed that may have applied (P6), ms, or

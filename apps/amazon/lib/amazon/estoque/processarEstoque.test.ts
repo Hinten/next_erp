@@ -56,7 +56,6 @@ import {
   type DepsProcessarEstoqueAmazon,
   ORCAMENTO_ANTES_DO_PATCH_MS,
   type ResultadoTarefaEstoqueAmazon,
-  depositoIdDaContaEstoqueAmazon,
   processarEstoqueAmazon,
   registrarDespachoEstoqueAmazon,
   severidadeDoDespachoEstoqueAmazon,
@@ -518,6 +517,20 @@ describe('P2 — the context and the conta’s depósito', () => {
     expect(c.chamadas).toEqual([]);
     expect(severidadeDoDespachoEstoqueAmazon(r)).toBe('WARNING');
   });
+
+  it.each([
+    ['another collection', `documents/filiais/${DEP}`],
+    ['a sub-path of the depósito', `${REF_DEP}/x`],
+    ['the bare id', DEP],
+  ])(
+    'NEAR-MISS: a stored ref naming %s is NO depósito ⇒ conta-sem-deposito (the one parse, familiaEstoque.ts)',
+    async (_c, deposito) => {
+      const c = cenario({ deposito });
+      const r = await c.rodar();
+      expect(r).toMatchObject({ acao: 'encerrado', motivo: 'conta-sem-deposito' });
+      expect(c.chamadas).toEqual([]);
+    },
+  );
 
   it('★ (mutation 10) a reconcile task whose depósito is not the conta’s ⇒ deposito-mudou, zero Amazon calls, no link read', async () => {
     const c = cenario();
@@ -1538,27 +1551,6 @@ describe('the dispatch line', () => {
     );
     expect(log.linhas[0]?.nivel).toBe('error');
     expect(log.linhas[0]?.meta).toMatchObject({ status: '<outro>', codigos: '<outro>' });
-  });
-});
-
-describe('depositoIdDaContaEstoqueAmazon — the conta’s depósito, in either stored form', () => {
-  it('both forms name the depósito', () => {
-    expect(depositoIdDaContaEstoqueAmazon(`documents/depositos/${DEP}`)).toBe(DEP);
-    expect(depositoIdDaContaEstoqueAmazon(`depositos/${DEP}`)).toBe(DEP);
-  });
-
-  it.each([
-    null,
-    undefined,
-    '',
-    DEP,
-    `documents/outra/${DEP}`,
-    `documents/depositos/${DEP}/sub/x`,
-    `/depositos/${DEP}`,
-    'depositos/..',
-    42,
-  ])('NEAR-MISS: %s names no depósito', (ref) => {
-    expect(depositoIdDaContaEstoqueAmazon(ref)).toBeNull();
   });
 });
 
