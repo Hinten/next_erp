@@ -1,25 +1,40 @@
 import { describe, expect, it } from 'vitest';
+import {
+  CODIGO_ERRO_AMAZON,
+  CODIGO_ERRO_ETIQUETA_AMAZON,
+  CODIGO_ERRO_NFE_AMAZON,
+  erroContaAmazonSchema,
+} from './contaAmazon';
 import * as modulo from './estoqueAmazon';
 import {
   CAMINHO_VINCULO_ESTOQUE_AMAZON_REGEX,
   CAMPOS_INDICE_JANELA_ESTOQUE_AMAZON,
   CAMPOS_INDICE_VARREDURA_VINCULOS_AMAZON,
   CHAVE_CONTAGEM_ESTOQUE_AMAZON_REGEX,
+  CODIGO_ERRO_ESTOQUE_AMAZON,
   FASE_RECONCILIACAO_ESTOQUE_AMAZON,
   LIMIAR_FEED_ESTOQUE_AMAZON,
   LIMIAR_ZERO_SEM_LINHA_ESTOQUE_AMAZON,
   MAX_ITENS_DIVERGENCIA_ESTOQUE_AMAZON,
+  MAX_PRODUTOS_ENVIO_ESTOQUE_MANUAL_AMAZON,
   MAX_SKUS_FEED_DELTA_ESTOQUE_AMAZON,
   REF_DEPOSITO_ESTOQUE_AMAZON_REGEX,
+  RESULTADO_ENVIO_ESTOQUE_MANUAL_AMAZON,
+  UNIDADE_LIMITE_ENVIO_ESTOQUE_MANUAL_AMAZON,
   contagensReconciliacaoEstoqueAmazonSchema,
   cursorVarreduraEstoqueAmazonSchema,
+  detalhesLimiteEnvioEstoqueManualAmazonSchema,
   divergenciaEstoqueAmazonSchema,
+  envioEstoqueManualAmazonSchema,
+  erroEnvioEstoqueManualAmazonSchema,
   faseReconciliacaoEstoqueAmazonSchema,
   idDivergenciaEstoqueAmazon,
   itemDivergenciaEstoqueAmazonSchema,
   pedidoReconciliacaoEstoqueAmazonSchema,
   reconciliacaoEstoqueAmazonSchema,
+  resultadoEnvioEstoqueManualAmazonSchema,
   sincronizacaoEstoqueAmazonSchema,
+  unidadeLimiteEnvioEstoqueManualAmazonSchema,
   vezSincronizacaoEstoqueAmazonSchema,
 } from './estoqueAmazon';
 import { ID_LOTE_FEED_AMAZON_REGEX, registroFeedAmazonSchema } from './feedAmazon';
@@ -617,6 +632,168 @@ describe('idDivergenciaEstoqueAmazon', () => {
     for (const pagina of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 53]) {
       expect(() => idDivergenciaEstoqueAmazon('r', pagina), String(pagina)).toThrow(RangeError);
     }
+  });
+});
+
+describe('the manual push route (PR 12-g)', () => {
+  it('★ CODIGO_ERRO_ESTOQUE_AMAZON is exactly the four codes, each AMAZON_ESTOQUE_-prefixed', () => {
+    expect(CODIGO_ERRO_ESTOQUE_AMAZON).toEqual({
+      CORPO_INVALIDO: 'AMAZON_ESTOQUE_CORPO_INVALIDO',
+      SELECAO_EXCEDE_LIMITE: 'AMAZON_ESTOQUE_SELECAO_EXCEDE_LIMITE',
+      CONTA_NAO_ENCONTRADA: 'AMAZON_ESTOQUE_CONTA_NAO_ENCONTRADA',
+      CONTA_SEM_DEPOSITO: 'AMAZON_ESTOQUE_CONTA_SEM_DEPOSITO',
+    });
+    for (const codigo of Object.values(CODIGO_ERRO_ESTOQUE_AMAZON)) {
+      expect(codigo).toMatch(/^AMAZON_ESTOQUE_[A-Z_]+$/);
+    }
+  });
+
+  it('★ every value is unique across ALL FOUR sets: a widening of another set (or a copy of its value) reds', () => {
+    const todos = [
+      ...Object.values(CODIGO_ERRO_AMAZON),
+      ...Object.values(CODIGO_ERRO_NFE_AMAZON),
+      ...Object.values(CODIGO_ERRO_ETIQUETA_AMAZON),
+      ...Object.values(CODIGO_ERRO_ESTOQUE_AMAZON),
+    ];
+    expect(new Set(todos).size).toBe(todos.length);
+    // NEAR-MISS: the NF-e re-drive's body code is ANOTHER code than this one.
+    expect(CODIGO_ERRO_NFE_AMAZON.CORPO_INVALIDO).not.toBe(
+      CODIGO_ERRO_ESTOQUE_AMAZON.CORPO_INVALIDO,
+    );
+  });
+
+  it('the produto bound is 50, the shared dialog’s — APART from the 30-SKU switch', () => {
+    expect(MAX_PRODUTOS_ENVIO_ESTOQUE_MANUAL_AMAZON).toBe(50);
+    expect(MAX_PRODUTOS_ENVIO_ESTOQUE_MANUAL_AMAZON).not.toBe(LIMIAR_FEED_ESTOQUE_AMAZON);
+  });
+
+  it('the two closed vocabularies, each with its companion constant', () => {
+    expect(resultadoEnvioEstoqueManualAmazonSchema.options).toEqual([
+      'enviado',
+      'pulado',
+      'falha',
+      'nao-tentado',
+    ]);
+    expect(Object.values(RESULTADO_ENVIO_ESTOQUE_MANUAL_AMAZON)).toEqual(
+      resultadoEnvioEstoqueManualAmazonSchema.options,
+    );
+    expect(unidadeLimiteEnvioEstoqueManualAmazonSchema.options).toEqual(['produtos', 'anuncios']);
+    expect(Object.values(UNIDADE_LIMITE_ENVIO_ESTOQUE_MANUAL_AMAZON)).toEqual(
+      unidadeLimiteEnvioEstoqueManualAmazonSchema.options,
+    );
+  });
+
+  const RESPOSTA = {
+    listings: [
+      {
+        produtoId: 'ancora-1',
+        produtoNome: 'Âncora 1',
+        sku: 'SKU-1',
+        resultado: RESULTADO_ENVIO_ESTOQUE_MANUAL_AMAZON.enviado,
+        mensagem: 'Na fila.',
+      },
+    ],
+    produtosSemEnvio: [{ produtoId: 'p-2', produtoNome: null, mensagem: 'Sem anúncio.' }],
+    pausadoAte: null,
+  };
+
+  it('the 200 envelope round-trips; pausadoAte is ALWAYS null (NEAR-MISS: an instant is refused)', () => {
+    expect(envioEstoqueManualAmazonSchema.parse(RESPOSTA)).toEqual(RESPOSTA);
+    expect(
+      envioEstoqueManualAmazonSchema.safeParse({ ...RESPOSTA, pausadoAte: '2027-01-01T00:00:00Z' })
+        .success,
+    ).toBe(false);
+  });
+
+  it('★ every field of the 200 envelope is REQUIRED: a row or envelope missing one is refused (NEAR-MISS: `produtoNome` null is accepted, absent is not)', () => {
+    const [linha] = RESPOSTA.listings;
+    const [semEnvio] = RESPOSTA.produtosSemEnvio;
+    const sem = (objeto: Readonly<Record<string, unknown>>, chave: string) =>
+      Object.fromEntries(Object.entries(objeto).filter(([k]) => k !== chave));
+    const recusados: unknown[] = [
+      ...['produtoId', 'produtoNome', 'sku', 'resultado', 'mensagem'].map((chave) => ({
+        ...RESPOSTA,
+        listings: [sem(linha ?? {}, chave)],
+      })),
+      ...['produtoId', 'produtoNome', 'mensagem'].map((chave) => ({
+        ...RESPOSTA,
+        produtosSemEnvio: [sem(semEnvio ?? {}, chave)],
+      })),
+      sem(RESPOSTA, 'pausadoAte'),
+      sem(RESPOSTA, 'listings'),
+      sem(RESPOSTA, 'produtosSemEnvio'),
+    ];
+    for (const corpo of recusados) {
+      expect(envioEstoqueManualAmazonSchema.safeParse(corpo).success, JSON.stringify(corpo)).toBe(
+        false,
+      );
+    }
+    // NEAR-MISS: a null name on either list is the honest "no usable name".
+    expect(
+      envioEstoqueManualAmazonSchema.safeParse({
+        ...RESPOSTA,
+        listings: [{ ...linha, produtoNome: null }],
+      }).success,
+    ).toBe(true);
+  });
+
+  it('a row’s resultado is the closed set: a slug outside it is refused (NEAR-MISS: `nao_tentado`)', () => {
+    for (const resultado of resultadoEnvioEstoqueManualAmazonSchema.options) {
+      const linha = { ...RESPOSTA.listings[0], resultado };
+      expect(
+        envioEstoqueManualAmazonSchema.safeParse({ ...RESPOSTA, listings: [linha] }).success,
+      ).toBe(true);
+    }
+    const ruim = { ...RESPOSTA.listings[0], resultado: 'nao_tentado' };
+    expect(
+      envioEstoqueManualAmazonSchema.safeParse({ ...RESPOSTA, listings: [ruim] }).success,
+    ).toBe(false);
+  });
+
+  it('the envelope is tolerant: an unknown key is stripped, never refused (a later step may add one)', () => {
+    const r = envioEstoqueManualAmazonSchema.parse({ ...RESPOSTA, novidade: 1 });
+    expect(Object.keys(r).sort()).toEqual(['listings', 'pausadoAte', 'produtosSemEnvio']);
+  });
+
+  it('the error envelope is the conta routes’ plus `detalhes`; `code` stays a plain string', () => {
+    const limite = {
+      error: 'x',
+      code: CODIGO_ERRO_ESTOQUE_AMAZON.SELECAO_EXCEDE_LIMITE,
+      detalhes: {
+        limite: LIMIAR_FEED_ESTOQUE_AMAZON,
+        unidade: UNIDADE_LIMITE_ENVIO_ESTOQUE_MANUAL_AMAZON.anuncios,
+        encontrados: 31,
+      },
+    };
+    expect(erroEnvioEstoqueManualAmazonSchema.parse(limite)).toEqual(limite);
+    expect(erroEnvioEstoqueManualAmazonSchema.parse({ error: 'x', code: 'AMAZON_NOVO' })).toEqual({
+      error: 'x',
+      code: 'AMAZON_NOVO',
+    });
+    for (const chave of Object.keys(erroContaAmazonSchema.shape)) {
+      expect(Object.keys(erroEnvioEstoqueManualAmazonSchema.shape), chave).toContain(chave);
+    }
+    // NEAR-MISS: a unit outside the two, a fractional or negative count, a
+    // zero bound, or a missing field is refused…
+    for (const detalhes of [
+      { ...limite.detalhes, unidade: 'skus' },
+      { ...limite.detalhes, encontrados: 31.5 },
+      { ...limite.detalhes, encontrados: -1 },
+      { ...limite.detalhes, limite: 0 },
+      { limite: 30, unidade: 'anuncios' },
+      { limite: 30, encontrados: 31 },
+      { unidade: 'anuncios', encontrados: 31 },
+    ]) {
+      expect(
+        detalhesLimiteEnvioEstoqueManualAmazonSchema.safeParse(detalhes).success,
+        JSON.stringify(detalhes),
+      ).toBe(false);
+    }
+    // …while zero found is a count like any other.
+    expect(
+      detalhesLimiteEnvioEstoqueManualAmazonSchema.safeParse({ ...limite.detalhes, encontrados: 0 })
+        .success,
+    ).toBe(true);
   });
 });
 

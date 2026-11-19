@@ -474,9 +474,12 @@ maxConcurrentDispatches: 1, maxDispatchesPerSecond: 2 }` — ⚠️ concurrency 
   clock Amazon compares). `retryConfig` 5 attempts, 10 s → 300 s, three
   doublings; `timeoutSeconds 300` (the 160-s Amazon worst case, and the task's
   own 200-s budget before its PATCH, both pinned in `src/index.test.ts`);
-  `secrets: AMAZON_LWA_CLIENT_SECRET`. Enqueued by ITSELF and by the stock tick
-  (`sweepAmazonStock`), both through `src/agendadorEstoque.ts` (the functions
-  runtime SA). ONE `evento: 'estoque'`
+  `secrets: AMAZON_LWA_CLIENT_SECRET`. Enqueued by ITSELF, by the stock tick
+  (`sweepAmazonStock`) and, since PR 12-f, by the jobs queue (a reconcile's
+  small drift, a feed batch handed to the per-SKU path), all through
+  `src/agendadorEstoque.ts` (the functions runtime SA), and by the App Hosting
+  manual push route `POST /api/marketplace/amazon/enviar-estoque` (PR 12-g;
+  NAMED per SKU, the App Hosting runtime SA). ONE `evento: 'estoque'`
   dispatch line per run: the closed `motivo`, both quantities, Amazon's status
   and issue CODES through their grammar — never an issue message or a body.
 - **`onNfeAprovadaAmazon`** — `onDocumentWritten` (Firestore) on
@@ -679,7 +682,8 @@ below stays COMMENTED OUT until the window:**
 # ~3-minute status lag most likely submits the NF-e again — wait ~5 minutes, or
 # for the aviso to change. This copy stops THIS codebase's producers (the
 # trigger, the task's re-enqueues); the App Hosting copy stops only that
-# backend's (the receiver, the re-drive). ⚠️ Since step 15 it ALSO stops every
+# backend's (the receiver, the re-drive, since step 12 the manual stock push).
+# ⚠️ Since step 15 it ALSO stops every
 # Easy Ship scheduling enqueue of this codebase (the acceptance entry, the
 # import entry, the scheduling task's own re-enqueues), with NO sweep behind it:
 # each logs one WARNING (`agendamento-nao-enfileirado` / `-nao-reenfileirado`)
@@ -847,16 +851,16 @@ And the same two onto `processAmazonListingsJob` (step 12a), each needing
   (`POST /api/webhooks/amazon`), whose `FEED_PROCESSING_FINISHED` wake-up is its
   SECOND producer (through `lib/firebase/filaLeitura.ts`, beside the reads one).
 
-And onto `processAmazonStockPatch` (step 12):
+And the same two onto `processAmazonStockPatch` (step 12):
 
-- the **functions runtime service account** — every producer today: the stock
-  task's OWN enqueues (the read-back, the 429 pause), the stock tick's patch
-  tasks (`sweepAmazonStock`) and, since PR 12-f, the jobs queue's (a reconcile's
+- the **functions runtime service account** — the stock task's OWN enqueues
+  (the read-back, the 429 pause), the stock tick's patch tasks
+  (`sweepAmazonStock`) and, since PR 12-f, the jobs queue's (a reconcile's
   small drift, a feed batch handed to the per-SKU path), through
-  `src/agendadorEstoque.ts`, the same root as the jobs queue. No App Hosting
-  code enqueues onto it yet, but the deploy grants it to BOTH runtime SAs
-  anyway: `TASKS_INVOKER_SA` is ONE list, applied to every task function of the
-  codebase.
+  `src/agendadorEstoque.ts`, the same root as the jobs queue;
+- the **App Hosting runtime service account** — since PR 12-g the manual stock
+  push route `POST /api/marketplace/amazon/enviar-estoque` (one named patch task
+  per SKU, through `lib/firebase/filaLeitura.ts`).
 
 **Every** enqueuing identity needs **three** grants **per queue** (grant 2 is
 per identity, not per queue), and this codebase has FIVE queues. Grant 1 takes
@@ -909,7 +913,10 @@ gcloud tasks queues add-iam-policy-binding filaLeituraAmazon \
 # handler's own enqueue is rethrown for its queue's retry; the stock task names
 # a lost read-back in its WARNING dispatch line, and a refused pause falls back
 # to the queue's own retry after that line; the stock tick ends the conta
-# `enfileiramento-falhou` with its cursor kept).
+# `enfileiramento-falhou` with its cursor kept; the manual stock push route
+# answers 500 after one ERROR line naming the SDK class and code, the error
+# sanitized of the answered body - only a selection that passes every check of
+# the route reaches that enqueue).
 gcloud iam service-accounts add-iam-policy-binding <enqueuing-sa> \
   --project=<project-id> \
   --member="serviceAccount:<enqueuing-sa>" \

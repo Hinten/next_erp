@@ -34,11 +34,16 @@ const TIMEOUT_SECONDS_LINHA = /^\s*timeoutSeconds\s*:\s*(\d+)\s*(?:#.*)?$/;
 const ROTA_ETIQUETA = 'app/api/marketplace/amazon/etiqueta/route.ts';
 const CORPO_DA_ETIQUETA = 'lib/amazon/agendamento/etiquetaAmazon.ts';
 
+/** The manual stock push route (step 12, PR 12-g), and its body: enqueue-only. */
+const ROTA_ENVIO_MANUAL_ESTOQUE = 'app/api/marketplace/amazon/enviar-estoque/route.ts';
+const CORPO_DO_ENVIO_MANUAL_ESTOQUE = 'lib/amazon/estoque/envioManualEstoque.ts';
+
 /**
  * The routes, and how many code exchanges each may make: status / start /
  * callback / the NF-e re-drive (step 14, PR 14-d — ZERO Amazon calls of any
  * kind, below) / the label route (step 15, PR 15-d — through its body, never an
- * exchange: a stale token's refresh is the context's).
+ * exchange: a stale token's refresh is the context's) / the manual stock push
+ * (step 12, PR 12-g — ZERO Amazon calls of any kind, below).
  */
 const ROTAS: readonly (readonly [string, number])[] = [
   ['app/api/marketplace/amazon/conta/[id]/route.ts', 0],
@@ -46,16 +51,18 @@ const ROTAS: readonly (readonly [string, number])[] = [
   ['app/api/oauth/amazon/callback/route.ts', 0],
   ['app/api/marketplace/amazon/enviar-nfe/route.ts', 0],
   [ROTA_ETIQUETA, 0],
+  [ROTA_ENVIO_MANUAL_ESTOQUE, 0],
   // The callback's body lives in `conectar.ts`; the ONE exchange is counted there.
   ['lib/amazon/conta/conectar.ts', 1],
 ];
 
-/** The bodies of the other four routes, which call neither the context nor the scheduling run. */
+/** The bodies of the other five routes, which call neither the context nor the scheduling run. */
 const CORPOS_SEM_CONTEXTO = [
   'lib/amazon/conta/status.ts',
   'lib/amazon/conta/iniciar.ts',
   'lib/amazon/conta/conectar.ts',
   'lib/amazon/nfe/reenvioNfe.ts',
+  CORPO_DO_ENVIO_MANUAL_ESTOQUE,
 ];
 
 function pinsDeTimeout(textos: string[]): { pinados: number[]; ilegiveis: string[] } {
@@ -101,7 +108,7 @@ describe('the OAuth routes fit inside the backend ceiling', () => {
     expect(PRAZO_AMAZON_MS.lwa + MARGEM_MS).toBeLessThanOrEqual(tetoDoBackendS() * 1000);
   });
 
-  it('status / start / callback / re-drive / label make 0 / 0 / 1 / 0 / 0 code exchanges, and no route ever refreshes', () => {
+  it('status / start / callback / re-drive / label / stock push make 0 / 0 / 1 / 0 / 0 / 0 code exchanges, and no route ever refreshes', () => {
     for (const [arquivo, trocas] of ROTAS) {
       const fonte = ler(arquivo);
       expect(contar(fonte, 'trocarCodigoAutorizacao('), arquivo).toBe(trocas);
@@ -117,9 +124,10 @@ describe('the OAuth routes fit inside the backend ceiling', () => {
     expect(contar(ler(CORPO_DA_ETIQUETA), 'trocarRefreshToken(')).toBe(0);
   });
 
-  it('★ the five route files are thin (no context, no client, no raw fetch); the four other bodies call neither the context nor the run, and the label route’s body calls each once', () => {
+  it('★ the six route files are thin (no context, no client, no raw fetch); the five other bodies call neither the context nor the run, and the label route’s body calls each once', () => {
     const rotas = ROTAS.map(([arquivo]) => arquivo).filter((a) => a.startsWith('app/'));
-    expect(rotas).toHaveLength(5);
+    expect(rotas).toHaveLength(6);
+    expect(rotas).toContain(ROTA_ENVIO_MANUAL_ESTOQUE);
     expect(rotas).toContain(ROTA_ETIQUETA);
     for (const arquivo of rotas) {
       expect(ler(arquivo), arquivo).not.toMatch(
@@ -162,6 +170,19 @@ describe('the OAuth routes fit inside the backend ceiling', () => {
         /loadAmazonContext|criarClienteSpApi|criarClienteEscritaSpApi|executarEscritaAmazon|lerPedidoAmazon\(|consultarStatusNotaFiscal|enviarNotaFiscal|fetch\(/,
       );
     }
+  });
+
+  it('★ the manual stock push (route and body) makes ZERO Amazon calls of any kind: it only enqueues (step 12, PR 12-g)', () => {
+    for (const arquivo of [ROTA_ENVIO_MANUAL_ESTOQUE, CORPO_DO_ENVIO_MANUAL_ESTOQUE]) {
+      const fonte = ler(arquivo);
+      expect(contar(fonte, 'trocarCodigoAutorizacao('), arquivo).toBe(0);
+      expect(contar(fonte, 'trocarRefreshToken('), arquivo).toBe(0);
+      expect(fonte, arquivo).not.toMatch(
+        /loadAmazonContext|criarClienteSpApi|criarClienteEscritaSpApi|executarEscritaAmazon|executarLoteEscritaAmazon|lerListingAmazon|buscarListingsAmazon|enviarDisponibilidadeAmazon|listingsAmazon|feedsAmazon|fetch\(/,
+      );
+    }
+    // Anti-vacuity: the body is the one that enqueues, through the producer's batch.
+    expect(ler(CORPO_DO_ENVIO_MANUAL_ESTOQUE)).toContain('.enfileirarLote(');
   });
 
   it('the reader parses a pin, ignores a comment, and fails closed on an unreadable one', () => {

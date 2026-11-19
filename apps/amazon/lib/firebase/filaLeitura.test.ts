@@ -1,8 +1,9 @@
 /**
- * The App Hosting composition root of its three producers — the reads queue's
+ * The App Hosting composition root of its four producers — the reads queue's
  * (the receiver), since step 14 (PR 14-d) the NF-e queue's (the re-drive
- * route), and since step 12a (PR 12-c) the jobs queue's (the receiver's feed
- * wake-up). The Admin SDK's `getFunctions` is mocked (a recording queue):
+ * route), since step 12a (PR 12-c) the jobs queue's (the receiver's feed
+ * wake-up), and since step 12 (PR 12-g) the stock queue's (the manual push
+ * route). The Admin SDK's `getFunctions` is mocked (a recording queue):
  * nothing reaches Cloud Tasks.
  */
 import { readFileSync } from 'node:fs';
@@ -12,6 +13,13 @@ import { MissingRegionError } from '@delfrance/core/region';
 import { ORIGEM_NOTIFICACAO_AMAZON, TIPO_TAREFA_AMAZON } from '@delfrance/schemas';
 
 import { TASKS_REGION_ENV } from '../amazon/env';
+import { AmazonEstoqueTarefasDesligadasError } from '../amazon/estoque/produtorEstoque';
+import {
+  ORIGEM_TAREFA_ESTOQUE_AMAZON,
+  type TarefaEstoqueAmazon,
+  nomeDaTarefaEstoque,
+  tarefaEstoqueAmazonSchema,
+} from '../amazon/estoque/tarefaEstoque';
 import { AmazonLotesTarefasDesligadasError } from '../amazon/feeds/agendadorLotes';
 import {
   type TarefaLoteAmazon,
@@ -40,11 +48,23 @@ const {
   agendadorDaFilaLeituraAmazon,
   agendadorDaFilaLotesAmazon,
   agendadorDaFilaNfeAmazon,
+  filaEstoqueDesligadaAmazon,
   filaLeituraDesligadaAmazon,
   filaLotesDesligadaAmazon,
   filaNfeDesligadaAmazon,
+  produtorDaFilaEstoqueAmazon,
   regiaoDaFilaLeituraAmazon,
 } = await import('./filaLeitura');
+
+/** The manual push's payload: one SKU, `origem: 'manual'`, the request's reference. */
+const TAREFA_ESTOQUE: TarefaEstoqueAmazon = tarefaEstoqueAmazonSchema.parse({
+  v: 1,
+  contaId: 'conta-teste',
+  sku: 'SKU-1',
+  origem: ORIGEM_TAREFA_ESTOQUE_AMAZON.manual,
+  referencia: 'req-1',
+  depositoId: null,
+});
 
 const PAYLOAD: PayloadNotificacaoAmazon = {
   tipo: TIPO_TAREFA_AMAZON.pedido,
@@ -276,5 +296,73 @@ describe('agendadorDaFilaLotesAmazon (step 12a, PR 12-c: the receiver’s SECOND
       agendador.enfileirarLote(DESPERTAR, { nome: NOME_DESPERTAR }),
     ).rejects.toBeInstanceOf(MissingRegionError);
     expect(h.chamadas).toEqual([]);
+  });
+});
+
+describe('produtorDaFilaEstoqueAmazon (step 12, PR 12-g: the manual push route’s producer)', () => {
+  it('★ enqueues NAMED on the region-qualified STOCK queue, the payload and its own name ALONE (no delay)', async () => {
+    vi.stubEnv('AMAZON_TASKS_REGION', 'xx-tarefas-1');
+    await expect(produtorDaFilaEstoqueAmazon().enfileirar(TAREFA_ESTOQUE)).resolves.toBe(
+      'enfileirada',
+    );
+    expect(h.caminhos).toEqual(['locations/xx-tarefas-1/functions/processAmazonStockPatch']);
+    expect(h.chamadas).toEqual([[TAREFA_ESTOQUE, { id: nomeDaTarefaEstoque(TAREFA_ESTOQUE) }]]);
+    expect(h.getFunctions).toHaveBeenCalledWith({ name: 'app-de-teste' });
+  });
+
+  it('the SAME region as the other three queues: FUNCTIONS_REGION when AMAZON_TASKS_REGION is unset', async () => {
+    vi.stubEnv('FUNCTIONS_REGION', 'xx-funcoes-1');
+    await produtorDaFilaEstoqueAmazon().enfileirar(TAREFA_ESTOQUE);
+    await agendadorDaFilaLeituraAmazon().enfileirar(PAYLOAD);
+    expect(h.caminhos).toEqual([
+      'locations/xx-funcoes-1/functions/processAmazonStockPatch',
+      'locations/xx-funcoes-1/functions/filaLeituraAmazon',
+    ]);
+  });
+
+  it.each([
+    ['1', true],
+    ['', false],
+    ['true', false],
+    [' 1', false],
+  ])(
+    'the SAME valve: AMAZON_TASKS_DISABLED=%j ⇒ closed: %s, for all four queues',
+    (valor, fechada) => {
+      vi.stubEnv('AMAZON_TASKS_DISABLED', valor);
+      expect(filaEstoqueDesligadaAmazon()).toBe(fechada);
+      expect(filaLotesDesligadaAmazon()).toBe(fechada);
+      expect(filaNfeDesligadaAmazon()).toBe(fechada);
+      expect(filaLeituraDesligadaAmazon()).toBe(fechada);
+    },
+  );
+
+  it('closed ⇒ the enqueue rejects the stock queue’s OWN class and the SDK is never touched', async () => {
+    vi.stubEnv('AMAZON_TASKS_DISABLED', '1');
+    const erro = await produtorDaFilaEstoqueAmazon()
+      .enfileirar(TAREFA_ESTOQUE)
+      .then(
+        () => expect.unreachable('o enqueue deveria ter rejeitado'),
+        (e: unknown) => e,
+      );
+    expect(erro).toBeInstanceOf(AmazonEstoqueTarefasDesligadasError);
+    expect(erro).not.toBeInstanceOf(AmazonTarefasDesligadasError);
+    expect(erro).not.toBeInstanceOf(AmazonNfeTarefasDesligadasError);
+    expect(erro).not.toBeInstanceOf(AmazonLotesTarefasDesligadasError);
+    expect(h.getFunctions).not.toHaveBeenCalled();
+  });
+
+  it('an unset region rejects THAT enqueue (resolved per enqueue, never at module load)', async () => {
+    const produtor = produtorDaFilaEstoqueAmazon();
+    await expect(produtor.enfileirar(TAREFA_ESTOQUE)).rejects.toBeInstanceOf(MissingRegionError);
+    expect(h.chamadas).toEqual([]);
+  });
+
+  it('★ the file still has ONE `getFunctions(` call, now behind FOUR producers', () => {
+    const fonte = readFileSync(new URL('./filaLeitura.ts', import.meta.url), 'utf8');
+    const codigo = fonte.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+    expect(codigo.match(/\bgetFunctions\s*\(/g)).toHaveLength(1);
+    // Its four CALLS (the declaration aside), one per producer.
+    expect(codigo.match(/(?<!function )\bfilaDoAppHosting<\w+>\(/g)).toHaveLength(4);
+    expect(codigo).toMatch(/caminhoDaFilaEstoqueAmazon\(regiaoDaFilaLeituraAmazon\(\)\)/);
   });
 });

@@ -177,7 +177,15 @@
  *    the importers of `estoque/` and of the stock root; and each reconcile
  *    document has ONE writer: the run's and the request's handles are named by
  *    the reconcile alone (its one tier-1 helper), the drift handle by the block
- *    module alone (an overwrite, read back by id, never queried).
+ *    module alone (an overwrite, read back by id, never queried);
+ *  - (step 12, PR 12-g) the manual push route `POST /api/marketplace/amazon/enviar-estoque`
+ *    and its body (`estoque/envioManualEstoque.ts`, which joins the I/O half
+ *    but NOT the App Hosting forbidden list) sit on the union walk: they reach
+ *    the stock producer and its payload, the App Hosting root binds the stock
+ *    queue behind its one `getFunctions(` call, and neither file names the
+ *    stock valve or its canary, a way to reach Amazon, the quantity or the
+ *    anchor list, or makes a write; the body reads the conta's depósito
+ *    through the ONE parse.
  */
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, posix, relative, sep } from 'node:path';
@@ -645,8 +653,9 @@ function importadoresDoSdkDeTarefas(fontes: readonly (readonly [string, string])
 
 /**
  * The App Hosting composition root of the reads queue (3-c), since step 14 (PR
- * 14-d) of the NF-e queue's re-drive producer, and since step 12a (PR 12-c) of
- * the jobs queue's feed wake-up: one of the app's five `getFunctions(` callers.
+ * 14-d) of the NF-e queue's re-drive producer, since step 12a (PR 12-c) of the
+ * jobs queue's feed wake-up, and since step 12 (PR 12-g) of the stock queue's
+ * manual push: one of the app's five `getFunctions(` callers.
  */
 const ARQUIVO_RAIZ_DA_FILA = 'lib/firebase/filaLeitura.ts';
 
@@ -710,16 +719,18 @@ const ARQUIVO_RAIZ_DO_AGENDADOR_ESTOQUE = 'functions/src/agendadorEstoque.ts';
  * calls: a root that binds another root's queue — the NF-e producer added to
  * the functions codebase's reads-queue root, whose closure the NF-e trigger
  * must never reach — is a different file than this table says. The App
- * Hosting root binds THREE queues (since step 14, PR 14-d: the re-drive route's
+ * Hosting root binds FOUR queues (since step 14, PR 14-d: the re-drive route's
  * NF-e producer; since step 12a, PR 12-c: the receiver's feed wake-up onto the
- * jobs queue), behind its ONE `getFunctions(` call
- * (`lib/firebase/filaLeitura.test.ts` pins the single call); the stock root
- * binds TWO (since step 12, PR 12-e1: the stock queue beside the jobs queue),
- * behind its own one call (`functions/src/agendadorEstoque.test.ts`).
+ * jobs queue; since step 12, PR 12-g: the manual push route's stock producer),
+ * behind its ONE `getFunctions(` call (`lib/firebase/filaLeitura.test.ts` pins
+ * the single call); the stock root binds TWO (since step 12, PR 12-e1: the
+ * stock queue beside the jobs queue), behind its own one call
+ * (`functions/src/agendadorEstoque.test.ts`).
  */
 const FILAS_DE_CADA_RAIZ: Readonly<Record<string, readonly string[]>> = {
   [ARQUIVO_RAIZ_DA_FILA]: [
     'caminhoDaFilaAmazon',
+    'caminhoDaFilaEstoqueAmazon',
     'caminhoDaFilaLotesAmazon',
     'caminhoDaFilaNfeAmazon',
   ],
@@ -1019,7 +1030,9 @@ const MODULOS_DE_FEED_FORA_DO_APP_HOSTING = [
  * concurrency 1 and its own budget) and its three Firestore I/O modules (the
  * masked link read, the family read, the outcome write-back). A route that
  * reaches the task could send a PATCH outside the stock queue; the stock
- * producer and the payload contract stay allowed (a route may ENQUEUE a task).
+ * producer and the payload contract stay allowed (a route may ENQUEUE a task),
+ * and so, since PR 12-g, does the manual push route's body
+ * ({@link ARQUIVO_ENVIO_MANUAL_ESTOQUE}), which reads and enqueues only.
  */
 const MODULOS_DE_ESTOQUE_FORA_DO_APP_HOSTING = [
   'lib/amazon/estoque/processarEstoque.ts',
@@ -1040,6 +1053,16 @@ const MODULOS_DE_ESTOQUE_FORA_DO_APP_HOSTING = [
   // and hands batches to both queues.
   'lib/amazon/estoque/provedorLoteEstoque.ts',
 ];
+
+/** The manual stock push route (step 12, PR 12-g), relative to the APP root: a union-walk entry. */
+const ROTA_ENVIO_MANUAL_ESTOQUE = 'app/api/marketplace/amazon/enviar-estoque/route.ts';
+
+/**
+ * Its body, relative to `lib/amazon`: the ONE I/O module of `estoque/` an App
+ * Hosting entry reaches besides the producer (it reads, and enqueues through
+ * the producer; it never reaches the task, the engine or Amazon).
+ */
+const ARQUIVO_ENVIO_MANUAL_ESTOQUE = 'estoque/envioManualEstoque.ts';
 
 /**
  * The label route (step 15, PR 15-d), relative to the APP root: the ONE App
@@ -2746,6 +2769,89 @@ describe('the step-14 NF-e re-drive route guards (14-d)', () => {
   });
 });
 
+/** The manual stock push route and its body (step 12, PR 12-g), relative to the APP root. */
+const ARQUIVOS_DO_ENVIO_MANUAL_ESTOQUE = [
+  ROTA_ENVIO_MANUAL_ESTOQUE,
+  `lib/amazon/${ARQUIVO_ENVIO_MANUAL_ESTOQUE}`,
+] as const;
+
+/**
+ * What the manual push (route and body) may never NAME in code (comments
+ * aside): the stock write valve, its canary list and every reader of either —
+ * the task is the one source of truth for a write —; every way to reach Amazon
+ * (the context, a client, the write engine's two entries, the listings
+ * helpers, a raw fetch); the quantity (the estoque handle, the family reads,
+ * the core's rule, the plan): the task computes it when it runs; and the
+ * produto's denormalised anchor list (a SKU is found through the link
+ * partition).
+ */
+const PROIBIDOS_NO_ENVIO_MANUAL_ESTOQUE =
+  /\b(?:lerValvula|decidirAlvo|decidirLote|lerModo|lerCanario|VALVULA_ENV_AMAZON|CANARIO_ENV_AMAZON|AMAZON_MODO_ESTOQUE|AMAZON_CANARIO_ESTOQUE|loadAmazonContext|criarClienteSpApi|criarClienteEscritaSpApi|executarEscritaAmazon|executarLoteEscritaAmazon|lerListingAmazon|buscarListingsAmazon|enviarDisponibilidadeAmazon|lerListingNaAmazon|buscarListingsNaAmazon|enviarDisponibilidadeNaAmazon|listingsAmazon|estoqueCollection|lerFamiliaEstoqueAmazon|lerFamiliasEstoqueAmazon|lerMembrosEstoqueAmazon|quantidadeEstoqueAmazon|quantidadeDoMembroCore|planejarEstoqueAmazon|processarEstoqueAmazon|integracoesComProduto|fetch)\b/g;
+
+describe('the step-12 manual push route guards (12-g)', () => {
+  it('★ neither the route nor its body names the stock valve, its canary, any way to reach Amazon, the quantity or the anchor list', () => {
+    for (const arquivo of ARQUIVOS_DO_ENVIO_MANUAL_ESTOQUE) {
+      const codigo = semComentarios(lerDoApp(arquivo) ?? '');
+      expect(codigo, arquivo).not.toBe('');
+      expect(codigo.match(PROIBIDOS_NO_ENVIO_MANUAL_ESTOQUE) ?? [], arquivo).toEqual([]);
+    }
+    // Anti-vacuity: the body DOES read the switch and enqueue, by these names.
+    const corpo = semComentarios(lerDoApp(ARQUIVOS_DO_ENVIO_MANUAL_ESTOQUE[1]) ?? '');
+    expect(corpo).toContain('lerChaveDeChamadasAmazon(');
+    expect(corpo).toContain('.enfileirarLote(');
+    expect(corpo).toContain('tarefaEstoqueAmazonSchema.safeParse(');
+  });
+
+  // (The transaction call is named by no file of the app at all: the guard above.)
+  it('★ neither the route nor its body makes a Firestore write or an aviso write', () => {
+    for (const arquivo of ARQUIVOS_DO_ENVIO_MANUAL_ESTOQUE) {
+      const codigo = semComentarios(lerDoApp(arquivo) ?? '');
+      expect(codigo.match(ESCRITA_FIRESTORE_EM_FEEDS) ?? [], arquivo).toEqual([]);
+      expect(codigo, arquivo).not.toMatch(
+        /\b(?:escreverAviso|resolverAviso|sincronizarAvisoContaEstoqueAmazon)\b|\.\s*set\s*\(\s*(?:ref|doc)/,
+      );
+    }
+    expect(Object.keys(ESCRITORES_EM_ESTOQUE)).not.toContain(ARQUIVO_ENVIO_MANUAL_ESTOQUE);
+  });
+
+  it('the valve scan flags what it exists for, and nothing alike (near-misses)', () => {
+    for (const [fonte, achado] of [
+      ['const v = lerValvula(FLUXO_AMAZON.estoque, a);', 'lerValvula'],
+      ["a['AMAZON_MODO_ESTOQUE']", 'AMAZON_MODO_ESTOQUE'],
+      ['a.AMAZON_CANARIO_ESTOQUE', 'AMAZON_CANARIO_ESTOQUE'],
+      ['const n = quantidadeEstoqueAmazon(m);', 'quantidadeEstoqueAmazon'],
+      ['estoqueCollection.ref(db, { produtoId })', 'estoqueCollection'],
+      ['await fetch(url)', 'fetch'],
+      // The app's own listings wrappers and their module, not only the package's helpers.
+      ['await lerListingNaAmazon(c, s)', 'lerListingNaAmazon'],
+      ['await buscarListingsNaAmazon(c, s)', 'buscarListingsNaAmazon'],
+      ['await enviarDisponibilidadeNaAmazon(c, s)', 'enviarDisponibilidadeNaAmazon'],
+      ["import { x } from '../listings/listingsAmazon';", 'listingsAmazon'],
+    ] as const) {
+      expect(fonte.match(PROIBIDOS_NO_ENVIO_MANUAL_ESTOQUE), fonte).toEqual([achado]);
+    }
+    // NEAR-MISS: the switch reader, the SKU path check, the producer and a
+    // link read are none of those.
+    expect(
+      'lerChaveDeChamadasAmazon(a); skuTemCaminhoAmazon(s); await deps.produtor().enfileirarLote(t); produtoAmazonLinkCollection.ref(db, { produtoId }); const estoqueSku = 1;'.match(
+        PROIBIDOS_NO_ENVIO_MANUAL_ESTOQUE,
+      ),
+    ).toBeNull();
+  });
+
+  it('the route verifies PERM.integracao.write — never a pedido bit — and is thin', () => {
+    const rota = semComentarios(lerDoApp(ROTA_ENVIO_MANUAL_ESTOQUE) ?? '');
+    expect(rota).toContain('verifyCaller(req, PERM.integracao.write)');
+    expect(rota).not.toMatch(/PERM\.pedido/);
+    expect(rota).toContain('enviarEstoqueManualAmazon(');
+    expect(rota).toMatch(/export async function POST\(/);
+    // The body is reached through its ONE importer, the route.
+    expect(IMPORTADORES_DE_ESTOQUE[ROTA_ENVIO_MANUAL_ESTOQUE]).toEqual([
+      'estoque/envioManualEstoque',
+    ]);
+  });
+});
+
 describe('the step-15 Easy Ship scheduling guards (15-b)', () => {
   const agendamento = arquivosTs(join(RAIZ_LIB, 'agendamento')).filter((p) => !ehTeste(p));
 
@@ -3662,6 +3768,14 @@ const TIPOS_PERMITIDOS_EM_ESTOQUE = ['../pedidos/vinculoProdutoAmazon', '../core
  *   the jobs payload contract and its names (a recovery's window `feed-enviar`); the evaluator, the window
  *   reader, the drift blocks, the family read, the write-back, the recovery
  *   delta, the reconcile request and the plan are its siblings'.
+ * - `envioManualEstoque.ts` (PR 12-g) — the manual push route's body, an App
+ *   Hosting entry's: the region error class (its pre-read region check), the
+ *   conta, produto and link handles (masked by-id reads, the children seek,
+ *   the partition listings), the SP-API package (the SKU path check alone), the
+ *   schemas (the codes, the envelopes, the bounds), zod (the strict body), the
+ *   task-SDK helpers (the failures it names), the logger, the read switch, the
+ *   environment's region name and the bounded body read; the payload, the
+ *   producer, the depósito parse and the probe set are its siblings'.
  */
 const E_S_EM_ESTOQUE: Readonly<Record<string, readonly string[]>> = {
   'estoque/resolverEstoque.ts': [
@@ -3752,6 +3866,18 @@ const E_S_EM_ESTOQUE: Readonly<Record<string, readonly string[]>> = {
     '@delfrance/integrations-amazon-sp-api',
     '@delfrance/schemas',
   ],
+  'estoque/envioManualEstoque.ts': [
+    '../core/filaTarefas',
+    '../core/log',
+    '../core/valvulas',
+    '../env',
+    '../notificacoes/corpo',
+    '@delfrance/core/region',
+    '@delfrance/data/admin/collections',
+    '@delfrance/integrations-amazon-sp-api',
+    '@delfrance/schemas',
+    'zod',
+  ],
 };
 
 /**
@@ -3792,9 +3918,15 @@ const ESCRITORES_EM_ESTOQUE: Readonly<Record<string, number>> = {
  * - `functions/src/filaLotes.ts` (PR 12-f) — the jobs root binds the daily
  *   reconcile's page (the dispatcher itself imports no fluxo's module);
  * - `functions/src/reconciliacaoEstoque.ts` (PR 12-f) — the daily reconcile's
- *   schedule runs its daily run.
+ *   schedule runs its daily run;
+ * - `app/api/marketplace/amazon/enviar-estoque/route.ts` (PR 12-g) — the manual
+ *   push route binds its body;
+ * - `lib/firebase/filaLeitura.ts` (PR 12-g) — the App Hosting root binds the
+ *   stock producer onto its queue for that route (the payload contract by
+ *   type). It sits OUTSIDE `lib/amazon`, so the scan reads `lib/` whole.
  */
 const IMPORTADORES_DE_ESTOQUE: Readonly<Record<string, readonly string[]>> = {
+  'app/api/marketplace/amazon/enviar-estoque/route.ts': ['estoque/envioManualEstoque'],
   'functions/src/agendadorEstoque.ts': ['estoque/produtorEstoque', 'estoque/tarefaEstoque'],
   'functions/src/filaEstoque.ts': ['estoque/processarEstoque'],
   'functions/src/filaLotes.ts': ['estoque/reconciliacaoEstoque'],
@@ -3802,6 +3934,7 @@ const IMPORTADORES_DE_ESTOQUE: Readonly<Record<string, readonly string[]>> = {
   'functions/src/reconciliacaoEstoque.ts': ['estoque/reconciliacaoEstoque'],
   'functions/src/sweepEstoque.ts': ['estoque/sincronizacaoEstoque'],
   'lib/amazon/feeds/destinosLote.ts': ['estoque/produtorEstoque', 'estoque/provedorLoteEstoque'],
+  'lib/firebase/filaLeitura.ts': ['estoque/produtorEstoque', 'estoque/tarefaEstoque'],
 };
 
 /** The names an import declaration of `espec` binds (namespace and default imports read as `*`). */
@@ -3840,6 +3973,7 @@ describe('the step-12 stock core guards (12-d)', () => {
       'estoque/divergenciasFirestore.ts',
       'estoque/envioEstoque.ts',
       'estoque/envioEstoqueFirestore.ts',
+      'estoque/envioManualEstoque.ts',
       'estoque/familiaEstoque.ts',
       'estoque/familiaEstoqueFirestore.ts',
       'estoque/gateListing.ts',
@@ -3965,9 +4099,13 @@ describe('the step-12 stock core guards (12-d)', () => {
     );
   });
 
-  it('★ (3, 12-e1, 12-e2) estoque/ is WIRED by EXACTLY the stock root, the stock queue, the stock tick’s schedule, the functions index and the seam’s root type — lib, app, functions and scripts', () => {
+  it('★ (3, 12-e1, 12-e2, 12-g) estoque/ is WIRED by EXACTLY the stock root, the stock queue, the stock tick’s schedule, the functions index, the seam’s root type, the manual push route and the App Hosting root — all of lib, app, functions and scripts', () => {
     const fora = [
       ...fontesDoChamadorDeSearchOrders(),
+      // The App Hosting roots outside `lib/amazon` (`lib/firebase`, `lib/auth`).
+      ...arquivosTs(join(RAIZ_APP, 'lib')).filter(
+        (p) => !ehTeste(p) && !relApp(p).startsWith('lib/amazon/'),
+      ),
       ...(existsSync(join(RAIZ_APP, 'proxy.ts')) ? [join(RAIZ_APP, 'proxy.ts')] : []),
     ].filter((p) => !relApp(p).startsWith('lib/amazon/estoque/'));
     const importadores = Object.fromEntries(
@@ -3995,9 +4133,14 @@ describe('the step-12 stock core guards (12-d)', () => {
     expect(importacoesDeValor(seam).filter((e) => IMPORTA_ESTOQUE.test(e))).toEqual([
       '../estoque/provedorLoteEstoque',
     ]);
-    // Anti-vacuity: the scan read the functions codebase and the scripts.
+    // Anti-vacuity: the scan read the functions codebase, the scripts and the
+    // App Hosting root outside `lib/amazon`.
     expect(fora.map(relApp)).toEqual(
-      expect.arrayContaining(['functions/src/index.ts', 'scripts/sanitizar.ts']),
+      expect.arrayContaining([
+        'functions/src/index.ts',
+        'scripts/sanitizar.ts',
+        ARQUIVO_RAIZ_DA_FILA,
+      ]),
     );
   });
 
@@ -4175,18 +4318,73 @@ describe('the step-12 patch path guards (12-e1)', () => {
     );
   });
 
-  it('★ the App Hosting list holds EVERY I/O module of estoque/ but the producer — derived from E_S_EM_ESTOQUE, never from itself', () => {
+  it('★ the App Hosting list holds EVERY I/O module of estoque/ but the producer and the manual push’s body — derived from E_S_EM_ESTOQUE, never from itself', () => {
     // E_S_EM_ESTOQUE is held to the folder by the purity pins above (a module
     // missing from it must pass the PURE allow-list, which no I/O module does),
     // so an entry dropped from the App Hosting list reds HERE, even while no
-    // route reaches it yet. The producer stays reachable on purpose: a route
-    // may ENQUEUE a task (the payload contract is pure).
+    // route reaches it yet. Two stay reachable on purpose: the producer (a
+    // route may ENQUEUE a task; the payload contract is pure) and, since PR
+    // 12-g, the manual push route's own body, which only READS and enqueues
+    // through that producer.
+    const naAppHosting = ['estoque/produtorEstoque.ts', ARQUIVO_ENVIO_MANUAL_ESTOQUE];
     const esperado = Object.keys(E_S_EM_ESTOQUE)
-      .filter((arquivo) => arquivo !== 'estoque/produtorEstoque.ts')
+      .filter((arquivo) => !naAppHosting.includes(arquivo))
       .map((arquivo) => `lib/amazon/${arquivo}`)
       .sort();
     expect(esperado).toContain('lib/amazon/estoque/processarEstoque.ts');
+    expect(Object.keys(E_S_EM_ESTOQUE)).toEqual(expect.arrayContaining(naAppHosting));
     expect([...MODULOS_DE_ESTOQUE_FORA_DO_APP_HOSTING].sort()).toEqual(esperado);
+  });
+
+  it('★ (12-g) the manual push route reaches the stock PRODUCER, its payload and its own body — never the task, the engine, the tick, the reconcile, the recovery delta or the feed provider; type edges and the @/ alias walked', () => {
+    const fecho = fechoDeImportacoes(
+      [ROTA_ENVIO_MANUAL_ESTOQUE],
+      lerDoApp,
+      resolverAliasDoApp(lerDoApp),
+    );
+    expect(violacoesDoAppHosting(fecho)).toEqual([]);
+    // It is on the union walk, not the label route's own.
+    expect(entradasDaUniaoDoAppHosting()).toContain(ROTA_ENVIO_MANUAL_ESTOQUE);
+    // Anti-vacuity: the walk entered the body, the producer, the payload and
+    // the App Hosting root that binds the producer…
+    expect(fecho.arquivos).toEqual(
+      expect.arrayContaining([
+        ROTA_ENVIO_MANUAL_ESTOQUE,
+        `lib/amazon/${ARQUIVO_ENVIO_MANUAL_ESTOQUE}`,
+        'lib/amazon/estoque/produtorEstoque.ts',
+        'lib/amazon/estoque/tarefaEstoque.ts',
+        ARQUIVO_RAIZ_DA_FILA,
+      ]),
+    );
+    // …and reached none of the stock wiring, nor the engine, nor any feed
+    // handler (both already in the shared list, named here so a change to the
+    // list cannot silently drop them for this route).
+    for (const proibido of [
+      'lib/amazon/estoque/processarEstoque.ts',
+      'lib/amazon/estoque/sincronizacaoEstoque.ts',
+      'lib/amazon/estoque/reconciliacaoEstoque.ts',
+      'lib/amazon/estoque/deltaEstoque.ts',
+      'lib/amazon/estoque/provedorLoteEstoque.ts',
+      'lib/amazon/estoque/familiaEstoqueFirestore.ts',
+      'lib/amazon/feeds/enviarFeed.ts',
+      MOTOR_DE_ESCRITA,
+    ]) {
+      expect(PROIBIDOS_NO_APP_HOSTING, proibido).toContain(proibido);
+      expect(fecho.arquivos, proibido).not.toContain(proibido);
+    }
+    // No file it reaches names the SP-API write client, or calls the listings or
+    // feed helpers (the redactor only NAMES their operations, as exempted above).
+    expect(fecho.arquivos.filter((a) => nomeiaClienteDeEscrita(lerDoApp(a) ?? ''))).toEqual([]);
+    expect(
+      fecho.arquivos
+        .filter((a) => nomeiaOsListings(lerDoApp(a) ?? ''))
+        .filter((a) => !NOMEIAM_LISTINGS_SEM_CHAMAR.includes(a)),
+    ).toEqual([]);
+    expect(
+      fecho.arquivos
+        .filter((a) => nomeiaOsFeeds(lerDoApp(a) ?? ''))
+        .filter((a) => !NOMEIAM_FEEDS_SEM_CHAMAR.includes(a)),
+    ).toEqual([]);
   });
 });
 
@@ -4294,10 +4492,12 @@ describe('the step-12 tick guards (12-e2)', () => {
         if (pelaChamada.length > 0) leem.push(relApp(p));
       }
       // Anti-vacuity: the patch task (P2), the tick (T3), the reconcile (its
-      // claim, its page, its sends), the drift blocks' reader and the stock feed
-      // provider (a send's depósito checks, a recovery's window) all read it so.
+      // claim, its page, its sends), the drift blocks' reader, the stock feed
+      // provider (a send's depósito checks, a recovery's window) and (PR 12-g)
+      // the manual push's conta gate all read it so.
       expect(leem.sort()).toEqual([
         'lib/amazon/estoque/divergenciasFirestore.ts',
+        'lib/amazon/estoque/envioManualEstoque.ts',
         'lib/amazon/estoque/processarEstoque.ts',
         'lib/amazon/estoque/provedorLoteEstoque.ts',
         'lib/amazon/estoque/reconciliacaoEstoque.ts',

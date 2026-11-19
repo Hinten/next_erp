@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { erroContaAmazonSchema } from './contaAmazon';
 import { ID_LOTE_FEED_AMAZON_REGEX } from './feedAmazon';
 import type { produtoAmazonLinkSchema } from './produto/collection/amazonLink';
 import type { estoqueProdutoSchema } from './produto/collection/estoque';
@@ -66,6 +67,14 @@ import { type TimestampLike, ttlExpiry } from './shared/ttl';
  * match block and no client can read any of them. Unknown keys are STRIPPED.
  * Bare schemas, never a `{ schema, meta }` export (`registry.test.ts`); the
  * Admin handles in `@delfrance/data/admin/collections` spell the paths.
+ *
+ * ## The manual push route's answers (PR 12-g)
+ *
+ * `POST /api/marketplace/amazon/enviar-estoque` stores nothing: its answers are
+ * wire shapes, not documents — the closed error-code set
+ * {@link CODIGO_ERRO_ESTOQUE_AMAZON}, the error envelope
+ * {@link erroEnvioEstoqueManualAmazonSchema} and the 200 envelope
+ * {@link envioEstoqueManualAmazonSchema}, one row per listing.
  */
 
 /** A non-negative SAFE integer: what every compared number here is. */
@@ -412,3 +421,149 @@ export function idDivergenciaEstoqueAmazon(execucaoId: string, pagina: number): 
   }
   return `${execucaoId}-${String(pagina)}`;
 }
+
+/* -------------------------------------------------------------------------- */
+/*                 The manual push route (step 12, PR 12-g)                   */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The most DISTINCT produtos one manual push may select: the shared stock
+ * dialog's bound. A request above it is refused whole, never truncated.
+ *
+ * ⚠️ NOT the listing bound: the route also refuses a selection whose produtos
+ * map to more than {@link LIMIAR_FEED_ESTOQUE_AMAZON} SKUs, because it only
+ * enqueues per-SKU patch tasks. The two bounds count different things.
+ */
+export const MAX_PRODUTOS_ENVIO_ESTOQUE_MANUAL_AMAZON = 50;
+
+/**
+ * The `code` of every error envelope `POST /api/marketplace/amazon/enviar-estoque`
+ * answers with that is NOT already in `CODIGO_ERRO_AMAZON` (the route's
+ * read-switch refusal reuses `AMAZON_CHAMADAS_DESLIGADAS`).
+ *
+ * ⚠️ A SEPARATE closed set on purpose, never a widening of `CODIGO_ERRO_AMAZON`
+ * (whose exhaustive copy in `apps/web` covers only the conta routes' answers).
+ * Every value is unique across this set, `CODIGO_ERRO_AMAZON`,
+ * `CODIGO_ERRO_NFE_AMAZON` and `CODIGO_ERRO_ETIQUETA_AMAZON`.
+ *
+ * The route never calls Amazon and never writes Firestore: every refusal below
+ * means NOTHING was enqueued.
+ */
+export const CODIGO_ERRO_ESTOQUE_AMAZON = {
+  /**
+   * 400 — the body is not exactly `{ integracaoId, produtoIds }`: a conta id
+   * outside its grammar, an empty list, or an id that is not a document id.
+   * `issues` names the field PATHS, never a value.
+   */
+  CORPO_INVALIDO: 'AMAZON_ESTOQUE_CORPO_INVALIDO',
+  /**
+   * 400 — the selection is too big, said by `detalhes`: more than
+   * {@link MAX_PRODUTOS_ENVIO_ESTOQUE_MANUAL_AMAZON} distinct produtos
+   * (`unidade: 'produtos'`), or produtos whose families hold more than
+   * {@link LIMIAR_FEED_ESTOQUE_AMAZON} distinct SKUs of the conta
+   * (`unidade: 'anuncios'`). All or nothing: no part of the selection was sent.
+   */
+  SELECAO_EXCEDE_LIMITE: 'AMAZON_ESTOQUE_SELECAO_EXCEDE_LIMITE',
+  /** 404 — no conta with this id, it is not an Amazon conta, or it is inactive. */
+  CONTA_NAO_ENCONTRADA: 'AMAZON_ESTOQUE_CONTA_NAO_ENCONTRADA',
+  /** 400 — the conta names no depósito the stock sync can read. */
+  CONTA_SEM_DEPOSITO: 'AMAZON_ESTOQUE_CONTA_SEM_DEPOSITO',
+} as const;
+export type CodigoErroEstoqueAmazon =
+  (typeof CODIGO_ERRO_ESTOQUE_AMAZON)[keyof typeof CODIGO_ERRO_ESTOQUE_AMAZON];
+
+/** What a selection limit counts: produtos, or the conta's listings (SKUs) they map to. */
+export const unidadeLimiteEnvioEstoqueManualAmazonSchema = z.enum(['produtos', 'anuncios']);
+export type UnidadeLimiteEnvioEstoqueManualAmazon = z.infer<
+  typeof unidadeLimiteEnvioEstoqueManualAmazonSchema
+>;
+
+/** Named members of {@link unidadeLimiteEnvioEstoqueManualAmazonSchema}: the enum's companion constant (the `prefer-schema-enum` lint rule). */
+export const UNIDADE_LIMITE_ENVIO_ESTOQUE_MANUAL_AMAZON = {
+  produtos: 'produtos',
+  anuncios: 'anuncios',
+} as const satisfies Record<string, UnidadeLimiteEnvioEstoqueManualAmazon>;
+
+/** The `detalhes` of a {@link CODIGO_ERRO_ESTOQUE_AMAZON}`.SELECAO_EXCEDE_LIMITE` refusal. */
+export const detalhesLimiteEnvioEstoqueManualAmazonSchema = z.object({
+  /** The bound the selection passed. */
+  limite: z.number().int().min(1),
+  unidade: unidadeLimiteEnvioEstoqueManualAmazonSchema,
+  /** How many the selection held, of that unit. */
+  encontrados: z.number().int().min(0),
+});
+export type DetalhesLimiteEnvioEstoqueManualAmazon = z.infer<
+  typeof detalhesLimiteEnvioEstoqueManualAmazonSchema
+>;
+
+/**
+ * Every non-2xx JSON body of the manual push route: the conta routes' envelope
+ * (`erroContaAmazonSchema`, `code` still a plain string so a code a newer
+ * backend adds still parses) plus the limit refusal's `detalhes`.
+ */
+export const erroEnvioEstoqueManualAmazonSchema = erroContaAmazonSchema.extend({
+  detalhes: detalhesLimiteEnvioEstoqueManualAmazonSchema.nullable().optional(),
+});
+export type ErroEnvioEstoqueManualAmazon = z.infer<typeof erroEnvioEstoqueManualAmazonSchema>;
+
+/**
+ * How one listing ended up in a manual push: `enviado` (its patch task is on
+ * the stock queue: the task compares the quantity with Amazon's and sends it),
+ * `pulado` (no task can carry or send it), `falha`, `nao-tentado` (the queue
+ * valve was closed, or the route's budget ran out: send it again).
+ */
+export const resultadoEnvioEstoqueManualAmazonSchema = z.enum([
+  'enviado',
+  'pulado',
+  'falha',
+  'nao-tentado',
+]);
+export type ResultadoEnvioEstoqueManualAmazon = z.infer<
+  typeof resultadoEnvioEstoqueManualAmazonSchema
+>;
+
+/** Named members of {@link resultadoEnvioEstoqueManualAmazonSchema}: the enum's companion constant (the `prefer-schema-enum` lint rule). */
+export const RESULTADO_ENVIO_ESTOQUE_MANUAL_AMAZON = {
+  enviado: 'enviado',
+  pulado: 'pulado',
+  falha: 'falha',
+  naoTentado: 'nao-tentado',
+} as const satisfies Record<string, ResultadoEnvioEstoqueManualAmazon>;
+
+/**
+ * What `POST /api/marketplace/amazon/enviar-estoque` answers on 200 — even when
+ * no listing was sent: a per-listing outcome is data, not an error.
+ *
+ * - `listings` — one row per (family anchor, SKU of the conta): `produtoId` is
+ *   the ANCHOR (a selected variation child is answered through its anchor's
+ *   rows) and `produtoNome` the ANCHOR's stored name, so a row reached through
+ *   a child still names the produto it moves (`null` when the name is blank or
+ *   absent); `mensagem` is the backend's pt-BR sentence. Enqueued is not sent:
+ *   the quantity is computed, compared and written by the task.
+ * - `produtosSemEnvio` — a selected produto with nothing to send, under its OWN
+ *   id and name (no document, a parent with no document, or no listing of the
+ *   conta in its family).
+ * - `pausadoAte` — always `null`: this channel has no daily-quota pause.
+ *
+ * Tolerant like the other answers (`z.object`): a later step may add a field.
+ */
+export const envioEstoqueManualAmazonSchema = z.object({
+  listings: z.array(
+    z.object({
+      produtoId: z.string(),
+      produtoNome: z.string().nullable(),
+      sku: z.string(),
+      resultado: resultadoEnvioEstoqueManualAmazonSchema,
+      mensagem: z.string(),
+    }),
+  ),
+  produtosSemEnvio: z.array(
+    z.object({
+      produtoId: z.string(),
+      produtoNome: z.string().nullable(),
+      mensagem: z.string(),
+    }),
+  ),
+  pausadoAte: z.null(),
+});
+export type EnvioEstoqueManualAmazon = z.infer<typeof envioEstoqueManualAmazonSchema>;
