@@ -473,6 +473,39 @@ describe('a slice and the other writers of the run document', () => {
     expect(r).toEqual({ kind: 'tarefas-desligadas' });
     expect(db.ler(RUN_PATH)).toMatchObject({ emExecucaoAteMs: 0, seq: 2 });
     expect(m.log.linhas.filter((l) => l.nivel === 'warn')).toHaveLength(2);
+    expect(m.log.linhas.filter((l) => l.msg.includes('a execução solta a vez'))).toHaveLength(1);
+  });
+
+  it('NEAR-MISS of the last: the valve closed at the hand-off and another dispatch moves the run before that release lands ⇒ parado — nothing released, NO WARNING claiming it', async () => {
+    const db = new FakeDb();
+    semearCatalogo(db);
+    const m0 = mundo();
+    expect(
+      await despacharReconcileEstoqueLi(
+        asDb(db),
+        tarefa(0),
+        m0.deps({ inicioMs: m0.relogio.agora - 50_001 }),
+      ),
+    ).toEqual({ kind: 'continua', fase: 'erp', seq: 1 });
+    const lease = AGORA_RECONCILE_MS + 2 * LEASE_RECONCILE_ESTOQUE_LI_MS;
+    // Our end checkpoint lands; the other dispatch then moves the run between it and our release.
+    db.antesDaProximaEscrita(RUN_PATH, () => undefined);
+    db.antesDaProximaEscrita(RUN_PATH, async () => {
+      await refRunReconcileLi(asDb(db)).update(
+        { seq: 3, emExecucaoAteMs: lease },
+        { lastUpdateTime: db.carimboDe(RUN_PATH) as never },
+      );
+    });
+    const m = mundo({}, () => new LiTarefasDesligadasError());
+    expect(
+      await despacharReconcileEstoqueLi(
+        asDb(db),
+        tarefa(1),
+        m.deps({ inicioMs: m.relogio.agora - 50_001 }),
+      ),
+    ).toEqual({ kind: 'parado' });
+    expect(db.ler(RUN_PATH)).toMatchObject({ seq: 3, emExecucaoAteMs: lease });
+    expect(m.log.linhas.filter((l) => l.msg.includes('a execução solta a vez'))).toEqual([]);
   });
 
   it('a transient hand-off failure is RETHROWN; the retry’s continuation check repairs it at 60 s', async () => {
@@ -667,6 +700,31 @@ describe('the queue’s LAST attempt — a release logs its ERROR and asks for t
     expect(m.fila.enfileirados).toEqual([REDEPOSITO]);
     expect(m.fila.sondados).toEqual([0]);
     expect(erros(m)).toEqual([['tentativas-esgotadas', null, 2]]);
+  });
+
+  it('⚠️ NEAR-MISS of the last: another dispatch moves the run before that release lands ⇒ parado — nothing released, no ERROR, no re-run', async () => {
+    const db = new FakeDb();
+    await emSeq1ComRevisao(db);
+    const lease = AGORA_RECONCILE_MS + 2 * LEASE_RECONCILE_ESTOQUE_LI_MS;
+    // Our end checkpoint lands; the other dispatch then moves the run between it and our release.
+    db.antesDaProximaEscrita(RUN_PATH, () => undefined);
+    db.antesDaProximaEscrita(RUN_PATH, async () => {
+      await refRunReconcileLi(asDb(db)).update(
+        { seq: 3, emExecucaoAteMs: lease },
+        { lastUpdateTime: db.carimboDe(RUN_PATH) as never },
+      );
+    });
+    const m = mundo({ tentativa: ULTIMA }, passagemFalha, sondaLease(db));
+    expect(
+      await despacharReconcileEstoqueLi(
+        asDb(db),
+        tarefa(1),
+        m.deps({ inicioMs: m.relogio.agora - 50_001 }),
+      ),
+    ).toEqual({ kind: 'parado' });
+    expect(db.ler(RUN_PATH)).toMatchObject({ seq: 3, emExecucaoAteMs: lease });
+    expect(m.fila.enfileirados).toEqual([]);
+    expect(erros(m)).toEqual([]);
   });
 
   it('⚠️ another dispatch wins the release (parar): NOTHING released, no ERROR, no re-run — for a retryable failure (parado) and for a coding bug (rethrown)', async () => {

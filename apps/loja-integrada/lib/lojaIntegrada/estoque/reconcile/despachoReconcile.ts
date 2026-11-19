@@ -78,8 +78,10 @@
  *    `tentativas-esgotadas`, from a fresh read; a coding bug releases it, then is rethrown) and a
  *    take that LANDED behind its error (released with ONE ERROR, then the error rethrown).
  *    Every last-attempt release logs its ERROR, and asks for the depósito re-run its counter
- *    names, only once it LANDED; another dispatch holding the run ⇒ nothing released, logged or
- *    asked (`parado`). A Firestore failure of the release itself leaves the lease to its expiry.
+ *    names, only once it LANDED (the closed valve's release at a hand-off logs its WARNING the
+ *    same way); another dispatch holding the run ⇒ nothing released, logged or asked: `parado`,
+ *    or — on the coding-bug and take paths — the original error rethrown. A Firestore failure of
+ *    the release itself leaves the lease to its expiry.
  *
  * Every line carries ids and counts only. ⚠️ Never name the Admin SDK's multi-document
  * read-and-write call here — not even in a comment (`estrutura.test.ts`).
@@ -1015,11 +1017,12 @@ async function passarAdiante(
       );
   } catch (err) {
     if (!(err instanceof LiTarefasDesligadasError)) throw err;
+    // Like every release: logged only once it LANDED; another dispatch holding the run ⇒ `parado`.
+    if (!(await liberar(db, { ...estado, seq }, seq))) return { kind: 'parado' };
     deps.logger.warn(`${TAG} tarefas desligadas — a execução solta a vez`, {
       execucaoId: tarefa.execucaoId,
       seq,
     });
-    await liberar(db, { ...estado, seq }, seq);
     return { kind: 'tarefas-desligadas' };
   }
   return { kind: 'continua', fase, seq };
