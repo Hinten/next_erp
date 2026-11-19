@@ -49,6 +49,7 @@ function refFalso(path: string) {
     get: async () => ({
       exists: () => h.docs.has(path),
       data: () => h.ler(path, structuredClone(h.docs.get(path)!)),
+      get: (field: string) => structuredClone(h.docs.get(path)?.[field]),
     }),
     withConverter: () => ref,
   };
