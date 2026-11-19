@@ -1,3 +1,4 @@
+import { nowMicros, nowMillis } from '@delfrance/core/datetime';
 import type { FieldDescriptor } from '../schema/types';
 
 /** Preferred creation-field wire names (first match on the schema wins). */
@@ -14,12 +15,18 @@ export const MODIFIED_AT_CANDIDATES = ['ultimaModificacao'] as const;
 export type StampFieldOverride = string | false | undefined;
 
 export interface ResolvedStampFields {
-  /** Creation field to stamp on create (nullish coalesce). `undefined` = none. */
+  /** Creation field to fill when missing on a main-document write. `undefined` = none. */
   createdAtField: string | undefined;
   /** Last-modified field to stamp on every main-doc write. `undefined` = none. */
   modifiedAtField: string | undefined;
   /** Wire unit for both stamps, derived from the modified field then create. */
   stampUnit: 'iso' | 'ms' | 'us';
+}
+
+export function nowForStamp(unit: ResolvedStampFields['stampUnit'] = 'iso'): number | string {
+  if (unit === 'us') return nowMicros();
+  if (unit === 'ms') return nowMillis();
+  return new Date().toISOString();
 }
 
 function firstPresent(keys: Set<string>, candidates: readonly string[]): string | undefined {

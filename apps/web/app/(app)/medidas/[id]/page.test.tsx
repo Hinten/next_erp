@@ -99,6 +99,7 @@ vi.mock('@/lib/data/tabelaDeMedidasCollection', () => ({
       get: async () => ({
         exists: () => h.docs.has(PATH),
         data: () => lerComoOConversor(structuredClone(h.docs.get(PATH))),
+        get: (field: string) => structuredClone(h.docs.get(PATH)?.[field]),
       }),
     }),
     converter: {},
@@ -479,6 +480,7 @@ describe('/medidas/[id] — editing and deletion require independent permissions
 describe('/medidas/[id] — a staged Shopee pick is written by the tabela’s save', () => {
   it('a pick writes the WHOLE map: every odd element and sibling key verbatim, the new entry = 3 keys; the ML map untouched', async () => {
     const raw = corpus();
+    raw.dataCadastro = 1_700_000_000_000;
     semear(raw);
     renderPage();
     await abrirAbaShopee();
@@ -612,8 +614,14 @@ describe('/medidas/[id] — a staged Shopee pick is written by the tabela’s sa
     await salvar();
 
     expect(h.patches).toHaveLength(1);
-    expect(Object.keys(h.patches[0]!).sort()).toEqual(['descricao', 'ultimaModificacao']);
+    expect(Object.keys(h.patches[0]!).sort()).toEqual([
+      'dataCadastro',
+      'descricao',
+      'ultimaModificacao',
+    ]);
     const guardado = h.docs.get(PATH)!;
+    expect(guardado.dataCadastro).toEqual(expect.any(Number));
+    expect(guardado.dataCadastro).toBe(guardado.ultimaModificacao);
     expect(JSON.stringify(guardado.tabelasMedidasShopee)).toBe(
       JSON.stringify(raw.tabelasMedidasShopee),
     );

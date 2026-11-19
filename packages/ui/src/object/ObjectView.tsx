@@ -44,7 +44,7 @@ import {
 import { applyPrepareForSave, collectPrepareForSave } from './prepareForSave';
 import { RecordPager } from './RecordPager';
 import { SectionTabs } from './SectionTabs';
-import { resolveStampFields, type StampFieldOverride } from './resolveStampFields';
+import { nowForStamp, resolveStampFields, type StampFieldOverride } from './resolveStampFields';
 import {
   NothingChangedError,
   MissingTransactionBaselineError,
@@ -313,7 +313,7 @@ export interface ObjectViewProps<S extends ZodObject<ZodRawShape>, C extends Zod
 
   /**
    * Override auto-detect of the creation stamp field (`timestamp` /
-   * `dataCadastro` / …). `false` disables create stamping. Default: first
+   * `dataCadastro` / …). `false` disables creation stamping. Default: first
    * candidate present on the schema descriptors.
    */
   createdAtField?: StampFieldOverride;
@@ -400,6 +400,13 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
   const [internalId, setInternalId] = useState<string | undefined>(recordId);
   // eslint-disable-next-line react-hooks/set-state-in-effect -- syncs internalId from recordId; a create-mode save keeps its new id until recordId itself changes
   useEffect(() => setInternalId(recordId), [recordId]);
+  const creationKey = stampFields.createdAtField;
+  const persistedCreationKey =
+    creationKey && !transientFields.includes(creationKey) ? creationKey : undefined;
+  const requiredCreationKey = internalId
+    ? descriptors.find((d) => d.key === persistedCreationKey && !d.nullable && !d.optional)?.key
+    : undefined;
+  const stampUnit = stampFields.stampUnit;
 
   const docRef = useMemo(
     () => (internalId ? collection.docRef(db, pathContext, internalId) : null),
@@ -451,10 +458,14 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
   // indices back (see FaixaCepEditor).
   const resolver = useMemo<Resolver<FieldValues>>(() => {
     const base = zodResolver(schema as never) as Resolver<FieldValues>;
-    if (preparedTransforms.length === 0 && !validate) return base;
+    if (preparedTransforms.length === 0 && !validate && !requiredCreationKey) return base;
     const wrapped: Resolver<FieldValues> = async (values, ctx, opts) => {
       // Copy-on-write: `values` is RHF's live object and must not be mutated.
-      const prepared = applyPrepareForSave(values as Record<string, unknown>, preparedTransforms);
+      let prepared = applyPrepareForSave(values as Record<string, unknown>, preparedTransforms);
+      // Validate legacy edits with a missing required creation date. The
+      // transaction reads and stamps the stored field when the edit commits.
+      if (requiredCreationKey && prepared[requiredCreationKey] == null)
+        prepared = { ...prepared, [requiredCreationKey]: nowForStamp(stampUnit) };
       const result = await base(prepared as FieldValues, ctx, opts);
       if (!validate) return result;
       // Merge cross-document issues at each path's first segment. A real shape
@@ -490,7 +501,7 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
       return { ...result, errors } as typeof result;
     };
     return wrapped;
-  }, [schema, preparedTransforms, validate, transactionDocuments]);
+  }, [schema, preparedTransforms, validate, transactionDocuments, requiredCreationKey, stampUnit]);
 
   const form = useForm<FieldValues>({
     resolver,
@@ -834,11 +845,11 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
         // write the operator had just been told was safe.
         baseline: disableConcurrencyGuard ? undefined : (baseline.current ?? undefined),
         ignoreFields: concurrencyIgnoreFields ? new Set(concurrencyIgnoreFields) : undefined,
-        stampUnit: stampFields.stampUnit,
+        stampUnit,
         // `false` when auto-detect found nothing — don't fall back to the
         // saveRecord defaults (`timestamp` / `ultimaModificacao`) on schemas
         // that genuinely lack those keys.
-        createdAtField: stampFields.createdAtField ?? false,
+        createdAtField: persistedCreationKey ?? false,
         modifiedAtField: stampFields.modifiedAtField ?? false,
       });
       // Zero out dirty state while preserving the persisted (transformed) values.

@@ -7,10 +7,10 @@ import {
   runTransaction,
 } from 'firebase/firestore';
 import type { z, ZodTypeAny } from 'zod';
-import { nowMicros, nowMillis } from '@delfrance/core/datetime';
 import type { CollectionHandle, PathContext } from '@delfrance/data';
 import { isEmpty, pickDirty, valuesEqual } from './diff';
 import type { DocumentBaseline } from './ObjectViewTransactionDocuments';
+import { nowForStamp } from './resolveStampFields';
 
 /** How one form field shows a guarded document. */
 export interface TransactionFormProjection {
@@ -128,10 +128,9 @@ export interface SaveRecordInput<S extends ZodTypeAny, T extends Record<string, 
    */
   modifiedAtField?: string | false;
   /**
-   * Creation field name (create-only, nullish coalesce — Flutter
-   * `timestamp ??= now`). Default `'timestamp'`. Pass `false` to disable.
-   * Domains that wire creation as `dataCadastro` pass that name (ObjectView
-   * auto-detects from the schema descriptors).
+   * Creation field to fill when missing. On update, the stored value wins.
+   * Defaults to `'timestamp'` for callers whose values include that key.
+   * ObjectView passes the schema's field name or `false` to disable stamping.
    */
   createdAtField?: string | false;
   /**
@@ -166,8 +165,8 @@ export interface SaveRecordResult<T> {
   /**
    * The main document as the COMMITTING attempt read it (`tx.get`), i.e. what
    * this save replaced — `null` on a create, or when the transaction read
-   * nothing (an update with no baseline, no changed sibling and no
-   * `deriveTransactionPatch`). Together with `patch` it is the transaction's own
+   * nothing (an update without a baseline, changed sibling, derived patch, or
+   * creation stamp check). Together with `patch` it is the transaction's own
    * before/after, which a caller diffs instead of the form: a form painted from
    * a stale cache copy is not what was stored.
    */
@@ -346,9 +345,18 @@ export async function saveRecord<
   T extends Record<string, unknown> = z.infer<S> & Record<string, unknown>,
 >(input: SaveRecordInput<S, T>): Promise<SaveRecordResult<T>> {
   const isUpdate = !!input.recordId;
-  const patch: Partial<T> | T = isUpdate
-    ? (pickDirty(input.values, input.dirtyFields) as Partial<T>)
+  const modifiedKey = resolveStampKey(input.modifiedAtField, 'ultimaModificacao');
+  const createdKey = resolveStampKey(input.createdAtField, 'timestamp');
+  const updateCreationKey =
+    isUpdate &&
+    createdKey &&
+    (input.createdAtField !== undefined || Object.hasOwn(input.values, createdKey))
+      ? createdKey
+      : undefined;
+  const patch: Record<string, unknown> = isUpdate
+    ? pickDirty(input.values, input.dirtyFields)
     : input.values;
+  if (updateCreationKey) delete patch[updateCreationKey];
 
   // Resolve the ref outside the transaction — refs don't need to be re-derived
   // inside it (only reads/writes do). Done BEFORE the no-op check so the sibling
@@ -374,9 +382,8 @@ export async function saveRecord<
     : proposedSiblings;
 
   // The main doc is written on every create, and on an update only when its
-  // dirty patch is non-empty. A sibling-only update (empty patch) skips the main
-  // write entirely — so neither the data NOR the last-modified stamp touches
-  // the otherwise-unchanged doc.
+  // dirty patch is non-empty. A sibling-only update skips the main document
+  // and its stamps.
   const writeMainDoc = !isUpdate || !isEmpty(patch);
 
   // Nothing to write at all → "no changes" (only reachable on update; a create
@@ -384,41 +391,12 @@ export async function saveRecord<
   // Descrição), so the no-op only fires when neither side has work.
   if (!writeMainDoc && siblings.length === 0) throw new NothingChangedError();
 
-  // Field names: default to the monorepo majority (`timestamp` /
-  // `ultimaModificacao`); ObjectView overrides for `dataCadastro` etc.
-  // `false` (or a prototype-polluting key) disables that stamp entirely.
-  const modifiedKey = resolveStampKey(input.modifiedAtField, 'ultimaModificacao');
-  const createdKey = resolveStampKey(input.createdAtField, 'timestamp');
-
-  // Stamps run ONLY when the main doc is actually written — so the TableView
-  // update-monitor sees real edits, and a sibling-only save doesn't bump an
-  // otherwise-unchanged parent. On create `patch` aliases `input.values`, so
-  // stamping `input.values` covers both.
-  if (writeMainDoc) {
-    const valuesRec = input.values as Record<string, unknown>;
-    const needsModified = !!modifiedKey && modifiedKey in valuesRec;
-    const needsCreated =
-      !isUpdate && !!createdKey && createdKey in valuesRec && valuesRec[createdKey] == null;
-
-    if (needsModified || needsCreated) {
-      const now =
-        input.stampUnit === 'us'
-          ? nowMicros()
-          : input.stampUnit === 'ms'
-            ? nowMillis()
-            : new Date().toISOString();
-
-      if (needsModified && modifiedKey) {
-        if (isUpdate) {
-          (patch as Record<string, unknown>)[modifiedKey] = now;
-        } else {
-          valuesRec[modifiedKey] = now;
-        }
-      }
-      if (needsCreated && createdKey) {
-        valuesRec[createdKey] = now;
-      }
-    }
+  const repairKey = writeMainDoc ? updateCreationKey : undefined;
+  const now = writeMainDoc ? nowForStamp(input.stampUnit) : undefined;
+  if (now !== undefined) {
+    if (modifiedKey && modifiedKey in input.values) patch[modifiedKey] = now;
+    if (!isUpdate && createdKey && createdKey in input.values && input.values[createdKey] == null)
+      patch[createdKey] = now;
   }
 
   // ADR 0011 tier 3. Tier 1 is unreachable here — this is the browser SDK,
@@ -437,10 +415,13 @@ export async function saveRecord<
   const result = await runTransaction(input.db, async (tx: Transaction) => {
     let current: Record<string, unknown> | null = null;
     let fields: string[] = [];
-    if (isUpdate && (guarded || siblings.length > 0 || input.deriveTransactionPatch)) {
+    let repairCreation = false;
+    if (isUpdate && (guarded || siblings.length > 0 || input.deriveTransactionPatch || repairKey)) {
       const snap = await tx.get(ref);
       if (!snap.exists()) throw new RecordConflictError(null, [], true);
       current = snap.data() as Record<string, unknown>;
+      // The raw field distinguishes a stored value from a converter default.
+      repairCreation = !!repairKey && snap.get(repairKey) == null;
       if (guarded) fields = conflictingFields(input.baseline!, current, patch, ignored);
     }
 
@@ -472,6 +453,10 @@ export async function saveRecord<
       writeMainDoc && input.deriveTransactionPatch
         ? { ...patch, ...input.deriveTransactionPatch(current, { ...patch }) }
         : { ...patch };
+    if (repairKey) {
+      delete effectivePatch[repairKey];
+      if (repairCreation && now !== undefined) effectivePatch[repairKey] = now;
+    }
 
     if (writeMainDoc) {
       if (isUpdate) {

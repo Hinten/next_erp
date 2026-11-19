@@ -4,15 +4,17 @@ import type { CollectionHandle } from '@delfrance/data';
 
 // `vi.mock` is hoisted, so anything its factory closes over must come from
 // `vi.hoisted`.
-const { firestoreMock } = vi.hoisted(() => {
+const { firestoreMock, snapshot } = vi.hoisted(() => {
+  const snapshot = (raw: Record<string, unknown>, converted = raw) => ({
+    exists: () => true,
+    data: () => converted,
+    get: (field: string) => raw[field],
+  });
   const txMock = {
     set: vi.fn(),
     update: vi.fn(),
     delete: vi.fn(),
-    get: vi.fn(async (ref: { id: string }) => ({
-      exists: () => true,
-      data: (): Record<string, unknown> => (ref.id === 'sibling' ? {} : { x: 1 }),
-    })),
+    get: vi.fn(async (ref: { id: string }) => snapshot(ref.id === 'sibling' ? {} : { x: 1 })),
   };
   const runTransactionMock = vi.fn(
     async (_db: unknown, fn: (tx: typeof txMock) => Promise<unknown>) => {
@@ -23,6 +25,7 @@ const { firestoreMock } = vi.hoisted(() => {
   const collectionMock = vi.fn(() => ({ withConverter: () => 'COLL_REF' }));
   return {
     firestoreMock: { txMock, runTransactionMock, docMock, collectionMock },
+    snapshot,
   };
 });
 
@@ -80,7 +83,7 @@ describe('saveRecord — transactional derivation', () => {
 
   it('reads current state even without a baseline and returns derived update fields', async () => {
     const current = { nome: 'Antes', telefonesAdicionais: ['14155552671'] };
-    firestoreMock.txMock.get.mockResolvedValue({ exists: () => true, data: () => current });
+    firestoreMock.txMock.get.mockResolvedValue(snapshot(current));
     const derive = vi.fn((fresh: Readonly<Record<string, unknown>> | null) => ({
       telefonesAdicionais: [...(fresh?.telefonesAdicionais as string[]), '5511999998888'],
     }));
@@ -109,10 +112,7 @@ describe('saveRecord — transactional derivation', () => {
   // read is no longer a kit (`camposDeKitDoPatch`), which only holds if the
   // derived keys are merged last.
   it('a derived key wins over the same key in the dirty patch', async () => {
-    firestoreMock.txMock.get.mockResolvedValue({
-      exists: () => true,
-      data: () => ({ ehKit: false, ehKitVirtual: false }),
-    });
+    firestoreMock.txMock.get.mockResolvedValue(snapshot({ ehKit: false, ehKitVirtual: false }));
     const result = await saveRecord({
       db: {} as never,
       collection: fakeCollection(),
@@ -214,10 +214,9 @@ describe('saveRecord — siblingWrites (atomic same-transaction writes)', () => 
   it('rejects the entire update if a structural sibling precondition fails', async () => {
     const main = { nome: 'Produto', filhoUnicoId: 'other' };
     const child = { nome: 'Variante existente' };
-    firestoreMock.txMock.get.mockImplementation(async (ref) => ({
-      exists: () => true,
-      data: () => (ref.id === 'sibling' ? child : main),
-    }));
+    firestoreMock.txMock.get.mockImplementation(async (ref) =>
+      snapshot(ref.id === 'sibling' ? child : main),
+    );
     const conflict = new Error('A família mudou');
     const assertCurrent = vi.fn(() => {
       throw conflict;
@@ -261,15 +260,15 @@ describe('saveRecord — siblingWrites (atomic same-transaction writes)', () => 
   });
 
   it('an update touching ONLY a sibling commits the sibling but skips the main-doc write', async () => {
-    // Empty dirtyFields ⇒ empty produto patch; `ultimaModificacao` present in
-    // values would (pre-fix) get stamped onto the patch and resurrect the main
-    // write — assert it does NOT (Copilot review #203).
+    firestoreMock.txMock.get.mockImplementation(async (ref) =>
+      snapshot(ref.id === 'sibling' ? {} : { timestamp: null }),
+    );
     await saveRecord({
       db: {} as never,
       collection: fakeCollection(),
       pathContext: {},
       recordId: 'EXISTING_ID',
-      values: { nome: 'unchanged', ultimaModificacao: null } as never,
+      values: { nome: 'unchanged', timestamp: null, ultimaModificacao: null },
       dirtyFields: {},
       currentUserUid: 'u1',
       stampUnit: 'ms',
@@ -286,12 +285,13 @@ describe('saveRecord — siblingWrites (atomic same-transaction writes)', () => 
         collection: fakeCollection(),
         pathContext: {},
         recordId: 'EXISTING_ID',
-        values: { nome: 'x' },
-        dirtyFields: {},
+        values: { nome: 'x', timestamp: null },
+        dirtyFields: { timestamp: true },
         currentUserUid: 'u1',
         siblingWrites: () => [],
       }),
     ).rejects.toBeInstanceOf(NothingChangedError);
+    expect(firestoreMock.runTransactionMock).not.toHaveBeenCalled();
   });
 
   it('runs a delete sibling via tx.delete (e.g. a cleared imposto)', async () => {
@@ -415,21 +415,61 @@ describe('saveRecord — create/modify stamps', () => {
     });
   });
 
-  it('on update, never writes the creation field even when it is null', async () => {
-    await saveRecord({
+  it('repairs a stored null dataCadastro even when the form contains a date', async () => {
+    const current = { nome: 'Original', dataCadastro: null };
+    firestoreMock.txMock.get.mockResolvedValue(snapshot(current));
+    const result = await saveRecord({
+      db: {} as never,
+      collection: fakeCollection(),
+      pathContext: {},
+      recordId: 'EXISTING_ID',
+      values: { nome: 'editado', dataCadastro: FIXED_MS - 1000, ultimaModificacao: null },
+      dirtyFields: { nome: true },
+      currentUserUid: 'u1',
+      stampUnit: 'ms',
+      createdAtField: 'dataCadastro',
+    });
+    expect(result.before).toEqual(current);
+    expect(result.patch).toEqual({
+      nome: 'editado',
+      dataCadastro: FIXED_MS,
+      ultimaModificacao: FIXED_MS,
+    });
+    expect(firestoreMock.txMock.update).toHaveBeenCalledWith(expect.anything(), result.patch);
+  });
+
+  it('repairs a missing stored timestamp even when the converter supplies a default', async () => {
+    firestoreMock.txMock.get.mockResolvedValue(snapshot({}, { timestamp: FIXED_MS - 1000 }));
+    const result = await saveRecord({
+      db: {} as never,
+      collection: fakeCollection(),
+      pathContext: {},
+      recordId: 'EXISTING_ID',
+      values: { nome: 'editado' },
+      dirtyFields: { nome: true },
+      currentUserUid: 'u1',
+      stampUnit: 'ms',
+      createdAtField: 'timestamp',
+    });
+    expect(result.patch).toEqual({ nome: 'editado', timestamp: FIXED_MS });
+    expect(firestoreMock.txMock.update).toHaveBeenCalledWith(expect.anything(), result.patch);
+  });
+
+  it.each([0, '2020-01-01T00:00:00.000Z'])('preserves a stored timestamp of %s', async (date) => {
+    firestoreMock.txMock.get.mockResolvedValue(snapshot({ timestamp: date }, { timestamp: null }));
+    const result = await saveRecord({
       db: {} as never,
       collection: fakeCollection(),
       pathContext: {},
       recordId: 'EXISTING_ID',
       values: { nome: 'editado', timestamp: null },
-      dirtyFields: { nome: true },
+      dirtyFields: { nome: true, timestamp: true },
       currentUserUid: 'u1',
       stampUnit: 'ms',
+      deriveTransactionPatch: () => ({ timestamp: FIXED_MS }),
     });
-    expect(firestoreMock.txMock.update).toHaveBeenCalledWith(
-      expect.objectContaining({ id: 'EXISTING_ID' }),
-      { nome: 'editado' },
-    );
+    expect(result.patch).toEqual({ nome: 'editado' });
+    expect(firestoreMock.txMock.update).toHaveBeenCalledWith(expect.anything(), result.patch);
   });
 
   it('on create, stamps both timestamp and ultimaModificacao when null', async () => {

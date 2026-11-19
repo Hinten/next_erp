@@ -60,10 +60,14 @@ class FakeDb {
     return {
       path,
       id: path.slice(path.lastIndexOf('/') + 1),
-      get: async () => ({
-        exists: () => this.docs.has(path),
-        data: () => this.docs.get(path),
-      }),
+      get: async () => {
+        const data = this.docs.get(path);
+        return {
+          exists: () => data !== undefined,
+          data: () => data,
+          get: (field: string) => data?.[field],
+        };
+      },
     };
   }
 }
@@ -257,6 +261,28 @@ describe('saveRecord — tier 3 concurrency guard (#824)', () => {
 
     expect(db.occ.txLog.some((e) => e.phase === 'abort')).toBe(true);
     expect(db.read(DOC_PATH)).toMatchObject({ precos: { varejo: 100, atacado: 90 } });
+  });
+
+  it('preserves the creation date written by a concurrent save on retry', async () => {
+    db.seed(DOC_PATH, { ...BASELINE, timestamp: null });
+    const winningDate = 1_710_000_000_000;
+    db.occ.beforeCommit = async () => {
+      db.occ.beforeCommit = null;
+      await db.occ.runTransaction(async (tx) => {
+        tx.update(db.docRef(DOC_PATH), { timestamp: winningDate });
+      });
+    };
+
+    // Even an edit with no form baseline needs a read to guard the repair.
+    const result = await save({ createdAtField: 'timestamp', stampUnit: 'ms' });
+
+    expect(db.occ.txLog.some((e) => e.phase === 'abort')).toBe(true);
+    expect(result.before).toMatchObject({ timestamp: winningDate });
+    expect(result.patch).toEqual({ precos: { varejo: 100, atacado: 90 } });
+    expect(db.read(DOC_PATH)).toMatchObject({
+      timestamp: winningDate,
+      precos: { varejo: 100, atacado: 90 },
+    });
   });
 });
 
