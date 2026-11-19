@@ -612,7 +612,30 @@ the checkout print and the `/pedidos` row action), which needs this backend depl
   confirmed by ONE GET ≥ 334 ms apart; a 429 stamps the run's progress, then re-enqueues the page
   unnamed), the block, the state update, the next page. Decide: the
   systemic guard (`zeroSemLinha` ≥ 1,500 or > half ⇒ nothing sent), ≤ 30 drift SKUs as patch
-  tasks, 31+ as ONE block `feed-enviar` (`partes` in the payload), every send 1,200 s later.
+  tasks, 31+ as BLOCK `feed-enviar`s, the walked pages PARTITIONED
+  (`lotesDeBlocosEstoqueAmazon`): ⌈pages ÷ 50⌉ batches
+  (`MAX_PARTES_LOTE_BLOCOS_FEED_AMAZON`, `feeds/tarefaLote.ts`: 50 full drift blocks are 15,000
+  messages and at most ~5.9 MB as the `on` document, inside the package's 25,000-message and
+  9.5-MB document refusal — a dry-run document, built from every member, for SKUs of up to 400
+  bytes once JSON-encoded — pinned through its own builder by `provedorLoteEstoque.test.ts`),
+  batch `k` reading the run's
+  blocks `[k × 50, min((k + 1) × 50, pages))` (`execucaoIdRun`, `parteInicial`, `partes` in the
+  payload; the schema refuses more than 50) under its OWN `execucaoId`
+  (`execucaoIdDoLoteBlocosFeed(conta, run, k)`, its lease holder) — a walk of ≤ 50 pages is ONE
+  batch, `parteInicial: 0` — every send 1,200 s later, each batch waiting up to 6 h behind a held
+  lease: they serialize through it, a batch still turned away then ends `lote-expirado`, and the
+  next daily run re-sends what still differs. ⚠️ The partition's price: each extra batch is a
+  feed of its own (record, poll ladder, report, write-back) whose end reopens the tick's 15-min
+  `feed-recente` lag; each waiting one re-enqueues itself unnamed every 300 s with a lease read
+  (≤ 72 in 6 h) on the jobs queue all feed work shares at concurrency 1; and a block batch is
+  never refused by the breaker, so under an open breaker every batch probes in turn — up to K
+  failed block feeds per run, plus the automatic reconcile's K, each failure re-stamping the
+  hour and holding back the window path's half-open probe (`feeds/vezFeed.ts`). The waiters
+  keep roughly their first dispatch's order, so when K feeds outlast the 6-h wait the SAME
+  ranges can expire every day (the same `parteInicial` on each run's `lote-expirado` send
+  lines): re-sending does not converge those, and only a movement the tick sees corrects their
+  SKUs. The page line's `lotes` / `lotesJaEnfileirados`
+  count the batches named and those already held; `feed` is `ja-enfileirada` only when all were.
   Close: the avisos clocked by `relogioInicio`, a `truncada` run resolving none, then the
   request re-read.
 - **The recovery delta** (PR 12-e2) `estoque/deltaEstoque.ts`, `enviarDeltaEstoqueAmazon`,
@@ -626,9 +649,15 @@ the checkout print and the `/pedidos` row action), which needs this backend depl
   'recuperacao'`, the hand-off's answer in `entrega`).
 - **The stock feed provider** (PR 12-f) `estoque/provedorLoteEstoque.ts`, the seam's `estoque`
   row (`criarProvedorLoteEstoqueAmazon`, a factory over the jobs root's `RaizLoteAmazon`). A
-  BLOCK batch reads its run's drift blocks by id (`partes` from the payload) and snapshots only
+  BLOCK batch reads EXACTLY its range of its run's drift blocks by id, in ONE `getAll`
+  (`{execucaoIdRun}-{parteInicial … parteInicial + partes − 1}` from the payload — never the
+  batch's own `execucaoId`, never another batch's blocks), its hand-off to patches named by that
+  RUN, and snapshots only
   the ERP side (the depósito first, the units masked, gone or varied units dropped, converged
-  SKUs dropped); a WINDOW batch takes its snapshot FIRST, re-derives the window at the
+  SKUs dropped); a package refusal of its document still ends the send `documento-falhou`,
+  unchanged (no second split: the payload cap keeps the `on` document inside the limits); a
+  WINDOW batch takes
+  its snapshot FIRST, re-derives the window at the
   payload's depósito (`deposito-mudou`, or > 3,000 SKUs ⇒ a `'feed'` request and
   `janela-grande`) with the payload's keep rule whole — its `forcarPorCommit` included, never
   a value of the provider's: a tick-born batch keeps its late commits unforced, a forcing
@@ -794,9 +823,11 @@ the checkout print and the `/pedidos` row action), which needs this backend depl
   terminal status, which is the tail's last write); `escadaFeed.ts` (the poll ladder);
   `relatorioFeed.ts` (the report reduced: attribution by `sku` only, the link issue shape, at
   most 200 SKUs written back); `tarefaLote.ts` (the strict jobs-queue payload union — a block
-  or a window batch, the latter carrying its keep rule whole, `forcarPorCommit` included, with
-  `esperaAteMs` set exactly when it forces — and every task name, each carrying the conta (the
-  notification wake-up's carries the seller)); `provedorLote.ts`
+  batch, since PR 12-f a RANGE of one run's stored parts (`execucaoIdRun`, `parteInicial`,
+  `partes` ≤ `MAX_PARTES_LOTE_BLOCOS_FEED_AMAZON`) under its own `execucaoId`
+  (`execucaoIdDoLoteBlocosFeed`), or a window batch, the latter carrying its keep rule whole,
+  `forcarPorCommit` included, with `esperaAteMs` set exactly when it forces — and every task
+  name, each carrying the conta (the notification wake-up's carries the seller)); `provedorLote.ts`
   (the provider seam's TYPES, the closed abort motivos, the timing constants); and
   `vezFeed.ts` (the lease's state machine: `decidirTomadaDaVez` classifies a read, a known
   `feedId` is never submitted over and an uncertain `enviando` is never taken over before its
@@ -1137,8 +1168,8 @@ no `env:` block.
 | Stock sync doc final write (step 12, PR 12-e2) | 1 | `update(…, { lastUpdateTime: <the lease's writeTime> })`: the lease released, `ultimoTickMs`, `semDeposito`, `falhasSeguidas` and `cursorMs` (advance-only, moved only past a window whose every SKU the payload can carry was enqueued or that had none, or that was durably handed off; RESET to now only after the reconcile request of a depósito change or of a cursor no window can be planned from) with `depositoDoCursor`; on 9/5 re-read ONCE: another tick's lease ⇒ nothing written; still ours ⇒ RE-DERIVED from the re-read and retried once |
 | Stock reconcile run (step 12, PR 12-f) | 1 | `estoque/reconciliacaoEstoque.ts`'s ONE write helper: claimed by `create`, or `update(…, { lastUpdateTime })` over an ended run or one 2 h without progress; each page's state update tier 1 on its step-0 read, the run check (`execucaoId` + `proximaPagina`) re-derived from a fresh read on 9/5/6, ≤ 3, then `ReconciliacaoEstoqueEmConflitoError`; a live run 15+ min without progress gets its next page RE-KICKED (the tick and every Start). Nobody else writes it |
 | Stock reconcile request (step 12, PR 12-f) | 1 | the same helper on `pedidoReconciliacaoEstoqueAmazon/{contaId}`: `pendente` and the automatic guard live HERE, so a request never breaks a page's precondition; cleared by the claim, read by the close |
-| Reconcile enqueues (step 12, PR 12-f) | 0 / unnamed | NAMED: page `n` by (conta, run, `n`), its re-kick by the stall's stamp, the block `feed-enviar` by (conta, run), the drift's patch tasks `reconciliacao` by the run; UNNAMED: a page's 429 re-enqueue, after a progress stamp on the run so the re-kick never doubles a throttled page (step 0 drops a stale copy, but each copy would re-read a whole page) |
-| Drift blocks (step 12, PR 12-f) | the page's overwrite | `set` at `{execucaoId}-{n}` BEFORE the page's state update; read by id (`partes` from the payload), never queried; TTL 7 days |
+| Reconcile enqueues (step 12, PR 12-f) | 0 / unnamed | NAMED: page `n` by (conta, run, `n`), its re-kick by the stall's stamp, each block `feed-enviar` by (conta, run, `k`) — `nomeEnvioFeed` of its own `execucaoIdDoLoteBlocosFeed(conta, run, k)`, so a decide run again after a lost `enviando` meets every batch it enqueued —, the drift's patch tasks `reconciliacao` by the run; UNNAMED: a page's 429 re-enqueue, after a progress stamp on the run so the re-kick never doubles a throttled page (step 0 drops a stale copy, but each copy would re-read a whole page) |
+| Drift blocks (step 12, PR 12-f) | the page's overwrite | `set` at `{execucaoId}-{n}` BEFORE the page's state update; read by id (a block batch: its range, `execucaoIdRun` + `parteInicial` + `partes` from the payload), never queried; TTL 7 days |
 | Stranded feed start (step 12, PR 12-f) | 1 | the tick's T4b, through `consumirPendenteVezFeed`: the named `vez` recovery FIRST, then `pendenteDesdeMs` cleared on the lease's own read |
 | Daily feed backstop (step 12, PR 12-f) | 0 | a missing record through the send's ONE create (ALREADY_EXISTS = recorded); the adoption rung NAMED per (conta, feed, São Paulo date) |
 

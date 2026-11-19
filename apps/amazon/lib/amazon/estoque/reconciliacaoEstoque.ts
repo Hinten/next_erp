@@ -3,8 +3,9 @@
  * ONE run walks every link doc of the conta, evaluates each SKU (the link
  * verdict, the ERP quantity, Amazon's live read and the listing gate, through
  * the evaluator the window feed shares), stores what drifted in blocks, and
- * then sends the drift — as patch tasks (≤ 30 SKUs), as ONE block feed (31 or
- * more), or nothing (no drift, or a depósito that would zero the catalogue).
+ * then sends the drift — as patch tasks (≤ 30 SKUs), as block feeds (31 or
+ * more: one per {@link MAX_PARTES_LOTE_BLOCOS_FEED_AMAZON} walked pages), or
+ * nothing (no drift, or a depósito that would zero the catalogue).
  * Nothing here PATCHes or posts: every send is an enqueue, and the task or the
  * feed send recomputes every quantity when it runs.
  *
@@ -123,12 +124,36 @@
  *    the run (`origem: 'reconciliacao'`, the walk's depósito id), delayed
  *    {@link ATRASO_ENVIO_RECONCILIACAO_S}; `dry-run` ⇒ no task, the line
  *    carries the count and up to {@link MAX_AMOSTRA_DRY_RUN} sample SKUs;
- *  - D ≥ 31 ⇒ `decidirLote`: `feed` and `dry-run` ⇒ ONE `feed-enviar` with a
- *    BLOCK batch (`partes` = the pages walked, carried IN the payload so a later
- *    run's reclaim cannot change what this send reads), named
- *    `nomeEnvioFeed(conta, run)`, delayed the same 20 minutes, waiting up to
- *    {@link ESPERA_LOTE_BLOCOS_MS} behind a held lease; the canary list ⇒
- *    patch tasks for the canary hits only, delayed the same; `off` ⇒ nothing.
+ *  - D ≥ 31 ⇒ `decidirLote`: `feed` and `dry-run` ⇒ the pages walked
+ *    PARTITIONED into ⌈pages ÷ {@link MAX_PARTES_LOTE_BLOCOS_FEED_AMAZON}⌉
+ *    BLOCK batches ({@link lotesDeBlocosEstoqueAmazon}): batch `k` reads the
+ *    run's blocks `[k × cap, min((k + 1) × cap, pages))` — the run's id, the
+ *    first block and the count carried IN the payload, so a later run's
+ *    reclaim cannot change what a send reads — with its OWN `execucaoId`
+ *    (`execucaoIdDoLoteBlocosFeed(conta, run, k)`, its lease holder), one
+ *    `feed-enviar` each, named `nomeEnvioFeed(conta, <that id>)`, all delayed
+ *    the same 20 minutes and waiting up to {@link ESPERA_LOTE_BLOCOS_MS}
+ *    behind a held lease. They serialize through the lease (each waits behind
+ *    the one sending); a batch still turned away when its wait ends expires
+ *    (`lote-expirado`), and the next daily run re-sends what still differs.
+ *    Each extra batch is a feed of its own (its record, poll ladder, report
+ *    and write-back), and its end reopens the tick's 15-minute `feed-recente`
+ *    lag; each waiting one re-enqueues itself, unnamed, every 300 s with a
+ *    lease read (at most 72 times in 6 h) on the jobs queue all feed work
+ *    shares at concurrency 1; under an open breaker every batch takes the
+ *    lease as a probe (`feeds/vezFeed.ts`). The waiters keep roughly the order
+ *    of their first dispatch, so when K feeds outlast the 6-h wait the ranges
+ *    that expire can be the same every day (the same `parteInicial` on each
+ *    run's `lote-expirado` send lines, the walk's pages being in key order):
+ *    re-sending does not converge those, and only a movement the tick sees
+ *    corrects their SKUs. A walk of at most the cap's pages is ONE batch,
+ *    `parteInicial: 0`. The
+ *    canary list ⇒ patch tasks for the canary hits only, delayed the same;
+ *    `off` ⇒ nothing. The line's `lotes` counts the batches named,
+ *    `lotesJaEnfileirados` those Cloud Tasks already held (a decide run again
+ *    after a crash before `enviando` meets every name it enqueued), and `feed`
+ *    is `ja-enfileirada` exactly when all of them were already held, else
+ *    `enfileirada`.
  *
  * Every send is delayed: an Amazon order counted in Amazon's read but not yet
  * imported would otherwise raise those units back on Amazon; 20 minutes later
@@ -237,6 +262,7 @@ import {
   type AgendadorLotesAmazon,
   AmazonLotesRegiaoDaFilaInvalidaError,
   AmazonLotesTarefasDesligadasError,
+  type ResultadoEnfileiramentoLoteAmazon,
 } from '../feeds/agendadorLotes';
 import type { RegistroLoteAmazon } from '../feeds/incertoFeed';
 import { MAX_FALHAS_SEGUIDAS_FEED } from '../feeds/provedorLote';
@@ -248,10 +274,12 @@ import {
   adotarFeedParadoAmazon,
 } from '../feeds/resultadoFeed';
 import {
+  MAX_PARTES_LOTE_BLOCOS_FEED_AMAZON,
   TIPO_TAREFA_LOTE_AMAZON,
   type TarefaEnviarFeedAmazon,
   type TarefaPaginaReconciliacaoAmazon,
   VERSAO_TAREFA_LOTE_AMAZON,
+  execucaoIdDoLoteBlocosFeed,
   nomeEnvioFeed,
   nomePaginaReconciliacao,
   nomeRetomadaReconciliacao,
@@ -323,8 +351,37 @@ export const MAX_TENTATIVAS_RECONCILIACAO = 3;
 /** The walk's projection (module header, step 2): the SKU is all the walk reads off a doc. */
 export const CAMPOS_VARREDURA_VINCULOS_ESTOQUE_AMAZON = ['sku'] as const;
 
-/** The producer label of a reconcile's block batch, on its `feed-enviar`. */
+/** The producer label of a reconcile's block batches, on each `feed-enviar`. */
 export const ORIGEM_LOTE_RECONCILIACAO_ESTOQUE_AMAZON = 'reconciliacao';
+
+/** One block batch's range of the run's drift blocks: `[parteInicial, parteInicial + partes)`. */
+export interface IntervaloLoteBlocosEstoqueAmazon {
+  readonly parteInicial: number;
+  readonly partes: number;
+}
+
+/**
+ * The partition of a walk's `paginas` drift blocks into block batches (module
+ * header, Decide): ⌈paginas ÷ {@link MAX_PARTES_LOTE_BLOCOS_FEED_AMAZON}⌉
+ * consecutive ranges, batch `k` from `k × cap` to `min((k + 1) × cap,
+ * paginas)` — no gap, no overlap, every one but the last exactly the cap.
+ *
+ * @throws {RangeError} `paginas` that is not a positive safe integer (a decide
+ *   of 31+ drift SKUs walked at least one page).
+ */
+export function lotesDeBlocosEstoqueAmazon(
+  paginas: number,
+): readonly IntervaloLoteBlocosEstoqueAmazon[] {
+  if (!Number.isSafeInteger(paginas) || paginas < 1) {
+    throw new RangeError('reconciliacaoEstoque.ts: paginas deve ser um inteiro seguro >= 1');
+  }
+  const cap = MAX_PARTES_LOTE_BLOCOS_FEED_AMAZON;
+  const lotes = Math.ceil(paginas / cap);
+  return Array.from({ length: lotes }, (_v, k) => ({
+    parteInicial: k * cap,
+    partes: Math.min((k + 1) * cap, paginas) - k * cap,
+  }));
+}
 
 /** The `fase` of every line here. */
 export const FASE_RECONCILIACAO_LOG = 'reconciliacao';
@@ -1291,8 +1348,16 @@ export interface ResultadoPaginaReconciliacaoEstoqueAmazon {
   readonly simulados: number;
   /** Up to {@link MAX_AMOSTRA_DRY_RUN} SKUs of a dry-run decide, joined with `,`. */
   readonly amostra: string | null;
-  /** The feed send this decide enqueued: `enfileirada` or `ja-enfileirada`. */
-  readonly feed: string | null;
+  /**
+   * The block feeds this decide enqueued (module header, Decide): `ja-enfileirada`
+   * when Cloud Tasks already held EVERY one of them, else `enfileirada`; `null`
+   * when it sent no feed.
+   */
+  readonly feed: ResultadoEnfileiramentoLoteAmazon | null;
+  /** The block batches this decide named (enqueued now or already held). */
+  readonly lotes: number;
+  /** Of {@link lotes}, those Cloud Tasks already held. */
+  readonly lotesJaEnfileirados: number;
   /** Avisos written: `<motivo>:<acao>` joined with `,`. */
   readonly avisos: string | null;
   /** The next run's Start, when the close found a request. */
@@ -1323,6 +1388,8 @@ function resultadoPagina(
     simulados: 0,
     amostra: null,
     feed: null,
+    lotes: 0,
+    lotesJaEnfileirados: 0,
     avisos: null,
     proximo: null,
     ...extra,
@@ -1367,6 +1434,8 @@ function registrarPagina(
       simulados: r.simulados,
       amostra: r.amostra,
       feed: r.feed,
+      lotes: r.lotes,
+      lotesJaEnfileirados: r.lotesJaEnfileirados,
       avisos: r.avisos,
       proximo: r.proximo,
     },
@@ -1923,28 +1992,11 @@ async function decidir(
   } else {
     const lote = decidirLote(e.valvula);
     if (lote.modo === 'feed' || lote.modo === MODO_AMAZON.dryRun) {
-      const tarefa: TarefaEnviarFeedAmazon = {
-        v: VERSAO_TAREFA_LOTE_AMAZON,
-        tipo: TIPO_TAREFA_LOTE_AMAZON.enviar,
-        fluxo: FLUXO_AMAZON.estoque,
-        contaId: t.contaId,
-        execucaoId: run.execucaoId,
-        origem: ORIGEM_LOTE_RECONCILIACAO_ESTOQUE_AMAZON,
-        lote: {
-          tipo: TIPO_LOTE_FEED_AMAZON.blocos,
-          partes: run.paginas,
-          esperaAteMs: deps.agora() + ATRASO_ENVIO_RECONCILIACAO_S * 1000 + ESPERA_LOTE_BLOCOS_MS,
-        },
-      };
-      const feed = await deps.agendador().enfileirarLote(tarefa, {
-        nome: nomeEnvioFeed(t.contaId, run.execucaoId),
-        atrasoS: ATRASO_ENVIO_RECONCILIACAO_S,
-      });
       extra = {
         ...extra,
         decisao:
           lote.modo === 'feed' ? DECISAO_RECONCILIACAO.feed : DECISAO_RECONCILIACAO.dryRunFeed,
-        feed,
+        ...(await enviarComoBlocos(e, run)),
       };
     } else if (lote.modo === 'so-patches-do-canario') {
       extra = { ...extra, ...(await enviarComoPatches(e, run, depositoId, true)) };
@@ -1978,6 +2030,53 @@ function juntar(lista: readonly string[]): string | null {
 }
 
 /**
+ * The drift as block feeds (module header, Decide): the walk's blocks
+ * partitioned ({@link lotesDeBlocosEstoqueAmazon}), one `feed-enviar` per
+ * batch, in batch order, each with its own `execucaoId` and name, all with the
+ * same delay and wait. A failed enqueue rethrows (the page's retry decides
+ * again; the names already enqueued answer `ja-enfileirada`).
+ */
+async function enviarComoBlocos(
+  e: Execucao,
+  run: ReconciliacaoEstoqueAmazon,
+): Promise<
+  Pick<ResultadoPaginaReconciliacaoEstoqueAmazon, 'feed' | 'lotes' | 'lotesJaEnfileirados'>
+> {
+  const { t, deps } = e;
+  const intervalos = lotesDeBlocosEstoqueAmazon(run.paginas);
+  const esperaAteMs = deps.agora() + ATRASO_ENVIO_RECONCILIACAO_S * 1000 + ESPERA_LOTE_BLOCOS_MS;
+  let jaEnfileirados = 0;
+  for (const [k, intervalo] of intervalos.entries()) {
+    const execucaoId = execucaoIdDoLoteBlocosFeed(t.contaId, run.execucaoId, k);
+    const tarefa: TarefaEnviarFeedAmazon = {
+      v: VERSAO_TAREFA_LOTE_AMAZON,
+      tipo: TIPO_TAREFA_LOTE_AMAZON.enviar,
+      fluxo: FLUXO_AMAZON.estoque,
+      contaId: t.contaId,
+      execucaoId,
+      origem: ORIGEM_LOTE_RECONCILIACAO_ESTOQUE_AMAZON,
+      lote: {
+        tipo: TIPO_LOTE_FEED_AMAZON.blocos,
+        execucaoIdRun: run.execucaoId,
+        parteInicial: intervalo.parteInicial,
+        partes: intervalo.partes,
+        esperaAteMs,
+      },
+    };
+    const r = await deps.agendador().enfileirarLote(tarefa, {
+      nome: nomeEnvioFeed(t.contaId, execucaoId),
+      atrasoS: ATRASO_ENVIO_RECONCILIACAO_S,
+    });
+    if (r === 'ja-enfileirada') jaEnfileirados += 1;
+  }
+  return {
+    feed: jaEnfileirados === intervalos.length ? 'ja-enfileirada' : 'enfileirada',
+    lotes: intervalos.length,
+    lotesJaEnfileirados: jaEnfileirados,
+  };
+}
+
+/**
  * The drift as patch tasks (module header, Decide): every drift SKU through
  * `decidirAlvo` — `on` ⇒ one task, delayed; `dry-run` ⇒ counted and sampled.
  * `canario` marks the D ≥ 31 canary branch.
@@ -1989,9 +2088,11 @@ async function enviarComoPatches(
   canario: boolean,
 ): Promise<Partial<ResultadoPaginaReconciliacaoEstoqueAmazon>> {
   const { db, t, deps } = e;
+  // Every block of the run: patch tasks carry no document, so no feed cap applies.
   const blocos = await lerBlocosDivergenciaEstoqueAmazon(db, {
     contaId: t.contaId,
     execucaoId: run.execucaoId,
+    parteInicial: 0,
     partes: run.paginas,
   });
   const tarefas: TarefaEstoqueAmazon[] = [];

@@ -86,6 +86,7 @@ describe.skipIf(!EMULATED)('the drift blocks on real Firestore (emulator)', () =
     const [lido] = await lerBlocosDivergenciaEstoqueAmazon(db(), {
       contaId: CONTA,
       execucaoId: EXEC,
+      parteInicial: 0,
       partes: 1,
     });
     expect(lido).toEqual({
@@ -103,6 +104,7 @@ describe.skipIf(!EMULATED)('the drift blocks on real Firestore (emulator)', () =
     const [, segundo] = await lerBlocosDivergenciaEstoqueAmazon(db(), {
       contaId: CONTA,
       execucaoId: EXEC,
+      parteInicial: 0,
       partes: 2,
     });
     expect(segundo?.itens).toEqual([item('C')]);
@@ -122,6 +124,7 @@ describe.skipIf(!EMULATED)('the drift blocks on real Firestore (emulator)', () =
     const blocos = await lerBlocosDivergenciaEstoqueAmazon(db(), {
       contaId: CONTA,
       execucaoId: EXEC,
+      parteInicial: 0,
       partes: 3,
     });
     expect(blocos.map((b) => [b.pagina, b.existe, b.itens.map((i) => i.sku)])).toEqual([
@@ -138,7 +141,12 @@ describe.skipIf(!EMULATED)('the drift blocks on real Firestore (emulator)', () =
       ).data() ?? {};
     await db().doc(bloco(0)).set(outro);
     await expect(
-      lerBlocosDivergenciaEstoqueAmazon(db(), { contaId: CONTA, execucaoId: EXEC, partes: 1 }),
+      lerBlocosDivergenciaEstoqueAmazon(db(), {
+        contaId: CONTA,
+        execucaoId: EXEC,
+        parteInicial: 0,
+        partes: 1,
+      }),
     ).rejects.toThrow(DivergenciaEstoqueInvalidaError);
   });
 });

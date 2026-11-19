@@ -341,7 +341,10 @@ export function severidadeDoEnvioFeedAmazon(r: ResultadoEnvioFeedAmazon): Severi
 
 /**
  * The ONE `feed-enviar` line: ids, closed codes, ms stamps and counts only —
- * never a SKU, a document URL, a seller id or Amazon's text.
+ * never a SKU, a document URL, a seller id or Amazon's text. `execucaoId` is
+ * the batch's own (its lease holder); a block batch adds its RANGE — the run
+ * whose parts it reads (`execucaoIdRun`), `parteInicial` and `partes` — so the
+ * line ties each batch back to its run.
  */
 export function registrarDespachoEnvioFeedAmazon(
   logger: LoggerAmazon,
@@ -358,6 +361,13 @@ export function registrarDespachoEnvioFeedAmazon(
     execucaoId: t.execucaoId,
     origem: t.origem,
     tipoLote: t.lote.tipo,
+    ...(t.lote.tipo === TIPO_LOTE_FEED_AMAZON.blocos
+      ? {
+          execucaoIdRun: t.lote.execucaoIdRun,
+          parteInicial: t.lote.parteInicial,
+          partes: t.lote.partes,
+        }
+      : {}),
     feedId: r.feedId,
     mensagens: r.mensagens,
     bytes: r.bytes,

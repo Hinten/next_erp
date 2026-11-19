@@ -43,8 +43,13 @@ const gravar = (pagina: number, itens: ReturnType<typeof item>[], agoraMs = AGOR
     itens,
     agoraMs,
   });
-const ler = (partes: number, execucaoId = EXEC) =>
-  lerBlocosDivergenciaEstoqueAmazon(asDb(fake), { contaId: CONTA, execucaoId, partes });
+const ler = (partes: number, execucaoId = EXEC, parteInicial = 0) =>
+  lerBlocosDivergenciaEstoqueAmazon(asDb(fake), {
+    contaId: CONTA,
+    execucaoId,
+    parteInicial,
+    partes,
+  });
 
 describe('the write: the page’s OVERWRITE', () => {
   it('★ a full set at {execucaoId}-{n}: items sorted by SKU, the canonical depósito ref, the TTL stamp 7 days on', async () => {
@@ -165,5 +170,36 @@ describe('the read: by id, never a query', () => {
   it('refuses partes that is not a positive safe integer, reading nothing', async () => {
     for (const partes of [0, -1, 1.5]) await expect(ler(partes)).rejects.toThrow(RangeError);
     expect(fake.operacoes).toBe(0);
+  });
+
+  it('★ a RANGE: ONE getAll of exactly {execucaoId}-{parteInicial..parteInicial+partes−1}, each block under its own page number (NEAR-MISS: the blocks just outside the range exist and are not read)', async () => {
+    for (const n of [0, 1, 2, 3, 4]) await gravar(n, [item(`SKU-${String(n)}`)]);
+    const leiturasAntes = fake.leiturasDetalhadas.length;
+
+    const blocos = await ler(2, EXEC, 2);
+
+    expect(blocos.map((b) => [b.pagina, b.itens.map((x) => x.sku)])).toEqual([
+      [2, ['SKU-2']],
+      [3, ['SKU-3']],
+    ]);
+    expect(fake.contagem).toMatchObject({ chamadasGetAll: 1, consultas: 0 });
+    expect(fake.leiturasDetalhadas.slice(leiturasAntes).map((l) => l.caminho)).toEqual([
+      caminho(2),
+      caminho(3),
+    ]);
+  });
+
+  it('refuses parteInicial that is not a non-negative safe integer, or a last part past the safe integers, reading nothing', async () => {
+    for (const inicial of [-1, 1.5]) {
+      // Refused by the reader's own guard, naming the field (not by a block id's grammar later).
+      await expect(ler(1, EXEC, inicial)).rejects.toThrow(RangeError);
+      await expect(ler(1, EXEC, inicial)).rejects.toThrow(/parteInicial/);
+    }
+    await expect(ler(2, EXEC, Number.MAX_SAFE_INTEGER)).rejects.toThrow(RangeError);
+    // The reader's own guard, before any block id is built (not the id's grammar later).
+    await expect(ler(2, EXEC, Number.MAX_SAFE_INTEGER)).rejects.toThrow(/última parte/);
+    expect(fake.operacoes).toBe(0);
+    // NEAR-MISS: the last safe integer itself is a part number a range can end on.
+    expect(await ler(1, EXEC, Number.MAX_SAFE_INTEGER)).toHaveLength(1);
   });
 });

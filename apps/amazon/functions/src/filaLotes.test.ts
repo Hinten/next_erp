@@ -314,7 +314,13 @@ describe('processAmazonListingsJob — the body', () => {
         contaId: CONTA,
         execucaoId: 'exec-fila-lotes',
         origem: 'delta',
-        lote: { tipo: 'blocos', partes: 1, esperaAteMs: AGORA_MS },
+        lote: {
+          tipo: 'blocos',
+          execucaoIdRun: 'run-teste',
+          parteInicial: 0,
+          partes: 1,
+          esperaAteMs: AGORA_MS,
+        },
       },
     });
     expect(linhas().map((l) => l.evento)).toEqual(['valvula', 'preco']);
@@ -332,7 +338,13 @@ describe('processAmazonListingsJob — the body', () => {
         contaId: CONTA,
         execucaoId: 'exec-fila-lotes',
         origem: 'delta',
-        lote: { tipo: 'blocos', partes: 1, esperaAteMs: AGORA_MS },
+        lote: {
+          tipo: 'blocos',
+          execucaoIdRun: 'run-teste',
+          parteInicial: 0,
+          partes: 1,
+          esperaAteMs: AGORA_MS,
+        },
       },
     });
     expect(linhas().map((l) => l.evento)).toEqual(['valvula', 'chamada-bloqueada', 'estoque']);

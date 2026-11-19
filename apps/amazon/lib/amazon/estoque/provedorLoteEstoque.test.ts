@@ -22,18 +22,23 @@ import type { Firestore } from 'firebase-admin/firestore';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
 import {
+  AmazonConfigError,
   AmazonHttpError,
   AmazonThrottleError,
   CAMINHO_LISTINGS,
   MARKETPLACE_ID_BR,
+  MAX_BYTES_FEED,
+  MAX_MENSAGENS_FEED,
   type SpApiEscritaClient,
   URL_BASE_SP_API,
   URL_TOKEN_LWA,
   enviarDisponibilidadeAmazon,
+  montarDocumentoListingsFeed,
 } from '@delfrance/integrations-amazon-sp-api';
 import {
   FLUXO_FEED_AMAZON,
   INTEGRACAO_TIPO,
+  MAX_ITENS_DIVERGENCIA_ESTOQUE_AMAZON,
   MAX_PROBLEMAS_ENVIO_ESTOQUE_AMAZON,
   MOTIVO_CONTA_AMAZON,
   type MotivoContaAmazon,
@@ -41,6 +46,7 @@ import {
   idRegistroFeedAmazon,
   idVezFeedAmazon,
   makeEstoqueUid,
+  sellingPartnerIdValido,
 } from '@delfrance/schemas';
 
 import {
@@ -50,7 +56,7 @@ import {
 } from '../avisos/avisos';
 import { __setRelogioDoCacheParaTestes } from '../core/contaCache';
 import { loadAmazonContext } from '../core/contexto';
-import { CANARIO_ENV_AMAZON, VALVULA_ENV_AMAZON } from '../core/valvulas';
+import { CANARIO_ENV_AMAZON, FLUXO_AMAZON, VALVULA_ENV_AMAZON, alvoValido } from '../core/valvulas';
 import {
   type FilaLotesAmazon,
   MAX_ATRASO_LOTE_S,
@@ -69,10 +75,12 @@ import {
 } from '../feeds/provedorLote';
 import { MAX_PROBLEMAS_POR_SKU, type ProblemaSku } from '../feeds/relatorioFeed';
 import {
+  MAX_PARTES_LOTE_BLOCOS_FEED_AMAZON,
   type TarefaEnviarFeedAmazon,
   type TarefaLoteAmazon,
   execucaoIdDaJanelaFeed,
   execucaoIdDaRecuperacaoFeed,
+  execucaoIdDoLoteBlocosFeed,
   loteJanelaFeedAmazonSchema,
   nomeEnvioFeed,
   tarefaEnviarFeedAmazonSchema,
@@ -110,6 +118,7 @@ import {
   ORIGEM_LOTE_RECUPERACAO_ESTOQUE_AMAZON,
   type ProvedorLoteEstoqueAmazon,
   criarProvedorLoteEstoqueAmazon,
+  mensagemEstoqueAmazon,
   patchEstoqueAmazon,
 } from './provedorLoteEstoque';
 import {
@@ -615,10 +624,21 @@ function janelaDaRecuperacao(
   );
 }
 
-function blocos(partes: number, execucaoId = 'run-x') {
+/**
+ * Block batch `lote` of the run `execucaoIdRun` (`run-x` unless told): its own
+ * `execucaoId`, minted as the decide mints it — never the run's — reading the
+ * run's blocks `[parteInicial, parteInicial + partes)`.
+ */
+function blocos(partes: number, parteInicial = 0, lote = 0, execucaoIdRun = 'run-x') {
   return enviar(
-    { tipo: 'blocos', partes, esperaAteMs: AGORA_MS + 6 * HORA },
-    execucaoId,
+    {
+      tipo: 'blocos',
+      execucaoIdRun,
+      parteInicial,
+      partes,
+      esperaAteMs: AGORA_MS + 6 * HORA,
+    },
+    execucaoIdDoLoteBlocosFeed(CONTA, execucaoIdRun, lote),
     'reconciliacao',
   );
 }
@@ -689,6 +709,127 @@ describe('the factory and its parity pins', () => {
   it('★ the report’s per-SKU problem cap equals the link outcome’s: a feed write-back never truncates twice', () => {
     expect(MAX_PROBLEMAS_POR_SKU).toBe(MAX_PROBLEMAS_ENVIO_ESTOQUE_AMAZON);
     expect(MAX_PROBLEMAS_POR_SKU).toBe(10);
+  });
+});
+
+/* ======================================================================================= */
+
+describe('★ the block batch cap: the worst document a capped batch builds, through the package’s OWN builder', () => {
+  /** 64 visible-ASCII characters JSON escapes to two bytes each: the longest header. */
+  const SELLER_PIOR = '"'.repeat(64);
+  /**
+   * No ceiling on the quantity: the longest JSON rendering of a non-negative
+   * number (the shared core floors the quantity and clamps it at 0, pinned by
+   * `familiaEstoque.test.ts`'s `−3 ⇒ 0`).
+   */
+  const QUANTIDADE_PIOR = Number.MAX_VALUE;
+
+  /**
+   * SKU `i` of the worst case: 40 code points (the most a member a sent feed
+   * carries may hold), every one a 4-byte UTF-8 character; the first encodes
+   * `i`, so every SKU of the document is distinct.
+   */
+  function skuPior(i: number): string {
+    return String.fromCodePoint(0x10000 + i) + String.fromCodePoint(0x1f600).repeat(39);
+  }
+
+  /** `blocos` full drift blocks of worst-case items, as the stock provider's messages. */
+  function documentoPior(blocos: number) {
+    const mensagens = Array.from(
+      { length: blocos * MAX_ITENS_DIVERGENCIA_ESTOQUE_AMAZON },
+      (_v, i) => mensagemEstoqueAmazon(skuPior(i), QUANTIDADE_PIOR),
+    );
+    return () => montarDocumentoListingsFeed({ sellerId: SELLER_PIOR, mensagens });
+  }
+
+  it('the worst case is the worst the grammars allow: a 40-code-point SKU of 4-byte characters the valve lets through, the longest quantity rendering, the longest escaped seller id', () => {
+    const sku = skuPior(MAX_MENSAGENS_FEED);
+    expect([...sku]).toHaveLength(40);
+    expect(new TextEncoder().encode(sku).byteLength).toBe(160);
+    expect(alvoValido(FLUXO_AMAZON.estoque, sku)).toBe(true);
+    // NEAR-MISS: one code point more is no target the valve lets into a sent feed.
+    expect(alvoValido(FLUXO_AMAZON.estoque, `${sku}x`)).toBe(false);
+    expect(JSON.stringify(QUANTIDADE_PIOR)).toHaveLength(23);
+    expect(JSON.stringify(QUANTIDADE_PIOR).length).toBeGreaterThan(
+      JSON.stringify(Number.MAX_SAFE_INTEGER).length,
+    );
+    expect(sellingPartnerIdValido(SELLER_PIOR)).toBe(true);
+    expect(JSON.stringify(SELLER_PIOR)).toHaveLength(2 + 2 * 64);
+  });
+
+  it('★ the arithmetic: cap × the block’s item cap stays under the message cap; the cap is 50', () => {
+    expect(MAX_PARTES_LOTE_BLOCOS_FEED_AMAZON).toBe(50);
+    expect(MAX_ITENS_DIVERGENCIA_ESTOQUE_AMAZON).toBe(300);
+    expect(MAX_PARTES_LOTE_BLOCOS_FEED_AMAZON * MAX_ITENS_DIVERGENCIA_ESTOQUE_AMAZON).toBe(15_000);
+    expect(
+      MAX_PARTES_LOTE_BLOCOS_FEED_AMAZON * MAX_ITENS_DIVERGENCIA_ESTOQUE_AMAZON,
+    ).toBeLessThanOrEqual(MAX_MENSAGENS_FEED);
+  });
+
+  it('★ the worst-case document at the cap BUILDS (every message, under the byte cap with headroom); NEAR-MISS: enough worst-case full blocks to pass 25,000 messages (past the byte cap too) are REFUSED whole', () => {
+    const doc = documentoPior(MAX_PARTES_LOTE_BLOCOS_FEED_AMAZON)();
+    expect(doc.mensagens).toBe(15_000);
+    expect(doc.bytes.byteLength).toBeLessThanOrEqual(MAX_BYTES_FEED);
+    // The documented worst case, byte for byte: 62% of the byte cap.
+    expect(doc.bytes.byteLength).toBe(5_899_099);
+    expect(doc.bytes.byteLength).toBeLessThan(0.63 * MAX_BYTES_FEED);
+
+    const blocosDoBug = Math.ceil((MAX_MENSAGENS_FEED + 1) / MAX_ITENS_DIVERGENCIA_ESTOQUE_AMAZON);
+    expect(blocosDoBug).toBe(84);
+    expect(documentoPior(blocosDoBug)).toThrow(AmazonConfigError);
+  });
+
+  it('★ the message cap ALONE refuses the unpartitioned batch the bug sent: 84 full blocks of ordinary SKUs, whose document stays far under the byte cap, are REFUSED whole; NEAR-MISS: 83 full blocks build', () => {
+    const blocosDoBug = 84;
+    const mensagens = Array.from(
+      { length: blocosDoBug * MAX_ITENS_DIVERGENCIA_ESTOQUE_AMAZON },
+      (_v, i) => mensagemEstoqueAmazon(`SKU-${String(i)}`, 9),
+    );
+    const cabem = (blocosDoBug - 1) * MAX_ITENS_DIVERGENCIA_ESTOQUE_AMAZON;
+    expect(cabem).toBeLessThanOrEqual(MAX_MENSAGENS_FEED);
+    expect(mensagens.length).toBeGreaterThan(MAX_MENSAGENS_FEED);
+
+    const ate83 = montarDocumentoListingsFeed({
+      sellerId: SPID_A,
+      mensagens: mensagens.slice(0, cabem),
+    });
+    expect(ate83.mensagens).toBe(cabem);
+    // An upper bound on the 84-block document's bytes: the 83 blocks, then the
+    // last block built alone (its header counted twice), each of its messages at
+    // most four `messageId` digits longer in the whole document, plus its comma.
+    const ultimoBloco = montarDocumentoListingsFeed({
+      sellerId: SPID_A,
+      mensagens: mensagens.slice(cabem),
+    });
+    const teto =
+      ate83.bytes.byteLength +
+      ultimoBloco.bytes.byteLength +
+      5 * MAX_ITENS_DIVERGENCIA_ESTOQUE_AMAZON;
+    expect(teto).toBeLessThan(0.7 * MAX_BYTES_FEED);
+    // So the refusal is the message count's, never the bytes'.
+    expect(() => montarDocumentoListingsFeed({ sellerId: SPID_A, mensagens })).toThrow(
+      AmazonConfigError,
+    );
+  });
+
+  it('the cap keeps headroom below the tightest one: 80 worst-case blocks still build, 81 are refused by their bytes', () => {
+    expect(documentoPior(80)().bytes.byteLength).toBeLessThanOrEqual(MAX_BYTES_FEED);
+    expect(documentoPior(81)).toThrow(AmazonConfigError);
+    expect(81 * MAX_ITENS_DIVERGENCIA_ESTOQUE_AMAZON).toBeLessThanOrEqual(MAX_MENSAGENS_FEED);
+  });
+
+  it('the headroom covers a dry-run document (every member, an invalid SKU included) of SKUs of 400 bytes once JSON-encoded at the cap; NEAR-MISS: 401 bytes are refused', () => {
+    const comSkuDe = (bytes: number) => () =>
+      montarDocumentoListingsFeed({
+        sellerId: SELLER_PIOR,
+        mensagens: Array.from(
+          { length: MAX_PARTES_LOTE_BLOCOS_FEED_AMAZON * MAX_ITENS_DIVERGENCIA_ESTOQUE_AMAZON },
+          (_v, i) => mensagemEstoqueAmazon(String(i).padStart(bytes, 'x'), QUANTIDADE_PIOR),
+        ),
+      });
+    expect(alvoValido(FLUXO_AMAZON.estoque, 'x'.repeat(400))).toBe(false);
+    expect(comSkuDe(400)().bytes.byteLength).toBeLessThanOrEqual(MAX_BYTES_FEED);
+    expect(comSkuDe(401)).toThrow(AmazonConfigError);
   });
 });
 
@@ -1004,6 +1145,42 @@ describe('★ a BLOCK batch: the run’s drift blocks, then the snapshot', () =>
     ]);
     // NEAR-MISS: one part fewer reads a prefix of the drift.
     expect(dadosDe(await m.provedor.membros(ctx, blocos(2))).skus).toEqual(['SKU-A']);
+  });
+
+  it('★ membros reads EXACTLY its range of the RUN’s blocks: ONE getAll of {run}-{parteInicial…parteInicial+partes−1}, never the batch’s own id (NEAR-MISS: the blocks just outside the range exist and are not read)', async () => {
+    const m = mundo();
+    for (const n of [0, 1, 2, 3, 4]) {
+      await bloco(m, n, [
+        {
+          sku: `SKU-${String(n)}`,
+          unidadeId: `u-${String(n)}`,
+          quantidadeAmazon: 1,
+          quantidadeErp: 2,
+        },
+      ]);
+    }
+    const t = blocos(2, 2, 1);
+    // Anti-vacuity: blocks stored under the BATCH's id would answer a reader keyed on it.
+    expect(t.execucaoId).not.toBe(RUN_X);
+    await bloco(
+      m,
+      2,
+      [{ sku: 'SKU-DO-LOTE', unidadeId: 'u-lote', quantidadeAmazon: 1, quantidadeErp: 2 }],
+      t.execucaoId,
+    );
+    const ctx = await m.ctx();
+    const leiturasAntes = m.fake.leituras.length;
+    const getAllsAntes = m.fake.contagem.chamadasGetAll;
+
+    const r = dadosDe(await m.provedor.membros(ctx, t));
+
+    expect(r.skus).toEqual(['SKU-2', 'SKU-3']);
+    expect(m.fake.contagem.chamadasGetAll - getAllsAntes).toBe(1);
+    expect(m.fake.consultas).toEqual([]);
+    expect(m.fake.leituras.slice(leiturasAntes)).toEqual([
+      `${RUN}/divergenciasEstoqueAmazon/${RUN_X}-2`,
+      `${RUN}/divergenciasEstoqueAmazon/${RUN_X}-3`,
+    ]);
   });
 
   it('★ montar: the snapshot BEFORE the first ERP read; a converged SKU dropped, a GONE unit and a unit with VARIATIONS dropped and counted, a kit root’s own sole member kept; the quantity is the ERP’s NOW', async () => {
@@ -2196,6 +2373,71 @@ describe('★ end to end: the REAL send, result and recovery handlers, a scripte
     await ligado.despachar(blocos(1));
     expect(ligado.feedChamadas).toEqual(['POST documento', 'PUT upload', 'POST feed']);
     expect(ligado.documentos.map((d) => d.messages.map((x) => x.sku))).toEqual([['SKU-A']]);
+  });
+
+  it('★ two block batches of ONE run through the real send and lease: batch 0 sends and holds the lease, batch 1 is turned away and WAITS (re-enqueued unnamed), never reading batch 0’s lease as its own; NEAR-MISS: batch 0 dispatched again reads its OWN enviado', async () => {
+    const m = mundo();
+    produto(m, 'u-a');
+    linha(m, 'u-a', 9, 1);
+    produto(m, 'u-b');
+    linha(m, 'u-b', 8, 1);
+    for (const [pagina, sku, unidadeId] of [
+      [0, 'SKU-A', 'u-a'],
+      [1, 'SKU-B', 'u-b'],
+    ] as const) {
+      await gravarBlocoDivergenciaEstoqueAmazon(m.db, {
+        contaId: CONTA,
+        execucaoId: 'run-x',
+        pagina,
+        depositoId: DEP,
+        itens: [{ sku, unidadeId, quantidadeAmazon: 1, quantidadeErp: 9 }],
+        agoraMs: m.relogio,
+      });
+    }
+    const lote0 = blocos(1, 0, 0);
+    const lote1 = blocos(1, 1, 1);
+
+    expect(await m.despachar(lote0)).toMatchObject({ r: { acao: 'enviado', feedId: FEED } });
+    expect(m.documentos.map((d) => d.messages.map((x) => x.sku))).toEqual([['SKU-A']]);
+    expect(m.fake.ler(VEZ)).toMatchObject({ execucaoId: lote0.execucaoId, estado: 'enviado' });
+
+    m.relogio += MIN;
+    const enviosAntes = doTipo(m, 'feed-enviar').length;
+    expect(await m.despachar(lote1)).toMatchObject({
+      r: { acao: 'aguardando', tomada: 'ocupada' },
+    });
+    // Its own payload re-enqueued UNNAMED; nothing of batch 1 was built or posted.
+    const copias = doTipo(m, 'feed-enviar').slice(enviosAntes);
+    expect(copias.map((x) => [x.tarefa, x.id])).toEqual([[lote1, null]]);
+    expect(m.documentos).toHaveLength(1);
+    expect(m.fake.ler(VEZ)).toMatchObject({ execucaoId: lote0.execucaoId });
+
+    // NEAR-MISS: batch 0's own id reads its own enviado (never a turned-away batch).
+    expect(await m.despachar(lote0)).toMatchObject({ r: { acao: 'consulta-retomada' } });
+  });
+
+  it('★ the send line of a block batch names the batch’s OWN id and its RANGE of the run (execucaoIdRun, parteInicial, partes); a window batch’s line carries none of the three', async () => {
+    const m = mundo();
+    const t = blocos(1, 0, 0);
+    await m.despachar(t);
+    const envio = m.log.linhas.filter((l) => l.meta?.fase === 'envio');
+    expect(envio).toHaveLength(1);
+    expect(envio[0]?.meta).toMatchObject({
+      tipoLote: 'blocos',
+      execucaoId: t.execucaoId,
+      execucaoIdRun: 'run-x',
+      parteInicial: 0,
+      partes: 1,
+    });
+    expect(t.execucaoId).not.toBe('run-x');
+
+    const n = mundo();
+    await n.despachar(janelaDoTick(AGORA_MS - 10 * MIN, AGORA_MS - MIN));
+    const [janela] = n.log.linhas.filter((l) => l.meta?.fase === 'envio');
+    expect(janela?.meta).toMatchObject({ tipoLote: 'janela' });
+    expect(janela?.meta).not.toHaveProperty('execucaoIdRun');
+    expect(janela?.meta).not.toHaveProperty('parteInicial');
+    expect(janela?.meta).not.toHaveProperty('partes');
   });
 
   it('★ the turned-away MERGE: a 31-SKU tick batch dispatched while a reconcile feed holds the lease is RECORDED; that feed’s DONE ⇒ ONE recovery covering both its catch-up and the recorded window, ONE feed-enviar, NO reconcile request', async () => {

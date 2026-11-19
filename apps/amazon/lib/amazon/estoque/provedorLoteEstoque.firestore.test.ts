@@ -9,6 +9,9 @@
  *    missing part an empty block), the units read with a field MASK, a gone
  *    unit and a unit with variations dropped, a kit root's own sole member
  *    kept, a converged SKU dropped, and the quantity the ERP's now;
+ *  - ★ a block batch reads EXACTLY its range of the RUN's blocks (the
+ *    payload's `execucaoIdRun`, never the batch's own id): of blocks 0–3, the
+ *    batch `[2, 4)` sends the SKUs of blocks 2 and 3 only;
  *  - ★ the feed's write-back on real link documents: `recusado` with no
  *    quantity under each document's own precondition, and ONE aviso clocked by
  *    a stored Firestore `Timestamp`;
@@ -56,6 +59,7 @@ import type { ContextoLoteAmazon } from '../feeds/provedorLote';
 import {
   type TarefaEnviarFeedAmazon,
   type TarefaLoteAmazon,
+  execucaoIdDoLoteBlocosFeed,
   tarefaEnviarFeedAmazonSchema,
 } from '../feeds/tarefaLote';
 import { falhaDeTarefaJaExistente } from '../testing/falhaDeEnfileiramento';
@@ -104,6 +108,10 @@ const PRODUTOS = [
   'u-kit',
   'u-kit-membro',
   'p-link',
+  'u-faixa-0',
+  'u-faixa-1',
+  'u-faixa-2',
+  'u-faixa-3',
 ].map((id) => `${P}${id}`);
 
 async function limpar(): Promise<void> {
@@ -216,15 +224,29 @@ async function contexto(): Promise<ContextoLoteAmazon> {
   };
 }
 
-function blocos(partes: number): TarefaEnviarFeedAmazon & { readonly fluxo: 'estoque' } {
+/**
+ * Block batch `lote` of the run {@link EXEC}: its own `execucaoId` (never the
+ * run's), reading the run's blocks `[parteInicial, parteInicial + partes)`.
+ */
+function blocos(
+  partes: number,
+  parteInicial = 0,
+  lote = 0,
+): TarefaEnviarFeedAmazon & { readonly fluxo: 'estoque' } {
   return tarefaEnviarFeedAmazonSchema.parse({
     v: 1,
     tipo: 'feed-enviar',
     fluxo: 'estoque',
     contaId: CONTA,
-    execucaoId: EXEC,
+    execucaoId: execucaoIdDoLoteBlocosFeed(CONTA, EXEC, lote),
     origem: 'reconciliacao',
-    lote: { tipo: 'blocos', partes, esperaAteMs: Date.now() + 6 * 3_600_000 },
+    lote: {
+      tipo: 'blocos',
+      execucaoIdRun: EXEC,
+      parteInicial,
+      partes,
+      esperaAteMs: Date.now() + 6 * 3_600_000,
+    },
   }) as TarefaEnviarFeedAmazon & { readonly fluxo: 'estoque' };
 }
 
@@ -302,6 +324,46 @@ describe.skipIf(!EMULATED)('the stock feed provider on the emulator', () => {
       unidadesAusentes: 1,
       unidadesComVariacoes: 1,
     });
+  });
+
+  it('★ a block batch reads EXACTLY its range of the RUN’s blocks on the server: blocks 0–3 written, the batch [2, 4) sends the SKUs of blocks 2 and 3 only (NEAR-MISS: blocks 0 and 1 exist and are not read)', async () => {
+    for (const n of [0, 1, 2, 3]) {
+      await produto(`u-faixa-${String(n)}`);
+      await linha(`u-faixa-${String(n)}`, 10);
+      await gravarBlocoDivergenciaEstoqueAmazon(db(), {
+        contaId: CONTA,
+        execucaoId: EXEC,
+        pagina: n,
+        depositoId: DEP,
+        itens: [
+          {
+            sku: `${P}SKU-FAIXA-${String(n)}`,
+            unidadeId: `${P}u-faixa-${String(n)}`,
+            quantidadeAmazon: 2,
+            quantidadeErp: 9,
+          },
+        ],
+        agoraMs: Date.now(),
+      });
+    }
+    const provedor = criarProvedorLoteEstoqueAmazon(raiz());
+    const ctx = await contexto();
+    const t = blocos(2, 2, 1);
+    // The batch's own id is its lease holder's, never the run's: no block is stored under it.
+    expect(t.execucaoId).not.toBe(EXEC);
+
+    const membros = await provedor.membros(ctx, t);
+    if ('abortado' in membros) throw new Error('membros abortados');
+    expect(membros.skus).toEqual([`${P}SKU-FAIXA-2`, `${P}SKU-FAIXA-3`]);
+    const r = await provedor.montar(ctx, t, membros.skus, membros.dados);
+
+    if ('abortado' in r) throw new Error(`abortada: ${r.abortado}`);
+    expect(r.mensagens.map((x) => x.sku)).toEqual([`${P}SKU-FAIXA-2`, `${P}SKU-FAIXA-3`]);
+    expect(r.diff).toMatchObject({ membros: 2, mensagens: 2 });
+    // NEAR-MISS: the batch [0, 2) of the same run reads the other two.
+    const antes = await provedor.membros(ctx, blocos(2, 0, 0));
+    if ('abortado' in antes) throw new Error('membros abortados');
+    expect(antes.skus).toEqual([`${P}SKU-FAIXA-0`, `${P}SKU-FAIXA-1`]);
   });
 
   it('★ the feed’s write-back on real link documents: recusado with no quantity, under each document’s precondition; ONE aviso clocked by the write-back’s own link-doc read (a real Timestamp, after the stored outcome clock, before the writes)', async () => {

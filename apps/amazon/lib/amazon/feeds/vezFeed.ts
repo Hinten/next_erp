@@ -94,7 +94,15 @@
  * {@link ESPERA_SONDA_DISJUNTOR_MS} after the last failure: one window batch
  * then takes the lease as the probe (one at a time, since the take holds the
  * lease); its completed feed resets the count, its failure re-stamps the
- * hour. A block batch is never refused.
+ * hour. A block batch is never refused: under an open breaker it takes the
+ * lease as a probe. A reconcile whose walk is partitioned into K block batches
+ * therefore probes up to K times in a row while feeds keep failing (each one
+ * built, uploaded and submitted, each failure adding 1 and re-stamping the
+ * hour, which keeps the window path's half-open probe back for as long as the
+ * series runs), and the automatic reconcile the first failure requests can
+ * add its own K. The lease serializes them and the 24-h guard bounds the
+ * requests, so the series ends; its price is up to 2K failed block feeds a day,
+ * where a single batch per run cost at most two.
  *
  * ## The submission floor
  *

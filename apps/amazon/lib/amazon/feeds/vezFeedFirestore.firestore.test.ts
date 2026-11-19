@@ -234,7 +234,13 @@ function blocos(execucaoId: string): TarefaEnviarFeedAmazon {
     contaId: CONTA,
     execucaoId,
     origem: 'reconciliacao',
-    lote: { tipo: 'blocos', partes: 2, esperaAteMs: AGORA + 6 * 60 * MIN },
+    lote: {
+      tipo: 'blocos',
+      execucaoIdRun: 'run-teste',
+      parteInicial: 0,
+      partes: 2,
+      esperaAteMs: AGORA + 6 * 60 * MIN,
+    },
   });
 }
 

@@ -19,6 +19,7 @@ import { describe, expect, expectTypeOf, it } from 'vitest';
 import { FLUXOS_COM_LOTE, type FluxoComLoteAmazon } from '../core/valvulas';
 import {
   DESFECHO_RECUPERACAO_FEED_AMAZON,
+  MAX_PARTES_LOTE_BLOCOS_FEED_AMAZON,
   ORIGEM_RESULTADO_FEED_AMAZON,
   type RodadaConsultaFeed,
   TIPO_TAREFA_LOTE_AMAZON,
@@ -26,6 +27,7 @@ import {
   desfechoRecuperacaoFeedAmazonSchema,
   execucaoIdDaJanelaFeed,
   execucaoIdDaRecuperacaoFeed,
+  execucaoIdDoLoteBlocosFeed,
   loteJanelaFeedAmazonSchema,
   nomeConsultaFeed,
   nomeEnvioFeed,
@@ -49,8 +51,13 @@ const FEED = '3485934';
 const EXECUCAO = 'b'.repeat(64);
 const T0 = 1_800_000_000_000;
 
+/** The run a block batch reads: an id under the batch grammar, never the batch's own. */
+const RUN = 'run-reconciliacao-1';
+
 const BLOCOS = {
   tipo: TIPO_LOTE_FEED_AMAZON.blocos,
+  execucaoIdRun: RUN,
+  parteInicial: 0,
   partes: 3,
   esperaAteMs: T0 + 6 * 3_600_000,
 };
@@ -320,6 +327,43 @@ describe('the payloads (.strict(), v: 1)', () => {
       expect(aceita(enviar({ ...BLOCOS, esperaAteMs: null }))).toBe(false);
       expect(aceita(enviar({ ...BLOCOS, partes: 1 }))).toBe(true);
     });
+
+    it('★ partes is capped: the cap parses, the cap + 1 is REFUSED (no producer can build a batch the package would refuse)', () => {
+      expect(MAX_PARTES_LOTE_BLOCOS_FEED_AMAZON).toBe(50);
+      expect(aceita(enviar({ ...BLOCOS, partes: MAX_PARTES_LOTE_BLOCOS_FEED_AMAZON }))).toBe(true);
+      expect(aceita(enviar({ ...BLOCOS, partes: MAX_PARTES_LOTE_BLOCOS_FEED_AMAZON + 1 }))).toBe(
+        false,
+      );
+      // The whole run a large walk would have sent as ONE batch before the cap.
+      expect(aceita(enviar({ ...BLOCOS, partes: 84 }))).toBe(false);
+    });
+
+    it('★ a RANGE of ONE run: parteInicial a non-negative safe integer, the run id required and under the batch grammar', () => {
+      expect(aceita(enviar({ ...BLOCOS, parteInicial: 0 }))).toBe(true);
+      expect(aceita(enviar({ ...BLOCOS, parteInicial: 50 }))).toBe(true);
+      expect(aceita(enviar({ ...BLOCOS, parteInicial: -1 }))).toBe(false);
+      expect(aceita(enviar({ ...BLOCOS, parteInicial: 1.5 }))).toBe(false);
+      expect(aceita(enviar({ ...BLOCOS, parteInicial: '0' }))).toBe(false);
+      const { parteInicial: _i, ...semInicio } = BLOCOS;
+      expect(aceita(enviar(semInicio))).toBe(false);
+      const { execucaoIdRun: _r, ...semRun } = BLOCOS;
+      expect(aceita(enviar(semRun))).toBe(false);
+      for (const execucaoIdRun of ['run:1', '', 'a b', 'a'.repeat(129), null]) {
+        expect(aceita(enviar({ ...BLOCOS, execucaoIdRun })), String(execucaoIdRun)).toBe(false);
+      }
+    });
+
+    it('refuses a range whose last part is past the safe integers (NEAR-MISS: ending ON the last safe integer parses)', () => {
+      expect(aceita(enviar({ ...BLOCOS, parteInicial: Number.MAX_SAFE_INTEGER, partes: 2 }))).toBe(
+        false,
+      );
+      expect(aceita(enviar({ ...BLOCOS, parteInicial: Number.MAX_SAFE_INTEGER, partes: 1 }))).toBe(
+        true,
+      );
+      expect(
+        aceita(enviar({ ...BLOCOS, parteInicial: Number.MAX_SAFE_INTEGER - 1, partes: 2 })),
+      ).toBe(true);
+    });
   });
 
   describe('★ the recovery', () => {
@@ -410,6 +454,34 @@ describe('★ the names', () => {
     expect(nomeRecuperacaoFeed(CONTA, FEED, 5)).toBe(
       sha256Hex(`feed:recuperacao:${CONTA}:${FEED}:5`),
     );
+    expect(execucaoIdDoLoteBlocosFeed(CONTA, RUN, 1)).toBe(sha256Hex(`blocos:${CONTA}:${RUN}:1`));
+  });
+
+  it('★ a block batch’s execucaoId: one per (conta, run, batch), never the run’s own, deterministic (NEAR-MISS: the same batch of the same run twice is one id)', () => {
+    const ids = new Set([
+      execucaoIdDoLoteBlocosFeed(CONTA, RUN, 0),
+      execucaoIdDoLoteBlocosFeed(CONTA, RUN, 1),
+      execucaoIdDoLoteBlocosFeed(CONTA, `${RUN}-2`, 0),
+      execucaoIdDoLoteBlocosFeed(OUTRA_CONTA, RUN, 0),
+      RUN,
+    ]);
+    expect(ids.size).toBe(5);
+    expect(execucaoIdDoLoteBlocosFeed(CONTA, RUN, 1)).toBe(
+      execucaoIdDoLoteBlocosFeed(CONTA, RUN, 1),
+    );
+    // Each is an id the batch grammar carries: a payload's execucaoId and a lease holder.
+    expect(
+      aceita({ ...enviar(BLOCOS), execucaoId: execucaoIdDoLoteBlocosFeed(CONTA, RUN, 0) }),
+    ).toBe(true);
+    // Two batches of one run: two send names.
+    expect(nomeEnvioFeed(CONTA, execucaoIdDoLoteBlocosFeed(CONTA, RUN, 0))).not.toBe(
+      nomeEnvioFeed(CONTA, execucaoIdDoLoteBlocosFeed(CONTA, RUN, 1)),
+    );
+    expect(() => execucaoIdDoLoteBlocosFeed(CONTA, 'run:1', 0)).toThrow(
+      /execucaoIdRun fora da gramática/,
+    );
+    expect(() => execucaoIdDoLoteBlocosFeed(CONTA, RUN, -1)).toThrow(RangeError);
+    expect(() => execucaoIdDoLoteBlocosFeed(CONTA, RUN, 0.5)).toThrow(RangeError);
   });
 
   it('two send runs of one conta give two uncertain names and two send names (NEAR-MISS: the same run gives one)', () => {
@@ -559,6 +631,7 @@ describe('★ the names', () => {
     ['nomeRecuperacaoFeed', (c) => nomeRecuperacaoFeed(c, FEED, null)],
     ['execucaoIdDaJanelaFeed', (c) => execucaoIdDaJanelaFeed(c, 10, 20)],
     ['execucaoIdDaRecuperacaoFeed', (c) => execucaoIdDaRecuperacaoFeed(c, FEED, null)],
+    ['execucaoIdDoLoteBlocosFeed', (c) => execucaoIdDoLoteBlocosFeed(c, RUN, 0)],
   ])('%s refuses a contaId outside its grammar, naming the grammar only', (_nome, f) => {
     expect(() => f('conta/x')).toThrow(/contaId fora da gramática/);
     expect(() => f('a:b')).toThrow(RangeError);

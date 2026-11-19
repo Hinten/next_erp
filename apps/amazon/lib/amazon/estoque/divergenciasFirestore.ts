@@ -22,11 +22,14 @@
  *
  * ## The read: by id, never a query
  *
- * {@link lerBlocosDivergenciaEstoqueAmazon} reads blocks `0…partes−1` of ONE
- * run by their ids, in `getAll` calls of at most 300 ids (one call for any run
- * of up to 300 pages). `partes` comes from the CALLER — the decide step's own
- * page count, or the `feed-enviar` payload, fixed when the run decided — and
- * never from the run's document, which the next run may already have
+ * {@link lerBlocosDivergenciaEstoqueAmazon} reads blocks `parteInicial …
+ * parteInicial + partes − 1` of ONE run by their ids, in `getAll` calls of at
+ * most 300 ids (one call for any range of up to 300 blocks: a block feed's
+ * range is far below). The run, the first block and the count come from the
+ * CALLER — the decide step's own run and page count (`0` and every page), or a
+ * block `feed-enviar` payload's range (`execucaoIdRun`, `parteInicial`,
+ * `partes`, fixed when the run decided; never that batch's own `execucaoId`)
+ * — and never from the run's document, which the next run may already have
  * reclaimed. A missing id reads as an EMPTY block. Never a query: an
  * `execucaoId` filter would be unindexed, and a key-prefix range is not
  * index-bounded on Enterprise.
@@ -146,24 +149,40 @@ export async function gravarBlocoDivergenciaEstoqueAmazon(
 }
 
 /**
- * Blocks `0…partes−1` of one run, by id (module header), in page order. A
- * missing id is an empty block.
+ * Blocks `parteInicial…parteInicial + partes − 1` of one run, by id (module
+ * header), in page order. A missing id is an empty block.
  *
- * @throws {RangeError} a conta or run outside its grammar, or `partes` that is
- *   not a positive safe integer (nothing read).
+ * @throws {RangeError} a conta or run outside its grammar, `parteInicial` that
+ *   is not a non-negative safe integer, `partes` that is not a positive safe
+ *   integer, or a last block past the safe integers (nothing read).
  * @throws {DivergenciaEstoqueInvalidaError} a stored block that does not parse
  *   or names another run.
  */
 export async function lerBlocosDivergenciaEstoqueAmazon(
   db: Firestore,
-  e: { readonly contaId: string; readonly execucaoId: string; readonly partes: number },
+  e: {
+    readonly contaId: string;
+    /** The RUN whose blocks are read. */
+    readonly execucaoId: string;
+    readonly parteInicial: number;
+    readonly partes: number;
+  },
 ): Promise<readonly BlocoDivergenciaLidoEstoqueAmazon[]> {
   exigirConta(e.contaId);
+  if (!Number.isSafeInteger(e.parteInicial) || e.parteInicial < 0) {
+    throw new RangeError(
+      'divergenciasFirestore.ts: parteInicial deve ser um inteiro seguro não negativo',
+    );
+  }
   if (!Number.isSafeInteger(e.partes) || e.partes < 1) {
     throw new RangeError('divergenciasFirestore.ts: partes deve ser um inteiro seguro >= 1');
   }
+  // A subtraction, exact here: a sum past the safe integers rounds, and can round back onto one.
+  if (e.partes - 1 > Number.MAX_SAFE_INTEGER - e.parteInicial) {
+    throw new RangeError('divergenciasFirestore.ts: a última parte não é um inteiro seguro');
+  }
   const ids = Array.from({ length: e.partes }, (_v, n) =>
-    idDivergenciaEstoqueAmazon(e.execucaoId, n),
+    idDivergenciaEstoqueAmazon(e.execucaoId, e.parteInicial + n),
   );
   const saida: BlocoDivergenciaLidoEstoqueAmazon[] = [];
   for (let inicio = 0; inicio < ids.length; inicio += MAX_BLOCOS_POR_LEITURA_ESTOQUE_AMAZON) {
@@ -174,7 +193,7 @@ export async function lerBlocosDivergenciaEstoqueAmazon(
       ),
     );
     for (const [i, id] of fatia.entries()) {
-      const pagina = inicio + i;
+      const pagina = e.parteInicial + inicio + i;
       const snap = snaps[i];
       if (snap?.exists !== true) {
         saida.push({ pagina, existe: false, depositoId: null, itens: [] });

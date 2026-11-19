@@ -10,7 +10,8 @@
  * ## The seam
  *
  *  - `membros` — the batch's SKUs, deduplicated: a block batch reads its
- *    `partes` stored parts, a window batch re-derives its window. `dados` is
+ *    payload's RANGE of one run's stored parts (`execucaoIdRun`,
+ *    `parteInicial`, `partes`), a window batch re-derives its window. `dados` is
  *    whatever `montar` needs (opaque to the core).
  *  - `montar` — the messages for exactly the members the valve let through,
  *    and `snapshotEmMs`, our clock BEFORE the batch's first read.

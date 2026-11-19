@@ -156,7 +156,7 @@ const blocos = (esperaAteMs = AGORA_MS + 6 * HORA, execucaoId = EXEC) =>
   enviar({
     execucaoId,
     origem: 'reconciliacao',
-    lote: { tipo: 'blocos', partes: 2, esperaAteMs },
+    lote: { tipo: 'blocos', execucaoIdRun: 'run-teste', parteInicial: 0, partes: 2, esperaAteMs },
   });
 
 /* ------------------------------------ leases ------------------------------------ */
@@ -1922,7 +1922,13 @@ describe('★ a fake PRICE provider drives the send with no stock module (the st
     const t = enviar({
       fluxo: FLUXO_FEED_AMAZON.preco,
       origem: 'operador',
-      lote: { tipo: 'blocos', partes: 1, esperaAteMs: AGORA_MS + HORA },
+      lote: {
+        tipo: 'blocos',
+        execucaoIdRun: 'run-teste',
+        parteInicial: 0,
+        partes: 1,
+        esperaAteMs: AGORA_MS + HORA,
+      },
     });
     const r = await c.rodar(t);
     expect(r).toMatchObject({ acao: ACAO_ENVIO_FEED.enviado, fluxo: 'preco' });

@@ -365,7 +365,9 @@ are local builds; neither deploys anything.
   first), then the start of the conta's reconcile run, whose pages run on
   `processAmazonListingsJob`: every link doc walked, Amazon's live quantities read 20 SKUs per
   search, the drift stored in `divergenciasEstoqueAmazon` and sent 20 minutes later (at most 30
-  SKUs as patch tasks, more as ONE feed; nothing when the depósito would zero the catalogue).
+  SKUs as patch tasks, more as block feeds, one per 50 walked pages
+  (`MAX_PARTES_LOTE_BLOCOS_FEED_AMAZON`), serialized by the stock feed lease; nothing when the
+  depósito would zero the catalogue).
   The same two gates as the tick, with ZERO Firestore operations. **No Amazon call** here (the
   pages read Amazon through the jobs queue's context), so **no `secrets:`**.
   `America/Sao_Paulo`, `timeoutSeconds 120`, `retryCount 0` (the next request, the tick's re-kick

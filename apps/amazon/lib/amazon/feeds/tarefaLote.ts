@@ -12,10 +12,17 @@
  * logs). Every `feedId` passes the package's `FEED_ID_AMAZON_REGEX`.
  *
  *  - `feed-enviar` — build and submit one feed. Its `lote` is a union:
- *    - a BLOCK batch `{ tipo: 'blocos', partes, esperaAteMs }`: `partes` is how
- *      many stored input parts the provider reads, fixed by the producer (so a
- *      later run can never change what this send reads); `esperaAteMs` bounds
- *      how long a batch turned away by a held lease keeps re-enqueuing itself;
+ *    - a BLOCK batch `{ tipo: 'blocos', execucaoIdRun, parteInicial, partes,
+ *      esperaAteMs }`: a RANGE of one run's stored input parts — the run whose
+ *      parts it reads (`execucaoIdRun`, never the batch's own `execucaoId`),
+ *      the first part and how many, fixed by the producer (so a later run can
+ *      never change what this send reads). `partes` is at most
+ *      {@link MAX_PARTES_LOTE_BLOCOS_FEED_AMAZON}, so the stock provider's
+ *      `on` document stays inside the package's limits (a dry-run one too,
+ *      for SKUs of up to 400 bytes once JSON-encoded): a run with more parts
+ *      is several batches, each its own lease holder
+ *      ({@link execucaoIdDoLoteBlocosFeed}). `esperaAteMs` bounds how long a
+ *      batch turned away by a held lease keeps re-enqueuing itself;
  *    - a WINDOW batch `{ tipo: 'janela', desdeMs, ateMs, manterDesdeMs,
  *      commitAposMs, forcarPorCommit, esperaAteMs, depositoId }`: the bounded
  *      movement window `(desdeMs, ateMs]` and its keep rule WHOLE; the provider
@@ -73,7 +80,11 @@
  * twice is one batch), a recovery's from the recovery itself
  * ({@link execucaoIdDaRecuperacaoFeed}: never from its `ateMs`, so a retried
  * recovery that re-derives a later `ateMs` meets its own first batch's name
- * instead of minting a twin the first would turn away).
+ * instead of minting a twin the first would turn away). A block batch's from
+ * its run and its index in the run's partition
+ * ({@link execucaoIdDoLoteBlocosFeed}: batch `k` of run `R`): two batches of
+ * one run are two lease holders — one id would read the second batch as the
+ * first one's own retry — and a decide run again names each batch as before.
  */
 import { sha256Hex } from '@delfrance/data/admin';
 import { FEED_ID_AMAZON_REGEX } from '@delfrance/integrations-amazon-sp-api';
@@ -146,16 +157,57 @@ export const DESFECHO_RECUPERACAO_FEED_AMAZON = {
 
 /* ---------------------------------- the batch --------------------------------- */
 
-/** A block batch (module header). */
+/**
+ * The most stored input parts ONE block batch reads (module header): a drift
+ * block holds at most `MAX_ITENS_DIVERGENCIA_ESTOQUE_AMAZON` (300) SKUs, one
+ * message each, and the package refuses a WHOLE document of more than
+ * `MAX_MENSAGENS_FEED` (25,000) messages or `MAX_BYTES_FEED` (9,500,000)
+ * minified UTF-8 bytes — every valid entry with it, and a batch rebuilt the
+ * same way the next day is refused again.
+ *
+ * Derived for the worst document the stock provider can build: 50 full blocks
+ * are 15,000 messages (60% of the message cap); each message at most 393 bytes
+ * plus its comma — a SKU of 40 code points (`alvoValido`'s bound on a member a
+ * submitted feed carries) of 4-byte characters, the longest JSON rendering of
+ * a non-negative number (`Number.MAX_VALUE`, 23 characters: the quantity has
+ * no ceiling, and the shared core floors it and clamps it at 0), a five-digit
+ * `messageId` — and the header with a 64-character seller id of escaped
+ * characters: 5,899,099 bytes (62% of the byte cap). The tightest cap is 80
+ * blocks (bytes bind first: 81 worst-case blocks exceed 9.5 MB); 50 keeps the
+ * headroom, which also covers a dry-run document (built from every member, an
+ * invalid SKU included) whose SKUs hold up to 400 bytes each once JSON-encoded.
+ * Derived for the stock provider's message: a fluxo whose message is larger
+ * needs its own bound. Pinned through the package's own builder by
+ * `estoque/provedorLoteEstoque.test.ts`.
+ */
+export const MAX_PARTES_LOTE_BLOCOS_FEED_AMAZON = 50;
+
+/** A block batch (module header): a range of one run's stored input parts. */
 export const loteBlocosFeedAmazonSchema = z
   .object({
     tipo: z.literal(TIPO_LOTE_FEED_AMAZON.blocos),
-    /** How many input parts the provider reads: at least one. */
-    partes: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
+    /** The run whose parts the batch reads — never the batch's own `execucaoId`. */
+    execucaoIdRun: execucaoIdSchema(),
+    /** The first part read. */
+    parteInicial: inteiroSeguro(),
+    /** How many parts the provider reads from `parteInicial`: 1 to the cap. */
+    partes: z.number().int().min(1).max(MAX_PARTES_LOTE_BLOCOS_FEED_AMAZON),
     /** ms — a turned-away block batch re-enqueues itself until then. */
     esperaAteMs: inteiroSeguro(),
   })
-  .strict();
+  .strict()
+  .superRefine((lote, ctx) => {
+    // The last part's number must be a safe integer: a part id spells it in digits.
+    // Compared by a subtraction, which is exact here (a sum past the safe
+    // integers rounds, and can round back onto one).
+    if (lote.partes - 1 > Number.MAX_SAFE_INTEGER - lote.parteInicial) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'a última parte não é um inteiro seguro',
+        path: ['parteInicial'],
+      });
+    }
+  });
 export type LoteBlocosFeedAmazon = z.infer<typeof loteBlocosFeedAmazonSchema>;
 
 /** A window batch (module header). */
@@ -429,6 +481,24 @@ export function execucaoIdDaJanelaFeed(contaId: string, desdeMs: number, ateMs: 
   exigirMs(ateMs, 'ateMs');
   if (desdeMs >= ateMs) throw new RangeError('tarefaLote.ts: janela vazia ou invertida');
   return sha256Hex(`janela:${contaId}:${String(desdeMs)}:${String(ateMs)}`);
+}
+
+/**
+ * A BLOCK batch's `execucaoId` (module header): batch `lote` (0-based) of the
+ * run `execucaoIdRun`'s partition — one per (conta, run, batch), never the
+ * run's own id, so every batch of one run is its own lease holder.
+ */
+export function execucaoIdDoLoteBlocosFeed(
+  contaId: string,
+  execucaoIdRun: string,
+  lote: number,
+): string {
+  exigir(CONTA_ID_AMAZON_REGEX, contaId, 'contaId');
+  exigir(ID_LOTE_FEED_AMAZON_REGEX, execucaoIdRun, 'execucaoIdRun');
+  if (!Number.isSafeInteger(lote) || lote < 0) {
+    throw new RangeError('tarefaLote.ts: lote deve ser um inteiro seguro não negativo');
+  }
+  return sha256Hex(`blocos:${contaId}:${execucaoIdRun}:${String(lote)}`);
 }
 
 /**

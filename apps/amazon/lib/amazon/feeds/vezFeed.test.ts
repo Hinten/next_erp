@@ -23,7 +23,9 @@ import {
 import { PRAZO_FEED_MS } from './registroFeed';
 import {
   type LoteFeedAmazon,
+  MAX_PARTES_LOTE_BLOCOS_FEED_AMAZON,
   type TarefaEnviarFeedAmazon,
+  execucaoIdDoLoteBlocosFeed,
   tarefaEnviarFeedAmazonSchema,
 } from './tarefaLote';
 import {
@@ -51,6 +53,7 @@ import {
   decidirTomadaDaVez,
   destinoDoLoteRecusado,
   disjuntorDaVez,
+  ehTomadaPropria,
   estadoDoDisjuntor,
   expirarIncertoVez,
   faseDaVez,
@@ -104,8 +107,13 @@ function aplicar(armazenada: VezFeedAmazon, escrever: Partial<VezFeedAmazon>): V
   return vezFeedAmazonSchema.parse({ ...armazenada, ...escrever });
 }
 
+/** The run whose drift blocks the block batches below read. */
+const RUN = 'execucao-run';
+
 const BLOCOS: LoteFeedAmazon = {
   tipo: TIPO_LOTE_FEED_AMAZON.blocos,
+  execucaoIdRun: RUN,
+  parteInicial: 0,
   partes: 2,
   esperaAteMs: AGORA + 6 * HORA,
 };
@@ -593,6 +601,46 @@ const PERSISTENTES = {
   ultimoFeedConcluidoEmMs: AGORA - 90 * MIN,
 };
 const CHAVES_PERSISTENTES = Object.keys(PERSISTENTES);
+
+describe('★ two block batches of ONE run are two lease holders (each its own execucaoId)', () => {
+  const LOTE_0 = execucaoIdDoLoteBlocosFeed(CONTA, RUN, 0);
+  const LOTE_1 = execucaoIdDoLoteBlocosFeed(CONTA, RUN, 1);
+  /** Batch 1 of the run: the blocks right after batch 0's. */
+  const SEGUNDO: LoteFeedAmazon = {
+    tipo: TIPO_LOTE_FEED_AMAZON.blocos,
+    execucaoIdRun: RUN,
+    parteInicial: MAX_PARTES_LOTE_BLOCOS_FEED_AMAZON,
+    partes: 1,
+    esperaAteMs: AGORA + 6 * HORA,
+  };
+
+  it('★ batch 1 reading the lease batch 0 holds (montando, enviando, enviado) is turned away and WAITS; NEAR-MISS: batch 0’s own id reads its own lease', () => {
+    expect(LOTE_0).not.toBe(LOTE_1);
+    expect([LOTE_0, LOTE_1]).not.toContain(RUN);
+    for (const estado of [E.montando, E.enviando, E.enviado]) {
+      const armazenada = vezEm(estado, { execucaoId: LOTE_0 });
+      const tomada = decidirTomadaDaVez(armazenada, AGORA, LOTE_1);
+      expect(tomada, estado).toEqual({ tipo: T.ocupada });
+      expect(ehTomadaPropria(tomada)).toBe(false);
+      expect(destinoDoLoteRecusado(tomada, SEGUNDO, FECHADO, AGORA)).toEqual({
+        tipo: D.aguardar,
+        atrasoS: ESPERA_LOTE_EM_VEZ_S,
+      });
+      // NEAR-MISS: one id for both batches would read batch 1 as batch 0's own retry.
+      expect(ehTomadaPropria(decidirTomadaDaVez(armazenada, AGORA, LOTE_0)), estado).toBe(true);
+    }
+  });
+
+  it('batch 1 never takes the lease batch 0 is building: tomarVez writes nothing (NEAR-MISS: once batch 0 released it, batch 1 takes it)', () => {
+    const montando = vezEm(E.montando, { execucaoId: LOTE_0 });
+    expect(tomarVez(montando, AGORA, tarefa(SEGUNDO, LOTE_1))).toEqual({
+      tipo: 'recusado',
+      motivo: RECUSA_DA_VEZ.outraRota,
+    });
+    const livre = vezEm(E.livre, { execucaoId: LOTE_0 });
+    expect(tomarVez(livre, AGORA, tarefa(SEGUNDO, LOTE_1)).tipo).toBe('atualizar');
+  });
+});
 
 describe('★ tomarVez — livre → montando, keeping what outlives each feed', () => {
   it('no document ⇒ a whole new lease, its persistent fields empty', () => {

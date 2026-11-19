@@ -375,7 +375,13 @@ function blocos(execucaoId: string, fluxo: FluxoFeedAmazon = FLUXO_FEED_AMAZON.e
     contaId: CONTA,
     execucaoId,
     origem: 'reconciliacao',
-    lote: { tipo: TIPO_LOTE_FEED_AMAZON.blocos, partes: 1, esperaAteMs: AGORA_MS + 6 * HORA },
+    lote: {
+      tipo: TIPO_LOTE_FEED_AMAZON.blocos,
+      execucaoIdRun: 'run-teste',
+      parteInicial: 0,
+      partes: 1,
+      esperaAteMs: AGORA_MS + 6 * HORA,
+    },
   });
 }
 

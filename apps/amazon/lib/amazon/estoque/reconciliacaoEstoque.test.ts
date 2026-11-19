@@ -46,12 +46,15 @@ import { CANARIO_ENV_AMAZON, VALVULA_ENV_AMAZON } from '../core/valvulas';
 import { type FilaLotesAmazon, criarAgendadorLotesAmazon } from '../feeds/agendadorLotes';
 import { MAX_FALHAS_SEGUIDAS_FEED } from '../feeds/provedorLote';
 import {
+  MAX_PARTES_LOTE_BLOCOS_FEED_AMAZON,
   type TarefaEnviarFeedAmazon,
   type TarefaLoteAmazon,
   type TarefaPaginaReconciliacaoAmazon,
+  execucaoIdDoLoteBlocosFeed,
   nomeEnvioFeed,
   nomePaginaReconciliacao,
   nomeRetomadaReconciliacao,
+  tarefaEnviarFeedAmazonSchema,
 } from '../feeds/tarefaLote';
 import { FakeDb, asDb, increment } from '../testing/fakeDb';
 import { falhaDeTarefaJaExistente } from '../testing/falhaDeEnfileiramento';
@@ -68,7 +71,10 @@ import {
   seedCredencial,
   tokenDeAcesso,
 } from '../testing/fixtures';
-import { lerBlocosDivergenciaEstoqueAmazon } from './divergenciasFirestore';
+import {
+  gravarBlocoDivergenciaEstoqueAmazon,
+  lerBlocosDivergenciaEstoqueAmazon,
+} from './divergenciasFirestore';
 import { type FilaEstoqueAmazon, criarProdutorEstoqueAmazon } from './produtorEstoque';
 import {
   ACAO_PAGINA_RECONCILIACAO,
@@ -90,6 +96,7 @@ import {
   decidirRetomadaReconciliacaoEstoqueAmazon,
   guardaSistemicaEstoqueAmazon,
   iniciarReconciliacaoEstoqueAmazon,
+  lotesDeBlocosEstoqueAmazon,
   processarPaginaReconciliacaoEstoqueAmazon,
   retomarReconciliacaoEstoqueAmazon,
   solicitarReconciliacaoEstoqueAmazon,
@@ -529,16 +536,35 @@ describe('★ Decide: the switch over the drift, every send delayed 20 minutes',
     expect(ultima).toMatchObject({
       acao: 'concluida',
       decisao: DECISAO_RECONCILIACAO.semDivergencia,
+      feed: null,
+      lotes: 0,
+      lotesJaEnfileirados: 0,
     });
     expect(m.patches).toEqual([]);
     expect(m.feeds()).toEqual([]);
+    // No feed, no batch: every page line says so (the closed set's `null`).
+    expect(m.linhasPagina().length).toBeGreaterThan(0);
+    for (const linha of m.linhasPagina()) {
+      expect(linha.meta).toMatchObject({ feed: null, lotes: 0, lotesJaEnfileirados: 0 });
+    }
   });
 
   it('D = 30 ⇒ 30 patch tasks, each NAMED by the run, the walk’s depósito id, delayed 1,200 s; no feed', async () => {
     const m = mundo();
     const skus = varios(m, LIMIAR_FEED_ESTOQUE_AMAZON, 'SKU-D', { erp: 7, amazon: 2 });
-    const { ultima } = await rodar(m);
-    expect(ultima).toMatchObject({ decisao: DECISAO_RECONCILIACAO.patches, tarefas: 30 });
+    const { paginas, ultima } = await rodar(m);
+    expect(ultima).toMatchObject({
+      decisao: DECISAO_RECONCILIACAO.patches,
+      tarefas: 30,
+      feed: null,
+      lotes: 0,
+      lotesJaEnfileirados: 0,
+    });
+    // A patch decide names no batch: its line says so.
+    expect(m.linhasPagina()).toHaveLength(paginas.length);
+    for (const linha of m.linhasPagina()) {
+      expect(linha.meta).toMatchObject({ feed: null, lotes: 0, lotesJaEnfileirados: 0 });
+    }
     expect(m.feeds()).toEqual([]);
     expect(m.patches).toHaveLength(30);
     expect(ATRASO_ENVIO_RECONCILIACAO_S).toBe(1_200);
@@ -556,29 +582,44 @@ describe('★ Decide: the switch over the drift, every send delayed 20 minutes',
     expect(m.patches.map((p) => (p.tarefa as TarefaEstoqueAmazon).sku).sort()).toEqual(skus);
   });
 
-  it('NEAR-MISS D = 31 under * ⇒ ONE feed-enviar carrying a BLOCK lote (partes, esperaAteMs), named by the run, delayed 1,200 s; ZERO patch tasks', async () => {
+  it('NEAR-MISS D = 31 under * ⇒ ONE feed-enviar carrying a BLOCK lote (the run, parteInicial 0, partes, esperaAteMs), its OWN execucaoId batch 0 of the run, named by it, delayed 1,200 s; ZERO patch tasks', async () => {
     const m = mundo();
     varios(m, LIMIAR_FEED_ESTOQUE_AMAZON + 1, 'SKU-D', { erp: 7, amazon: 2 });
     const { ultima } = await rodar(m);
-    expect(ultima).toMatchObject({ decisao: DECISAO_RECONCILIACAO.feed, feed: 'enfileirada' });
+    expect(ultima).toMatchObject({
+      decisao: DECISAO_RECONCILIACAO.feed,
+      feed: 'enfileirada',
+      lotes: 1,
+      lotesJaEnfileirados: 0,
+    });
     expect(m.patches).toEqual([]);
     const [feed, ...outros] = m.feeds();
     expect(outros).toEqual([]);
     const run = m.run();
+    const lote0 = execucaoIdDoLoteBlocosFeed(CONTA, run?.execucaoId ?? '', 0);
+    expect(lote0).not.toBe(run?.execucaoId);
     expect(feed?.atrasoS).toBe(1_200);
-    expect(feed?.nome).toBe(nomeEnvioFeed(CONTA, run?.execucaoId ?? ''));
+    expect(feed?.nome).toBe(nomeEnvioFeed(CONTA, lote0));
     expect(feed?.tarefa).toEqual({
       v: 1,
       tipo: 'feed-enviar',
       fluxo: 'estoque',
       contaId: CONTA,
-      execucaoId: run?.execucaoId,
+      execucaoId: lote0,
       origem: 'reconciliacao',
       lote: {
         tipo: 'blocos',
+        execucaoIdRun: run?.execucaoId,
+        parteInicial: 0,
         partes: 1,
         esperaAteMs: expect.any(Number) as number,
       },
+    });
+    // The decide's line carries the count next to the answer.
+    expect(m.linhasPagina().at(-1)?.meta).toMatchObject({
+      feed: 'enfileirada',
+      lotes: 1,
+      lotesJaEnfileirados: 0,
     });
     const espera = feed?.tarefa.lote.tipo === 'blocos' ? feed.tarefa.lote.esperaAteMs : 0;
     expect(espera - m.relogio).toBe(1_200_000 + ESPERA_LOTE_BLOCOS_MS);
@@ -606,15 +647,21 @@ describe('★ Decide: the switch over the drift, every send delayed 20 minutes',
     expect(ultima).toMatchObject({ decisao: DECISAO_RECONCILIACAO.dryRunFeed });
     expect(m.feeds()).toHaveLength(1);
     const run = m.run();
+    const lote0 = execucaoIdDoLoteBlocosFeed(CONTA, run?.execucaoId ?? '', 0);
     expect(m.feeds()[0]).toMatchObject({
-      nome: nomeEnvioFeed(CONTA, run?.execucaoId ?? ''),
+      nome: nomeEnvioFeed(CONTA, lote0),
       atrasoS: 1_200,
       tarefa: {
         tipo: 'feed-enviar',
         fluxo: 'estoque',
-        execucaoId: run?.execucaoId,
+        execucaoId: lote0,
         origem: 'reconciliacao',
-        lote: { tipo: 'blocos', partes: 1 },
+        lote: {
+          tipo: 'blocos',
+          execucaoIdRun: run?.execucaoId,
+          parteInicial: 0,
+          partes: 1,
+        },
       },
     });
     expect(m.patches).toEqual([]);
@@ -716,23 +763,27 @@ describe('★ the blocks', () => {
     await m.solicitar(ORIGEM_PEDIDO_RECONCILIACAO_ESTOQUE_AMAZON.tick);
     await m.drenar(1);
     const [feed] = m.feeds();
-    const primeiro = feed?.tarefa.execucaoId ?? '';
-    expect(feed?.tarefa.lote).toMatchObject({ tipo: 'blocos', partes: 2 });
+    const lote = feed?.tarefa.lote;
+    if (lote?.tipo !== 'blocos') throw new Error('teste: um lote de blocos');
+    const primeiro = lote.execucaoIdRun;
+    expect(lote).toMatchObject({ tipo: 'blocos', parteInicial: 0, partes: 2 });
+    expect(feed?.tarefa.execucaoId).toBe(execucaoIdDoLoteBlocosFeed(CONTA, primeiro, 0));
     // The next run reclaimed the document and walked one page.
     await m.drenar(1);
     expect(m.run()?.execucaoId).not.toBe(primeiro);
     expect(m.run()?.paginas).toBe(1);
-    const partes = feed?.tarefa.lote.tipo === 'blocos' ? feed.tarefa.lote.partes : 0;
     const blocos = await lerBlocosDivergenciaEstoqueAmazon(asDb(m.fake), {
       contaId: CONTA,
       execucaoId: primeiro,
-      partes,
+      parteInicial: lote.parteInicial,
+      partes: lote.partes,
     });
     expect(blocos.flatMap((b) => b.itens)).toHaveLength(31);
     // NEAR-MISS: the run document's count is the NEXT run's, a prefix of the first's blocks.
     const doDocumento = await lerBlocosDivergenciaEstoqueAmazon(asDb(m.fake), {
       contaId: CONTA,
       execucaoId: primeiro,
+      parteInicial: 0,
       partes: m.run()?.paginas ?? 1,
     });
     expect(doDocumento.flatMap((b) => b.itens)).toHaveLength(0);
@@ -1599,9 +1650,13 @@ describe('★ Decide reads the WHOLE run’s drift, not the closing page’s', (
     expect(paginas.map((p) => p.pagina?.divergencias)).toEqual([31, 0]);
     expect(ultima).toMatchObject({ decisao: DECISAO_RECONCILIACAO.feed, feed: 'enfileirada' });
     expect(m.feeds().map((f) => f.tarefa.lote)).toEqual([
-      expect.objectContaining({ tipo: 'blocos', partes: 2 }),
+      expect.objectContaining({ tipo: 'blocos', parteInicial: 0, partes: 2 }),
     ]);
     expect(m.patches).toEqual([]);
+    // The walk page decided nothing: its line names no feed and no batch (NEAR-MISS: the decide's does).
+    const [walk, decide] = m.linhasPagina();
+    expect(walk?.meta).toMatchObject({ feed: null, lotes: 0, lotesJaEnfileirados: 0 });
+    expect(decide?.meta).toMatchObject({ feed: 'enfileirada', lotes: 1, lotesJaEnfileirados: 0 });
   });
 
   it('5 drift SKUs on page 0 ⇒ 5 patch tasks, and feed-estoque-falhou is NOT resolved as a zero drift', async () => {
@@ -1618,7 +1673,16 @@ describe('★ Decide reads the WHOLE run’s drift, not the closing page’s', (
       },
     );
     const { ultima } = await rodar(m);
-    expect(ultima).toMatchObject({ decisao: DECISAO_RECONCILIACAO.patches, tarefas: 5 });
+    expect(ultima).toMatchObject({
+      decisao: DECISAO_RECONCILIACAO.patches,
+      tarefas: 5,
+      feed: null,
+      lotes: 0,
+      lotesJaEnfileirados: 0,
+    });
+    for (const linha of m.linhasPagina()) {
+      expect(linha.meta).toMatchObject({ feed: null, lotes: 0, lotesJaEnfileirados: 0 });
+    }
     expect(m.patches.map((p) => (p.tarefa as TarefaEstoqueAmazon).sku).sort()).toEqual(skus);
     expect(avisoDe(m, MOTIVO_CONTA_AMAZON.feedEstoqueFalhou)?.resolvidoEm).toBeNull();
   });
@@ -1855,6 +1919,7 @@ describe('★ the dedupe and the counters across pages', () => {
     const blocos = await lerBlocosDivergenciaEstoqueAmazon(asDb(m.fake), {
       contaId: CONTA,
       execucaoId: m.run()?.execucaoId ?? '',
+      parteInicial: 0,
       partes: 2,
     });
     expect(blocos.flatMap((b) => b.itens.map((x) => x.sku))).toEqual(['SKU-DUP']);
@@ -1906,5 +1971,292 @@ describe('★ the walk’s budget is read before EACH ref form’s query', () =>
       (q) => q.colecao === 'prodAmazon' && q.ordens.some(([c]) => c === '__name__'),
     );
     expect(walk.map((q) => q.filtros)).toEqual([[['contaAmazonOuterRef', REF_CONTA]]]);
+  });
+});
+
+describe('★ Decide PARTITIONS the block feed: one batch per cap of walked pages', () => {
+  const CAP = MAX_PARTES_LOTE_BLOCOS_FEED_AMAZON;
+  const EXEC_P = 'exec-particao';
+
+  /**
+   * A run that walked `paginas` pages with 31+ drift SKUs, stored `decidindo`:
+   * the page past its last re-enters the decide (step 0), no walk needed.
+   */
+  async function decidirCom(m: Mundo, paginas: number) {
+    m.fake.seed(RUN, {
+      ...runDe({
+        execucaoId: EXEC_P,
+        fase: FASE_RECONCILIACAO_ESTOQUE_AMAZON.decidindo,
+        proximaPagina: paginas,
+        paginas,
+        progressoEmMs: AGORA_MS,
+      }),
+      contagens: { ...runDe().contagens, enviaveis: 4 * paginas, divergencias: 2 * paginas + 31 },
+    });
+    return m.pagina({
+      v: 1,
+      tipo: 'reconciliacao',
+      contaId: CONTA,
+      execucaoId: EXEC_P,
+      pagina: paginas,
+    });
+  }
+
+  /** What each enqueued block feed covers: [parteInicial, parteInicial + partes). */
+  const intervalos = (m: Mundo) =>
+    m
+      .feeds()
+      .map((f) =>
+        f.tarefa.lote.tipo === 'blocos'
+          ? [f.tarefa.lote.parteInicial, f.tarefa.lote.parteInicial + f.tarefa.lote.partes]
+          : null,
+      );
+
+  it('the partition: ⌈pages ÷ cap⌉ consecutive ranges, no gap, no overlap, every one but the last exactly the cap', () => {
+    expect(CAP).toBe(50);
+    expect(lotesDeBlocosEstoqueAmazon(1)).toEqual([{ parteInicial: 0, partes: 1 }]);
+    expect(lotesDeBlocosEstoqueAmazon(CAP)).toEqual([{ parteInicial: 0, partes: CAP }]);
+    expect(lotesDeBlocosEstoqueAmazon(CAP + 1)).toEqual([
+      { parteInicial: 0, partes: CAP },
+      { parteInicial: CAP, partes: 1 },
+    ]);
+    expect(lotesDeBlocosEstoqueAmazon(2 * CAP + 7)).toEqual([
+      { parteInicial: 0, partes: CAP },
+      { parteInicial: CAP, partes: CAP },
+      { parteInicial: 2 * CAP, partes: 7 },
+    ]);
+    for (const paginas of [1, 2, CAP - 1, CAP, CAP + 1, 3 * CAP, 3 * CAP + 1, 997]) {
+      const lotes = lotesDeBlocosEstoqueAmazon(paginas);
+      expect(lotes).toHaveLength(Math.ceil(paginas / CAP));
+      const cobertas = lotes.flatMap((l) =>
+        Array.from({ length: l.partes }, (_v, i) => l.parteInicial + i),
+      );
+      expect(cobertas).toEqual(Array.from({ length: paginas }, (_v, i) => i));
+      for (const l of lotes) expect(l.partes).toBeLessThanOrEqual(CAP);
+    }
+    for (const paginas of [0, -1, 1.5]) {
+      expect(() => lotesDeBlocosEstoqueAmazon(paginas)).toThrow(RangeError);
+    }
+  });
+
+  it('★ exactly the cap of pages ⇒ ONE batch [0, cap), batch 0 of the run', async () => {
+    const m = mundo();
+    const r = await decidirCom(m, CAP);
+    expect(r).toMatchObject({
+      decisao: DECISAO_RECONCILIACAO.feed,
+      feed: 'enfileirada',
+      lotes: 1,
+      lotesJaEnfileirados: 0,
+    });
+    expect(intervalos(m)).toEqual([[0, CAP]]);
+    const [feed] = m.feeds();
+    expect(feed?.tarefa.execucaoId).toBe(execucaoIdDoLoteBlocosFeed(CONTA, EXEC_P, 0));
+    expect(feed?.nome).toBe(nomeEnvioFeed(CONTA, execucaoIdDoLoteBlocosFeed(CONTA, EXEC_P, 0)));
+    expect(feed?.tarefa.lote).toMatchObject({ execucaoIdRun: EXEC_P });
+    expect(m.run()?.fase).toBe('concluida');
+  });
+
+  it('★ NEAR-MISS cap + 1 pages ⇒ TWO batches [0, cap) and [cap, cap + 1): distinct execucaoIds and names, both reading the run, the same delay and wait, each a payload the schema accepts', async () => {
+    const m = mundo();
+    const r = await decidirCom(m, CAP + 1);
+    expect(r).toMatchObject({
+      decisao: DECISAO_RECONCILIACAO.feed,
+      feed: 'enfileirada',
+      lotes: 2,
+      lotesJaEnfileirados: 0,
+    });
+    expect(intervalos(m)).toEqual([
+      [0, CAP],
+      [CAP, CAP + 1],
+    ]);
+    const feeds = m.feeds();
+    const ids = feeds.map((f) => f.tarefa.execucaoId);
+    expect(ids).toEqual([0, 1].map((k) => execucaoIdDoLoteBlocosFeed(CONTA, EXEC_P, k)));
+    expect(new Set(ids).size).toBe(2);
+    expect(ids).not.toContain(EXEC_P);
+    expect(feeds.map((f) => f.nome)).toEqual(ids.map((id) => nomeEnvioFeed(CONTA, id)));
+    expect(new Set(feeds.map((f) => f.nome)).size).toBe(2);
+    const esperas = new Set<number>();
+    for (const f of feeds) {
+      expect(f.atrasoS).toBe(ATRASO_ENVIO_RECONCILIACAO_S);
+      expect(f.tarefa).toMatchObject({
+        fluxo: 'estoque',
+        contaId: CONTA,
+        origem: 'reconciliacao',
+        lote: { tipo: 'blocos', execucaoIdRun: EXEC_P },
+      });
+      expect(tarefaEnviarFeedAmazonSchema.parse(f.tarefa)).toEqual(f.tarefa);
+      if (f.tarefa.lote.tipo === 'blocos') esperas.add(f.tarefa.lote.esperaAteMs);
+    }
+    expect([...esperas]).toEqual([m.relogio + 1_200_000 + ESPERA_LOTE_BLOCOS_MS]);
+    expect(m.linhasPagina().at(-1)?.meta).toMatchObject({ lotes: 2, lotesJaEnfileirados: 0 });
+  });
+
+  it('a walk of 2 × cap + 7 pages ⇒ three batches, the last one the remainder', async () => {
+    const m = mundo();
+    expect(await decidirCom(m, 2 * CAP + 7)).toMatchObject({ lotes: 3 });
+    expect(intervalos(m)).toEqual([
+      [0, CAP],
+      [CAP, 2 * CAP],
+      [2 * CAP, 2 * CAP + 7],
+    ]);
+  });
+
+  it.each([
+    [1, 1],
+    [CAP, 1],
+    [CAP + 1, 2],
+  ])(
+    '★ the decide of %i pages run again (its enviando lost) names every one of its %i batches as before: all ja-enfileirada, nothing new enqueued (NEAR-MISS: the first decide had enqueued them as NEW tasks before its enviando failed)',
+    async (paginas, lotes) => {
+      const m = mundo();
+      // The decide's first write on the run is its `enviando`: it fails once.
+      m.fake.antesDaProximaEscrita(RUN, () => {
+        throw indisponivel();
+      });
+      await expect(decidirCom(m, paginas)).rejects.toThrow('UNAVAILABLE');
+      expect(m.run()?.fase).toBe('decidindo');
+      // The fake queue records only a task it accepted as new.
+      const primeiros = m.feeds().map((f) => f.nome);
+      expect(primeiros).toHaveLength(lotes);
+
+      const r = await m.pagina({
+        v: 1,
+        tipo: 'reconciliacao',
+        contaId: CONTA,
+        execucaoId: EXEC_P,
+        pagina: paginas,
+      });
+
+      expect(r).toMatchObject({ feed: 'ja-enfileirada', lotes, lotesJaEnfileirados: lotes });
+      expect(m.linhasPagina().at(-1)?.meta).toMatchObject({
+        feed: 'ja-enfileirada',
+        lotes,
+        lotesJaEnfileirados: lotes,
+      });
+      expect(m.feeds().map((f) => f.nome)).toEqual(primeiros);
+      expect(m.run()?.fase).toBe('concluida');
+    },
+  );
+
+  it('a decide whose SECOND batch failed to enqueue is retried: batch 0 already held, batch 1 enqueued ⇒ feed enfileirada, lotesJaEnfileirados 1', async () => {
+    const m = mundo();
+    m.falhasLotes.push({
+      quando: (t) =>
+        t.tipo === 'feed-enviar' && t.lote.tipo === 'blocos' && t.lote.parteInicial === CAP,
+      erro: indisponivel(),
+    });
+    await expect(decidirCom(m, CAP + 1)).rejects.toThrow();
+    expect(intervalos(m)).toEqual([[0, CAP]]);
+    expect(m.run()?.fase).toBe('decidindo');
+
+    const r = await m.pagina({
+      v: 1,
+      tipo: 'reconciliacao',
+      contaId: CONTA,
+      execucaoId: EXEC_P,
+      pagina: CAP + 1,
+    });
+
+    expect(r).toMatchObject({ feed: 'enfileirada', lotes: 2, lotesJaEnfileirados: 1 });
+    expect(intervalos(m)).toEqual([
+      [0, CAP],
+      [CAP, CAP + 1],
+    ]);
+  });
+
+  it('under dry-run the decide partitions the same way (the send each batch reaches posts nothing: pinned in provedorLoteEstoque.test.ts)', async () => {
+    const m = mundo();
+    m.ambiente[VALVULA_ENV_AMAZON.estoque] = 'dry-run';
+    expect(await decidirCom(m, CAP + 1)).toMatchObject({
+      decisao: DECISAO_RECONCILIACAO.dryRunFeed,
+      lotes: 2,
+    });
+    expect(intervalos(m)).toEqual([
+      [0, CAP],
+      [CAP, CAP + 1],
+    ]);
+  });
+
+  /** The SKUs the drift blocks of {@link EXEC_P} hold, by page: one each. */
+  const SKU_BLOCO_0 = 'SKU-BLOCO-0';
+  const SKU_BLOCO_CAP = 'SKU-BLOCO-CAP';
+  const SKU_FORA_DO_RUN = 'SKU-FORA-DO-RUN';
+
+  /**
+   * A run of `paginas` pages stored `decidindo` with `divergencias` drift SKUs,
+   * one drift block written at page 0, at page `cap` and at page `paginas` (one
+   * past the run's last page): the page past its last re-enters the decide.
+   */
+  async function decidirPatchesCom(m: Mundo, paginas: number, divergencias: number) {
+    for (const [pagina, s] of [
+      [0, SKU_BLOCO_0],
+      [CAP, SKU_BLOCO_CAP],
+      [paginas, SKU_FORA_DO_RUN],
+    ] as const) {
+      await gravarBlocoDivergenciaEstoqueAmazon(asDb(m.fake), {
+        contaId: CONTA,
+        execucaoId: EXEC_P,
+        pagina,
+        depositoId: DEP,
+        itens: [
+          { sku: s, unidadeId: `u-${String(pagina)}`, quantidadeAmazon: 2, quantidadeErp: 7 },
+        ],
+        agoraMs: AGORA_MS,
+      });
+    }
+    m.fake.seed(RUN, {
+      ...runDe({
+        execucaoId: EXEC_P,
+        fase: FASE_RECONCILIACAO_ESTOQUE_AMAZON.decidindo,
+        proximaPagina: paginas,
+        paginas,
+        progressoEmMs: AGORA_MS,
+      }),
+      contagens: { ...runDe().contagens, enviaveis: 4 * paginas, divergencias },
+    });
+    return m.pagina({
+      v: 1,
+      tipo: 'reconciliacao',
+      contaId: CONTA,
+      execucaoId: EXEC_P,
+      pagina: paginas,
+    });
+  }
+
+  const skusDosPatches = (m: Mundo) =>
+    m.patches.map((p) => (p.tarefa as TarefaEstoqueAmazon).sku).sort();
+
+  it('★ the patch path is NOT capped: D ≤ 30 over cap + 1 pages ⇒ a patch task for the drift on block 0 AND on block cap, each named by the run (NEAR-MISS: a block past the run’s last page is never read)', async () => {
+    const m = mundo();
+    const r = await decidirPatchesCom(m, CAP + 1, 3);
+    expect(r).toMatchObject({
+      decisao: DECISAO_RECONCILIACAO.patches,
+      tarefas: 2,
+      feed: null,
+      lotes: 0,
+      lotesJaEnfileirados: 0,
+    });
+    expect(skusDosPatches(m)).toEqual([SKU_BLOCO_0, SKU_BLOCO_CAP]);
+    expect(skusDosPatches(m)).not.toContain(SKU_FORA_DO_RUN);
+    for (const p of m.patches) {
+      expect(p.tarefa).toMatchObject({ origem: 'reconciliacao', referencia: EXEC_P });
+    }
+    expect(m.feeds()).toEqual([]);
+  });
+
+  it('★ the canary branch is NOT capped either: D ≥ 31 over cap + 1 pages under a canary list naming the SKU of block cap ⇒ its patch task (NEAR-MISS: a listed SKU on a block past the run’s last page gets none, an unlisted one on block 0 none)', async () => {
+    const m = mundo();
+    m.ambiente[CANARIO_ENV_AMAZON.estoque] =
+      `${CONTA}:${SKU_BLOCO_CAP},${CONTA}:${SKU_FORA_DO_RUN}`;
+    const r = await decidirPatchesCom(m, CAP + 1, 2 * (CAP + 1) + 31);
+    expect(r).toMatchObject({
+      decisao: DECISAO_RECONCILIACAO.canario,
+      tarefas: 1,
+      feed: null,
+      lotes: 0,
+    });
+    expect(skusDosPatches(m)).toEqual([SKU_BLOCO_CAP]);
+    expect(m.feeds()).toEqual([]);
   });
 });

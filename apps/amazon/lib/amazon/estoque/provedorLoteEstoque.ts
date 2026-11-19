@@ -9,11 +9,18 @@
  *
  * ## `membros`
  *
- *  - Block batch: the run's drift blocks `{execucaoId}-{0…partes−1}`, ONE
- *    `getAll` by id (`divergenciasFirestore.ts`), `partes` from the PAYLOAD —
- *    never a query, never the reconcile document (the next run may have
- *    reclaimed it). The members are the blocks' SKUs, each with its block item
- *    and its block's depósito.
+ *  - Block batch: EXACTLY its range of the run's drift blocks,
+ *    `{execucaoIdRun}-{parteInicial … parteInicial + partes − 1}`, ONE
+ *    `getAll` by id (`divergenciasFirestore.ts`), the run, the first block and
+ *    the count all from the PAYLOAD — never the batch's own `execucaoId` (its
+ *    lease holder), never another batch's blocks, never a query, never the
+ *    reconcile document (the next run may have reclaimed it). The members are
+ *    those blocks' SKUs, each with its block item and its block's depósito. The
+ *    payload caps `partes` (`MAX_PARTES_LOTE_BLOCOS_FEED_AMAZON`), so the `on`
+ *    document the package builds from them stays inside its message and byte
+ *    limits (a dry-run one, built from every member, for SKUs of up to 400
+ *    bytes once JSON-encoded); a refusal by the package would still end the
+ *    send `documento-falhou` whole, unchanged (no second split here).
  *  - Window batch: `snapshotEmMs` = our clock FIRST, before the first window
  *    query, so a row committed while the window is re-derived falls after the
  *    snapshot and the recovery forces it. Then the conta's depósito (the
@@ -115,8 +122,9 @@
  * ## `repassarParaPatches`
  *
  * One NAMED patch task per SKU on the stock queue, no delay: a block batch's as
- * `reconciliacao` named by its run, carrying the walk's depósito (the walk is
- * already 20 minutes old); a window batch's as `delta` named by each SKU's
+ * `reconciliacao` named by its RUN (the payload's `execucaoIdRun`, never the
+ * batch's own id), carrying the walk's depósito (the walk is already 20
+ * minutes old); a window batch's as `delta` named by each SKU's
  * observation (a movement the tick already patched dedupes), and a FORCED one
  * as `catch-up` named by the batch's `execucaoId` (it must run even when the
  * tick already sent that observation).
@@ -308,7 +316,8 @@ export function patchEstoqueAmazon(quantidade: number): PatchListingAmazon {
   };
 }
 
-function mensagem(sku: string, quantidade: number): MensagemListingsFeed {
+/** ONE SKU's feed message: its SKU and its stock merge, the only message this provider builds. */
+export function mensagemEstoqueAmazon(sku: string, quantidade: number): MensagemListingsFeed {
   return { sku, patches: [patchEstoqueAmazon(quantidade)] };
 }
 
@@ -485,7 +494,10 @@ async function membrosDaJanela(
   };
 }
 
-/** A block batch's members (module header): the run's blocks by id, ZERO queries. */
+/**
+ * A block batch's members (module header): EXACTLY its range of the RUN's
+ * blocks by id, ZERO queries.
+ */
 async function membrosDosBlocos(
   ctx: ContextoLoteAmazon,
   entrada: TarefaEnviarFeedAmazon,
@@ -497,7 +509,8 @@ async function membrosDosBlocos(
   }
   const blocos = await lerBlocosDivergenciaEstoqueAmazon(ctx.db, {
     contaId: ctx.contexto.integracaoId,
-    execucaoId: entrada.execucaoId,
+    execucaoId: lote.execucaoIdRun,
+    parteInicial: lote.parteInicial,
     partes: lote.partes,
   });
   const membros = new Map<string, MembroDoBlocoEstoqueAmazon>();
@@ -579,7 +592,7 @@ async function montarJanela(
       continue;
     }
     if (forcar) forcados += 1;
-    mensagens.push(mensagem(s.sku, plano.quantidade));
+    mensagens.push(mensagemEstoqueAmazon(s.sku, plano.quantidade));
   }
   mensagens.sort((a, b) => porTexto(a.sku, b.sku));
   const porChave = avaliacao.contagem.porChave;
@@ -740,7 +753,7 @@ async function montarBlocos(
       contagem.convergidos += 1;
       continue;
     }
-    mensagens.push(mensagem(item.sku, quantidade));
+    mensagens.push(mensagemEstoqueAmazon(item.sku, quantidade));
   }
   mensagens.sort((a, b) => porTexto(a.sku, b.sku));
   return {
@@ -1077,6 +1090,10 @@ async function repassarParaPatches(
     });
     ({ tarefas } = tarefasDasObservacoes(contaId, observacoes, entrada.execucaoId));
   } else {
+    const { lote } = entrada;
+    if (lote.tipo !== TIPO_LOTE_FEED_AMAZON.blocos) {
+      throw new TypeError('provedorLoteEstoque.ts: repasse de blocos sem blocos');
+    }
     tarefas = skus.flatMap((sku) => {
       const m = dados.membros.get(sku);
       if (m === undefined || m.depositoId === null) return [];
@@ -1085,7 +1102,8 @@ async function repassarParaPatches(
         contaId,
         sku,
         origem: ORIGEM_TAREFA_ESTOQUE_AMAZON.reconciliacao,
-        referencia: entrada.execucaoId,
+        // Named by the RUN, never by this batch's own id (module header).
+        referencia: lote.execucaoIdRun,
         depositoId: m.depositoId,
       });
       return t.success ? [t.data] : [];

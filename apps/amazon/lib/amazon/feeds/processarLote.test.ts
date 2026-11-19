@@ -49,7 +49,13 @@ const PAYLOADS = {
     contaId: CONTA,
     execucaoId: EXEC,
     origem: 'delta',
-    lote: { tipo: 'blocos', partes: 1, esperaAteMs: AGORA_MS },
+    lote: {
+      tipo: 'blocos',
+      execucaoIdRun: 'run-teste',
+      parteInicial: 0,
+      partes: 1,
+      esperaAteMs: AGORA_MS,
+    },
   },
   'feed-resultado': {
     v: 1,
