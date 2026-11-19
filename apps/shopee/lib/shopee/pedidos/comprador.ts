@@ -61,6 +61,7 @@
 
 import {
   CAPTURA_COMPRADOR_ESTADO,
+  MOTIVO_RECUSA,
   TIPO_CLIENTE,
   buildEnderecoForcado,
   cpfCnpjUtilizavel,
@@ -71,6 +72,7 @@ import {
   type ClienteResolveFields,
   type EnderecoBuildOutcome,
   type MotivoRecusa,
+  type TipoDeValor,
   TIPO_DE_VALOR,
 } from '@delfrance/schemas';
 
@@ -264,25 +266,73 @@ export function enderecoDeShopee(
   regiao: string | null,
 ): EnderecoBuildOutcome | null {
   if (addr == null) return null;
+  const { entrada } = portoesDoEnderecoShopee(addr, regiao);
+  if (entrada === null) return null;
+  return buildEnderecoForcado({ ...entrada, numero: null, complemento: null });
+}
 
+/** The builder input {@link enderecoDeShopee} hands `buildEnderecoForcado`, gates passed. */
+export interface EntradaEnderecoShopee {
+  readonly cepRaw: string;
+  readonly logradouro: string;
+  readonly bairro: string | null;
+  readonly cidade: string | null;
+  /** `null` when Shopee sent no usable state — the builder's `AC` by ABSENCE, not a lookup miss. */
+  readonly estadoRaw: string | null;
+  readonly paisId: string | null;
+}
+
+/** What {@link enderecoDeShopee}'s three gates answered for one block. */
+export interface PortoesEnderecoShopee {
+  /** `<campo>:<verdito>` per refusing gate (`nome`, `logradouro`, `cep`) — names, never values. */
+  readonly recusados: readonly string[];
+  /** The builder input, or `null` when any gate refused. */
+  readonly entrada: EntradaEnderecoShopee | null;
+}
+
+/**
+ * {@link enderecoDeShopee}'s gates and its builder input, as ONE function — the
+ * import reads `entrada`, and the CLI's TEST buyer preview reads `recusados`
+ * and `entrada.estadoRaw` off the same answer rather than re-deriving them
+ * (the #1369 drift: two copies that read correct while disagreeing).
+ */
+export function portoesDoEnderecoShopee(
+  addr: EnderecoShopee,
+  regiao: string | null,
+): PortoesEnderecoShopee {
   const nome = nomeUtilizavel(addr.name);
   const logradouro = valorUtilizavel(addr.full_address);
   const cep = valorUtilizavel(addr.zipcode);
-  if (nome === null || logradouro === null || cep === null) return null;
-
-  return buildEnderecoForcado({
-    cepRaw: cep,
-    logradouro,
-    numero: null,
-    complemento: null,
-    // `district` is the finer of the two; `town` is the coarser fallback. Both
-    // are legitimately empty by region, and both can be masked — hence the
-    // predicate on each rather than a `??` on the raw values.
-    bairro: valorUtilizavel(addr.district) ?? valorUtilizavel(addr.town),
-    cidade: valorUtilizavel(addr.city),
-    estadoRaw: valorUtilizavel(addr.state),
-    paisId: regiao,
-  });
+  if (nome === null || logradouro === null || cep === null) {
+    const portoes: ReadonlyArray<readonly [string, string | null, unknown, TipoDeValor]> = [
+      ['nome', nome, addr.name, TIPO_DE_VALOR.nome],
+      ['logradouro', logradouro, addr.full_address, TIPO_DE_VALOR.texto],
+      ['cep', cep, addr.zipcode, TIPO_DE_VALOR.texto],
+    ];
+    // One reason per gate that REFUSED, so the list cannot come back empty.
+    // `motivoDaRecusa` is non-null exactly where its `*Utilizavel` twin is
+    // null; the `invalido` fallback only keeps a refusal from losing its name.
+    const recusados = portoes
+      .filter(([, valor]) => valor === null)
+      .map(([campo, , bruto, tipo]) =>
+        recusa(campo, motivoDaRecusa(bruto, tipo) ?? MOTIVO_RECUSA.invalido),
+      );
+    return { recusados, entrada: null };
+  }
+  return {
+    recusados: [],
+    entrada: {
+      cepRaw: cep,
+      logradouro,
+      // `district` is the finer of the two; `town` is the coarser fallback. Both
+      // are legitimately empty by region, and both can be masked — hence the
+      // predicate on each rather than a `??` on the raw values.
+      bairro: valorUtilizavel(addr.district) ?? valorUtilizavel(addr.town),
+      cidade: valorUtilizavel(addr.city),
+      estadoRaw: valorUtilizavel(addr.state),
+      paisId: regiao,
+    },
+  };
 }
 
 /* --------------------------------- diary ------------------------------------ */
@@ -352,5 +402,125 @@ export function avaliarCapturaComprador(args: {
       ? CAPTURA_COMPRADOR_ESTADO.expirado
       : CAPTURA_COMPRADOR_ESTADO.pendente,
     camposRecusados,
+  };
+}
+
+/* ------------------------ the TEST buyer simulation ------------------------- */
+
+/**
+ * The repo's sanctioned FAKE CPF — check digits valid, never a real document
+ * (the same literal the CLI tests and the dev seed use). The ONE place
+ * production code spells a CPF.
+ */
+export const CPF_FALSO_DE_TESTE = '12345678909';
+
+/**
+ * What the `importar:pedido` CLI's TEST buyer mode asks for (`--importar-cliente`
+ * and its three dependents). Nothing else builds one: the importer takes it as
+ * an optional dependency, and a test greps that no route, sweep, trigger or
+ * notification arm names it.
+ */
+export interface SimulacaoCompradorShopee {
+  /** `--nome-teste`: replaces ONLY `recipient_address.name`. `null` keeps Shopee's. */
+  readonly nomeTeste: string | null;
+  /** `--cep-teste` (8 digits): replaces ONLY `recipient_address.zipcode`. */
+  readonly cepTeste: string | null;
+  /** `--importar-endereco`: without it the cliente is linked and no endereço is written. */
+  readonly importarEndereco: boolean;
+}
+
+/**
+ * A refused simulation — always BEFORE any buyer or pedido write, so a CLI
+ * exits 1 with nothing to undo. (A Shopee read before the refusal may still
+ * renew the conta's access token; that write is the token store's, not ours.)
+ */
+export class SimulacaoCompradorRecusadaError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SimulacaoCompradorRecusadaError';
+  }
+}
+
+/**
+ * The buyer mode runs only against the SANDBOX — `overrideDeSandboxAtivo`'s
+ * verdict (`SHOPEE_SANDBOX=1` AND the resolved sandbox host), passed in so this
+ * module stays free of the environment.
+ */
+export function exigirSandboxParaSimulacao(overrideSandboxAtivo: boolean): void {
+  if (overrideSandboxAtivo) return;
+  throw new SimulacaoCompradorRecusadaError(
+    'O modo comprador de TESTE só roda no sandbox da Shopee: exige SHOPEE_SANDBOX=1 e o host ' +
+      'de sandbox resolvido.',
+  );
+}
+
+/**
+ * A REAL order-level region the TEST mode accepts: exactly two UPPERCASE
+ * letters, and not `BR`.
+ *
+ * ⚠️ Deliberately STRICTER than `pedidoForaDoBrasil`, which reads a blank, a
+ * padded or a lowercase `'br'` as foreign — the SAFE direction for the NF-e
+ * block it feeds, and the unsafe one here, where "foreign" is what lets a fake
+ * CPF in. Blank = absent (the `valorUtilizavel` convention), and an absent
+ * region is not proof of a foreign one.
+ */
+export function regiaoEstrangeiraParaSimulacao(regiaoReal: string | null): boolean {
+  return regiaoReal !== null && /^[A-Z]{2}$/.test(regiaoReal) && regiaoReal !== REGIAO_BR;
+}
+
+/**
+ * …and only on an order whose REAL order-level region is foreign
+ * ({@link regiaoEstrangeiraParaSimulacao}). A fake CPF must never pair with a
+ * real Brazilian buyer.
+ */
+export function exigirRegiaoForaDoBrasilParaSimulacao(regiaoReal: string | null): void {
+  if (regiaoEstrangeiraParaSimulacao(regiaoReal)) return;
+  throw new SimulacaoCompradorRecusadaError(
+    `O modo comprador de TESTE recusa um pedido de região ` +
+      `${regiaoReal === null ? '(ausente)' : JSON.stringify(regiaoReal)}: um CPF de teste nunca ` +
+      'se junta a um comprador brasileiro de verdade.',
+  );
+}
+
+/**
+ * The row the buyer adapter reads in buyer mode: region `'BR'` (so
+ * {@link clienteDeShopee} and {@link avaliarCapturaComprador} run at all),
+ * Shopee's own document when it is usable or {@link CPF_FALSO_DE_TESTE}, and the
+ * recipient's name and zipcode replaced only when a substitute was given.
+ *
+ * ⚠️ The caller keeps the REAL row for everything else: the region it hands
+ * {@link enderecoDeShopee} as `paisId`, `bloquearEmissaoNFe` and every fiscal
+ * flag. A `null` `recipient_address` stays `null` — no partial address is
+ * invented around a substitute name.
+ */
+export function simularCompradorShopee<T extends DetalheCompradorShopee>(
+  linha: T,
+  simulacao: SimulacaoCompradorShopee,
+): {
+  readonly linha: T;
+  readonly cpfDeTesteAplicado: boolean;
+  /** A substitute counts as APPLIED only where there was a block to put it in. */
+  readonly nomeTesteAplicado: boolean;
+  readonly cepTesteAplicado: boolean;
+} {
+  const documentoDaShopee = cpfCnpjUtilizavel(linha.buyer_cpf_id);
+  const endereco = linha.recipient_address;
+  return {
+    nomeTesteAplicado: endereco != null && simulacao.nomeTeste !== null,
+    cepTesteAplicado: endereco != null && simulacao.cepTeste !== null,
+    linha: {
+      ...linha,
+      region: REGIAO_BR,
+      buyer_cpf_id: documentoDaShopee ?? CPF_FALSO_DE_TESTE,
+      recipient_address:
+        endereco == null
+          ? null
+          : {
+              ...endereco,
+              name: simulacao.nomeTeste ?? endereco.name,
+              zipcode: simulacao.cepTeste ?? endereco.zipcode,
+            },
+    },
+    cpfDeTesteAplicado: documentoDaShopee === null,
   };
 }
