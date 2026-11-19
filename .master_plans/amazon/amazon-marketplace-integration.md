@@ -29,7 +29,7 @@ Citation conventions:
     - push intake + a backstop poll;
     - order and payment import;
     - NF-e upload → automatic Easy Ship (DBA) scheduling → a ZPL label fetched on demand at print time;
-    - stock (one patch per SKU for sale-driven deltas; `JSON_LISTINGS_FEED` for bulk pushes and the daily reconcile);
+    - stock (one patch per SKU for a batch of at most 30 SKUs; `JSON_LISTINGS_FEED` for 31 or more: a busy delta, the daily reconcile's drift);
     - a manual price push;
     - a read-only listing **link** (no produto creation);
     - the `int_frete` binding;
@@ -38,7 +38,7 @@ Citation conventions:
 - **The five architecture answers** (§1.1):
   1. Amazon **signs nothing**. The receiver authenticates our own AWS relay's API-key header and `NotificationMetadata.ApplicationId`, and fails closed.
   2. **Push exists, but only into the developer's AWS.** `ORDER_CHANGE` is **SQS-only**, so the transport is SQS → EventBridge Pipe → API destination → our receiver (D4). A 15-minute `searchOrders` poll is the backstop.
-  3. **Stock has two paths, and at ~20,000 SKUs both are needed.** A sale-driven delta goes out as one synchronous `patchListingsItem` (merge) per SKU. A bulk push (the daily reconcile's drift, an operator "send all", the window's first push) goes out as one asynchronous `JSON_LISTINGS_FEED` (≤ 25,000 messages), because Amazon recommends the feed above ~1,500 items / 5 min. The feed needs a submission record plus a result poll, which no channel here has written (step 12a).
+  3. **Stock has two paths, and at ~20,000 SKUs both are needed.** A batch of at most 30 SKUs goes out as one synchronous `patchListingsItem` (merge) per SKU. A batch of 31 or more (a busy 5-minute delta, the daily reconcile's drift, the window's first push) goes out as one asynchronous `JSON_LISTINGS_FEED` (the reconcile's drift as feeds of at most 15,000 messages each). Amazon recommends the feed above ~1,500 items / 5 min; this repo switches far below it, at 30 (Lucas, 2026-11-10). The feed needs a submission record plus a result poll, which no channel here has written (step 12a).
   4. **A listing is a family:** a non-buyable parent SKU plus child SKUs (`parentage_level`, `child_parent_sku_relationship`, `variation_theme`).
   5. **The buyer's fiscal identity is inline in `getOrder`, but gated** by role (CPF/CNPJ need Tax Invoicing) and by status (name and address only from UNSHIPPED).
 - **Brazilian fulfilment chain:**
@@ -106,8 +106,9 @@ This is the proposed `MARKETPLACE_TIPO_CAPS[INTEGRACAO_TIPO.amazon]` in `package
     // ~20,000 SKUs (Lucas, 2026-10-14) ⇒ the bulk path is JSON_LISTINGS_FEED: ≤ 25,000 messages and ≤ 10 MB per
     // feed, 5 feeds / 5 min, result in a processing report up to 8 h later (D:feeds-api-faq,
     // D:building-listings-management-workflows-guide: "use the feed for operations that involve more than 1,500
-    // items"). Sale-driven deltas still go out as one synchronous patchListingsItem per SKU (5 rps / burst 5,
-    // D:listings-items-api-rate-limits). Needs a submission record + a result poll (plan step 12a).
+    // items"). This repo switches at 30 (Lucas, 2026-11-10): a batch of ≤ 30 SKUs goes out as one synchronous
+    // patchListingsItem per SKU (5 rps / burst 5, D:listings-items-api-rate-limits), and a delta of 31 or more
+    // SKUs goes as a delta feed. Needs a submission record + a result poll (plan step 12a).
     protocolo: 'feed-assincrono',
     loteMax: 25000,                 // messages per JSON_LISTINGS_FEED document
     multiDeposito: 'nao',           // Multi-Location Inventory is US-only (D:mli-integration-guide)
@@ -160,7 +161,7 @@ The row lands with a whole-row assertion in `marketplace.test.ts`, replacing the
 |---|---|---|---|
 | 1 | Signs its notifications? | **No.** There is no signature, HMAC or token in any notification schema. Authenticity rests on AWS: the queue policy *allows* SP-API's principal (it does not make it the only writer), and the last hop to our receiver carries a static API key that **our** EventBridge Connection adds. ⇒ The receiver checks the key in constant time (unset ⇒ 503, mismatch ⇒ 401), requires `ApplicationId` to be our app, and keeps the queue's IAM writers minimal. | [model] OrderChangeNotification.json; D:tutorial-grant-permission-to-sqs-queue; docs.aws eb-target-connection-auth |
 | 2 | Push or poll? | **Push into the developer's AWS only.** Destinations are SQS or EventBridge. **`ORDER_CHANGE` is SQS-only**; EventBridge carries only BRANDED_ITEM_CONTENT_CHANGE, ITEM_PRODUCT_TYPE_CHANGE, LISTINGS_ITEM_STATUS/ISSUES/MFN_QUANTITY_CHANGE, PRODUCT_TYPE_DEFINITIONS_CHANGE and SHIPMENT_TRACKING_MILESTONE_CHANGED. Delivery is at-least-once, unordered, with duplicates; dedup on `NotificationId`. `ORDER_STATUS_CHANGE` was removed 2026-07-29. Amazon advises a backup fetch ⇒ the `searchOrders` backstop (step 4). | D:notification-type-values; D:set-up-notifications-with-amazon-sqs; D:sp-api-deprecations |
-| 3 | How does stock go out? | **Two ways, and ~20,000 SKUs needs both.** (a) `patchListingsItem` per SKU (`op: merge` on `/attributes/fulfillment_availability`, `productType: PRODUCT`): synchronous `ACCEPTED`/`INVALID` plus issues, applied 0–15 min later; `merge` keeps fields not sent (lead time). (b) `JSON_LISTINGS_FEED` (`PATCH` messages, the same body): ≤ 25,000 messages and ≤ 10 MB per feed, 5 feeds / 5 min, a processing report with per-message issues up to 8 h later, `FEED_PROCESSING_FINISHED` (SQS) when done. Amazon: use the feed above ~1,500 items / 5 min; mixed patches and feed messages are applied in **submission-timestamp order**. | D:merge-a-listing; D:building-listings-management-workflows-guide; D:feeds-api-faq; D:listings-apis-faq |
+| 3 | How does stock go out? | **Two ways, and ~20,000 SKUs needs both.** (a) `patchListingsItem` per SKU (`op: merge` on `/attributes/fulfillment_availability`, `productType: PRODUCT`): synchronous `ACCEPTED`/`INVALID` plus issues; backend updates may be delayed 0–15 min, `getListingsItem` typically reflects a change in 1–5 min, and status and issues notifications lag 15–20 min (D:listings-apis-faq); `merge` keeps fields not sent (lead time). (b) `JSON_LISTINGS_FEED` (`PATCH` messages, the same body): ≤ 25,000 messages and ≤ 10 MB per feed, 5 feeds / 5 min, a processing report with per-message issues up to 8 h later, `FEED_PROCESSING_FINISHED` (SQS) when done. Amazon: use the feed above ~1,500 items / 5 min; this repo switches at 30 (Lucas, 2026-11-10): a delta of 31 or more SKUs goes as a delta feed. Mixed patches and feed messages are applied in **submission-timestamp order**. | D:merge-a-listing; D:building-listings-management-workflows-guide; D:feeds-api-faq; D:listings-apis-faq |
 | 4 | Listing = one resource or a family? | **Family.** The non-buyable parent SKU carries `parentage_level: parent` and the theme. Each child carries `child_parent_sku_relationship.parent_sku` and the theme attributes. Stock and price live on children. `getListingsItem includedData=relationships` lists `childSkus`/`parentSkus`. | D:building-listings-management-workflows-guide; M:listingsItems_2021-08-01.json ItemRelationship |
 | 5 | Buyer fiscal identity inline or gated? | **Inline but gated.** `tax.taxRegistrations[entityType=BUYER]` (types include `CPF`, `CNPJ`) needs Tax Invoicing or Tax Remittance (Restricted). `buyer.buyerName` and the address lines need one of those or DTC Shipping, and arrive only in UNSHIPPED / PARTIALLY_SHIPPED / SHIPPED. Phone and e-mail need DTC Shipping. MERCHANT and MARKETPLACE registrations appear only while PENDING / UNSHIPPED. ⇒ The NF-e needs **Tax Invoicing + DTC Shipping**. | D:get-tax-information; D:access-orders-pii |
 
@@ -230,7 +231,7 @@ A gap investigation then read every changelog entry and every docs page for Easy
 | D5 | **Receiver:** on `defineNotificationPipeline`. It acks fast and enqueues; it compares the header secret in constant time (unset ⇒ 503, mismatch ⇒ 401); it requires `ApplicationId` to be ours. The task always re-fetches `getOrder` and never maps the payload. | Step 3. |
 | D6 | **Orders API v2026-01-01 only.** v0 is never built. | Steps 4–6. |
 | D7 | **Fulfilment: Easy Ship/DBA only.** No self-ship, no FBA. An AFN order is flagged and never touches stock. | Steps 5, 12, 14, 15. |
-| D8 | **Volume:** 1 conta, ≤ ~50 orders/day, **~20,000 SKUs** (variations counted; corrected by Lucas on 2026-10-14). The plan sizes every catalogue flow for all of them being listed on Amazon. **Feeds are used where the volume calls for them** (Lucas): bulk stock and bulk price go out as `JSON_LISTINGS_FEED`; sale-driven deltas and single-produto pushes stay per-SKU patches. | Steps 9, 12, 12a, 13; §4.23. |
+| D8 | **Volume:** 1 conta, ≤ ~50 orders/day, **~20,000 SKUs** (variations counted; corrected by Lucas on 2026-10-14). The plan sizes every catalogue flow for all of them being listed on Amazon. **Feeds are used where the volume calls for them** (Lucas): bulk stock and bulk price go out as `JSON_LISTINGS_FEED`; sale-driven deltas and single-produto pushes stay per-SKU patches. **Amended for stock (Lucas, 2026-11-10):** a stock batch of at most 30 SKUs goes as per-SKU patches and 31 or more as a feed, sale-driven deltas included (the stock orchestrator call below); bulk price is step 13's to decide. | Steps 9, 12, 12a, 13; §4.23. |
 | D9 | **Price:** PRE-cutover and **manual only**. **The ERP sets `our_price`**; no Amazon repricer runs at the cutover. `minimum/maximum_seller_allowed_price` come from one pure function, `faixaDePrecoAmazon`. In v1 it reads today's price lists. When the promotional list is deprecated in favour of a price range, only that function changes. | Step 13. |
 | D10 | **App:** reuse the existing app (Public, Draft). The new ERP gets its **own authorization** through the website OAuth flow (`version=beta`) with its own redirect URI. After the cutover, the legacy copy is neutralised by **rotating the client secret**, not by revoking the authorization, because OAuth revocation is per app and would revoke the new token too. | Step 2; W1, W5, W13. |
 | D11 | **Mock only (the LI D17 analogue).** No live call from this repository's code before the cutover. Fixtures come from the models' `x-amzn-api-sandbox` examples plus sanitized owner captures. The first live calls happen in the window, behind valves and canaries. | Step 2b; §1.2; §5. |
@@ -243,7 +244,7 @@ A gap investigation then read every changelog entry and every docs page for Easy
 | D18 | **⏸ Listings discussion gate.** The legacy listing flows have several known problems that Lucas will describe in person. Before the Phase-3 plan of **any listing step** is written, Lucas walks through those problems and we agree on the best way forward. That covers the pre-cutover link (steps 9 + 9b) and every listing part after the cutover (steps 10, 11, P1, the P3 import mode), plus the link-doc census W11. Everything this plan says about listings is a starting point, not a decision, until that discussion has happened. | Steps 9, 9b, 10, 11, P1, P3; W11; §7. |
 
 **Orchestrator calls (vetoable, one line each):**
-- **Stock:** sale-driven deltas are `patchListingsItem` merges per SKU while a flush holds fewer than 1,500 SKUs; anything bigger (the daily reconcile's drift, an operator "send all", the window's first push) is one `JSON_LISTINGS_FEED` with a submission record (step 12a).
+- **Stock:** a batch of at most 30 SKUs goes as `patchListingsItem` merges per SKU, 31 or more as one `JSON_LISTINGS_FEED` with a submission record (step 12a) (Lucas, 2026-11-10; was 1,500). A busy 5-minute delta tick (31–3,000 moved SKUs) sends its own delta feed; the daily reconcile's drift (forced, it is the "send all"; under `*`, the window's first push) goes as block feeds of at most 15,000 messages each.
 - **`MissingPackageDimensions`:** an aviso only, and the operator fixes the dimensions in Seller Central. The label flow never writes to the catalog and never sends fabricated defaults.
 - **NF-e upload:** only for `aprovada`, never for an EPEC-only authorization (`'p'`).
 - **NF-e `detPag` for CreditCard/Pix:** carry the BR-only `acquirerId` (CNPJ), `cardBrand` and `authorizationCode`. Amazon added those fields for SEFAZ-compliant invoices.
@@ -271,7 +272,7 @@ A gap investigation then read every changelog entry and every docs page for Easy
   - The stored `contaAmazonOuterRef` is `'documents/integracao/<contaId>'`.
   - The corpus may contain duplicate link docs, and child link docs carrying their parent's ASIN or SKU. W11 runs a census of both.
 - **`produtos/{id}` denorms** written by legacy Amazon code: `marketplace[]`, `marketplaceIds[]` (bare ASINs), `integracoesComProduto[]` (bare contaId) and `statusProdutosMarketplace{'<contaId>_<ASIN>': {enviarEstoque, …}}`.
-  - They are read tolerantly. `integracoesComProduto` is maintained by the step-9b trigger.
+  - They are read tolerantly. `integracoesComProduto` is maintained by the step-9b trigger. *(Amended 2026-11-19: the step-12 and step-13 backends never read it; the web row providers (21-estoque, 21-preço) ride it after 9b.)*
   - `enviarEstoque === false` is honoured by step 12.
 - **`grupoDeVariacoes/{id}.linksVariacoesAmazon[]`** stays untyped JSON (`z.array(z.json())`) until POST step 11, because publishing is POST.
 - **Orders:** `pedidos/{digest}` + `pedidos/{digest}/pagamentos/{digest}` + `clientes/{id}/enderecos/{id}`.
@@ -354,7 +355,7 @@ Every step gets a Phase-3 step plan that Lucas approves before code is written (
 | 9 Product import | 9 + 9b | PRE (link only) | "Create produto from listing" is P3. |
 | 10 Categories / attributes | 10 | POST | Product Type Definitions. |
 | 11 Publish / lifecycle | 11 | POST | |
-| 12 Stock | 12 + 12a | PRE | Per-SKU patches for deltas; 12a = the `JSON_LISTINGS_FEED` submission record + result poll for bulk. |
+| 12 Stock | 12 + 12a | PRE | Per-SKU patches for a batch of at most 30 SKUs; 12a = the `JSON_LISTINGS_FEED` submission record + result poll for 31 or more. |
 | 13 Price | 13 | PRE (manual) | |
 | 14 NF-e upload | 14 | PRE | Delivery by Amazon API. |
 | 15 Labels | 15 | PRE | Easy Ship bulk: automatic scheduling; the ZPL is fetched on demand at print time, never stored. |
@@ -710,13 +711,13 @@ Cached `getDefinitionsProductType` (locale `pt_BR`) for publishing. Not needed b
 
 ### Step 12: Stock sync — PRE
 
-- **Gate:** `estoque.suporte: 'sim'`, `protocolo: 'feed-assincrono'` (bulk) with per-SKU patches for deltas. **Trigger:**
+- **Gate:** `estoque.suporte: 'sim'`, `protocolo: 'feed-assincrono'` (31 SKUs or more) with per-SKU patches for a batch of at most 30. **Trigger:**
   - event-driven deltas from the shared estoque core (Cloud Task per flush of changed SKUs);
   - a daily reconcile (`onSchedule`);
   - a manual send per produto (HTTP row action) and an operator "send all" (HTTP → job).
 - **Two write paths, one body.** Both carry `{productType: 'PRODUCT', op: 'merge', path: '/attributes/fulfillment_availability', value: [{fulfillment_channel_code: 'DEFAULT', quantity}]}`; `merge` keeps the lead time.
-  - **Patch path:** `PATCH /listings/2021-08-01/items/{sellerId}/{sku}?marketplaceIds=A2Q3Y263D00KWC`, used for a flush of **fewer than 1,500 SKUs** (sale-driven deltas, a single produto). `ACCEPTED` ≠ applied, so the issues come back on the link doc.
-  - **Feed path:** one `JSON_LISTINGS_FEED` of `PATCH` messages (step 12a), used for **1,500 SKUs or more** (the daily reconcile's drift, "send all", the window's first full push, a mass ERP stock adjustment). 20,000 SKUs fit in one feed (≤ 25,000 messages, ≤ 10 MB).
+  - **Patch path:** `PATCH /listings/2021-08-01/items/{sellerId}/{sku}?marketplaceIds=A2Q3Y263D00KWC`, used for a batch of **at most 30 SKUs** (Lucas, 2026-11-10; was fewer than 1,500): a 5-minute delta tick's, a feed recovery's, the reconcile's drift, the manual send. `ACCEPTED` ≠ applied, so the issues come back on the link doc.
+  - **Feed path:** one `JSON_LISTINGS_FEED` of `PATCH` messages (step 12a), used for **31 SKUs or more** (Lucas, 2026-11-10; was 1,500 or more): a busy tick's 31–3,000 moved SKUs as one delta feed, and the daily reconcile's drift ("send all" when forced; under `*`, the window's first full push) as block feeds of at most 50 drift blocks (≤ 15,000 messages) each, so ≈ 20,000 SKUs take two feeds, sent one after the other. A mass ERP stock adjustment above 3,000 moved SKUs, or a truncated window, is handed to a reconcile run.
 - **Quantity:** one function shared by every path. It uses the conta's depósito, is clamped at 0, makes kits ERP-computed, honours `statusProdutosMarketplace[...].enviarEstoque === false`, skips parents, and never writes AFN.
 - **Read cost (the cost centre, now at ~20,000 SKUs):**
   - Discovery opens with the `integracoesComProduto` anchor and a change-window aggregate, so an idle tick costs ~nothing.
@@ -730,15 +731,26 @@ Cached `getDefinitionsProductType` (locale `pt_BR`) for publishing. Not needed b
     - (3) at most one stock feed in flight per conta (a lease). Patches keep flowing during the feed.
 - **Dry-run/valve:** `AMAZON_MODO_ESTOQUE` + canary.
   - The patch dry-run diffs against `fulfillmentAvailability`. Its read-back is deferred ≥ 5 min (the 1–5 min visibility lag).
-  - The feed dry-run builds the whole feed document and diffs it against the listings report, without `createFeed`.
+  - The feed dry-run builds the whole feed document and diffs it against the live read its build made (the reconcile walk's `searchListingsItems`, or a delta feed's own), never a listings report, and posts nothing.
   - Under a canary list other than exactly `*`, bulk paths send **patches for the canary SKUs only**, never a feed.
 - **Verification:**
   - the quantity table (kits, depósito, `enviarEstoque`, parent skip, AFN);
-  - the 1,499/1,500 path switch (near-miss);
+  - the 30/31 path switch (near-miss);
   - an idle-tick cost test;
   - a stale patch task loses to a fresh one;
-  - the catch-up re-sends exactly the SKUs moved after the snapshot.
+  - the catch-up re-sends exactly the SKUs with an estoque row committed after the snapshot, its 20-s skew margin included.
 - **Does NOT:** subscribe `LISTINGS_ITEM_MFN_QUANTITY_CHANGE` (P1); read 20,000 listings one by one.
+- **Amendment (2026-11-19, step 12 built: PRs 12-d … 12-g):**
+  - **Discovery is movement-first, never the `integracoesComProduto` anchor.** A 5-minute tick (`sweepAmazonStock`) reads the collection-group window of `estoques` stamps at the conta's depósito (`estoques (depositoOuterRef, ultimaModificacao, __name__)`), reaching 5 min below its cursor and keeping a row stamped after `cursor − 20 s` or committed after it, so kit sales count through their stamp; each moved produto becomes the conta's SKUs through its `prodAmazon` partition, and an idle tick's discovery is two empty range seeks (the whole idle tick per conta: the conta list and read, the sync doc's read, lease write and final write, and one `getAll` of the reconcile run and the feed lease). This replaces the Cloud Task per flush and `integracoesComProduto` + the change-window aggregate.
+  - **The manual send** is `POST /api/marketplace/amazon/enviar-estoque` (`PERM.integracao.write`, App Hosting): 1–50 produtos, a variation child hopped to its anchor, more than 30 distinct SKUs refused whole (400, nothing enqueued), then one named patch task per SKU; it never calls Amazon, never computes a quantity and never reads the stock valve (the task decides). Its web provider (21-estoque) waits for 9b.
+  - **"Send all"** is the daily reconcile forced from Cloud Scheduler: diff-based, so no force-all feed and no button. This replaces "an operator 'send all' (HTTP → job)".
+  - **Quantity:** the shared estoque core with `{ incluirEstoqueProprioDoKit: false, pularKitVirtual: false, estoqueMax: +∞ }`, computed at dispatch (tasks carry identities only); no ledger, no `limiar`, no sweep tiers: every send compares the ERP quantity with Amazon's live one.
+  - **The daily reconcile** (`reconcileAmazonStock`, 03:44 America/Sao_Paulo) walks every link doc of the conta by key (`prodAmazon (contaAmazonOuterRef, __name__)`, 300 a page on the jobs queue) and reads Amazon live with `searchListingsItems`, 20 SKUs per call ≥ 220 ms apart, a miss confirmed by one `getListingsItem`; no `GET_MERCHANT_LISTINGS_ALL_DATA` and no `createReport` (C5 stays step 9's). This replaces the listings report and its stale-data exclusion.
+  - **Every reconcile send is delayed 20 minutes (1,200 s) after the walk and recomputes at dispatch** (patches for a drift of ≤ 30, block feeds for 31 or more, a canary list's patches), so an Amazon order not yet imported does not re-raise its units.
+  - **A misconfigured depósito must not zero the catalogue:** a reconcile run whose depósito answers 0 with no estoque row for ≥ 1,500 SKUs, or for more than half of the run's sendable SKUs, sends nothing and raises the conta's aviso (`estoque-deposito-sem-linhas`).
+  - **The link refusal list:** no write, a count, and a per-conta aviso for the classes a person must fix: two live produtos for one SKU, no live produto, an unreadable parent pointer, a child link doc carrying its parent's SKU or ASIN (the corpus shape §3 names), a unit with variations; also `enviarEstoque === false`, a SKU the patch path cannot carry (`/`, `\`, `..`, `.`: sent only inside a feed), and, from Amazon's live read, not listed, a variation parent, any non-`DEFAULT` fulfillment channel, an ASIN that contradicts the link's.
+  - **Read-back:** one re-run of the same task 6 min after an `ACCEPTED` patch, never a chain; none for a reconcile patch or a feed (the processing report and the next reconcile are theirs); a live read equal to the ERP quantity within 15 min of our own patch of a different quantity, or of a stock feed's end, is not trusted (the 0–15 min backend lag), so the task patches anyway.
+  - **Step 13's own "Bulk (≥ 1,500 SKUs, D8)" is left as written:** step 13's plan decides whether price follows the same 30-SKU switch.
 
 ### Step 12a: Feed submission infrastructure (`JSON_LISTINGS_FEED`) — PRE
 
@@ -755,6 +767,17 @@ The template's `'feed-assincrono'` warning applies: the notification pipeline ha
 - **Firestore:** `feedsAmazon` + an index `(contaId ASC, status ASC)`; both rulesets regenerated.
 - **Verification:** the feed document validates against `listings-feed-schema-v2.json`; the report parser handles errors, warnings and per-SKU attribution; a duplicate completion is harmless; the deadline raises an aviso.
 - **Does NOT:** use legacy XML or flat-file feeds (removed by Amazon); submit a feed under a canary list other than `*`.
+- **Amendment (2026-11-19, step 12a built: PRs 12-a … 12-c, the stock provider in 12-f):**
+  - **The record is `feedsAmazon/{contaId}_{feedId}`** (a `feedId` is unique only per seller, and `^[0-9]{1,20}$` everywhere), its status forward-only `enviado < processando <` `concluido` | `falhou` | `cancelado` | `abandonado`, TTL 180 days, with NO `(contaId, status)` index (nothing queries it by status: the lease names the in-flight feed, each poll rung its record) and no ruleset change (a bare const outside `ALL_DOMAINS`); the one-in-flight lease is `feedsAmazonEmCurso/{fluxo}-{contaId}`. This replaces the record id, its field list (the schema in `packages/schemas/src/feedAmazon.ts` is the source) and the index above.
+  - **`snapshotEmMs`, not `snapshotEmUs`** (here and in step 12's guards): ms, the unit of `estoques.ultimaModificacao`, our clock before the first ERP read (a window batch's, before its re-derivation's first query). The catch-up re-sends, unconditionally, every SKU with an estoque row COMMITTED after `snapshotEmMs − 20 s` (found among the rows stamped after `snapshotEmMs − 5 min`), as patches (≤ 30) or inside the next feed: estoque rows, not the ledger change window, so kit sales count.
+  - **`FEED_PROCESSING_FINISHED` is a wake-up:** the receiver checks the `feedId` grammar and makes one named enqueue onto the jobs queue `processAmazonListingsJob` (its second producer; no `notificacoesAmazon` row), whose handler re-reads `getFeed` on the same ladder the poll runs (+2, +7, +17, +32, +62 and +92 min after the submission, then hourly); the 12-h deadline raises the aviso and keeps polling hourly, and 48 h abandons the feed.
+  - **Report issues are attributed by their own `sku` only** (absent ⇒ feed-level; the stock write-back skips a SKU with no link of the conta), at most 200 SKUs (10 problems each) are written back per report, and the record keeps counts only.
+  - **The outcome goes to a new per-flow link field, `envioEstoqueAmazon`** (an event-clock watermark on our submission instant `emMs`; a feed entry carries `quantidade: null`), never to the legacy `issues`, which nothing here writes.
+  - **An uncertain `createFeed`** (cut, 5xx, network, or a 2xx failing its schema: there is no idempotency key) is never retried: the named `feed-incerto` task, enqueued before the call, waits until 12 h after the submission and then recovers; the lease reads uncertain at once, the feed-failure aviso is raised, and stock window batches go as patches meanwhile.
+  - **A feed's tail ends with its terminal status:** the recovery enqueue, the holder-checked lease release and the aviso come first, and the terminal status LAST (it is also the duplicate gate); every rung enqueues its successor before any Amazon call, and the daily reconcile's start re-adopts a feed whose record has not moved for more than 6 h (the backstop).
+  - **Two batch kinds, one send:** a block batch (the reconcile's drift, read from its stored drift blocks by id, at most 50 per feed) and a window batch, the delta feed (the payload carries the bounded window and its keep rule, never the SKUs; the send re-derives its members and reads Amazon live right before `createFeed`).
+  - **A batch that meets a held lease:** a non-forcing window batch records its range start on the lease and rides the holder's recovery; a forcing one (a recovery's) waits up to 1 h; behind a holder older than 30 min, an uncertain or 12-h-overdue holder, or an open breaker, a window batch goes as patches; a block batch waits up to 6 h, then leaves its drift to the next daily run; consecutive stock submissions are ≥ 120 s apart.
+  - **Chains terminate and failures do not loop:** a recovery keeps only the rows committed after its feed's `snapshotEmMs − 20 s` plus a recorded start, and a recovery's own feed is delayed to at least the snapshot + 40 s, so once movement stops the chain ends within one more feed; a failed feed's own members go once more, a window batch's as patches, a block batch's through one automatic reconcile request (at most one per conta per 24 h). **The breaker:** after 3 consecutive failed feeds, window batches go as patches with one probe feed an hour, until a `DONE` closes it.
 
 ### Step 13: Price push (manual) — PRE
 
@@ -886,14 +909,14 @@ The template's `'feed-assincrono'` warning applies: the notification pipeline ha
 | `getOrder` (≈ 3–5 changes × 50 orders, plus ≈ 150–300 for Easy Ship: the scheduling task and each print) | 300–550 at 0.5 rps |
 | NF-e: status + submit + status checks | ≈ 50 × 4 at 1.133 rps |
 | Easy Ship: RDT + bulk (schedule once + each print) | ≈ 200–300 at 1 rps |
-| Stock deltas (patch + deferred read-back) | a few hundred at 5 rps |
-| Daily stock reconcile | 1 listings report (create + status polls + document) + drift as patches (< 1,500) or 1 feed |
-| Full stock push (≈ 20,000 SKUs) | 1 `JSON_LISTINGS_FEED`: document + upload + `createFeed` + status polls + report (vs ≈ 67 min of patches) |
+| Stock deltas (5-minute tick: patch + one read-back 6 min later) | ≤ 30 SKUs per tick as patches (a `getListingsItem`, a `patchListingsItem` when the value differs, the read-back), so ≤ 8,640 patch tasks/day from the tick alone; a busy tick's 31–3,000 SKUs go as one delta feed instead (⌈n / 20⌉ `searchListingsItems` + the feed calls): ≈ 10–40 delta feeds on an ordinary day and ≈ 50–150 on a heavy one, estimated with best-case feed cycles and unmeasured until W8 |
+| Daily stock reconcile (03:44) | ⌈SKUs / 20⌉ `searchListingsItems` (≈ 1,000 at ≥ 220 ms apart, ≈ 4 min) + one `getListingsItem` per search miss + the drift 20 min later as patches (≤ 30) or as block feeds of at most 50 drift blocks (≤ 15,000 messages) each |
+| Full stock push (≈ 20,000 SKUs: the reconcile under `*`, or forced) | its drift as block feeds of ≤ 15,000 messages (two at ≈ 20,000), each: document + upload + `createFeed` + status polls + report, sent one after the other through the lease (vs ≈ 67 min of patches) |
 | Price, per produto (manual) | ≈ 3 calls per SKU |
 | Price, bulk (manual) | 1 listings report + 1 feed |
 | Listing link job, first pass | 1 report + one `getListingsItem` per unlinked SKU (≤ 20,000 ≈ 67 min, resumable) |
 
-**Queues** (starting points; the step plans confirm): a reads queue for intake and the link job; per-operation write queues, one per flow (stock, price, NF-e — `processAmazonNfeUpload`, step 14 — and agendamento — `processAmazonEasyShipSchedule`, step 15, with `minBackoff 60 s`), each with `maxConcurrentDispatches: 1` (Amazon's rate limits are per operation and Cloud Tasks' per queue, so one shared writes queue would let a stock run starve invoices); a feeds queue for the step-12a result polls; `minBackoff 10 s`, `maxBackoff 300 s`. `AmazonThrottleError` throws. Feeds stay far below the limit of 5 `JSON_LISTINGS_FEED` per 5 minutes: at most one stock feed and one price feed in flight per conta.
+**Queues** (starting points; the step plans confirm): a reads queue for intake and the link job; per-operation write queues, one per flow (stock, price, NF-e — `processAmazonNfeUpload`, step 14 — and agendamento — `processAmazonEasyShipSchedule`, step 15, with `minBackoff 60 s`), each with `maxConcurrentDispatches: 1` (Amazon's rate limits are per operation and Cloud Tasks' per queue, so one shared writes queue would let a stock run starve invoices); a feeds queue for the step-12a result polls; `minBackoff 10 s`, `maxBackoff 300 s`. `AmazonThrottleError` throws. Feeds stay below the limit of 5 `JSON_LISTINGS_FEED` per 5 minutes: at most one stock feed and one price feed in flight per conta. *(Amended in step 12: the stock queue is `processAmazonStockPatch` (concurrency 1, 2/s, 300 s); the jobs queue `processAmazonListingsJob` (concurrency 1, 1/s, 540 s, 1 GiB) carries the reconcile's walk pages and every feed send, result rung and recovery; consecutive stock submissions are ≥ 120 s apart, so stock alone stays at most half of the feed limit and step 13's price feeds must keep to the other half.)*
 
 ### 4.24 Dropped steps, with the `'nao'` or decision that dropped them
 
@@ -904,7 +927,7 @@ The template's `'feed-assincrono'` warning applies: the notification pipeline ha
 | 18 Tabela de medidas | `tabelaDeMedidas: 'nao'` | — |
 | 19 Kits virtuais | `kitVirtual: 'nao'` | ERP-computed kit quantity in step 12 |
 | Template step 4 missed-feed replay | no replay feed in SP-API | the cursor + SQS retention + DLQ |
-| Sweep tiering | not assumed (D8) | deltas + one daily reconcile; tiering is decided from the step-12 scan measurement at ~20,000 SKUs |
+| Sweep tiering | settled in step 12 (D8) | deltas every 5 minutes + one daily reconcile at 03:44, no tiers and no monthly force-all: every send compares the ERP quantity with Amazon's live one |
 
 **Deferred by decision (POST, D3):** steps 10, 11, 17 (folded into P4) and P1–P4.
 
@@ -919,8 +942,8 @@ The template's `'feed-assincrono'` warning applies: the notification pipeline ha
 7. **Steps 5 + 6 + 7** (captures C1 first). *(Amended 2026-10-27: built and merged without the captures; the capture-dependent defaults are validated later, tracked on #1923; see step 5's amendment.)*
 8. **⏸ The listings discussion (D18)**, then **steps 9 + 9b + 21-link** (order items need links).
 9. **Step 14 → step 15 + 21-etiqueta.** *(Amended: no capture gates a merge (the 2026-10-27 precedent), and this item runs before item 8 (Lucas, 2026-11-04).)*
-10. **Step 12a** (feed infrastructure), then **step 12 + 21-estoque.**
-11. **Step 13 + 21-preço** (the bulk path reuses 12a).
+10. **Step 12a** (feed infrastructure), then **step 12 + 21-estoque.** *(Amended: runs before item 8 and does not depend on 9b (Lucas, 2026-11-10); 21-estoque rides `integracoesComProduto`, so it waits for 9b.)*
+11. **Step 13 + 21-preço** (the bulk path reuses 12a). *(Amended: runs before item 8 and does not depend on 9b (Lucas, 2026-11-10); 21-preço waits for 9b.)*
 12. **Step 22** (capture C6).
 13. **The window** (§5).
 
@@ -930,8 +953,8 @@ None of these writes is exercised by this code before the window. Each one's fir
 
 | Amazon write | Step | Valve (+ canary list) | Dry-run diff against | Read-back |
 |---|---|---|---|---|
-| `patchListingsItem` `fulfillment_availability` | 12 | `AMAZON_MODO_ESTOQUE` | `getListingsItem` `fulfillmentAvailability` | the same, deferred ≥ 5 min |
-| `JSON_LISTINGS_FEED` (stock `PATCH` messages) | 12 + 12a | `AMAZON_MODO_ESTOQUE` (feeds only under a canary list of exactly `*`) | the whole feed document vs the listings report | the processing report + sampled `getListingsItem` |
+| `patchListingsItem` `fulfillment_availability` | 12 | `AMAZON_MODO_ESTOQUE` | `getListingsItem` `fulfillmentAvailability` | the same, once, 6 min after an `ACCEPTED` patch (none for a reconcile patch) |
+| `JSON_LISTINGS_FEED` (stock `PATCH` messages) | 12 + 12a | `AMAZON_MODO_ESTOQUE` (feeds only under a canary list of exactly `*`) | the whole feed document vs the live read its build made (the reconcile walk's `searchListingsItems`, or a delta feed's own) | the processing report + the next daily reconcile |
 | `patchListingsItem` `purchasable_offer` | 13 | `AMAZON_MODO_PRECO` | `getListingsItem` `attributes.purchasable_offer` | the same + issues |
 | `JSON_LISTINGS_FEED` (price `PATCH` messages) | 13 + 12a | `AMAZON_MODO_PRECO` (feeds only under `*`) | the feed document vs the report price + `ultimaOfertaEnviada` | the processing report + sampled `getListingsItem` |
 | `submitInvoice` (Delivery by Amazon) | 14 | `AMAZON_MODO_NFE` | `getInvoiceStatus` | `getInvoiceStatus` |
@@ -961,7 +984,7 @@ Each item below becomes an issue **only after Lucas says yes to opening it**. Th
 4. **W4: pause every legacy Amazon background writer at the freeze.**
    - **Phase:** 1.
    - **Action:** pause the legacy order-poll scheduler, the stock fan-out, the feeds/scheduling/products queues and the NF-e trigger.
-   - **Verify:** no legacy Amazon call is logged after the freeze.
+   - **Verify:** the legacy scheduler jobs' state and the legacy queues' state, plus a zero task count on each queue; never "no legacy Amazon call is logged" (a quiet day proves nothing).
    - **Why:** they write to **Amazon** (stock, scheduling, invoices), not only to Firestore. Leaving them running makes two writers.
 5. **W5: connect + subscribe.**
    - **Phase:** 3 step 4.
@@ -979,7 +1002,7 @@ Each item below becomes an issue **only after Lucas says yes to opening it**. Th
    - **Why:** it is idempotent by the deterministic ids.
 8. **W8: valves.**
    - **Phase:** 4.
-   - **Action:** per flow (estoque, preço, NF-e, agendamento): `dry-run` → canary → `on` → `*`. The first full stock push (≈ 20,000 SKUs) is one `JSON_LISTINGS_FEED`, first as a dry-run (the feed document diffed against the listings report) and only then submitted, once the canary list is `*`.
+   - **Action:** per flow (estoque, preço, NF-e, agendamento): `dry-run` → canary → `on` → `*`. The first full stock push (≈ 20,000 SKUs) is the first daily reconcile under `*` (its drift as block feeds of ≤ 15,000 messages each, so two, unless the systemic zero guard stops the send), first as a dry-run (each feed document diffed against the reconcile walk's live read, never the listings report) and only then submitted, once the canary list is `*`.
    - **Verify:** the run-start log line, then the dry-run diffs, then clean read-backs; for the first feed, its processing report (errors per SKU) and the post-feed catch-up count.
    - **Why:** there must be no dual writer to Amazon.
 9. **W9: deploy in order.**
@@ -1031,8 +1054,8 @@ Each item below becomes an issue **only after Lucas says yes to opening it**. Th
 
 ## 7. Questions still open for Lucas (not decided above)
 
-1. **`faixaDePrecoAmazon` v1:** `minimo` = the promotional list when > 0, else the normal price, and `maximo` = the normal price. Is that the range you want until the new price-range model exists?
-2. **Reservations:** keep PENDING Amazon orders reserving ERP stock (the current behaviour), or reserve only from UNSHIPPED?
+1. **`faixaDePrecoAmazon` v1:** `minimo` = the promotional list when > 0, else the normal price, and `maximo` = the normal price. Is that the range you want until the new price-range model exists? **Answered (Lucas, 2026-11-10): as proposed** (`our_price` = the normal list, `minimo` = the promotional list when > 0 else the normal price, `maximo` = the normal price; only this function changes when the price-range model arrives).
+2. **Reservations:** keep PENDING Amazon orders reserving ERP stock (the current behaviour), or reserve only from UNSHIPPED? **Answered (Lucas, 2026-11-10): PENDING reserves and CANCELLED releases, as step 5 ships** (no code change).
 3. **Pickup rescheduling:** is it acceptable that rescheduling a DBA pickup stays in Seller Central (there is no documented BR API for it)? **Answered: it stays in Seller Central, a default kept on 2026-10-22.**
 4. **Listings (D18):** the known problems of the legacy listing flows, and the best way to handle each one. To be discussed when we reach step 9, before any listing step plan is written.
 5. **Refunds and returns (P4):** how the ERP should detect and handle them properly, beyond D17's interim inference. To be explored in depth after the cutover.

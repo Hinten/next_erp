@@ -1,31 +1,35 @@
 /**
- * The App Hosting COMPOSITION ROOT of this backend's three Cloud Tasks
+ * The App Hosting COMPOSITION ROOT of this backend's four Cloud Tasks
  * producers: the reads queue (`filaLeituraAmazon`, the push receiver's), the
  * NF-e queue (`processAmazonNfeUpload`, since step 14, PR 14-d: the re-drive
- * route `POST /api/marketplace/amazon/enviar-nfe`'s) and the jobs queue
+ * route `POST /api/marketplace/amazon/enviar-nfe`'s), the jobs queue
  * (`processAmazonListingsJob`, since step 12a, PR 12-c: the receiver's
- * `FEED_PROCESSING_FINISHED` wake-up). All three are bound to the real Cloud
- * Tasks transport through the file's ONE `getFunctions(` call
- * ({@link filaDoAppHosting}). Outside `lib/amazon` on purpose — it reads
- * `process.env` and calls `getFunctions(`, and `lib/amazon` does neither
- * (`estrutura.test.ts`, which also pins this file as one of the app's
- * `getFunctions(` roots, pinned to its queue set — its three path builders — by
- * `FILAS_DE_CADA_RAIZ`).
+ * `FEED_PROCESSING_FINISHED` wake-up) and the stock queue
+ * (`processAmazonStockPatch`, since step 12, PR 12-g: the manual push route
+ * `POST /api/marketplace/amazon/enviar-estoque`'s per-SKU tasks). All four are
+ * bound to the real Cloud Tasks transport through the file's ONE
+ * `getFunctions(` call ({@link filaDoAppHosting}). Outside `lib/amazon` on
+ * purpose — it reads `process.env` and calls `getFunctions(`, and `lib/amazon`
+ * does neither (`estrutura.test.ts`, which also pins this file as one of the
+ * app's `getFunctions(` roots, pinned to its queue set — its four path builders
+ * — by `FILAS_DE_CADA_RAIZ`).
  *
- * - The region of ALL three queues: `AMAZON_TASKS_REGION`, then
+ * - The region of ALL four queues: `AMAZON_TASKS_REGION`, then
  *   `FUNCTIONS_REGION`, NO default (`requireRegion` throws `MissingRegionError`;
  *   #1108). Read as STATIC `process.env.X` members, the shape the functions
  *   bundle needs too. Every queue lives in the functions codebase `amazon`, in
  *   ONE region. Without the region-qualified path the Admin SDK targets its own
  *   default region and the task is silently dropped.
- * - The queue valve, the SAME variable for all three: `AMAZON_TASKS_DISABLED`
+ * - The queue valve, the SAME variable for all four: `AMAZON_TASKS_DISABLED`
  *   exactly `'1'` closes it. For the reads queue that is sweep-only mode (the
  *   receiver persists every delivery as `failed` for the reprocess sweep —
  *   never a silent drop). For the NF-e queue there is NO sweep: the re-drive
  *   route answers 503 `AMAZON_TAREFAS_DESLIGADAS` and enqueues nothing. For the
  *   jobs queue the receiver drops the wake-up with a WARNING: the feed's own
- *   poll chain still reads it. Anything else (`true`, ` 1`, blank) leaves it
- *   open.
+ *   poll chain still reads it. For the stock queue the manual push answers its
+ *   listings `nao-tentado` and enqueues nothing (the tick and the daily
+ *   reconcile still send what moved). Anything else (`true`, ` 1`, blank)
+ *   leaves it open.
  *
  * ⚠️ The enqueuing identity (the App Hosting runtime service account) needs
  * `roles/cloudtasks.enqueuer` on EACH queue and `roles/iam.serviceAccountUser`,
@@ -43,6 +47,12 @@ import {
 } from '../amazon/notificacoes/agendador';
 import type { PayloadNotificacaoAmazon } from '../amazon/notificacoes/notificacao';
 import {
+  type ProdutorEstoqueAmazon,
+  caminhoDaFilaEstoqueAmazon,
+  criarProdutorEstoqueAmazon,
+} from '../amazon/estoque/produtorEstoque';
+import type { TarefaEstoqueAmazon } from '../amazon/estoque/tarefaEstoque';
+import {
   type AgendadorLotesAmazon,
   caminhoDaFilaLotesAmazon,
   criarAgendadorLotesAmazon,
@@ -57,7 +67,7 @@ import type { TarefaNfeAmazon } from '../amazon/nfe/tarefaNfe';
 import { getAdminApp } from './admin';
 
 /**
- * The region of ALL three queues (the reads, NF-e and jobs queues), or
+ * The region of ALL four queues (the reads, NF-e, jobs and stock queues), or
  * `MissingRegionError` (names only, no default).
  */
 export function regiaoDaFilaLeituraAmazon(): string {
@@ -91,6 +101,15 @@ export function filaNfeDesligadaAmazon(): boolean {
  * feed's own poll chain still reads its outcome.
  */
 export function filaLotesDesligadaAmazon(): boolean {
+  return valvulaDasFilasFechada();
+}
+
+/**
+ * Is the stock queue's valve closed? The SAME variable as the other three
+ * queues'. The manual push then reads its selection, answers every listing it
+ * would enqueue `nao-tentado` and builds no producer.
+ */
+export function filaEstoqueDesligadaAmazon(): boolean {
   return valvulaDasFilasFechada();
 }
 
@@ -140,5 +159,23 @@ export function agendadorDaFilaLotesAmazon(): AgendadorLotesAmazon {
     desligado: filaLotesDesligadaAmazon(),
     fila: () =>
       filaDoAppHosting<TarefaLoteAmazon>(caminhoDaFilaLotesAmazon(regiaoDaFilaLeituraAmazon())),
+  });
+}
+
+/**
+ * The manual push route's producer (step 12, PR 12-g): the stock queue, for
+ * ONE NAMED patch task per SKU (`origem: 'manual'`, named by the request's
+ * reference and the SKU), at most 16 in flight. The valve read now, the queue —
+ * and so the region — resolved per enqueue and never while the valve is
+ * closed. What a rejection means and the names are the pure producer's
+ * (`lib/amazon/estoque/produtorEstoque.ts`).
+ */
+export function produtorDaFilaEstoqueAmazon(): ProdutorEstoqueAmazon {
+  return criarProdutorEstoqueAmazon({
+    desligado: filaEstoqueDesligadaAmazon(),
+    fila: () =>
+      filaDoAppHosting<TarefaEstoqueAmazon>(
+        caminhoDaFilaEstoqueAmazon(regiaoDaFilaLeituraAmazon()),
+      ),
   });
 }
