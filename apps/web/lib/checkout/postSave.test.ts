@@ -138,8 +138,11 @@ describe('runCheckoutPostSave', () => {
 
   it('a Shopee pedido with NO int_frete ref still dispatches, on the block (#1523)', async () => {
     // Before `resolverIntFrete` this was `no-integration` + a yellow toast: a
-    // Shopee pedido never carries `integracaoFreteOuterRef`, so its label was
-    // unreachable from the checkout.
+    // Shopee pedido this app imported then never carried
+    // `integracaoFreteOuterRef`, so its label was unreachable from the
+    // checkout. Since 2026-11-18 the importer stamps its conta's ref on CREATE
+    // only, so a pedido created while its conta had no active `int_frete` doc
+    // (or, on staging only, one imported earlier) is still this shape.
     ensureNfeMock.mockResolvedValue({ ok: false, pending: true });
     derefMock.mockReturnValue(null);
     emitirEtiquetaMock.mockResolvedValue({ status: 'printed' });

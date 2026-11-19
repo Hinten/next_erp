@@ -177,13 +177,17 @@ export interface EtiquetaProviderDeps {
  *                 `integracaoFreteOuterRef` (today's only shape);
  *   - `'bloco'` — NO document: the frete block's `externalOptionIntegracao`
  *                 names a marketplace-owned tipo, and that is the whole
- *                 identity. A Shopee pedido imported by THIS app carries no
- *                 `int_frete` ref (step 5 sets none), and an ML pedido whose
- *                 ref was degraded to null on import is the same case (#1523,
- *                 R-q). ⚠️ A MIGRATED legacy Shopee pedido does carry one — the
- *                 legacy FreteShopee document's — and dispatches as `'doc'`
+ *                 identity. A Shopee pedido created while its conta had no
+ *                 active `int_frete` doc (or, on staging only, one imported
+ *                 before 2026-11-18) carries no ref — the importer stamps the
+ *                 conta's ref on CREATE only, never as a backfill — and an ML
+ *                 pedido whose ref was degraded to null on import is the same
+ *                 case (#1523, R-q). ⚠️ A Shopee pedido created since then for
+ *                 a conta with an active doc, like a MIGRATED legacy one (the
+ *                 legacy FreteShopee document's ref), dispatches as `'doc'`
  *                 when that document's tipo is `shopee`. The Shopee provider
- *                 reads neither, so nothing may assume "Shopee ⇒ `'bloco'`".
+ *                 reads neither, and both shapes stay live, so nothing may
+ *                 assume "Shopee ⇒ `'bloco'`" or "Shopee ⇒ `'doc'`".
  *
  * ⚠️ A provider that needs the DOCUMENT (its id or its data) must narrow on
  * `fonte === 'doc'` first — Melhor Envio passes `id` to its HTTP client, the

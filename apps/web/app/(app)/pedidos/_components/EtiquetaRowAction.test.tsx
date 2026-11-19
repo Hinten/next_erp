@@ -146,7 +146,12 @@ function pedidoCom(frete: Record<string, unknown>): Pedido {
   } as unknown as Pedido;
 }
 
-/** The step-5 Shopee shape: the block names the tipo, and there is NO int_frete ref. */
+/**
+ * The ref-less Shopee shape: the block names the tipo, and there is NO int_frete
+ * ref — a pedido created while its conta had no active doc (or, on staging only,
+ * one imported before 2026-11-18): the importer stamps its conta's ref on CREATE
+ * only, and nothing backfills it.
+ */
 const PEDIDO_SHOPEE = pedidoCom({ externalOptionIntegracao: INTEGRACAO_FRETE.shopee });
 const PEDIDO_ML = pedidoCom({ externalOptionIntegracao: INTEGRACAO_FRETE.mercadoLivre });
 /** The imported Amazon shape: the block names the tipo, and there is NO int_frete ref. */

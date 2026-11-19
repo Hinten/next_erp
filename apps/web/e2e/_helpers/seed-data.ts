@@ -3112,13 +3112,19 @@ export async function cleanupPedidoEtiquetaConferenciaLiFixtures(
 /**
  * Fixture for the Shopee etiqueta row action (#1523, step 15): ONE pedido
  * (`<prefix>-ped-001`) whose `freteInicial` is the block the Shopee order
- * import writes, and nothing else — the label route it reaches is stubbed by
- * the spec, so no conta, `int_frete` or cliente is read.
+ * import writes when it stamps no `int_frete` ref, and nothing else — the
+ * label route it reaches is stubbed by the spec, so no conta, `int_frete` or
+ * cliente is read.
  *
  * What the block pins, each on purpose:
  *   - `externalOptionIntegracao: 'shopee'` and NO `integracaoFreteOuterRef` —
- *     a Shopee pedido has no `int_frete` document at all, so the row must reach
- *     the provider off the block alone (`resolverIntFrete`, `fonte: 'bloco'`);
+ *     the REF-LESS case, kept deliberately: since 2026-11-18 the importer
+ *     stamps its conta's active `int_frete` ref on every pedido it CREATES, but
+ *     one created while its conta had no active doc (or, on staging only, one
+ *     imported before that) still has none (nothing backfills it), so the row
+ *     must reach the provider off
+ *     the block alone (`resolverIntFrete`, `fonte: 'bloco'`). The ref'd shape
+ *     only adds a document the Shopee provider never reads;
  *   - `externalOptionId: null` — so the HoverCard opens off
  *     `FREIGHT_TIPO_CAPS.shopee.canFetchLabel` alone, never off a stored
  *     option id;

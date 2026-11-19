@@ -7,10 +7,14 @@
  *
  * The tipo is the DISPATCH tipo (`tipoDeDespacho`, #1523): a marketplace-owned
  * frete block names it outright, and otherwise the int_frete doc does (cached,
- * shared across rows on the same integração). A Shopee pedido imported by THIS
- * app carries no `int_frete` ref (step 5 sets none); a migrated legacy one
- * carries the legacy FreteShopee doc's ref and dispatches as `'doc'` when that
- * doc's tipo is `shopee` — the provider reads neither. The buy's heavier cart
+ * shared across rows on the same integração). A Shopee pedido the importer
+ * created since 2026-11-18 for a conta with an active `int_frete` doc carries
+ * that doc's ref (create-only); one created while its conta had none (or, on
+ * staging only, one imported earlier) carries none; a migrated legacy one
+ * carries the legacy FreteShopee doc's ref. Its block names
+ * the tipo in all three, so the row reads no doc to learn it; the click's
+ * `resolverIntFrete` answers `'doc'` whenever that doc's tipo is `shopee` and
+ * `'bloco'` otherwise — the provider reads neither shape. The buy's heavier cart
  * resolution stays lazy in
  * `EtiquetaComprarModal`, and the fetch-label + generic-label paths both reuse
  * the shared checkout etiqueta registry (gates + provider).

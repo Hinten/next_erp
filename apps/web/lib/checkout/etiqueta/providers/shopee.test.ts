@@ -144,7 +144,10 @@ function makeInput(over: {
     pedidoId: 'p1',
     // W18: step 5 writes `externalId: null` on every multi-package order.
     frete: { externalId: null, externalOptionIntegracao: 'shopee' } as never,
-    // The realistic shape: a Shopee pedido has no `int_frete` document.
+    // The ref-less shape (a Shopee pedido created while its conta had no active
+    // `int_frete` doc, or, on staging only, one imported before 2026-11-18).
+    // One created since for a conta with an active doc carries that doc's ref
+    // and resolves `'doc'`; the provider reads neither shape.
     intFrete: { fonte: 'bloco', id: null, tipo: INTEGRACAO_FRETE.shopee, data: null },
     formato: over.formato ?? 'pdf',
     deps: {
