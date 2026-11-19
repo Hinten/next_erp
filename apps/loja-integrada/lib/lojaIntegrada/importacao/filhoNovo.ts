@@ -134,11 +134,11 @@ import {
   lerGruposErpLi,
   nomesIguaisPeloCorteLi,
   opcoesResolvidasLi,
-  paiArmazenadoLi,
   planejarDocCriadoLi,
   taxonomiaDoFilhoLi,
   veredictoDaSondaLi,
 } from './familiaNova';
+import { paiArmazenadoLi } from '../produtos/paiArmazenadoLi';
 import type { FamiliaLi, FilhoDaFamiliaLi } from './familias';
 import {
   PAPEL_DO_VINCULO_LI,

@@ -35,6 +35,7 @@ export function lojaIntegradaClientFalso(
     revisaoImportacao: naoEsperado('revisaoImportacao'),
     rotearEtiqueta: naoEsperado('rotearEtiqueta'),
     conferirPagamento: naoEsperado('conferirPagamento'),
+    enviarEstoque: naoEsperado('enviarEstoque'),
   };
   return { ...base, ...metodos };
 }

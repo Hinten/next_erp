@@ -18,6 +18,11 @@ import {
 } from './importacao/orcamento';
 import { unidadeDaFotoLi } from './importacao/fotos';
 import { CONCORRENCIA_REDRIVE_LI, LIMITE_REDRIVE_LI } from './notificacoes/notificacao';
+import {
+  CONCORRENCIA_ENVIO_MANUAL_ESTOQUE_LI,
+  MAX_ALVOS_ENVIO_ESTOQUE_LI,
+  MAX_PRODUTOS_ENVIO_ESTOQUE_LI,
+} from './estoque/envioManualEstoqueLi';
 
 /**
  * The credential routes must fit inside this backend's request ceiling.
@@ -120,6 +125,20 @@ const ROTAS_DA_IMPORTACAO: readonly (readonly [string, number])[] = [
 /** Every package read the import makes (in its dispatch), and the other ways out — none in a request. */
 const SAIDAS_PARA_A_LOJA =
   /lerPaginaLi\(|lerPaginaProdutosLi\(|buscarProdutoLi\(|baixarImagemLi\(|criarLeitorCdnLi|listarCategoriasLi\(|listarMarcasLi\(|listarGradesLi\(|buscarGradeLi\(|criarClienteLeituraLi|validarPersonalToken|paginarLi|buscarPedidoLi|listarHistoricoSituacaoLi|buscarProdutoPorIdExternoLi|\.get\(\s*\{\s*operacao|fetch\(/;
+
+/**
+ * The operator's stock routes (step 12, PR 12-h) and their cores, with how many context loads
+ * (`loadLojaIntegradaContext(`) each file makes: NONE — both only enqueue, and the send run or the
+ * reconcile slice reaches Loja Integrada later, in the functions codebase. No file here names a
+ * package read either.
+ */
+const ROTAS_DO_ESTOQUE: readonly (readonly [string, number])[] = [
+  ['app/api/marketplace/loja-integrada/enviar-estoque/route.ts', 0],
+  ['app/api/marketplace/loja-integrada/conta/[id]/estoque/reconciliar/route.ts', 0],
+  ['lib/lojaIntegrada/estoque/envioManualEstoqueLi.ts', 0],
+  ['lib/lojaIntegrada/estoque/reconcile/reconcileManualLi.ts', 0],
+  ['lib/lojaIntegrada/estoque/contaDoEstoqueLi.ts', 0],
+];
 
 /** The three conta routes, and how many validating calls and re-drives each may make. */
 const ROTAS: readonly (readonly [string, number, number])[] = [
@@ -281,12 +300,16 @@ describe('the catalogue routes fit inside the backend ceiling', () => {
     const doCatalogo = new Set(ROTAS_DO_CATALOGO.map(([a]) => a));
     const daConta = new Set(ROTAS.map(([a]) => a));
     const daImportacao = new Set(ROTAS_DA_IMPORTACAO.map(([a]) => a));
+    const doEstoque = new Set(ROTAS_DO_ESTOQUE.map(([a]) => a));
     expect(
-      naPasta.filter((f) => !doCatalogo.has(f) && !daConta.has(f) && !daImportacao.has(f)),
+      naPasta.filter(
+        (f) => !doCatalogo.has(f) && !daConta.has(f) && !daImportacao.has(f) && !doEstoque.has(f),
+      ),
     ).toEqual([]);
     expect(naPasta.filter((f) => doCatalogo.has(f))).toHaveLength(4);
     expect(naPasta.filter((f) => daConta.has(f))).toHaveLength(3);
     expect(naPasta.filter((f) => daImportacao.has(f))).toHaveLength(5);
+    expect(naPasta.filter((f) => doEstoque.has(f))).toHaveLength(1);
     // Anti-vacuity: each route delegates to the core, exactly once.
     for (const [arquivo] of ROTAS_DO_CATALOGO.filter(([a]) => a.startsWith('app/'))) {
       const fonte = readFileSync(path.join(APP_DIR, arquivo), 'utf8');
@@ -383,5 +406,46 @@ describe('the product import: its routes call nothing, its dispatch fits its bud
     expect([ORCAMENTO_DESPACHO_IMPORTACAO_LI_MS, CAUDA_DESPACHO_IMPORTACAO_LI_MS]).toEqual([
       70_000, 30_000,
     ]);
+  });
+});
+
+/**
+ * The operator's stock routes (step 12, PR 12-h). Neither calls Loja Integrada: the push makes
+ * Firestore reads and Cloud Tasks enqueues in bounded rounds, the reconcile two reads and ONE
+ * enqueue. So each fits the ceiling with its rounds and the margin — the push's worst case is the
+ * conta read, the selection's ONE getAll, one expansion round per {@link
+ * CONCORRENCIA_ENVIO_MANUAL_ESTOQUE_LI} selected roots, then per round of targets a listing and an
+ * enqueue.
+ */
+describe('the stock routes: they call nothing, and fit the ceiling with their rounds', () => {
+  it('no context load and no way out to Loja Integrada in any route or core file', () => {
+    for (const [arquivo, contextos] of ROTAS_DO_ESTOQUE) {
+      const fonte = readFileSync(path.join(APP_DIR, arquivo), 'utf8');
+      expect(contar(fonte, 'loadLojaIntegradaContext('), arquivo).toBe(contextos);
+      expect(fonte, arquivo).not.toMatch(SAIDAS_PARA_A_LOJA);
+    }
+    // Anti-vacuity: each route delegates to its core, exactly once.
+    const [envio, reconcile] = ROTAS_DO_ESTOQUE;
+    expect(
+      contar(readFileSync(path.join(APP_DIR, envio?.[0] ?? ''), 'utf8'), 'enviarEstoqueManualLi('),
+    ).toBe(1);
+    expect(
+      contar(
+        readFileSync(path.join(APP_DIR, reconcile?.[0] ?? ''), 'utf8'),
+        'iniciarReconcileManualLi(',
+      ),
+    ).toBe(1);
+  });
+
+  it('the push’s worst case — conta + getAll + the expansion rounds + 2 × the target rounds — plus margin ≤ the smallest ceiling', () => {
+    const { pinados } = configDoBackend();
+    const tetoS = pinados.length > 0 ? Math.min(...pinados) : TETO_APP_HOSTING_PADRAO_S;
+    const rodadas =
+      2 +
+      Math.ceil(MAX_PRODUTOS_ENVIO_ESTOQUE_LI / CONCORRENCIA_ENVIO_MANUAL_ESTOQUE_LI) +
+      2 * Math.ceil(MAX_ALVOS_ENVIO_ESTOQUE_LI / CONCORRENCIA_ENVIO_MANUAL_ESTOQUE_LI);
+    expect(rodadas * RODADA_FIRESTORE_MS + MARGEM_MS).toBeLessThanOrEqual(tetoS * 1000);
+    // Today's numbers: (2 + 10 + 2 × 2) rounds × 250 ms + 30 s = 34 s.
+    expect(rodadas * RODADA_FIRESTORE_MS + MARGEM_MS).toBe(34_000);
   });
 });

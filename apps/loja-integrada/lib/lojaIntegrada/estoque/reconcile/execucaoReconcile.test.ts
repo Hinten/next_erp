@@ -15,6 +15,7 @@ import { FakeDb, asDb, grpc } from '../../testing/fakeDb';
 import { AGORA_RECONCILE_MS, RUN_A, RUN_B } from '../../testing/reconcileEstoqueLi';
 import {
   ABANDONO_RECONCILE_ESTOQUE_LI_MS,
+  CAMPOS_LEASE_RECONCILE_LI,
   type EstadoEscritaReconcileLi,
   LEASE_RECONCILE_ESTOQUE_LI_MS,
   LiReconcileEstoqueConcorrenteError,
@@ -23,6 +24,8 @@ import {
   assumirLeaseReconcileLi,
   decidirSliceReconcileLi,
   gravarLoteReconcileLi,
+  leaseReconcileVivoLi,
+  lerLeaseRunReconcileLi,
   lerRunReconcileLi,
   refRunReconcileLi,
 } from './execucaoReconcile';
@@ -469,5 +472,148 @@ describe('assumirLeaseReconcileLi — the take', () => {
     });
     expect(r.tipo).toBe('assumido');
     expect(db.escritasEm(RUN_PATH)).toHaveLength(1);
+  });
+});
+
+describe('leaseReconcileVivoLi and the MASKED lease read (PR 12-h: the operator reconcile route)', () => {
+  const vivo = (over: Record<string, unknown>) =>
+    leaseReconcileVivoLi(runEmCurso(over), AGORA_RECONCILE_MS);
+
+  it('held, unexpired and at most 48 h old ⇒ alive; each edge on its own side (near-misses)', () => {
+    expect(vivo({})).toBe(true);
+    expect(vivo({ emExecucaoAteMs: AGORA_RECONCILE_MS })).toBe(true);
+    expect(vivo({ emExecucaoAteMs: AGORA_RECONCILE_MS - 1 })).toBe(false);
+    expect(vivo({ emExecucaoAteMs: 0 })).toBe(false);
+    expect(vivo({ iniciadoEmMs: AGORA_RECONCILE_MS - ABANDONO_RECONCILE_ESTOQUE_LI_MS })).toBe(
+      true,
+    );
+    expect(vivo({ iniciadoEmMs: AGORA_RECONCILE_MS - ABANDONO_RECONCILE_ESTOQUE_LI_MS - 1 })).toBe(
+      false,
+    );
+    expect(vivo({ iniciadoEmMs: null })).toBe(false);
+  });
+
+  it('is EXACTLY the decision’s “ocupado”: across held, free, expired, > 48 h and the same minute, another run’s first slice is refused iff the lease is alive (and the minute does not defer it first)', () => {
+    const inicioDoMinuto = Math.floor(AGORA_RECONCILE_MS / 60_000) * 60_000;
+    const casos = [
+      {},
+      { emExecucaoAteMs: 0 },
+      { emExecucaoAteMs: AGORA_RECONCILE_MS - 1 },
+      { emExecucaoAteMs: AGORA_RECONCILE_MS },
+      { iniciadoEmMs: AGORA_RECONCILE_MS - ABANDONO_RECONCILE_ESTOQUE_LI_MS - 1 },
+      { iniciadoEmMs: AGORA_RECONCILE_MS - ABANDONO_RECONCILE_ESTOQUE_LI_MS },
+      { iniciadoEmMs: null },
+      { iniciadoEmMs: inicioDoMinuto },
+      { iniciadoEmMs: inicioDoMinuto, emExecucaoAteMs: 0 },
+    ];
+    for (const over of casos) {
+      const run = runEmCurso(over);
+      const decisao = decidirSliceReconcileLi(
+        lido(run),
+        { execucaoId: RUN_B, seq: 0 },
+        AGORA_RECONCILE_MS,
+      );
+      if (decisao.tipo === 'adiar') continue;
+      expect(decisao.tipo === 'ocupado', JSON.stringify(over)).toBe(
+        leaseReconcileVivoLi(run, AGORA_RECONCILE_MS),
+      );
+    }
+    // ⚠️ The same minute is checked FIRST by the decision: a run that took the lease this minute
+    // reads `adiar` there — which is why the route asks the lease rule itself, before the decision.
+    const recente = runEmCurso({ iniciadoEmMs: inicioDoMinuto });
+    expect(
+      decidirSliceReconcileLi(lido(recente), { execucaoId: RUN_B, seq: 0 }, AGORA_RECONCILE_MS)
+        .tipo,
+    ).toBe('adiar');
+    expect(leaseReconcileVivoLi(recente, AGORA_RECONCILE_MS)).toBe(true);
+  });
+
+  it('reads the run document ONCE, masked to the four lease fields — never the candidate list', async () => {
+    const db = new FakeDb();
+    const getAll = vi.spyOn(db, 'getAll');
+    await comRun(db, {
+      candidatos: [{ c: 0, i: '7', p: 'p1', d: 3 }],
+      walk: { ultimoDocPath: null, concluida: true },
+    });
+    db.leituras.length = 0;
+
+    const r = await lerLeaseRunReconcileLi(asDb(db));
+
+    expect(getAll).toHaveBeenCalledTimes(1);
+    const args = getAll.mock.calls[0] ?? [];
+    expect(args.at(-1)).toEqual({ fieldMask: [...CAMPOS_LEASE_RECONCILE_LI] });
+    expect(CAMPOS_LEASE_RECONCILE_LI).toEqual([
+      'execucaoId',
+      'seq',
+      'emExecucaoAteMs',
+      'iniciadoEmMs',
+    ]);
+    expect(db.leituras).toEqual([RUN_PATH]);
+    expect(Object.keys(r.dados).sort()).toEqual([...CAMPOS_LEASE_RECONCILE_LI].sort());
+    expect(r.run).toMatchObject({ execucaoId: RUN_A, seq: 2, candidatos: [], contas: [] });
+  });
+
+  it('PROPERTY: the decision on the masked read equals the decision on the full read, for every stored lease and every arriving slice', async () => {
+    const inicioDoMinuto = Math.floor(AGORA_RECONCILE_MS / 60_000) * 60_000;
+    const estados = [
+      {},
+      { emExecucaoAteMs: 0 },
+      { emExecucaoAteMs: AGORA_RECONCILE_MS - 1 },
+      { iniciadoEmMs: AGORA_RECONCILE_MS - ABANDONO_RECONCILE_ESTOQUE_LI_MS - 1 },
+      { iniciadoEmMs: inicioDoMinuto },
+      {
+        execucaoId: null,
+        emExecucaoAteMs: 0,
+        iniciadoEmMs: null,
+        fase: null,
+        contas: [],
+        candidatos: [],
+      },
+    ];
+    const tarefas = [
+      { execucaoId: RUN_A, seq: 2 },
+      { execucaoId: RUN_A, seq: 1 },
+      { execucaoId: RUN_B, seq: 0 },
+      { execucaoId: RUN_B, seq: 1 },
+    ];
+    for (const over of estados) {
+      const db = new FakeDb();
+      await comRun(db, {
+        candidatos: [{ c: 0, i: '7', p: 'p1', d: 3 }],
+        ...over,
+      });
+      const cheio = await lerRunReconcileLi(asDb(db));
+      const mascarado = await lerLeaseRunReconcileLi(asDb(db));
+      expect(cheio.run, JSON.stringify(over)).not.toBeNull();
+      for (const tarefa of tarefas) {
+        expect(
+          decidirSliceReconcileLi(mascarado, tarefa, AGORA_RECONCILE_MS),
+          JSON.stringify({ over, tarefa }),
+        ).toEqual(decidirSliceReconcileLi(cheio, tarefa, AGORA_RECONCILE_MS));
+      }
+    }
+  });
+
+  it('⚠️ the ONE divergence: a document malformed OUTSIDE the lease fields is a run to the mask and abandoned by the full read — the route answers 409 where the next slice would take over (the conservative side)', async () => {
+    const db = new FakeDb();
+    // A candidate naming a conta outside the list: the refined schema refuses the WHOLE document.
+    await comRun(db, { contas: [], candidatos: [{ c: 0, i: '7', p: 'p1', d: 3 }] });
+    expect((await lerRunReconcileLi(asDb(db))).run).toBeNull();
+    const mascarado = await lerLeaseRunReconcileLi(asDb(db));
+    expect(mascarado.run).not.toBeNull();
+    expect(leaseReconcileVivoLi(mascarado.run ?? runEmCurso(), AGORA_RECONCILE_MS)).toBe(true);
+  });
+
+  it('no document ⇒ absent, run null; a lease field off its schema ⇒ run null (fail toward a take, as the full read)', async () => {
+    const db = new FakeDb();
+    expect(await lerLeaseRunReconcileLi(asDb(db))).toEqual({
+      existe: false,
+      dados: {},
+      run: null,
+      versao: null,
+    });
+    db.seed(RUN_PATH, { execucaoId: 'a b', emExecucaoAteMs: 1, seq: 0 });
+    const r = await lerLeaseRunReconcileLi(asDb(db));
+    expect([r.existe, r.run]).toEqual([true, null]);
   });
 });

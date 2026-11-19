@@ -1,5 +1,6 @@
 /**
- * The UNCACHED conta reads: the single conta a route gates a write on, the ONE
+ * The UNCACHED conta reads: the single conta a route gates a write on (read in
+ * `./leituraDaConta`, a credential-free leaf, and re-exported here), the ONE
  * enumeration of Loja Integrada contas, and the wrong-store guard built on it.
  *
  * ⚠️ Every read here decides a write, so none of them may come from
@@ -30,12 +31,13 @@
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import { integracaoCollection } from '@delfrance/data/admin/collections';
-import { INTEGRACAO_TIPO, type Integracao, depositoDaContaLi } from '@delfrance/schemas';
+import { INTEGRACAO_TIPO, depositoDaContaLi } from '@delfrance/schemas';
 
 import { relogioDoDocumentoUs } from '../avisos/avisos';
 import { fingerprintDoToken } from './credencial';
 import { lerCredencial } from './credentialStore';
 import { LiCredencialInvalidaError } from './erros';
+import { lerContaLojaIntegrada } from './leituraDaConta';
 
 /**
  * Is this value unusable as a conta (document) id? Empty, or carrying a `/`
@@ -55,22 +57,10 @@ export function naoEhIdDeConta(id: unknown): boolean {
 }
 
 /**
- * The conta document, read uncached, when it exists AND is a Loja Integrada
- * conta; `null` otherwise (the routes answer both with one 404). `ativo` is not
- * checked: a parked or inactive conta must stay fixable.
+ * The single-conta read, uncached (`./leituraDaConta`, a module of its own so a
+ * route that must not reach the credential modules can read the conta too).
  */
-export async function lerContaLojaIntegrada(
-  db: Firestore,
-  integracaoId: string,
-): Promise<Integracao | null> {
-  const snap = await integracaoCollection.docRef(db, {}, integracaoId).get();
-  if (!snap.exists) return null;
-  const conta = integracaoCollection.parseRead(
-    snap.data(),
-    integracaoCollection.docPath({}, integracaoId),
-  );
-  return conta.tipo === INTEGRACAO_TIPO.lojaIntegrada ? conta : null;
-}
+export { lerContaLojaIntegrada };
 
 /** One Loja Integrada conta, reduced to what a sweep or a guard needs. */
 export interface ContaLojaIntegradaResumo {

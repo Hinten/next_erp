@@ -1899,6 +1899,12 @@ export * from './tarefaEstoqueLojaIntegrada';
 // so no `registry.ts` entry; a star export for the fold-inventory's raw-text reason above.
 export * from './estoqueErpLojaIntegrada';
 
+// The Loja Integrada stock sync's two OPERATOR routes (master plan step 12, PR 12-h): the manual
+// push's strict body and its answer, and the reconcile route's answer — one wire contract for the
+// backend and `apps/web`. Not a collection, so no `registry.ts` entry; a star export for the same
+// raw-text reason as above.
+export * from './estoqueManualLojaIntegrada';
+
 // The machine-readable next step of a Shopee publish refusal (step 21, #1529):
 // the refusal sites in `apps/shopee` produce it, the web's wire parses it per row
 // and maps it to a button — one vocabulary, never a second copy (#1369). Also the

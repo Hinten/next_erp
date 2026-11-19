@@ -218,15 +218,18 @@ const CODEBASES = {
     // list omits, and the drift test a listed key the build does not define.
     inlined: { FUNCTIONS_REGION: null, FIREBASE_DATABASE_ID: 'default' },
     tasksRegionVar: 'FUNCTIONS_REGION',
-    // ⚠️ `null` until the App Hosting enqueuer exists (step 4). In step 3 only
-    // the functions themselves enqueue (the order poller), so there is no
-    // second env to agree with: a non-null pair here would make
-    // `crossCheckNote` tell the operator to set an `apphosting.yaml` row that
-    // nothing reads. `storage` is the precedent. Step 4 sets both values and
-    // adds this codebase to the `backend cross-check` list in
-    // `preflight.test.js`.
-    backendVar: null,
-    backendManifest: null,
+    // The App Hosting backend enqueues since master-plan step 12 (PR 12-h): the
+    // manual stock push onto the stock queue and the operator's reconcile onto
+    // the reads queue (`apps/loja-integrada/lib/firebase/filasLi.ts`), so its
+    // region variable must resolve to the SAME region these queues are created
+    // in, or every such task is silently dropped (#1108).
+    backendVar: 'LOJA_INTEGRADA_TASKS_REGION',
+    backendManifest: 'apps/loja-integrada/apphosting.yaml',
+    // ⚠️ Console-ONLY, the Shopee shape: that manifest deliberately has NO
+    // LOJA_INTEGRADA_TASKS_REGION row (a value there reaches EVERY project's
+    // backend; unset is the safe state), so `crossCheckNote` must not tell the
+    // operator to add one.
+    backendConsoleOnly: true,
     // Both queues' `rateLimits` are LITERALS — the reads queue and, since
     // master-plan step 7, the writes queue with its instance limits
     // (concurrency 1 is a correctness property, not a tunable) — so there is

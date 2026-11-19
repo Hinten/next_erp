@@ -41,8 +41,12 @@ import type { PushOutcome, PushRowBase } from './types';
  * purpose: an effect can be skipped, a remount cannot.
  */
 
+// ⚠️ `enfileirado` has its OWN colour and label, never `enviado`'s: the route
+// that answers it sent nothing (see `PushOutcome`), so a green "Enviado" badge
+// would claim the store already shows the number.
 const COR: Record<PushOutcome, string> = {
   enviado: 'green',
+  enfileirado: 'blue',
   pulado: 'yellow',
   falha: 'red',
   'nao-tentado': 'gray',
@@ -50,10 +54,36 @@ const COR: Record<PushOutcome, string> = {
 
 const ROTULO: Record<PushOutcome, string> = {
   enviado: 'Enviado',
+  enfileirado: 'Enfileirado',
   pulado: 'Pulado',
   falha: 'Erro',
   'nao-tentado': 'Não tentado',
 };
+
+/** How many rows of each outcome the summary line counts. */
+export interface ResumoDoEnvio {
+  readonly enviados: number;
+  readonly enfileirados: number;
+  readonly pulados: number;
+  readonly falhas: number;
+}
+
+/**
+ * The summary line under the title, e.g. `Enviados 1 · Pulados 0 · Falhas 0`.
+ *
+ * ⚠️ `Enfileirados N` appears ONLY when N > 0, so a run with no queued row keeps
+ * the exact text it always had — the e2e specs pin it byte for byte
+ * (`e2e/produtos-shopee-acoes.vendas.e2e.spec.ts`). Queued rows are counted
+ * apart from the sent ones, never folded into `Enviados`: nothing was sent yet.
+ */
+export function linhaDeResumoDoEnvio(resumo: ResumoDoEnvio, rotuloSucessoPlural: string): string {
+  return [
+    `${rotuloSucessoPlural} ${String(resumo.enviados)}`,
+    ...(resumo.enfileirados > 0 ? [`Enfileirados ${String(resumo.enfileirados)}`] : []),
+    `Pulados ${String(resumo.pulados)}`,
+    `Falhas ${String(resumo.falhas)}`,
+  ].join(' · ');
+}
 
 type Fase = 'confirmar' | 'enviando' | 'terminado';
 
@@ -95,10 +125,10 @@ export interface PushProgressDialogProps<Row extends PushRowBase, Opcao> {
    * by default.
    *
    * ⚠️ Only the wording is overridable, never the outcome vocabulary itself:
-   * every channel backend answers in the same four `PushOutcome` values, and the
+   * every channel backend answers in the same five `PushOutcome` values, and the
    * badge colours carry the same meaning whatever the operation. A pause run
    * reading "Enviado" would be the one place this shared dialog lies about what
-   * it just did.
+   * it just did. It renames `enviado` alone — `enfileirado` keeps its own label.
    */
   rotuloSucesso?: { singular: string; plural: string };
 }
@@ -169,8 +199,9 @@ export function PushProgressDialog<Row extends PushRowBase, Opcao>({
     }
   }
 
-  const resumo = {
+  const resumo: ResumoDoEnvio = {
     enviados: rows.filter((r) => r.outcome === 'enviado').length,
+    enfileirados: rows.filter((r) => r.outcome === 'enfileirado').length,
     pulados: rows.filter((r) => r.outcome === 'pulado').length,
     falhas: rows.filter((r) => r.outcome === 'falha').length,
   };
@@ -199,8 +230,7 @@ export function PushProgressDialog<Row extends PushRowBase, Opcao>({
           <Group gap="sm">
             {!terminal && <Loader size="xs" />}
             <Text size="sm" fw={500}>
-              {rotuloSucesso?.plural ?? 'Enviados'} {resumo.enviados} · Pulados {resumo.pulados} ·
-              Falhas {resumo.falhas}
+              {linhaDeResumoDoEnvio(resumo, rotuloSucesso?.plural ?? 'Enviados')}
             </Text>
           </Group>
         )}

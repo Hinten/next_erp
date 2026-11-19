@@ -3,6 +3,7 @@ import { INTEGRACAO_TIPO, type IntegracaoTipo } from '@delfrance/schemas';
 
 import type { MotivoNaoSuportado } from '@/lib/marketplace/caps/suporteCanal';
 import { PROVIDERS, enviarEstoqueParaIntegracao, resolveStockPushProvider } from './registry';
+import { lojaIntegradaStockProvider } from './providers/lojaIntegrada';
 import { mercadoLivreStockProvider } from './providers/mercadoLivre';
 import { shopeeStockProvider } from './providers/shopee';
 import type { StockPushInput } from './types';
@@ -13,13 +14,15 @@ function input(over: Partial<StockPushInput> = {}): StockPushInput {
     produtoIds: ['p1'],
     nomePorProdutoId: new Map([['p1', 'Camiseta']]),
     reenviarComErro: false,
-    deps: { mercadoLivre: null, shopee: null },
+    deps: { mercadoLivre: null, shopee: null, lojaIntegrada: null },
     ...over,
   };
 }
 
 /**
- * Every tipo with NO provider row, with the reason the caps table gives.
+ * Every tipo the caps table does not clear, with the reason it gives. Loja
+ * Integrada sits here although it HAS a provider row (step 12, ahead of its
+ * step-22 caps flip): the caps answer first, so it still falls back.
  *
  * Written out rather than derived: a test that loops the constant it validates
  * passes for any content. The coverage assertion below is what keeps it
@@ -58,7 +61,7 @@ describe('resolveStockPushProvider', () => {
     expect(resolveStockPushProvider(INTEGRACAO_TIPO.shopee)).toBe(shopeeStockProvider);
   });
 
-  it('the table above covers every tipo with no provider row', () => {
+  it('the table above covers every tipo the caps do not clear', () => {
     expect(new Set(NAO_SUPORTADOS.map(([tipo]) => tipo))).toEqual(
       new Set(
         Object.values(INTEGRACAO_TIPO).filter(
@@ -84,8 +87,28 @@ describe('resolveStockPushProvider', () => {
 
   it('registers exactly the tipos its providers claim', () => {
     expect(Object.keys(PROVIDERS).sort()).toEqual(
-      [String(INTEGRACAO_TIPO.mercadoLivre), String(INTEGRACAO_TIPO.shopee)].sort(),
+      [
+        String(INTEGRACAO_TIPO.mercadoLivre),
+        String(INTEGRACAO_TIPO.shopee),
+        String(INTEGRACAO_TIPO.lojaIntegrada),
+      ].sort(),
     );
+  });
+
+  it('Loja Integrada has its row, and STILL resolves to the placeholder until the step-22 flip', async () => {
+    // The rows-first middle state: the row exists, the caps say "not built", and
+    // the caps answer first. Red the day `implementado` flips — then this test
+    // becomes "routes Loja Integrada to its provider", like Shopee's above.
+    expect(PROVIDERS[INTEGRACAO_TIPO.lojaIntegrada]).toBe(lojaIntegradaStockProvider);
+    const provider = resolveStockPushProvider(INTEGRACAO_TIPO.lojaIntegrada);
+    expect(provider).not.toBe(lojaIntegradaStockProvider);
+    expect(provider.tipos).toEqual([]);
+    const res = await provider.enviarEstoque(
+      input({
+        integracao: { id: 'c9', nome: 'Conta', tipo: INTEGRACAO_TIPO.lojaIntegrada, ativo: true },
+      }),
+    );
+    expect(res.rows[0]).toMatchObject({ outcome: 'pulado', motivo: 'canal-nao-implementado' });
   });
 });
 

@@ -177,6 +177,59 @@ export async function lerRunReconcileLi(db: Firestore): Promise<RunLidoLi> {
   return runDoSnapshot(await refRunReconcileLi(db).get());
 }
 
+/**
+ * The run document's LEASE fields: exactly what {@link leaseReconcileVivoLi} and the decision
+ * below read (`execucaoId`, `seq`, `emExecucaoAteMs`, `iniciadoEmMs`) — never the candidate
+ * list, which can hold about 600 KB while a run is going.
+ */
+export const CAMPOS_LEASE_RECONCILE_LI = [
+  'execucaoId',
+  'seq',
+  'emExecucaoAteMs',
+  'iniciadoEmMs',
+] as const;
+
+/**
+ * ONE read of the run document MASKED to {@link CAMPOS_LEASE_RECONCILE_LI} (`getAll(ref,
+ * { fieldMask })`, the global slot's precedent, `slotEstoqueLi.ts`), parsed exactly as
+ * {@link lerRunReconcileLi} parses a whole one: every other field has a default, so the masked
+ * document satisfies the refined schema, and a lease field off its schema still reads `run: null`.
+ * For a caller that only asks whether a run holds the lease (the operator's reconcile route);
+ * `dados` and `versao` are the MASKED read's, never a slice's precondition.
+ *
+ * ⚠️ The one divergence from a whole read: a document malformed OUTSIDE these fields (a candidate
+ * naming a conta off the list, say) parses here and is abandoned by the whole read — so the route
+ * answers "running" where the next slice would take over. The conservative side; such a document
+ * is a hand edit or a bug, and its lease still expires within the hour.
+ */
+export async function lerLeaseRunReconcileLi(db: Firestore): Promise<RunLidoLi> {
+  const [snap] = await db.getAll(refRunReconcileLi(db), {
+    fieldMask: [...CAMPOS_LEASE_RECONCILE_LI],
+  });
+  if (snap === undefined) return { existe: false, dados: {}, run: null, versao: null };
+  return runDoSnapshot(snap);
+}
+
+/**
+ * Whether the stored run still HOLDS its lease at `agoraMs`, so another run's first slice would
+ * be refused (`ocupado`): the lease taken (`emExecucaoAteMs ≠ 0`), not yet expired, and the run
+ * started at most {@link ABANDONO_RECONCILE_ESTOQUE_LI_MS} ago. Pure. The ONE copy of the rule:
+ * {@link decidirSliceReconcileLi} answers `ocupado` through it, and the operator's reconcile
+ * route asks it before enqueuing — BEFORE the same-minute `adiar` the decision checks first, so a
+ * run that took the lease seconds ago is reported as running, not as a new run to defer.
+ */
+export function leaseReconcileVivoLi(
+  run: Pick<ReconcileEstoqueLojaIntegrada, 'emExecucaoAteMs' | 'iniciadoEmMs'>,
+  agoraMs: number,
+): boolean {
+  return (
+    run.emExecucaoAteMs !== 0 &&
+    run.emExecucaoAteMs >= agoraMs &&
+    run.iniciadoEmMs !== null &&
+    agoraMs - run.iniciadoEmMs <= ABANDONO_RECONCILE_ESTOQUE_LI_MS
+  );
+}
+
 /** Why a take found the stored run abandoned (module header). */
 export type AbandonoReconcileLi = 'fora-do-formato' | 'lease-vencido' | 'mais-de-48h';
 
@@ -213,12 +266,10 @@ export function decidirSliceReconcileLi(
   if (run.iniciadoEmMs !== null && janelaEstoqueLi(agoraMs) === janelaEstoqueLi(run.iniciadoEmMs)) {
     return { tipo: 'adiar' };
   }
+  if (leaseReconcileVivoLi(run, agoraMs)) return { tipo: 'ocupado' };
   if (run.emExecucaoAteMs === 0) return { tipo: 'assumir', abandonada: null };
   if (run.emExecucaoAteMs < agoraMs) return { tipo: 'assumir', abandonada: 'lease-vencido' };
-  if (run.iniciadoEmMs === null || agoraMs - run.iniciadoEmMs > ABANDONO_RECONCILE_ESTOQUE_LI_MS) {
-    return { tipo: 'assumir', abandonada: 'mais-de-48h' };
-  }
-  return { tipo: 'ocupado' };
+  return { tipo: 'assumir', abandonada: 'mais-de-48h' };
 }
 
 /** Where a slice writes: its run, its `seq`, and its chained precondition. */

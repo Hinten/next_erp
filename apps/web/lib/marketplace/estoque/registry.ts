@@ -3,6 +3,7 @@ import { INTEGRACAO_TIPO_LABELS, type IntegracaoTipo } from '@delfrance/schemas'
 import { type VereditoCanal, vereditoCanal } from '@/lib/marketplace/caps/suporteCanal';
 
 import { buildProviderMap } from '../push/types';
+import { lojaIntegradaStockProvider } from './providers/lojaIntegrada';
 import { mercadoLivreStockProvider } from './providers/mercadoLivre';
 import { shopeeStockProvider } from './providers/shopee';
 import { criarUnsupportedChannelStockProvider } from './providers/unsupportedChannel';
@@ -17,9 +18,18 @@ import type { StockPushChannelResult, StockPushInput, StockPushProvider } from '
  * untouched.
  *
  * Modelled on `lib/checkout/etiqueta/registry.ts`.
+ *
+ * ⚠️ The Loja Integrada row is registered AHEAD of its caps flip (master plan
+ * step 12 → step 22, the Shopee rows-first precedent): `resolveStockPushProvider`
+ * asks the caps first, so the row stays unreachable — every Loja Integrada conta
+ * still gets the `canal-nao-implementado` placeholder — until step 22 flips
+ * `implementado`. `caps/registriesAlinhadas.test.ts` pins that middle state.
  */
 export const PROVIDERS: Readonly<Partial<Record<IntegracaoTipo, StockPushProvider>>> =
-  buildProviderMap([mercadoLivreStockProvider, shopeeStockProvider], 'Stock push');
+  buildProviderMap(
+    [mercadoLivreStockProvider, shopeeStockProvider, lojaIntegradaStockProvider],
+    'Stock push',
+  );
 
 /**
  * What `MARKETPLACE_TIPO_CAPS` says about sending stock to this channel, and --

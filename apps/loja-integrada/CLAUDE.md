@@ -58,8 +58,8 @@ Master plan: `.master_plans/loja-integrada/loja-integrada-marketplace-integratio
 
 `GET` status (`PERM.integracao.read`); `PUT …/credencial` save, `PUT …/credencial/validade`
 renew the expiry date, `DELETE …/credencial` remove (all `PERM.integracao.write`); the four
-catalogue `GET`s (step 10, "The catalogue reads" below); and the product import's routes (step 9,
-"The product import" below). Every route exports its verb as `export async function
+catalogue `GET`s (step 10, "The catalogue reads" below); the product import's routes (step 9,
+"The product import" below); and `POST …/estoque/reconciliar` (step 12, "Stock routes"). Every route exports its verb as `export async function
 GET|POST|PUT|DELETE` (never a re-export: `cors-proxy-covers-routes.test.js` cannot read one), and
 every verb must be listed in the literal `Access-Control-Allow-Methods` in `proxy.ts`. The status and
 credential routes read the conta uncached and require only `tipo === 3`, so a parked or
@@ -1168,6 +1168,27 @@ the store's stock list (`li`), the sends (`fila`), the avisos (`fim`).
   and the pauses taken are the run document's per-conta counters (`c<idx>ListaCompleta`, …), which
   the take resets with the run.
 
+## Stock routes (step 12, PR 12-h)
+
+- `POST …/enviar-estoque` (the produtos table's push; `estoque/envioManualEstoqueLi.ts`) and
+  `POST …/conta/[id]/estoque/reconciliar` (one FULL run now; `reconcile/reconcileManualLi.ts`):
+  `PERM.integracao.write`, ENQUEUE-only (no LI call, no credential read, no write). A queued push
+  row is `enfileirado`, never "sent". Zero-read gates first: valve `off` ⇒ 503
+  `LI_ESTOQUE_DESLIGADO`; the push alone needs the read switch exactly `on`; tasks valve `1` ⇒ 503
+  `LI_TAREFAS_DESLIGADAS`; the region. Then the conta UNCACHED: 404, 409 inactive, 409
+  `LI_CONTA_SEM_DEPOSITO`.
+- Push: ONE masked `getAll` of the selection, roots expanded on `produtos (paiId,
+  integracoesComProduto, __name__)` (pinned), one link listing per target, classified by
+  `planoDosVinculosEstoqueLi`; > 30 children ⇒ 400 `LI_SELECAO_EXCEDE_LIMITE`, refused whole.
+  The bound is PER REQUEST: the web sends one request that can enqueue per conta and run. The
+  operator copy states only what this backend knows (the functions copy of a pair decides).
+  Reconcile: one lease read masked to 4 fields; a live lease ⇒ 409 with `execucaoId`; else
+  `estoque-reconcile-manual-<minute ms>` seq 0 ⇒ 202.
+- App Hosting producer root `lib/firebase/filasLi.ts`: `LOJA_INTEGRADA_TASKS_REGION` /
+  `_TASKS_DISABLED` are CONSOLE-only; it binds the stock and reads queues only (pinned). Walked as
+  `ROTAS_DE_ENFILEIRAMENTO_ESTOQUE_LI` (trigger rules + no credential module); `prazos.test.ts`
+  lists `ROTAS_DO_ESTOQUE`.
+
 ## Notification pipeline (step 3)
 
 - `notificacoes/notificacao.ts` binds the shared failures-only core to
@@ -1210,7 +1231,8 @@ the store's stock list (`li`), the sends (`fila`), the avisos (`fim`).
   failure (REST, STRING codes; `functions/*` only WITH an `httpResponse`) →
   `LiTarefasTransitoriasError`; anything else rethrown untouched. The payload goes ALONE (no
   task id, no `uri`). Each root reads the env and binds the queue (`functions/src/agendador.ts`;
-  App Hosting from step 4). Fake failures with `testing/falhaDeEnfileiramento.ts`.
+  App Hosting since PR 12-h, `lib/firebase/filasLi.ts`). Fake failures with
+  `testing/falhaDeEnfileiramento.ts`.
 - The functions roots bind every read run's deps in ONE place, `functions/src/depsLeitura.ts`
   (env whole, the importer from the seam table per run). `index.ts` exports only triggers:
   any other runtime export there reads as a Cloud Function name.

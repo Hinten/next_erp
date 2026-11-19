@@ -19,7 +19,11 @@
  *    of a read that gave no answer (the shared read-failure mapper's);
  *  - the product import routes' own (step 9): a malformed job id, a job that is
  *    not this conta's, a running import (with its `jobId`), a job already ended,
- *    and a cancel that kept losing its precondition.
+ *    and a cancel that kept losing its precondition;
+ *  - the stock routes' own (step 12, PR 12-h): the stock valve off, the Cloud
+ *    Tasks valve closed, a running reconcile (with its `execucaoId`), a conta with
+ *    no depósito, and a push over its children bound (with `limite` and
+ *    `encontrados`).
  *
  * ⚠️ The ONE module under `lib/lojaIntegrada/` that imports `next/server`, and
  * therefore the one module step 3's functions bundle must never reach. Nothing
@@ -38,6 +42,7 @@ import type { ValidacaoTokenLi } from '@delfrance/integrations-loja-integrada';
 import { CODIGO_ERRO_LI, type CodigoErroLi } from '@delfrance/schemas';
 
 import type { ValidadeRecusada } from '../conta/validade';
+import type { ContaDoEstoqueLi } from '../estoque/contaDoEstoqueLi';
 
 import type { FalhaDeLeituraLi } from './falhaDeLeituraLi';
 import {
@@ -126,6 +131,14 @@ export interface ExtrasDoEnvelopeLi {
   readonly correlationId?: string;
   /** The RUNNING product import, on `LI_IMPORTACAO_EM_ANDAMENTO` only. */
   readonly jobId?: string;
+  /** The RUNNING stock reconcile, on `LI_RECONCILE_EM_ANDAMENTO` only. */
+  readonly execucaoId?: string;
+  /**
+   * The manual push's bound and the children it FOUND before it stopped looking (a lower bound),
+   * on `LI_SELECAO_EXCEDE_LIMITE`.
+   */
+  readonly limite?: number;
+  readonly encontrados?: number;
 }
 
 /** One envelope. Every refusal below goes through here. */
@@ -143,6 +156,9 @@ export function respostaLi(
       ...(extras.status === undefined ? {} : { status: extras.status }),
       ...(extras.correlationId === undefined ? {} : { correlationId: extras.correlationId }),
       ...(extras.jobId === undefined ? {} : { jobId: extras.jobId }),
+      ...(extras.execucaoId === undefined ? {} : { execucaoId: extras.execucaoId }),
+      ...(extras.limite === undefined ? {} : { limite: extras.limite }),
+      ...(extras.encontrados === undefined ? {} : { encontrados: extras.encontrados }),
     },
     { status: httpStatus },
   );
@@ -368,6 +384,90 @@ export function respostaChamadasDesligadas(): NextResponse {
     CODIGO_ERRO_LI.chamadasDesligadas,
     'As chamadas à Loja Integrada estão desligadas neste backend (até a migração, ou ' +
       'por configuração). Nada foi enviado à Loja Integrada nem salvo.',
+  );
+}
+
+/**
+ * 503 `LI_ESTOQUE_DESLIGADO` — the stock valve (`LOJA_INTEGRADA_MODO_ESTOQUE`) is `off` on this
+ * backend (unset, blank or any value but the exact `dry-run`/`on`), so no send run or reconcile
+ * would run: the stock routes answer it before any read, with nothing enqueued (step 12).
+ */
+export function respostaEstoqueDesligado(): NextResponse {
+  return respostaLi(
+    503,
+    CODIGO_ERRO_LI.estoqueDesligado,
+    'O estoque da Loja Integrada está desligado neste backend (até a migração, ou por ' +
+      'configuração). Nada foi enfileirado.',
+  );
+}
+
+/**
+ * 503 `LI_TAREFAS_DESLIGADAS` — this backend's Cloud Tasks valve
+ * (`LOJA_INTEGRADA_TASKS_DISABLED=1`) is closed: the stock routes answer it before any read, with
+ * nothing enqueued (step 12).
+ */
+export function respostaTarefasDesligadas(): NextResponse {
+  return respostaLi(
+    503,
+    CODIGO_ERRO_LI.tarefasDesligadas,
+    'As filas da Loja Integrada estão desligadas neste backend. Nada foi enfileirado.',
+  );
+}
+
+/**
+ * 409 `LI_RECONCILE_EM_ANDAMENTO` — a stock reconcile run holds its lease; `execucaoId` names it.
+ * Nothing was enqueued: the running chain covers every conta (step 12).
+ */
+export function respostaReconcileEmAndamento(execucaoId: string): NextResponse {
+  return respostaLi(
+    409,
+    CODIGO_ERRO_LI.reconcileEmAndamento,
+    'Uma reconciliação de estoque já está em andamento (ela cobre todas as contas). Nada foi ' +
+      'enfileirado.',
+    { execucaoId },
+  );
+}
+
+/** 409 `LI_CONTA_SEM_DEPOSITO` — the conta names no depósito: no stock to send or reconcile. */
+export function respostaContaSemDeposito(): NextResponse {
+  return respostaLi(
+    409,
+    CODIGO_ERRO_LI.contaSemDeposito,
+    'A conta da Loja Integrada não tem depósito configurado. Nada foi enfileirado.',
+  );
+}
+
+/**
+ * The stock routes' conta refusals (`estoque/contaDoEstoqueLi.ts`): a conta missing or of another
+ * channel ⇒ 404 `LI_CONTA_NAO_ENCONTRADA`, inactive ⇒ 409 `LI_CONTA_INATIVA` (the app errors'
+ * own sentences), no depósito ⇒ 409 `LI_CONTA_SEM_DEPOSITO`. Nothing was enqueued.
+ */
+export function respostaDaContaDoEstoqueLi(
+  contaId: string,
+  recusa: Exclude<ContaDoEstoqueLi, { readonly tipo: 'ok' }>,
+): NextResponse {
+  switch (recusa.tipo) {
+    case 'nao-encontrada':
+      return respostaDeErroLi(new LiContaNaoEncontradaError(contaId));
+    case 'inativa':
+      return respostaDeErroLi(new LiContaInativaError(contaId));
+    case 'sem-deposito':
+      return respostaContaSemDeposito();
+  }
+}
+
+/**
+ * 400 `LI_SELECAO_EXCEDE_LIMITE` — the manual push would enqueue more children than `limite`;
+ * `encontrados` is how many it found before it stopped looking (a LOWER bound: the expansion stops
+ * at the round that passes the bound). Refused whole, never truncated: nothing was enqueued.
+ */
+export function respostaSelecaoExcedeLimite(limite: number, encontrados: number): NextResponse {
+  return respostaLi(
+    400,
+    CODIGO_ERRO_LI.selecaoExcedeLimite,
+    `Selecione no máximo ${String(limite)} variações vinculadas desta conta para enviar o ` +
+      `estoque (a seleção tem pelo menos ${String(encontrados)}). Nada foi enfileirado.`,
+    { limite, encontrados },
   );
 }
 

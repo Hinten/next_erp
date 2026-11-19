@@ -56,7 +56,10 @@ progress dialog or the produtos page, and the produto ML tab only for its one
    `apps/<canal>`, returning `{ listings[], produtosSemEnvio[], pausadoAte }` —
    the per-listing extras are the channel's own (Shopee's `variacoes` is a
    per-model ARRAY where Mercado Livre's is a count), and its provider maps
-   them. Each channel owns its envelope schema in `lib/<canal>/wire.ts`. Nothing
+   them. Each channel owns its envelope schema in `lib/<canal>/wire.ts` —
+   except Loja Integrada, whose request and answer live in `@delfrance/schemas`
+   (`estoqueManualLojaIntegrada.ts`), imported by the route AND the client, so
+   there is one definition, not two. Nothing
    in that envelope is Mercado-Livre-specific by design (`anuncioId`, not
    `itemId`).
 2. **`providers/<canal>.ts`** exporting a `StockPushProvider`:
@@ -105,3 +108,24 @@ rule 8).
 for **every** tipo. If a channel legitimately lands in the middle — backend
 shipped, this screen not wired yet — say so there with a named exception; do not
 delete the assertion.
+
+## Loja Integrada (master plan step 12)
+
+`providers/lojaIntegrada.ts` has its `PROVIDERS` row ahead of the channel's caps
+flip (step 22), so it is **unreachable** until then: the caps answer
+`canal-nao-implementado` first, and `registriesAlinhadas.test.ts` pins that one
+(action, tipo) pair as its named exception. Three things differ from the other
+two channels:
+
+- **It queues, it does not send.** A queued child is `enfileirado`, never
+  `enviado`; the channel's send run decides later.
+- **Its rows are CHILDREN**, not family anchors — each child is its own listing
+  there — keyed by the store product id.
+- **No `reenviarComErro`** (no refusal latch on that channel), and the selection
+  is sliced to the route's body cap (`MAX_PRODUTOS_ENVIO_ESTOQUE_LI`), one
+  request after the other — but at most ONE slice per run may queue anything:
+  the backend's children bound is per request, so once a slice may have queued,
+  every later id is `nao-tentado` (`um-lote-por-envio`), its sentence saying
+  whether that slice DID queue or only may have. An id an earlier slice already
+  answered (a child its selected parent reached) is neither sent again nor
+  marked: it keeps its one row.

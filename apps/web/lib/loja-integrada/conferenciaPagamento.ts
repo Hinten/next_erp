@@ -288,6 +288,11 @@ export const ACAO_HARD_DO_CODIGO_LI = {
   [E.importacaoNaoEncontrada]: 'confirmar-transitorio',
   [E.importacaoEncerrada]: 'confirmar-transitorio',
   [E.importacaoEmConflito]: 'confirmar-transitorio',
+  [E.estoqueDesligado]: 'confirmar-transitorio',
+  [E.tarefasDesligadas]: 'confirmar-transitorio',
+  [E.reconcileEmAndamento]: 'confirmar-transitorio',
+  [E.contaSemDeposito]: 'confirmar-transitorio',
+  [E.selecaoExcedeLimite]: 'confirmar-transitorio',
 } as const satisfies Record<CodigoErroLi, AcaoHardDoCodigoLi>;
 
 /**
@@ -327,6 +332,11 @@ export const ACAO_IMPRESSAO_DO_CODIGO_LI = {
   [E.importacaoNaoEncontrada]: 'confirmar-transitorio',
   [E.importacaoEncerrada]: 'confirmar-transitorio',
   [E.importacaoEmConflito]: 'confirmar-transitorio',
+  [E.estoqueDesligado]: 'confirmar-transitorio',
+  [E.tarefasDesligadas]: 'confirmar-transitorio',
+  [E.reconcileEmAndamento]: 'confirmar-transitorio',
+  [E.contaSemDeposito]: 'confirmar-transitorio',
+  [E.selecaoExcedeLimite]: 'confirmar-transitorio',
 } as const satisfies Record<CodigoErroLi, AcaoImpressaoDoCodigoLi>;
 
 /**
@@ -366,6 +376,11 @@ const LINHA_DO_CODIGO_LI: Readonly<Record<CodigoErroLi, string>> = {
   [E.importacaoNaoEncontrada]: 'resposta inesperada do backend',
   [E.importacaoEncerrada]: 'resposta inesperada do backend',
   [E.importacaoEmConflito]: 'resposta inesperada do backend',
+  [E.estoqueDesligado]: 'resposta inesperada do backend',
+  [E.tarefasDesligadas]: 'resposta inesperada do backend',
+  [E.reconcileEmAndamento]: 'resposta inesperada do backend',
+  [E.contaSemDeposito]: 'resposta inesperada do backend',
+  [E.selecaoExcedeLimite]: 'resposta inesperada do backend',
 };
 
 /** The `<causa>` of every non-code failure, by its class. */

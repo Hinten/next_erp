@@ -73,8 +73,17 @@ parent link only.
 
 The dialog's only per-operation knob is `rotuloSucesso` — the wording of the
 `enviado` outcome ("Enviado" / "Pausado"). The outcome VOCABULARY itself stays
-fixed: every channel backend answers in the same four `PushOutcome` values and
+fixed: every channel backend answers in the same five `PushOutcome` values and
 the badge colours mean the same thing whatever the operation.
+
+⚠️ **`enfileirado` is the fifth, and it is not a success wording.** A backend
+that only QUEUES the work answers it — Loja Integrada's stock push (master plan
+step 12): the route sent nothing, and the channel's queue decides minutes later,
+from fresh reads, whether anything is written. It gets its own badge
+("Enfileirado", blue) and its own count in the summary, which appears only when
+it is above zero, so a run without queued rows keeps the exact
+`Enviados N · Pulados N · Falhas N` line the e2e specs pin. `rotuloSucesso`
+never renames it.
 
 `resolve*PushProvider` falls back on its own — any tipo without an exact provider
 goes to that operation's `unsupportedChannel`, which claims **no** tipos

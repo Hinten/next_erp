@@ -28,6 +28,7 @@ function input(
     deps: {
       mercadoLivre: null,
       shopee: enviarPrecos === null ? null : shopeeClientFalso({ enviarPrecos }),
+      lojaIntegrada: null,
     },
     ...over,
   };

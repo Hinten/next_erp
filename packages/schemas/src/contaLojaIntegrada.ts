@@ -120,7 +120,9 @@ export function situacaoValidadeTokenLi(dias: number): SituacaoValidadeTokenLi {
  * `GET …/conta/[id]/grades/[gradeId]`, step 10), and the pedidos routes
  * (`PUT …/pedidos/[pedidoId]/rota-etiqueta`, the label routing, and
  * `GET …/pedidos/[pedidoId]/pagamento`, the paid re-check), and the product
- * import routes (`…/conta/[id]/importacoes…`, step 9). The web keys its
+ * import routes (`…/conta/[id]/importacoes…`, step 9), and the stock routes
+ * (`POST …/enviar-estoque` and `POST …/conta/[id]/estoque/reconciliar`, step
+ * 12). The web keys its
  * copy and its decisions on `code`, never on the status alone: a 422 can mean
  * "refused by Loja Integrada" or "malformed, never sent", and a 503 can mean
  * "retry" or "switched off until the cutover" — each needs its own advice.
@@ -230,6 +232,29 @@ export const CODIGO_ERRO_LI = {
    * retry re-decides from a fresh read. Only the import's cancel route answers it.
    */
   importacaoEmConflito: 'LI_IMPORTACAO_EM_CONFLITO',
+  /**
+   * 503 — the stock valve (`LOJA_INTEGRADA_MODO_ESTOQUE`) is `off` on this backend, so no stock
+   * send or reconcile would run: the stock routes (step 12) enqueue nothing. Like the read switch,
+   * the state of every environment until the cutover; retrying does not help.
+   */
+  estoqueDesligado: 'LI_ESTOQUE_DESLIGADO',
+  /**
+   * 503 — the backend's Cloud Tasks valve (`LOJA_INTEGRADA_TASKS_DISABLED=1`) is closed: the stock
+   * routes enqueue nothing. A deployment decision; retrying does not help.
+   */
+  tarefasDesligadas: 'LI_TAREFAS_DESLIGADAS',
+  /**
+   * 409 — a stock reconcile run holds its lease; the envelope's `execucaoId` names it. Nothing was
+   * enqueued: the running chain covers every conta.
+   */
+  reconcileEmAndamento: 'LI_RECONCILE_EM_ANDAMENTO',
+  /** 409 — the conta names no depósito, so no stock can be sent or reconciled for it. */
+  contaSemDeposito: 'LI_CONTA_SEM_DEPOSITO',
+  /**
+   * 400 — the manual stock push would enqueue more children than one request may (the envelope's
+   * `limite` and `encontrados`). Refused whole, never truncated; nothing was enqueued.
+   */
+  selecaoExcedeLimite: 'LI_SELECAO_EXCEDE_LIMITE',
 } as const;
 export type CodigoErroLi = (typeof CODIGO_ERRO_LI)[keyof typeof CODIGO_ERRO_LI];
 
@@ -348,7 +373,12 @@ export type RespostaRemocaoCredencialLi = z.infer<typeof respostaRemocaoCredenci
  *   inconclusive validation (`null` when there was none);
  * - `correlationId` — the validation call's id, to find it in the logs;
  * - `jobId` — the RUNNING product import, on `LI_IMPORTACAO_EM_ANDAMENTO`
- *   only, so the web attaches to it instead of starting another.
+ *   only, so the web attaches to it instead of starting another;
+ * - `execucaoId` — the RUNNING stock reconcile, on `LI_RECONCILE_EM_ANDAMENTO`
+ *   only (step 12);
+ * - `limite` and `encontrados` — the manual stock push's cap and the children
+ *   it found before it stopped looking (a LOWER bound), on
+ *   `LI_SELECAO_EXCEDE_LIMITE` only (step 12).
  *
  * `code` is a plain string rather than {@link CODIGO_ERRO_LI}'s union: a code a
  * newer backend adds must still parse in an older browser.
@@ -362,5 +392,8 @@ export const erroContaLojaIntegradaSchema = z.object({
   status: z.number().int().nullable().optional(),
   correlationId: z.string().nullable().optional(),
   jobId: z.string().nullable().optional(),
+  execucaoId: z.string().nullable().optional(),
+  limite: z.number().int().nullable().optional(),
+  encontrados: z.number().int().nullable().optional(),
 });
 export type ErroContaLojaIntegrada = z.infer<typeof erroContaLojaIntegradaSchema>;

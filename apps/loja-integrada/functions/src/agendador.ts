@@ -11,7 +11,11 @@ import {
   type AgendadorImportacaoLi,
   criarAgendadorImportacaoLi,
 } from '../../lib/lojaIntegrada/importacao/agendadorImportacao';
-import { type AgendadorLi, criarAgendadorLi } from '../../lib/lojaIntegrada/notificacoes/agendador';
+import {
+  type AgendadorLi,
+  criarAgendadorLi,
+  valvulaDeTarefasLiFechada,
+} from '../../lib/lojaIntegrada/notificacoes/agendador';
 import {
   FILA_LEITURA_LI,
   type PayloadNotificacaoLi,
@@ -30,8 +34,11 @@ import { getAdminApp } from './lib/admin';
  * import's task names are the pure modules'
  * (`lib/lojaIntegrada/notificacoes/agendador.ts`,
  * `lib/lojaIntegrada/importacao/agendadorImportacao.ts`); this file only reads
- * the environment and binds the Admin SDK's task queue. Step 4 adds an App
- * Hosting root of its own beside the inbound webhook.
+ * the environment and binds the Admin SDK's task queue. Since step 12 (PR
+ * 12-h) App Hosting has a root of its own, `lib/firebase/filasLi.ts` (the
+ * operator's stock routes), reading the same two variables on that surface
+ * through the same `requireRegion` and {@link valvulaDeTarefasLiFechada}; step
+ * 4's inbound webhook will enqueue through it too.
  */
 
 /**
@@ -59,10 +66,12 @@ export function regiaoDaFilaLi(): string {
 
 /**
  * The sweep-only valve: EXACTLY `'1'` closes it. Unset, blank, `'true'`, `'1 '`
- * and `' 1'` all leave enqueuing on — never trim or case-fold a valve.
+ * and `' 1'` all leave enqueuing on — never trim or case-fold a valve. The rule
+ * is the pure module's ONE copy ({@link valvulaDeTarefasLiFechada}); this root
+ * only reads the variable.
  */
 export function tarefasLiDesligadas(): boolean {
-  return process.env.LOJA_INTEGRADA_TASKS_DISABLED === '1';
+  return valvulaDeTarefasLiFechada(process.env.LOJA_INTEGRADA_TASKS_DISABLED);
 }
 
 /**
