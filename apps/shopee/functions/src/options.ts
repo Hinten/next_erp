@@ -24,7 +24,14 @@ if (!region) {
 // success (#887, #1108). Blank must count as unset.
 process.env.SHOPEE_TASKS_REGION = (process.env.SHOPEE_TASKS_REGION?.trim() || undefined) ?? region;
 
+// ⚠️ `memory: '512MiB'` is a STOP-GAP (Lucas, 2026-11-19). On staging, triggers
+// that do almost nothing (`onIntegracaoShopeeChanged`, `onProdutoShopeeLinkChanged`)
+// and schedules (`reprocessShopeeNotifications`, `sweepShopeeLostPushes`) died with
+// "Memory limit of 256 MiB exceeded with 257 MiB used": the codebase is ONE bundle,
+// so every function pays the whole startup footprint. #2194 measures it and brings
+// the default back down; a per-function `memory` still overrides this one.
 setGlobalOptions({
   region,
   maxInstances: 10,
+  memory: '512MiB',
 });

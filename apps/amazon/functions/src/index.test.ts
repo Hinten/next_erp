@@ -1181,13 +1181,14 @@ describe('processAmazonListingsJob — the declared options (step 12a, PR 12-c)'
     expect(piorCasoMs).toBe(160_000);
   });
 
-  it('★ the memory pin: 1 GiB, the FIRST in this codebase — every other function keeps the default', () => {
+  it('★ the memory pin: 1 GiB, the FIRST per-function value in this codebase — every other function takes the codebase default, 512 MiB (#2194)', () => {
     expect(endpointOf(processAmazonListingsJob).availableMemoryMb).toBe(1024);
     expect(fonte).toContain("memory: '1GiB',");
     for (const [nome, fn] of Object.entries({ ...AGENDAMENTOS, ...FILAS, ...GATILHOS })) {
       if (nome === 'processAmazonListingsJob') continue;
-      // The SDK records an unset option as its reset marker, never a number.
-      expect(typeof endpointOf(fn).availableMemoryMb, nome).not.toBe('number');
+      // `options.ts`'s `setGlobalOptions({ memory: '512MiB' })` — the stop-gap #2194
+      // measures and brings back down. A per-function value here would be a new pin.
+      expect(endpointOf(fn).availableMemoryMb, nome).toBe(512);
     }
   });
 

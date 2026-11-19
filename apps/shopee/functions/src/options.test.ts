@@ -57,6 +57,21 @@ describe('options.ts — o guarda de região em branco', () => {
     expect(process.env.SHOPEE_TASKS_REGION).toBe('us-east4');
   });
 
+  it('registra as opções globais: a região embutida, o teto de instâncias e o stop-gap de 512 MiB (#2194)', async () => {
+    process.env.FUNCTIONS_REGION = 'us-central1';
+    const { setGlobalOptions } = await import('firebase-functions/v2');
+    // The mock outlives `vi.resetModules()`: the earlier cases' imports called it too.
+    vi.mocked(setGlobalOptions).mockClear();
+
+    await import('./options');
+
+    expect(setGlobalOptions).toHaveBeenCalledExactlyOnceWith({
+      region: 'us-central1',
+      maxInstances: 10,
+      memory: '512MiB',
+    });
+  });
+
   it('recusa a build sem FUNCTIONS_REGION embutida — sem default', async () => {
     delete process.env.FUNCTIONS_REGION;
 
