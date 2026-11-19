@@ -32,7 +32,7 @@ import {
   tarefaEstoqueLiSchema,
 } from '@delfrance/schemas';
 
-import { __setRelogioDoCacheParaTestes } from '../core/contaCache';
+import { __setRelogioDoCacheParaTestes, lerContaEmCache } from '../core/contaCache';
 import { docCredencial } from '../core/credentialStore';
 import { PRAZO_ULTIMA_ESCRITA_MS, PrazoDeEscritaEsgotadoLiError } from '../core/escrita';
 import { LiCredencialTrocadaError } from '../core/erros';
@@ -519,6 +519,64 @@ describe('every skip costs ZERO credential reads and ZERO store calls', () => {
 /*                          The own record and the hint                        */
 /* -------------------------------------------------------------------------- */
 
+describe('a reconcile send carries its run’s depósito (PR 12-g)', () => {
+  const doReconcile = (depositoId: string) =>
+    tarefa({ origem: ORIGEM_TAREFA_ESTOQUE_LI.reconcile, depositoId });
+  const leiturasDaConta = (c: Cenario) =>
+    c.db.leituras.filter((l) => l === `integracao/${CONTA}`).length;
+  const contaEm = (depositoOuterRef: string) => ({
+    tipo: INTEGRACAO_TIPO.lojaIntegrada,
+    nome: 'Loja E',
+    ativo: true,
+    depositoOuterRef,
+  });
+
+  it('⚠️ the conta names ANOTHER depósito now ⇒ dropped (deposito-mudou, ONE WARNING) before the produto is read: zero credential reads, zero store calls', async () => {
+    const c = cenario({ conta: contaEm(OUTRO_DEP) });
+    expect(await c.rodar(doReconcile(DEP))).toEqual({ kind: 'pulado', motivo: 'deposito-mudou' });
+    expect(c.motivosAviso()).toEqual(['deposito-mudou']);
+    // The conta read twice (the second past the cache), nothing else.
+    expect(c.custo()).toEqual(custoDeSkip(2));
+  });
+
+  it('⚠️ NEAR-MISS: the SAME depósito in the other stored form is the run’s depósito — sent, ONE conta read, no second', async () => {
+    const c = cenario({ conta: contaEm(NUA) });
+    expect(await c.rodar(doReconcile(DEP))).toEqual({ kind: 'escrito-lote' });
+    expect(leiturasDaConta(c)).toBe(1);
+  });
+
+  it('⚠️ a CACHED copy of the conta from before a re-point: the send of the NEW depósito evicts it and reads the conta once more — computed at the new depósito, never the cached one', async () => {
+    const c = cenario();
+    await lerContaEmCache(asDb(c.db), CONTA);
+    c.db.seed(`integracao/${CONTA}`, contaEm(OUTRO_DEP));
+    expect(await c.rodar(doReconcile('dep-2'))).toEqual({ kind: 'escrito-lote' });
+    expect(leiturasDaConta(c)).toBe(2);
+    // dep-2 holds no record of the produto, the old depósito does: the real 0 is sent.
+    expect(c.p.puts()).toHaveLength(1);
+    expect(c.p.puts()[0]?.corpo).toMatchObject({ quantidade: 0 });
+  });
+
+  it('⚠️ NEAR-MISS: another origin carries no depósito and pays no check — the cached copy serves it', async () => {
+    const c = cenario();
+    await lerContaEmCache(asDb(c.db), CONTA);
+    c.db.seed(`integracao/${CONTA}`, contaEm(OUTRO_DEP));
+    expect((await c.rodar(tarefa())).kind).toBe('escrito');
+    expect(leiturasDaConta(c)).toBe(1);
+  });
+
+  it('the payload refuses a depósito on any origin but reconcile, and a reconcile send without one', async () => {
+    const c = cenario();
+    expect(await c.rodar({ ...tarefa(), depositoId: DEP })).toEqual({ kind: 'payload-invalido' });
+    expect(
+      await c.rodar({
+        ...tarefa({ origem: ORIGEM_TAREFA_ESTOQUE_LI.reconcile }),
+        depositoId: null,
+      }),
+    ).toEqual({ kind: 'payload-invalido' });
+    expect(c.custo()).toEqual(SEM_CUSTO);
+  });
+});
+
 describe('the own record: the hint, the canonical record, the never-had-stock hold', () => {
   it('the canonical hint at the depósito ⇒ one point read and NO estoques query', async () => {
     const c = cenario();
@@ -737,7 +795,9 @@ describe('the origin decides the write kind, and whether there is a read-back ca
     '%s ⇒ estoque-produto-lote: GET and PUT, NO read-back call (7 / 3 / 2)',
     async (origem) => {
       const c = cenario();
-      expect(await c.rodar(tarefa({ origem }))).toEqual({ kind: 'escrito-lote' });
+      // A reconcile send carries its run's depósito (the conta's, here: no extra read).
+      const depositoId = origem === ORIGEM_TAREFA_ESTOQUE_LI.reconcile ? DEP : null;
+      expect(await c.rodar(tarefa({ origem, depositoId }))).toEqual({ kind: 'escrito-lote' });
       expect(c.p.chamadas()).toEqual([GET, PUT]);
       expect(c.custo()).toEqual({
         erp: 7,
@@ -1051,7 +1111,9 @@ describe('the refusal aviso is resolved only when OPEN, under `on`', () => {
     const c = cenario('linha' in o ? { linha: o.linha } : {});
     abrir(c, (AGORA_MS - 3_600_000) * 1000);
     await c.rodar(
-      'origem' in o ? tarefa({ origem: ORIGEM_TAREFA_ESTOQUE_LI.reconcile }) : tarefa(),
+      'origem' in o
+        ? tarefa({ origem: ORIGEM_TAREFA_ESTOQUE_LI.reconcile, depositoId: DEP })
+        : tarefa(),
     );
     expect(c.db.ler(AVISO_RECUSADO)).toMatchObject({
       resolucaoMotivo: 'estoque-enviado',
@@ -1444,7 +1506,12 @@ describe('the worst case of one run, measured (the stock queue sizes its timeout
         tarefa(),
       ],
       ['dry-run', { modo: MODO_LI.dryRun }, () => undefined, tarefa()],
-      ['lote', {}, () => undefined, tarefa({ origem: ORIGEM_TAREFA_ESTOQUE_LI.reconcile })],
+      [
+        'lote',
+        {},
+        () => undefined,
+        tarefa({ origem: ORIGEM_TAREFA_ESTOQUE_LI.reconcile, depositoId: DEP }),
+      ],
       [
         'corrida',
         { linha: { quantidade: 8, quantidade_reservada: 4 } },

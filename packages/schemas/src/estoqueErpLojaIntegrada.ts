@@ -165,6 +165,42 @@ export type VinculoDaContaLi =
   /** Exactly one store product of the conta, linked as a child. */
   | { readonly tipo: 'vinculado'; readonly idLi: string };
 
+/** The conta's COUNTING links among a produto's own (`contaDoLinkLi` + `vinculoLiConta`). */
+function vinculosQueContamLi(
+  contaId: string,
+  links: readonly unknown[],
+): Readonly<Record<string, unknown>>[] {
+  return links
+    .filter(ehObjeto)
+    .filter((link) => contaDoLinkLi(link) === contaId && vinculoLiConta(link));
+}
+
+/** The distinct store ids of counting links, as canonical decimal text, sorted. */
+function idsDosVinculosQueContamLi(
+  daConta: readonly Readonly<Record<string, unknown>>[],
+): string[] {
+  const ids = new Set<string>();
+  for (const link of daConta) {
+    const id = inteiroPositivoCanonicoLi(proprio(link, 'id'));
+    if (id !== null) ids.add(id);
+  }
+  return [...ids].sort();
+}
+
+/**
+ * The store ids the conta's COUNTING links on one produto name — roots and children alike — as
+ * canonical decimal text, deduplicated and sorted: the ids {@link vinculoDaContaLi} decides over,
+ * through the SAME two steps (one copy of the rule). The daily reconcile keys its snapshot entries
+ * of a produto it does not send (`pai`, `nao-suportado`, `vinculo-ambiguo`, which carry no id)
+ * by them.
+ *
+ * Equal: `123` and `'123'` on two links ⇒ `['123']`. Distinct: two ids ⇒ both; another conta's
+ * link, one in the trash and `'0123'` ⇒ none.
+ */
+export function idsDosVinculosDaContaLi(contaId: string, links: readonly unknown[]): string[] {
+  return idsDosVinculosQueContamLi(vinculosQueContamLi(contaId, links));
+}
+
 /**
  * The first three steps of the stock run's plan for one (conta, produto), from the produto's OWN
  * `produtolojaintegrada` documents (raw, every conta's) alone, in this order:
@@ -182,17 +218,11 @@ export type VinculoDaContaLi =
  * a link in the trash or with `id: '0123'` ⇒ not counted at all.
  */
 export function vinculoDaContaLi(contaId: string, links: readonly unknown[]): VinculoDaContaLi {
-  const daConta = links
-    .filter(ehObjeto)
-    .filter((link) => contaDoLinkLi(link) === contaId && vinculoLiConta(link));
+  const daConta = vinculosQueContamLi(contaId, links);
   if (daConta.length === 0) return { tipo: 'sem-vinculo' };
 
-  const ids = new Set<string>();
-  for (const link of daConta) {
-    const id = inteiroPositivoCanonicoLi(proprio(link, 'id'));
-    if (id !== null) ids.add(id);
-  }
-  if (ids.size > 1) return { tipo: 'vinculo-ambiguo' };
+  const ids = idsDosVinculosQueContamLi(daConta);
+  if (ids.length > 1) return { tipo: 'vinculo-ambiguo' };
   const [idLi] = ids;
   // Unreachable: `vinculoLiConta` counts a link only when the same reader reads its id.
   if (idLi === undefined) return { tipo: 'sem-vinculo' };

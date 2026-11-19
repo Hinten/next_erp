@@ -57,6 +57,14 @@ vi.mock('../../lib/lojaIntegrada/notificacoes/notificacao', async (importOrigina
   };
 });
 
+vi.mock('../../lib/lojaIntegrada/estoque/reconcile/despachoReconcile', async (importOriginal) => {
+  const real =
+    await importOriginal<
+      typeof import('../../lib/lojaIntegrada/estoque/reconcile/despachoReconcile')
+    >();
+  return { ...real, despacharReconcileEstoqueLi: vi.fn(real.despacharReconcileEstoqueLi) };
+});
+
 vi.mock('../../lib/lojaIntegrada/importacao/despacho', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../lib/lojaIntegrada/importacao/despacho')>();
   return { ...real, despacharImportacaoLi: vi.fn(real.despacharImportacaoLi) };
@@ -65,7 +73,9 @@ vi.mock('../../lib/lojaIntegrada/importacao/despacho', async (importOriginal) =>
 const { DETALHE_TIPO_DESCONHECIDO_LI, filaLeituraLojaIntegrada } = await import('./filaLeitura');
 const notificacao = await import('../../lib/lojaIntegrada/notificacoes/notificacao');
 const despacho = await import('../../lib/lojaIntegrada/importacao/despacho');
-const { criarAgendadorImportacaoLiDoAmbiente } = await import('./agendador');
+const { criarAgendadorImportacaoLiDoAmbiente, criarAgendadorReconcileEstoqueLiDoAmbiente } =
+  await import('./agendador');
+const reconcile = await import('../../lib/lojaIntegrada/estoque/reconcile/despachoReconcile');
 
 afterAll(() => {
   if (originalFunctionsRegion === undefined) delete process.env.FUNCTIONS_REGION;
@@ -403,6 +413,56 @@ describe('an `importacao` task (master plan step 9)', () => {
       detail: null,
       tipo: 'importacao',
       jobId: 'id/com/barras',
+    });
+  });
+});
+
+describe('an `estoque-reconcile` task (master plan step 12, PR 12-g)', () => {
+  const fatia = { tipo: 'estoque-reconcile', execucaoId: 'estoque-reconcile-20270115', seq: 0 };
+
+  it('runs ONE reconcile slice — never the notification pipeline, never the import: with the stock valve off it reads nothing', async () => {
+    await rodar({ data: fatia, retryCount: 0, id: 'tarefa-r' });
+
+    expect(notificacao.tratarTarefaLeituraLi).not.toHaveBeenCalled();
+    expect(despacho.despacharImportacaoLi).not.toHaveBeenCalled();
+    expect(reconcile.despacharReconcileEstoqueLi).toHaveBeenCalledTimes(1);
+    expect(fake.leituras).toEqual([]);
+    expect(fake.escritas).toEqual([]);
+    expect(linhaUnica()).toEqual({
+      fila: 'filaLeituraLojaIntegrada',
+      tipo: 'estoque-reconcile',
+      execucaoId: 'estoque-reconcile-20270115',
+      seq: 0,
+      kind: 'desligado',
+      fase: null,
+      tentativa: 0,
+    });
+  });
+
+  it('hands the slice the attempt, the live environment, a start stamp taken FIRST, a real clock and the producer root', async () => {
+    const antes = Date.now();
+    await rodar({ data: fatia, retryCount: 2, id: 'tarefa-r2' });
+
+    const chamada = vi.mocked(reconcile.despacharReconcileEstoqueLi).mock.calls[0];
+    const [db, dados, deps] = chamada ?? [];
+    expect(db).toBe(h.db);
+    expect(dados).toEqual(fatia);
+    expect(deps?.tentativa).toBe(2);
+    expect(deps?.ambiente).toBe(process.env);
+    expect(deps?.logger).toBe(logger);
+    expect(deps?.agendador).toBe(criarAgendadorReconcileEstoqueLiDoAmbiente);
+    expect(deps?.inicioMs).toBeGreaterThanOrEqual(antes);
+    expect(deps?.inicioMs).toBeLessThanOrEqual(deps?.agoraMs() ?? 0);
+    expect(deps?.tamanhoPaginaCaminhada).toBeUndefined();
+  });
+
+  it('⚠️ NEAR-MISS: a payload of the reconcile’s tipo that does not parse is dropped by the slice — never by the pipeline', async () => {
+    await rodar({ data: { ...fatia, execucaoId: 'a b' }, retryCount: 0 });
+    expect(notificacao.tratarTarefaLeituraLi).not.toHaveBeenCalled();
+    expect(linhaUnica()).toMatchObject({
+      tipo: 'estoque-reconcile',
+      kind: 'payload-invalido',
+      execucaoId: 'a b',
     });
   });
 });

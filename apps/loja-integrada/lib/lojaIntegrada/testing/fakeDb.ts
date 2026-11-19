@@ -36,7 +36,8 @@
  *    and its log entry carries `sobrescrita: true`;
  *  - every write resolves `{ writeTime }`;
  *  - a LOST REPLY ({@link FakeDb.respostaPerdidaNaProximaEscrita}, step 9): the next guarded
- *    `update` on a path LANDS and then rejects gRPC 9 — what the Admin SDK reports when a commit
+ *    `update` on a path — alone, or inside a batch, whose WHOLE commit then lands (step 12) —
+ *    LANDS and then rejects gRPC 9 — what the Admin SDK reports when a commit
  *    landed, its reply was lost (UNAVAILABLE), and the SDK's own retry of the same commit met the
  *    stamp of its own write. The caller sees a lost precondition for a write that is stored. Given
  *    an error, it rejects with THAT one instead: a commit that landed while the call surfaced a
@@ -100,11 +101,14 @@
  *
  * ## The batch — all or nothing, each write under its own precondition
  *
- * `batch()` returns `{ create, update, commit }` (`set` and `delete` throw):
+ * `batch()` returns `{ create, update, set, delete, commit }` (step 12: the stock reconcile writes
+ * the kits map whole and sweeps it inside batches that carry the run document's precondition):
  *
  *  - `create(ref, data)` and `update(ref, patch, { lastUpdateTime }?)` validate
  *    their payload when CALLED, as the SDK does (the same refusals as the
- *    single-document writes), and queue the write. Two writes on one path in
+ *    single-document writes), and queue the write; so does `set(ref, data)` — with NO
+ *    options only, the whole-document overwrite (the `create` refusals) — and
+ *    `delete(ref)`, with no precondition only. Two writes on one path in
  *    one batch, a write after `commit` and an EMPTY commit throw: none is
  *    modelled;
  *  - `commit()` first runs, in queue order, each path's injected failure and
@@ -113,7 +117,8 @@
  *    `create` on an existing doc rejects gRPC 6, an `update` under
  *    `lastUpdateTime` on a stale OR missing doc rejects 9 (the stamp replaces
  *    the `exists` check, as for a single update), a plain `update` on a missing
- *    doc rejects 5. The FIRST failure rejects the commit and NOTHING is applied;
+ *    doc rejects 5; a `set` and a `delete` meet no check. The FIRST failure rejects the commit and
+ *    NOTHING is applied;
  *  - otherwise every write applies under ONE commit stamp (a commit's writes
  *    share its time), each logged with the batch's number in `lote`.
  *
@@ -141,11 +146,15 @@
  *    production. A snapshot missing an `orderBy` field, and an `orderBy` after
  *    a cursor, throw, as the SDK does.
  *  - **`orderBy(FieldPath.documentId())` orders by the document KEY** (the id in
- *    a collection, the full path in a group), never filters for existence, and
- *    a query ordered by it alone takes `startAfter('<id>')`: a plain id, seeking
- *    past it whether or not a document of that id exists. A value with a `/`,
- *    an empty one, or a value cursor on any other ordering throws, as the SDK
- *    does for the first two.
+ *    a collection, the full path in a group — compared SEGMENT BY SEGMENT, as the
+ *    server does, never as raw text: `produtos/p/…` before `produtos/p-1/…`), never
+ *    filters for existence, and a query ordered by it alone takes
+ *    `startAfter('<id>')`: a plain id on a collection, a FULL document path on a
+ *    group (step 12, the stock reconcile's key walk), seeking past it whether or
+ *    not a document there exists. On a collection a value with a `/` or an empty
+ *    one throws, on a group anything but an even, non-empty-segment path, and a
+ *    value cursor on any other ordering throws, as the SDK does; a SNAPSHOT
+ *    cursor on a group query throws too (it would seek by its leaf id).
  *
  * ## Read times
  *
@@ -424,9 +433,21 @@ function compararValores(a: unknown, b: unknown, campo: string): number {
   return (a as boolean | number | string) < (b as boolean | number | string) ? -1 : 1;
 }
 
-/** Two document keys, in key order. */
+/**
+ * Two document keys, in KEY order: segment by segment, as the server orders a key (a collection
+ * query's keys are single ids, so this is a plain comparison there). A group query's keys are full
+ * paths, and a raw text comparison would put `produtos/p-1/…` before `produtos/p/…` (`-` sorts
+ * before `/`), while the server compares `p` with `p-1` first and puts `p` before it (step 12).
+ */
 function compararIds(a: string, b: string): number {
-  return a < b ? -1 : a > b ? 1 : 0;
+  const sa = a.split('/');
+  const sb = b.split('/');
+  for (let i = 0; i < Math.min(sa.length, sb.length); i += 1) {
+    const x = sa[i] ?? '';
+    const y = sb[i] ?? '';
+    if (x !== y) return x < y ? -1 : 1;
+  }
+  return sa.length - sb.length;
 }
 
 /** A row as the ordering sees it: an id and the values of its fields. */
@@ -451,10 +472,20 @@ function compararPosicoes(a: Posicao, b: Posicao, ordens: readonly Ordem[]): num
   return (ordens.at(-1)?.direcao ?? 'asc') === 'desc' ? -c : c;
 }
 
-/** A `startAfter` cursor: the snapshot's id and values, frozen when it was given. */
+/**
+ * A `startAfter` cursor: the snapshot's id and values, frozen when it was given. `caminho`: a
+ * value cursor holding a FULL document path, on a group query ordered by the key alone (step 12).
+ */
 interface Cursor {
   readonly id: string;
   readonly data: DocData;
+  readonly caminho?: true;
+}
+
+/** A full document path: an even number of non-empty segments, no leading or trailing slash. */
+function ehCaminhoDeDocumento(v: string): boolean {
+  const segmentos = v.split('/');
+  return segmentos.length >= 2 && segmentos.length % 2 === 0 && segmentos.every((x) => x !== '');
 }
 
 /** Everything a query carries. Never mutated: each builder call copies it. */
@@ -535,7 +566,11 @@ type EscritaDoLote =
       readonly caminho: string;
       readonly dados: DocData;
       readonly precondicao: PrecondicaoFake | undefined;
-    };
+    }
+  /** `set(ref, data)` with NO options: the whole document replaced, created when absent. */
+  | { readonly verbo: 'set'; readonly caminho: string; readonly dados: DocData }
+  /** `delete(ref)` with no precondition: idempotent, like the single-document one. */
+  | { readonly verbo: 'delete'; readonly caminho: string };
 
 /** A document ref's path, as the batch reads it off the ref it is handed. */
 function caminhoDoRef(ref: unknown): string {
@@ -971,11 +1006,23 @@ export class FakeDb {
         enfileirar({ verbo: 'update', caminho, dados: patch, precondicao });
         return lote;
       },
-      set: () => {
-        throw new Error('FakeDb: set() num lote não é modelado');
+      set: (ref: unknown, data: DocData, opcoes?: unknown) => {
+        if (opcoes !== undefined) {
+          throw new Error(
+            'FakeDb: set() num lote só é modelado sem opções (a sobrescrita inteira)',
+          );
+        }
+        const caminho = caminhoDoRef(ref);
+        validarCriacao(caminho, data);
+        enfileirar({ verbo: 'set', caminho, dados: structuredClone(data) });
+        return lote;
       },
-      delete: () => {
-        throw new Error('FakeDb: delete() num lote não é modelado');
+      delete: (ref: unknown, precondicao?: unknown) => {
+        if (precondicao !== undefined) {
+          throw new Error('FakeDb: delete() com precondição num lote não é modelado');
+        }
+        enfileirar({ verbo: 'delete', caminho: caminhoDoRef(ref) });
+        return lote;
       },
       commit: async () => {
         if (comprometido) throw new Error('FakeDb: lote enviado duas vezes');
@@ -987,20 +1034,40 @@ export class FakeDb {
           const atual = this.store.get(e.caminho);
           if (e.verbo === 'create') {
             if (atual !== undefined) throw grpc(6, 'ALREADY_EXISTS');
-          } else {
+          } else if (e.verbo === 'update') {
             const recusa = recusaDeAtualizacao(atual, e.precondicao);
             if (recusa !== null) throw recusa;
           }
+          // A `set` and a `delete` carry no precondition: each lands whatever is stored.
         }
         // All of them, under ONE commit stamp.
         this.lotes += 1;
         const noLote = { writeTime: this.proximoCarimbo(), lote: this.lotes };
         for (const e of fila) {
+          if (e.verbo === 'delete') {
+            this.registrar('delete', e.caminho, null, noLote);
+            this.store.delete(e.caminho);
+            continue;
+          }
+          if (e.verbo === 'set') {
+            this.registrar('set', e.caminho, e.dados, noLote, true);
+            this.guardar(e.caminho, structuredClone(e.dados), noLote.writeTime);
+            continue;
+          }
           this.registrar(e.verbo, e.caminho, e.dados, noLote);
           const anterior = e.verbo === 'create' ? undefined : this.store.get(e.caminho)?.data;
           const dados =
             e.verbo === 'create' ? structuredClone(e.dados) : this.aplicar(anterior, e.dados);
           this.guardar(e.caminho, dados, noLote.writeTime);
+        }
+        // A LOST REPLY on a guarded update of the batch: the whole batch is stored, then the call
+        // rejects (module header) — the SDK retried the commit and met its own stamp.
+        for (const e of fila) {
+          const perdida = this.respostasPerdidas.get(e.caminho);
+          if (e.verbo === 'update' && e.precondicao?.lastUpdateTime !== undefined && perdida) {
+            this.respostasPerdidas.delete(e.caminho);
+            throw perdida;
+          }
         }
         return fila.map(() => ({ writeTime: noLote.writeTime }));
       },
@@ -1068,6 +1135,15 @@ export class FakeDb {
             throw new Error(
               'FakeDb: startAfter(<valor>) só é modelado sobre orderBy(FieldPath.documentId()) sozinho',
             );
+          }
+          if (grupo) {
+            // The SDK, on a GROUP query: the value must name a whole document path (step 12).
+            if (!ehCaminhoDeDocumento(doc)) {
+              throw new Error(
+                `FakeDb: startAfter('${doc}') numa consulta de grupo — o SDK exige um caminho de documento`,
+              );
+            }
+            return derivar({ apos: { id: doc, data: {}, caminho: true } });
           }
           if (doc === '' || doc.includes('/')) {
             // The SDK: the value must be a plain document id of the queried collection.
@@ -1139,8 +1215,9 @@ export class FakeDb {
         data: stored.data,
         stored,
       }));
-    if (grupo && apos !== null) {
-      throw new Error('FakeDb: startAfter() numa consulta de grupo não é modelado');
+    if (grupo && apos !== null && apos.caminho !== true) {
+      // A SNAPSHOT cursor on a group query would seek by its leaf id, never its path.
+      throw new Error('FakeDb: startAfter(<snapshot>) numa consulta de grupo não é modelado');
     }
     // Order, THEN cursor, THEN cap — the order the server applies them in.
     const ordenados = [...encontrados].sort((a, b) => compararPosicoes(a, b, ordens));

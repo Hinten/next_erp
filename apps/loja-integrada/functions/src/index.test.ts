@@ -24,6 +24,7 @@ import { PRAZO_ULTIMA_ESCRITA_MS } from '../../lib/lojaIntegrada/core/escrita';
 import { RITMO_ESCRITA_LI_MS } from '../../lib/lojaIntegrada/core/ritmo';
 import { FILA_ESTOQUE_LI } from '../../lib/lojaIntegrada/estoque/agendadorEstoque';
 import { PIOR_EXECUCAO_ESTOQUE_LI_MS } from '../../lib/lojaIntegrada/estoque/processarEstoque';
+import { DURACAO_MAXIMA_SLICE_RECONCILE_LI_MS } from '../../lib/lojaIntegrada/estoque/reconcile/orcamentoReconcile';
 import { DURACAO_MAXIMA_DESPACHO_IMPORTACAO_LI_MS } from '../../lib/lojaIntegrada/importacao/orcamento';
 import type { ImportadorPedidoLi } from '../../lib/lojaIntegrada/notificacoes/notificacao';
 import { importarPedidoLi } from '../../lib/lojaIntegrada/pedidos/importarPedido';
@@ -117,6 +118,7 @@ const {
   onIntegracaoLojaIntegradaChanged,
   onProdutoLojaIntegradaLinkChanged,
   pollLojaIntegradaPedidos,
+  reconciliarEstoqueLojaIntegrada,
   reprocessLojaIntegradaNotifications,
   sweepLojaIntegradaTokenExpiry,
   varrerEscritasLojaIntegrada,
@@ -142,6 +144,7 @@ afterAll(() => {
  */
 const AGENDAMENTOS = {
   pollLojaIntegradaPedidos,
+  reconciliarEstoqueLojaIntegrada,
   reprocessLojaIntegradaNotifications,
   sweepLojaIntegradaTokenExpiry,
   varrerEscritasLojaIntegrada,
@@ -691,6 +694,27 @@ describe('filaLeituraLojaIntegrada — the declared options', () => {
     expect(kMaximo).toBe(7);
   });
 
+  it('the stock reconcile is ONE chain for every conta: an intake attempt waits at most ONE reconcile slice (the import’s 100 s) — K = imports running + 1', () => {
+    // Master plan step 12 (PR 12-g): the daily reconcile rides this queue as ONE chain of slices
+    // for every conta (contas run one after another inside it), each slice held to the import's
+    // own budget + tail — the SAME constant, never a third number. So it is one co-tenant whatever
+    // the number of contas: alone, the ladder is the K = 1 case; beside one import, K = 2.
+    const tentativas = fila.retryConfig.maxAttempts ?? 0;
+    const execucao = endpointOf(filaLeituraLojaIntegrada).timeoutSeconds as number;
+    const backoff = fila.retryConfig.maxBackoffSeconds ?? 0;
+    const sliceS = DURACAO_MAXIMA_SLICE_RECONCILE_LI_MS / 1000;
+    expect(DURACAO_MAXIMA_SLICE_RECONCILE_LI_MS).toBe(DURACAO_MAXIMA_DESPACHO_IMPORTACAO_LI_MS);
+    const escada = (k: number): number =>
+      tentativas * (execucao + k * sliceS) + Math.max(tentativas - 1, 0) * backoff;
+    // The reconcile alone: 3 × (300 + 100) + 2 × 300.
+    expect(escada(1)).toBe(1800);
+    expect(escada(1)).toBeLessThanOrEqual(1800);
+    // ⚠️ NEAR-MISS: beside one import it no longer fits half the hour, but still fits the hour.
+    expect(escada(2)).toBe(2100);
+    expect(escada(2)).toBeGreaterThan(1800);
+    expect(escada(2)).toBeLessThanOrEqual(3600);
+  });
+
   it('declares the invoker, the leg whose absence fails invisibly (#1133)', () => {
     expect(fila.invoker).toEqual([
       'apphosting@p.iam.gserviceaccount.com',
@@ -867,6 +891,48 @@ describe('filaEstoqueLojaIntegrada — the declared options', () => {
   });
 });
 
+describe('reconciliarEstoqueLojaIntegrada — the options (master plan step 12, PR 12-g)', () => {
+  /** The minutes past the hour a five-field cron fires at, computed (`*`, `*\/n`, `a,b`). */
+  function minutosDoCron(cron: string): Set<number> {
+    const [campo = ''] = cron.split(' ');
+    const minutos = new Set<number>();
+    for (const parte of campo.split(',')) {
+      const passo = /^\*\/(\d+)$/.exec(parte);
+      if (parte === '*') for (let m = 0; m < 60; m += 1) minutos.add(m);
+      else if (passo !== null) for (let m = 0; m < 60; m += Number(passo[1])) minutos.add(m);
+      else minutos.add(Number(parte));
+    }
+    return minutos;
+  }
+
+  it('fires daily at 04:23 America/Sao_Paulo, with a 60 s timeout (one enqueue) and a scheduler retry', () => {
+    expect(gatilhoDe(reconciliarEstoqueLojaIntegrada).schedule).toBe('23 4 * * *');
+    expect(gatilhoDe(reconciliarEstoqueLojaIntegrada).timeZone).toBe('America/Sao_Paulo');
+    expect(endpointOf(reconciliarEstoqueLojaIntegrada).timeoutSeconds).toBe(60);
+    const retry = (
+      endpointOf(reconciliarEstoqueLojaIntegrada).scheduleTrigger as {
+        retryConfig?: { retryCount?: number };
+      }
+    ).retryConfig;
+    expect(retry?.retryCount).toBe(3);
+  });
+
+  it('⚠️ minute 23 is fired by NO other schedule of the codebase (computed, not eyeballed)', () => {
+    const outros = Object.entries(AGENDAMENTOS).filter(
+      ([nome]) => nome !== 'reconciliarEstoqueLojaIntegrada',
+    );
+    expect(outros).toHaveLength(4);
+    for (const [nome, fn] of outros) {
+      const cron = gatilhoDe(fn).schedule ?? '';
+      expect(minutosDoCron(cron).has(23), nome).toBe(false);
+    }
+    // ÂNCORA: the helper sees what each cron fires — `*\/5` fires 0 and 55, `15,45` its two.
+    expect(minutosDoCron('*/5 * * * *').has(55)).toBe(true);
+    expect(minutosDoCron('15,45 * * * *')).toEqual(new Set([15, 45]));
+    expect(minutosDoCron('23 4 * * *')).toEqual(new Set([23]));
+  });
+});
+
 describe('varrerEscritasLojaIntegrada — the options', () => {
   it('ticks at :15 and :45 America/Sao_Paulo, offset from the reads sweep, with a 60 s timeout (it only enqueues)', () => {
     expect(gatilhoDe(varrerEscritasLojaIntegrada).schedule).toBe('15,45 * * * *');
@@ -903,7 +969,9 @@ describe('the Firestore triggers (GATILHOS)', () => {
     // At-least-once redelivery for transient Firestore failures; without it the
     // event is dropped on the first one. A redelivery replays the ORIGINAL
     // before/after, and every arm but one is safe under that: the conta reconcile
-    // reads neither (it re-reads the conta itself), the history trigger and the
+    // reads neither (it re-reads the conta itself), the conta trigger's depósito arm
+    // (PR 12-g) enqueues ONE task NAMED by the after side's update time (a replay
+    // re-meets it), the history trigger and the
     // stock trigger enqueue NAMED tasks (the stock one keeps no state and writes
     // nothing; its tasks re-read the stock when they run), and the anchor's
     // remove re-derives from a guarded re-read of the
@@ -963,11 +1031,12 @@ describe('the Firestore triggers (GATILHOS)', () => {
 describe('every trigger of the codebase', () => {
   const TODOS = { ...AGENDAMENTOS, ...FILAS, ...GATILHOS };
 
-  it('every onSchedule export is in AGENDAMENTOS — and there are exactly four', () => {
+  it('every onSchedule export is in AGENDAMENTOS — and there are exactly five', () => {
     expect(exportadosCom('scheduleTrigger')).toEqual(Object.keys(AGENDAMENTOS).sort());
-    expect(Object.keys(AGENDAMENTOS)).toHaveLength(4);
+    expect(Object.keys(AGENDAMENTOS)).toHaveLength(5);
     expect(exportadosCom('scheduleTrigger')).toEqual([
       'pollLojaIntegradaPedidos',
+      'reconciliarEstoqueLojaIntegrada',
       'reprocessLojaIntegradaNotifications',
       'sweepLojaIntegradaTokenExpiry',
       'varrerEscritasLojaIntegrada',

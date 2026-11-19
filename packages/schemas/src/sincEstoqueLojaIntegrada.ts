@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { MAX_AMOSTRA_AVISO_ESTOQUE_LI, motivoEstoqueVinculoLiSchema } from './aviso';
 import { inteiroPositivoCanonicoLi } from './mapaFreteLojaIntegrada';
 import { millisSinceEpoch } from './shared/datetime';
 
@@ -45,10 +46,32 @@ import { millisSinceEpoch } from './shared/datetime';
  * ## Writers (root `CLAUDE.md` rule 7)
  *
  * Only the reconcile run holding the lease in `reconcileEstoqueLojaIntegrada/atual` writes
- * here, each write a native precondition (`update(patch, { lastUpdateTime })` on the slice's own
- * read, advance-only), and every document written by a run carries that run's `execucaoId`: a
- * slice with another `execucaoId` is refused, and the kits map is swept by it (a header or shard
- * of an older run is stale). The send runs and the trigger only READ. No transaction.
+ * here, and every document written by a run carries that run's `execucaoId`: a slice with another
+ * `execucaoId` is refused, and the kits map is swept by it (a header or shard of an older run is
+ * stale). The send runs and the trigger only READ. No transaction.
+ *
+ * Every write rides a BATCH that also updates the run document under its own read's
+ * `lastUpdateTime` (tier 1): a slice whose lease was taken over — or another dispatch of the same
+ * slice — fails that precondition, and nothing of the batch lands. Beside it, the root, the
+ * buckets and `pais` are each `create`d when absent and otherwise `update`d under the slice's own
+ * read of THEM (whole fields, advance-only); the kits headers and shards, which the slice never
+ * reads, are written whole (`set`) and deleted under the run document's precondition alone. A
+ * component's header and its shards go in ONE batch, so no reader sees a header of one run beside
+ * shards of another (`estoque/reconcile/mapaKitsReconcile.ts` in the app).
+ *
+ * ## The PR 12-g amendment
+ *
+ * The daily reconcile's build proved two things this contract lacked, and added them:
+ *
+ *  - the root's {@link execucaoContaEstoqueLiSchema} (`execucao`): what ONE run must keep for a
+ *    conta across its slices — the depósito it fixed when it took the lease (a run never reads two
+ *    depósitos for one conta), the store ids its list walk has seen (`vistos`: a linked child the
+ *    walk never saw is confirmed one by one before anything says it has no row), the samples of
+ *    its avisos (one list per reason, at most `MAX_AMOSTRA_AVISO_ESTOQUE_LI` ids, so a sample
+ *    survives every slice), and the kits map writer's cursor (`mapa`);
+ *  - a store kit's entry carries its composition (`q`, `e`), read when the walk evaluated the kit:
+ *    the kits map is built from the snapshot at the end of the walk without reading one kit or
+ *    stock record again.
  *
  * ## Admin-only / default-deny
  *
@@ -163,15 +186,91 @@ export const ultimoReconcileEstoqueLiSchema = z.object({
 });
 export type UltimoReconcileEstoqueLi = z.infer<typeof ultimoReconcileEstoqueLiSchema>;
 
+/**
+ * The reasons a run keeps a SAMPLE of ERP produto ids for: `retido` (the "sem estoque no ERP"
+ * aviso) and every `lojaIntegradaEstoqueVinculo` motivo — `ambiguo` (two store ids on one
+ * produto) and `estoque-ambiguo` (two non-canonical records at the depósito) stay apart here,
+ * though the snapshot flags both `amb`, because they are two avisos.
+ */
+export const motivoAmostraEstoqueLiSchema = z.enum([
+  'retido',
+  ...motivoEstoqueVinculoLiSchema.options,
+]);
+export type MotivoAmostraEstoqueLi = z.infer<typeof motivoAmostraEstoqueLiSchema>;
+
+/** Named members of {@link motivoAmostraEstoqueLiSchema} — see `delfrance/prefer-schema-enum`. */
+export const MOTIVO_AMOSTRA_ESTOQUE_LI = {
+  retido: 'retido',
+  ambiguo: 'ambiguo',
+  duplicado: 'duplicado',
+  semLinhaNaLoja: 'sem-linha-na-loja',
+  ausente: 'ausente',
+  estoqueAmbiguo: 'estoque-ambiguo',
+  depositoSemRegistros: 'deposito-sem-registros',
+} as const satisfies Record<string, MotivoAmostraEstoqueLi>;
+
+/** Where the kits map writer stands for a conta (`estoque/reconcile/mapaKitsReconcile.ts`). */
+export const etapaMapaEstoqueLiSchema = z.enum(['escrita', 'varredura', 'feito']);
+export type EtapaMapaEstoqueLi = z.infer<typeof etapaMapaEstoqueLiSchema>;
+
+/** Named members of {@link etapaMapaEstoqueLiSchema} — see `delfrance/prefer-schema-enum`. */
+export const ETAPA_MAPA_ESTOQUE_LI = {
+  escrita: 'escrita',
+  varredura: 'varredura',
+  feito: 'feito',
+} as const satisfies Record<string, EtapaMapaEstoqueLi>;
+
+/**
+ * The kits map writer's cursor: `escrita` writes the components in id order after
+ * `ultimoComponenteId` (exclusive; `null` = from the first), `varredura` deletes what an older
+ * run left, `feito` is done.
+ */
+export const mapaContaEstoqueLiSchema = z.object({
+  etapa: etapaMapaEstoqueLiSchema,
+  ultimoComponenteId: idDocumentoEstoqueLiSchema.nullable(),
+});
+export type MapaContaEstoqueLi = z.infer<typeof mapaContaEstoqueLiSchema>;
+
+/**
+ * What ONE reconcile run keeps for this conta across its slices (the module header's PR 12-g
+ * amendment). Written by the lease holder only; a value of another `execucaoId` is another run's
+ * and is read as none.
+ *
+ *  - `depositoId`: the depósito the run fixed when it took the lease, as a BARE document id —
+ *    every slice reads this conta's records there, never a depósito re-read mid-run;
+ *  - `vistos`: the store ids the store's list walk of THIS run has seen or settled;
+ *  - `amostras`: per reason, the first {@link MAX_AMOSTRA_AVISO_ESTOQUE_LI} ERP produto ids (the
+ *    counts are the run document's counters);
+ *  - `mapa`: the kits map writer's cursor; `null` until the link walk is over.
+ */
+export const execucaoContaEstoqueLiSchema = z.object({
+  execucaoId: idExecucaoEstoqueLiSchema,
+  depositoId: idDocumentoEstoqueLiSchema,
+  vistos: z.array(idProdutoLiTextoSchema).default([]),
+  amostras: z
+    .partialRecord(
+      motivoAmostraEstoqueLiSchema,
+      z.array(idDocumentoEstoqueLiSchema).max(MAX_AMOSTRA_AVISO_ESTOQUE_LI),
+    )
+    .default({}),
+  mapa: mapaContaEstoqueLiSchema.nullable().default(null),
+});
+export type ExecucaoContaEstoqueLi = z.infer<typeof execucaoContaEstoqueLiSchema>;
+
 export const sincEstoqueLojaIntegradaSchema = z.object({
   reconcile: reconcileContaEstoqueLiSchema.nullable().default(null),
   ultimoReconcile: ultimoReconcileEstoqueLiSchema.nullable().default(null),
+  /** The running reconcile's own state for this conta (PR 12-g amendment); `null` = none yet. */
+  execucao: execucaoContaEstoqueLiSchema.nullable().default(null),
 });
 export type SincEstoqueLojaIntegrada = z.infer<typeof sincEstoqueLojaIntegradaSchema>;
 
 /* -------------------------------------------------------------------------- */
 /*                                The snapshot                                 */
 /* -------------------------------------------------------------------------- */
+
+/** A component's quantity in a kit: positive and finite, possibly fractional. */
+const qtdComponenteKitSchema = z.number().positive().finite();
 
 /**
  * What the reconcile's ERP side decided about one store product id — the entry's `f`:
@@ -214,7 +313,12 @@ export const FLAG_ENTRADA_ESTOQUE_LI = {
  *    `f` is `v`;
  *  - `f`: {@link flagEntradaEstoqueLiSchema};
  *  - `k`: `true` when the produto is a kit (its S derives from its components); absent
- *    otherwise, never `false`, to keep the entry short.
+ *    otherwise, never `false`, to keep the entry short;
+ *  - `q`, `e` (PR 12-g amendment): a valid KIT's composition as the walk read it — `q`, every
+ *    component that constrains it → its quantity in the kit (the kits map's own `q`); `e`, the
+ *    same components → the stock record id each resolved to at the conta's depósito, or `null`
+ *    (none, or two legacy ones). Both or neither, with the same keys, and only on a `v` entry with
+ *    `k`; a kit entry without them is simply left out of the kits map.
  */
 export const entradaSnapshotEstoqueLiSchema = z
   .object({
@@ -222,6 +326,11 @@ export const entradaSnapshotEstoqueLiSchema = z
     s: z.number().int().nonnegative().nullable(),
     f: flagEntradaEstoqueLiSchema,
     k: z.literal(true).nullable().optional(),
+    q: z.record(idDocumentoEstoqueLiSchema, qtdComponenteKitSchema).nullable().optional(),
+    e: z
+      .record(idDocumentoEstoqueLiSchema, idDocumentoEstoqueLiSchema.nullable())
+      .nullable()
+      .optional(),
   })
   .superRefine((entrada, ctx) => {
     const semVinculo = entrada.f === FLAG_ENTRADA_ESTOQUE_LI.semVinculo;
@@ -233,6 +342,24 @@ export const entradaSnapshotEstoqueLiSchema = z
     }
     if (semVinculo && entrada.k != null) {
       ctx.addIssue({ code: 'custom', path: ['k'], message: 'uma linha sem vínculo não é kit' });
+    }
+    const q = entrada.q ?? null;
+    const e = entrada.e ?? null;
+    if ((q === null) !== (e === null)) {
+      ctx.addIssue({ code: 'custom', path: ['e'], message: 'q e e vêm juntos' });
+    }
+    if (q === null) return;
+    if (entrada.f !== FLAG_ENTRADA_ESTOQUE_LI.valido || entrada.k !== true) {
+      ctx.addIssue({ code: 'custom', path: ['q'], message: 'composição só num kit válido' });
+    }
+    const chavesQ = Object.keys(q).sort();
+    const chavesE = Object.keys(e ?? {}).sort();
+    if (
+      chavesQ.length === 0 ||
+      chavesQ.length !== chavesE.length ||
+      chavesQ.some((c, i) => c !== chavesE[i])
+    ) {
+      ctx.addIssue({ code: 'custom', path: ['e'], message: 'q e e nomeiam os mesmos componentes' });
     }
   });
 export type EntradaSnapshotEstoqueLi = z.infer<typeof entradaSnapshotEstoqueLiSchema>;
@@ -278,9 +405,6 @@ export type PaisSnapshotEstoqueLi = z.infer<typeof paisSnapshotEstoqueLiSchema>;
 /* -------------------------------------------------------------------------- */
 /*                                 The kits map                                */
 /* -------------------------------------------------------------------------- */
-
-/** A component's quantity in a kit: positive and finite, possibly fractional. */
-const qtdComponenteKitSchema = z.number().positive().finite();
 
 /**
  * One store-linked kit containing the component: `i`, the kit's store id; `q`, every

@@ -39,7 +39,7 @@ describe('reconcileEstoqueLojaIntegradaSchema (the daily run’s lease and chain
       fase: FASE_RECONCILE_ESTOQUE_LI.li,
       contas: ['conta-a', 'conta-b'],
       idxConta: 1,
-      walk: { ultimoDocPath: 'produtos/p9/produtolojaintegrada/123456789' },
+      walk: { ultimoDocPath: 'produtos/p9/produtolojaintegrada/123456789', concluida: false },
       candidatos: [
         { c: 0, i: '123456789', p: 'p1', d: 3 },
         { c: 1, i: '7654321', p: 'p2', d: -2 },
@@ -107,6 +107,22 @@ describe('reconcileEstoqueLojaIntegradaSchema (the daily run’s lease and chain
     // NEAR-MISS: a document path has an EVEN number of segments; this one names a collection.
     expect(ok('a/produtolojaintegrada/l1')).toBe(false);
     expect(ok('a/b/c/produtolojaintegrada/l1')).toBe(false);
+  });
+
+  it('PR 12-g amendment: a finished walk says so, and only a walk that found NO link has no path', () => {
+    const lido = (walk: unknown) => reconcileEstoqueLojaIntegradaSchema.safeParse({ walk });
+    // A cursor stored before the amendment reads as a walk still under way.
+    expect(lido({ ultimoDocPath: 'produtos/p1/produtolojaintegrada/l1' }).data?.walk).toEqual({
+      ultimoDocPath: 'produtos/p1/produtolojaintegrada/l1',
+      concluida: false,
+    });
+    expect(lido({ ultimoDocPath: null, concluida: true }).success).toBe(true);
+    expect(
+      lido({ ultimoDocPath: 'produtos/p1/produtolojaintegrada/l1', concluida: true }).success,
+    ).toBe(true);
+    // NEAR-MISS: the flag is a boolean, never its text; the path keeps its grammar.
+    expect(lido({ ultimoDocPath: null, concluida: 'true' }).success).toBe(false);
+    expect(lido({ ultimoDocPath: 'l1', concluida: true }).success).toBe(false);
   });
 
   it('⚠️ NEAR-MISS: the lease and the chain keep their bounds — a null lease never reads as free', () => {

@@ -17,6 +17,7 @@
  * | the components whose CANONICAL record is still unread (none found, or only legacy ones: a row without `parentId` is invisible to the join) | the own-record query, per component | as the own record |
  * | "any record at any depósito?" | where-less listing, `limit 1` | the produto's own partition, no index |
  * | the duplicate-link probe | GROUP `contaLojaIntegrada == form`, `id in [n, 'n']`, per form | COLLECTION_GROUP `produtolojaintegrada (contaLojaIntegrada, id)` |
+ * | the daily reconcile's lookup of unknown store rows (`reconcile/faseLi.ts`) | the same builder, `id in` up to 15 numbers + their 15 texts, per form | the same index |
  *
  * ## A hint is used only when it IS the canonical record
  *
@@ -43,7 +44,7 @@
  * it stores: a record whose stored owner disagrees with its path is attributed to its path, and a
  * component it does not then answer for is looked up again by its own collection.
  */
-import type { Firestore } from 'firebase-admin/firestore';
+import type { DocumentSnapshot, Firestore, Query } from 'firebase-admin/firestore';
 import {
   estoqueCollection,
   produtoCollection,
@@ -125,14 +126,8 @@ function proprio(o: Readonly<Record<string, unknown>>, chave: string): unknown {
  */
 export { depositoDaContaLi, formasDoDepositoLi };
 
-/** The produto, masked to {@link CAMPOS_PRODUTO_ESTOQUE_LI}, or `null` when it does not exist. */
-export async function lerProdutoEstoqueLi(
-  db: Firestore,
-  produtoId: string,
-): Promise<ProdutoEstoqueLi | null> {
-  const [snap] = await db.getAll(produtoCollection.docRef(db, {}, produtoId), {
-    fieldMask: [...CAMPOS_PRODUTO_ESTOQUE_LI],
-  });
+/** A masked produto read, as the quantity reads it — or `null` when the document is absent. */
+function produtoDoSnapshotLi(snap: DocumentSnapshot | undefined): ProdutoEstoqueLi | null {
   if (snap === undefined || !snap.exists) return null;
   const dados: Readonly<Record<string, unknown>> = snap.data() ?? {};
   return {
@@ -142,6 +137,44 @@ export async function lerProdutoEstoqueLi(
     componentesKit: (proprio(dados, 'componentesKit') ?? null) as ComponentesKit | null,
     statusProdutosMarketplace: proprio(dados, 'statusProdutosMarketplace'),
   };
+}
+
+/** The produto, masked to {@link CAMPOS_PRODUTO_ESTOQUE_LI}, or `null` when it does not exist. */
+export async function lerProdutoEstoqueLi(
+  db: Firestore,
+  produtoId: string,
+): Promise<ProdutoEstoqueLi | null> {
+  const [snap] = await db.getAll(produtoCollection.docRef(db, {}, produtoId), {
+    fieldMask: [...CAMPOS_PRODUTO_ESTOQUE_LI],
+  });
+  return produtoDoSnapshotLi(snap);
+}
+
+/** The most produtos one masked `getAll` of {@link lerProdutosEstoqueLi} names. */
+export const MAX_PRODUTOS_POR_LEITURA_ESTOQUE_LI = 300;
+
+/**
+ * Many produtos, each masked to {@link CAMPOS_PRODUTO_ESTOQUE_LI} exactly as
+ * {@link lerProdutoEstoqueLi} reads one (the same projection, one copy): ONE `getAll` per
+ * {@link MAX_PRODUTOS_POR_LEITURA_ESTOQUE_LI} distinct ids, in order. Keyed by id; `null` for an
+ * absent document. No read for an empty list. The daily reconcile reads a walk page's produtos so.
+ */
+export async function lerProdutosEstoqueLi(
+  db: Firestore,
+  produtoIds: readonly string[],
+): Promise<ReadonlyMap<string, ProdutoEstoqueLi | null>> {
+  const unicos = [...new Set(produtoIds)];
+  const lidos = new Map<string, ProdutoEstoqueLi | null>();
+  for (let i = 0; i < unicos.length; i += MAX_PRODUTOS_POR_LEITURA_ESTOQUE_LI) {
+    const fatia = unicos.slice(i, i + MAX_PRODUTOS_POR_LEITURA_ESTOQUE_LI);
+    const snaps = await db.getAll(...fatia.map((id) => produtoCollection.docRef(db, {}, id)), {
+      fieldMask: [...CAMPOS_PRODUTO_ESTOQUE_LI],
+    });
+    fatia.forEach((id, n) => {
+      lidos.set(id, produtoDoSnapshotLi(snaps[n]));
+    });
+  }
+  return lidos;
 }
 
 /** The produto's OWN `produtolojaintegrada` documents, raw, every conta's (a where-less listing). */
@@ -189,18 +222,33 @@ async function lerEstoqueNoDepositoPorConsultaLi(
 }
 
 /**
- * The kit components that BOUND the kit, in the shared fold's own sense (`kitEstoqueDisponivel`:
- * `limitarEstoque !== false` and a finite quantity above 0), for a kit (`ehKit` or `ehKitVirtual`,
- * exactly `true`) — none for anything else. An id that cannot be one path segment is left out:
- * it cannot be read, so it stays unresolved and counts 0 in the fold.
+ * The kit components that BOUND the kit, with each one's quantity in the kit, in the shared
+ * fold's own sense (`kitEstoqueDisponivel`: `limitarEstoque !== false` and a finite quantity above
+ * 0), for a kit (`ehKit` or `ehKitVirtual`, exactly `true`) — none for anything else, in the
+ * stored entries' order. An id that cannot be one path segment is left out: it cannot be read, so
+ * it stays unresolved and counts 0 in the fold.
  */
-export function componentesQueLimitamLi(produto: ProdutoEstoqueLi): string[] {
+function entradasQueLimitamLi(produto: ProdutoEstoqueLi): [string, number][] {
   if (produto.ehKit !== true && produto.ehKitVirtual !== true) return [];
   return componentesKitEntries(produto.componentesKit)
     .filter(([, kit]) => kit.limitarEstoque !== false)
     .filter(([, kit]) => Number.isFinite(kit.quantidade) && kit.quantidade > 0)
-    .map(([id]) => id)
-    .filter(segmentoDeCaminhoLi);
+    .filter(([id]) => segmentoDeCaminhoLi(id))
+    .map(([id, kit]): [string, number] => [id, kit.quantidade]);
+}
+
+/** The ids of {@link entradasQueLimitamLi}: what a send run reads at the depósito for a kit. */
+export function componentesQueLimitamLi(produto: ProdutoEstoqueLi): string[] {
+  return entradasQueLimitamLi(produto).map(([id]) => id);
+}
+
+/**
+ * The same components, each → its quantity in the kit (the kits map's `q`, which the daily
+ * reconcile records for a store kit): ONE filter with {@link componentesQueLimitamLi}, so the map
+ * can never name a component the send run does not read, or miss one it does.
+ */
+export function quantidadesQueLimitamLi(produto: ProdutoEstoqueLi): Record<string, number> {
+  return Object.fromEntries(entradasQueLimitamLi(produto));
 }
 
 /** Up to {@link MAX_VALORES_IN_ESTOQUE_LI} values per slice. */
@@ -210,6 +258,41 @@ function emFatias<T>(valores: readonly T[]): T[][] {
     fatias.push(valores.slice(i, i + MAX_VALORES_IN_ESTOQUE_LI));
   }
   return fatias;
+}
+
+/**
+ * Run `fn` over `itens` with at most `limite` running at once, the results in `itens`' order. With
+ * `limite` 1 it is a plain sequential loop: the send run's order of reads, byte for byte. A
+ * rejection propagates, and no new item starts after it. The daily reconcile's bulk reads use it
+ * too (`reconcile/faseErp.ts`).
+ */
+export async function emParaleloLi<T, R>(
+  itens: readonly T[],
+  limite: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const saida: R[] = new Array<R>(itens.length);
+  let proximo = 0;
+  let falhou = false;
+  const trabalhador = async (): Promise<void> => {
+    while (!falhou && proximo < itens.length) {
+      const i = proximo;
+      proximo += 1;
+      const item = itens[i] as T;
+      let concluiu = false;
+      try {
+        saida[i] = await fn(item);
+        concluiu = true;
+      } finally {
+        // No handler: a rejection propagates as is, and stops the others taking new items.
+        if (!concluiu) falhou = true;
+      }
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.max(1, Math.min(limite, itens.length)) }, () => trabalhador()),
+  );
+  return saida;
 }
 
 /**
@@ -228,8 +311,68 @@ export async function lerComponentesNoDepositoLi(
   depositoId: string,
   estoqueIds: Readonly<Record<string, string | null>> | null,
 ): Promise<DocEstoqueLi[]> {
-  const componentes = componentesQueLimitamLi(produto);
+  return lerRegistrosNoDepositoLi(db, componentesQueLimitamLi(produto), depositoId, estoqueIds);
+}
+
+/** {@link lerRegistrosNoDepositoLi}'s options. */
+export interface OpcoesRegistrosNoDepositoLi {
+  /**
+   * How many of the group joins and of the own-collection queries may run at once (default 1:
+   * one after another, the send run's order). The daily reconcile reads a whole walk page so.
+   */
+  readonly concorrencia?: number;
+  /**
+   * Told what each path of the read cost — the daily reconcile's measurement (its ERP side's
+   * fallbacks are what decide a night's reads): {@link CONTAGEM_REGISTROS_NO_DEPOSITO_LI}'s names,
+   * each with a count, a name that counted 0 never told. Absent: nothing is told.
+   */
+  readonly aoContar?: (nome: ContagemRegistrosNoDepositoLi, n: number) => void;
+}
+
+/** What {@link OpcoesRegistrosNoDepositoLi.aoContar} is told, one name per path of the read. */
+export type ContagemRegistrosNoDepositoLi =
+  | 'canonicosAchados'
+  | 'canonicosAusentes'
+  | 'juncoes'
+  | 'consultasProprias';
+
+/** Named members of {@link ContagemRegistrosNoDepositoLi}. */
+export const CONTAGEM_REGISTROS_NO_DEPOSITO_LI = {
+  /** Canonical ids read by the `getAll` that came back as a record at the depósito. */
+  canonicosAchados: 'canonicosAchados',
+  /** Canonical ids read by the `getAll` that did not (absent, or at another depósito). */
+  canonicosAusentes: 'canonicosAusentes',
+  /** Group-join queries (slices × stored forms). */
+  juncoes: 'juncoes',
+  /** Own-collection queries (one per produto whose canonical record is still unread). */
+  consultasProprias: 'consultasProprias',
+} as const satisfies Record<string, ContagemRegistrosNoDepositoLi>;
+
+/**
+ * EVERY record of the given produtos at the conta's depósito — the read
+ * {@link lerComponentesNoDepositoLi} makes for a kit's bounding components, for ANY list of
+ * produtos (the daily reconcile reads a walk page's own records and its kits' components through
+ * it, so a send run and the reconcile can never resolve a produto's stock differently). In order:
+ * the ids `idsConhecidos` names that ARE the canonical record (`makeEstoqueUid`), by ONE `getAll`;
+ * then the group join for those still missing, per stored form, at most
+ * {@link MAX_VALORES_IN_ESTOQUE_LI} per query; then the own-collection query for each one whose
+ * CANONICAL record is still unread. No read at all for an empty list. Several records of one
+ * produto all come back: resolving them is `estoqueNoDepositoLi`'s.
+ */
+export async function lerRegistrosNoDepositoLi(
+  db: Firestore,
+  produtoIds: readonly string[],
+  depositoId: string,
+  idsConhecidos: Readonly<Record<string, string | null>> | null,
+  opcoes: OpcoesRegistrosNoDepositoLi = {},
+): Promise<DocEstoqueLi[]> {
+  const componentes = [...new Set(produtoIds)];
   if (componentes.length === 0) return [];
+  const concorrencia = opcoes.concorrencia ?? 1;
+  const contar = (nome: ContagemRegistrosNoDepositoLi, n: number): void => {
+    if (n > 0) opcoes.aoContar?.(nome, n);
+  };
+  const estoqueIds = idsConhecidos;
   const formas = formasDoDepositoLi(depositoId);
   const porDono = new Map<string, Map<string, DocEstoqueLi>>();
   const guardar = (doc: DocEstoqueLi, aceitos: ReadonlySet<string>): void => {
@@ -252,28 +395,38 @@ export async function lerComponentesNoDepositoLi(
         estoqueCollection.docRef(db, { produtoId: c }, makeEstoqueUid(c, depositoId)),
       ),
     );
+    let achados = 0;
     for (const snap of snaps) {
       const dados = snap.exists ? snap.data() : undefined;
       if (dados !== undefined && registroNoDepositoLi(dados, formas)) {
         guardar({ caminho: snap.ref.path, dados }, todos);
+        achados += 1;
       }
     }
+    contar(CONTAGEM_REGISTROS_NO_DEPOSITO_LI.canonicosAchados, achados);
+    contar(CONTAGEM_REGISTROS_NO_DEPOSITO_LI.canonicosAusentes, snaps.length - achados);
   }
 
   // 2. The group join, per stored form, for the components still missing.
   const [campoDono, campoDeposito] = CAMPOS_INDICE_COMPONENTES_LI;
   const semRegistro = () => componentes.filter((c) => !porDono.has(c));
-  for (const fatia of emFatias(semRegistro())) {
+  const juncoes = emFatias(semRegistro()).flatMap((fatia) =>
+    formas.map((forma) => ({ fatia, forma })),
+  );
+  contar(CONTAGEM_REGISTROS_NO_DEPOSITO_LI.juncoes, juncoes.length);
+  const respostas = await emParaleloLi(juncoes, concorrencia, ({ fatia, forma }) =>
+    estoqueCollection
+      .groupQuery(db)
+      .where(campoDono, 'in', fatia)
+      .where(campoDeposito, '==', forma)
+      .get(),
+  );
+  juncoes.forEach(({ fatia }, i) => {
     const aceitos = new Set(fatia);
-    for (const forma of formas) {
-      const snap = await estoqueCollection
-        .groupQuery(db)
-        .where(campoDono, 'in', fatia)
-        .where(campoDeposito, '==', forma)
-        .get();
-      for (const d of snap.docs) guardar({ caminho: d.ref.path, dados: d.data() }, aceitos);
+    for (const d of respostas[i]?.docs ?? []) {
+      guardar({ caminho: d.ref.path, dados: d.data() }, aceitos);
     }
-  }
+  });
 
   // 3. A component whose CANONICAL record is still unread: its own collection. A join hit is not
   //    a complete answer — a record with no `parentId` (the canonical one included) is invisible
@@ -286,10 +439,14 @@ export async function lerComponentesNoDepositoLi(
       (doc) => caminhoEstoqueLi(doc.caminho)?.estoqueId === canonico,
     );
   };
-  for (const componente of componentes.filter((c) => !temCanonico(c))) {
-    const registros = await lerEstoqueNoDepositoPorConsultaLi(db, componente, formas);
-    for (const registro of registros) guardar(registro, new Set([componente]));
-  }
+  const semCanonico = componentes.filter((c) => !temCanonico(c));
+  contar(CONTAGEM_REGISTROS_NO_DEPOSITO_LI.consultasProprias, semCanonico.length);
+  const proprios = await emParaleloLi(semCanonico, concorrencia, (componente) =>
+    lerEstoqueNoDepositoPorConsultaLi(db, componente, formas),
+  );
+  semCanonico.forEach((componente, i) => {
+    for (const registro of proprios[i] ?? []) guardar(registro, new Set([componente]));
+  });
 
   return [...porDono.values()].flatMap((grupo) => [...grupo.values()]);
 }
@@ -301,6 +458,46 @@ export async function temEstoqueEmQualquerDepositoLi(
 ): Promise<boolean> {
   const snap = await estoqueCollection.ref(db, { produtoId }).limit(1).get();
   return !snap.empty;
+}
+
+/**
+ * The most store ids ONE {@link consultaVinculosDaContaPorIdsLi} names: each id is asked as its
+ * number AND its canonical text (a link stores either), so 15 ids are the `in` operator's 30 values
+ * ({@link MAX_VALORES_IN_ESTOQUE_LI}).
+ */
+export const MAX_IDS_POR_CONSULTA_VINCULO_LI = MAX_VALORES_IN_ESTOQUE_LI / 2;
+
+/**
+ * The ONE builder of the query that finds a conta's links by store id, shared by the send run's
+ * duplicate probe ({@link sondarVinculoDuplicadoLi}) and the daily reconcile's lookup of a stock
+ * row no snapshot entry names (`estoque/reconcile/faseLi.ts`), so the two can never drift apart:
+ * the collection group `produtolojaintegrada`, `contaLojaIntegrada == forma` (ONE stored form of
+ * the conta ref; the caller asks each form) and `id in [<number>, '<text>', …]` for every id —
+ * an equality and an `in`, served by the declared COLLECTION_GROUP
+ * `produtolojaintegrada (contaLojaIntegrada, id)` (its pin: `leituraEstoqueErp.test.ts`). No
+ * limit: each caller sets its own. The conta, the counting predicate and the owner are the
+ * caller's to check in code (`contaDoLinkLi`, `vinculoLiConta`, the PATH).
+ *
+ * Every id is the canonical decimal text of a positive safe integer (a snapshot key, a stock
+ * row's produto). Throws `RangeError` for no id or more than {@link MAX_IDS_POR_CONSULTA_VINCULO_LI}.
+ */
+export function consultaVinculosDaContaPorIdsLi(
+  db: Firestore,
+  forma: string,
+  idsLi: readonly string[],
+): Query {
+  if (idsLi.length === 0 || idsLi.length > MAX_IDS_POR_CONSULTA_VINCULO_LI) {
+    throw new RangeError('consultaVinculosDaContaPorIdsLi: de 1 a 15 ids por consulta');
+  }
+  const [campoConta, campoId] = CAMPOS_INDICE_VINCULO_LI;
+  return produtoLojaIntegradaLinkCollection
+    .groupQuery(db)
+    .where(campoConta, '==', forma)
+    .where(
+      campoId,
+      'in',
+      idsLi.flatMap((idLi) => [Number(idLi), idLi]),
+    );
 }
 
 /**
@@ -317,15 +514,9 @@ export async function sondarVinculoDuplicadoLi(
   idLi: string,
   produtoId: string,
 ): Promise<boolean> {
-  const [campoConta, campoId] = CAMPOS_INDICE_VINCULO_LI;
   const snaps = await Promise.all(
     contaRefForms(contaId).map((forma) =>
-      produtoLojaIntegradaLinkCollection
-        .groupQuery(db)
-        .where(campoConta, '==', forma)
-        .where(campoId, 'in', [Number(idLi), idLi])
-        .limit(LIMITE_VINCULOS_LI)
-        .get(),
+      consultaVinculosDaContaPorIdsLi(db, forma, [idLi]).limit(LIMITE_VINCULOS_LI).get(),
     ),
   );
   return snaps.some((snap) =>

@@ -47,6 +47,16 @@ const DB = { sentinela: 'o db do getDb' } as unknown as Firestore;
 const admin = vi.hoisted(() => ({ getDb: vi.fn() }));
 vi.mock('./lib/admin', () => ({ getDb: admin.getDb }));
 
+/** The depósito arm's producer root (PR 12-g): every enqueue it was handed, recorded. */
+const reconcile = vi.hoisted(() => ({
+  raiz: vi.fn(),
+  enfileirados: [] as { tarefa: unknown; opcoes: unknown }[],
+}));
+vi.mock('./agendador', async (importOriginal) => {
+  const real = await importOriginal<typeof import('./agendador')>();
+  return { ...real, criarAgendadorReconcileEstoqueLiDoAmbiente: reconcile.raiz };
+});
+
 const { onIntegracaoLojaIntegradaChanged } = await import('./onIntegracaoLojaIntegradaChanged');
 const { syncIntFreteLi } = await import('../../lib/lojaIntegrada/frete/intFrete');
 
@@ -91,15 +101,22 @@ const DISPOSICAO: DisposicaoIntFrete = {
   campos: ['tipo', 'ativo', 'contaLojaIntegradaEnviosOuterRef', 'nome'],
 };
 
-type Snap = { exists: boolean; data: () => DocData };
+type Snap = {
+  exists: boolean;
+  data: () => DocData;
+  updateTime?: { seconds: number; nanoseconds: number };
+};
 type Evento = {
   data: { before: Snap; after: Snap } | undefined;
   params: { integracaoId: string };
   time: string;
 };
 
+/** The after side's commit stamp in every event: 2026-10-15T12:00:00.123456Z. */
+const ATUALIZADO_EM = { seconds: 1_760_529_600, nanoseconds: 123_456_000 };
+
 function snap(data: DocData | null): Snap {
-  return { exists: data != null, data: () => data ?? {} };
+  return { exists: data != null, data: () => data ?? {}, updateTime: ATUALIZADO_EM };
 }
 
 function disparar(evento: Evento): Promise<unknown> {
@@ -124,6 +141,13 @@ let info: ReturnType<typeof vi.spyOn>;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  reconcile.enfileirados.length = 0;
+  reconcile.raiz.mockImplementation(() => ({
+    enfileirar: async (tarefa: unknown, opcoes: unknown) => {
+      reconcile.enfileirados.push({ tarefa, opcoes });
+    },
+  }));
+  vi.stubEnv('LOJA_INTEGRADA_MODO_ESTOQUE', 'dry-run');
   admin.getDb.mockImplementation(() => DB);
   core.reconciliar.mockResolvedValue(DISPOSICAO);
   info = vi.spyOn(logger, 'info').mockImplementation(() => {});
@@ -131,6 +155,7 @@ beforeEach(() => {
 
 afterEach(() => {
   info.mockRestore();
+  vi.unstubAllEnvs();
 });
 
 /** Nothing at all happened: no handle, no reconcile, no line. */
@@ -318,5 +343,97 @@ describe('onIntegracaoLojaIntegradaChanged — the log line', () => {
     const linhas = JSON.stringify(info.mock.calls);
     expect(linhas).not.toContain(NOME);
     expect(linhas).not.toContain('Nome antigo');
+  });
+});
+
+describe('onIntegracaoLojaIntegradaChanged — the DEPÓSITO arm (master plan step 12, PR 12-g)', () => {
+  const comDeposito = (ref: unknown, over: DocData = {}) =>
+    conta({ depositoOuterRef: ref, ...over });
+  const execucao = `estoque-reconcile-deposito-${String(1_760_529_600_123_456)}`;
+
+  it('an UPDATE that re-points the depósito (D1 → D2) enqueues ONE full run, seq 0, at once, named by the after side’s update time — zero reads', async () => {
+    await run(comDeposito('documents/depositos/D1'), comDeposito('documents/depositos/D2'));
+
+    expect(reconcile.enfileirados).toEqual([
+      {
+        tarefa: { tipo: 'estoque-reconcile', execucaoId: execucao, seq: 0 },
+        opcoes: { atrasoS: 0 },
+      },
+    ]);
+    // The freight arm sees no mirrored field move: nothing read at all.
+    expect(admin.getDb).not.toHaveBeenCalled();
+    expect(core.reconciliar).not.toHaveBeenCalled();
+  });
+
+  it('a depósito SET on an existing conta (none → D1) fires too; a redelivery of the same write names the same run', async () => {
+    await run(conta(), comDeposito('depositos/D1'));
+    await run(conta(), comDeposito('depositos/D1'));
+    expect(reconcile.enfileirados.map((e) => e.tarefa)).toEqual([
+      { tipo: 'estoque-reconcile', execucaoId: execucao, seq: 0 },
+      { tipo: 'estoque-reconcile', execucaoId: execucao, seq: 0 },
+    ]);
+  });
+
+  it.each([
+    [
+      '⚠️ a CREATE with a depósito (the nightly run bootstraps it)',
+      null,
+      comDeposito('documents/depositos/D1'),
+    ],
+    [
+      '⚠️ NEAR-MISS: one depósito in its two spellings',
+      comDeposito('documents/depositos/D1'),
+      comDeposito('depositos/D1'),
+    ],
+    ['the depósito removed (D1 → none)', comDeposito('documents/depositos/D1'), conta()],
+    ['a delete', comDeposito('documents/depositos/D1'), null],
+    [
+      'a rename that keeps the depósito',
+      comDeposito('depositos/D1'),
+      comDeposito('depositos/D1', { nome: 'Outro' }),
+    ],
+    [
+      'an inactive conta after the write',
+      comDeposito('depositos/D1'),
+      comDeposito('depositos/D2', { ativo: false }),
+    ],
+    [
+      'another channel',
+      contaMl({ depositoOuterRef: 'depositos/D1' }),
+      contaMl({ depositoOuterRef: 'depositos/D2' }),
+    ],
+    [
+      'retyped out of Loja Integrada',
+      comDeposito('depositos/D1'),
+      comDeposito('depositos/D2', { tipo: INTEGRACAO_TIPO.shopee }),
+    ],
+  ])('%s: NOTHING enqueued and nothing read', async (_caso, before, after) => {
+    await run(before, after);
+
+    expect(reconcile.enfileirados).toEqual([]);
+    expect(reconcile.raiz).not.toHaveBeenCalled();
+  });
+
+  it('the stock valve OFF: nothing enqueued, the producer never built, zero reads', async () => {
+    vi.stubEnv('LOJA_INTEGRADA_MODO_ESTOQUE', '');
+    await run(comDeposito('depositos/D1'), comDeposito('depositos/D2'));
+    expect(reconcile.raiz).not.toHaveBeenCalled();
+    expect(admin.getDb).not.toHaveBeenCalled();
+  });
+
+  it('both arms on ONE write: the freight doc reconciled AND the run enqueued, independently', async () => {
+    await run(comDeposito('depositos/D1'), comDeposito('depositos/D2', { nome: 'Outro nome' }));
+    esperarUmaReconciliacao();
+    expect(reconcile.enfileirados).toHaveLength(1);
+  });
+
+  it('a transient enqueue failure propagates to the Eventarc retry (the name keeps it idempotent)', async () => {
+    const falha = new Error('transitória');
+    reconcile.raiz.mockImplementation(() => ({
+      enfileirar: async () => {
+        throw falha;
+      },
+    }));
+    await expect(run(comDeposito('depositos/D1'), comDeposito('depositos/D2'))).rejects.toBe(falha);
   });
 });

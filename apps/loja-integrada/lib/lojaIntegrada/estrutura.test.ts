@@ -475,6 +475,21 @@ const CAMINHO_DA_TAREFA_DA_IMPORTACAO = [
   DESPACHO_DA_IMPORTACAO,
 ] as const;
 
+/**
+ * The daily stock reconcile's TASK path (step 12, PR 12-g): the reads queue's handler (an entry of
+ * its own, as for the import), the one binding of a slice's deps, and the slice. Its store phase
+ * (`faseLi.ts`) is the reconcile's only reach into Loja Integrada, walked with the read routes'
+ * rules: through the context loader only, whose first act is the read switch.
+ */
+const CAMINHO_DA_TAREFA_DO_RECONCILE = [
+  FILA_DE_LEITURA,
+  'functions/src/depsReconcileEstoque.ts',
+  'lib/lojaIntegrada/estoque/reconcile/despachoReconcile.ts',
+] as const;
+
+/** The reconcile's store phase: the one module of that path that calls Loja Integrada. */
+const FASE_LI_DO_RECONCILE = 'lib/lojaIntegrada/estoque/reconcile/faseLi.ts';
+
 /** The complete step's photos (step 9, PR 9-d): the dispatch's ONE path to the CDN. */
 const MODULO_DAS_FOTOS = 'lib/lojaIntegrada/importacao/fotos.ts';
 
@@ -537,12 +552,35 @@ const CARREGAM_O_PACOTE_NO_GATILHO_DE_ESTOQUE = ['lib/lojaIntegrada/pedidos/vinc
  */
 const RAIZ_DO_PRODUTOR_DE_ESTOQUE = 'functions/src/agendadorEstoque.ts';
 
-/** `ler` without type-only imports, the producer root read as a file that imports nothing. */
-function leitorDoGatilhoDeEstoque(lerBruto: LeitorDeFonte): LeitorDeFonte {
+/**
+ * The READS queue's producer root (`functions/src/agendador.ts`), a LEAF of the reconcile's
+ * schedule and depósito-arm walk for the same reason: it binds the reads pipeline's queue, and
+ * walking into it would put the whole reads queue in a closure that enqueues one task.
+ */
+const RAIZ_DO_PRODUTOR_DE_LEITURA = 'functions/src/agendador.ts';
+
+/**
+ * The reconcile's NIGHTLY START and its DEPÓSITO-CHANGE arm (step 12, PR 12-g), and the conta
+ * trigger that carries the arm: each enqueues ONE reads-queue task and reads nothing, so none may
+ * reach what a Loja Integrada call needs — walked with the stock trigger's rules, both producer
+ * roots leaves.
+ */
+const CAMINHO_DO_INICIO_DO_RECONCILE = [
+  'functions/src/reconciliarEstoque.ts',
+  'lib/lojaIntegrada/estoque/reconcile/agendamentoReconcile.ts',
+  'lib/lojaIntegrada/estoque/reconcile/gatilhoDepositoLi.ts',
+  'functions/src/onIntegracaoLojaIntegradaChanged.ts',
+] as const;
+
+/** `ler` without type-only imports, each producer root in `folhas` read as a file importing nothing. */
+function leitorDoGatilhoDeEstoque(
+  lerBruto: LeitorDeFonte,
+  folhas: readonly string[] = [RAIZ_DO_PRODUTOR_DE_ESTOQUE],
+): LeitorDeFonte {
   return (caminho) => {
     const texto = lerBruto(caminho);
     if (texto === null) return null;
-    return caminho === RAIZ_DO_PRODUTOR_DE_ESTOQUE ? '' : semImportacoesDeTipo(texto);
+    return folhas.includes(caminho) ? '' : semImportacoesDeTipo(texto);
   };
 }
 
@@ -555,8 +593,9 @@ function leitorDoGatilhoDeEstoque(lerBruto: LeitorDeFonte): LeitorDeFonte {
 function violacoesDoGatilhoDeEstoque(
   entradas: readonly string[],
   lerBruto: LeitorDeFonte,
+  folhas: readonly string[] = [RAIZ_DO_PRODUTOR_DE_ESTOQUE],
 ): string[] {
-  const ler = leitorDoGatilhoDeEstoque(lerBruto);
+  const ler = leitorDoGatilhoDeEstoque(lerBruto, folhas);
   const fecho = fechoDeImportacoes(entradas, ler, resolverAliasDoApp(ler));
   const violacoes: string[] = [];
   for (const espec of fecho.externos) {
@@ -1115,6 +1154,52 @@ describe('lib/lojaIntegrada layout', () => {
   );
 
   it(
+    'the stock reconcile task path (step 12, PR 12-g: the queue handler, deps, slice) reaches Loja Integrada only through the context loader: no fetch, and no client, validating GET or CDN reader of its own',
+    { timeout: 30_000 },
+    () => {
+      for (const entrada of CAMINHO_DA_TAREFA_DO_RECONCILE) {
+        expect(lerDoApp(entrada), entrada).not.toBeNull();
+      }
+      expect(violacoesDaRotaDeLeitura(CAMINHO_DA_TAREFA_DO_RECONCILE, lerDoApp)).toEqual([]);
+      // Anti-vacuity: the walk entered the store phase and the context loader it reads through.
+      const ler: LeitorDeFonte = (c) => {
+        const texto = lerDoApp(c);
+        return texto === null ? null : semImportacoesDeTipo(texto);
+      };
+      const fecho = fechoDeImportacoes(
+        CAMINHO_DA_TAREFA_DO_RECONCILE,
+        ler,
+        resolverAliasDoApp(ler),
+      );
+      expect(fecho.arquivos).toEqual(
+        expect.arrayContaining([
+          ...CAMINHO_DA_TAREFA_DO_RECONCILE,
+          FASE_LI_DO_RECONCILE,
+          CONSTRUTOR_DO_CLIENTE,
+          'lib/lojaIntegrada/estoque/reconcile/faseErp.ts',
+          'lib/lojaIntegrada/estoque/reconcile/filaReconcile.ts',
+          'lib/lojaIntegrada/estoque/reconcile/fimReconcile.ts',
+          'lib/lojaIntegrada/estoque/slotEstoqueLi.ts',
+          'lib/lojaIntegrada/core/falhaDeLeituraLi.ts',
+        ]),
+      );
+      // Only the store phase loads the context: the queue and end phases never do.
+      for (const sem of [
+        'lib/lojaIntegrada/estoque/reconcile/filaReconcile.ts',
+        'lib/lojaIntegrada/estoque/reconcile/fimReconcile.ts',
+      ]) {
+        expect(lerDoApp(sem) ?? '', sem).not.toMatch(/\bloadLojaIntegradaContext\b/);
+      }
+      expect(fecho.externos).toContain('@delfrance/integrations-loja-integrada');
+      // The store phase loads the context ONCE, and names no package client of its own.
+      const faseLi = lerDoApp(FASE_LI_DO_RECONCILE) ?? '';
+      expect(faseLi.split('loadLojaIntegradaContext(')).toHaveLength(2);
+      expect(faseLi).toContain('lerPaginaEstoqueLi(contexto.cliente');
+      expect(faseLi).toContain('buscarEstoqueProdutoLi(contexto.cliente');
+    },
+  );
+
+  it(
     'the stock trigger and the kit fan-out (step 12) call NOTHING outside the ERP: no context, park, pacer, write engine or send run, no client named, no fetch, and the package loaded only for constants',
     { timeout: 30_000 },
     () => {
@@ -1144,6 +1229,43 @@ describe('lib/lojaIntegrada layout', () => {
       expect(
         violacoesDoGatilhoDeEstoque(['lib/lojaIntegrada/estoque/processarEstoque.ts'], lerDoApp)
           .length,
+      ).toBeGreaterThan(0);
+    },
+  );
+
+  it(
+    'the reconcile’s nightly start and depósito-change arm (step 12, PR 12-g) call NOTHING outside the ERP: no context, park, pacer, write engine or send run, no client named, no fetch',
+    { timeout: 30_000 },
+    () => {
+      const folhas = [RAIZ_DO_PRODUTOR_DE_ESTOQUE, RAIZ_DO_PRODUTOR_DE_LEITURA];
+      for (const entrada of CAMINHO_DO_INICIO_DO_RECONCILE) {
+        expect(lerDoApp(entrada), entrada).not.toBeNull();
+      }
+      expect(violacoesDoGatilhoDeEstoque(CAMINHO_DO_INICIO_DO_RECONCILE, lerDoApp, folhas)).toEqual(
+        [],
+      );
+      // Anti-vacuity: the walk entered the valve, the reads producer's pure module and its root.
+      const ler = leitorDoGatilhoDeEstoque(lerDoApp, folhas);
+      const fecho = fechoDeImportacoes(
+        CAMINHO_DO_INICIO_DO_RECONCILE,
+        ler,
+        resolverAliasDoApp(ler),
+      );
+      expect(fecho.arquivos).toEqual(
+        expect.arrayContaining([
+          ...CAMINHO_DO_INICIO_DO_RECONCILE,
+          'lib/lojaIntegrada/core/valvulas.ts',
+          'lib/lojaIntegrada/estoque/reconcile/agendadorReconcile.ts',
+          RAIZ_DO_PRODUTOR_DE_LEITURA,
+        ]),
+      );
+      // The rules bite: the SLICE, walked by them, fails on what it reaches.
+      expect(
+        violacoesDoGatilhoDeEstoque(
+          ['lib/lojaIntegrada/estoque/reconcile/despachoReconcile.ts'],
+          lerDoApp,
+          folhas,
+        ).length,
       ).toBeGreaterThan(0);
     },
   );

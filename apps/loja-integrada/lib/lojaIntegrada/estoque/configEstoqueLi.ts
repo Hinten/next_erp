@@ -1,14 +1,14 @@
 /**
- * The stock sync's two NUMERIC settings, read from the environment an entry point passes in
- * (master plan step 12): the upper cap on what one store row advertises, and the eager ceiling of
- * the kit fan-out. A LEAF: it imports `@delfrance/schemas` and one type, so the stock trigger can
+ * The stock sync's NUMERIC settings, read from the environment an entry point passes in (master
+ * plan step 12): the upper cap on what one store row advertises, the eager ceiling of the kit
+ * fan-out, and the page size the daily reconcile reads the store's stock list with. A LEAF: it imports `@delfrance/schemas` and one type, so the stock trigger can
  * read both without pulling the send run's module — and with it the write context — into its
  * closure (`processarEstoque.ts` re-exports the cap reader, so none of its importers moved).
  *
  * Pure: no clock, no network, no Firestore; the environment is a parameter (`estrutura.test.ts`).
  * Nothing is trimmed or case-folded, as with the valves (`core/valvulas.ts`).
  */
-import { MAX_KITS_EM_LINHA_ESTOQUE_LI } from '@delfrance/schemas';
+import { MAX_KITS_EM_LINHA_ESTOQUE_LI, MAX_LIMITE_PAGINA_ESTOQUE_LI } from '@delfrance/schemas';
 
 import type { AmbienteLi } from '../core/valvulas';
 
@@ -89,4 +89,56 @@ export function lerTetoKitsImediatosLi(ambiente: AmbienteLi): TetoKitsImediatosL
     if (teto <= MAX_KITS_EM_LINHA_ESTOQUE_LI) return { teto, valido: true };
   }
   return { teto: TETO_KITS_IMEDIATOS_INVALIDO_LI, valido: false };
+}
+
+/* -------------------------------------------------------------------------- */
+/*                   The reconcile's page of the store's stock list            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * How many rows each page of the store's stock list asks for in the daily reconcile
+ * (`estoque/reconcile/faseLi.ts`). Read when a conta's list walk STARTS and stored in the walk's
+ * cursor (`sincEstoqueLojaIntegrada/{conta}.reconcile.limite`): a run never changes it mid-list,
+ * whatever the environment says by the time it resumes.
+ */
+export const LIMITE_PAGINA_ESTOQUE_ENV_LI = 'LOJA_INTEGRADA_ESTOQUE_LIMITE_PAGINA';
+
+/**
+ * The page size when the variable is unset or blank: 100, as measured — the owner's read-only
+ * stock captures saw `limit` 20, 50 and 100 honoured exactly. It is also the largest the list is
+ * ever asked for ({@link MAX_LIMITE_PAGINA_ESTOQUE_LI}, the schema's one bound).
+ */
+export const LIMITE_PAGINA_ESTOQUE_PADRAO_LI = 100;
+
+/** A positive integer in canonical decimal: no sign, no leading zero, no space, no fraction. */
+const LIMITE_PAGINA_CANONICO = /^[1-9][0-9]*$/;
+
+/** The page size as read, and whether the value could be read as given. */
+export interface LimitePaginaEstoqueLi {
+  readonly limite: number;
+  /** `false` when a value was set and refused or clamped: the caller logs ONE WARNING per run. */
+  readonly valido: boolean;
+}
+
+/**
+ * The reconcile's page size: unset or blank (exactly `''`, nothing trimmed) ⇒ the default
+ * ({@link LIMITE_PAGINA_ESTOQUE_PADRAO_LI}), valid; `1` to {@link MAX_LIMITE_PAGINA_ESTOQUE_LI} in
+ * canonical decimal ⇒ that number, valid; a canonical number ABOVE it (`101`, `100000`, one past
+ * the safe-integer range) ⇒ CLAMPED to it, not valid; anything else (`0`, `03`, ` 5`, `5 `, `1.5`,
+ * `-1`, `1e2`, `abc`) ⇒ the default, not valid. Never throws: a misconfigured page size must not
+ * stop the reconcile, only cost it a WARNING.
+ */
+export function lerLimitePaginaEstoqueLi(ambiente: AmbienteLi): LimitePaginaEstoqueLi {
+  const valor = ambiente[LIMITE_PAGINA_ESTOQUE_ENV_LI];
+  if (valor === undefined || valor === '') {
+    return { limite: LIMITE_PAGINA_ESTOQUE_PADRAO_LI, valido: true };
+  }
+  if (!LIMITE_PAGINA_CANONICO.test(valor)) {
+    return { limite: LIMITE_PAGINA_ESTOQUE_PADRAO_LI, valido: false };
+  }
+  const limite = Number(valor);
+  if (!Number.isSafeInteger(limite) || limite > MAX_LIMITE_PAGINA_ESTOQUE_LI) {
+    return { limite: MAX_LIMITE_PAGINA_ESTOQUE_LI, valido: false };
+  }
+  return { limite, valido: true };
 }
