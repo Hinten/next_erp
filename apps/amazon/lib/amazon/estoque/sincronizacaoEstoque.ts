@@ -43,13 +43,33 @@
  *   - a depósito that is not the stored `depositoDoCursor` (both compared as
  *     ids, through the same parse) ⇒ NO window is read: the new depósito's
  *     earlier stamps sit below a cursor taken at the old one, so only a
- *     reconcile can see them. ONE WARNING `deposito-do-cursor-mudou`, the
- *     cursor and `depositoDoCursor` KEPT (the hand-off below).
+ *     reconcile can see them. The reconcile hand-off (below), then the cursor
+ *     RESET to now with the new depósito: one WARNING line, once.
+ * - **T4b** — ONE `getAll` of the conta's reconcile run
+ *   (`reconciliacaoEstoqueAmazon/{contaId}`) and its stock feed lease
+ *   (`feedsAmazonEmCurso/estoque-{contaId}`), both by id, whatever the depósito:
+ *   - a LIVE run without progress for more than 15 minutes has lost its next
+ *     task: its page is RE-KICKED (`retomarReconciliacaoEstoqueAmazon`, named by
+ *     the stall), so a stall heals within minutes with no request;
+ *   - the STRANDED START: an EXPIRED `montando` lease holding a pending start
+ *     (a holder that died building releases nothing, and on a quiet stretch no
+ *     batch comes to take it over) ⇒ the start's NAMED `vez` recovery FIRST,
+ *     then the start cleared — both through the lease I/O
+ *     (`consumirPendenteVezFeed`, which re-reads the lease and re-decides on
+ *     that read, so a holder that moved meanwhile is never overwritten).
+ *   A named failure of the jobs producer there ends the conta's run
+ *   `enfileiramento-falhou` before any window read (T8 still runs). A run or a
+ *   lease that no longer parses costs only its own step — the re-kick, or the
+ *   stranded start — named in `manutencaoInvalida` (the line at WARNING): the
+ *   delta path below still runs, so a broken maintenance document never halts
+ *   the conta's five-minute sync.
  * - **T5** — `janelaDoTick` over the stored cursor. A `RangeError` from it (a
- *   cursor too far ahead of the clock to be a ms instant) ends THIS conta with
- *   its line naming the class, the cursor untouched; the other contas go on. A
- *   `null` window (a cursor ahead of this clock by the overlap or more) reads
- *   nothing. The window reaches 5 minutes below the cursor and keeps a row
+ *   cursor too far ahead of the clock to be a ms instant: a hand edit or a
+ *   misplaced unit) is caught BY CLASS around that one call: no window can be
+ *   planned from it, so the reconcile hand-off, then the cursor RESET to now
+ *   (`janela-invalida`, WARNING) — the tick heals the cursor instead of
+ *   repeating the refusal every five minutes. A `null` window (a cursor ahead
+ *   of this clock by the overlap or more) reads nothing. The window reaches 5 minutes below the cursor and keeps a row
  *   stamped after `cursor − 20 s`, or stamped further back but COMMITTED after
  *   `cursor − 20 s`: the main estoque writer
  *   (`apps/functions/src/estoques/sincronizarEstoquePedido.ts`) takes its stamp
@@ -75,11 +95,14 @@
  *   'delta'`, the reference the observation's commit `updateTime`), at most 16
  *   in flight; the deadline reached before every one started ⇒
  *   `orcamento-esgotado`, the cursor kept (the next tick re-reads the window,
- *   and the names dedupe what was already enqueued); 31–3,000 ⇒ the delta feed;
- *   more ⇒ a reconcile. A SKU the task payload cannot carry (more than 40 code
- *   points, which no write path can send) is counted and dropped; a contained
- *   enqueue failure (the stock queue's valve, a named transient, a region, a
- *   raw Cloud Tasks failure) keeps the cursor.
+ *   and the names dedupe what was already enqueued); 31–3,000 ⇒ the delta
+ *   feed, as `decidirLote` reads the stock valve: under a canary LIST the
+ *   canary's own SKUs as patch tasks per observation (the others counted
+ *   `fora-do-canario`), otherwise the window `feed-enviar` (its send applies
+ *   the valve again); more ⇒ a reconcile. A SKU the task payload cannot carry
+ *   (more than 40 code points, which no write path can send) is counted and
+ *   dropped; a contained enqueue failure (either queue's valve, a named
+ *   transient, a region, a raw Cloud Tasks failure) keeps the cursor.
  * - **T8** — the conta aviso `estoque-sem-deposito` FIRST, clocked by T4's read
  *   time: on a `semDeposito` TRANSITION (raised on `false → true`, resolved on
  *   `true → false`), and whenever this run took over a lease no run released
@@ -92,7 +115,9 @@
  *   lastUpdateTime: <the lease's writeTime> })`: the lease released,
  *   `ultimoTickMs`, `semDeposito`, and the cursor — moved to the window's end
  *   ONLY when every SKU the task payload can carry was enqueued (or there was
- *   none), never below the stored one — with the depósito it was taken at. On
+ *   none) or the window was durably handed off, never below the stored one but
+ *   by the two RESETS (a depósito change, a cursor no window can be planned
+ *   from) — with the depósito it was taken at. On
  *   FAILED_PRECONDITION (or NOT_FOUND) it re-reads
  *   ONCE: another tick's lease ⇒ nothing written (a WARNING); still ours ⇒
  *   RE-DERIVED from the re-read and retried once, never the captured patch
@@ -103,25 +128,46 @@
  *   rows (`linhas`) are every row the window query RETURNED, the reach-back's
  *   re-read rows the keep rule dropped included, never only the ones that moved.
  *
- * ## The hand-offs are not durable yet
+ * ## The hand-offs, durable
  *
- * A window of 31–3,000 SKUs is a delta feed, and a larger, truncated or unmapped
- * window — or a depósito change — is a reconcile run. Neither consumer exists
- * yet, so each is a WARNING placeholder (`feed-necessario`,
- * `reconciliacao-necessaria`, `deposito-do-cursor-mudou`) and the cursor is
- * KEPT: a hand-off that is not durable never moves it, so the window stays
- * readable until a durable hand-off replaces the line. The tick's window always
- * carries a commit filter (`commitAposMs`, never null) and, unless clamped, a
- * stamp keep rule above its range start: what carrying it into a durable window
- * feed must preserve is in `apps/amazon/CLAUDE.md` (the tick's T7).
+ * A hand-off is durable before the cursor moves past its window, so a window
+ * is never lost:
+ *
+ *  - the DELTA FEED (`feed-necessario`, 31–3,000 SKUs): ONE window
+ *    `feed-enviar` onto the jobs queue — the window's bounds, its keep rule
+ *    WHOLE (`manterDesdeMs`, `commitAposMs`, `forcarPorCommit: false`), no
+ *    `esperaAteMs`, and the depósito, never its SKUs (the send re-derives the
+ *    window under exactly the tick's keep rule, its late commits kept and
+ *    unforced; the set may differ by what moved in between) — NAMED
+ *    `nomeEnvioFeed(conta, execucaoIdDaJanelaFeed(conta, desdeMs, ateMs))`
+ *    with the window's own `desdeMs` (cursor − 5 min: a clamped window is a
+ *    reconcile, never a feed), so the same window
+ *    twice is one batch; no delay. Turned away on `ocupada` or
+ *    `incerta-recuperar`, the batch records its RANGE start as the pending
+ *    one; behind a slow, uncertain, overdue or expired holder, or an open
+ *    breaker, it goes per SKU (the table in `feeds/vezFeed.ts`);
+ *  - the RECONCILE (`reconciliacao-necessaria`: more than 3,000 SKUs, a
+ *    truncated window, a window not mapped in time, a depósito change, a
+ *    cursor no window can be planned from): `solicitarReconciliacaoEstoqueAmazon`
+ *    with `origem: 'tick'` — the request written on its own document, then
+ *    Start (a live run leaves the request to its close). A tick's request is
+ *    never refused: only an automatic one is loop-guarded.
+ *
+ * The line names the hand-off (`repasse`) and what it answered (`entrega`). A
+ * named failure of the jobs producer keeps the cursor
+ * (`enfileiramento-falhou`): the next tick re-reads the window and hands it
+ * off again, the names deduping what landed.
  *
  * ## A conta that fails
  *
- * A Firestore status error and a sync document that no longer parses
- * ({@link SincronizacaoEstoqueDocumentoInvalidoError}) are contained PER CONTA
- * (one line; the lease, if taken, expires before the next tick) and the other
- * contas go on; a failed aviso is such a Firestore error. Anything else — a
- * bug — fails the tick loudly.
+ * A Firestore status error, and a sync document, a reconcile run or request,
+ * or a stock feed lease that no longer parses
+ * ({@link SincronizacaoEstoqueDocumentoInvalidoError}, and the reconcile's and
+ * the lease's own classes), are contained PER CONTA (one line; the lease, if
+ * taken, expires before the next tick) and the other contas go on; a failed
+ * aviso is such a Firestore error. So is a reconcile or lease write that kept
+ * losing its precondition (`conflito`: the next tick re-derives). Anything
+ * else — a bug — fails the tick loudly.
  *
  * ## Units
  *
@@ -133,8 +179,11 @@
  * ## Rule 7
  *
  * Every write is a native precondition on ONE document: the lease, then the
- * final write on the lease's own commit. The enqueues are named per
- * observation (tier 0). No multi-document atomic write.
+ * final write on the lease's own commit. The enqueues are named (tier 0): a
+ * patch task per observation, the delta feed per window, the re-kick per stall
+ * and the stranded start's recovery per (holder, start). The reconcile request
+ * and the feed lease's start are written by their own modules, each tier 1 on
+ * its own read. No multi-document atomic write.
  */
 import type {
   DocumentReference,
@@ -142,7 +191,6 @@ import type {
   Firestore,
   Timestamp,
 } from 'firebase-admin/firestore';
-import { MissingRegionError } from '@delfrance/core/region';
 import {
   integracaoCollection,
   sincronizacaoEstoqueAmazonCollection,
@@ -156,7 +204,10 @@ import {
 import {
   INTEGRACAO_TIPO,
   MOTIVO_CONTA_AMAZON,
+  type ReconciliacaoEstoqueAmazon,
   type SincronizacaoEstoqueAmazon,
+  TIPO_LOTE_FEED_AMAZON,
+  type VezFeedAmazon,
   sincronizacaoEstoqueAmazonSchema,
 } from '@delfrance/schemas';
 
@@ -166,19 +217,46 @@ import {
 } from '../avisos/avisos';
 import { type ContaAmazonResumo, idDeContaValido, listarContasAmazon } from '../core/contas';
 import {
-  AmazonTarefasTransitoriasError,
-  descreverFalhaDoSdkDeTarefasAmazon,
-  ehFalhaDoSdkDeTarefasAmazon,
-} from '../core/filaTarefas';
-import {
   type CampoLogAmazon,
   type LoggerAmazon,
   type SeveridadeAmazon,
   registrarEventoAmazon,
 } from '../core/log';
-import { FLUXO_AMAZON, MODO_AMAZON, lerChaveDeChamadasAmazon, lerValvula } from '../core/valvulas';
+import {
+  FLUXO_AMAZON,
+  MODO_AMAZON,
+  type ValvulaAmazon,
+  decidirAlvo,
+  decidirLote,
+  lerChaveDeChamadasAmazon,
+  lerValvula,
+} from '../core/valvulas';
 import type { AmbienteAmazon } from '../env';
-import { janelaDoTick } from './descobertaEstoque';
+import type {
+  AgendadorLotesAmazon,
+  ResultadoEnfileiramentoLoteAmazon,
+} from '../feeds/agendadorLotes';
+import {
+  TIPO_TAREFA_LOTE_AMAZON,
+  VERSAO_TAREFA_LOTE_AMAZON,
+  execucaoIdDaJanelaFeed,
+  nomeEnvioFeed,
+  tarefaEnviarFeedAmazonSchema,
+} from '../feeds/tarefaLote';
+import { CONSUMO_DO_PENDENTE, consumirPendenteVez } from '../feeds/vezFeed';
+import {
+  type AlvoVezFeed,
+  AmazonVezFeedEmConflitoError,
+  AmazonVezFeedInvalidaError,
+  consumirPendenteVezFeed,
+  lerVezFeedDoSnapshot,
+  refVezFeed,
+} from '../feeds/vezFeedFirestore';
+import {
+  type JanelaEstoqueAmazon,
+  type ObservacaoEstoqueAmazon,
+  janelaDoTick,
+} from './descobertaEstoque';
 import {
   DESFECHO_DESCOBERTA_ESTOQUE_AMAZON,
   ETAPA_DESCOBERTA_ESTOQUE_AMAZON,
@@ -197,6 +275,17 @@ import {
   AmazonEstoqueTarefasDesligadasError,
   type ProdutorEstoqueAmazon,
 } from './produtorEstoque';
+import {
+  ORIGEM_PEDIDO_RECONCILIACAO_ESTOQUE_AMAZON,
+  ReconciliacaoEstoqueDocumentoInvalidoError,
+  ReconciliacaoEstoqueEmConflitoError,
+  type ResultadoRetomadaReconciliacaoEstoqueAmazon,
+  falhaDeEnfileiramentoLoteContida,
+  lerReconciliacaoDoSnapshot,
+  refReconciliacaoEstoqueAmazon,
+  retomarReconciliacaoEstoqueAmazon,
+  solicitarReconciliacaoEstoqueAmazon,
+} from './reconciliacaoEstoque';
 import {
   ORIGEM_TAREFA_ESTOQUE_AMAZON,
   type TarefaEstoqueAmazon,
@@ -238,24 +327,28 @@ export const LEASE_TICK_ESTOQUE_AMAZON_MS = 270_000;
 /** The `fase` every line of the tick carries. */
 export const FASE_TICK_ESTOQUE_AMAZON = 'tick';
 
+/** The producer label of a tick's window `feed-enviar` (the record and the lines carry it). */
+export const ORIGEM_LOTE_TICK_ESTOQUE_AMAZON = 'delta';
+
 /* -------------------------------------------------------------------------- */
 /*                                  Contract                                  */
 /* -------------------------------------------------------------------------- */
 
-/**
- * A hand-off the tick cannot make durable yet (module header): logged as a
- * WARNING, the cursor KEPT.
- */
+/** A durable hand-off of the window (module header): the line names it. */
 export const REPASSE_TICK_ESTOQUE_AMAZON = {
   /** 31–3,000 moved SKUs: one delta feed of the window. */
   feedNecessario: 'feed-necessario',
-  /** More than 3,000, a truncated window, or a window not mapped in time: a reconcile run. */
+  /**
+   * More than 3,000 SKUs, a truncated window, a window not mapped in time, a
+   * depósito change or a cursor no window can be planned from: a reconcile run.
+   */
   reconciliacaoNecessaria: 'reconciliacao-necessaria',
-  /** The conta's depósito is not the one the cursor was taken at: a reconcile at the new one. */
-  depositoDoCursorMudou: 'deposito-do-cursor-mudou',
 } as const;
 export type RepasseTickEstoqueAmazon =
   (typeof REPASSE_TICK_ESTOQUE_AMAZON)[keyof typeof REPASSE_TICK_ESTOQUE_AMAZON];
+
+/** What a hand-off answered (closed): the delta feed's enqueue, or the reconcile request. */
+export type EntregaTickEstoqueAmazon = ResultadoEnfileiramentoLoteAmazon | 'pedido';
 
 /** How one conta's run ended (closed). */
 export const DESFECHO_TICK_ESTOQUE_AMAZON = {
@@ -267,13 +360,16 @@ export const DESFECHO_TICK_ESTOQUE_AMAZON = {
   primeiroTick: 'primeiro-tick',
   /** The cursor is ahead of this clock by the overlap or more: nothing to read. */
   cursorAdiantado: 'cursor-adiantado',
-  /** A hand-off placeholder (`repasse` names it): the cursor kept. */
+  /** A durable hand-off (`repasse` names it, `entrega` what it answered): the cursor advanced. */
   repassado: 'repassado',
   /** The deadline came before the window was read, or before every task was started: the cursor kept. */
   orcamentoEsgotado: 'orcamento-esgotado',
-  /** The stock queue refused the enqueue (a named class): the cursor kept. */
+  /** Either queue refused an enqueue (a named class): the cursor kept. */
   enfileiramentoFalhou: 'enfileiramento-falhou',
-  /** The window planner refused the stored cursor (a `RangeError`): the cursor kept. */
+  /**
+   * The window planner refused the stored cursor (a `RangeError`): the
+   * reconcile hand-off, then the cursor RESET to now.
+   */
   janelaInvalida: 'janela-invalida',
   /** The conta has no depósito the stock sync can read. */
   semDeposito: 'sem-deposito',
@@ -291,8 +387,13 @@ export const DESFECHO_TICK_ESTOQUE_AMAZON = {
   semTempo: 'sem-tempo',
   /** A Firestore status error, contained for this conta. */
   erroFirestore: 'erro-firestore',
-  /** The sync document no longer parses (a hand edit): nothing written for this conta. */
+  /**
+   * The sync document, the reconcile run or request, or the stock feed lease no
+   * longer parses (a hand edit): nothing more written for this conta.
+   */
   documentoInvalido: 'documento-invalido',
+  /** A reconcile or feed-lease write kept losing its precondition: the next tick re-derives. */
+  conflito: 'conflito',
 } as const;
 export type DesfechoTickEstoqueAmazon =
   (typeof DESFECHO_TICK_ESTOQUE_AMAZON)[keyof typeof DESFECHO_TICK_ESTOQUE_AMAZON];
@@ -354,12 +455,21 @@ export interface DepsTickEstoqueAmazon {
   readonly contas: LeitorDeContasEstoqueAmazon;
   /** The stock queue's producer — built only when a batch is due. */
   readonly produtor: () => ProdutorEstoqueAmazon;
+  /**
+   * The jobs queue's producer — built only when one is due: the delta feed's
+   * `feed-enviar`, a reconcile page (a re-kick, a requested run's first page),
+   * the stranded start's `vez` recovery.
+   */
+  readonly agendador: () => AgendadorLotesAmazon;
   /** Now, in MILLISECONDS — read at every decision (the budget, the lease, the window, the stamps). */
   readonly agora: () => number;
   readonly logger: LoggerAmazon;
   /** `(by) => FieldValue.increment(by)` — the aviso counter. */
   readonly increment: (by: number) => unknown;
-  /** A fresh id per conta run: the lease's holder (the id grammar of the stock documents). */
+  /**
+   * A fresh id (the id grammar of the stock documents): each conta run's lease
+   * holder, and the run a reconcile request starts.
+   */
   readonly gerarExecucaoId: () => string;
 }
 
@@ -369,8 +479,18 @@ export interface ResultadoContaTickEstoqueAmazon {
   readonly desfecho: DesfechoTickEstoqueAmazon;
   /** The batch's form or the conta's state, in the stock sync's closed vocabulary. */
   readonly motivo: MotivoEstoqueAmazon | null;
-  /** The hand-off placeholder this run logged, if any. */
+  /** The hand-off this run made, if any. */
   readonly repasse: RepasseTickEstoqueAmazon | null;
+  /** What that hand-off answered. */
+  readonly entrega: EntregaTickEstoqueAmazon | null;
+  /** T4b: the re-kick of a stalled reconcile run, when one was due. */
+  readonly retomada: ResultadoRetomadaReconciliacaoEstoqueAmazon;
+  /** T4b: a stranded start handed to its `vez` recovery and cleared. */
+  readonly inicioRecuperado: boolean;
+  /** T4b: a run or lease that no longer parses, `<class>:<fields>` joined with `;` (its step skipped). */
+  readonly manutencaoInvalida: string | null;
+  /** 31+ SKUs under a canary list: the SKUs the list does not name (not sent). */
+  readonly foraDoCanario: number;
   /** Window queries run, rows returned, produtos read, link partitions listed. */
   readonly paginas: number;
   readonly linhas: number;
@@ -429,7 +549,6 @@ function registrarTick(
 }
 
 const DESFECHOS_EM_WARNING: ReadonlySet<DesfechoTickEstoqueAmazon> = new Set([
-  DESFECHO_TICK_ESTOQUE_AMAZON.repassado,
   DESFECHO_TICK_ESTOQUE_AMAZON.orcamentoEsgotado,
   DESFECHO_TICK_ESTOQUE_AMAZON.enfileiramentoFalhou,
   DESFECHO_TICK_ESTOQUE_AMAZON.janelaInvalida,
@@ -439,19 +558,36 @@ const DESFECHOS_EM_WARNING: ReadonlySet<DesfechoTickEstoqueAmazon> = new Set([
   DESFECHO_TICK_ESTOQUE_AMAZON.semTempo,
   DESFECHO_TICK_ESTOQUE_AMAZON.erroFirestore,
   DESFECHO_TICK_ESTOQUE_AMAZON.documentoInvalido,
+  DESFECHO_TICK_ESTOQUE_AMAZON.conflito,
 ]);
+
+/**
+ * WARNING for a failed or refused run, and for a depósito change (an operator
+ * moved the conta: its hand-off re-reads the whole catalogue); a durable
+ * hand-off of a busy window is the everyday path, INFO.
+ */
+function severidadeDaConta(r: ResultadoContaTickEstoqueAmazon): SeveridadeAmazon {
+  if (DESFECHOS_EM_WARNING.has(r.desfecho)) return 'WARNING';
+  if (r.manutencaoInvalida !== null) return 'WARNING';
+  return r.motivo === MOTIVO_ESTOQUE_AMAZON.depositoMudou ? 'WARNING' : 'INFO';
+}
 
 /** The ONE line per conta run (T9); an inactive conta, skipped every tick, writes none. */
 function registrarConta(deps: DepsTickEstoqueAmazon, r: ResultadoContaTickEstoqueAmazon): void {
   registrarTick(
     deps,
     r.contaId,
-    DESFECHOS_EM_WARNING.has(r.desfecho) ? 'WARNING' : 'INFO',
+    severidadeDaConta(r),
     `[amazon/estoque] tick da conta: ${r.desfecho}`,
     {
       desfecho: r.desfecho,
       motivo: r.motivo,
       repasse: r.repasse,
+      entrega: r.entrega,
+      retomada: r.retomada,
+      inicioRecuperado: r.inicioRecuperado,
+      manutencaoInvalida: r.manutencaoInvalida,
+      foraDoCanario: r.foraDoCanario,
       paginas: r.paginas,
       linhas: r.linhas,
       produtos: r.produtos,
@@ -484,6 +620,11 @@ function resultado(
     desfecho,
     motivo: null,
     repasse: null,
+    entrega: null,
+    retomada: null,
+    inicioRecuperado: false,
+    manutencaoInvalida: null,
+    foraDoCanario: 0,
     paginas: 0,
     linhas: 0,
     produtos: 0,
@@ -623,8 +764,14 @@ async function tomarLease(
 
 /** What the final write applies, on whatever document state it is derived from. */
 interface PlanoFinal {
-  /** Move the cursor here (never below the stored one); `null` keeps it. */
+  /** Move the cursor here (never below the stored one, but by a reset); `null` keeps it. */
   readonly cursorAteMs: number | null;
+  /**
+   * A RESET (a depósito change, a cursor no window can be planned from): the
+   * cursor written at `cursorAteMs` WHATEVER the stored one, its depósito
+   * with it — only after the reconcile hand-off that covers what it skips.
+   */
+  readonly reiniciar: boolean;
   /** The canonical depósito ref the cursor is taken at, written with the cursor. */
   readonly depositoDoCursor: string | null;
   readonly semDeposito: boolean;
@@ -636,7 +783,8 @@ interface PlanoFinal {
 /**
  * The final write's patch, DERIVED from `base` — the state at the lease on the
  * first attempt, the re-read on the retry — so a retry never re-applies what
- * the losing attempt decided (root rule 7): the cursor only moves forward.
+ * the losing attempt decided (root rule 7): the cursor only moves forward, but
+ * by a reset.
  */
 function patchFinal(
   base: SincronizacaoEstoqueAmazon,
@@ -648,7 +796,10 @@ function patchFinal(
     semDeposito: p.semDeposito,
   };
   let cursorAvancou = false;
-  if (p.cursorAteMs !== null && (base.cursorMs === null || p.cursorAteMs > base.cursorMs)) {
+  if (
+    p.cursorAteMs !== null &&
+    (p.reiniciar || base.cursorMs === null || p.cursorAteMs > base.cursorMs)
+  ) {
     patch.cursorMs = p.cursorAteMs;
     cursorAvancou = true;
     if (p.depositoDoCursor !== null && p.depositoDoCursor !== base.depositoDoCursor) {
@@ -701,82 +852,287 @@ async function escreverFinal(
 /*                                 The window                                  */
 /* -------------------------------------------------------------------------- */
 
-/** What T5–T7 concluded, for the final write and the line. */
+/** What T4b–T7 concluded, for the final write and the line. */
 interface Conclusao {
   readonly desfecho: DesfechoTickEstoqueAmazon;
   readonly motivo: MotivoEstoqueAmazon | null;
   readonly repasse: RepasseTickEstoqueAmazon | null;
+  readonly entrega: EntregaTickEstoqueAmazon | null;
   readonly cursorAteMs: number | null;
+  /** The cursor RESET (`PlanoFinal.reiniciar`). */
+  readonly reiniciar: boolean;
   readonly falhas: PlanoFinal['falhas'];
   readonly extra: Partial<ResultadoContaTickEstoqueAmazon>;
 }
 
-/** A hand-off placeholder (module header): WARNING, the cursor kept, the counter untouched. */
-function repassar(
-  repasse: RepasseTickEstoqueAmazon,
-  motivo: MotivoEstoqueAmazon,
-  extra: Partial<ResultadoContaTickEstoqueAmazon>,
+/** A conclusion that keeps the cursor and leaves the counter as it is. */
+function semCursor(
+  desfecho: DesfechoTickEstoqueAmazon,
+  extra: Partial<ResultadoContaTickEstoqueAmazon> = {},
 ): Conclusao {
   return {
-    desfecho: DESFECHO_TICK_ESTOQUE_AMAZON.repassado,
-    motivo,
-    repasse,
+    desfecho,
+    motivo: null,
+    repasse: null,
+    entrega: null,
     cursorAteMs: null,
+    reiniciar: false,
     falhas: 'manter',
     extra,
   };
 }
 
 /**
- * A rejection of the stock producer the tick CONTAINS, by class (root rule 6),
- * as its line names it; `null` for anything else, which the caller rethrows.
+ * A rejection of either producer the tick CONTAINS, by class (root rule 6), as
+ * its line names it: the stock queue's own valve and region classes, then the
+ * jobs producer's (`falhaDeEnfileiramentoLoteContida`: its valve and region,
+ * and the named transient, the missing region and the raw Cloud Tasks
+ * failure both producers share); `null` for anything else, which the caller
+ * rethrows.
  */
 function falhaDeEnfileiramentoContida(err: unknown): string | null {
   if (
     err instanceof AmazonEstoqueTarefasDesligadasError ||
-    err instanceof AmazonTarefasTransitoriasError ||
-    err instanceof AmazonEstoqueRegiaoDaFilaInvalidaError ||
-    err instanceof MissingRegionError
+    err instanceof AmazonEstoqueRegiaoDaFilaInvalidaError
   ) {
     return err.name;
   }
-  if (ehFalhaDoSdkDeTarefasAmazon(err)) return descreverFalhaDoSdkDeTarefasAmazon(err);
-  return null;
+  return falhaDeEnfileiramentoLoteContida(err);
+}
+
+/** A contained enqueue failure: the cursor kept, the counter + 1 (module header). */
+function enfileiramentoFalhou(
+  erro: string,
+  motivo: MotivoEstoqueAmazon | null,
+  repasse: RepasseTickEstoqueAmazon | null,
+  extra: Partial<ResultadoContaTickEstoqueAmazon>,
+): Conclusao {
+  return {
+    desfecho: DESFECHO_TICK_ESTOQUE_AMAZON.enfileiramentoFalhou,
+    motivo,
+    repasse,
+    entrega: null,
+    cursorAteMs: null,
+    reiniciar: false,
+    falhas: 'somar',
+    extra: { ...extra, erro },
+  };
+}
+
+/** What one durable hand-off is: its kind, its motivo, and the cursor it lets move. */
+interface Repasse {
+  readonly repasse: RepasseTickEstoqueAmazon;
+  readonly motivo: MotivoEstoqueAmazon;
+  readonly desfecho: DesfechoTickEstoqueAmazon;
+  readonly cursorAteMs: number;
+  readonly reiniciar: boolean;
+  /** The counter: a durable hand-off is a clean end; a cursor no window could be planned from is not. */
+  readonly falhas: PlanoFinal['falhas'];
+}
+
+/**
+ * ONE durable hand-off (module header, "The hand-offs, durable"): `fazer`
+ * enqueues the delta feed or writes the reconcile request; only once it
+ * answered may the cursor move. A named producer failure keeps the cursor.
+ */
+async function repassar(
+  r: Repasse,
+  fazer: () => Promise<EntregaTickEstoqueAmazon>,
+  extra: Partial<ResultadoContaTickEstoqueAmazon>,
+): Promise<Conclusao> {
+  let entrega: EntregaTickEstoqueAmazon;
+  try {
+    entrega = await fazer();
+  } catch (err) {
+    const classe = falhaDeEnfileiramentoContida(err);
+    if (classe === null) throw err;
+    return enfileiramentoFalhou(classe, r.motivo, r.repasse, extra);
+  }
+  return {
+    desfecho: r.desfecho,
+    motivo: r.motivo,
+    repasse: r.repasse,
+    entrega,
+    cursorAteMs: r.cursorAteMs,
+    reiniciar: r.reiniciar,
+    falhas: r.falhas,
+    extra,
+  };
+}
+
+/**
+ * The reconcile hand-off (module header): the request, `origem: 'tick'`, then
+ * Start. A tick's request is never refused (only an automatic one is guarded),
+ * so its answer is the request itself.
+ */
+async function pedirReconciliacao(
+  contaId: string,
+  deps: DepsTickEstoqueAmazon,
+): Promise<EntregaTickEstoqueAmazon> {
+  await solicitarReconciliacaoEstoqueAmazon(
+    deps.db,
+    contaId,
+    ORIGEM_PEDIDO_RECONCILIACAO_ESTOQUE_AMAZON.tick,
+    deps,
+  );
+  return 'pedido';
+}
+
+/**
+ * The delta-feed hand-off (module header): ONE window `feed-enviar` carrying
+ * the window's bounds, its keep rule WHOLE (`manterDesdeMs`, `commitAposMs`
+ * and `forcarPorCommit`, which the tick's window always sets `false`) and the
+ * depósito — never its SKUs — NAMED by (conta, window), no delay. A batch that
+ * does not force waits on no lease (`esperaAteMs: null`): turned away on
+ * `ocupada` or `incerta-recuperar`, its range start is recorded instead; behind
+ * a slow, uncertain, overdue or expired holder, or an open breaker, it goes per
+ * SKU (`feeds/vezFeed.ts`, `classeDoLote` and `destinoDoLoteRecusado`).
+ */
+function enfileirarFeedDoTick(
+  contaId: string,
+  depositoId: string,
+  janela: JanelaEstoqueAmazon,
+  deps: DepsTickEstoqueAmazon,
+): Promise<EntregaTickEstoqueAmazon> {
+  const execucaoId = execucaoIdDaJanelaFeed(contaId, janela.desdeMs, janela.ateMs);
+  const tarefa = tarefaEnviarFeedAmazonSchema.parse({
+    v: VERSAO_TAREFA_LOTE_AMAZON,
+    tipo: TIPO_TAREFA_LOTE_AMAZON.enviar,
+    fluxo: FLUXO_AMAZON.estoque,
+    contaId,
+    execucaoId,
+    origem: ORIGEM_LOTE_TICK_ESTOQUE_AMAZON,
+    lote: {
+      tipo: TIPO_LOTE_FEED_AMAZON.janela,
+      desdeMs: janela.desdeMs,
+      ateMs: janela.ateMs,
+      manterDesdeMs: janela.manterDesdeMs,
+      commitAposMs: janela.commitAposMs,
+      forcarPorCommit: janela.forcarPorCommit,
+      esperaAteMs: null,
+      depositoId,
+    },
+  });
+  return deps.agendador().enfileirarLote(tarefa, { nome: nomeEnvioFeed(contaId, execucaoId) });
+}
+
+/**
+ * One NAMED delta patch task per observation, at most 16 in flight, the
+ * deadline asked before STARTING each; a SKU no payload can carry counted. The
+ * cursor moves to the window's end only when every task was started.
+ */
+async function enfileirarObservacoes(
+  contaId: string,
+  observacoes: readonly ObservacaoEstoqueAmazon[],
+  cursorAteMs: number,
+  prazoMs: number,
+  deps: DepsTickEstoqueAmazon,
+  extra: Partial<ResultadoContaTickEstoqueAmazon>,
+): Promise<Conclusao> {
+  const tarefas: TarefaEstoqueAmazon[] = [];
+  let foraDaTarefa = 0;
+  for (const o of observacoes) {
+    const t = tarefaEstoqueAmazonSchema.safeParse({
+      v: VERSAO_TAREFA_ESTOQUE_AMAZON,
+      contaId,
+      sku: o.sku,
+      origem: ORIGEM_TAREFA_ESTOQUE_AMAZON.delta,
+      referencia: referenciaDaObservacao(o.updateTime),
+      depositoId: null,
+    });
+    if (t.success) tarefas.push(t.data);
+    else foraDaTarefa += 1;
+  }
+  const comTarefas = { ...extra, foraDaTarefa };
+  let lote = { enfileiradas: 0, jaEnfileiradas: 0, naoTentadas: 0 };
+  if (tarefas.length > 0) {
+    try {
+      lote = await deps
+        .produtor()
+        .enfileirarLote(tarefas, { continuar: () => deps.agora() < prazoMs });
+    } catch (err) {
+      const classe = falhaDeEnfileiramentoContida(err);
+      if (classe === null) throw err;
+      return enfileiramentoFalhou(classe, MOTIVO_ESTOQUE_AMAZON.emPatches, null, comTarefas);
+    }
+  }
+  const contados = {
+    ...comTarefas,
+    tarefas: lote.enfileiradas,
+    jaEnfileiradas: lote.jaEnfileiradas,
+    naoTentadas: lote.naoTentadas,
+  };
+  if (lote.naoTentadas > 0) {
+    return {
+      ...semCursor(DESFECHO_TICK_ESTOQUE_AMAZON.orcamentoEsgotado, {
+        ...contados,
+        orcamentoEsgotado: true,
+      }),
+      motivo: MOTIVO_ESTOQUE_AMAZON.orcamentoEsgotado,
+      falhas: 'somar',
+    };
+  }
+  return {
+    desfecho: DESFECHO_TICK_ESTOQUE_AMAZON.enfileirado,
+    motivo: MOTIVO_ESTOQUE_AMAZON.emPatches,
+    repasse: null,
+    entrega: null,
+    cursorAteMs,
+    reiniciar: false,
+    falhas: 'zerar',
+    extra: contados,
+  };
+}
+
+/** What T5–T7 work with for one conta whose depósito is the cursor's. */
+interface ContaDaJanela {
+  readonly contaId: string;
+  readonly depositoId: string;
+  readonly cursorMs: number;
+  readonly prazoMs: number;
+  readonly valvula: ValvulaAmazon<typeof FLUXO_AMAZON.estoque>;
 }
 
 /** T5–T7 for one conta whose depósito is the cursor's (module header). */
-async function lerEEnfileirar(
-  contaId: string,
-  depositoId: string,
-  cursorMs: number,
-  prazoMs: number,
-  deps: DepsTickEstoqueAmazon,
-): Promise<Conclusao> {
-  // T5: the window. Its planner's RangeError ends this conta only (a stamp, never the tick).
+async function lerEEnfileirar(c: ContaDaJanela, deps: DepsTickEstoqueAmazon): Promise<Conclusao> {
+  const { contaId, depositoId, prazoMs } = c;
+  // T5: the window. Its planner's RangeError is caught around that call alone:
+  // no window can be planned from this cursor, so a reconcile covers whatever
+  // it would have read, and the cursor is RESET (taken BEFORE the request).
+  const agoraMs = deps.agora();
   let janela: ReturnType<typeof janelaDoTick>;
   try {
-    janela = janelaDoTick({ cursorMs, agoraMs: deps.agora() });
+    janela = janelaDoTick({ cursorMs: c.cursorMs, agoraMs });
   } catch (err) {
     if (!(err instanceof RangeError)) throw err;
-    return {
-      desfecho: DESFECHO_TICK_ESTOQUE_AMAZON.janelaInvalida,
-      motivo: null,
-      repasse: null,
-      cursorAteMs: null,
-      falhas: 'somar',
-      extra: { erro: err.name },
-    };
+    return repassar(
+      {
+        repasse: REPASSE_TICK_ESTOQUE_AMAZON.reconciliacaoNecessaria,
+        motivo: MOTIVO_ESTOQUE_AMAZON.emReconciliacao,
+        desfecho: DESFECHO_TICK_ESTOQUE_AMAZON.janelaInvalida,
+        cursorAteMs: agoraMs,
+        reiniciar: true,
+        falhas: 'somar',
+      },
+      () => pedirReconciliacao(contaId, deps),
+      { erro: err.name },
+    );
   }
-  if (janela === null) {
-    return {
-      desfecho: DESFECHO_TICK_ESTOQUE_AMAZON.cursorAdiantado,
-      motivo: null,
-      repasse: null,
-      cursorAteMs: null,
-      falhas: 'manter',
-      extra: {},
-    };
-  }
+  if (janela === null) return semCursor(DESFECHO_TICK_ESTOQUE_AMAZON.cursorAdiantado);
+  const ateMs = janela.ateMs;
+  const reconciliacao = (extra: Partial<ResultadoContaTickEstoqueAmazon>) =>
+    repassar(
+      {
+        repasse: REPASSE_TICK_ESTOQUE_AMAZON.reconciliacaoNecessaria,
+        motivo: MOTIVO_ESTOQUE_AMAZON.emReconciliacao,
+        desfecho: DESFECHO_TICK_ESTOQUE_AMAZON.repassado,
+        cursorAteMs: ateMs,
+        reiniciar: false,
+        falhas: 'zerar',
+      },
+      () => pedirReconciliacao(contaId, deps),
+      extra,
+    );
 
   // T5–T6: the rows, the produtos, the probes, the conta's SKUs.
   const d = await descobrirJanelaEstoqueAmazon(
@@ -791,31 +1147,24 @@ async function lerEEnfileirar(
     sondas: d.contagem.sondas,
   };
   if (d.tipo === DESFECHO_DESCOBERTA_ESTOQUE_AMAZON.truncada) {
-    return repassar(
-      REPASSE_TICK_ESTOQUE_AMAZON.reconciliacaoNecessaria,
-      MOTIVO_ESTOQUE_AMAZON.emReconciliacao,
-      { ...lidos, truncada: true },
-    );
+    return reconciliacao({ ...lidos, truncada: true });
   }
   if (d.tipo === DESFECHO_DESCOBERTA_ESTOQUE_AMAZON.prazo) {
     // T5's deadline (before or between window pages) says the reads were slow,
     // not how much moved: the cursor kept, the next tick re-reads the window.
     if (d.etapa === ETAPA_DESCOBERTA_ESTOQUE_AMAZON.janela) {
       return {
-        desfecho: DESFECHO_TICK_ESTOQUE_AMAZON.orcamentoEsgotado,
+        ...semCursor(DESFECHO_TICK_ESTOQUE_AMAZON.orcamentoEsgotado, {
+          ...lidos,
+          prazo: d.etapa,
+          orcamentoEsgotado: true,
+        }),
         motivo: MOTIVO_ESTOQUE_AMAZON.orcamentoEsgotado,
-        repasse: null,
-        cursorAteMs: null,
         falhas: 'somar',
-        extra: { ...lidos, prazo: d.etapa, orcamentoEsgotado: true },
       };
     }
     // T6's (the produtos, the link partitions): a window too slow to map.
-    return repassar(
-      REPASSE_TICK_ESTOQUE_AMAZON.reconciliacaoNecessaria,
-      MOTIVO_ESTOQUE_AMAZON.emReconciliacao,
-      { ...lidos, prazo: d.etapa },
-    );
+    return reconciliacao({ ...lidos, prazo: d.etapa });
   }
 
   // T7: the batch's form, from its distinct SKUs as the tick sees them.
@@ -824,88 +1173,124 @@ async function lerEEnfileirar(
   switch (destinoDoLoteDelta(n)) {
     case DESTINO_LOTE_DELTA_ESTOQUE_AMAZON.nada:
       return {
-        desfecho: DESFECHO_TICK_ESTOQUE_AMAZON.janelaVazia,
-        motivo: null,
-        repasse: null,
-        cursorAteMs: janela.ateMs,
+        ...semCursor(DESFECHO_TICK_ESTOQUE_AMAZON.janelaVazia, comSkus),
+        cursorAteMs: ateMs,
         falhas: 'zerar',
-        extra: comSkus,
       };
-    case DESTINO_LOTE_DELTA_ESTOQUE_AMAZON.feed:
-      return repassar(
-        REPASSE_TICK_ESTOQUE_AMAZON.feedNecessario,
-        MOTIVO_ESTOQUE_AMAZON.emFeed,
-        comSkus,
-      );
     case DESTINO_LOTE_DELTA_ESTOQUE_AMAZON.reconciliacao:
-      return repassar(
-        REPASSE_TICK_ESTOQUE_AMAZON.reconciliacaoNecessaria,
-        MOTIVO_ESTOQUE_AMAZON.emReconciliacao,
-        comSkus,
-      );
+      return reconciliacao(comSkus);
     case DESTINO_LOTE_DELTA_ESTOQUE_AMAZON.patches:
+      return enfileirarObservacoes(contaId, d.observacoes, ateMs, prazoMs, deps, comSkus);
+    case DESTINO_LOTE_DELTA_ESTOQUE_AMAZON.feed:
       break;
   }
 
-  // 1–30: one named patch task per observation; a SKU no payload can carry is counted.
-  const tarefas: TarefaEstoqueAmazon[] = [];
-  let foraDaTarefa = 0;
-  for (const o of d.observacoes) {
-    const t = tarefaEstoqueAmazonSchema.safeParse({
-      v: VERSAO_TAREFA_ESTOQUE_AMAZON,
-      contaId,
-      sku: o.sku,
-      origem: ORIGEM_TAREFA_ESTOQUE_AMAZON.delta,
-      referencia: referenciaDaObservacao(o.updateTime),
-      depositoId: null,
+  // 31–3,000: the delta feed, in the form the stock valve gives a batch. Under
+  // a canary LIST, only the canary's SKUs, as patch tasks per observation.
+  if (decidirLote(c.valvula).modo === 'so-patches-do-canario') {
+    const noCanario = d.observacoes.filter(
+      (o) => decidirAlvo(c.valvula, contaId, o.sku).modo === MODO_AMAZON.on,
+    );
+    return enfileirarObservacoes(contaId, noCanario, ateMs, prazoMs, deps, {
+      ...comSkus,
+      foraDoCanario: n - noCanario.length,
     });
-    if (t.success) tarefas.push(t.data);
-    else foraDaTarefa += 1;
   }
-  const comTarefas = { ...comSkus, foraDaTarefa };
-  let lote = { enfileiradas: 0, jaEnfileiradas: 0, naoTentadas: 0 };
-  if (tarefas.length > 0) {
-    try {
-      lote = await deps
-        .produtor()
-        .enfileirarLote(tarefas, { continuar: () => deps.agora() < prazoMs });
-    } catch (err) {
-      const classe = falhaDeEnfileiramentoContida(err);
-      if (classe === null) throw err;
-      return {
-        desfecho: DESFECHO_TICK_ESTOQUE_AMAZON.enfileiramentoFalhou,
-        motivo: MOTIVO_ESTOQUE_AMAZON.emPatches,
-        repasse: null,
-        cursorAteMs: null,
-        falhas: 'somar',
-        extra: { ...comTarefas, erro: classe },
-      };
+  return repassar(
+    {
+      repasse: REPASSE_TICK_ESTOQUE_AMAZON.feedNecessario,
+      motivo: MOTIVO_ESTOQUE_AMAZON.emFeed,
+      desfecho: DESFECHO_TICK_ESTOQUE_AMAZON.repassado,
+      cursorAteMs: ateMs,
+      reiniciar: false,
+      falhas: 'zerar',
+    },
+    () => enfileirarFeedDoTick(contaId, depositoId, janela, deps),
+    comSkus,
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/*                   T4b: the reconcile run and the feed lease                  */
+/* -------------------------------------------------------------------------- */
+
+/** What T4b did. */
+interface Manutencao {
+  readonly retomada: ResultadoRetomadaReconciliacaoEstoqueAmazon;
+  readonly inicioRecuperado: boolean;
+  /** A contained enqueue failure's class: the conta's run ends here (T8 still runs). */
+  readonly erro: string | null;
+  /**
+   * The maintenance documents that no longer parse, each as `<class>:<fields>`
+   * (field NAMES only), joined with `;`: their step skipped.
+   */
+  readonly invalidos: string | null;
+}
+
+/**
+ * T4b (module header): ONE `getAll` of the reconcile run and the stock feed
+ * lease; the re-kick of a run that lost its next task; the stranded start's
+ * `vez` recovery, then its clearing. A run or a lease that no longer parses
+ * costs ONLY its own step (named in `invalidos`, the line at WARNING): the
+ * delta path (T5–T8) still runs. A lease write that kept losing its
+ * precondition propagates (contained per conta); a named producer failure is
+ * answered in `erro`.
+ */
+async function manterReconciliacaoEVez(
+  contaId: string,
+  deps: DepsTickEstoqueAmazon,
+): Promise<Manutencao> {
+  const alvo: AlvoVezFeed = { fluxo: FLUXO_AMAZON.estoque, contaId };
+  const [snapRun, snapVez] = await deps.db.getAll(
+    refReconciliacaoEstoqueAmazon(deps.db, contaId),
+    refVezFeed(deps.db, alvo),
+  );
+  if (snapRun === undefined || snapVez === undefined) {
+    throw new TypeError('sincronizacaoEstoque.ts: o getAll não respondeu os dois documentos');
+  }
+  const invalidos: string[] = [];
+  let run: ReconciliacaoEstoqueAmazon | null = null;
+  try {
+    run = lerReconciliacaoDoSnapshot(snapRun, contaId).estado;
+  } catch (err) {
+    if (!(err instanceof ReconciliacaoEstoqueDocumentoInvalidoError)) throw err;
+    invalidos.push(`${err.name}:${err.campos.join(',')}`);
+  }
+  let vez: VezFeedAmazon | null = null;
+  let vezLegivel = true;
+  try {
+    ({ vez } = lerVezFeedDoSnapshot(snapVez, alvo));
+  } catch (err) {
+    if (!(err instanceof AmazonVezFeedInvalidaError)) throw err;
+    vezLegivel = false;
+    invalidos.push(`${err.name}:${err.campos.join(',')}`);
+  }
+  const lidos = invalidos.length === 0 ? null : invalidos.join(';');
+  let retomada: ResultadoRetomadaReconciliacaoEstoqueAmazon = null;
+  let inicioRecuperado = false;
+  try {
+    retomada = await retomarReconciliacaoEstoqueAmazon(contaId, run, deps);
+    // The stranded start, decided by the lease's own rule on THIS read; the
+    // lease I/O then re-reads and re-decides before it writes anything.
+    const montandoVencida = { tipo: CONSUMO_DO_PENDENTE.montandoVencida } as const;
+    if (
+      vezLegivel &&
+      consumirPendenteVez(vez, montandoVencida, deps.agora()).tipo === 'atualizar'
+    ) {
+      const consumo = await consumirPendenteVezFeed(deps.db, alvo, montandoVencida, {
+        agora: deps.agora,
+        enfileirarVez: async (recuperacao) => {
+          await deps.agendador().enfileirarLote(recuperacao.tarefa, { nome: recuperacao.nome });
+        },
+      });
+      inicioRecuperado = consumo.tipo === 'escrito';
     }
+  } catch (err) {
+    const classe = falhaDeEnfileiramentoContida(err);
+    if (classe === null) throw err;
+    return { retomada, inicioRecuperado, erro: classe, invalidos: lidos };
   }
-  const contados = {
-    ...comTarefas,
-    tarefas: lote.enfileiradas,
-    jaEnfileiradas: lote.jaEnfileiradas,
-    naoTentadas: lote.naoTentadas,
-  };
-  if (lote.naoTentadas > 0) {
-    return {
-      desfecho: DESFECHO_TICK_ESTOQUE_AMAZON.orcamentoEsgotado,
-      motivo: MOTIVO_ESTOQUE_AMAZON.orcamentoEsgotado,
-      repasse: null,
-      cursorAteMs: null,
-      falhas: 'somar',
-      extra: { ...contados, orcamentoEsgotado: true },
-    };
-  }
-  return {
-    desfecho: DESFECHO_TICK_ESTOQUE_AMAZON.enfileirado,
-    motivo: MOTIVO_ESTOQUE_AMAZON.emPatches,
-    repasse: null,
-    cursorAteMs: janela.ateMs,
-    falhas: 'zerar',
-    extra: contados,
-  };
+  return { retomada, inicioRecuperado, erro: null, invalidos: lidos };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -913,14 +1298,15 @@ async function lerEEnfileirar(
 /* -------------------------------------------------------------------------- */
 
 /**
- * One conta's run, T3–T9 (module header). A Firestore status error and
- * {@link SincronizacaoEstoqueDocumentoInvalidoError} propagate: the tick
- * contains them per conta.
+ * One conta's run, T3–T9 (module header). A Firestore status error, a
+ * document that no longer parses and a write that kept losing its
+ * precondition propagate: the tick contains them per conta.
  */
 async function executarConta(
   contaId: string,
   inicioDoTickMs: number,
   prazoMs: number,
+  valvula: ValvulaAmazon<typeof FLUXO_AMAZON.estoque>,
   deps: DepsTickEstoqueAmazon,
 ): Promise<ResultadoContaTickEstoqueAmazon> {
   // T3: the conta, raw and uncached; its depósito as the stock documents store it.
@@ -938,38 +1324,47 @@ async function executarConta(
   if (lease === null) return resultado(contaId, DESFECHO_TICK_ESTOQUE_AMAZON.leaseOcupado);
   const estado = lease.estado;
 
+  // T4b: the reconcile run and the stock feed lease.
+  const manutencao = await manterReconciliacaoEVez(contaId, deps);
+
+  const depositoDoCursor =
+    depositoId === null ? null : formasRefDepositoEstoqueAmazon(depositoId)[0];
   let conclusao: Conclusao;
-  let depositoDoCursor: string | null = null;
-  if (depositoId === null) {
+  if (manutencao.erro !== null) {
+    // A queue that refused T4b's enqueue: no window read this tick.
+    conclusao = enfileiramentoFalhou(manutencao.erro, null, null, {});
+  } else if (depositoId === null) {
     conclusao = {
-      desfecho: DESFECHO_TICK_ESTOQUE_AMAZON.semDeposito,
+      ...semCursor(DESFECHO_TICK_ESTOQUE_AMAZON.semDeposito),
       motivo: MOTIVO_ESTOQUE_AMAZON.contaSemDeposito,
-      repasse: null,
-      cursorAteMs: null,
-      falhas: 'manter',
-      extra: {},
     };
-  } else {
-    depositoDoCursor = formasRefDepositoEstoqueAmazon(depositoId)[0];
-    if (estado.cursorMs === null) {
-      conclusao = {
-        desfecho: DESFECHO_TICK_ESTOQUE_AMAZON.primeiroTick,
-        motivo: null,
-        repasse: null,
-        cursorAteMs: deps.agora(),
+  } else if (estado.cursorMs === null) {
+    conclusao = {
+      ...semCursor(DESFECHO_TICK_ESTOQUE_AMAZON.primeiroTick),
+      cursorAteMs: deps.agora(),
+      falhas: 'zerar',
+    };
+  } else if (depositoIdDaContaEstoqueAmazon(estado.depositoDoCursor) !== depositoId) {
+    // No window from a cursor taken at another depósito (module header, T4): a
+    // reconcile at the new one, then the cursor RESET there (taken BEFORE the request).
+    const agoraMs = deps.agora();
+    conclusao = await repassar(
+      {
+        repasse: REPASSE_TICK_ESTOQUE_AMAZON.reconciliacaoNecessaria,
+        motivo: MOTIVO_ESTOQUE_AMAZON.depositoMudou,
+        desfecho: DESFECHO_TICK_ESTOQUE_AMAZON.repassado,
+        cursorAteMs: agoraMs,
+        reiniciar: true,
         falhas: 'zerar',
-        extra: {},
-      };
-    } else if (depositoIdDaContaEstoqueAmazon(estado.depositoDoCursor) !== depositoId) {
-      // No window from a cursor taken at another depósito (module header, T4).
-      conclusao = repassar(
-        REPASSE_TICK_ESTOQUE_AMAZON.depositoDoCursorMudou,
-        MOTIVO_ESTOQUE_AMAZON.depositoMudou,
-        {},
-      );
-    } else {
-      conclusao = await lerEEnfileirar(contaId, depositoId, estado.cursorMs, prazoMs, deps);
-    }
+      },
+      () => pedirReconciliacao(contaId, deps),
+      {},
+    );
+  } else {
+    conclusao = await lerEEnfileirar(
+      { contaId, depositoId, cursorMs: estado.cursorMs, prazoMs, valvula },
+      deps,
+    );
   }
 
   // T8: the aviso FIRST — the flag it is gated on is stored after it. On a
@@ -977,9 +1372,9 @@ async function executarConta(
   // have landed its aviso and lost the flag, which no later transition would
   // ever correct.
   const semDeposito = depositoId === null;
-  const retomada = lido.estado.vez !== null;
+  const retomadaDaVez = lido.estado.vez !== null;
   let aviso: ResultadoContaTickEstoqueAmazon['aviso'] = null;
-  if (semDeposito !== estado.semDeposito || retomada) {
+  if (semDeposito !== estado.semDeposito || retomadaDaVez) {
     await sincronizarAvisoContaEstoqueAmazon(
       deps.db,
       { increment: deps.increment, nowMs: deps.agora(), logger: deps.logger },
@@ -998,6 +1393,7 @@ async function executarConta(
   // T8: the final write.
   const escrito = await escreverFinal(ref, lease, {
     cursorAteMs: conclusao.cursorAteMs,
+    reiniciar: conclusao.reiniciar,
     depositoDoCursor,
     semDeposito,
     falhas: conclusao.falhas,
@@ -1007,6 +1403,10 @@ async function executarConta(
     ...conclusao.extra,
     motivo: conclusao.motivo,
     repasse: conclusao.repasse,
+    entrega: conclusao.entrega,
+    retomada: manutencao.retomada,
+    inicioRecuperado: manutencao.inicioRecuperado,
+    manutencaoInvalida: manutencao.invalidos,
     aviso,
   };
   if (escrito === null) {
@@ -1023,6 +1423,7 @@ async function executarConta(
 async function contaNoTick(
   conta: ContaAmazonResumo,
   inicioDoTickMs: number,
+  valvula: ValvulaAmazon<typeof FLUXO_AMAZON.estoque>,
   deps: DepsTickEstoqueAmazon,
 ): Promise<ResultadoContaTickEstoqueAmazon> {
   const contaId = conta.integracaoId;
@@ -1037,13 +1438,28 @@ async function contaNoTick(
   }
   const prazoMs = agoraMs + orcamentoMs - FOLGA_CONTA_ESTOQUE_AMAZON_MS;
   try {
-    return await executarConta(contaId, inicioDoTickMs, prazoMs, deps);
+    return await executarConta(contaId, inicioDoTickMs, prazoMs, valvula, deps);
   } catch (err) {
     if (err instanceof SincronizacaoEstoqueDocumentoInvalidoError) {
       return resultado(contaId, DESFECHO_TICK_ESTOQUE_AMAZON.documentoInvalido, {
         erro: err.name,
         campos: err.campos.join(','),
       });
+    }
+    if (
+      err instanceof ReconciliacaoEstoqueDocumentoInvalidoError ||
+      err instanceof AmazonVezFeedInvalidaError
+    ) {
+      return resultado(contaId, DESFECHO_TICK_ESTOQUE_AMAZON.documentoInvalido, {
+        erro: err.name,
+        campos: err.campos.join(','),
+      });
+    }
+    if (
+      err instanceof ReconciliacaoEstoqueEmConflitoError ||
+      err instanceof AmazonVezFeedEmConflitoError
+    ) {
+      return resultado(contaId, DESFECHO_TICK_ESTOQUE_AMAZON.conflito, { erro: err.name });
     }
     if (!isGrpcStatusError(err)) throw err;
     return resultado(contaId, DESFECHO_TICK_ESTOQUE_AMAZON.erroFirestore, {
@@ -1085,7 +1501,7 @@ export async function executarTickEstoqueAmazon(
   const contas = await deps.contas.listar(deps.db);
   const resultados: ResultadoContaTickEstoqueAmazon[] = [];
   for (const conta of ordemDoTickEstoqueAmazon(contas, inicioDoTickMs)) {
-    const r = await contaNoTick(conta, inicioDoTickMs, deps);
+    const r = await contaNoTick(conta, inicioDoTickMs, valvula, deps);
     resultados.push(r);
     if (r.desfecho !== DESFECHO_TICK_ESTOQUE_AMAZON.inativa) registrarConta(deps, r);
   }

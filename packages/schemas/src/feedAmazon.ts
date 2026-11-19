@@ -30,10 +30,10 @@ import { type TimestampLike, ttlExpiry } from './shared/ttl';
  * re-create it from here. Besides the in-flight state it keeps four clocks and
  * a counter that outlive each feed (a take keeps them):
  *
- *  - `pendenteDesdeMs` — the earliest window start of the tick-born window
- *    batches turned away while the lease was held; MIN-merged, never
- *    overwritten, and consumed by the next release (or the writes that hand it
- *    to a recovery without releasing);
+ *  - `pendenteDesdeMs` — the earliest RANGE start (`desdeMs`) of the
+ *    non-forcing window batches (`forcarPorCommit: false`) turned away while
+ *    the lease was held; MIN-merged, never overwritten, and consumed by the
+ *    next release (or the writes that hand it to a recovery without releasing);
  *  - `falhasSeguidas` and `ultimaFalhaEmMs` — consecutive releases that raised
  *    the fluxo's feed-failure aviso, reset by a completed feed: the breaker and
  *    its half-open probe's clock;
@@ -172,10 +172,22 @@ export const DESFECHO_FEED_AMAZON = {
 
 /**
  * A window batch's bounded movement window `(desdeMs, ateMs]` at one depósito,
- * and its keep rule: `manterDesdeMs` keeps the rows stamped after it, and
- * `commitAposMs` the rows COMMITTED after it. A FUNCTION returning fresh
- * builders, so the record, the lease and the jobs payload spread the same
- * fields without sharing a refined object.
+ * and its keep rule WHOLE: `manterDesdeMs` keeps the rows stamped after it,
+ * `commitAposMs` the rows COMMITTED after it, and `forcarPorCommit` says
+ * whether a row the commit test kept FORCES its SKU (sent even when Amazon's
+ * live read already shows its ERP value).
+ *
+ * `forcarPorCommit` is true exactly for a recovery's window with a snapshot:
+ * the recovered feed may have read that row's old value, and its message may
+ * land after the live read. A tick's window carries a commit filter (the main
+ * estoque writer stamps before its transaction, so a row can commit after the
+ * tick that read past its stamp) but never forces: that row raced no feed. The
+ * field is REQUIRED, with no default: no record, lease or jobs payload of the
+ * feed core has ever been deployed or stored, so there is no stored shape
+ * without it to tolerate.
+ *
+ * A FUNCTION returning fresh builders, so the record, the lease and the jobs
+ * payload spread the same fields without sharing a refined object.
  */
 export function camposJanelaFeedAmazon() {
   return {
@@ -183,6 +195,7 @@ export function camposJanelaFeedAmazon() {
     ateMs: inteiroSeguro(),
     manterDesdeMs: inteiroSeguro().nullable(),
     commitAposMs: inteiroSeguro().nullable(),
+    forcarPorCommit: z.boolean(),
     depositoId: z.string().regex(ID_LOTE_FEED_AMAZON_REGEX),
   };
 }
@@ -192,11 +205,14 @@ interface JanelaVerificavel {
   readonly ateMs: number;
   readonly manterDesdeMs: number | null;
   readonly commitAposMs: number | null;
+  readonly forcarPorCommit: boolean;
 }
 
 /**
  * The window's own refusals: an empty or reversed window (`desdeMs ≥ ateMs`),
- * and a window that keeps nothing (both keep fields `null`). For a
+ * a window that keeps nothing (both keep fields `null`), and a window that
+ * forces with no commit filter (`forcarPorCommit` with `commitAposMs` null:
+ * only the commit test forces, {@link camposJanelaFeedAmazon}). For a
  * `superRefine`.
  */
 export function verificarJanelaFeedAmazon(janela: JanelaVerificavel, ctx: z.RefinementCtx): void {
@@ -212,6 +228,13 @@ export function verificarJanelaFeedAmazon(janela: JanelaVerificavel, ctx: z.Refi
       code: 'custom',
       message: 'janela sem regra de manutenção: manterDesdeMs e commitAposMs são ambos null',
       path: ['manterDesdeMs'],
+    });
+  }
+  if (janela.forcarPorCommit && janela.commitAposMs === null) {
+    ctx.addIssue({
+      code: 'custom',
+      message: 'janela que força sem filtro de commit: forcarPorCommit exige commitAposMs',
+      path: ['forcarPorCommit'],
     });
   }
 }
@@ -344,7 +367,7 @@ export const vezFeedAmazonSchema = z.object({
   tipoLote: tipoLoteFeedAmazonSchema.nullable().default(null),
   /** The holder's window (a window batch), copied into a re-created record. */
   janela: janelaFeedAmazonSchema.nullable().default(null),
-  /** ms — the earliest start of the window batches turned away; MIN-merged (module header). */
+  /** ms — the earliest RANGE start of the non-forcing window batches turned away; MIN-merged (module header). */
   pendenteDesdeMs: inteiroSeguro().nullable().default(null),
   /** Consecutive releases that raised the feed-failure aviso; 0 after a completed feed. */
   falhasSeguidas: inteiroSeguro().default(0),

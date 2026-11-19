@@ -159,7 +159,25 @@
  *    only READS the conta; a conta's depósito has ONE parse, in
  *    `estoque/familiaEstoque.ts`; and no production module of `estoque/`
  *    names the produto's `integracoesComProduto` (a SKU is found through the
- *    link partition, never through that denormalised list).
+ *    link partition, never through that denormalised list);
+ *  - (step 12, PR 12-f) the daily reconcile (`estoque/reconciliacaoEstoque.ts`)
+ *    and its drift blocks (`estoque/divergenciasFirestore.ts`) join that I/O
+ *    half, its write rosters and the App Hosting forbidden list; the jobs root
+ *    (`functions/src/filaLotes.ts`) joins the importers of `estoque/` (it binds
+ *    the reconcile's page; the dispatcher imports no fluxo's module); and both
+ *    read a stored depósito through the ONE parse. The stock feed provider
+ *    (`estoque/provedorLoteEstoque.ts`) joins the I/O half and the App Hosting
+ *    forbidden list; the seam (`feeds/destinosLote.ts`) imports it by value, its
+ *    ONE fluxo value import; it reads the conta's depósito through the ONE
+ *    parse; and it is the recovery delta's caller, so that module needs no
+ *    entry of its own in the stock roots' walk. The batch evaluator
+ *    (`estoque/avaliacaoLoteEstoque.ts`, shared by a reconcile page and a
+ *    window batch's build) joins the I/O half and the App Hosting forbidden
+ *    list; the daily schedule (`functions/src/reconciliacaoEstoque.ts`) joins
+ *    the importers of `estoque/` and of the stock root; and each reconcile
+ *    document has ONE writer: the run's and the request's handles are named by
+ *    the reconcile alone (its one tier-1 helper), the drift handle by the block
+ *    module alone (an overwrite, read back by id, never queried).
  */
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, posix, relative, sep } from 'node:path';
@@ -1013,6 +1031,14 @@ const MODULOS_DE_ESTOQUE_FORA_DO_APP_HOSTING = [
   'lib/amazon/estoque/descobertaFirestore.ts',
   'lib/amazon/estoque/sincronizacaoEstoque.ts',
   'lib/amazon/estoque/deltaEstoque.ts',
+  // (step 12, PR 12-f) the batch evaluator: it reads Amazon's listings; the
+  // daily reconcile and its drift blocks.
+  'lib/amazon/estoque/avaliacaoLoteEstoque.ts',
+  'lib/amazon/estoque/reconciliacaoEstoque.ts',
+  'lib/amazon/estoque/divergenciasFirestore.ts',
+  // (step 12, PR 12-f) the stock feed provider: it reads Amazon (the evaluator)
+  // and hands batches to both queues.
+  'lib/amazon/estoque/provedorLoteEstoque.ts',
 ];
 
 /**
@@ -3455,7 +3481,7 @@ describe('the step-12a feed core guards (12-b, 12-c)', () => {
     );
   });
 
-  it('(12-c, 12-e1, 12-e2) the stock root binds the jobs and the stock queues only, and only those two queues and the stock tick import it', () => {
+  it('(12-c, 12-e1, 12-e2, 12-f) the stock root binds the jobs and the stock queues only, and only those two queues, the stock tick and the daily reconcile’s schedule import it', () => {
     const raiz = lerDoApp(ARQUIVO_RAIZ_DO_AGENDADOR_ESTOQUE) ?? '';
     expect(chamaGetFunctions(raiz)).toBe(true);
     expect(filasDaRaiz(raiz)).toEqual(['caminhoDaFilaEstoqueAmazon', 'caminhoDaFilaLotesAmazon']);
@@ -3467,6 +3493,7 @@ describe('the step-12a feed core guards (12-b, 12-c)', () => {
     expect(importadores).toEqual([
       'functions/src/filaEstoque.ts',
       'functions/src/filaLotes.ts',
+      'functions/src/reconciliacaoEstoque.ts',
       'functions/src/sweepEstoque.ts',
     ]);
   });
@@ -3592,15 +3619,49 @@ const TIPOS_PERMITIDOS_EM_ESTOQUE = ['../pedidos/vinculoProdutoAmazon', '../core
  *   window's index-field tuple, the conta id grammar).
  * - `sincronizacaoEstoque.ts` (PR 12-e2) — the five-minute tick: the avisos
  *   seam (`estoque-sem-deposito` on its flag's transition), the conta reads
- *   (the uncached list and the conta-id grammar), the task-SDK helpers and the
- *   region error class (the producer's failures it contains), the logger, the
- *   valves (the read switch and the stock valve), the conta and sync-document
- *   handles, the gRPC class readers (its lease and its final write), and the
- *   schemas.
+ *   (the uncached list and the conta-id grammar), the logger, the valves (the
+ *   read switch, the stock valve and, PR 12-f, the batch and member decisions
+ *   of a delta feed under a canary list), the conta and sync-document handles,
+ *   the gRPC class readers (its lease and its final write), and the schemas;
+ *   since PR 12-f the jobs payload contract and its names (the window
+ *   `feed-enviar`), and the feed lease's pure rule and its I/O (T4b's stranded
+ *   start: the read, the parse, the consuming write). The producers' failure
+ *   classes come through the reconcile's one classifier, a sibling.
  * - `deltaEstoque.ts` (PR 12-e2) — the recovery delta: the logger (its one
  *   line), the valves (the line's flow) and the schemas (the conta id and the
  *   feed reference grammars); the window, the producer and the payload are
  *   its siblings'.
+ * - `avaliacaoLoteEstoque.ts` (PR 12-f) — the batch evaluator shared by a
+ *   reconcile page and a window batch's build: the logger and the valves (one
+ *   line per search, the flow), the ONE listings caller (the search and the
+ *   single read), the order import's OWN query, dono read and dono count (one
+ *   binding, never a second copy of it), the produto handle (the masked unit
+ *   `getAll`), the SP-API package (the search size and the SKU checks) and the
+ *   schemas (the conta id grammar, the document-id check); the resolver's
+ *   other reads, the family read, the verdict and the gate are its siblings'.
+ * - `divergenciasFirestore.ts` (PR 12-f) — the drift blocks: the drift handle
+ *   (the page's overwrite and the by-id `getAll`) and the schemas (the block
+ *   schema, its id, the TTL helper, the conta id grammar).
+ * - `reconciliacaoEstoque.ts` (PR 12-f) — the daily reconcile: the avisos seam
+ *   (its four avisos, clocked by the run's first read), the context (the read
+ *   switch first), the logger, the valves (the stock valve, the batch and the
+ *   member decisions), the conta, run, request and link handles (the raw conta
+ *   read, the two documents' tier-1 writes, the walk), the gRPC class readers
+ *   (a lost precondition), the conta ref forms (the walk's two `==`), the SP-API
+ *   package (the 429's class), the schemas, the jobs payload contract and its
+ *   names, the breaker's bound and the lease phase (one by-id lease read), and
+ *   the shared read-failure ladder (a context refusal); and its daily run: the
+ *   uncached conta list, the feed's daily backstop (the result handler's), and
+ *   the producers' failure classes it contains (the jobs producer's, the
+ *   task-SDK helpers', the region's).
+ * - `provedorLoteEstoque.ts` (PR 12-f) — the stock feed provider: the avisos
+ *   seam (its write-back's `estoque-recusado-pela-amazon`), the logger and the
+ *   valves (its lines, the flow), the produto handle (the block snapshot's
+ *   masked unit `getAll`), the SP-API package (the merge's named keys), the
+ *   schemas, the seam's timing constants, the jobs producer's delay bound and
+ *   the jobs payload contract and its names (a recovery's window `feed-enviar`); the evaluator, the window
+ *   reader, the drift blocks, the family read, the write-back, the recovery
+ *   delta, the reconcile request and the plan are its siblings'.
  */
 const E_S_EM_ESTOQUE: Readonly<Record<string, readonly string[]>> = {
   'estoque/resolverEstoque.ts': [
@@ -3639,15 +3700,58 @@ const E_S_EM_ESTOQUE: Readonly<Record<string, readonly string[]>> = {
   'estoque/sincronizacaoEstoque.ts': [
     '../avisos/avisos',
     '../core/contas',
-    '../core/filaTarefas',
     '../core/log',
     '../core/valvulas',
-    '@delfrance/core/region',
+    '../feeds/tarefaLote',
+    '../feeds/vezFeed',
+    '../feeds/vezFeedFirestore',
     '@delfrance/data/admin/collections',
     '@delfrance/data/admin/grpcErrors',
     '@delfrance/schemas',
   ],
   'estoque/deltaEstoque.ts': ['../core/log', '../core/valvulas', '@delfrance/schemas'],
+  'estoque/avaliacaoLoteEstoque.ts': [
+    '../core/log',
+    '../core/valvulas',
+    '../listings/listingsAmazon',
+    '../pedidos/vinculoProdutoAmazon',
+    '@delfrance/data/admin/collections',
+    '@delfrance/integrations-amazon-sp-api',
+    '@delfrance/schemas',
+  ],
+  'estoque/divergenciasFirestore.ts': ['@delfrance/data/admin/collections', '@delfrance/schemas'],
+  'estoque/reconciliacaoEstoque.ts': [
+    '../avisos/avisos',
+    '../core/contas',
+    '../core/contexto',
+    '../core/filaTarefas',
+    '../core/log',
+    '../core/valvulas',
+    '../feeds/agendadorLotes',
+    '../feeds/provedorLote',
+    '../feeds/resultadoFeed',
+    '../feeds/tarefaLote',
+    '../feeds/vezFeed',
+    '../feeds/vezFeedFirestore',
+    '../pedidos/falhaLeituraAmazon',
+    '@delfrance/core/region',
+    '@delfrance/data/admin/collections',
+    '@delfrance/data/admin/grpcErrors',
+    '@delfrance/data/admin/produtos',
+    '@delfrance/integrations-amazon-sp-api',
+    '@delfrance/schemas',
+  ],
+  'estoque/provedorLoteEstoque.ts': [
+    '../avisos/avisos',
+    '../core/log',
+    '../core/valvulas',
+    '../feeds/agendadorLotes',
+    '../feeds/provedorLote',
+    '../feeds/tarefaLote',
+    '@delfrance/data/admin/collections',
+    '@delfrance/integrations-amazon-sp-api',
+    '@delfrance/schemas',
+  ],
 };
 
 /**
@@ -3659,10 +3763,16 @@ const E_S_EM_ESTOQUE: Readonly<Record<string, readonly string[]>> = {
  * `update(…, { lastUpdateTime })` on the lease's commit (rule 7 tier 1). The
  * patch task writes through the write-back and through `avisos/avisos.ts`, the
  * tick's aviso through the latter; the readers and the producer write nothing.
+ * (PR 12-f) The drift blocks' ONE overwrite by their page (`set` through the drift
+ * handle, by the page that holds the run), and the reconcile's TWO — its ONE
+ * write helper's `create` and `update(…, { lastUpdateTime })`, through which
+ * every write of the run and of the request goes (rule 7 tier 1).
  * The scan is {@link ESCRITA_FIRESTORE_EM_FEEDS}, shape-only.
  */
 const ESCRITORES_EM_ESTOQUE: Readonly<Record<string, number>> = {
+  'estoque/divergenciasFirestore.ts': 1,
   'estoque/envioEstoqueFirestore.ts': 1,
+  'estoque/reconciliacaoEstoque.ts': 2,
   'estoque/sincronizacaoEstoque.ts': 3,
 };
 
@@ -3677,14 +3787,21 @@ const ESCRITORES_EM_ESTOQUE: Readonly<Record<string, number>> = {
  * - `functions/src/sweepEstoque.ts` (PR 12-e2) — the stock tick's schedule runs
  *   the tick;
  * - `lib/amazon/feeds/destinosLote.ts` — the seam's root names the stock
- *   producer's TYPE (a provider factory receives it), never a value.
+ *   producer's TYPE (a provider factory receives it), and (PR 12-f) holds the
+ *   stock provider's factory: its ONE value import of `estoque/`;
+ * - `functions/src/filaLotes.ts` (PR 12-f) — the jobs root binds the daily
+ *   reconcile's page (the dispatcher itself imports no fluxo's module);
+ * - `functions/src/reconciliacaoEstoque.ts` (PR 12-f) — the daily reconcile's
+ *   schedule runs its daily run.
  */
 const IMPORTADORES_DE_ESTOQUE: Readonly<Record<string, readonly string[]>> = {
   'functions/src/agendadorEstoque.ts': ['estoque/produtorEstoque', 'estoque/tarefaEstoque'],
   'functions/src/filaEstoque.ts': ['estoque/processarEstoque'],
+  'functions/src/filaLotes.ts': ['estoque/reconciliacaoEstoque'],
   'functions/src/index.ts': ['estoque/produtorEstoque'],
+  'functions/src/reconciliacaoEstoque.ts': ['estoque/reconciliacaoEstoque'],
   'functions/src/sweepEstoque.ts': ['estoque/sincronizacaoEstoque'],
-  'lib/amazon/feeds/destinosLote.ts': ['estoque/produtorEstoque'],
+  'lib/amazon/feeds/destinosLote.ts': ['estoque/produtorEstoque', 'estoque/provedorLoteEstoque'],
 };
 
 /** The names an import declaration of `espec` binds (namespace and default imports read as `*`). */
@@ -3716,9 +3833,11 @@ describe('the step-12 stock core guards (12-d)', () => {
 
   it('★ (1) estoque/ is Next-free, reads no process environment and never imports the @/ alias', () => {
     expect(estoque.map(rel).sort()).toEqual([
+      'estoque/avaliacaoLoteEstoque.ts',
       'estoque/deltaEstoque.ts',
       'estoque/descobertaEstoque.ts',
       'estoque/descobertaFirestore.ts',
+      'estoque/divergenciasFirestore.ts',
       'estoque/envioEstoque.ts',
       'estoque/envioEstoqueFirestore.ts',
       'estoque/familiaEstoque.ts',
@@ -3729,6 +3848,8 @@ describe('the step-12 stock core guards (12-d)', () => {
       'estoque/planoEstoque.ts',
       'estoque/processarEstoque.ts',
       'estoque/produtorEstoque.ts',
+      'estoque/provedorLoteEstoque.ts',
+      'estoque/reconciliacaoEstoque.ts',
       'estoque/resolverEstoque.ts',
       'estoque/sincronizacaoEstoque.ts',
       'estoque/tarefaEstoque.ts',
@@ -3868,9 +3989,12 @@ describe('the step-12 stock core guards (12-d)', () => {
         .filter(([, nomeados]) => nomeados.length > 0),
     );
     expect(importadores).toEqual(IMPORTADORES_DE_ESTOQUE);
-    // The seam's root names the stock producer by TYPE only.
+    // The seam's root names the stock producer by TYPE only; its ONE value
+    // import of estoque/ is the stock provider's factory.
     const seam = readFileSync(join(RAIZ_LIB, 'feeds', 'destinosLote.ts'), 'utf8');
-    expect(importacoesDeValor(seam).filter((e) => IMPORTA_ESTOQUE.test(e))).toEqual([]);
+    expect(importacoesDeValor(seam).filter((e) => IMPORTA_ESTOQUE.test(e))).toEqual([
+      '../estoque/provedorLoteEstoque',
+    ]);
     // Anti-vacuity: the scan read the functions codebase and the scripts.
     expect(fora.map(relApp)).toEqual(
       expect.arrayContaining(['functions/src/index.ts', 'scripts/sanitizar.ts']),
@@ -4035,14 +4159,13 @@ describe('the step-12 patch path guards (12-e1)', () => {
     }
     // …and the stock functions roots DO reach every one of them, so the list is
     // not vacuous: a bundle importing the queue's body, or the tick's, would
-    // fail. The recovery delta (PR 12-e2) has no caller yet — the stock feed
-    // provider will be its root — so it enters the walk as its own entry until
-    // one does.
+    // fail. The batch evaluator, the reconcile, the stock feed provider and,
+    // through it, the recovery delta are reached through the jobs root (PR 12-f).
     const fila = fechoDeImportacoes(
       [
         'functions/src/filaEstoque.ts',
         'functions/src/sweepEstoque.ts',
-        'lib/amazon/estoque/deltaEstoque.ts',
+        'functions/src/filaLotes.ts',
       ],
       lerDoApp,
     );
@@ -4170,13 +4293,115 @@ describe('the step-12 tick guards (12-e2)', () => {
         expect(lidas(texto), relApp(p)).toBe(pelaChamada.length);
         if (pelaChamada.length > 0) leem.push(relApp(p));
       }
-      // Anti-vacuity: the patch task (P2) and the tick (T3) both read it so.
+      // Anti-vacuity: the patch task (P2), the tick (T3), the reconcile (its
+      // claim, its page, its sends), the drift blocks' reader and the stock feed
+      // provider (a send's depósito checks, a recovery's window) all read it so.
       expect(leem.sort()).toEqual([
+        'lib/amazon/estoque/divergenciasFirestore.ts',
         'lib/amazon/estoque/processarEstoque.ts',
+        'lib/amazon/estoque/provedorLoteEstoque.ts',
+        'lib/amazon/estoque/reconciliacaoEstoque.ts',
         'lib/amazon/estoque/sincronizacaoEstoque.ts',
       ]);
     },
   );
+});
+
+/** The daily reconcile and its drift blocks (step 12, PR 12-f), relative to `lib/amazon`. */
+const ARQUIVO_DA_RECONCILIACAO_ESTOQUE = 'estoque/reconciliacaoEstoque.ts';
+const ARQUIVO_DOS_BLOCOS_ESTOQUE = 'estoque/divergenciasFirestore.ts';
+
+/** The drift handle's uses the block module may make: a by-id ref (the `getAll`) and the overwrite. */
+const USO_DO_HANDLE_DOS_BLOCOS = /^divergenciaEstoqueAmazonCollection\.(?:docRef|set)\($/;
+
+describe('the step-12 reconcile guards (12-f)', () => {
+  const codigo = (p: string) => semComentarios(readFileSync(p, 'utf8'));
+  /** Every use of the drift handle in `texto`, each cut at its call's opening parenthesis. */
+  const usosDosBlocos = (texto: string) =>
+    texto.match(/\bdivergenciaEstoqueAmazonCollection\b\s*(?:\.\s*\w+\s*\(|[^.\s])/g) ?? [];
+
+  // An app-wide parse: CI headroom, not a budget.
+  it(
+    '★ each reconcile document has ONE writer across the app: the run’s and the request’s handles are named by the reconcile alone, the drift handle by the block module alone',
+    { timeout: 30_000 },
+    () => {
+      const producao = fontesDeProducaoDoApp();
+      const nomeiam = (re: RegExp) =>
+        producao
+          .filter((p) => re.test(codigo(p)))
+          .map(relApp)
+          .sort();
+      const reconciliacao = `lib/amazon/${ARQUIVO_DA_RECONCILIACAO_ESTOQUE}`;
+      expect(nomeiam(/\breconciliacaoEstoqueAmazonCollection\b/)).toEqual([reconciliacao]);
+      expect(nomeiam(/\bpedidoReconciliacaoEstoqueAmazonCollection\b/)).toEqual([reconciliacao]);
+      expect(nomeiam(/\bdivergenciaEstoqueAmazonCollection\b/)).toEqual([
+        `lib/amazon/${ARQUIVO_DOS_BLOCOS_ESTOQUE}`,
+      ]);
+      // Anti-vacuity: both modules really import those handles from the shared barrel.
+      const rec = readFileSync(join(RAIZ_LIB, ARQUIVO_DA_RECONCILIACAO_ESTOQUE), 'utf8');
+      expect(nomesImportadosDe(rec, '@delfrance/data/admin/collections')).toEqual(
+        expect.arrayContaining([
+          'reconciliacaoEstoqueAmazonCollection',
+          'pedidoReconciliacaoEstoqueAmazonCollection',
+        ]),
+      );
+      const blocos = readFileSync(join(RAIZ_LIB, ARQUIVO_DOS_BLOCOS_ESTOQUE), 'utf8');
+      expect(nomesImportadosDe(blocos, '@delfrance/data/admin/collections')).toEqual([
+        'divergenciaEstoqueAmazonCollection',
+      ]);
+    },
+  );
+
+  it('★ the reconcile’s two write calls are its ONE helper’s create and update(…, { lastUpdateTime }) (tier 1); the blocks’ one write is the handle’s set (an overwrite, never a create), and the blocks are read by id in a getAll, never queried', () => {
+    const rec = codigo(join(RAIZ_LIB, ARQUIVO_DA_RECONCILIACAO_ESTOQUE));
+    const escritas = rec.match(ESCRITA_FIRESTORE_EM_FEEDS) ?? [];
+    expect(escritas).toHaveLength(ESCRITORES_EM_ESTOQUE[ARQUIVO_DA_RECONCILIACAO_ESTOQUE] ?? -1);
+    expect(rec.match(/\bref\s*\.\s*create\s*\(/g) ?? []).toHaveLength(1);
+    expect(rec.match(/\bref\s*\.\s*update\s*\([^()]*\{\s*lastUpdateTime\s*:/g) ?? []).toHaveLength(
+      1,
+    );
+    // Both inside the ONE helper every write of the run and of the request goes through.
+    const helper = rec.match(/\basync function gravarComPrecondicao\b[\s\S]*?\n}/)?.[0] ?? '';
+    expect(helper.match(ESCRITA_FIRESTORE_EM_FEEDS) ?? []).toHaveLength(escritas.length);
+
+    const blocos = codigo(join(RAIZ_LIB, ARQUIVO_DOS_BLOCOS_ESTOQUE));
+    expect(blocos.match(ESCRITA_FIRESTORE_EM_FEEDS) ?? []).toEqual([
+      expect.stringMatching(/^divergenciaEstoqueAmazonCollection\s*\.\s*set\s*\($/),
+    ]);
+    expect(ESCRITORES_EM_ESTOQUE[ARQUIVO_DOS_BLOCOS_ESTOQUE]).toBe(1);
+    // Every use of the handle (the import aside) is a by-id ref or the overwrite.
+    const usos = usosDosBlocos(blocos).filter((u) => !u.endsWith('}'));
+    expect(usos.length).toBeGreaterThanOrEqual(2);
+    for (const uso of usos) expect(uso.replace(/\s+/g, ''), uso).toMatch(USO_DO_HANDLE_DOS_BLOCOS);
+    expect(blocos).toMatch(/\bdb\s*\.\s*getAll\s*\(/);
+    expect(blocos).not.toMatch(/\.\s*(?:where|orderBy|startAt|startAfter|endAt|limit)\s*\(/);
+  });
+
+  it('(12-f) the drift-handle scan flags a create, a query and a merge, and nothing alike (near-misses)', () => {
+    const fora = (texto: string) =>
+      usosDosBlocos(texto)
+        .filter((u) => !u.endsWith('}'))
+        .map((u) => u.replace(/\s+/g, ''))
+        .filter((u) => !USO_DO_HANDLE_DOS_BLOCOS.test(u));
+    for (const proibido of [
+      'divergenciaEstoqueAmazonCollection.ref(db, { contaId }).where("execucaoId", "==", x);',
+      'divergenciaEstoqueAmazonCollection.merge(db, { contaId }, id, {});',
+      'divergenciaEstoqueAmazonCollection.add(db, { contaId }, {});',
+      'const h = divergenciaEstoqueAmazonCollection;',
+    ]) {
+      expect(fora(proibido), proibido).toHaveLength(1);
+    }
+    for (const permitido of [
+      'await divergenciaEstoqueAmazonCollection.set(db, { contaId }, id, {});',
+      'divergenciaEstoqueAmazonCollection .docRef(db, { contaId }, id)',
+      'import { divergenciaEstoqueAmazonCollection } from "@delfrance/data/admin/collections";',
+    ]) {
+      expect(fora(permitido), permitido).toEqual([]);
+    }
+    // A create through the by-id ref is a write the scan counts, never the set.
+    const criado = 'await divergenciaEstoqueAmazonCollection.docRef(db, p, id).create(b);';
+    expect(criado.match(ESCRITA_FIRESTORE_EM_FEEDS)).toEqual(['.create(']);
+  });
 });
 
 describe('the step-2b capture sanitizer guards', () => {

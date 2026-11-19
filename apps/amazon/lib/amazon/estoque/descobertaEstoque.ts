@@ -36,12 +36,12 @@
  *    `C − 20 s` would be. A cursor ahead of this clock by the overlap or more is no window.
  *    There is NO first-tick case here: a sync document with no cursor stores
  *    one at now and reads no window (`sincronizacaoEstoque.ts`, T4), and a
- *    cursor removed by hand is that same first tick. Today nothing in the tick
- *    resets a stored cursor (a depósito change and a refused cursor both keep
- *    it); `sincronizacaoEstoqueAmazonSchema.cursorMs` documents a reset on a
- *    depósito change once the reconcile hand-off is durable. Over ANY cursor
- *    stored anew the reach-back keeps only what moved after it: rows stamped
- *    after it less the overlap, and rows committed after it less the margin.
+ *    cursor removed by hand is that same first tick. The tick RESETS a stored
+ *    cursor to now only after a durable reconcile request (a depósito change,
+ *    or a cursor no window can be planned from), and the reconcile then reads
+ *    everything before it. Over ANY cursor stored anew the reach-back keeps
+ *    only what moved after it: rows stamped after it less the overlap, and rows
+ *    committed after it less the margin.
  *  - {@link janelaDaRecuperacao} — a feed's recovery (the catch-up), merged
  *    with the pending start of the window batches a held lease turned away.
  *    With a snapshot `S`, the range reaches back to `S − 5 min`, and inside it

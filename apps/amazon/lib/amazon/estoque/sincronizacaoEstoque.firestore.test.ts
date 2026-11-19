@@ -7,8 +7,9 @@
  *
  *  - ★ the idle tick's EXACT cost, counted on the server's own calls (a
  *    counting wrapper around the real Admin SDK): one conta list, one conta
- *    read, one sync-document read, one lease write, two empty window queries,
- *    one final write — and nothing else;
+ *    read, one sync-document read, one lease write, ONE `getAll` of the
+ *    reconcile run and the stock feed lease, two empty window queries, one
+ *    final write — and nothing else;
  *  - ★ a first tick, then a moved row: ONE task named by the row's REAL commit
  *    time; the overlap re-reading the row answers "already enqueued"; a rewrite
  *    that leaves `ultimaModificacao` unchanged (a writer whose clock lost the
@@ -22,7 +23,10 @@
  *    held lease writes nothing, and a write landing between the lease and the
  *    final write is refused, the re-derive keeping the newer cursor;
  *  - the `estoque-sem-deposito` aviso raised and resolved on the flag's
- *    transitions, under the real preconditions.
+ *    transitions, under the real preconditions;
+ *  - ★ T4b (PR 12-f) on the server: a stalled reconcile run re-kicked, and an
+ *    expired `montando` lease's pending start handed to its named `vez`
+ *    recovery, then cleared under the server's own precondition.
  *
  * ⚠️ The emulator does NOT enforce indexes: a pass here proves the queries'
  * SHAPE and results, never their cost on Enterprise — the index pin is the cost
@@ -30,8 +34,9 @@
  *
  * ⚠️ D11. The read switch is ON in exactly one place: the object literal handed
  * to the tick as `ambiente`, never `process.env` (the lane sets it `off`). The
- * tick makes no Amazon call and binds no client. The producer is the REAL one
- * over a RECORDING queue: nothing is enqueued onto a queue the lane dispatches.
+ * tick makes no Amazon call and binds no client. Both producers are the REAL
+ * ones over RECORDING queues: nothing is enqueued onto a queue the lane
+ * dispatches.
  *
  * ⚠️ The emulator is SHARED (`vitest.tasks.config.ts`'s rules): every document
  * id and the depósito here start with `e2e-estoque-sincronizacao-`, which no
@@ -45,8 +50,10 @@ import { DocumentReference, type Firestore, Query } from 'firebase-admin/firesto
 import { FieldValue } from 'firebase-admin/firestore';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import {
+  FLUXO_FEED_AMAZON,
   INTEGRACAO_TIPO,
   MOTIVO_CONTA_AMAZON,
+  idVezFeedAmazon,
   makeEstoqueUid,
   motivoContaAmazonSchema,
 } from '@delfrance/schemas';
@@ -54,6 +61,13 @@ import {
 import { getAdminFirestore } from '@/lib/firebase/admin';
 
 import { chaveContaPrecisaAtencao } from '../avisos/avisos';
+import { criarAgendadorLotesAmazon } from '../feeds/agendadorLotes';
+import {
+  type TarefaLoteAmazon,
+  nomeRecuperacaoFeed,
+  nomeRetomadaReconciliacao,
+  referenciaVezFeed,
+} from '../feeds/tarefaLote';
 import { falhaDeTarefaJaExistente } from '../testing/falhaDeEnfileiramento';
 import { caminhoConta, loggerEspiao } from '../testing/fixtures';
 import { criarProdutorEstoqueAmazon } from './produtorEstoque';
@@ -79,6 +93,10 @@ const PRODUTO = `${P}prod`;
 const CAMINHO_PRODUTO = `produtos/${PRODUTO}`;
 const CAMINHO_ESTOQUE = `${CAMINHO_PRODUTO}/estoques/${makeEstoqueUid(PRODUTO, DEP)}`;
 const CAMINHO_SYNC = `sincronizacaoEstoqueAmazon/${CONTA}`;
+/** T4b's two documents, read by id: the reconcile run and the stock feed lease. */
+const CAMINHO_RUN = `reconciliacaoEstoqueAmazon/${CONTA}`;
+const CAMINHO_VEZ = `feedsAmazonEmCurso/${idVezFeedAmazon(FLUXO_FEED_AMAZON.estoque, CONTA)}`;
+const CAMINHO_PEDIDO = `pedidoReconciliacaoEstoqueAmazon/${CONTA}`;
 const SKU = `${P}SKU-1`;
 /**
  * The tick's clock in every case but the commit lag's: an arbitrary ms instant
@@ -104,7 +122,9 @@ const AVISOS = motivoContaAmazonSchema.options.map(
 async function limpar(): Promise<void> {
   await db().recursiveDelete(db().doc(CAMINHO_PRODUTO));
   await Promise.all(
-    [CAMINHO_SYNC, caminhoConta(CONTA), ...AVISOS].map((c) => db().doc(c).delete()),
+    [CAMINHO_SYNC, CAMINHO_RUN, CAMINHO_VEZ, CAMINHO_PEDIDO, caminhoConta(CONTA), ...AVISOS].map(
+      (c) => db().doc(c).delete(),
+    ),
   );
 }
 
@@ -161,6 +181,8 @@ async function linha(ultimaModificacao: number, quantidade = 3) {
 
 interface Contagem {
   readonly leituras: string[];
+  /** `getAll` CALLS (each document of one is a read above). */
+  getAlls: number;
   readonly consultas: string[];
   readonly escritas: string[];
 }
@@ -194,6 +216,7 @@ function contando(real: Firestore, c: Contagem): Firestore {
           } else if (t instanceof Query) {
             if (nome === 'get') c.consultas.push(rotulos.get(t) ?? '?');
           } else if (nome === 'getAll') {
+            c.getAlls += 1;
             for (const r of reais) if (r instanceof DocumentReference) c.leituras.push(r.path);
           }
           const saida: unknown = (valor as (...a: unknown[]) => unknown).apply(t, reais);
@@ -219,6 +242,8 @@ function contando(real: Firestore, c: Contagem): Firestore {
 /** Task ids the recording queue holds, and every task it accepted. */
 let idsNaFila = new Set<string>();
 let enfileiradas: TarefaEstoqueAmazon[] = [];
+/** Every task the recording JOBS queue accepted, with its name. */
+let lotes: { tarefa: TarefaLoteAmazon; id: string | null }[] = [];
 /** A write a case lands while the batch is enqueued: after the lease, before the final write. */
 let duranteOLote: (() => Promise<void>) | null = null;
 
@@ -238,6 +263,16 @@ const produtor = criarProdutorEstoqueAmazon({
   }),
 });
 
+const agendador = criarAgendadorLotesAmazon({
+  desligado: false,
+  fila: () => ({
+    enqueue: (tarefa, extras) => {
+      lotes.push({ tarefa, id: extras?.id ?? null });
+      return Promise.resolve();
+    },
+  }),
+});
+
 async function tick(
   agoraMs: number,
   firestore: Firestore = db(),
@@ -253,6 +288,7 @@ async function tick(
       ler: LEITOR_DE_CONTAS_ESTOQUE_AMAZON.ler,
     },
     produtor: () => produtor,
+    agendador: () => agendador,
     agora: () => agoraMs,
     logger: loggerEspiao().logger,
     increment: (by) => FieldValue.increment(by),
@@ -278,6 +314,7 @@ describe.skipIf(!EMULATED)('the stock tick on real Firestore (emulator)', () => 
     expect(process.env.AMAZON_CHAMADAS).not.toBe('on');
     idsNaFila = new Set();
     enfileiradas = [];
+    lotes = [];
     duranteOLote = null;
     await limpar();
   });
@@ -286,13 +323,13 @@ describe.skipIf(!EMULATED)('the stock tick on real Firestore (emulator)', () => 
     await limpar();
   });
 
-  it('★ the IDLE tick’s exact cost on the server: 1 conta list, 1 conta read, 1 sync read, 1 lease write, 2 empty window queries, 1 final write — nothing else', async () => {
+  it('★ the IDLE tick’s exact cost on the server: 1 conta list, 1 conta read, 1 sync read, 1 lease write, ONE getAll of the run and the lease, 2 empty window queries, 1 final write — nothing else', async () => {
     await semearConta();
     await semearSync();
     await semearProduto();
     // Just below the window's reach-back: the window's lower bound excludes it.
     await linha(T0 - INTERVALO_TICK_ESTOQUE_AMAZON_MS - CINCO_MINUTOS_MS);
-    const contagem: Contagem = { leituras: [], consultas: [], escritas: [] };
+    const contagem: Contagem = { leituras: [], getAlls: 0, consultas: [], escritas: [] };
     const r = await tick(T0, contando(db(), contagem));
     expect(r).toMatchObject({
       desfecho: DESFECHO_TICK_ESTOQUE_AMAZON.janelaVazia,
@@ -303,7 +340,8 @@ describe.skipIf(!EMULATED)('the stock tick on real Firestore (emulator)', () => 
       tarefas: 0,
     });
     expect(contagem).toEqual({
-      leituras: [caminhoConta(CONTA), CAMINHO_SYNC],
+      leituras: [caminhoConta(CONTA), CAMINHO_SYNC, CAMINHO_RUN, CAMINHO_VEZ],
+      getAlls: 1,
       consultas: ['integracao', 'estoques', 'estoques'],
       escritas: [`update ${CAMINHO_SYNC}`, `update ${CAMINHO_SYNC}`],
     });
@@ -316,6 +354,7 @@ describe.skipIf(!EMULATED)('the stock tick on real Firestore (emulator)', () => 
       semDeposito: false,
     });
     expect(enfileiradas).toEqual([]);
+    expect(lotes).toEqual([]);
   });
 
   it('★ a first tick, then a moved row: ONE task named by the REAL commit; the overlap dedupes; a rewrite that keeps the stamp mints a NEW task', async () => {
@@ -403,7 +442,7 @@ describe.skipIf(!EMULATED)('the stock tick on real Firestore (emulator)', () => 
     const cursorMs = commit.toMillis() + 21_000;
     expect(base - 60_000).toBeGreaterThan(cursorMs - CINCO_MINUTOS_MS);
     await semearSync({ cursorMs });
-    const contagem: Contagem = { leituras: [], consultas: [], escritas: [] };
+    const contagem: Contagem = { leituras: [], getAlls: 0, consultas: [], escritas: [] };
     const r = await tick(cursorMs + INTERVALO_TICK_ESTOQUE_AMAZON_MS, contando(db(), contagem));
     expect(r).toMatchObject({
       desfecho: DESFECHO_TICK_ESTOQUE_AMAZON.janelaVazia,
@@ -444,6 +483,53 @@ describe.skipIf(!EMULATED)('the stock tick on real Firestore (emulator)', () => 
     // NEAR-MISS: a final write without its precondition would have put the
     // cursor back at this window's end, below the newer one.
     expect(await sincronizacao()).toMatchObject({ cursorMs: adiante, vez: null, ultimoTickMs: t1 });
+  });
+
+  it('★ T4b on the server: ONE getAll of the run and the lease; a stalled live run RE-KICKED by its stall’s name; an expired montando’s start handed to its NAMED vez recovery, then cleared under the server’s own precondition', async () => {
+    await semearConta();
+    await semearSync();
+    await db()
+      .doc(CAMINHO_RUN)
+      .set({
+        execucaoId: `${P}run`,
+        fase: 'varrendo',
+        depositoOuterRef: CANONICA,
+        proximaPagina: 1,
+        paginas: 1,
+        progressoEmMs: T0 - 16 * 60_000,
+        iniciadaEmMs: T0 - 60 * 60_000,
+      });
+    await db()
+      .doc(CAMINHO_VEZ)
+      .set({
+        estado: 'montando',
+        execucaoId: `${P}morto`,
+        ateMs: T0 - 1,
+        atualizadoEmMs: T0 - 11 * 60_000,
+        pendenteDesdeMs: T0 - 30 * 60_000,
+      });
+    const antes = (await db().doc(CAMINHO_VEZ).get()).updateTime;
+    const contagem: Contagem = { leituras: [], getAlls: 0, consultas: [], escritas: [] };
+    const r = await tick(T0, contando(db(), contagem));
+    expect(r).toMatchObject({ retomada: 'retomada', inicioRecuperado: true });
+    expect(contagem.getAlls).toBe(1);
+    expect(contagem.escritas).toContain(`update ${CAMINHO_VEZ}`);
+    expect(lotes.map((l) => [l.tarefa.tipo, l.id])).toEqual([
+      ['reconciliacao', nomeRetomadaReconciliacao(CONTA, `${P}run`, 1, T0 - 16 * 60_000)],
+      [
+        'feed-recuperar',
+        nomeRecuperacaoFeed(CONTA, referenciaVezFeed(`${P}morto`), T0 - 30 * 60_000),
+      ],
+    ]);
+    const vez = await db().doc(CAMINHO_VEZ).get();
+    expect(vez.data()).toMatchObject({
+      estado: 'montando',
+      pendenteDesdeMs: null,
+      atualizadoEmMs: T0,
+    });
+    expect(vez.updateTime?.isEqual(antes ?? vez.updateTime)).toBe(false);
+    // The run itself is the page's to move: the re-kick wrote nothing on it.
+    expect(contagem.escritas.filter((e) => e.endsWith(CAMINHO_RUN))).toEqual([]);
   });
 
   it('the estoque-sem-deposito aviso: raised on false → true, resolved on true → false, under the real preconditions', async () => {

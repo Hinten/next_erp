@@ -41,6 +41,10 @@ const h = vi.hoisted(() => ({
     enfileirarPausa: (): Promise<never> => Promise.reject(new Error('teste: nada enfileira')),
   },
   criarProdutor: vi.fn(),
+  agendador: {
+    enfileirarLote: (): Promise<never> => Promise.reject(new Error('teste: nada enfileira')),
+  },
+  criarAgendador: vi.fn(),
 }));
 vi.mock('./lib/admin', () => ({
   getDb: () => h.db,
@@ -52,6 +56,10 @@ vi.mock('./agendadorEstoque', () => ({
   criarProdutorEstoqueAmazonDoAmbiente: () => {
     h.criarProdutor();
     return h.produtor;
+  },
+  criarAgendadorLotesAmazonDoAmbiente: () => {
+    h.criarAgendador();
+    return h.agendador;
   },
 }));
 vi.mock('../../lib/amazon/estoque/sincronizacaoEstoque', async (importOriginal) => {
@@ -165,6 +173,7 @@ describe('sweepAmazonStock — the gates the body applies to what the root binds
     // A first tick reads no window and enqueues nothing: no producer is built.
     expect(fake.consultas.map((c) => c.colecao)).toEqual(['integracao']);
     expect(h.criarProdutor).not.toHaveBeenCalled();
+    expect(h.criarAgendador).not.toHaveBeenCalled();
     expect(linhas().filter((l) => l.conta === CONTA)).toEqual([
       expect.objectContaining({ desfecho: 'primeiro-tick', fase: 'tick', severity: 'INFO' }),
     ]);
@@ -271,6 +280,15 @@ describe('depsDoTickEstoqueAmazon — what the root binds', () => {
 
     expect(deps.produtor()).toBe(h.produtor);
     expect(h.criarProdutor).toHaveBeenCalledTimes(1);
+  });
+
+  it('the JOBS producer (the delta feed, a reconcile page, a vez recovery) is the stock root’s too, as a THUNK', () => {
+    const deps = depsDoTickEstoqueAmazon();
+    expect(h.criarAgendador).not.toHaveBeenCalled();
+
+    expect(deps.agendador()).toBe(h.agendador);
+    expect(h.criarAgendador).toHaveBeenCalledTimes(1);
+    expect(h.criarProdutor).not.toHaveBeenCalled();
   });
 
   it('a fresh lease holder id per call, in the stock documents’ id grammar, and the real clock', () => {

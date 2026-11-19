@@ -53,6 +53,24 @@ const JANELA = {
   ateMs: ANTES - 60_000,
   manterDesdeMs: ANTES - 600_000,
   commitAposMs: null,
+  forcarPorCommit: false,
+  depositoId: 'deposito-1',
+};
+
+/** The tick's cursor: 5 minutes before the submission. */
+const CURSOR = ANTES - 300_000;
+
+/**
+ * A tick's window for {@link CURSOR}: the range from the cursor less 5 minutes,
+ * a row kept when stamped OR committed after the cursor less 20 s — a commit
+ * filter that never forces.
+ */
+const JANELA_DO_TICK = {
+  desdeMs: CURSOR - 300_000,
+  ateMs: ANTES,
+  manterDesdeMs: CURSOR - 20_000,
+  commitAposMs: CURSOR - 20_000,
+  forcarPorCommit: false,
   depositoId: 'deposito-1',
 };
 
@@ -204,6 +222,52 @@ describe('the window', () => {
     expect(janelaFeedAmazonSchema.safeParse({ ...JANELA, depositoId: 'deposito/1' }).success).toBe(
       false,
     );
+  });
+
+  describe('★ forcarPorCommit', () => {
+    it('the tick’s shape parses unchanged: a commit filter that does NOT force', () => {
+      expect(janelaFeedAmazonSchema.parse(JANELA_DO_TICK)).toEqual(JANELA_DO_TICK);
+    });
+
+    it('a recovery’s forcing window parses: a commit filter that forces', () => {
+      const recuperacao = { ...JANELA_DO_TICK, manterDesdeMs: null, forcarPorCommit: true };
+      expect(janelaFeedAmazonSchema.parse(recuperacao)).toEqual(recuperacao);
+    });
+
+    it('refuses forcing with no commit filter, naming the field (NEAR-MISS: the same window not forcing parses)', () => {
+      const r = janelaFeedAmazonSchema.safeParse({ ...JANELA, forcarPorCommit: true });
+      expect(r.success).toBe(false);
+      expect(r.error?.issues.map((i) => i.path)).toEqual([['forcarPorCommit']]);
+      expect(janelaFeedAmazonSchema.safeParse({ ...JANELA, forcarPorCommit: false }).success).toBe(
+        true,
+      );
+    });
+
+    it('is REQUIRED: a window without it is refused, and so is a non-boolean', () => {
+      const { forcarPorCommit: _f, ...semFlag } = JANELA_DO_TICK;
+      expect(janelaFeedAmazonSchema.safeParse(semFlag).success).toBe(false);
+      expect(
+        janelaFeedAmazonSchema.safeParse({ ...JANELA_DO_TICK, forcarPorCommit: null }).success,
+      ).toBe(false);
+      expect(
+        janelaFeedAmazonSchema.safeParse({ ...JANELA_DO_TICK, forcarPorCommit: 0 }).success,
+      ).toBe(false);
+    });
+
+    it('a stored lease or record whose window lacks it fails its parse (nothing tolerates the older shape)', () => {
+      const { forcarPorCommit: _f, ...semFlag } = JANELA_DO_TICK;
+      expect(vezFeedAmazonSchema.safeParse({ ...VEZ, janela: semFlag }).success).toBe(false);
+      expect(registroFeedAmazonSchema.safeParse({ ...CRIACAO, janela: semFlag }).success).toBe(
+        false,
+      );
+      // NEAR-MISS: the same documents with the field parse, the window kept whole.
+      expect(vezFeedAmazonSchema.parse({ ...VEZ, janela: JANELA_DO_TICK }).janela).toEqual(
+        JANELA_DO_TICK,
+      );
+      expect(registroFeedAmazonSchema.parse({ ...CRIACAO, janela: JANELA_DO_TICK }).janela).toEqual(
+        JANELA_DO_TICK,
+      );
+    });
   });
 });
 

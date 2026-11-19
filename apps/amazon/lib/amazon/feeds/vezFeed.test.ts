@@ -23,7 +23,9 @@ import {
 import { PRAZO_FEED_MS } from './registroFeed';
 import {
   type LoteFeedAmazon,
+  MAX_PARTES_LOTE_BLOCOS_FEED_AMAZON,
   type TarefaEnviarFeedAmazon,
+  execucaoIdDoLoteBlocosFeed,
   tarefaEnviarFeedAmazonSchema,
 } from './tarefaLote';
 import {
@@ -51,6 +53,7 @@ import {
   decidirTomadaDaVez,
   destinoDoLoteRecusado,
   disjuntorDaVez,
+  ehTomadaPropria,
   estadoDoDisjuntor,
   expirarIncertoVez,
   faseDaVez,
@@ -104,31 +107,54 @@ function aplicar(armazenada: VezFeedAmazon, escrever: Partial<VezFeedAmazon>): V
   return vezFeedAmazonSchema.parse({ ...armazenada, ...escrever });
 }
 
+/** The run whose drift blocks the block batches below read. */
+const RUN = 'execucao-run';
+
 const BLOCOS: LoteFeedAmazon = {
   tipo: TIPO_LOTE_FEED_AMAZON.blocos,
+  execucaoIdRun: RUN,
+  parteInicial: 0,
   partes: 2,
   esperaAteMs: AGORA + 6 * HORA,
 };
 
-/** A TICK-born window batch: no commit filter, no wait. */
+/**
+ * A TICK-born window batch, the tick's own shape: its RANGE starts below its
+ * stamp rule (the reach-back), it carries a commit filter that does NOT force,
+ * and it has no wait.
+ */
 const TICK: LoteFeedAmazon = {
   tipo: TIPO_LOTE_FEED_AMAZON.janela,
   desdeMs: 900,
   ateMs: 5_000,
-  manterDesdeMs: 900,
-  commitAposMs: null,
+  manterDesdeMs: 1_180,
+  commitAposMs: 1_180,
+  forcarPorCommit: false,
   esperaAteMs: null,
   depositoId: 'deposito-1',
 };
 
-/** A RECOVERY-born window batch: a commit filter, and a bounded wait. */
+/** A RECOVERY-born window batch: a commit filter that forces, and a bounded wait. */
 const RECUPERACAO: LoteFeedAmazon = {
   tipo: TIPO_LOTE_FEED_AMAZON.janela,
   desdeMs: 700,
   ateMs: 5_000,
   manterDesdeMs: 800,
   commitAposMs: 750,
+  forcarPorCommit: true,
   esperaAteMs: AGORA + HORA,
+  depositoId: 'deposito-1',
+};
+
+/** A recovery's window with no snapshot (a `vez` recovery): stamp-only, so it never forces. */
+const SEM_SNAPSHOT: LoteFeedAmazon = {
+  tipo: TIPO_LOTE_FEED_AMAZON.janela,
+  desdeMs: 800,
+  ateMs: 5_000,
+  manterDesdeMs: 800,
+  commitAposMs: null,
+  forcarPorCommit: false,
+  esperaAteMs: null,
   depositoId: 'deposito-1',
 };
 
@@ -374,11 +400,23 @@ describe('estadoDoDisjuntor — open at 3, half-open an hour after the last fail
 
 /* ============================ the turned-away batch =========================== */
 
-describe('classeDoLote', () => {
-  it('block; window WITHOUT a commit filter = tick-born; WITH one = recovery-born', () => {
+describe('★ classeDoLote — keyed on forcarPorCommit, never on the commit filter', () => {
+  it('block; a window that does not force = tick-born; one that forces = recovery-born', () => {
     expect(classeDoLote(BLOCOS)).toBe(CLASSE_DO_LOTE.blocos);
     expect(classeDoLote(TICK)).toBe(CLASSE_DO_LOTE.janelaDoTick);
     expect(classeDoLote(RECUPERACAO)).toBe(CLASSE_DO_LOTE.janelaDaRecuperacao);
+  });
+
+  it('★ the tick’s batch carries a commit filter and is STILL tick-born (NEAR-MISS: the same batch forcing is recovery-born)', () => {
+    if (TICK.tipo !== TIPO_LOTE_FEED_AMAZON.janela) throw new Error('fixture');
+    expect(TICK.commitAposMs).toBe(1_180);
+    expect(classeDoLote(TICK)).toBe(CLASSE_DO_LOTE.janelaDoTick);
+    const forcando = { ...TICK, forcarPorCommit: true, esperaAteMs: AGORA + HORA };
+    expect(classeDoLote(forcando)).toBe(CLASSE_DO_LOTE.janelaDaRecuperacao);
+  });
+
+  it('a recovery with no snapshot (stamp-only, not forcing) folds like the tick’s', () => {
+    expect(classeDoLote(SEM_SNAPSHOT)).toBe(CLASSE_DO_LOTE.janelaDoTick);
   });
 });
 
@@ -564,6 +602,46 @@ const PERSISTENTES = {
 };
 const CHAVES_PERSISTENTES = Object.keys(PERSISTENTES);
 
+describe('★ two block batches of ONE run are two lease holders (each its own execucaoId)', () => {
+  const LOTE_0 = execucaoIdDoLoteBlocosFeed(CONTA, RUN, 0);
+  const LOTE_1 = execucaoIdDoLoteBlocosFeed(CONTA, RUN, 1);
+  /** Batch 1 of the run: the blocks right after batch 0's. */
+  const SEGUNDO: LoteFeedAmazon = {
+    tipo: TIPO_LOTE_FEED_AMAZON.blocos,
+    execucaoIdRun: RUN,
+    parteInicial: MAX_PARTES_LOTE_BLOCOS_FEED_AMAZON,
+    partes: 1,
+    esperaAteMs: AGORA + 6 * HORA,
+  };
+
+  it('★ batch 1 reading the lease batch 0 holds (montando, enviando, enviado) is turned away and WAITS; NEAR-MISS: batch 0’s own id reads its own lease', () => {
+    expect(LOTE_0).not.toBe(LOTE_1);
+    expect([LOTE_0, LOTE_1]).not.toContain(RUN);
+    for (const estado of [E.montando, E.enviando, E.enviado]) {
+      const armazenada = vezEm(estado, { execucaoId: LOTE_0 });
+      const tomada = decidirTomadaDaVez(armazenada, AGORA, LOTE_1);
+      expect(tomada, estado).toEqual({ tipo: T.ocupada });
+      expect(ehTomadaPropria(tomada)).toBe(false);
+      expect(destinoDoLoteRecusado(tomada, SEGUNDO, FECHADO, AGORA)).toEqual({
+        tipo: D.aguardar,
+        atrasoS: ESPERA_LOTE_EM_VEZ_S,
+      });
+      // NEAR-MISS: one id for both batches would read batch 1 as batch 0's own retry.
+      expect(ehTomadaPropria(decidirTomadaDaVez(armazenada, AGORA, LOTE_0)), estado).toBe(true);
+    }
+  });
+
+  it('batch 1 never takes the lease batch 0 is building: tomarVez writes nothing (NEAR-MISS: once batch 0 released it, batch 1 takes it)', () => {
+    const montando = vezEm(E.montando, { execucaoId: LOTE_0 });
+    expect(tomarVez(montando, AGORA, tarefa(SEGUNDO, LOTE_1))).toEqual({
+      tipo: 'recusado',
+      motivo: RECUSA_DA_VEZ.outraRota,
+    });
+    const livre = vezEm(E.livre, { execucaoId: LOTE_0 });
+    expect(tomarVez(livre, AGORA, tarefa(SEGUNDO, LOTE_1)).tipo).toBe('atualizar');
+  });
+});
+
 describe('★ tomarVez — livre → montando, keeping what outlives each feed', () => {
   it('no document ⇒ a whole new lease, its persistent fields empty', () => {
     const r = tomarVez(null, AGORA, tarefa(TICK));
@@ -581,11 +659,13 @@ describe('★ tomarVez — livre → montando, keeping what outlives each feed',
         atualizadoEmMs: AGORA,
         origem: 'delta',
         tipoLote: TIPO_LOTE_FEED_AMAZON.janela,
+        // The tick's keep rule WHOLE, its commit filter and its forcarPorCommit included.
         janela: {
           desdeMs: 900,
           ateMs: 5_000,
-          manterDesdeMs: 900,
-          commitAposMs: null,
+          manterDesdeMs: 1_180,
+          commitAposMs: 1_180,
+          forcarPorCommit: false,
           depositoId: 'deposito-1',
         },
         pendenteDesdeMs: null,
@@ -623,15 +703,32 @@ describe('★ tomarVez — livre → montando, keeping what outlives each feed',
     expect(depois).toMatchObject(PERSISTENTES);
   });
 
-  it('a recovery-born window is stored with its commit filter (the keep rule, never the wait)', () => {
+  it('a recovery-born window is stored with its commit filter and its forcing (the keep rule, never the wait)', () => {
     const r = tomarVez(vezEm(E.livre), AGORA, tarefa(RECUPERACAO));
     expect(r.tipo === 'atualizar' && r.escrever.janela).toEqual({
       desdeMs: 700,
       ateMs: 5_000,
       manterDesdeMs: 800,
       commitAposMs: 750,
+      forcarPorCommit: true,
       depositoId: 'deposito-1',
     });
+  });
+
+  it('★ the stored window KEEPS forcarPorCommit: the lease written parses, and a lease without it does not', () => {
+    for (const lote of [TICK, RECUPERACAO]) {
+      const r = tomarVez(vezEm(E.livre), AGORA, tarefa(lote));
+      if (r.tipo !== 'atualizar') throw new Error('esperava atualizar');
+      const depois = aplicar(vezEm(E.livre), r.escrever);
+      expect(depois.janela?.forcarPorCommit).toBe(lote.tipo === 'janela' && lote.forcarPorCommit);
+    }
+    // NEAR-MISS: the same window without the flag is a lease no read accepts.
+    const r = tomarVez(vezEm(E.livre), AGORA, tarefa(TICK));
+    if (r.tipo !== 'atualizar' || r.escrever.janela == null) throw new Error('esperava a janela');
+    const { forcarPorCommit: _f, ...semFlag } = r.escrever.janela;
+    expect(
+      vezFeedAmazonSchema.safeParse({ ...vezEm(E.livre), ...r.escrever, janela: semFlag }).success,
+    ).toBe(false);
   });
 
   it('refuses (writes nothing) whenever the route is not tomar', () => {
@@ -654,7 +751,21 @@ describe('★ tomarVez — livre → montando, keeping what outlives each feed',
 describe('★ the pending start — MIN-merged, never overwritten', () => {
   const ocupada = (pendenteDesdeMs: number | null) =>
     vezEm(E.enviando, { pendenteDesdeMs, ateMs: AGORA + MIN });
-  const comDesde = (desdeMs: number) => tarefa({ ...TICK, desdeMs, manterDesdeMs: desdeMs }, EU);
+  /** The tick's shape from `desdeMs`: its stamp rule and commit filter 280 ms above its range start. */
+  const comDesde = (desdeMs: number) =>
+    tarefa(
+      {
+        tipo: TIPO_LOTE_FEED_AMAZON.janela,
+        desdeMs,
+        ateMs: 5_000,
+        manterDesdeMs: desdeMs + 280,
+        commitAposMs: desdeMs + 280,
+        forcarPorCommit: false,
+        esperaAteMs: null,
+        depositoId: 'deposito-1',
+      },
+      EU,
+    );
 
   it('mesclarPendente: stored 1,000 + 900 ⇒ 900; + 1,100 ⇒ 1,000; nothing stored ⇒ the batch’s', () => {
     expect(mesclarPendente(1_000, 900)).toBe(900);
@@ -689,6 +800,71 @@ describe('★ the pending start — MIN-merged, never overwritten', () => {
   it('a tick-born batch on incerta-recuperar records its start (the uncertain path folds it)', () => {
     const incerta = vezEm(E.enviando, { antesDoEnvioMs: AGORA - 13 * HORA, ateMs: AGORA - HORA });
     expect(registrarPendenteVez(incerta, AGORA, comDesde(900)).tipo).toBe('atualizar');
+  });
+
+  it.each([
+    ['ocupada', vezEm(E.enviando, { pendenteDesdeMs: null, ateMs: AGORA + MIN })],
+    [
+      'incerta-recuperar',
+      vezEm(E.enviando, { antesDoEnvioMs: AGORA - 13 * HORA, ateMs: AGORA - HORA }),
+    ],
+  ] as const)(
+    '★ the TICK’s batch, commit filter and all, turned away on %s ⇒ registrar-pendente recording its RANGE start (NEAR-MISS: never its manterDesdeMs, which a stamp-only recovery would read past its late commits)',
+    (_classe, holder) => {
+      const t = tarefa(TICK, EU);
+      expect(
+        destinoDoLoteRecusado(
+          decidirTomadaDaVez(holder, AGORA, EU),
+          t.lote,
+          disjuntorDaVez(holder),
+          AGORA,
+        ),
+      ).toEqual({ tipo: D.registrarPendente });
+      const r = registrarPendenteVez(holder, AGORA, t);
+      expect(r).toEqual({
+        tipo: 'atualizar',
+        escrever: { pendenteDesdeMs: 900, atualizadoEmMs: AGORA },
+        pendenteDesdeMs: 900,
+      });
+      if (t.lote.tipo !== TIPO_LOTE_FEED_AMAZON.janela) throw new Error('fixture');
+      expect(t.lote.manterDesdeMs).toBe(1_180);
+      expect(r.tipo === 'atualizar' && r.pendenteDesdeMs).not.toBe(t.lote.manterDesdeMs);
+    },
+  );
+
+  it('★ NEAR-MISS: stored 1,000 and the tick’s batch from 900 (stamp rule at 1,180) ⇒ 900 written — recording its manterDesdeMs would keep 1,000 and write nothing', () => {
+    expect(registrarPendenteVez(ocupada(1_000), AGORA, tarefa(TICK, EU))).toEqual({
+      tipo: 'atualizar',
+      escrever: { pendenteDesdeMs: 900, atualizadoEmMs: AGORA },
+      pendenteDesdeMs: 900,
+    });
+  });
+
+  it('★ a FORCING batch on ocupada waits; on incerta-recuperar it goes per SKU — never a recorded start', () => {
+    const ocupadaPor = vezEm(E.enviando, { pendenteDesdeMs: 1_000, ateMs: AGORA + MIN });
+    const t = tarefa(RECUPERACAO, EU);
+    expect(
+      destinoDoLoteRecusado(
+        decidirTomadaDaVez(ocupadaPor, AGORA, EU),
+        t.lote,
+        disjuntorDaVez(ocupadaPor),
+        AGORA,
+      ),
+    ).toEqual({ tipo: D.aguardar, atrasoS: ESPERA_LOTE_EM_VEZ_S });
+    expect(registrarPendenteVez(ocupadaPor, AGORA, t)).toEqual({
+      tipo: 'recusado',
+      motivo: RECUSA_DA_VEZ.outraRota,
+    });
+    const incerta = vezEm(E.enviando, { antesDoEnvioMs: AGORA - 13 * HORA, ateMs: AGORA - HORA });
+    expect(
+      destinoDoLoteRecusado(
+        decidirTomadaDaVez(incerta, AGORA, EU),
+        t.lote,
+        disjuntorDaVez(incerta),
+        AGORA,
+      ),
+    ).toEqual({ tipo: D.repassarParaPatches, motivo: MOTIVO_REPASSE_LOTE.incertaRecuperar });
+    expect(registrarPendenteVez(incerta, AGORA, t).tipo).toBe('recusado');
   });
 
   it('★ refused for every batch whose route is not registrar-pendente (16, 18)', () => {
@@ -1045,7 +1221,14 @@ function emPosse(fase: EstadoVezFeedAmazon): VezFeedAmazon {
     ateMs: fase === E.enviando ? AGORA - 12 * HORA : AGORA + HORA,
     origem: 'delta',
     tipoLote: TIPO_LOTE_FEED_AMAZON.janela,
-    janela: { desdeMs: 900, ateMs: 5_000, manterDesdeMs: 900, commitAposMs: null, depositoId: 'd' },
+    janela: {
+      desdeMs: 900,
+      ateMs: 5_000,
+      manterDesdeMs: 1_180,
+      commitAposMs: 1_180,
+      forcarPorCommit: false,
+      depositoId: 'd',
+    },
     ...PERSISTENTES,
     ultimoEnvioMs: AGORA - 10 * SEG,
   });

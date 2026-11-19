@@ -47,12 +47,12 @@ import {
   tokenDeAcesso,
 } from '../testing/fixtures';
 import { MAX_TENTATIVAS_ENVIO_ESTOQUE_AMAZON } from './envioEstoqueFirestore';
+import { DADOS_LEITURA_ESTOQUE_AMAZON } from './gateListing';
 import { JANELA_VISIBILIDADE_MS } from './planoEstoque';
 import {
   ACAO_TAREFA_ESTOQUE_AMAZON,
   AmazonEstoquePrazoDaTarefaError,
   CAMPO_FEED_RECENTE_ESTOQUE_AMAZON,
-  DADOS_LEITURA_ESTOQUE_AMAZON,
   type DepsProcessarEstoqueAmazon,
   ORCAMENTO_ANTES_DO_PATCH_MS,
   type ResultadoTarefaEstoqueAmazon,

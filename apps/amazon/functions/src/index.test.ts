@@ -18,6 +18,7 @@ import type { ExpiracaoSweepAmazonResult } from '../../lib/amazon/conta/expiraca
 import { __setRelogioDoCacheParaTestes } from '../../lib/amazon/core/contaCache';
 import { LOGGER_STDOUT_AMAZON } from '../../lib/amazon/core/log';
 import { ORCAMENTO_ANTES_DO_PATCH_MS } from '../../lib/amazon/estoque/processarEstoque';
+import { ORCAMENTO_PAGINA_RECONCILIACAO_MS } from '../../lib/amazon/estoque/reconciliacaoEstoque';
 import { FILA_ESTOQUE_AMAZON } from '../../lib/amazon/estoque/produtorEstoque';
 import {
   INTERVALO_TICK_ESTOQUE_AMAZON_MS,
@@ -144,6 +145,7 @@ const {
   processAmazonListingsJob,
   processAmazonNfeUpload,
   processAmazonStockPatch,
+  reconcileAmazonStock,
   reprocessAmazonNotifications,
   sweepAmazonExpirations,
   sweepAmazonStock,
@@ -164,6 +166,7 @@ afterAll(() => {
 /** Every scheduled trigger this codebase exports. The exhaustiveness test makes adding one mandatory. */
 const AGENDAMENTOS = {
   pollAmazonOrders,
+  reconcileAmazonStock,
   reprocessAmazonNotifications,
   sweepAmazonExpirations,
   sweepAmazonStock,
@@ -818,6 +821,25 @@ describe('sweepAmazonStock — the options and their arithmetic (step 12, PR 12-
   });
 });
 
+describe('reconcileAmazonStock — the options (step 12, PR 12-f)', () => {
+  it('runs DAILY at 03:44 America/Sao_Paulo', () => {
+    expect(gatilhoDe(reconcileAmazonStock).schedule).toBe('44 3 * * *');
+    expect(gatilhoDe(reconcileAmazonStock).timeZone).toBe('America/Sao_Paulo');
+  });
+
+  it('has timeoutSeconds 120: a few by-id reads, writes and enqueues per conta (the walk runs on the jobs queue)', () => {
+    expect(endpointOf(reconcileAmazonStock).timeoutSeconds).toBe(120);
+  });
+
+  it('retries nothing: a failed run is redone by the next request, the tick’s re-kick or tomorrow’s run', () => {
+    expect(gatilhoDe(reconcileAmazonStock).retryConfig?.retryCount).toBe(0);
+  });
+
+  it('binds NO secret — the run makes no Amazon call (its pages read Amazon through the jobs queue)', () => {
+    expect(segredosDe(reconcileAmazonStock)).toEqual([]);
+  });
+});
+
 describe('sweepAmazonExpirations', () => {
   it('runs DAILY at 07:15 America/Sao_Paulo', () => {
     expect(gatilhoDe(sweepAmazonExpirations).schedule).toBe('15 7 * * *');
@@ -1131,6 +1153,23 @@ describe('processAmazonListingsJob — the declared options (step 12a, PR 12-c)'
     expect([piorCasoMs, timeoutS]).toEqual([460_000, 540]);
   });
 
+  it('★ and a reconcile page fits it too: its 400-s budget, the Amazon read the deadline caught in flight (a refresh and the read, twice under the forced refresh), and a stated tail for its writes, its next enqueue and a last page’s decide and close', () => {
+    // The budget is read before every Amazon call, so at most ONE call is in
+    // flight when it passes; the tail is Firestore and Cloud Tasks only (the
+    // block, the state update, the next page, or the decide's enqueues and the
+    // close's avisos, end and request read) — a margin, not a measurement.
+    const chamadaMs = 2 * (PRAZO_AMAZON_MS.lwa + PRAZO_AMAZON_MS.leitura);
+    const caudaMs = 50_000;
+    const piorCasoMs = ORCAMENTO_PAGINA_RECONCILIACAO_MS + chamadaMs + caudaMs;
+    const timeoutS = endpointOf(processAmazonListingsJob).timeoutSeconds as number;
+    expect(piorCasoMs).toBeLessThan(timeoutS * 1000);
+    // ÂNCORA: the numbers this arithmetic was written for.
+    expect([ORCAMENTO_PAGINA_RECONCILIACAO_MS, chamadaMs, caudaMs]).toEqual([
+      400_000, 80_000, 50_000,
+    ]);
+    expect([piorCasoMs, timeoutS]).toEqual([530_000, 540]);
+  });
+
   it('★ and a result dispatch fits it too: getFeed and getFeedDocument each refreshed once, the download, three LWA exchanges', () => {
     const piorCasoMs =
       3 * PRAZO_AMAZON_MS.lwa +
@@ -1163,8 +1202,9 @@ describe('processAmazonListingsJob — the declared options (step 12a, PR 12-c)'
     expect(segredosDe(processAmazonListingsJob)).toEqual([SEGREDO_LWA]);
   });
 
-  it('★ binds the seam table itself, ONCE, and it is EMPTY in this PR — no fluxo reaches Amazon through it', () => {
-    expect(DESTINO_LOTE_AMAZON).toEqual({ estoque: null, preco: null });
+  it('★ binds the seam table itself, ONCE — the stock row filled (PR 12-f), the price row still null', () => {
+    expect(DESTINO_LOTE_AMAZON.estoque).not.toBeNull();
+    expect(DESTINO_LOTE_AMAZON.preco).toBeNull();
     expect(fonte).toContain(
       'vincularDestinosLoteAmazon( RAIZ_DOS_LOTES_AMAZON, DESTINO_LOTE_AMAZON, );',
     );
@@ -1373,10 +1413,11 @@ describe('onNfeAprovadaAmazon (step 14, PR 14-c)', () => {
 describe('every trigger of the codebase', () => {
   const TODOS = { ...AGENDAMENTOS, ...FILAS, ...GATILHOS };
 
-  it('every onSchedule export is in AGENDAMENTOS — and there are exactly four', () => {
+  it('every onSchedule export is in AGENDAMENTOS — and there are exactly five', () => {
     expect(exportadosCom('scheduleTrigger')).toEqual(Object.keys(AGENDAMENTOS).sort());
     expect(exportadosCom('scheduleTrigger')).toEqual([
       'pollAmazonOrders',
+      'reconcileAmazonStock',
       'reprocessAmazonNotifications',
       'sweepAmazonExpirations',
       'sweepAmazonStock',
@@ -1540,12 +1581,14 @@ describe('every trigger of the codebase', () => {
   );
 
   it('binds the LWA secret on the five queues, the reprocess and the poll, and NOTHING else anywhere', () => {
-    // The expiry sweep, the stock tick and the two Firestore triggers make no
-    // Amazon call (D11): a declared secret missing from Secret Manager would
-    // fail the whole deploy for a function that never reads it.
+    // The expiry sweep, the stock tick, the daily stock reconcile and the two
+    // Firestore triggers make no Amazon call (D11): a declared secret missing
+    // from Secret Manager would fail the whole deploy for a function that
+    // never reads it.
     const SEM_SEGREDO = [
       'sweepAmazonExpirations',
       'sweepAmazonStock',
+      'reconcileAmazonStock',
       'onIntegracaoAmazonChanged',
       'onNfeAprovadaAmazon',
     ];
@@ -1554,7 +1597,7 @@ describe('every trigger of the codebase', () => {
       expect(segredosDe(fn), nome).toEqual(esperado);
     }
     // ÂNCORA: the walk covers all three families.
-    expect(Object.keys(TODOS)).toHaveLength(11);
+    expect(Object.keys(TODOS)).toHaveLength(12);
   });
 
   it('runs in the inlined region (the bare options import, #1108) and caps instances at 10', () => {
@@ -1566,21 +1609,27 @@ describe('every trigger of the codebase', () => {
 
   it("the schedules are DISTINCT, and none is the half-hour cron other channels' sweeps use", () => {
     const crons = Object.values(AGENDAMENTOS).map((fn) => gatilhoDe(fn).schedule);
-    expect(crons).toHaveLength(4);
+    expect(crons).toHaveLength(5);
     expect(new Set(crons).size).toBe(crons.length);
     expect(crons).not.toContain('*/30 * * * *');
   });
 
-  it("★ no two schedules share a minute: the poll's four slots, the reprocess's :10/:40, the expiry's :15 and the stock tick's twelve", () => {
+  it("★ no two schedules share a minute: the poll's four slots, the reprocess's :10/:40, the expiry's :15, the stock tick's twelve and the daily reconcile's :44", () => {
     const poll = minutosDoCron(gatilhoDe(pollAmazonOrders).schedule) ?? [];
     const reprocesso = minutosDoCron(gatilhoDe(reprocessAmazonNotifications).schedule) ?? [];
     // The expiry runs daily (`15 7 * * *`): its minute field is its first.
     const expiracao = Number((gatilhoDe(sweepAmazonExpirations).schedule ?? '').split(' ')[0]);
     const estoque = minutosDoCron(gatilhoDe(sweepAmazonStock).schedule) ?? [];
+    // The reconcile runs daily (`44 3 * * *`): its minute field is its first, at hour 3.
+    const [minutoReconciliacao, horaReconciliacao] = (
+      gatilhoDe(reconcileAmazonStock).schedule ?? ''
+    ).split(' ');
+    const reconciliacao = Number(minutoReconciliacao);
     expect(poll).toHaveLength(4);
     expect(reprocesso).toEqual([10, 40]);
     expect(expiracao).toBe(15);
     expect(estoque).toHaveLength(12);
+    expect([reconciliacao, Number(horaReconciliacao)]).toEqual([44, 3]);
     // Every PAIR of schedules, as minute sets: a minute in two of them is a
     // collision whichever two they are.
     const familias: Record<string, readonly number[]> = {
@@ -1588,6 +1637,7 @@ describe('every trigger of the codebase', () => {
       reprocesso,
       expiracao: [expiracao],
       estoque,
+      reconciliacao: [reconciliacao],
     };
     const nomes = Object.keys(familias);
     for (const [i, a] of nomes.entries()) {
@@ -1599,9 +1649,9 @@ describe('every trigger of the codebase', () => {
         ).toEqual([]);
       }
     }
-    // ÂNCORA: 4 + 2 + 1 + 12 minutes, none of them twice.
-    expect(Object.values(familias).flat()).toHaveLength(19);
-    expect(new Set(Object.values(familias).flat()).size).toBe(19);
+    // ÂNCORA: 4 + 2 + 1 + 12 + 1 minutes, none of them twice.
+    expect(Object.values(familias).flat()).toHaveLength(20);
+    expect(new Set(Object.values(familias).flat()).size).toBe(20);
   });
 
   it("imports './options' FIRST and ALONE — the global options precede every trigger", () => {

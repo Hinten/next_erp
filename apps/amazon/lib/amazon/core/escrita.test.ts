@@ -1084,7 +1084,13 @@ const entradaPreco = tarefaEnviarFeedAmazonSchema.parse({
   contaId: CONTA,
   execucaoId: 'execucao-preco-1',
   origem: 'operador',
-  lote: { tipo: 'blocos', partes: 1, esperaAteMs: AGORA_MS + 60 * 60_000 },
+  lote: {
+    tipo: 'blocos',
+    execucaoIdRun: 'run-teste',
+    parteInicial: 0,
+    partes: 1,
+    esperaAteMs: AGORA_MS + 60 * 60_000,
+  },
 }) as TarefaEnviarFeedAmazon & { readonly fluxo: typeof FLUXO_AMAZON.preco };
 
 /** One price batch run, the provider's members and build bound the way a caller binds them. */

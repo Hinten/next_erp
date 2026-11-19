@@ -19,6 +19,7 @@ import { describe, expect, expectTypeOf, it } from 'vitest';
 import { FLUXOS_COM_LOTE, type FluxoComLoteAmazon } from '../core/valvulas';
 import {
   DESFECHO_RECUPERACAO_FEED_AMAZON,
+  MAX_PARTES_LOTE_BLOCOS_FEED_AMAZON,
   ORIGEM_RESULTADO_FEED_AMAZON,
   type RodadaConsultaFeed,
   TIPO_TAREFA_LOTE_AMAZON,
@@ -26,15 +27,20 @@ import {
   desfechoRecuperacaoFeedAmazonSchema,
   execucaoIdDaJanelaFeed,
   execucaoIdDaRecuperacaoFeed,
+  execucaoIdDoLoteBlocosFeed,
+  loteJanelaFeedAmazonSchema,
   nomeConsultaFeed,
   nomeEnvioFeed,
   nomeIncertoFeed,
   nomeNotificacaoFeed,
+  nomePaginaReconciliacao,
   nomeRecuperacaoFeed,
+  nomeRetomadaReconciliacao,
   origemResultadoFeedAmazonSchema,
   referenciaDaRecuperacaoFeed,
   referenciaVezFeed,
   tarefaLoteAmazonSchema,
+  tarefaPaginaReconciliacaoAmazonSchema,
   tarefaRecuperarFeedAmazonSchema,
   tipoTarefaLoteAmazonSchema,
 } from './tarefaLote';
@@ -45,29 +51,52 @@ const FEED = '3485934';
 const EXECUCAO = 'b'.repeat(64);
 const T0 = 1_800_000_000_000;
 
+/** The run a block batch reads: an id under the batch grammar, never the batch's own. */
+const RUN = 'run-reconciliacao-1';
+
 const BLOCOS = {
   tipo: TIPO_LOTE_FEED_AMAZON.blocos,
+  execucaoIdRun: RUN,
+  parteInicial: 0,
   partes: 3,
   esperaAteMs: T0 + 6 * 3_600_000,
 };
 
-/** A TICK-born window batch: its keep rule is its start; no commit filter, no wait. */
+/** The tick's cursor: 5 minutes before T0. */
+const CURSOR = T0 - 300_000;
+
+/**
+ * A TICK-born window batch, the tick's shape for {@link CURSOR}: the range from
+ * the cursor less 5 minutes, a row kept when stamped OR committed after the
+ * cursor less 20 s — a commit filter that never forces — and no wait.
+ */
 const JANELA_DO_TICK = {
   tipo: TIPO_LOTE_FEED_AMAZON.janela,
-  desdeMs: T0 - 300_000,
+  desdeMs: CURSOR - 300_000,
   ateMs: T0,
-  manterDesdeMs: T0 - 300_000,
-  commitAposMs: null,
+  manterDesdeMs: CURSOR - 20_000,
+  commitAposMs: CURSOR - 20_000,
+  forcarPorCommit: false,
   esperaAteMs: null,
   depositoId: 'deposito-1',
 };
 
-/** A RECOVERY-born window batch: its commit filter, and how long it may wait. */
+/** A RECOVERY-born window batch: its commit filter, which forces, and how long it may wait. */
 const JANELA_DA_RECUPERACAO = {
   ...JANELA_DO_TICK,
   manterDesdeMs: T0 - 900_000,
   commitAposMs: T0 - 20_000,
+  forcarPorCommit: true,
   esperaAteMs: T0 + 3_600_000,
+};
+
+/** A recovery's window with no snapshot (a `vez` recovery): stamp-only, not forcing, no wait. */
+const JANELA_SEM_SNAPSHOT = {
+  ...JANELA_DO_TICK,
+  manterDesdeMs: T0 - 600_000,
+  commitAposMs: null,
+  forcarPorCommit: false,
+  esperaAteMs: null,
 };
 
 function enviar(lote: Record<string, unknown>) {
@@ -113,7 +142,8 @@ const RECUPERAR = {
     desdeMs: JANELA_DO_TICK.desdeMs,
     ateMs: JANELA_DO_TICK.ateMs,
     manterDesdeMs: JANELA_DO_TICK.manterDesdeMs,
-    commitAposMs: null,
+    commitAposMs: JANELA_DO_TICK.commitAposMs,
+    forcarPorCommit: false,
     depositoId: 'deposito-1',
   },
 };
@@ -164,6 +194,7 @@ describe('the payloads (.strict(), v: 1)', () => {
       enviar(BLOCOS),
       enviar(JANELA_DO_TICK),
       enviar(JANELA_DA_RECUPERACAO),
+      enviar(JANELA_SEM_SNAPSHOT),
       RESULTADO,
       { ...RESULTADO, contaId: null, rodada: 0, origem: ORIGEM_RESULTADO_FEED_AMAZON.notificacao },
       INCERTO,
@@ -229,14 +260,48 @@ describe('the payloads (.strict(), v: 1)', () => {
     });
 
     it('refuses a batch whose keep fields are both null', () => {
-      expect(aceita(enviar({ ...JANELA_DO_TICK, manterDesdeMs: null }))).toBe(false);
+      expect(aceita(enviar({ ...JANELA_DO_TICK, manterDesdeMs: null, commitAposMs: null }))).toBe(
+        false,
+      );
     });
 
-    it('refuses commitAposMs without esperaAteMs, and the reverse (NEAR-MISS: both, or neither, parse)', () => {
+    it('★ a TICK-born batch — a commit filter, forcarPorCommit false, no esperaAteMs — parses unchanged', () => {
+      expect(JANELA_DO_TICK.commitAposMs).not.toBeNull();
+      expect(tarefaLoteAmazonSchema.parse(enviar(JANELA_DO_TICK))).toEqual(enviar(JANELA_DO_TICK));
+      expect(loteJanelaFeedAmazonSchema.parse(JANELA_DO_TICK)).toEqual(JANELA_DO_TICK);
+    });
+
+    it('★ esperaAteMs is set EXACTLY when the batch forces (NEAR-MISS: the commit filter alone decides nothing)', () => {
+      // Forcing without a wait bound, and a wait bound without forcing: refused.
       expect(aceita(enviar({ ...JANELA_DA_RECUPERACAO, esperaAteMs: null }))).toBe(false);
       expect(aceita(enviar({ ...JANELA_DO_TICK, esperaAteMs: T0 + 3_600_000 }))).toBe(false);
+      // A forcing batch with its bound, and a non-forcing one without, parse —
+      // commit filter or not.
       expect(aceita(enviar(JANELA_DA_RECUPERACAO))).toBe(true);
       expect(aceita(enviar(JANELA_DO_TICK))).toBe(true);
+      expect(aceita(enviar(JANELA_SEM_SNAPSHOT))).toBe(true);
+      expect(aceita(enviar({ ...JANELA_SEM_SNAPSHOT, esperaAteMs: T0 + 3_600_000 }))).toBe(false);
+      const r = loteJanelaFeedAmazonSchema.safeParse({ ...JANELA_DO_TICK, esperaAteMs: T0 });
+      expect(r.error?.issues.map((i) => i.path)).toEqual([['esperaAteMs']]);
+    });
+
+    it('refuses a forcing batch with no commit filter (only the commit test forces)', () => {
+      expect(
+        aceita(
+          enviar({
+            ...JANELA_SEM_SNAPSHOT,
+            forcarPorCommit: true,
+            esperaAteMs: T0 + 3_600_000,
+          }),
+        ),
+      ).toBe(false);
+    });
+
+    it('refuses a batch without forcarPorCommit, or with one that is not a boolean', () => {
+      const { forcarPorCommit: _f, ...semFlag } = JANELA_DO_TICK;
+      expect(aceita(enviar(semFlag))).toBe(false);
+      expect(aceita(enviar({ ...JANELA_DO_TICK, forcarPorCommit: 'false' }))).toBe(false);
+      expect(aceita(enviar({ ...JANELA_DO_TICK, forcarPorCommit: null }))).toBe(false);
     });
 
     it('a recovery-born batch may keep by commit alone (no stamp rule)', () => {
@@ -261,6 +326,43 @@ describe('the payloads (.strict(), v: 1)', () => {
       expect(aceita(enviar(semEspera))).toBe(false);
       expect(aceita(enviar({ ...BLOCOS, esperaAteMs: null }))).toBe(false);
       expect(aceita(enviar({ ...BLOCOS, partes: 1 }))).toBe(true);
+    });
+
+    it('★ partes is capped: the cap parses, the cap + 1 is REFUSED (no producer can build a batch the package would refuse)', () => {
+      expect(MAX_PARTES_LOTE_BLOCOS_FEED_AMAZON).toBe(50);
+      expect(aceita(enviar({ ...BLOCOS, partes: MAX_PARTES_LOTE_BLOCOS_FEED_AMAZON }))).toBe(true);
+      expect(aceita(enviar({ ...BLOCOS, partes: MAX_PARTES_LOTE_BLOCOS_FEED_AMAZON + 1 }))).toBe(
+        false,
+      );
+      // The whole run a large walk would have sent as ONE batch before the cap.
+      expect(aceita(enviar({ ...BLOCOS, partes: 84 }))).toBe(false);
+    });
+
+    it('★ a RANGE of ONE run: parteInicial a non-negative safe integer, the run id required and under the batch grammar', () => {
+      expect(aceita(enviar({ ...BLOCOS, parteInicial: 0 }))).toBe(true);
+      expect(aceita(enviar({ ...BLOCOS, parteInicial: 50 }))).toBe(true);
+      expect(aceita(enviar({ ...BLOCOS, parteInicial: -1 }))).toBe(false);
+      expect(aceita(enviar({ ...BLOCOS, parteInicial: 1.5 }))).toBe(false);
+      expect(aceita(enviar({ ...BLOCOS, parteInicial: '0' }))).toBe(false);
+      const { parteInicial: _i, ...semInicio } = BLOCOS;
+      expect(aceita(enviar(semInicio))).toBe(false);
+      const { execucaoIdRun: _r, ...semRun } = BLOCOS;
+      expect(aceita(enviar(semRun))).toBe(false);
+      for (const execucaoIdRun of ['run:1', '', 'a b', 'a'.repeat(129), null]) {
+        expect(aceita(enviar({ ...BLOCOS, execucaoIdRun })), String(execucaoIdRun)).toBe(false);
+      }
+    });
+
+    it('refuses a range whose last part is past the safe integers (NEAR-MISS: ending ON the last safe integer parses)', () => {
+      expect(aceita(enviar({ ...BLOCOS, parteInicial: Number.MAX_SAFE_INTEGER, partes: 2 }))).toBe(
+        false,
+      );
+      expect(aceita(enviar({ ...BLOCOS, parteInicial: Number.MAX_SAFE_INTEGER, partes: 1 }))).toBe(
+        true,
+      );
+      expect(
+        aceita(enviar({ ...BLOCOS, parteInicial: Number.MAX_SAFE_INTEGER - 1, partes: 2 })),
+      ).toBe(true);
     });
   });
 
@@ -289,9 +391,28 @@ describe('the payloads (.strict(), v: 1)', () => {
 
     it('refuses a recovered window that is reversed or keeps nothing', () => {
       expect(aceita({ ...RECUPERAR, janela: { ...RECUPERAR.janela, ateMs: 1 } })).toBe(false);
-      expect(aceita({ ...RECUPERAR, janela: { ...RECUPERAR.janela, manterDesdeMs: null } })).toBe(
-        false,
-      );
+      expect(
+        aceita({
+          ...RECUPERAR,
+          janela: { ...RECUPERAR.janela, manterDesdeMs: null, commitAposMs: null },
+        }),
+      ).toBe(false);
+    });
+
+    it('★ the recovered window carries forcarPorCommit: kept as given, required (NEAR-MISS: the tick’s window with it parses)', () => {
+      expect(tarefaRecuperarFeedAmazonSchema.parse(RECUPERAR).janela).toEqual(RECUPERAR.janela);
+      const forcando = { ...RECUPERAR.janela, forcarPorCommit: true };
+      expect(
+        tarefaRecuperarFeedAmazonSchema.parse({ ...RECUPERAR, janela: forcando }).janela,
+      ).toEqual(forcando);
+      const { forcarPorCommit: _f, ...semFlag } = RECUPERAR.janela;
+      expect(aceita({ ...RECUPERAR, janela: semFlag })).toBe(false);
+      expect(
+        aceita({
+          ...RECUPERAR,
+          janela: { ...RECUPERAR.janela, commitAposMs: null, forcarPorCommit: true },
+        }),
+      ).toBe(false);
     });
   });
 
@@ -333,6 +454,34 @@ describe('★ the names', () => {
     expect(nomeRecuperacaoFeed(CONTA, FEED, 5)).toBe(
       sha256Hex(`feed:recuperacao:${CONTA}:${FEED}:5`),
     );
+    expect(execucaoIdDoLoteBlocosFeed(CONTA, RUN, 1)).toBe(sha256Hex(`blocos:${CONTA}:${RUN}:1`));
+  });
+
+  it('★ a block batch’s execucaoId: one per (conta, run, batch), never the run’s own, deterministic (NEAR-MISS: the same batch of the same run twice is one id)', () => {
+    const ids = new Set([
+      execucaoIdDoLoteBlocosFeed(CONTA, RUN, 0),
+      execucaoIdDoLoteBlocosFeed(CONTA, RUN, 1),
+      execucaoIdDoLoteBlocosFeed(CONTA, `${RUN}-2`, 0),
+      execucaoIdDoLoteBlocosFeed(OUTRA_CONTA, RUN, 0),
+      RUN,
+    ]);
+    expect(ids.size).toBe(5);
+    expect(execucaoIdDoLoteBlocosFeed(CONTA, RUN, 1)).toBe(
+      execucaoIdDoLoteBlocosFeed(CONTA, RUN, 1),
+    );
+    // Each is an id the batch grammar carries: a payload's execucaoId and a lease holder.
+    expect(
+      aceita({ ...enviar(BLOCOS), execucaoId: execucaoIdDoLoteBlocosFeed(CONTA, RUN, 0) }),
+    ).toBe(true);
+    // Two batches of one run: two send names.
+    expect(nomeEnvioFeed(CONTA, execucaoIdDoLoteBlocosFeed(CONTA, RUN, 0))).not.toBe(
+      nomeEnvioFeed(CONTA, execucaoIdDoLoteBlocosFeed(CONTA, RUN, 1)),
+    );
+    expect(() => execucaoIdDoLoteBlocosFeed(CONTA, 'run:1', 0)).toThrow(
+      /execucaoIdRun fora da gramática/,
+    );
+    expect(() => execucaoIdDoLoteBlocosFeed(CONTA, RUN, -1)).toThrow(RangeError);
+    expect(() => execucaoIdDoLoteBlocosFeed(CONTA, RUN, 0.5)).toThrow(RangeError);
   });
 
   it('two send runs of one conta give two uncertain names and two send names (NEAR-MISS: the same run gives one)', () => {
@@ -482,9 +631,76 @@ describe('★ the names', () => {
     ['nomeRecuperacaoFeed', (c) => nomeRecuperacaoFeed(c, FEED, null)],
     ['execucaoIdDaJanelaFeed', (c) => execucaoIdDaJanelaFeed(c, 10, 20)],
     ['execucaoIdDaRecuperacaoFeed', (c) => execucaoIdDaRecuperacaoFeed(c, FEED, null)],
+    ['execucaoIdDoLoteBlocosFeed', (c) => execucaoIdDoLoteBlocosFeed(c, RUN, 0)],
   ])('%s refuses a contaId outside its grammar, naming the grammar only', (_nome, f) => {
     expect(() => f('conta/x')).toThrow(/contaId fora da gramática/);
     expect(() => f('a:b')).toThrow(RangeError);
     expect(() => f(CONTA)).not.toThrow();
+  });
+});
+
+describe('(12-f) the reconcile page: its payload and its names', () => {
+  const PAGINA = {
+    v: VERSAO_TAREFA_LOTE_AMAZON,
+    tipo: TIPO_TAREFA_LOTE_AMAZON.reconciliacao,
+    contaId: CONTA,
+    execucaoId: EXECUCAO,
+    pagina: 7,
+  };
+
+  it('parses unchanged; strict, versioned, a page a non-negative safe integer, the ids under their grammars', () => {
+    expect(tarefaPaginaReconciliacaoAmazonSchema.parse(PAGINA)).toEqual(PAGINA);
+    expect(aceita(PAGINA)).toBe(true);
+    expect(aceita({ ...PAGINA, pagina: 0 })).toBe(true);
+    for (const ruim of [
+      { ...PAGINA, skus: ['A'] },
+      { ...PAGINA, v: 2 },
+      { ...PAGINA, pagina: -1 },
+      { ...PAGINA, pagina: 1.5 },
+      { ...PAGINA, pagina: '7' },
+      { ...PAGINA, contaId: 'conta/x' },
+      { ...PAGINA, execucaoId: 'a:b' },
+    ]) {
+      expect(aceita(ruim), JSON.stringify(ruim)).toBe(false);
+    }
+    const { pagina: _pagina, ...semPagina } = PAGINA;
+    expect(aceita(semPagina)).toBe(false);
+  });
+
+  it('a page’s name is sha256Hex of rec:<conta>:<run>:<page>; the re-kick’s adds :retomada:<stall stamp>', () => {
+    expect(nomePaginaReconciliacao(CONTA, EXECUCAO, 7)).toBe(
+      sha256Hex(`rec:${CONTA}:${EXECUCAO}:7`),
+    );
+    expect(nomeRetomadaReconciliacao(CONTA, EXECUCAO, 7, T0)).toBe(
+      sha256Hex(`rec:${CONTA}:${EXECUCAO}:7:retomada:${String(T0)}`),
+    );
+  });
+
+  it('one name per (conta, run, page); a stall re-kicked twice is one name, a later stall another', () => {
+    const nomes = new Set([
+      nomePaginaReconciliacao(CONTA, EXECUCAO, 0),
+      nomePaginaReconciliacao(CONTA, EXECUCAO, 1),
+      nomePaginaReconciliacao(OUTRA_CONTA, EXECUCAO, 0),
+      nomePaginaReconciliacao(CONTA, 'c'.repeat(64), 0),
+      nomeRetomadaReconciliacao(CONTA, EXECUCAO, 0, T0),
+      nomeRetomadaReconciliacao(CONTA, EXECUCAO, 0, T0 + 1),
+      // NEAR-MISS: a feed send of the SAME run is a different name.
+      nomeEnvioFeed(CONTA, EXECUCAO),
+    ]);
+    expect(nomes.size).toBe(7);
+    expect(nomeRetomadaReconciliacao(CONTA, EXECUCAO, 0, T0)).toBe(
+      nomeRetomadaReconciliacao(CONTA, EXECUCAO, 0, T0),
+    );
+  });
+
+  it('an id, a page or a stamp outside its grammar throws a RangeError naming the rule only', () => {
+    expect(() => nomePaginaReconciliacao('conta/x', EXECUCAO, 0)).toThrow(
+      /contaId fora da gramática/,
+    );
+    expect(() => nomePaginaReconciliacao(CONTA, 'a:b', 0)).toThrow(/execucaoId fora da gramática/);
+    expect(() => nomePaginaReconciliacao(CONTA, EXECUCAO, -1)).toThrow(RangeError);
+    expect(() => nomePaginaReconciliacao(CONTA, EXECUCAO, 0.5)).toThrow(RangeError);
+    expect(() => nomeRetomadaReconciliacao(CONTA, EXECUCAO, 0, -1)).toThrow(RangeError);
+    expect(() => nomeRetomadaReconciliacao(CONTA, EXECUCAO, 0, 1.5)).toThrow(RangeError);
   });
 });

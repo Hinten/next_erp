@@ -1,8 +1,11 @@
+import { randomUUID } from 'node:crypto';
+
 import { FieldValue } from 'firebase-admin/firestore';
 import { onTaskDispatched } from 'firebase-functions/v2/tasks';
 
 import { LOGGER_STDOUT_AMAZON } from '../../lib/amazon/core/log';
-import { LWA_CLIENT_SECRET_ENV } from '../../lib/amazon/env';
+import { type AmbienteAmazon, LWA_CLIENT_SECRET_ENV } from '../../lib/amazon/env';
+import { processarPaginaReconciliacaoEstoqueAmazon } from '../../lib/amazon/estoque/reconciliacaoEstoque';
 import {
   DESTINO_LOTE_AMAZON,
   type ProvedoresLoteAmazon,
@@ -12,6 +15,7 @@ import {
 import type { RegistroLoteAmazon } from '../../lib/amazon/feeds/incertoFeed';
 import {
   type DepsProcessarLoteAmazon,
+  type ProcessadorPaginaReconciliacaoAmazon,
   processarLoteAmazon,
 } from '../../lib/amazon/feeds/processarLote';
 import { sanitizarFalhaDaTarefaAmazon } from '../../lib/amazon/notificacoes/notificacao';
@@ -43,28 +47,76 @@ export const SEGREDOS_DOS_LOTES_AMAZON: readonly string[] = [LWA_CLIENT_SECRET_E
  */
 export const TENTATIVAS_LOTE_AMAZON = 5;
 
+/** A real sleep of `ms` milliseconds: the stock builds' pacing between two Amazon calls. */
+export function esperarMs(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+/** A fresh run id (a UUID: inside the stock documents' id grammar). */
+export function novoExecucaoIdAmazon(): string {
+  return randomUUID();
+}
+
+/** `FieldValue.increment(by)`: the aviso counter. */
+export function incrementoAmazon(by: number): unknown {
+  return FieldValue.increment(by);
+}
+
+/** The process environment, WHOLE and live, read when called: a provider's valve. */
+export function ambienteDoProcessoAmazon(): AmbienteAmazon {
+  return process.env;
+}
+
 /**
  * What a provider factory of the seam receives (`RaizLoteAmazon`): the stock
  * root's TWO producers, as thunks — the jobs queue's (a recovery's
  * `feed-enviar`, a reconcile hand-off) and the stock queue's (one patch task
- * per SKU handed to the per-SKU path). Neither is built here: a provider
- * builds one only when it enqueues.
+ * per SKU handed to the per-SKU path); neither is built here, a provider
+ * builds one only when it enqueues — plus the real sleep of a build's pacing,
+ * the aviso counter, a fresh run id for a reconcile a provider requests, and
+ * the environment (a thunk too) a provider's recovery reads the valve from.
  */
 export const RAIZ_DOS_LOTES_AMAZON: RaizLoteAmazon = {
   agendadorLotes: criarAgendadorLotesAmazonDoAmbiente,
   produtorEstoque: criarProdutorEstoqueAmazonDoAmbiente,
+  esperar: esperarMs,
+  increment: incrementoAmazon,
+  gerarExecucaoId: novoExecucaoIdAmazon,
+  ambiente: ambienteDoProcessoAmazon,
 };
 
 /**
  * The seam table BOUND, ONCE per process (`lib/amazon/feeds/destinosLote.ts`):
  * each non-null factory called exactly once with {@link RAIZ_DOS_LOTES_AMAZON},
- * at module load, and every dispatch reads these same rows. Both rows are
- * `null` until a fluxo fills its own, so today nothing is called here.
+ * at module load, and every dispatch reads these same rows. The stock row is
+ * filled (PR 12-f); the price row stays `null` until step 13.
  */
 export const PROVEDORES_DOS_LOTES_AMAZON: ProvedoresLoteAmazon = vincularDestinosLoteAmazon(
   RAIZ_DOS_LOTES_AMAZON,
   DESTINO_LOTE_AMAZON,
 );
+
+/**
+ * The stock reconcile's page (step 12, PR 12-f), BOUND: the dispatch's own
+ * deps handed through, plus what only the page needs — the stock queue's
+ * producer from the stock root (a THUNK: a page that enqueues no patch builds
+ * none), a real sleep for its Amazon pacing, and a fresh run id for the next
+ * run its close may start. The dispatcher imports no fluxo's module; this root
+ * is where the jobs queue meets the stock flow.
+ */
+export const PAGINA_RECONCILIACAO_AMAZON: ProcessadorPaginaReconciliacaoAmazon = (
+  db,
+  tarefa,
+  deps,
+) =>
+  processarPaginaReconciliacaoEstoqueAmazon(db, tarefa, {
+    ...deps,
+    produtorEstoque: criarProdutorEstoqueAmazonDoAmbiente,
+    esperar: esperarMs,
+    gerarExecucaoId: novoExecucaoIdAmazon,
+  });
 
 /**
  * The dependencies of ONE jobs-queue dispatch, bound to the runtime — the one
@@ -78,25 +130,28 @@ export const PROVEDORES_DOS_LOTES_AMAZON: ProvedoresLoteAmazon = vincularDestino
  *   — the functions codebase's stock root (`./agendadorEstoque`), built only
  *   when one is due.
  * - `provedores`: the seam's rows, BOUND once per process
- *   ({@link PROVEDORES_DOS_LOTES_AMAZON}); both are empty until a fluxo fills
- *   its own.
+ *   ({@link PROVEDORES_DOS_LOTES_AMAZON}): the stock row since PR 12-f, the
+ *   price row empty until step 13.
  * - `fetch`: the global one, read at CALL time, handed to the context, the
  *   write client and both document transfers alike (the package never defaults
  *   it).
  * - `increment`: a tier-0 `FieldValue` for the aviso counter.
  * - `logger`: the app's ONE logger. Never `firebase-functions`' logger, never
  *   `console.*`.
+ * - `paginaReconciliacao`: the stock reconcile's page, BOUND
+ *   ({@link PAGINA_RECONCILIACAO_AMAZON}).
  */
 export function depsDosLotesAmazon(registro: RegistroLoteAmazon): DepsProcessarLoteAmazon {
   return {
     ambiente: process.env,
     agora: () => Date.now(),
     logger: LOGGER_STDOUT_AMAZON,
-    increment: (by: number) => FieldValue.increment(by),
+    increment: incrementoAmazon,
     agendador: criarAgendadorLotesAmazonDoAmbiente,
     provedores: PROVEDORES_DOS_LOTES_AMAZON,
     registro,
     fetch: (input, init) => globalThis.fetch(input, init),
+    paginaReconciliacao: PAGINA_RECONCILIACAO_AMAZON,
   };
 }
 
@@ -104,11 +159,12 @@ export function depsDosLotesAmazon(registro: RegistroLoteAmazon): DepsProcessarL
  * The Amazon JOBS queue (step 12a, PR 12-c): ONE function — and so ONE Cloud
  * Tasks queue, auto-provisioned and named after it — for every task of the
  * `JSON_LISTINGS_FEED` core: a feed's send, its poll rungs and wake-ups, the
- * wait after a lost `createFeed` answer, and the recoveries. The body is
+ * wait after a lost `createFeed` answer, and the recoveries; and, since step
+ * 12 (PR 12-f), each page of the daily stock reconcile. The body is
  * `lib/amazon/feeds/processarLote.ts`, which dispatches on the payload's
  * `tipo`. Its producers: the handlers' own enqueues (through `./agendadorEstoque`,
- * the functions runtime SA), the seam's providers (through the same root, once
- * a fluxo fills its row) and the push receiver's `FEED_PROCESSING_FINISHED`
+ * the functions runtime SA), the seam's providers (through the same root: the
+ * stock row since PR 12-f) and the push receiver's `FEED_PROCESSING_FINISHED`
  * wake-up (through `lib/firebase/filaLeitura.ts`, the App Hosting runtime SA).
  *
  * ⚠️ The export name IS the deployed function AND queue name, and it must equal
@@ -147,7 +203,8 @@ export function depsDosLotesAmazon(registro: RegistroLoteAmazon): DepsProcessarL
  *
  * D11: nothing calls Amazon before the window — the context loader refuses
  * unless `AMAZON_CHAMADAS` is exactly `on`, a submission also needs the fluxo's
- * valve `on` and the canary list exactly `*`, and the seam is empty in this PR.
+ * valve `on` and the canary list exactly `*`; the stock provider reaches Amazon
+ * only through that same context.
  */
 // ⚠️ No type argument on the call: `tasks-invoker-inventory.test.js` discovers
 // task functions by the call text, and the untyped call keeps `req.data` at

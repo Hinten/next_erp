@@ -40,9 +40,8 @@ import { type TimestampLike, ttlExpiry } from './shared/ttl';
  * the depósito the walk read. Overwritten by a retried page (its content comes
  * from live reads), read by id, never queried. `expiraEm` is its TTL stamp,
  * REQUIRED, so a block written without one fails its parse instead of living
- * forever. ⚠️ The TTL policy on `divergenciasEstoqueAmazon` is NOT declared yet:
- * nothing writes a block, and the policy (a `TTL_POLICIES` row plus its
- * `fieldOverrides` entry) lands together with the block's writer.
+ * forever. The TTL policy on `divergenciasEstoqueAmazon` is a `TTL_POLICIES`
+ * row plus its `fieldOverrides` entry, declared with the block's writer.
  *
  * ## Units
  *
@@ -134,8 +133,9 @@ export const CAMPOS_INDICE_JANELA_ESTOQUE_AMAZON = [
 /**
  * The reconcile's walk, IN INDEX ORDER: a collection-group read of `prodAmazon`
  * with `contaAmazonOuterRef ==` one ref form, paged by document key. Typed
- * against the link schema's own keys; not yet pinned against
- * `firestore.indexes.json` (declared with the walk).
+ * against the link schema's own keys. Pinned against `firestore.indexes.json`
+ * (the collection-group entry, with the trailing `__name__` the walk orders by)
+ * by `estoqueAmazon.indexes.test.ts`.
  */
 export const CAMPOS_INDICE_VARREDURA_VINCULOS_AMAZON = [
   'contaAmazonOuterRef',
@@ -389,8 +389,7 @@ export const divergenciaEstoqueAmazonSchema = z.object({
   itens: z.array(itemDivergenciaEstoqueAmazonSchema).max(MAX_ITENS_DIVERGENCIA_ESTOQUE_AMAZON),
   /**
    * TTL stamp, REQUIRED: a real `Date` on write — a numeric epoch is refused,
-   * because a TTL policy silently ignores one (module header: the policy itself
-   * is not declared yet).
+   * because a TTL policy silently ignores one (module header).
    */
   expiraEm: ttlExpiry(),
 });

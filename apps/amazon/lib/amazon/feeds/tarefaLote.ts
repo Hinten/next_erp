@@ -1,7 +1,7 @@
 /**
- * The feed core's JOBS-QUEUE contract (step 12a, PR 12-b): the payload union
- * of the four feed tasks and every task NAME the core mints. Unwired in 12-b:
- * the producers and the dispatcher arrive in 12-c.
+ * The JOBS-QUEUE contract (step 12a, PR 12-b; the reconcile page since step
+ * 12, PR 12-f): the payload union of the four feed tasks and the stock
+ * reconcile's page, and every task NAME they mint.
  *
  * ## The payloads: ids, closed tokens and numbers only
  *
@@ -12,18 +12,30 @@
  * logs). Every `feedId` passes the package's `FEED_ID_AMAZON_REGEX`.
  *
  *  - `feed-enviar` — build and submit one feed. Its `lote` is a union:
- *    - a BLOCK batch `{ tipo: 'blocos', partes, esperaAteMs }`: `partes` is how
- *      many stored input parts the provider reads, fixed by the producer (so a
- *      later run can never change what this send reads); `esperaAteMs` bounds
- *      how long a batch turned away by a held lease keeps re-enqueuing itself;
+ *    - a BLOCK batch `{ tipo: 'blocos', execucaoIdRun, parteInicial, partes,
+ *      esperaAteMs }`: a RANGE of one run's stored input parts — the run whose
+ *      parts it reads (`execucaoIdRun`, never the batch's own `execucaoId`),
+ *      the first part and how many, fixed by the producer (so a later run can
+ *      never change what this send reads). `partes` is at most
+ *      {@link MAX_PARTES_LOTE_BLOCOS_FEED_AMAZON}, so the stock provider's
+ *      `on` document stays inside the package's limits (a dry-run one too,
+ *      for SKUs of up to 400 bytes once JSON-encoded): a run with more parts
+ *      is several batches, each its own lease holder
+ *      ({@link execucaoIdDoLoteBlocosFeed}). `esperaAteMs` bounds how long a
+ *      batch turned away by a held lease keeps re-enqueuing itself;
  *    - a WINDOW batch `{ tipo: 'janela', desdeMs, ateMs, manterDesdeMs,
- *      commitAposMs, esperaAteMs, depositoId }`: the bounded movement window
- *      `(desdeMs, ateMs]` and its keep rule; the provider re-derives the
- *      members from it at send. `commitAposMs` set marks a RECOVERY-born batch
- *      (its commit filter cannot be folded into a bare start, so it waits, up to
- *      `esperaAteMs`); a TICK-born one carries neither. Refused when
- *      `desdeMs ≥ ateMs`, when both keep fields are `null`, or when exactly
- *      one of `commitAposMs` and `esperaAteMs` is set.
+ *      commitAposMs, forcarPorCommit, esperaAteMs, depositoId }`: the bounded
+ *      movement window `(desdeMs, ateMs]` and its keep rule WHOLE; the provider
+ *      re-derives the members from it at send, under the very rule its
+ *      producer kept rows by. `forcarPorCommit` marks a recovery-born batch
+ *      that forces (its forcing cannot be folded into a bare start, so it
+ *      waits, up to `esperaAteMs`); a tick-born batch carries the tick's commit
+ *      filter, `forcarPorCommit: false`, and no `esperaAteMs` (a recovery's
+ *      with no snapshot carries `forcarPorCommit: false` and no `esperaAteMs`
+ *      too, keeping by stamp alone). Refused when
+ *      `desdeMs ≥ ateMs`, when both keep fields are `null`, when it forces with
+ *      no commit filter, or unless `esperaAteMs` is set exactly when
+ *      `forcarPorCommit` is true.
  *  - `feed-resultado` — one poll rung, a notification wake-up or an adoption:
  *    `contaId` is `null` only for a wake-up (the notification names a seller,
  *    not a conta); `rodada` is the rung's index.
@@ -32,7 +44,12 @@
  *    turned-away batches pending: `vez`) leaves to recover. A `vez` recovery
  *    has no feed outcome: its `snapshotEmMs` and `janela` are `null` and its
  *    `pendenteDesdeMs` is REQUIRED; any other outcome carries the feed's
- *    snapshot. `janela` is the recovered feed's own window (a window batch).
+ *    snapshot. `janela` is the recovered feed's own window (a window batch),
+ *    its keep rule whole, `forcarPorCommit` included.
+ *  - `reconciliacao` (step 12, PR 12-f) — ONE page of a stock reconcile run:
+ *    the conta, the run (`execucaoId`) and the page number. The page re-derives
+ *    from the run's document whether it is the page the run walks next, so a
+ *    duplicate dispatch does nothing.
  *
  * ## The names: every one carries the conta
  *
@@ -52,14 +69,22 @@
  *    pending start it folded): a retried tail that read the SAME start
  *    dedupes, one that read another start enqueues one more recovery instead
  *    of meeting the first one's tombstone. A payload's reference is
- *    {@link referenciaDaRecuperacaoFeed} (a `vez` recovery's is prefixed).
+ *    {@link referenciaDaRecuperacaoFeed} (a `vez` recovery's is prefixed);
+ *  - {@link nomePaginaReconciliacao} — (conta, run, page): every enqueue of
+ *    one page of one run is one task; {@link nomeRetomadaReconciliacao} —
+ *    (conta, run, page, the stalled run's last progress stamp): the re-kick of
+ *    a run that lost its next task, one per stall.
  *
  * A window batch's own `execucaoId` is minted from its PRODUCER's identity:
  * a tick's from its window ({@link execucaoIdDaJanelaFeed}: the same window
  * twice is one batch), a recovery's from the recovery itself
  * ({@link execucaoIdDaRecuperacaoFeed}: never from its `ateMs`, so a retried
  * recovery that re-derives a later `ateMs` meets its own first batch's name
- * instead of minting a twin the first would turn away).
+ * instead of minting a twin the first would turn away). A block batch's from
+ * its run and its index in the run's partition
+ * ({@link execucaoIdDoLoteBlocosFeed}: batch `k` of run `R`): two batches of
+ * one run are two lease holders — one id would read the second batch as the
+ * first one's own retry — and a decide run again names each batch as before.
  */
 import { sha256Hex } from '@delfrance/data/admin';
 import { FEED_ID_AMAZON_REGEX } from '@delfrance/integrations-amazon-sp-api';
@@ -99,6 +124,7 @@ export const tipoTarefaLoteAmazonSchema = z.enum([
   'feed-resultado',
   'feed-incerto',
   'feed-recuperar',
+  'reconciliacao',
 ]);
 export type TipoTarefaLoteAmazon = z.infer<typeof tipoTarefaLoteAmazonSchema>;
 export const TIPO_TAREFA_LOTE_AMAZON = {
@@ -106,6 +132,7 @@ export const TIPO_TAREFA_LOTE_AMAZON = {
   resultado: 'feed-resultado',
   incerto: 'feed-incerto',
   recuperar: 'feed-recuperar',
+  reconciliacao: 'reconciliacao',
 } as const satisfies Record<string, TipoTarefaLoteAmazon>;
 
 /** Who enqueued a result rung: the ladder, a notification wake-up, or an adoption. */
@@ -130,16 +157,57 @@ export const DESFECHO_RECUPERACAO_FEED_AMAZON = {
 
 /* ---------------------------------- the batch --------------------------------- */
 
-/** A block batch (module header). */
+/**
+ * The most stored input parts ONE block batch reads (module header): a drift
+ * block holds at most `MAX_ITENS_DIVERGENCIA_ESTOQUE_AMAZON` (300) SKUs, one
+ * message each, and the package refuses a WHOLE document of more than
+ * `MAX_MENSAGENS_FEED` (25,000) messages or `MAX_BYTES_FEED` (9,500,000)
+ * minified UTF-8 bytes — every valid entry with it, and a batch rebuilt the
+ * same way the next day is refused again.
+ *
+ * Derived for the worst document the stock provider can build: 50 full blocks
+ * are 15,000 messages (60% of the message cap); each message at most 393 bytes
+ * plus its comma — a SKU of 40 code points (`alvoValido`'s bound on a member a
+ * submitted feed carries) of 4-byte characters, the longest JSON rendering of
+ * a non-negative number (`Number.MAX_VALUE`, 23 characters: the quantity has
+ * no ceiling, and the shared core floors it and clamps it at 0), a five-digit
+ * `messageId` — and the header with a 64-character seller id of escaped
+ * characters: 5,899,099 bytes (62% of the byte cap). The tightest cap is 80
+ * blocks (bytes bind first: 81 worst-case blocks exceed 9.5 MB); 50 keeps the
+ * headroom, which also covers a dry-run document (built from every member, an
+ * invalid SKU included) whose SKUs hold up to 400 bytes each once JSON-encoded.
+ * Derived for the stock provider's message: a fluxo whose message is larger
+ * needs its own bound. Pinned through the package's own builder by
+ * `estoque/provedorLoteEstoque.test.ts`.
+ */
+export const MAX_PARTES_LOTE_BLOCOS_FEED_AMAZON = 50;
+
+/** A block batch (module header): a range of one run's stored input parts. */
 export const loteBlocosFeedAmazonSchema = z
   .object({
     tipo: z.literal(TIPO_LOTE_FEED_AMAZON.blocos),
-    /** How many input parts the provider reads: at least one. */
-    partes: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
+    /** The run whose parts the batch reads — never the batch's own `execucaoId`. */
+    execucaoIdRun: execucaoIdSchema(),
+    /** The first part read. */
+    parteInicial: inteiroSeguro(),
+    /** How many parts the provider reads from `parteInicial`: 1 to the cap. */
+    partes: z.number().int().min(1).max(MAX_PARTES_LOTE_BLOCOS_FEED_AMAZON),
     /** ms — a turned-away block batch re-enqueues itself until then. */
     esperaAteMs: inteiroSeguro(),
   })
-  .strict();
+  .strict()
+  .superRefine((lote, ctx) => {
+    // The last part's number must be a safe integer: a part id spells it in digits.
+    // Compared by a subtraction, which is exact here (a sum past the safe
+    // integers rounds, and can round back onto one).
+    if (lote.partes - 1 > Number.MAX_SAFE_INTEGER - lote.parteInicial) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'a última parte não é um inteiro seguro',
+        path: ['parteInicial'],
+      });
+    }
+  });
 export type LoteBlocosFeedAmazon = z.infer<typeof loteBlocosFeedAmazonSchema>;
 
 /** A window batch (module header). */
@@ -147,16 +215,20 @@ export const loteJanelaFeedAmazonSchema = z
   .object({
     tipo: z.literal(TIPO_LOTE_FEED_AMAZON.janela),
     ...camposJanelaFeedAmazon(),
-    /** ms — null for a tick-born batch; a recovery-born one waits until then. */
+    /**
+     * ms — set exactly when the batch forces (`forcarPorCommit`: a recovery's,
+     * with a snapshot), which waits behind a held lease until then; null for a
+     * batch that does not force (the tick's, or a recovery's with no snapshot).
+     */
     esperaAteMs: inteiroSeguro().nullable(),
   })
   .strict()
   .superRefine((lote, ctx) => {
     verificarJanelaFeedAmazon(lote, ctx);
-    if ((lote.commitAposMs === null) !== (lote.esperaAteMs === null)) {
+    if (lote.forcarPorCommit !== (lote.esperaAteMs !== null)) {
       ctx.addIssue({
         code: 'custom',
-        message: 'commitAposMs e esperaAteMs andam juntos: ambos null ou ambos definidos',
+        message: 'esperaAteMs é definido exatamente quando forcarPorCommit é true',
         path: ['esperaAteMs'],
       });
     }
@@ -262,12 +334,25 @@ export const tarefaRecuperarFeedAmazonSchema = z
   });
 export type TarefaRecuperarFeedAmazon = z.infer<typeof tarefaRecuperarFeedAmazonSchema>;
 
-/** Every jobs-queue payload of the feed core. */
+/** `reconciliacao` (module header): one page of one stock reconcile run. */
+export const tarefaPaginaReconciliacaoAmazonSchema = z
+  .object({
+    v: z.literal(VERSAO_TAREFA_LOTE_AMAZON),
+    tipo: z.literal(TIPO_TAREFA_LOTE_AMAZON.reconciliacao),
+    contaId: contaIdSchema(),
+    execucaoId: execucaoIdSchema(),
+    pagina: inteiroSeguro(),
+  })
+  .strict();
+export type TarefaPaginaReconciliacaoAmazon = z.infer<typeof tarefaPaginaReconciliacaoAmazonSchema>;
+
+/** Every jobs-queue payload: the feed core's four tasks and the reconcile page. */
 export const tarefaLoteAmazonSchema = z.discriminatedUnion('tipo', [
   tarefaEnviarFeedAmazonSchema,
   tarefaResultadoFeedAmazonSchema,
   tarefaIncertoFeedAmazonSchema,
   tarefaRecuperarFeedAmazonSchema,
+  tarefaPaginaReconciliacaoAmazonSchema,
 ]);
 export type TarefaLoteAmazon = z.infer<typeof tarefaLoteAmazonSchema>;
 
@@ -399,6 +484,24 @@ export function execucaoIdDaJanelaFeed(contaId: string, desdeMs: number, ateMs: 
 }
 
 /**
+ * A BLOCK batch's `execucaoId` (module header): batch `lote` (0-based) of the
+ * run `execucaoIdRun`'s partition — one per (conta, run, batch), never the
+ * run's own id, so every batch of one run is its own lease holder.
+ */
+export function execucaoIdDoLoteBlocosFeed(
+  contaId: string,
+  execucaoIdRun: string,
+  lote: number,
+): string {
+  exigir(CONTA_ID_AMAZON_REGEX, contaId, 'contaId');
+  exigir(ID_LOTE_FEED_AMAZON_REGEX, execucaoIdRun, 'execucaoIdRun');
+  if (!Number.isSafeInteger(lote) || lote < 0) {
+    throw new RangeError('tarefaLote.ts: lote deve ser um inteiro seguro não negativo');
+  }
+  return sha256Hex(`blocos:${contaId}:${execucaoIdRun}:${String(lote)}`);
+}
+
+/**
  * A RECOVERY-born window batch's `execucaoId`: the recovery's own identity, the
  * same inputs as {@link nomeRecuperacaoFeed} — never its window's bounds.
  */
@@ -410,4 +513,36 @@ export function execucaoIdDaRecuperacaoFeed(
   exigir(CONTA_ID_AMAZON_REGEX, contaId, 'contaId');
   exigirReferencia(referencia);
   return sha256Hex(`recuperacao:${contaId}:${referencia}:${campoDoPendente(pendenteDesdeMs)}`);
+}
+
+/** A reconcile page's name: (conta, run, page). */
+export function nomePaginaReconciliacao(
+  contaId: string,
+  execucaoId: string,
+  pagina: number,
+): string {
+  exigir(CONTA_ID_AMAZON_REGEX, contaId, 'contaId');
+  exigir(ID_LOTE_FEED_AMAZON_REGEX, execucaoId, 'execucaoId');
+  return sha256Hex(`rec:${contaId}:${execucaoId}:${String(exigirMs(pagina, 'pagina'))}`);
+}
+
+/**
+ * The re-kick of a stalled run (module header): (conta, run, the page it
+ * walks next, the run's last progress stamp in ms). A run that stalls again
+ * after progressing has a new stamp, so a new name; the same stall re-kicked
+ * twice is one task.
+ */
+export function nomeRetomadaReconciliacao(
+  contaId: string,
+  execucaoId: string,
+  pagina: number,
+  marcoMs: number,
+): string {
+  exigir(CONTA_ID_AMAZON_REGEX, contaId, 'contaId');
+  exigir(ID_LOTE_FEED_AMAZON_REGEX, execucaoId, 'execucaoId');
+  return sha256Hex(
+    `rec:${contaId}:${execucaoId}:${String(exigirMs(pagina, 'pagina'))}:retomada:${String(
+      exigirMs(marcoMs, 'marcoMs'),
+    )}`,
+  );
 }

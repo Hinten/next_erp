@@ -175,6 +175,7 @@ import {
   ESPACO_MINIMO_ENTRE_FEEDS_MS,
   MOTIVO_ABORTO_LOTE,
   type MotivoAbortoLote,
+  ORCAMENTO_MONTAGEM_LOTE_MS,
   type ProvedorLoteAmazon,
 } from './provedorLote';
 import { prazoDoFeed } from './registroFeed';
@@ -215,11 +216,11 @@ import {
 /* ---------------------------------- the budget --------------------------------- */
 
 /**
- * The ONE build budget `membros` and `montar` share, from E5's start (240 s):
- * past it the batch is `snapshot-lento`, nothing posted. With the submission's
- * worst case on top it fits the jobs queue's 540-s timeout.
+ * The ONE build budget `membros` and `montar` share (`./provedorLote`, where a
+ * provider reads it too), re-exported where the jobs queue's timeout pin reads
+ * it.
  */
-export const ORCAMENTO_MONTAGEM_LOTE_MS = 240_000;
+export { ORCAMENTO_MONTAGEM_LOTE_MS };
 
 /** The delay of a 429's re-enqueue, in whole seconds: the submission floor. */
 export const ESPERA_APOS_LIMITE_FEED_S = ESPACO_MINIMO_ENTRE_FEEDS_MS / 1000;
@@ -340,7 +341,10 @@ export function severidadeDoEnvioFeedAmazon(r: ResultadoEnvioFeedAmazon): Severi
 
 /**
  * The ONE `feed-enviar` line: ids, closed codes, ms stamps and counts only —
- * never a SKU, a document URL, a seller id or Amazon's text.
+ * never a SKU, a document URL, a seller id or Amazon's text. `execucaoId` is
+ * the batch's own (its lease holder); a block batch adds its RANGE — the run
+ * whose parts it reads (`execucaoIdRun`), `parteInicial` and `partes` — so the
+ * line ties each batch back to its run.
  */
 export function registrarDespachoEnvioFeedAmazon(
   logger: LoggerAmazon,
@@ -357,6 +361,13 @@ export function registrarDespachoEnvioFeedAmazon(
     execucaoId: t.execucaoId,
     origem: t.origem,
     tipoLote: t.lote.tipo,
+    ...(t.lote.tipo === TIPO_LOTE_FEED_AMAZON.blocos
+      ? {
+          execucaoIdRun: t.lote.execucaoIdRun,
+          parteInicial: t.lote.parteInicial,
+          partes: t.lote.partes,
+        }
+      : {}),
     feedId: r.feedId,
     mensagens: r.mensagens,
     bytes: r.bytes,
@@ -605,18 +616,33 @@ export function registroDaVezFeed(
   });
 }
 
-/** The record's `create` (tier 0): `ALREADY_EXISTS` means already recorded. */
-async function criarRegistro(e: Execucao, vez: VezFeedAmazon): Promise<'criado' | 'ja-registrado'> {
-  const registro = registroDaVezFeed(e.alvo, vez, e.deps.agora());
+/**
+ * The record's `create` from the LEASE's fields (tier 0): the send's `escrito`,
+ * its `retomar-consulta`, and the daily backstop's record that went missing
+ * (`resultadoFeed.ts`) all go through this ONE create. `ALREADY_EXISTS` means
+ * already recorded.
+ */
+export async function criarRegistroDaVezFeed(
+  db: Firestore,
+  alvo: AlvoVezFeed,
+  vez: VezFeedAmazon,
+  agoraMs: number,
+): Promise<'criado' | 'ja-registrado'> {
+  const registro = registroDaVezFeed(alvo, vez, agoraMs);
   try {
     await feedAmazonCollection
-      .docRef(e.db, {}, idRegistroFeedAmazon(registro.contaId, registro.feedId))
+      .docRef(db, {}, idRegistroFeedAmazon(registro.contaId, registro.feedId))
       .create(registro);
     return 'criado';
   } catch (err) {
     if (isAlreadyExists(err)) return 'ja-registrado';
     throw err;
   }
+}
+
+/** This run's record `create`, through {@link criarRegistroDaVezFeed}. */
+function criarRegistro(e: Execucao, vez: VezFeedAmazon): Promise<'criado' | 'ja-registrado'> {
+  return criarRegistroDaVezFeed(e.db, e.alvo, vez, e.deps.agora());
 }
 
 /** A release of the lease by this run (module header: the `vez` recovery first). */

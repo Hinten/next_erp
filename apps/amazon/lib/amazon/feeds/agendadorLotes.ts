@@ -3,7 +3,8 @@
  * `processAmazonListingsJob` ({@link FILA_LOTES_AMAZON}) means, with the
  * transport handed in. Modelled on the NF-e and scheduling producers
  * (`nfe/agendadorNfe.ts`, `agendamento/agendadorAgendamento.ts`), with ONE
- * entry point for the four feed tasks, NAMED or not by its caller.
+ * entry point for the four feed tasks and the stock reconcile's page (step 12,
+ * PR 12-f), NAMED or not by its caller.
  *
  * The queue itself is bound by a COMPOSITION ROOT, never here: the functions
  * codebase's `functions/src/agendadorEstoque.ts` (the feed handlers' own
@@ -31,11 +32,13 @@
  *    notification wake-up, every poll rung and the adoption rung
  *    (`feed-resultado`), every recovery (`feed-recuperar`, the `vez` one
  *    included), the uncertain wait (`feed-incerto`), a send minted by its
- *    producer's identity (`feed-enviar`).
+ *    producer's identity (`feed-enviar`), a reconcile page and its re-kick
+ *    (`reconciliacao`).
  *  - UNNAMED: the waits — a 429's re-enqueue, the submission floor's remainder,
  *    the uncertain wait's early re-enqueue, a turned-away batch's 300-s wait —
- *    because a tombstone would refuse the next one. Only `feed-enviar` and
- *    `feed-incerto` have unnamed enqueues: a `feed-resultado` or a
+ *    because a tombstone would refuse the next one; and a reconcile page's
+ *    429 re-enqueue. Only `feed-enviar`, `feed-incerto` and `reconciliacao`
+ *    have unnamed enqueues: a `feed-resultado` or a
  *    `feed-recuperar` without a `nome` is a `RangeError` (an unnamed rung or
  *    recovery would fork its chain on the queue's own retries).
  *

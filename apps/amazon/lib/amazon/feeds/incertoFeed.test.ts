@@ -48,7 +48,22 @@ const JANELA = {
   ateMs: ANTES - 15 * MIN,
   manterDesdeMs: ANTES - 20 * MIN,
   commitAposMs: null,
+  forcarPorCommit: false,
   depositoId: 'deposito-teste',
+};
+/** The tick's window: a stamp rule and a commit filter 4 min 40 s above its start, never forcing. */
+const JANELA_DO_TICK = {
+  ...JANELA,
+  manterDesdeMs: JANELA.desdeMs + 280_000,
+  commitAposMs: JANELA.desdeMs + 280_000,
+  forcarPorCommit: false,
+};
+/** A recovery's window with a snapshot: no stamp rule, a commit filter that FORCES. */
+const JANELA_QUE_FORCA = {
+  ...JANELA,
+  manterDesdeMs: null,
+  commitAposMs: JANELA.desdeMs + 280_000,
+  forcarPorCommit: true,
 };
 
 function vez(campos: Partial<VezFeedAmazon>): VezFeedAmazon {
@@ -304,6 +319,24 @@ describe('★ at the deadline: the recovery, the aviso, the release — in that 
       meta: { evento: 'estoque', fase: 'incerto', caminhoIncerto: 'recuperado' },
     });
   });
+
+  it.each<[string, typeof JANELA_DO_TICK | typeof JANELA_QUE_FORCA]>([
+    ['the tick’s (a commit filter that does not force)', JANELA_DO_TICK],
+    ['a forcing recovery’s (a commit filter that forces)', JANELA_QUE_FORCA],
+  ])(
+    '★ the recovery carries the lease’s window WHOLE, forcarPorCommit included: %s',
+    async (_caso, janela) => {
+      const c = cenario();
+      c.fake.seed(VEZ, incerta({ janela }));
+      await c.rodar();
+      const [recuperacao] = doTipo(c, 'feed-recuperar');
+      expect(recuperacao?.tarefa).toMatchObject({ desfecho: 'incerto', feedId: null });
+      // toEqual, not toMatchObject: the flag is compared exactly, never as a subset.
+      expect(recuperacao?.tarefa.tipo === 'feed-recuperar' && recuperacao.tarefa.janela).toEqual(
+        janela,
+      );
+    },
+  );
 
   it('a BLOCK batch’s lease recovers with janela null', async () => {
     const c = cenario();

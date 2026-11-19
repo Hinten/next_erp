@@ -68,6 +68,7 @@ const JANELA = {
   ateMs: AGORA_MS - 25 * MIN,
   manterDesdeMs: AGORA_MS - 30 * MIN,
   commitAposMs: null,
+  forcarPorCommit: false,
   depositoId: 'deposito-ci',
 };
 
