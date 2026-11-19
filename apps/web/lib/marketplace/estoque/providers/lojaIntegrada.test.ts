@@ -23,7 +23,10 @@ import type { StockPushInput } from '../types';
  *  - a child row is the CHILD, named by its own name, else by the id selected;
  *  - the selection is sliced to the route's body cap, so no `ZodError` breaks
  *    the run's other contas — and once a slice MAY have queued anything, no
- *    other slice of the run is sent (the backend's bound is per request);
+ *    other slice of the run is sent (the backend's bound is per request), with
+ *    a sentence that claims the queue only when a row SAID so;
+ *  - an id an earlier slice already answered (a child its parent's expansion
+ *    reached) gets no second row and is not sent again;
  *  - the answer is validated by the CLIENT against the shared contract, and a
  *    2xx it refuses (an older or newer backend) is a `falha` row saying the
  *    outcome is unknown — RespostaInvalida is narrowed before its parent class;
@@ -276,18 +279,27 @@ describe('lojaIntegradaStockProvider — the selection is sliced to the body cap
     expect(res.rows).toHaveLength(ids.length);
   });
 
+  const { enfileirado: ENFILEIRADO, falha: FALHA } = RESULTADO_ENVIO_ESTOQUE_LI;
+
   it.each([
-    ['a row enfileirado', RESULTADO_ENVIO_ESTOQUE_LI.enfileirado],
-    ['a falha row (it may have landed)', RESULTADO_ENVIO_ESTOQUE_LI.falha],
-  ])(
-    '⭐ once a slice answered %s, NO other slice of the run is sent: every later id is nao-tentado (the bound is per request)',
-    async (_caso, resultado) => {
+    ['a row enfileirado', [ENFILEIRADO], 'enfileirado'],
+    ['a falha row (it may have landed)', [FALHA], 'incerto'],
+    [
+      'a falha row BESIDE an enfileirado one (the queued row is a fact)',
+      [FALHA, ENFILEIRADO],
+      'enfileirado',
+    ],
+  ] as const)(
+    '⭐ once a slice answered %s, NO other slice of the run is sent: every later id is nao-tentado (the bound is per request), with the sentence for that cause',
+    async (_caso, resultados, causa) => {
       const ids = ids201();
-      const enviarEstoque = vi
-        .fn<EnviarEstoque>()
-        .mockResolvedValue(
-          resposta({ listings: [listing({ produtoId: 'p0', solicitadoId: 'p0', resultado })] }),
-        );
+      const enviarEstoque = vi.fn<EnviarEstoque>().mockResolvedValue(
+        resposta({
+          listings: resultados.map((resultado, n) =>
+            listing({ produtoId: `p${String(n)}`, solicitadoId: `p${String(n)}`, resultado }),
+          ),
+        }),
+      );
       const res = await lojaIntegradaStockProvider.enviarEstoque(
         input(comEnvio(enviarEstoque), { produtoIds: ids }),
       );
@@ -296,28 +308,113 @@ describe('lojaIntegradaStockProvider — the selection is sliced to the body cap
         produtoId: `p${String(MAX_PRODUTOS_ENVIO_ESTOQUE_LI)}`,
         outcome: 'nao-tentado',
         motivo: MOTIVO_UM_LOTE_POR_ENVIO_LI,
-        mensagem: MENSAGEM_UM_LOTE_POR_ENVIO_LI,
+        mensagem: MENSAGEM_UM_LOTE_POR_ENVIO_LI[causa],
       });
     },
   );
 
-  it('⭐ a slice whose outcome is UNKNOWN (a 5xx) stops the run too: it may have queued', async () => {
-    const ids = ids201();
+  it('NEAR MISS — the two sentences differ, and only the queued one claims the queue', () => {
+    expect(MENSAGEM_UM_LOTE_POR_ENVIO_LI.enfileirado).toContain('este envio já enfileirou o seu');
+    expect(MENSAGEM_UM_LOTE_POR_ENVIO_LI.incerto).not.toContain('enfileirou');
+    expect(MENSAGEM_UM_LOTE_POR_ENVIO_LI.incerto).toContain('não foi possível confirmar');
+  });
+
+  it.each([
+    ['a 5xx', new LojaIntegradaClientHttpError('O backend falhou (HTTP 500).', 500, null)],
+    ['the deadline', new LojaIntegradaClientTempoEsgotadoError()],
+    ['the network', new LojaIntegradaClientNetworkError(new TypeError('Failed to fetch'))],
+    [
+      'a 2xx the contract refuses',
+      new LojaIntegradaClientRespostaInvalidaError('formato', 200, ['x']),
+    ],
+  ])(
+    '⭐ a slice whose outcome is UNKNOWN (%s) stops the run too — and the later ids never say it queued',
+    async (_caso, erro) => {
+      const ids = ids201();
+      const enviarEstoque = vi.fn<EnviarEstoque>().mockRejectedValue(erro);
+      const res = await lojaIntegradaStockProvider.enviarEstoque(
+        input(comEnvio(enviarEstoque), { produtoIds: ids }),
+      );
+      expect(enviarEstoque).toHaveBeenCalledTimes(1);
+      expect(res.rows).toHaveLength(ids.length);
+      expect(res.rows.slice(0, -1).every((r) => r.outcome === 'falha')).toBe(true);
+      expect(res.rows.at(-1)).toMatchObject({
+        outcome: 'nao-tentado',
+        motivo: MOTIVO_UM_LOTE_POR_ENVIO_LI,
+        mensagem: MENSAGEM_UM_LOTE_POR_ENVIO_LI.incerto,
+      });
+    },
+  );
+
+  /** Slice 1 = the parent `R` and 199 others; slice 2 = `resto`. */
+  const comPaiNaPrimeira = (resto: readonly string[]) => [
+    'R',
+    ...Array.from({ length: MAX_PRODUTOS_ENVIO_ESTOQUE_LI - 1 }, (_, i) => `p${String(i + 1)}`),
+    ...resto,
+  ];
+
+  it('⭐ a child its parent’s expansion already QUEUED in slice 1 keeps ONE row — never a second nao-tentado one; near miss: its sibling still gets one', async () => {
     const enviarEstoque = vi
       .fn<EnviarEstoque>()
-      .mockRejectedValue(
-        new LojaIntegradaClientHttpError('O backend falhou (HTTP 500).', 500, null),
+      .mockResolvedValue(
+        resposta({ listings: [listing({ produtoId: 'C', solicitadoId: 'R', idLi: '900' })] }),
       );
     const res = await lojaIntegradaStockProvider.enviarEstoque(
-      input(comEnvio(enviarEstoque), { produtoIds: ids }),
+      input(comEnvio(enviarEstoque), { produtoIds: comPaiNaPrimeira(['C', 'D']) }),
     );
     expect(enviarEstoque).toHaveBeenCalledTimes(1);
-    expect(res.rows).toHaveLength(ids.length);
-    expect(res.rows.slice(0, -1).every((r) => r.outcome === 'falha')).toBe(true);
-    expect(res.rows.at(-1)).toMatchObject({
-      outcome: 'nao-tentado',
-      motivo: MOTIVO_UM_LOTE_POR_ENVIO_LI,
-    });
+    expect(res.rows.filter((r) => r.produtoId === 'C').map((r) => [r.outcome, r.key])).toEqual([
+      ['enfileirado', 'C:conta-li-1:900'],
+    ]);
+    expect(res.rows.filter((r) => r.produtoId === 'D').map((r) => [r.outcome, r.motivo])).toEqual([
+      ['nao-tentado', MOTIVO_UM_LOTE_POR_ENVIO_LI],
+    ]);
+  });
+
+  it('a child its parent’s expansion already answered (skipped) is not SENT again either — only the rest of the slice goes', async () => {
+    const enviarEstoque = vi
+      .fn<EnviarEstoque>()
+      .mockResolvedValueOnce(
+        resposta({
+          listings: [
+            listing({
+              produtoId: 'C',
+              solicitadoId: 'R',
+              resultado: RESULTADO_ENVIO_ESTOQUE_LI.pulado,
+              motivo: 'paridade',
+            }),
+          ],
+        }),
+      )
+      .mockResolvedValue(resposta());
+    const res = await lojaIntegradaStockProvider.enviarEstoque(
+      input(comEnvio(enviarEstoque), { produtoIds: comPaiNaPrimeira(['C', 'D']) }),
+    );
+    expect(enviarEstoque.mock.calls.map(([c]) => c.produtoIds)).toEqual([
+      comPaiNaPrimeira([]),
+      ['D'],
+    ]);
+    expect(res.rows.filter((r) => r.produtoId === 'C')).toHaveLength(1);
+  });
+
+  it('NEAR MISS — a slice whose every id was already answered sends no request at all', async () => {
+    const enviarEstoque = vi.fn<EnviarEstoque>().mockResolvedValue(
+      resposta({
+        listings: [
+          listing({
+            produtoId: 'C',
+            solicitadoId: 'R',
+            resultado: RESULTADO_ENVIO_ESTOQUE_LI.pulado,
+            motivo: 'paridade',
+          }),
+        ],
+      }),
+    );
+    const res = await lojaIntegradaStockProvider.enviarEstoque(
+      input(comEnvio(enviarEstoque), { produtoIds: comPaiNaPrimeira(['C']) }),
+    );
+    expect(enviarEstoque).toHaveBeenCalledTimes(1);
+    expect(res.rows.map((r) => r.produtoId)).toEqual(['C']);
   });
 
   it('NEAR MISS — through the REAL client, 201 ids reach the strict route as two valid bodies', async () => {

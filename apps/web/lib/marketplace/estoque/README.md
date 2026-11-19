@@ -125,4 +125,7 @@ two channels:
   is sliced to the route's body cap (`MAX_PRODUTOS_ENVIO_ESTOQUE_LI`), one
   request after the other — but at most ONE slice per run may queue anything:
   the backend's children bound is per request, so once a slice may have queued,
-  every later id is `nao-tentado` (`um-lote-por-envio`).
+  every later id is `nao-tentado` (`um-lote-por-envio`), its sentence saying
+  whether that slice DID queue or only may have. An id an earlier slice already
+  answered (a child its selected parent reached) is neither sent again nor
+  marked: it keeps its one row.

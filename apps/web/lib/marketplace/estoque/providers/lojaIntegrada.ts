@@ -58,9 +58,18 @@ import type {
  *   per REQUEST, so N slices would queue N times it. Once a slice MAY have
  *   queued something — a row `enfileirado`, a `falha` row (it may have
  *   landed), or an outcome nobody can confirm — every later id is
- *   `nao-tentado` ({@link MOTIVO_UM_LOTE_POR_ENVIO_LI}). A slice that provably
+ *   `nao-tentado` ({@link MOTIVO_UM_LOTE_POR_ENVIO_LI}), with the sentence for
+ *   WHY: a queued row is a fact, anything else only a possibility, and the
+ *   rows above it already say the outcome is unconfirmed. A slice that provably
  *   queued nothing (only skips, or a refusal) lets the next one go: a sparse
  *   /produtos selection still reaches the ids of this channel it carries.
+ * - **An id an earlier slice already answered** — a selected child its
+ *   selected parent's expansion reached first — is left out of every later
+ *   slice: neither sent again nor marked `nao-tentado`, so it keeps the one row
+ *   it has. (The other order, a child answered first and its parent sent
+ *   later, still gets the backend's second row for it: the parent's request is
+ *   needed for its other children, and a backend row is never dropped — it may
+ *   be a real queue.)
  * - **A conta-level answer is one row per requested id of that slice**: the
  *   backend switched off (read switch, stock valve, its task queues) or the
  *   slice over the children bound ⇒ `nao-tentado` (nothing was queued); any
@@ -79,14 +88,31 @@ import type {
 /** The selected produto ids one request carries at most (the route's body cap). */
 export const FATIA_ENVIO_ESTOQUE_LI = MAX_PRODUTOS_ENVIO_ESTOQUE_LI;
 
-/** The motivo of an id left out because an earlier slice of this run already queued (header). */
+/** The motivo of an id left out because an earlier slice of this run queued, or may have (header). */
 export const MOTIVO_UM_LOTE_POR_ENVIO_LI = 'um-lote-por-envio';
 
-/** Its copy: nothing was attempted for this id, and why repeating is the fix. */
-export const MENSAGEM_UM_LOTE_POR_ENVIO_LI =
-  'Não tentado: cada envio enfileira no máximo um lote por conta da Loja Integrada, para não ' +
-  'atrasar as outras atualizações de estoque da loja, e este envio já enfileirou o seu. ' +
-  'Selecione estes produtos e envie de novo.';
+/**
+ * Why a slice of this run stops the later ones: it queued a child (a fact), or
+ * its outcome is UNKNOWN — a `falha` row, a 5xx, the deadline, the network, a
+ * 2xx this build cannot read (a possibility).
+ */
+type LoteDaRodada = 'enfileirado' | 'incerto';
+
+/**
+ * Its copy, one sentence per cause: nothing was attempted for this id, and why
+ * repeating is the fix. ⚠️ Never claim the queue for a cause that only MAY
+ * have queued: the rows above it say the outcome is unknown.
+ */
+export const MENSAGEM_UM_LOTE_POR_ENVIO_LI: Readonly<Record<LoteDaRodada, string>> = {
+  enfileirado:
+    'Não tentado: cada envio enfileira no máximo um lote por conta da Loja Integrada, para não ' +
+    'atrasar as outras atualizações de estoque da loja, e este envio já enfileirou o seu. ' +
+    'Selecione estes produtos e envie de novo.',
+  incerto:
+    'Não tentado: cada envio enfileira no máximo um lote por conta da Loja Integrada, para não ' +
+    'atrasar as outras atualizações de estoque da loja, e não foi possível confirmar se o lote ' +
+    'anterior deste envio foi enfileirado. Selecione estes produtos e envie de novo.',
+};
 
 /** The row a backend answer's `resultado` becomes — `enfileirado` stays itself. */
 const OUTCOME_DO_RESULTADO: Record<ResultadoEnvioEstoqueLi, StockPushOutcome> = {
@@ -299,18 +325,26 @@ export const lojaIntegradaStockProvider: StockPushProvider = {
     }
 
     const rows: StockPushRow[] = [];
-    // Whether a slice of this run MAY have queued anything (header): then no other slice goes.
-    let loteEnfileirado = false;
-    for (const fatia of fatiar(ids, FATIA_ENVIO_ESTOQUE_LI)) {
+    // Why a slice of this run MAY have queued anything (header): then no other slice goes.
+    let lote: LoteDaRodada | null = null;
+    // Every id a slice of this run already answered: no later slice answers it again (header).
+    const respondidos = new Set<string>();
+    const registrar = (novas: readonly StockPushRow[]): void => {
+      rows.push(...novas);
+      for (const r of novas) respondidos.add(r.produtoId);
+    };
+    for (const selecionados of fatiar(ids, FATIA_ENVIO_ESTOQUE_LI)) {
       // Cancelled between slices: what was answered stands, the run reports it.
       if (input.signal?.aborted === true) break;
-      if (loteEnfileirado) {
-        rows.push(
-          ...fatiaInteira(
+      const fatia = selecionados.filter((id) => !respondidos.has(id));
+      if (fatia.length === 0) continue;
+      if (lote !== null) {
+        registrar(
+          fatiaInteira(
             fatia,
             'nao-tentado',
             MOTIVO_UM_LOTE_POR_ENVIO_LI,
-            MENSAGEM_UM_LOTE_POR_ENVIO_LI,
+            MENSAGEM_UM_LOTE_POR_ENVIO_LI[lote],
           ),
         );
         continue;
@@ -320,18 +354,19 @@ export const lojaIntegradaStockProvider: StockPushProvider = {
           { contaId: integracao.id, produtoIds: fatia },
           input.signal === undefined ? {} : { sinal: input.signal },
         );
-        rows.push(...linhasDaResposta(res));
-        loteEnfileirado = res.listings.some(
-          (l) =>
-            l.resultado === RESULTADO_ENVIO_ESTOQUE_LI.enfileirado ||
-            l.resultado === RESULTADO_ENVIO_ESTOQUE_LI.falha,
-        );
+        registrar(linhasDaResposta(res));
+        // A queued row is a fact and wins over a `falha` beside it (header).
+        if (res.listings.some((l) => l.resultado === RESULTADO_ENVIO_ESTOQUE_LI.enfileirado)) {
+          lote = 'enfileirado';
+        } else if (res.listings.some((l) => l.resultado === RESULTADO_ENVIO_ESTOQUE_LI.falha)) {
+          lote = 'incerto';
+        }
       } catch (err) {
         const falha = classificarFalha(err, input.signal);
         if (falha === null) throw err; // never a generic catch (repo rule 6)
         if (falha.tipo === 'cancelado') break;
-        rows.push(...fatiaInteira(fatia, falha.outcome, falha.motivo, falha.mensagem));
-        loteEnfileirado = falha.podeTerEnfileirado;
+        registrar(fatiaInteira(fatia, falha.outcome, falha.motivo, falha.mensagem));
+        if (falha.podeTerEnfileirado) lote = 'incerto';
       }
     }
     // This channel's backend never pauses a conta for a quota: it queues.
