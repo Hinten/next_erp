@@ -61,6 +61,10 @@ const admin = vi.hoisted(() => ({ getDb: vi.fn() }));
 vi.mock('./lib/admin', () => ({ getDb: admin.getDb }));
 
 const { onIntegracaoShopeeChanged } = await import('./onIntegracaoShopeeChanged');
+// The app's shared binding, loaded BESIDE the trigger: with ONE binding the
+// module is already cached and `core.vinculos` keeps one argument list; a
+// private copy in the trigger would make it two (T36).
+const { syncIntFreteShopee } = await import('../../lib/shopee/frete/intFrete');
 
 /* ---------------------------------- fixtures ------------------------------ */
 
@@ -232,6 +236,14 @@ describe('onIntegracaoShopeeChanged — the deployed binding (T36)', () => {
     // options object (ML's `refTolerante`) would turn on the tolerant scan the
     // Shopee path must never run, and would diverge from the window pass.
     expect(core.vinculos).toEqual([[VINCULO_INT_FRETE_CONTA.shopee]]);
+  });
+
+  it('T36: é a MESMA amarração do importador de pedidos — `lib/shopee/frete/intFrete.ts`, não uma cópia', () => {
+    // Both modules are loaded in this file; one argument list means the trigger
+    // built no binding of its own (a private zero-option copy behaves the same
+    // and would otherwise pass every other test here).
+    expect(core.vinculos).toHaveLength(1);
+    expect(syncIntFreteShopee.vinculo).toBe(VINCULO_INT_FRETE_CONTA.shopee);
   });
 });
 

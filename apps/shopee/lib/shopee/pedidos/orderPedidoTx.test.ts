@@ -5,6 +5,7 @@ import {
   CAPTURA_COMPRADOR_ESTADO,
   ESTADO_FRETE,
   ESTADO_PEDIDO,
+  freteDoPedidoSchema,
   type ItemDoPedido,
 } from '@delfrance/schemas';
 import type { ShopeeOrderDetailRow } from '@delfrance/integrations-shopee';
@@ -12,7 +13,7 @@ import type { ShopeeOrderDetailRow } from '@delfrance/integrations-shopee';
 import { FakeDb, asDb } from '../testing/fakeDb';
 import { FIXTURE_ORDER_DETAIL_QTY2_SG, lerPedidoDetalhe } from '../fixtures/wireCorpus';
 import { makeItemEnsureUniqueId, makePedidoIdShopee } from './orderIds';
-import { mapearFreteInicialShopee } from './orderFreteMapping';
+import { mapearFreteInicialShopee, mesclarFreteInicialShopee } from './orderFreteMapping';
 import {
   mapearPedidoShopee,
   microsDeSegundosShopee,
@@ -982,6 +983,356 @@ describe('salvarPedidoShopee — o escopo das comparações', () => {
     expect((db.store[PEDIDO_PATH]!.data.marketplace as Record<string, unknown>).cancelReason).toBe(
       'BUYER_CHANGED_MIND',
     );
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*            the two freight refs (Lucas, 2026-11-18): int_frete + entrega     */
+/* -------------------------------------------------------------------------- */
+
+describe('salvarPedidoShopee — as refs do frete: int_frete da conta e endereço de entrega', () => {
+  /** The conta's ACTIVE int_frete doc, as the importer stamps it (R). */
+  const REF_CONTA = 'documents/int_frete/shopee-int-1';
+  /** A LEGACY ref a migrated pedido carries (S) — another doc id entirely. */
+  const REF_LEGADA = 'documents/int_frete/LegacyAutoId0000001';
+  const ENDERECO = 'documents/clientes/cli-1/enderecos/end-1';
+  const OUTRO_ENDERECO = 'documents/clientes/cli-1/enderecos/end-2';
+  const NOVO_US = microsDeSegundosShopee(UPDATE_TIME_S + 60);
+
+  /** The mapper's block with R stamped on it — exactly what the importer hands over. */
+  function freteComRef(ref: string | null, watermarkUs = WATERMARK_US) {
+    return {
+      ...mapearFreteInicialShopee({ detalhe: detalheSG(), escrow: null, watermarkUs }).frete,
+      integracaoFreteOuterRef: ref,
+    };
+  }
+
+  function freteGravado(db: FakeDb): Record<string, unknown> {
+    return db.store[PEDIDO_PATH]!.data.freteInicial as Record<string, unknown>;
+  }
+
+  const PRAZO_US = WATERMARK_US + 86_400_000_000;
+
+  /**
+   * A stored block carrying every field the first-fill rebuild must CARRY —
+   * step 7's diary (`pacotes`, optional with NO default, so a dropped key is
+   * erased) and deadline, a LEGACY ref, the block's own clock — already
+   * schema-parsed, so one whole-object comparison names any field it drops.
+   */
+  function blocoRico() {
+    return freteDoPedidoSchema.parse({
+      estado: ESTADO_FRETE.postado,
+      modalidade: '1',
+      externalOptionIntegracao: 'shopee',
+      externalId: 'PKG-1',
+      codRastreio: 'BR123',
+      valorCobrado: 5,
+      integracaoFreteOuterRef: REF_LEGADA,
+      enderecoFreteOuterReference: null,
+      prazoDespacho: PRAZO_US,
+      ultimaModificacao: WATERMARK_US - 2_000_000,
+      pacotes: [
+        {
+          numero: 'PKG-1',
+          estado: ESTADO_FRETE.postado,
+          estadoMarketplace: 'LOGISTICS_PICKUP_DONE',
+          codRastreio: 'BR123',
+          canalId: '90021',
+          prazoDespacho: PRAZO_US,
+          atualizadoEm: WATERMARK_US - 2_000_000,
+          fonte: 'get_package_detail',
+        },
+      ],
+    });
+  }
+
+  /** A stored pedido as a test needs it, with a stored freight block. */
+  function armazenado(extra: Record<string, unknown> = {}, bloco: Record<string, unknown> = {}) {
+    const db = new FakeDb();
+    db.seed(PEDIDO_PATH, {
+      estado: ESTADO_PEDIDO.pago,
+      numero: ORDER_SN,
+      itens: {},
+      itensIds: [],
+      valorCobrado: 1,
+      descontoTotal: 0,
+      lastMarketplaceUpdate: WATERMARK_US - 1_000_000,
+      ultimaModificacao: NOW_US - 5_000_000,
+      freteInicial: {
+        estado: ESTADO_FRETE.postado,
+        modalidade: '1',
+        externalOptionIntegracao: 'shopee',
+        codRastreio: 'BR123',
+        valorCobrado: 5,
+        integracaoFreteOuterRef: null,
+        enderecoFreteOuterReference: null,
+        ...bloco,
+      },
+      ...extra,
+    });
+    return db;
+  }
+
+  it('a CRIAÇÃO grava R e o endereço de entrega = o fiscal, no bloco inteiro', async () => {
+    const db = new FakeDb();
+    const r = await salvar(
+      db,
+      mapear({ frete: freteComRef(REF_CONTA), enderecoFiscalOuterRef: ENDERECO }),
+    );
+    expect(r.acao).toBe('criado');
+    const doc = db.store[PEDIDO_PATH]!.data;
+    expect(freteGravado(db).integracaoFreteOuterRef).toBe(REF_CONTA);
+    expect(freteGravado(db).enderecoFreteOuterReference).toBe(ENDERECO);
+    expect(doc.enderecoFiscalOuterRef).toBe(ENDERECO);
+  });
+
+  it('QUASE-ERRO: uma CRIAÇÃO sem int_frete ativo nem endereço grava as duas refs NULAS', async () => {
+    // The SG / masked order: nothing resolved, and the pedido is what it was
+    // before the reversal — `null`, never a derived `shopee-<id>`.
+    const db = new FakeDb();
+    await salvar(db, mapear({ frete: freteComRef(null), enderecoFiscalOuterRef: null }));
+    expect(freteGravado(db).integracaoFreteOuterRef).toBeNull();
+    expect(freteGravado(db).enderecoFreteOuterReference).toBeNull();
+  });
+
+  it('⚠️ SÓ pedidos NOVOS: uma atualização com R mapeada MANTÉM a ref NULA gravada', async () => {
+    // Imported before the reversal: the stored ref is `null`. The newer delivery
+    // carries R and DOES rewrite the block (its `ultimaModificacao` moves), and
+    // the ref must still not be backfilled.
+    const db = new FakeDb();
+    await salvar(db, mapear({ frete: freteComRef(null) }));
+    const r = await salvar(
+      db,
+      mapear({ frete: freteComRef(REF_CONTA, NOVO_US), watermarkUs: NOVO_US }),
+      NOVO_US,
+    );
+    expect(r.acao).toBe('atualizado');
+    // ÂNCORA: the block really was rewritten by this transaction.
+    expect(freteGravado(db).ultimaModificacao).toBe(NOVO_US);
+    expect(freteGravado(db).integracaoFreteOuterRef).toBeNull();
+  });
+
+  it('⚠️ SÓ pedidos NOVOS: a ref LEGADA gravada (S) sobrevive a uma R diferente', async () => {
+    const db = armazenado({}, { integracaoFreteOuterRef: REF_LEGADA });
+    const r = await salvar(db, mapear({ frete: freteComRef(REF_CONTA) }));
+    expect(r.acao).toBe('atualizado');
+    // ÂNCORA: the merge ran over this block (the buyer's figure moved 5 → 1.99).
+    expect(freteGravado(db).valorCobrado).toBe(1.99);
+    expect(freteGravado(db).integracaoFreteOuterRef).toBe(REF_LEGADA);
+  });
+
+  it('uma REPETIÇÃO do mesmo payload é ignorado-sem-mudanca — e uma R que mudou no meio também', async () => {
+    const db = new FakeDb();
+    await salvar(db, mapear({ frete: freteComRef(REF_CONTA), enderecoFiscalOuterRef: ENDERECO }));
+    db.writes.length = 0;
+
+    const igual = await salvar(
+      db,
+      mapear({ frete: freteComRef(REF_CONTA), enderecoFiscalOuterRef: ENDERECO }),
+    );
+    expect(igual.acao).toBe('ignorado-sem-mudanca');
+    expect(db.writes).toEqual([]);
+
+    // QUASE-ERRO: the conta's doc changed (another active one is newer) — the
+    // pedido does not follow it, and the comparison does not even look.
+    const outraRef = await salvar(
+      db,
+      mapear({
+        frete: freteComRef('documents/int_frete/OutroDoc000000001'),
+        enderecoFiscalOuterRef: ENDERECO,
+      }),
+    );
+    expect(outraRef.acao).toBe('ignorado-sem-mudanca');
+    expect(db.writes).toEqual([]);
+    expect(freteGravado(db).integracaoFreteOuterRef).toBe(REF_CONTA);
+  });
+
+  it('o endereço de entrega entra SÓ na transação que preenche o fiscal PELA PRIMEIRA vez', async () => {
+    // Masked first (no fiscal), unmasked later: this is that later delivery.
+    const db = armazenado({ enderecoFiscalOuterRef: null });
+    const r = await salvar(db, mapear({ enderecoFiscalOuterRef: ENDERECO }));
+    expect(r.acao).toBe('atualizado');
+    expect(r.gruposAplicados).toContain('preencher-uma-vez');
+    const doc = db.store[PEDIDO_PATH]!.data;
+    expect(doc.enderecoFiscalOuterRef).toBe(ENDERECO);
+    expect(freteGravado(db).enderecoFreteOuterReference).toBe(ENDERECO);
+    // The rebuild is over the block this transaction holds: step 7's fields stay.
+    expect(freteGravado(db).estado).toBe(ESTADO_FRETE.postado);
+    expect(freteGravado(db).codRastreio).toBe('BR123');
+
+    // QUASE-ERRO: a LATER delivery naming another endereço fills neither — the
+    // fiscal one is already set, so this is not the first fill.
+    const r2 = await salvar(
+      db,
+      mapear({ enderecoFiscalOuterRef: OUTRO_ENDERECO, watermarkUs: NOVO_US }),
+      NOVO_US,
+    );
+    expect(r2.acao).toBe('atualizado');
+    expect(db.store[PEDIDO_PATH]!.data.enderecoFiscalOuterRef).toBe(ENDERECO);
+    expect(freteGravado(db).enderecoFreteOuterReference).toBe(ENDERECO);
+  });
+
+  it('⚠️ SEM backfill: um fiscal JÁ gravado com a entrega vazia não é tocado', async () => {
+    const db = armazenado({ enderecoFiscalOuterRef: OUTRO_ENDERECO });
+    const r = await salvar(
+      db,
+      mapear({ enderecoFiscalOuterRef: ENDERECO, watermarkUs: NOVO_US }),
+      NOVO_US,
+    );
+    expect(r.acao).toBe('atualizado');
+    // ÂNCORA: the block was rewritten (by the merge) — and kept its empty ref.
+    expect(freteGravado(db).ultimaModificacao).toBe(NOVO_US);
+    expect(freteGravado(db).enderecoFreteOuterReference).toBeNull();
+    expect(db.store[PEDIDO_PATH]!.data.enderecoFiscalOuterRef).toBe(OUTRO_ENDERECO);
+  });
+
+  it('QUASE-ERRO: uma entrega JÁ gravada sobrevive ao primeiro preenchimento do fiscal', async () => {
+    const MANUAL = 'documents/clientes/cli-9/enderecos/end-manual';
+    const db = armazenado(
+      { enderecoFiscalOuterRef: null },
+      { enderecoFreteOuterReference: MANUAL },
+    );
+    await salvar(db, mapear({ enderecoFiscalOuterRef: ENDERECO }));
+    expect(db.store[PEDIDO_PATH]!.data.enderecoFiscalOuterRef).toBe(ENDERECO);
+    expect(freteGravado(db).enderecoFreteOuterReference).toBe(MANUAL);
+  });
+
+  it('⚠️ CONGELADO (hasUserInteraction): o primeiro fiscal ainda leva a entrega — e o dinheiro fica', async () => {
+    const jaGravado = { ...itemDe(0, 'prod-antigo'), precoDeVenda: 99 };
+    const db = armazenado({
+      hasUserInteraction: true,
+      enderecoFiscalOuterRef: null,
+      itens: { 'prod-antigo': [jaGravado] },
+      itensIds: ['prod-antigo'],
+      freteInicial: blocoRico(),
+    });
+    // The mapped block carries R: the rebuild must not take it from there.
+    const r = await salvar(
+      db,
+      mapear({ frete: freteComRef(REF_CONTA), enderecoFiscalOuterRef: ENDERECO }),
+    );
+    expect(r.acao).toBe('atualizado');
+    const doc = db.store[PEDIDO_PATH]!.data;
+    expect(doc.enderecoFiscalOuterRef).toBe(ENDERECO);
+    expect(freteGravado(db).enderecoFreteOuterReference).toBe(ENDERECO);
+    // The freeze still holds over everything else: the lines, the money and the
+    // block's own figures are the stored ones.
+    expect(r.gruposAplicados).not.toContain('dados');
+    expect(doc.itens).toEqual({ 'prod-antigo': [jaGravado] });
+    expect(doc.valorCobrado).toBe(1);
+    expect(freteGravado(db).valorCobrado).toBe(5);
+    expect(freteGravado(db).estado).toBe(ESTADO_FRETE.postado);
+    expect(freteGravado(db).integracaoFreteOuterRef).toBe(REF_LEGADA);
+    // The WHOLE block: the stored one plus the delivery ref and nothing else —
+    // a rebuild that dropped `pacotes`, `prazoDespacho`, the legacy ref or the
+    // block clock (all re-defaulted or erased by the parse) fails here.
+    expect(freteGravado(db)).toEqual({ ...blocoRico(), enderecoFreteOuterReference: ENDERECO });
+  });
+
+  it('LIVRE: o rebuild do primeiro preenchimento é a MESCLA desta transação + a entrega, campo a campo', async () => {
+    const db = armazenado({ enderecoFiscalOuterRef: null, freteInicial: blocoRico() });
+    const mapeado = mapear({ frete: freteComRef(REF_CONTA), enderecoFiscalOuterRef: ENDERECO });
+    const r = await salvar(db, mapeado);
+    expect(r.acao).toBe('atualizado');
+    // ÂNCORAS: the merge's refreshed fields, not the stored ones — the base is
+    // the block this transaction already holds.
+    expect(freteGravado(db).valorCobrado).toBe(1.99);
+    expect(freteGravado(db).ultimaModificacao).toBe(WATERMARK_US);
+    expect(freteGravado(db).integracaoFreteOuterRef).toBe(REF_LEGADA);
+    expect(freteGravado(db)).toEqual(
+      freteDoPedidoSchema.parse({
+        ...mesclarFreteInicialShopee(blocoRico(), mapeado.dados.freteInicial),
+        enderecoFreteOuterReference: ENDERECO,
+      }),
+    );
+  });
+
+  it('⚠️ um bloco gravado que NÃO valida pula SÓ a entrega — o resto da entrega ainda grava', async () => {
+    // A legacy block a frozen pedido never had rewritten: the rebuild would
+    // fail the freight schema and the `update()` would throw the whole delivery
+    // (here a CANCELLED) away over a convenience ref.
+    const blocoLegado = {
+      estado: ESTADO_FRETE.postado,
+      externalOptionIntegracao: 'shopee',
+      valorCobrado: 'cinco',
+      enderecoFreteOuterReference: null,
+    };
+    const db = armazenado({
+      hasUserInteraction: true,
+      enderecoFiscalOuterRef: null,
+      freteInicial: blocoLegado,
+    });
+    const r = await salvar(
+      db,
+      mapear({ detalhe: linha({ order_status: 'CANCELLED' }), enderecoFiscalOuterRef: ENDERECO }),
+    );
+    expect(r.acao).toBe('atualizado');
+    const doc = db.store[PEDIDO_PATH]!.data;
+    expect(doc.estado).toBe(ESTADO_PEDIDO.cancelado);
+    expect(doc.enderecoFiscalOuterRef).toBe(ENDERECO);
+    expect(doc.freteInicial).toEqual(blocoLegado);
+    const aviso = avisos.find((a) => String(a[0]).includes('endereço de entrega não preenchido'));
+    expect(aviso?.[1]).toEqual({
+      orderSn: ORDER_SN,
+      pedidoId: PEDIDO_ID,
+      campos: ['valorCobrado: invalid_type'],
+    });
+    // Paths only — never the value that failed.
+    expect(JSON.stringify(aviso)).not.toContain('cinco');
+  });
+
+  it('sem bloco gravado, nenhum bloco é fabricado para a entrega — congelado ou não', async () => {
+    // Frozen: nothing writes the block at all, so it stays absent.
+    const congelado = armazenado({
+      hasUserInteraction: true,
+      enderecoFiscalOuterRef: null,
+      freteInicial: null,
+    });
+    await salvar(
+      congelado,
+      mapear({ frete: freteComRef(REF_CONTA), enderecoFiscalOuterRef: ENDERECO }),
+    );
+    expect(congelado.store[PEDIDO_PATH]!.data.enderecoFiscalOuterRef).toBe(ENDERECO);
+    expect(congelado.store[PEDIDO_PATH]!.data.freteInicial).toBeNull();
+
+    // Unfrozen: the merge writes the mapped block, WITHOUT either create-only ref.
+    const livre = armazenado({ enderecoFiscalOuterRef: null, freteInicial: null });
+    await salvar(
+      livre,
+      mapear({ frete: freteComRef(REF_CONTA), enderecoFiscalOuterRef: ENDERECO }),
+    );
+    expect(livre.store[PEDIDO_PATH]!.data.enderecoFiscalOuterRef).toBe(ENDERECO);
+    expect(freteGravado(livre).valorCobrado).toBe(1.99); // ÂNCORA: the block landed
+    expect(freteGravado(livre).integracaoFreteOuterRef).toBeNull();
+    expect(freteGravado(livre).enderecoFreteOuterReference).toBeNull();
+  });
+
+  it('regra 7: duas entregas que viram o fiscal vazio — a perdedora re-deriva do SEU tx.get e não preenche nada', async () => {
+    // Both read an empty fiscal ref. A's commit is held until B lands; A then
+    // ABORTS, re-reads, finds the fiscal ref B wrote, and fills neither — so the
+    // fiscal and the delivery refs stay PAIRED on B's value.
+    const db = armazenado({ enderecoFiscalOuterRef: null });
+    const portao = deferred();
+    let segurou = false;
+    db.occ.beforeCommit = (ctx) => {
+      const ehA = ctx.writes.some(
+        (w) => (w.data as Record<string, unknown>).enderecoFiscalOuterRef === ENDERECO,
+      );
+      if (!ehA || segurou) return undefined;
+      segurou = true;
+      return portao.promise;
+    };
+
+    const runA = salvar(db, mapear({ enderecoFiscalOuterRef: ENDERECO }));
+    const runB = salvar(db, mapear({ enderecoFiscalOuterRef: OUTRO_ENDERECO }));
+    await runB;
+    portao.resolve();
+    const a = await runA;
+
+    expect(db.occ.txLog.filter((e) => e.phase === 'abort')).toHaveLength(1);
+    expect(a.acao).toBe('ignorado-sem-mudanca');
+    expect(db.store[PEDIDO_PATH]!.data.enderecoFiscalOuterRef).toBe(OUTRO_ENDERECO);
+    expect(freteGravado(db).enderecoFreteOuterReference).toBe(OUTRO_ENDERECO);
   });
 });
 

@@ -1,19 +1,20 @@
 import { logger } from 'firebase-functions';
 import { onDocumentWritten } from 'firebase-functions/v2/firestore';
 import { integracaoCollection } from '@delfrance/data/admin/collections';
-import { intFreteContaSync } from '@delfrance/data/admin/frete';
-import { integracaoMeta, VINCULO_INT_FRETE_CONTA } from '@delfrance/schemas';
+import { integracaoMeta } from '@delfrance/schemas';
 
 import { shopIdResolvivel } from '../../lib/shopee/core/contaCache';
+import { syncIntFreteShopee as sync } from '../../lib/shopee/frete/intFrete';
 import { redriveDeferredSemContaForShopId } from '../../lib/shopee/notificacoes/notificacao';
 import { getDb } from './lib/admin';
 
-/**
- * The Shopee binding of the shared `int_frete` ⇆ conta core. Zero options — the
- * window pass (`tools/migrations/src/2026-10-shopee-int-frete/`) builds the very
- * same one, so the trigger and the backfill can never decide differently.
- */
-const sync = intFreteContaSync(VINCULO_INT_FRETE_CONTA.shopee);
+// `sync` is the app's ONE binding of the shared `int_frete` ⇆ conta core
+// (`lib/shopee/frete/intFrete.ts`, zero options). The order import looks the
+// doc up through the very same constant, and the window pass
+// (`tools/migrations/src/2026-10-shopee-int-frete/`) binds the same row with the
+// same zero options — so the trigger, the importer and the backfill never
+// disagree on which doc is the conta's (the importer then keeps only an ACTIVE
+// one; the trigger converges whatever it finds).
 
 /**
  * Shopee conta trigger (master plan step 20, #1528) — the codebase's THIRD
@@ -26,7 +27,12 @@ const sync = intFreteContaSync(VINCULO_INT_FRETE_CONTA.shopee);
  *     screen upserted it on every save; the new stack saves the conta through a
  *     plain `ObjectView` with no companion write, so this trigger keeps it in
  *     step. All the logic is the shared core `@delfrance/data/admin/frete`
- *     (#1369): this file passes it the conta ID and NOTHING else.
+ *     (#1369): this file passes it the conta ID and NOTHING else. Since
+ *     2026-11-18 (Lucas, reversing step 20's "no consumer" decision) the order
+ *     import stamps the conta's ACTIVE doc on every pedido it CREATES
+ *     (`freteInicial.integracaoFreteOuterRef`), so the doc this arm keeps in
+ *     step is the one a new import names; a deactivated one is named by no NEW
+ *     import (pedidos created while it was active, and migrated ones, keep it).
  *  2. **The #808 re-drive.** When a write makes the conta RESOLVABLE for a
  *     shop id (`shopIdResolvivel`, the payload twin of the push receiver's
  *     query), that shop's `sem-conta` deferred pushes go back to the hot lane,

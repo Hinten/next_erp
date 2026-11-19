@@ -1,7 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
-import { integracaoCollection } from '@delfrance/data/admin/collections';
-import { ESTADO_FRETE, ESTADO_PEDIDO, INTEGRACAO_TIPO, pagamentoSchema } from '@delfrance/schemas';
+import { intFreteCollection, integracaoCollection } from '@delfrance/data/admin/collections';
+import {
+  ESTADO_FRETE,
+  ESTADO_PEDIDO,
+  INTEGRACAO_FRETE,
+  INTEGRACAO_TIPO,
+  pagamentoSchema,
+} from '@delfrance/schemas';
 import type { ZodError } from 'zod';
 import {
   ShopeeApiError,
@@ -92,7 +98,11 @@ vi.mock('../avisos/despachoAutomatico', async (importOriginal) => {
   };
 });
 
-import { SHOPEE_ERRO_ORDER_NOT_FOUND, importarPedidoShopee } from './importarPedido';
+import {
+  SHOPEE_ERRO_ORDER_NOT_FOUND,
+  importarPedidoShopee,
+  prepararImportacaoPedidoShopee,
+} from './importarPedido';
 import { avisarNfeShopee, chaveAvisoNfeShopee } from '../nfe/avisoNfe';
 import { MOTIVO_NFE_SHOPEE } from '../nfe/errosNfe';
 import { SHOPEE_ORDER_STATUS } from './orderStatusMaps';
@@ -1490,5 +1500,190 @@ describe('importarPedidoShopee — o resolvedor do despacho (passo 15b)', () => 
       resolucaoMotivo: RESOLUCAO_AVISO_DESPACHO.pedidoCancelado,
     });
     expect(linhaDoImport(2)).toMatchObject({ despachoResolvidos: 1, etiquetaResolvida: false });
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*          the conta's int_frete doc + the delivery address (2026-11-18)      */
+/* -------------------------------------------------------------------------- */
+
+describe('importarPedidoShopee — o int_frete da conta e o endereço de entrega', () => {
+  const INT_FRETE_PATH = intFreteCollection.resolvePath({});
+  const BACK_REF = `documents/integracao/${INT}`;
+  /** A migrated conta's doc keeps its legacy AUTO id — never `shopee-<id>`. */
+  const ID_LEGADO = 'LegacyAutoId0000001';
+
+  function semearIntFrete(c: Cenario, id: string, over: DocData = {}): void {
+    c.db.seed(`${INT_FRETE_PATH}/${id}`, {
+      tipo: INTEGRACAO_FRETE.shopee,
+      contaShopeeFreteOuterRef: BACK_REF,
+      ativo: true,
+      nome: 'Loja Sandbox',
+      dataCadastro: 1_700_000_000_000,
+      ...over,
+    } satisfies DocData);
+  }
+
+  function freteDoPedido(c: Cenario): Record<string, unknown> {
+    return c.db.store[PEDIDO_PATH]!.data.freteInicial as Record<string, unknown>;
+  }
+
+  it('um int_frete ATIVO da conta vira a ref do pedido CRIADO', async () => {
+    const c = cenario();
+    semearIntFrete(c, `shopee-${INT}`);
+    const r = await importar(c);
+    expect(r.acao).toBe('criado');
+    // ⚠️ Survives step 7's backstop too, which rebuilds the block right after.
+    expect(freteDoPedido(c).integracaoFreteOuterRef).toBe(`documents/int_frete/shopee-${INT}`);
+  });
+
+  it('a linha de log diz SE havia um int_frete ativo — um booleano, nunca o id', async () => {
+    const c = cenario();
+    semearIntFrete(c, `shopee-${INT}`);
+    await importar(c);
+    expect(linhaDoImport(0).intFreteAtivo).toBe(true);
+    const tudo = JSON.stringify(linhaDoImport(0));
+    expect(tudo).not.toContain('int_frete/');
+    expect(tudo).not.toContain(`shopee-${INT}`);
+
+    // QUASE-ERRO: no active doc logs `false`, never an absent key.
+    infos.length = 0;
+    await importar(cenario());
+    expect(linhaDoImport(0).intFreteAtivo).toBe(false);
+  });
+
+  it('QUASE-ERRO: a ref é a do doc ENCONTRADO — um id legado nunca vira `shopee-<id>`', async () => {
+    const c = cenario();
+    semearIntFrete(c, ID_LEGADO);
+    await importar(c);
+    expect(freteDoPedido(c).integracaoFreteOuterRef).toBe(`documents/int_frete/${ID_LEGADO}`);
+  });
+
+  it('só um doc INATIVO ⇒ ref nula, e o pedido é criado do mesmo jeito', async () => {
+    const c = cenario();
+    semearIntFrete(c, `shopee-${INT}`, { ativo: false });
+    const r = await importar(c);
+    expect(r.acao).toBe('criado');
+    expect(freteDoPedido(c).integracaoFreteOuterRef).toBeNull();
+  });
+
+  it('o doc de OUTRA conta, ou de outro TIPO com a nossa back-ref, ⇒ ref nula', async () => {
+    const c = cenario();
+    semearIntFrete(c, 'shopee-int-2', { contaShopeeFreteOuterRef: 'documents/integracao/int-2' });
+    semearIntFrete(c, 'mercadoLivre-int-1', { tipo: INTEGRACAO_FRETE.mercadoLivre });
+    await importar(c);
+    expect(freteDoPedido(c).integracaoFreteOuterRef).toBeNull();
+  });
+
+  it('nenhum doc (conta incompleta: o gatilho nunca criou um) ⇒ importa com ref nula', async () => {
+    const c = cenario();
+    const r = await importar(c);
+    expect(r).toMatchObject({ kind: 'pedido', acao: 'criado', pedidoId: PEDIDO_ID });
+    expect(freteDoPedido(c).integracaoFreteOuterRef).toBeNull();
+  });
+
+  it('dois docs ATIVOS ⇒ vence o `dataCadastro` mais NOVO — nem o primeiro encontrado, nem o menor id', async () => {
+    // Seeded so the three candidate rules name DIFFERENT docs: the legacy doc
+    // is found first (the double answers in insertion order) AND has the
+    // lexically lower id ('L' < 's' — the legacy `.first()` and the core's
+    // tie-break), while `shopee-<id>` is the NEWER one.
+    const c = cenario();
+    semearIntFrete(c, ID_LEGADO, { dataCadastro: 1_700_000_000_000 });
+    semearIntFrete(c, `shopee-${INT}`, { dataCadastro: 1_700_000_000_001 });
+    await importar(c);
+    expect(freteDoPedido(c).integracaoFreteOuterRef).toBe(`documents/int_frete/shopee-${INT}`);
+  });
+
+  it('a consulta é EXATAMENTE tipo + back-ref + ativo, sem cache, ANTES de qualquer transação e fora delas', async () => {
+    const c = cenario();
+    semearIntFrete(c, `shopee-${INT}`);
+    const consultasAoAbrir: number[] = [];
+    const doIntFrete = () => c.db.consultasCompletas.filter((q) => q.fonte === INT_FRETE_PATH);
+    const original = c.db.runTransaction.bind(c.db);
+    vi.spyOn(c.db, 'runTransaction').mockImplementation((fn, opcoes) => {
+      consultasAoAbrir.push(doIntFrete().length);
+      return original(fn, opcoes);
+    });
+
+    await importar(c);
+
+    expect(doIntFrete()).toEqual([
+      {
+        fonte: INT_FRETE_PATH,
+        clausulas: [
+          ['tipo', '==', INTEGRACAO_FRETE.shopee],
+          ['contaShopeeFreteOuterRef', '==', BACK_REF],
+          ['ativo', '==', true],
+        ],
+        ordens: [],
+        limite: null,
+        apos: null,
+      },
+    ]);
+    // Every transaction of the import (pedido, pagamentos, frete) opened AFTER
+    // the lookup, and none of them read the collection.
+    expect(consultasAoAbrir.length).toBeGreaterThan(0);
+    expect(consultasAoAbrir.every((n) => n === 1)).toBe(true);
+    expect(c.db.leiturasEmTransacao.filter((p) => p.startsWith(INT_FRETE_PATH))).toEqual([]);
+
+    // Uncached: its answer feeds a write, so the next import asks again.
+    await importar(c);
+    expect(doIntFrete()).toHaveLength(2);
+  });
+
+  it('prepararImportacaoPedidoShopee com um doc ativo NÃO escreve nada — e já traz a ref', async () => {
+    const c = cenario();
+    semearIntFrete(c, `shopee-${INT}`);
+    const preparado = await prepararImportacaoPedidoShopee(
+      asDb(c.db),
+      { integracaoId: INT, shopId: SHOP, orderSn: ORDER_SN, nowMs: NOW_MS },
+      c.deps,
+    );
+    expect(preparado.kind).toBe('preparo');
+    if (preparado.kind !== 'preparo') return;
+    // ÂNCORA: the lookup ran and its answer is on the mapped block…
+    expect(preparado.preparo.frete.integracaoFreteOuterRef).toBe(
+      `documents/int_frete/shopee-${INT}`,
+    );
+    // …and the read-only half wrote and staged nothing.
+    expect(c.db.writes).toEqual([]);
+    expect(c.db.opLog.filter((o) => o.op !== 'get')).toEqual([]);
+  });
+
+  it('o endereço de entrega = o fiscal na CRIAÇÃO quando o endereço resolve', async () => {
+    const c = cenario({ detalhe: detalheBR() });
+    await importar(c);
+    const doc = c.db.store[PEDIDO_PATH]!.data;
+    // ÂNCORA: the buyer step really resolved an endereço.
+    expect(typeof doc.enderecoFiscalOuterRef).toBe('string');
+    expect(freteDoPedido(c).enderecoFreteOuterReference).toBe(doc.enderecoFiscalOuterRef);
+  });
+
+  it('QUASE-ERRO: numa order SG (nenhum endereço) a entrega fica NULA', async () => {
+    const c = cenario();
+    await importar(c);
+    expect(c.db.store[PEDIDO_PATH]!.data.enderecoFiscalOuterRef).toBeNull();
+    expect(freteDoPedido(c).enderecoFreteOuterReference).toBeNull();
+  });
+
+  it('mascarada e depois LIMPA: a entrega entra junto com o PRIMEIRO fiscal, e a ref da conta não', async () => {
+    // Imported masked (no endereço, and no int_frete doc yet); the conta's doc
+    // appears, then the buyer unmasks on a newer delivery.
+    const c = cenario({ detalhe: detalheBRMascarado() });
+    await importar(c);
+    expect(freteDoPedido(c).enderecoFreteOuterReference).toBeNull();
+    semearIntFrete(c, `shopee-${INT}`);
+
+    c.getOrderDetail.mockResolvedValue({
+      order_list: [{ ...detalheBR(), update_time: UPDATE_TIME_S + 60 }],
+    });
+    const r = await importar(c);
+
+    expect(r.acao).toBe('atualizado');
+    const doc = c.db.store[PEDIDO_PATH]!.data;
+    expect(typeof doc.enderecoFiscalOuterRef).toBe('string');
+    expect(freteDoPedido(c).enderecoFreteOuterReference).toBe(doc.enderecoFiscalOuterRef);
+    // Only NEW pedidos get the conta's ref: this one existed before the doc did.
+    expect(freteDoPedido(c).integracaoFreteOuterRef).toBeNull();
   });
 });
