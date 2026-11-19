@@ -53,6 +53,7 @@ import {
   ENDERECO_FALLBACKS,
   FORMA_PAGAMENTO_LABELS,
   STATUS_PAGAMENTO_LABELS,
+  cpfCnpjUtilizavel,
   idFromRef,
   idFromRefOrNull,
   normalizeNome,
@@ -75,10 +76,13 @@ import {
 } from '@delfrance/integrations-shopee';
 
 import {
+  FONTE_CPF_SIMULADO,
   SimulacaoCompradorRecusadaError,
+  cpfDeTesteUtilizavel,
   regiaoEstrangeiraParaSimulacao,
   type CapturaComprador,
   type EnderecoShopee,
+  type FonteCpfSimulado,
   type PortoesEnderecoShopee,
   type SimulacaoCompradorShopee,
 } from './comprador';
@@ -124,13 +128,24 @@ Opções
 
 Modo comprador de TESTE — só no sandbox, só numa order de região não-BR
   --importar-cliente  simula um comprador brasileiro: o CPF que a Shopee mandar,
-                      se utilizável, senão um CPF de teste; cria e vincula o
-                      cliente. Com --live, exige --project e uma conta de
-                      serviço emitida para esse projeto.
+                      se utilizável; senão o de --cpf-teste; senão o CPF falso
+                      do repo. Cria e vincula o cliente. Com --live, exige
+                      --project e uma conta de serviço emitida para esse
+                      projeto.
   --importar-endereco também grava o endereço (exige --importar-cliente).
   --nome-teste <nome> troca SÓ o nome do destinatário (exige --importar-cliente).
   --cep-teste <cep>   troca SÓ o CEP, 8 dígitos sem traço (exige
                       --importar-cliente).
+  --cpf-teste <cpf>   usa ESTE CPF de teste no lugar do CPF falso do repo (o
+                      da Shopee, se utilizável, continua valendo): 11 dígitos,
+                      puros ou no formato 000.000.000-00, com dígitos
+                      verificadores válidos; só CPF, nunca CNPJ (exige
+                      --importar-cliente). No staging o CPF falso já pertence a
+                      clientes de teste (o NF-e live do CI e seeds de dev) —
+                      use esta flag. O valor fica no histórico do shell: só um
+                      CPF de TESTE, nunca o de uma pessoa real. O script não
+                      repete os dígitos, mas o pnpm repete a linha de comando
+                      (no cabeçalho e no erro): rode com pnpm -s.
 
 O dry-run continua CHAMANDO a Shopee (get_order_detail + get_escrow_detail) e
 lendo o Firestore — ele não grava. Ver apps/shopee/scripts/README.md.
@@ -163,6 +178,42 @@ export interface ArgsImportarPedido {
 /** `--cep-teste`: the 8 digits `enderecoSchema.cep` stores, and nothing else. */
 const CEP_TESTE = /^\d{8}$/;
 
+/**
+ * `--cpf-teste`'s two accepted SPELLINGS: 11 bare digits, or the usual
+ * `000.000.000-00`. Shape only — the check digits are
+ * {@link cpfDeTesteUtilizavel}'s, never re-implemented here.
+ */
+const CPF_TESTE_GRAFIA = /^(?:\d{11}|\d{3}\.\d{3}\.\d{3}-\d{2})$/;
+
+/** A CNPJ's length in the canonical stored form — named only to say WHY a value was refused. */
+const CARACTERES_CNPJ = 14;
+
+/**
+ * `--cpf-teste` → the canonical 11 digits, or a refusal. ⚠️ No message carries
+ * the value: it is a document, and the error line lands in a transcript.
+ *
+ * The "nunca CNPJ" wording is reserved for a value the canonical predicate
+ * accepts AS a CNPJ: any other 14-character value (a bad check digit, letters)
+ * gets the shape message, so the refusal never names a kind the value is not.
+ */
+function cpfTesteDoArgumento(bruto: string): string {
+  if (!CPF_TESTE_GRAFIA.test(bruto)) {
+    throw new ArgumentoInvalidoError(
+      cpfCnpjUtilizavel(bruto)?.length === CARACTERES_CNPJ
+        ? '--cpf-teste aceita só CPF (pessoa física, 11 dígitos), nunca CNPJ.'
+        : '--cpf-teste exige um CPF de 11 dígitos, puros ou no formato 000.000.000-00.',
+    );
+  }
+  const cpf = cpfDeTesteUtilizavel(bruto);
+  if (cpf === null) {
+    throw new ArgumentoInvalidoError(
+      '--cpf-teste não é um CPF válido: os dígitos verificadores não conferem (ou os 11 ' +
+        'dígitos são todos iguais). Use um CPF de TESTE gerado com dígitos válidos.',
+    );
+  }
+  return cpf;
+}
+
 export type ComandoImportarPedido =
   | { readonly kind: 'ajuda' }
   | { readonly kind: 'importar'; readonly args: ArgsImportarPedido };
@@ -176,6 +227,13 @@ function semValor(nome: string, inline: string | undefined): true {
   if (inline !== undefined) throw new ArgumentoInvalidoError(`${nome} não aceita valor.`);
   return true;
 }
+
+/**
+ * What an unknown token must look like for the refusal to NAME it: one or two
+ * dashes, then letters and hyphens only. A digit anywhere means it may be a
+ * document, so it is not repeated.
+ */
+const FORMA_DE_FLAG = /^--?[a-z][a-z-]*$/i;
 
 function valorDe(nome: string, inline: string | undefined, proximo: string | undefined): string {
   const bruto = (inline ?? proximo)?.trim();
@@ -210,6 +268,7 @@ export function parseArgsImportarPedido(argv: readonly string[]): ComandoImporta
   let importarEndereco = false;
   let nomeTeste: string | undefined;
   let cepTeste: string | undefined;
+  let cpfTeste: string | undefined;
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i] ?? '';
@@ -258,8 +317,22 @@ export function parseArgsImportarPedido(argv: readonly string[]): ComandoImporta
         cepTeste = valorDe('cep-teste', inline, argv[i + 1]);
         if (inline === undefined) i += 1;
         break;
+      case '--cpf-teste':
+        cpfTeste = valorDe('cpf-teste', inline, argv[i + 1]);
+        if (inline === undefined) i += 1;
+        break;
       default:
-        throw new ArgumentoInvalidoError(`Opção desconhecida: ${arg}`);
+        // ⚠️ Never echo a VALUE: a mistyped `--cpf-teste=<cpf>`, or a CPF typed
+        // without its flag, would otherwise land in the error line — and the
+        // terminal transcript. A flag is named by the text before `=`, and only
+        // when that text is FLAG-shaped: a stray dash in front of a CPF
+        // (`-000.000.000-00`, `--00000000000`) is a value, never a flag name.
+        throw new ArgumentoInvalidoError(
+          FORMA_DE_FLAG.test(nome)
+            ? `Opção desconhecida: ${nome}${inline === undefined ? '' : '=…'}`
+            : 'Argumento solto, sem flag (o valor não é repetido aqui): passe cada valor logo ' +
+                'depois da sua flag (veja --help).',
+        );
     }
   }
 
@@ -272,6 +345,7 @@ export function parseArgsImportarPedido(argv: readonly string[]): ComandoImporta
       [importarEndereco, '--importar-endereco'],
       [nomeTeste !== undefined, '--nome-teste'],
       [cepTeste !== undefined, '--cep-teste'],
+      [cpfTeste !== undefined, '--cpf-teste'],
     ] as const) {
       if (presente) throw new ArgumentoInvalidoError(`${flag} exige --importar-cliente.`);
     }
@@ -279,6 +353,7 @@ export function parseArgsImportarPedido(argv: readonly string[]): ComandoImporta
   if (cepTeste !== undefined && !CEP_TESTE.test(cepTeste)) {
     throw new ArgumentoInvalidoError('--cep-teste exige exatamente 8 dígitos, sem traço.');
   }
+  const cpfTesteCanonico = cpfTeste === undefined ? null : cpfTesteDoArgumento(cpfTeste);
   if (integracaoId == null) {
     throw new ArgumentoInvalidoError('--integracao <integracaoId> é obrigatório.');
   }
@@ -297,6 +372,7 @@ export function parseArgsImportarPedido(argv: readonly string[]): ComandoImporta
             comprador: {
               nomeTeste: nomeTeste ?? null,
               cepTeste: cepTeste ?? null,
+              cpfTeste: cpfTesteCanonico,
               importarEndereco,
             },
           }
@@ -507,14 +583,53 @@ export function decidirColisaoDeDocumento(
   return { kind: 'mesmo-nome', clienteIds: donos.map((d) => d.clienteId).sort() };
 }
 
-/** The refusal for {@link decidirColisaoDeDocumento}'s `colisao` — ids only, never a name. */
-export function exigirDocumentoSemColisao(decisao: ColisaoDeDocumento): void {
+/**
+ * The refusal for {@link decidirColisaoDeDocumento}'s `colisao` — ids only, never
+ * a name and never the document's digits.
+ *
+ * `fonteDoCpf` picks the way out, because each source has a different one: on
+ * staging the repo's fake is held by test clientes (the NF-e live CI lane's
+ * `ci-*-cliente` leftovers, and dev seeds), so the first remedy is a
+ * `--cpf-teste` nobody holds; a `--cpf-teste` that collides needs another one;
+ * and Shopee's own usable document beats `--cpf-teste` (the precedence), so
+ * changing the test CPF would change nothing there.
+ *
+ * ⚠️ A `colisao` ALWAYS throws: a source outside the union (a JS caller, a
+ * cast) gets the generic refusal after the switch, never a fall-through that
+ * reads as "no collision" and links the test buyer to a stranger.
+ */
+export function exigirDocumentoSemColisao(
+  decisao: ColisaoDeDocumento,
+  fonteDoCpf: FonteCpfSimulado,
+): void {
   if (decisao.kind !== 'colisao') return;
+  const donos = `(${decisao.clienteIds.join(', ')})`;
+  const reusar = '--nome-teste "<o nome desse cliente>" para reusá-lo';
+  const apagar = 'apague esse cliente e os endereços dele no console';
+  switch (fonteDoCpf) {
+    case FONTE_CPF_SIMULADO.cpfFalso:
+      throw new SimulacaoCompradorRecusadaError(
+        `o CPF falso do repo, que o modo de teste usaria, já pertence a outro cliente ${donos}. ` +
+          'Passe --cpf-teste <outro CPF de teste> (um CPF de teste válido que nenhum cliente ' +
+          `use); ou ${reusar}; ou ${apagar} (o NF-e live do CI e seeds de dev gravam clientes ` +
+          'com o CPF falso). Nada foi gravado.',
+      );
+    case FONTE_CPF_SIMULADO.cpfTeste:
+      throw new SimulacaoCompradorRecusadaError(
+        `o CPF informado em --cpf-teste já pertence a outro cliente ${donos}. Passe outro ` +
+          `--cpf-teste, ou ${reusar}. Nada foi gravado.`,
+      );
+    case FONTE_CPF_SIMULADO.shopee:
+      throw new SimulacaoCompradorRecusadaError(
+        `o documento que a Shopee mandou já pertence a outro cliente ${donos}; ele vence o ` +
+          `--cpf-teste, então trocar o CPF de teste não muda nada. Passe ${reusar}, ou ` +
+          `${apagar}. Nada foi gravado.`,
+      );
+  }
+  // Unreachable for a typed caller — the fail-CLOSED fallback for any other.
   throw new SimulacaoCompradorRecusadaError(
-    `o documento que o modo de teste usaria já pertence a outro cliente ` +
-      `(${decisao.clienteIds.join(', ')}). Passe --nome-teste "<o nome desse cliente>" para ` +
-      'reusá-lo, ou apague esse cliente e os endereços dele no console (o seed de dev grava ' +
-      'um cliente com o CPF de teste). Nada foi gravado.',
+    `o documento que o modo de teste usaria já pertence a outro cliente ${donos}. Passe ` +
+      `${reusar}, ou ${apagar}. Nada foi gravado.`,
   );
 }
 
@@ -1192,6 +1307,8 @@ export interface CompradorSimuladoResumo {
   readonly veredictoReal: VereditoResumo;
   readonly veredictoSimulado: VereditoResumo;
   readonly cpfDeTesteAplicado: boolean;
+  /** Whose document the simulated row carries — a source NAME, never the digits. */
+  readonly fonteDoCpf: FonteCpfSimulado;
   readonly nomeTesteAplicado: boolean;
   readonly cepTesteAplicado: boolean;
   readonly importarEndereco: boolean;
@@ -1268,6 +1385,7 @@ export function resumoDoCompradorSimulado(
     veredictoReal: veredito(simulacao.capturaReal),
     veredictoSimulado: veredito(capturaSimulada),
     cpfDeTesteAplicado: simulacao.cpfDeTesteAplicado,
+    fonteDoCpf: simulacao.fonteDoCpf,
     nomeTesteAplicado: simulacao.nomeTesteAplicado,
     cepTesteAplicado: simulacao.cepTesteAplicado,
     importarEndereco: simulacao.pedida.importarEndereco,
@@ -1294,6 +1412,30 @@ function simNao(v: boolean): string {
   return v ? 'sim' : 'não';
 }
 
+/** The `CPF de teste aplicado` line, per source — never the digits. */
+const CPF_DE_TESTE_APLICADO: Readonly<Record<FonteCpfSimulado, string>> = {
+  [FONTE_CPF_SIMULADO.cpfTeste]: 'sim (informado em --cpf-teste)',
+  [FONTE_CPF_SIMULADO.cpfFalso]: 'sim (o CPF falso do repo)',
+  [FONTE_CPF_SIMULADO.shopee]: 'não — vale o da Shopee',
+};
+
+/**
+ * The script's preamble line for the TEST buyer mode (stderr, before anything
+ * is read): which substitutes were GIVEN — never one of their values.
+ *
+ * ⚠️ Built HERE, not in the script, so a test can feed it the digits:
+ * `scripts/` is outside vitest's `include`, and a line written there could
+ * print `--cpf-teste`'s value with nothing to say so.
+ */
+export function linhaDoCompradorNoPreambulo(comprador: SimulacaoCompradorShopee): string {
+  const dado = (valor: string | null): string => (valor === null ? 'não' : 'sim');
+  return (
+    `  comprador ....... TESTE — endereço=${simNao(comprador.importarEndereco)} ` +
+    `nome-teste=${dado(comprador.nomeTeste)} cep-teste=${dado(comprador.cepTeste)} ` +
+    `cpf-teste=${dado(comprador.cpfTeste)}`
+  );
+}
+
 /** The stdout half of the buyer block. Names, verdicts and counts only. */
 export function renderCompradorSimulado(r: CompradorSimuladoResumo): string[] {
   const e = r.endereco;
@@ -1313,7 +1455,7 @@ export function renderCompradorSimulado(r: CompradorSimuladoResumo): string[] {
     '### comprador — MODO DE TESTE (--importar-cliente)',
     `  veredito real ........... ${textoDoVeredito(r.veredictoReal)}   (o que uma importação normal gravaria)`,
     `  veredito simulado ....... ${textoDoVeredito(r.veredictoSimulado)}   (o que esta execução gravaria)`,
-    `  CPF de teste aplicado ... ${simNao(r.cpfDeTesteAplicado)}`,
+    `  CPF de teste aplicado ... ${CPF_DE_TESTE_APLICADO[r.fonteDoCpf]}`,
     `  nome de teste ........... ${r.nomeTesteAplicado ? 'aplicado' : 'não — vale o que a Shopee mandou'}`,
     `  CEP de teste ............ ${r.cepTesteAplicado ? 'aplicado' : 'não — vale o que a Shopee mandou'}`,
     `  endereço ................ ${resultado}`,
@@ -1391,6 +1533,11 @@ export interface CompradorGravadoResumo {
   readonly matchedBy: string | null;
   readonly enderecoId: string | null;
   /**
+   * Whose document the cliente was created or matched under — a source NAME,
+   * never the digits; `null` when the write half did not run.
+   */
+  readonly fonteDoCpf: FonteCpfSimulado | null;
+  /**
    * What to delete to undo the test, read off the pedido AS STORED after the
    * run (so a cliente linked by an earlier test run is listed too): the
    * pedido, then the endereço and the cliente it links. Bare document paths.
@@ -1422,6 +1569,7 @@ export function resumoDoCompradorGravado(
     criado: c?.cliente?.criado ?? null,
     matchedBy: c?.cliente?.matchedBy ?? null,
     enderecoId: ref === null ? null : idFromRef(ref),
+    fonteDoCpf: c?.fonteDoCpf ?? null,
     limpeza,
   };
 }
@@ -1433,6 +1581,7 @@ export function renderCompradorGravado(r: CompradorGravadoResumo): string[] {
       ? '  cliente ................. — (nenhum resolvido nesta execução; ver capturaComprador)'
       : `  cliente ................. ${r.clienteId}   criado=${r.criado === null ? '—' : simNao(r.criado)}` +
         `   matchedBy=${r.matchedBy ?? '—'}`,
+    `  CPF de teste aplicado ... ${r.fonteDoCpf === null ? '—' : CPF_DE_TESTE_APLICADO[r.fonteDoCpf]}`,
     `  endereço ................ ${r.enderecoId ?? '— (nenhum gravado nesta execução)'}`,
     `  pedido .................. ${r.pedidoId ?? '—'}`,
   ];

@@ -414,9 +414,41 @@ export function avaliarCapturaComprador(args: {
  */
 export const CPF_FALSO_DE_TESTE = '12345678909';
 
+/** A CPF's length in the canonical stored form (`normalizeDocumento`'s output). */
+const DIGITOS_CPF = 11;
+
+/**
+ * A `--cpf-teste` value in the canonical stored form (11 digits) — or `null`.
+ *
+ * The capture's own predicate, `cpfCnpjUtilizavel` (`normalizeDocumento`, then
+ * `validateCpfCnpj`'s mod-11, which also refuses an all-same-digit CPF), narrowed
+ * to a CPF: the mode simulates a PESSOA FÍSICA, so a valid CNPJ is refused too.
+ * ONE function, read by the CLI parser AND re-checked by
+ * {@link simularCompradorShopee} — no second copy of the check-digit rule.
+ */
+export function cpfDeTesteUtilizavel(raw: unknown): string | null {
+  const documento = cpfCnpjUtilizavel(raw);
+  return documento !== null && documento.length === DIGITOS_CPF ? documento : null;
+}
+
+/**
+ * Where the document on the simulated buyer row came from — reported by NAME,
+ * never by its digits.
+ */
+export const FONTE_CPF_SIMULADO = {
+  /** Shopee sent a usable CPF/CNPJ: the real data wins, always. */
+  shopee: 'shopee',
+  /** The operator's own `--cpf-teste`. */
+  cpfTeste: 'cpf-teste',
+  /** {@link CPF_FALSO_DE_TESTE}, the repo's fake. */
+  cpfFalso: 'cpf-falso',
+} as const satisfies Record<string, string>;
+
+export type FonteCpfSimulado = (typeof FONTE_CPF_SIMULADO)[keyof typeof FONTE_CPF_SIMULADO];
+
 /**
  * What the `importar:pedido` CLI's TEST buyer mode asks for (`--importar-cliente`
- * and its three dependents). Nothing else builds one: the importer takes it as
+ * and its four dependents). Nothing else builds one: the importer takes it as
  * an optional dependency, and a test greps that no route, sweep, trigger or
  * notification arm names it.
  */
@@ -425,6 +457,15 @@ export interface SimulacaoCompradorShopee {
   readonly nomeTeste: string | null;
   /** `--cep-teste` (8 digits): replaces ONLY `recipient_address.zipcode`. */
   readonly cepTeste: string | null;
+  /**
+   * `--cpf-teste`, canonical (11 digits, check digits valid — the parser runs
+   * {@link cpfDeTesteUtilizavel}): used INSTEAD of {@link CPF_FALSO_DE_TESTE}
+   * when Shopee sends no usable document. `null` keeps the fake.
+   *
+   * ⚠️ Printed, logged and echoed NOWHERE — only its source
+   * ({@link FONTE_CPF_SIMULADO}) is reported.
+   */
+  readonly cpfTeste: string | null;
   /** `--importar-endereco`: without it the cliente is linked and no endereço is written. */
   readonly importarEndereco: boolean;
 }
@@ -484,26 +525,48 @@ export function exigirRegiaoForaDoBrasilParaSimulacao(regiaoReal: string | null)
 
 /**
  * The row the buyer adapter reads in buyer mode: region `'BR'` (so
- * {@link clienteDeShopee} and {@link avaliarCapturaComprador} run at all),
- * Shopee's own document when it is usable or {@link CPF_FALSO_DE_TESTE}, and the
- * recipient's name and zipcode replaced only when a substitute was given.
+ * {@link clienteDeShopee} and {@link avaliarCapturaComprador} run at all), the
+ * document by precedence — Shopee's own when it is usable (the real data wins),
+ * else `--cpf-teste`, else {@link CPF_FALSO_DE_TESTE} — and the recipient's name
+ * and zipcode replaced only when a substitute was given.
  *
  * ⚠️ The caller keeps the REAL row for everything else: the region it hands
  * {@link enderecoDeShopee} as `paisId`, `bloquearEmissaoNFe` and every fiscal
  * flag. A `null` `recipient_address` stays `null` — no partial address is
  * invented around a substitute name.
+ *
+ * ⚠️ A `cpfTeste` that is not a usable CPF is REFUSED, never replaced by the
+ * fake: the operator asked for that document, and a silent fallback would run
+ * the collision check on a different one. The parser refuses it first; this is
+ * the defence for any other caller.
  */
 export function simularCompradorShopee<T extends DetalheCompradorShopee>(
   linha: T,
   simulacao: SimulacaoCompradorShopee,
 ): {
   readonly linha: T;
+  /** `true` whenever the document is not Shopee's — i.e. {@link fonteDoCpf} is not `shopee`. */
   readonly cpfDeTesteAplicado: boolean;
+  readonly fonteDoCpf: FonteCpfSimulado;
   /** A substitute counts as APPLIED only where there was a block to put it in. */
   readonly nomeTesteAplicado: boolean;
   readonly cepTesteAplicado: boolean;
 } {
+  const cpfTeste = simulacao.cpfTeste === null ? null : cpfDeTesteUtilizavel(simulacao.cpfTeste);
+  if (simulacao.cpfTeste !== null && cpfTeste === null) {
+    // The value is deliberately NOT in the message.
+    throw new SimulacaoCompradorRecusadaError(
+      '--cpf-teste não é um CPF utilizável (11 dígitos, dígitos verificadores válidos). ' +
+        'Nada foi gravado.',
+    );
+  }
   const documentoDaShopee = cpfCnpjUtilizavel(linha.buyer_cpf_id);
+  const fonteDoCpf: FonteCpfSimulado =
+    documentoDaShopee !== null
+      ? FONTE_CPF_SIMULADO.shopee
+      : cpfTeste !== null
+        ? FONTE_CPF_SIMULADO.cpfTeste
+        : FONTE_CPF_SIMULADO.cpfFalso;
   const endereco = linha.recipient_address;
   return {
     nomeTesteAplicado: endereco != null && simulacao.nomeTeste !== null,
@@ -511,7 +574,7 @@ export function simularCompradorShopee<T extends DetalheCompradorShopee>(
     linha: {
       ...linha,
       region: REGIAO_BR,
-      buyer_cpf_id: documentoDaShopee ?? CPF_FALSO_DE_TESTE,
+      buyer_cpf_id: documentoDaShopee ?? cpfTeste ?? CPF_FALSO_DE_TESTE,
       recipient_address:
         endereco == null
           ? null
@@ -521,6 +584,7 @@ export function simularCompradorShopee<T extends DetalheCompradorShopee>(
               zipcode: simulacao.cepTeste ?? endereco.zipcode,
             },
     },
-    cpfDeTesteAplicado: documentoDaShopee === null,
+    cpfDeTesteAplicado: fonteDoCpf !== FONTE_CPF_SIMULADO.shopee,
+    fonteDoCpf,
   };
 }

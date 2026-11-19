@@ -108,6 +108,7 @@ import {
   portoesDoEnderecoShopee,
   simularCompradorShopee,
   type CapturaComprador,
+  type FonteCpfSimulado,
   type PortoesEnderecoShopee,
   type SimulacaoCompradorShopee,
 } from './comprador';
@@ -208,6 +209,8 @@ export interface ResultadoImportacaoPedidoShopee {
   readonly compradorDeTeste?: {
     readonly cliente: ClienteResolvidoShopee | null;
     readonly enderecoOuterRef: string | null;
+    /** Whose document the buyer row carried — a source NAME, never the digits. */
+    readonly fonteDoCpf: FonteCpfSimulado;
   };
 }
 
@@ -524,6 +527,12 @@ export interface SimulacaoAplicadaShopee {
   /** The verdict on the REAL row — what a normal import would have stored. */
   readonly capturaReal: CapturaComprador;
   readonly cpfDeTesteAplicado: boolean;
+  /**
+   * Whose document the buyer row carries — Shopee's usable one, `--cpf-teste`,
+   * or the repo's fake (that precedence). The collision check runs on THAT
+   * document; the reports name the source, never the digits.
+   */
+  readonly fonteDoCpf: FonteCpfSimulado;
   /** The substitute was put into a block — `false` over a `null` `recipient_address`. */
   readonly nomeTesteAplicado: boolean;
   readonly cepTesteAplicado: boolean;
@@ -698,6 +707,7 @@ export async function prepararImportacaoPedidoShopee(
               detalheComprador: simulado.linha,
               capturaReal,
               cpfDeTesteAplicado: simulado.cpfDeTesteAplicado,
+              fonteDoCpf: simulado.fonteDoCpf,
               nomeTesteAplicado: simulado.nomeTesteAplicado,
               cepTesteAplicado: simulado.cepTesteAplicado,
               portoesEndereco:
@@ -1035,6 +1045,7 @@ export async function gravarPreparoPedidoShopee(
           compradorDeTeste: {
             cliente: comprador.clienteResolvido ?? null,
             enderecoOuterRef: comprador.enderecoOuterRef,
+            fonteDoCpf: simulacao.fonteDoCpf,
           },
         }),
   };
