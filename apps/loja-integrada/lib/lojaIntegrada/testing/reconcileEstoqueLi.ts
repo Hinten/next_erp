@@ -8,6 +8,7 @@ import {
   type EntradaSnapshotEstoqueLi,
   INTEGRACAO_TIPO,
   type TarefaFilaEstoqueLi,
+  type TarefaReconcileEstoqueLi,
   baldeSnapshotEstoqueLi,
   makeEstoqueUid,
 } from '@delfrance/schemas';
@@ -109,12 +110,13 @@ export interface EnfileiradoReconcileLi {
 }
 
 /**
- * A reads-queue producer that records, or rejects with `falha` when given. `sonda`, when given, is
- * called at EACH enqueue and its answer kept in `sondados` (same order as `enfileirados`): what
- * the world looked like at that instant — the run document's lease, say.
+ * A reads-queue producer that records, or rejects with what `falha` returns for the task (`null`:
+ * that task goes through — a hand-off failing while the depósito re-run is accepted, say). `sonda`,
+ * when given, is called at EACH recorded enqueue and its answer kept in `sondados` (same order as
+ * `enfileirados`): what the world looked like at that instant — the run document's lease, say.
  */
 export function agendadorGravador(
-  falha?: () => unknown,
+  falha?: (tarefa: TarefaReconcileEstoqueLi) => unknown,
   sonda?: () => unknown,
 ): {
   readonly agendador: AgendadorReconcileEstoqueLi;
@@ -128,7 +130,8 @@ export function agendadorGravador(
     sondados,
     agendador: {
       async enfileirar(tarefa, { atrasoS }) {
-        if (falha !== undefined) throw falha();
+        const erro = falha?.(tarefa) ?? null;
+        if (erro !== null) throw erro;
         enfileirados.push({ execucaoId: tarefa.execucaoId, seq: tarefa.seq, atrasoS });
         if (sonda !== undefined) sondados.push(sonda());
       },

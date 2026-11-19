@@ -41,10 +41,10 @@
  * created during the run excluded — and, after the release, enqueues ONE full run named after the
  * newest conta update time it saw. Worst case: the rest of the running chain plus one full run.
  * The reads queue dispatches one task at a time, so no arm run slips between that listing and the
- * release. Residuals: a chain that ends ABANDONED (the queue's attempts spent, or a crash that
- * leaves its lease to expire) asks only for what its queue phase recorded, and a change undone
- * before the release that the queue phase never saw asks for nothing — each waits for the next
- * nightly run.
+ * release. Residuals: a chain RELEASED on the queue's last attempt asks only for what its queue
+ * phase recorded, one a crash leaves to its lease's expiry asks for nothing, and a change undone
+ * before the release that the queue phase never saw asks for nothing — what is not asked for waits
+ * for the next nightly run.
  *
  * Sends already enqueued are covered by the payload: every reconcile send carries its run's
  * depósito, and the send run drops one whose conta now names another (`processarEstoque.ts`, step

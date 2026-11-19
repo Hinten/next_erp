@@ -376,12 +376,28 @@ enqueued by hand start the same run. What an operator needs:
   more — an active conta whose depósito is not the one it fixed, or an active
   conta it did not take that now has one (never a conta CREATED during the run) —
   and enqueues ONE full run named `estoque-reconcile-redeposito-<µs>` after the
-  release. Worst case: the rest of the running chain plus one full run. A chain
-  that ends abandoned (`tentativas-esgotadas`, or a crash that leaves the lease to
-  expire) asks for nothing, and the change waits for the next nightly run. Every
-  reconcile send carries its run's depósito: one whose conta now names another is
-  dropped by the send run (one WARNING `deposito-mudou`), after one read of the
-  conta past its 15-minute cache.
+  release. Worst case: the rest of the running chain plus one full run. An
+  abandoned chain that is RELEASED on its last attempt (`tentativas-esgotadas`,
+  `falha-nao-retentavel`) asks only for the re-run its queue phase recorded; a
+  crash that leaves the lease to expire asks for nothing; a change the queue phase
+  never saw waits for the next nightly run. So before enqueuing a run by hand
+  after one of those ERROR lines, look for the `estoque-reconcile-redeposito-<µs>`
+  run it may already have asked for. Every reconcile send carries its run's
+  depósito: one whose conta now names another is dropped by the send run (one
+  WARNING `deposito-mudou`), after one read of the conta past its 15-minute
+  cache.
+- **`recusa-da-loja`** (ONE ERROR for a conta): the store refuses that conta's
+  stock read — a 3xx or 4xx other than 401, 403 and 429 on its stock list (a 404
+  included), the same but a 404 on the detail read of a linked child the list
+  never showed (there a 404 means "no row"), or a request the package refused to
+  send (`LiConfigError`, say a stored token it cannot send). That conta's list or
+  confirmations stay incomplete that night (its `sem-linha-na-loja` aviso stays
+  unresolved) and the chain goes on to the next conta. The line names the class,
+  the status and the operation: check that conta's credential and configuration.
+  It repeats every night until fixed.
+- **`falha-nao-retentavel`** (ONE ERROR): a coding bug on the queue's last
+  attempt. The lease is released first, so the next run is not refused for an
+  hour, and the error is rethrown (the runtime logs it too). It needs a code fix.
 - **The backlog horizon**: a send that only RAISES a store's number is enqueued
   only while its slot instant is within 12 h; the rest wait for the next night
   (counted `adiadosHorizonte` on the run document). Over-advertising sends always

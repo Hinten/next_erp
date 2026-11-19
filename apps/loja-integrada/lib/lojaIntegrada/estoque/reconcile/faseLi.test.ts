@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
 import { TASK_MAX_ATTEMPTS } from '@delfrance/data/admin/notifications';
+import { LiConfigError } from '@delfrance/integrations-loja-integrada';
 import {
   type EntradaSnapshotEstoqueLi,
   FLAG_ENTRADA_ESTOQUE_LI,
@@ -889,11 +890,61 @@ describe('the failures, each narrowed to its class', () => {
       expect(await m.correr()).toEqual([{ tipo: 'conta-encerrada' }]);
       expect(m.contadores).toEqual({ c0RecusasDaLoja: 1 });
       expect(
-        m.log.linhas.map((l) => [l.nivel, l.meta.motivo, l.meta.classe, l.meta.status]),
-      ).toEqual([['error', 'recusa-da-loja', classe, status]]);
+        m.log.linhas.map((l) => [
+          l.nivel,
+          l.meta.motivo,
+          l.meta.classe,
+          l.meta.status,
+          l.meta.operacao,
+        ]),
+      ).toEqual([['error', 'recusa-da-loja', classe, status, 'lerPaginaEstoque']]);
       expect(listas(p)).toHaveLength(1);
     },
   );
+
+  it('⚠️ a LiConfigError on the LIST (the package refused to send the request) is a deterministic refusal too: the conta ENDS on the first attempt, one ERROR naming the class — never a rethrow', async () => {
+    const { db, p } = doisNaLista();
+    p.fila.push(
+      naProxima(
+        CAMINHO_LISTA_ESTOQUE_LI,
+        'GET',
+        () => new LiConfigError('token', { operacao: 'lerPaginaEstoque', refCredencial: null }),
+      ),
+    );
+    const m = montar(db, p, { tentativa: 0 });
+    expect(await m.correr()).toEqual([{ tipo: 'conta-encerrada' }]);
+    expect(m.contadores).toEqual({ c0RecusasDaLoja: 1 });
+    expect(
+      m.log.linhas.map((l) => [
+        l.nivel,
+        l.meta.motivo,
+        l.meta.classe,
+        l.meta.status,
+        l.meta.operacao,
+      ]),
+    ).toEqual([['error', 'recusa-da-loja', 'LiConfigError', null, 'lerPaginaEstoque']]);
+    expect(listas(p)).toHaveLength(1);
+  });
+
+  it('⚠️ a 400 on a confirmation’s DETAIL GET ends the conta too (its operation named), and the refused id is NEVER settled: no sem-linha-na-loja, no full confirmation — the aviso stays unresolved', async () => {
+    const { db, p } = cenario({ entradas: { '301': v('a', 1), '302': v('b', 1) }, linhas: [] });
+    p.fila.push(
+      naProxima(`${CAMINHO_LISTA_ESTOQUE_LI}/301`, 'GET', () => respostaJson(400, undefined)),
+    );
+    const m = montar(db, p, { tentativa: 0 });
+    const passos = await m.correr();
+    expect(passos.at(-1)).toEqual({ tipo: 'conta-encerrada' });
+    expect(detalhes(p)).toEqual([`GET ${CAMINHO_LISTA_ESTOQUE_LI}/301`]);
+    expect(m.contadores).toMatchObject({ c0RecusasDaLoja: 1, c0ListaCompleta: 1 });
+    expect(m.doConta('verificacaoFeita')).toBe(0);
+    expect(m.doConta('semLinhaNaLoja')).toBe(0);
+    expect(m.estado().visto('301')).toBe(false);
+    expect(
+      m.log.linhas
+        .filter((l) => l.nivel === 'error')
+        .map((l) => [l.meta.motivo, l.meta.status, l.meta.operacao]),
+    ).toEqual([['recusa-da-loja', 400, 'buscarEstoqueProduto']]);
+  });
 
   it('⚠️ NEAR-MISS: a coding bug inside a unit is still rethrown as-is', async () => {
     const { db, p } = doisNaLista();

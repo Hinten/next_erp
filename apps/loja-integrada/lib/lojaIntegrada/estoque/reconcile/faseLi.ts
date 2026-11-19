@@ -106,13 +106,16 @@
  *    the slice writes what it completed, then rethrows the ORIGINAL error and the queue retries the
  *    slice at the cursor. On the queue's LAST attempt the conta is ended instead (one ERROR,
  *    counted, its walk incomplete) and the chain goes on with the next one.
- *  - **A deterministic refusal of the conta's request** — a 404 on the LIST, another 3xx/4xx, a
+ *  - **A deterministic refusal of the conta's request** — a 404 on the LIST, another 3xx/4xx on
+ *    the list or on a confirmation's detail GET (a detail 404 is "no row", above), a
  *    `LiConfigError` (the package refused the request before sending it: a stored token it cannot
- *    send, say) ⇒ the conta is ENDED on EVERY attempt, its list incomplete: one ERROR
- *    `recusa-da-loja` (the class and the status only), counted `recusasDaLoja`, and the chain goes
- *    on with the next conta. A retry would meet the same answer, and ONE chain serves every conta:
- *    rethrown, one conta's refusal would stop every conta after it — the queue and end phases too —
- *    every night.
+ *    send, say) ⇒ the conta is ENDED on EVERY attempt, its list or its confirmations incomplete:
+ *    one ERROR `recusa-da-loja` (the class, the status and the package's operation name only),
+ *    counted `recusasDaLoja`, and the chain goes on with the next conta. A retry would meet the
+ *    same answer, and ONE chain serves every conta: rethrown, one conta's refusal would stop every
+ *    conta after it — the queue and end phases too — every night. A refused detail GET is never
+ *    settled as seen: that would let `sem-linha-na-loja` resolve on a row nobody read, so the
+ *    conta's confirmation stays incomplete (conservative) until the store answers.
  *  - **Anything else** — a coding bug — is rethrown as-is, on every attempt (on the queue's last
  *    one the slice releases the lease first, `despachoReconcile.ts`).
  *
@@ -889,6 +892,8 @@ export class FaseLiReconcileLi {
       motivo: 'recusa-da-loja',
       classe: classeDaFalhaLi(err),
       status: err instanceof LiHttpError ? err.status : null,
+      // The package's operation name (the list or a confirmation's detail), never a value.
+      operacao: err.operacao,
     });
     return { tipo: 'conta-encerrada' };
   }

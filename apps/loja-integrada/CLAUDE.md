@@ -1089,11 +1089,13 @@ the store's stock list (`li`), the sends (`fila`), the avisos (`fim`).
   5xx, the deadline, the network, a malformed envelope, a paging stop, Firestore ⇒ a progress
   checkpoint at the SAME seq, then the original error rethrown (the retry resumes at the failed
   page) — on the queue's last attempt that conta is ended instead (one ERROR) and the chain goes
-  on; a DETERMINISTIC refusal of the conta's request (a 404 or another 3xx/4xx on the list, a
-  `LiConfigError`) ends that conta on EVERY attempt (one ERROR `recusa-da-loja`, counted) — ONE
-  chain serves every conta, so a rethrow would stop every conta after it, every night; a coding bug
-  stays loud. The candidates live in the run document under a
-  600 000-byte budget (one per conta and store id; when full, the lowest `d` goes first).
+  on; a DETERMINISTIC refusal of the conta's request (a 404 or another 3xx/4xx on the list, another
+  3xx/4xx on a confirmation's detail GET, a `LiConfigError`) ends that conta on EVERY attempt (one
+  ERROR `recusa-da-loja` naming the `operacao`, counted) — ONE chain serves every conta, so a
+  rethrow would stop every conta after it, every night; a refused detail id is never settled, so
+  `sem-linha-na-loja` stays unresolved (conservative); a coding bug stays loud. The candidates live
+  in the run document under a 600 000-byte budget (one per conta and store id; when full, the
+  lowest `d` goes first).
 - **The safety gate** (once, at the queue phase's start, in EVERY valve mode): a conta whose
   `zeroPorDeposito × 100 > 5 × avaliados` — more than 5% of its evaluated children have a record
   elsewhere and none at its depósito, which would push 0 everywhere — gets NONE of its candidates
@@ -1139,17 +1141,22 @@ the store's stock list (`li`), the sends (`fila`), the avisos (`fim`).
   named first slice (`estoque-reconcile-deposito-<µs of the write>`), zero reads, no read-switch
   check (that is how the ERP side runs before the window). Never on a create, a spelling change, a
   removal, an inactive conta. A run holding the lease refuses it; the running chain catches the
-  change itself (above): worst case the rest of that chain plus one full run. A chain that ends
-  abandoned asks only for what its counter holds, and the change otherwise waits for the next night.
+  change itself (above): worst case the rest of that chain plus one full run. A chain released on
+  its last attempt asks only for what its counter holds, one a crash leaves to its lease's expiry
+  asks for nothing, and the change otherwise waits for the next night.
   Sends already queued are bound to their run's depósito: the send run drops one whose conta names
   another (`deposito-mudou`), after one read past the conta cache; within that cache's 15 minutes a
   re-point a warm instance has not seen still sends at the old depósito (every send run's staleness).
-- **Last attempt**: a retryable failure (Firestore, Cloud Tasks, the concurrency error) releases the
-  lease with ONE ERROR `tentativas-esgotadas`, or hands off when the run is already one seq ahead
-  (with our delay when the stored document holds OUR end patch), or asks again for the re-run when
-  our release already landed; coding bugs stay loud — rethrown — but release the lease first with
-  ONE ERROR `falha-nao-retentavel` (the class only), so no deterministic failure holds it for an
-  hour. Every last-attempt release asks for the re-run its counter names.
+- **Last attempt** (a slice, its take, the `continuacao` repair): a retryable failure (Firestore,
+  Cloud Tasks, the concurrency error) releases the lease with ONE ERROR `tentativas-esgotadas`, or
+  hands off when the run is already one seq ahead (with our delay when the stored document holds
+  OUR end patch; that hand-off or the repair's failing transiently releases), or asks again for the
+  re-run when our release already landed; a take that landed behind its error is released, then
+  rethrown; coding bugs stay loud — rethrown — but release the lease first with ONE ERROR
+  `falha-nao-retentavel` (the class only), so no deterministic failure holds it for an hour. Only a
+  release that LANDED logs its ERROR and asks for the re-run its counter names; another dispatch
+  holding the run ⇒ nothing released, logged or asked. A Firestore failure of the release leaves
+  the lease to expire.
 - **Amendments to the 12-a contracts** (in `packages/schemas`): the root's `execucao`, a kit entry's
   `q`/`e`, the walk's `concluida`; the write protocol (every per-conta write rides the run
   document's batch and precondition — a root under its own read, a kits header or shard `set` or

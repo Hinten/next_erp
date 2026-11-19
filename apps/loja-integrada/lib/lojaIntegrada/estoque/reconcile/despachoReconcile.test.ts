@@ -7,7 +7,11 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { TASK_MAX_ATTEMPTS } from '@delfrance/data/admin/notifications';
-import { FLAG_ENTRADA_ESTOQUE_LI, TIPO_TAREFA_RECONCILE_ESTOQUE_LI } from '@delfrance/schemas';
+import {
+  FLAG_ENTRADA_ESTOQUE_LI,
+  TIPO_TAREFA_RECONCILE_ESTOQUE_LI,
+  type TarefaReconcileEstoqueLi,
+} from '@delfrance/schemas';
 
 import { FakeDb, asDb, grpc, increment } from '../../testing/fakeDb';
 import {
@@ -24,6 +28,7 @@ import {
   seedRegistro,
 } from '../../testing/reconcileEstoqueLi';
 import { LiTarefasDesligadasError, LiTarefasTransitoriasError } from './agendadorReconcile';
+import { CONTADOR_DEPOSITO_MUDOU_LI, idExecucaoRedepositoLi } from './contasReconcile';
 import {
   LEASE_RECONCILE_ESTOQUE_LI_MS,
   LiReconcileEstoqueAdiadoError,
@@ -47,10 +52,17 @@ const tarefa = (seq: number, execucaoId = RUN_A) => ({
   seq,
 });
 
-/** One slice's world: a clock the test moves, the recording producer and logger. */
-function mundo(over: Partial<DepsReconcileEstoqueLi> = {}, falha?: () => unknown) {
+/**
+ * One slice's world: a clock the test moves, the recording producer (failing a task when `falha`
+ * returns an error for it; `sonda` called at each recorded enqueue) and logger.
+ */
+function mundo(
+  over: Partial<DepsReconcileEstoqueLi> = {},
+  falha?: (t: TarefaReconcileEstoqueLi) => unknown,
+  sonda?: () => unknown,
+) {
   const relogio = { agora: AGORA_RECONCILE_MS };
-  const fila = agendadorGravador(falha);
+  const fila = agendadorGravador(falha, sonda);
   const estoque = filaEstoqueGravadora();
   const log = loggerGravador();
   const deps = (extra: Partial<DepsReconcileEstoqueLi> = {}): DepsReconcileEstoqueLi => ({
@@ -568,5 +580,210 @@ describe('the queue’s LAST attempt', () => {
     expect(r).toEqual({ kind: 'continua', fase: 'erp', seq: 1 });
     expect(m.fila.enfileirados).toEqual([{ execucaoId: RUN_A, seq: 1, atrasoS: 2 }]);
     expect(db.ler(RUN_PATH)).toMatchObject({ seq: 1 });
+  });
+});
+
+/** µs of a conta write the queue phase recorded (a re-pointed depósito): the re-run's name. */
+const VERSAO_DEPOSITO_US = 1_800_000_000_000_001;
+const REDEPOSITO = {
+  execucaoId: idExecucaoRedepositoLi(VERSAO_DEPOSITO_US),
+  seq: 0,
+  atrasoS: 0,
+};
+const ULTIMA = TASK_MAX_ATTEMPTS - 1;
+/** Cloud Tasks failing transiently for the chain's own hand-offs only (the re-run goes through). */
+const passagemFalha = (t: TarefaReconcileEstoqueLi) =>
+  t.execucaoId === RUN_A
+    ? new LiTarefasTransitoriasError('FirebaseFunctionsError', 'unknown-error', 503)
+    : null;
+
+describe('the queue’s LAST attempt — a release logs its ERROR and asks for the depósito re-run only once it LANDED', () => {
+  /**
+   * RUN_A at seq 1 with the lease held, the queue phase's record of a re-pointed depósito in its
+   * counters (a later slice of a run whose earlier one dropped that conta).
+   */
+  async function emSeq1ComRevisao(db: FakeDb): Promise<void> {
+    semearCatalogo(db);
+    const m = mundo();
+    expect(
+      await despacharReconcileEstoqueLi(
+        asDb(db),
+        tarefa(0),
+        m.deps({ inicioMs: m.relogio.agora - 50_001 }),
+      ),
+    ).toEqual({ kind: 'continua', fase: 'erp', seq: 1 });
+    db.seed(RUN_PATH, {
+      ...db.ler(RUN_PATH),
+      contadores: { [CONTADOR_DEPOSITO_MUDOU_LI]: VERSAO_DEPOSITO_US },
+    });
+  }
+  /** The lease at each recorded enqueue. */
+  const sondaLease = (db: FakeDb) => () => db.ler(RUN_PATH)?.emExecucaoAteMs;
+  const erros = (m: ReturnType<typeof mundo>) =>
+    m.log.linhas
+      .filter((l) => l.nivel === 'error')
+      .map((l) => [l.meta.motivo, l.meta.classe ?? null, l.meta.seq]);
+
+  it('⚠️ a retryable failure (gRPC 14): released with ONE ERROR tentativas-esgotadas, THEN exactly one re-run — enqueued with the lease already 0', async () => {
+    const db = new FakeDb();
+    await emSeq1ComRevisao(db);
+    db.falharConsulta('produtolojaintegrada', grpc(14, 'UNAVAILABLE'));
+    const m = mundo({ tentativa: ULTIMA }, undefined, sondaLease(db));
+    expect(await despacharReconcileEstoqueLi(asDb(db), tarefa(1), m.deps())).toEqual({
+      kind: 'tentativas-esgotadas',
+    });
+    expect(db.ler(RUN_PATH)).toMatchObject({ seq: 2, emExecucaoAteMs: 0 });
+    expect(m.fila.enfileirados).toEqual([REDEPOSITO]);
+    expect(m.fila.sondados).toEqual([0]);
+    expect(erros(m)).toEqual([['tentativas-esgotadas', null, 1]]);
+  });
+
+  it('⚠️ a coding bug (TypeError): released with ONE ERROR falha-nao-retentavel and rethrown, THEN exactly one re-run — enqueued with the lease already 0', async () => {
+    const db = new FakeDb();
+    await emSeq1ComRevisao(db);
+    db.falharConsulta('produtolojaintegrada', new TypeError('bug'));
+    const m = mundo({ tentativa: ULTIMA }, undefined, sondaLease(db));
+    await expect(despacharReconcileEstoqueLi(asDb(db), tarefa(1), m.deps())).rejects.toBeInstanceOf(
+      TypeError,
+    );
+    expect(db.ler(RUN_PATH)).toMatchObject({ seq: 2, emExecucaoAteMs: 0 });
+    expect(m.fila.enfileirados).toEqual([REDEPOSITO]);
+    expect(m.fila.sondados).toEqual([0]);
+    expect(erros(m)).toEqual([['falha-nao-retentavel', 'TypeError', 1]]);
+  });
+
+  it('⚠️ our end patch LANDED and BOTH hand-offs fail transiently: the run one seq ahead is released (ONE ERROR), THEN exactly one re-run', async () => {
+    const db = new FakeDb();
+    await emSeq1ComRevisao(db);
+    const m = mundo({ tentativa: ULTIMA }, passagemFalha, sondaLease(db));
+    expect(
+      await despacharReconcileEstoqueLi(
+        asDb(db),
+        tarefa(1),
+        m.deps({ inicioMs: m.relogio.agora - 50_001 }),
+      ),
+    ).toEqual({ kind: 'tentativas-esgotadas' });
+    expect(db.ler(RUN_PATH)).toMatchObject({ seq: 3, emExecucaoAteMs: 0 });
+    expect(m.fila.enfileirados).toEqual([REDEPOSITO]);
+    expect(m.fila.sondados).toEqual([0]);
+    expect(erros(m)).toEqual([['tentativas-esgotadas', null, 2]]);
+  });
+
+  it('⚠️ another dispatch wins the release (parar): NOTHING released, no ERROR, no re-run — for a retryable failure (parado) and for a coding bug (rethrown)', async () => {
+    for (const falha of [grpc(14, 'UNAVAILABLE'), new TypeError('bug')]) {
+      const db = new FakeDb();
+      await emSeq1ComRevisao(db);
+      db.falharConsulta('produtolojaintegrada', falha);
+      // The other dispatch of this slice lands its end checkpoint between our read and our release.
+      db.antesDaProximaEscrita(RUN_PATH, async () => {
+        await refRunReconcileLi(asDb(db)).update(
+          { seq: 2, emExecucaoAteMs: AGORA_RECONCILE_MS + 2 * LEASE_RECONCILE_ESTOQUE_LI_MS },
+          { lastUpdateTime: db.carimboDe(RUN_PATH) as never },
+        );
+      });
+      const m = mundo({ tentativa: ULTIMA });
+      const r = despacharReconcileEstoqueLi(asDb(db), tarefa(1), m.deps());
+      if (falha instanceof TypeError) await expect(r).rejects.toBe(falha);
+      else expect(await r).toEqual({ kind: 'parado' });
+      expect(db.ler(RUN_PATH)).toMatchObject({
+        seq: 2,
+        emExecucaoAteMs: AGORA_RECONCILE_MS + 2 * LEASE_RECONCILE_ESTOQUE_LI_MS,
+      });
+      expect(m.fila.enfileirados).toEqual([]);
+      expect(erros(m)).toEqual([]);
+    }
+  });
+
+  it('⚠️ the REPAIR’s hand-off failing transiently on the last attempt releases the stored seq (ONE ERROR, then one re-run); NEAR-MISS: before it, rethrown and nothing released', async () => {
+    const db = new FakeDb();
+    await emSeq1ComRevisao(db);
+    // Attempt 0: the end checkpoint lands (seq 2), the hand-off fails and is rethrown.
+    const m0 = mundo({}, passagemFalha);
+    await expect(
+      despacharReconcileEstoqueLi(
+        asDb(db),
+        tarefa(1),
+        m0.deps({ inicioMs: m0.relogio.agora - 50_001 }),
+      ),
+    ).rejects.toBeInstanceOf(LiTarefasTransitoriasError);
+    const lease = db.ler(RUN_PATH)?.emExecucaoAteMs;
+    expect(lease).toBeGreaterThan(AGORA_RECONCILE_MS);
+    expect(db.ler(RUN_PATH)).toMatchObject({ seq: 2 });
+    // NEAR-MISS: a middle attempt's repair rethrows.
+    const m1 = mundo({ tentativa: ULTIMA - 1 }, passagemFalha);
+    await expect(
+      despacharReconcileEstoqueLi(asDb(db), tarefa(1), m1.deps()),
+    ).rejects.toBeInstanceOf(LiTarefasTransitoriasError);
+    expect(db.ler(RUN_PATH)).toMatchObject({ seq: 2, emExecucaoAteMs: lease });
+    expect(erros(m1)).toEqual([]);
+    // The last attempt's repair releases.
+    const m = mundo({ tentativa: ULTIMA }, passagemFalha, sondaLease(db));
+    expect(await despacharReconcileEstoqueLi(asDb(db), tarefa(1), m.deps())).toEqual({
+      kind: 'tentativas-esgotadas',
+    });
+    expect(db.ler(RUN_PATH)).toMatchObject({ seq: 3, emExecucaoAteMs: 0 });
+    expect(m.fila.enfileirados).toEqual([REDEPOSITO]);
+    expect(m.fila.sondados).toEqual([0]);
+    expect(erros(m)).toEqual([['tentativas-esgotadas', null, 2]]);
+  });
+
+  it('⚠️ the REPAIR meeting a coding bug on the last attempt releases the stored seq first (ONE ERROR falha-nao-retentavel), then rethrows', async () => {
+    const db = new FakeDb();
+    await emSeq1ComRevisao(db);
+    await expect(
+      despacharReconcileEstoqueLi(
+        asDb(db),
+        tarefa(1),
+        mundo({}, passagemFalha).deps({ inicioMs: AGORA_RECONCILE_MS - 50_001 }),
+      ),
+    ).rejects.toBeInstanceOf(LiTarefasTransitoriasError);
+    const bug = new TypeError('bug');
+    const m = mundo(
+      { tentativa: ULTIMA },
+      (t) => (t.execucaoId === RUN_A ? bug : null),
+      sondaLease(db),
+    );
+    await expect(despacharReconcileEstoqueLi(asDb(db), tarefa(1), m.deps())).rejects.toBe(bug);
+    expect(db.ler(RUN_PATH)).toMatchObject({ seq: 3, emExecucaoAteMs: 0 });
+    expect(m.fila.enfileirados).toEqual([REDEPOSITO]);
+    expect(m.fila.sondados).toEqual([0]);
+    expect(erros(m)).toEqual([['falha-nao-retentavel', 'TypeError', 2]]);
+  });
+
+  it('⚠️ a TAKE that lands behind a DEADLINE_EXCEEDED on the last attempt is released before the rethrow (ONE ERROR); NEAR-MISS: before it, the lease stays for the retry', async () => {
+    for (const ultima of [false, true]) {
+      const db = new FakeDb();
+      semearCatalogo(db);
+      // A released earlier run, so the take is a guarded update.
+      db.seed(RUN_PATH, {
+        execucaoId: RUN_B,
+        iniciadoEmMs: AGORA_RECONCILE_MS - 86_400_000,
+        emExecucaoAteMs: 0,
+        seq: 9,
+        fase: 'fim',
+        contas: [],
+      });
+      db.respostaPerdidaNaProximaEscrita(RUN_PATH, grpc(4, 'DEADLINE_EXCEEDED'));
+      const m = mundo({ tentativa: ultima ? ULTIMA : ULTIMA - 1 });
+      await expect(
+        despacharReconcileEstoqueLi(asDb(db), tarefa(0), m.deps()),
+      ).rejects.toMatchObject({ code: 4 });
+      if (!ultima) {
+        expect(db.ler(RUN_PATH)).toMatchObject({
+          execucaoId: RUN_A,
+          seq: 0,
+          emExecucaoAteMs: AGORA_RECONCILE_MS + LEASE_RECONCILE_ESTOQUE_LI_MS,
+        });
+        expect(erros(m)).toEqual([]);
+        continue;
+      }
+      expect(db.ler(RUN_PATH)).toMatchObject({ execucaoId: RUN_A, seq: 1, emExecucaoAteMs: 0 });
+      expect(erros(m)).toEqual([['tentativas-esgotadas', 'Error', 0]]);
+      // The next run takes the free lease at once.
+      m.relogio.agora += 120_000;
+      expect(
+        (await despacharReconcileEstoqueLi(asDb(db), tarefa(0, RUN_B), m.deps())).kind,
+      ).not.toBe('ocupado');
+    }
   });
 });

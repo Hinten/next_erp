@@ -67,11 +67,19 @@
  *    run still at this `seq` is released with ONE ERROR `tentativas-esgotadas` (the next night
  *    starts over: no store phase ever runs on a half-built snapshot); a run ONE `seq` ahead is
  *    handed off — with this slice's own delay when the stored document holds ITS end-of-slice
- *    patch, else as a courtesy at the conservative 60 s; a run this slice already RELEASED asks
- *    again for its depósito re-run. Coding bugs stay loud on every attempt — rethrown, never
- *    swallowed — but on the LAST attempt the lease is released first with ONE ERROR
- *    `falha-nao-retentavel` (the error's class only), so one deterministic failure never holds
- *    the lease for an hour and refuses every run in it.
+ *    patch, else as a courtesy at the conservative 60 s (that hand-off failing transiently releases
+ *    it, ONE ERROR `tentativas-esgotadas`); a run this slice already RELEASED asks again for its
+ *    depósito re-run. Coding bugs stay loud on every attempt — rethrown, never swallowed — but
+ *    on the LAST attempt the lease is released first with ONE ERROR `falha-nao-retentavel` (the
+ *    error's class only), so one deterministic failure never holds the lease for an hour and
+ *    refuses every run in it.
+ *  - The same last-attempt rule covers the two failures outside the slice: the `continuacao`
+ *    repair's hand-off (a transient Cloud Tasks failure releases the stored `seq` with ONE ERROR
+ *    `tentativas-esgotadas`, from a fresh read; a coding bug releases it, then is rethrown) and a
+ *    take that LANDED behind its error (released with ONE ERROR, then the error rethrown).
+ *    Every last-attempt release logs its ERROR, and asks for the depósito re-run its counter
+ *    names, only once it LANDED; another dispatch holding the run ⇒ nothing released, logged or
+ *    asked (`parado`). A Firestore failure of the release itself leaves the lease to its expiry.
  *
  * Every line carries ids and counts only. ⚠️ Never name the Admin SDK's multi-document
  * read-and-write call here — not even in a comment (`estrutura.test.ts`).
@@ -124,6 +132,7 @@ import {
   LiReconcileEstoqueConcorrenteError,
   MAX_ESCRITAS_LOTE_RECONCILE_LI,
   type RaizParaAssumirLi,
+  type ResultadoAssumirLi,
   type RunLidoLi,
   assumirLeaseReconcileLi,
   decidirSliceReconcileLi,
@@ -322,7 +331,12 @@ export async function despacharReconcileEstoqueLi(
       case 'adiar':
         throw new LiReconcileEstoqueAdiadoError(tarefa.execucaoId);
       case 'continuacao':
-        return repararContinuacao(db, tarefa, lido, decisao.seq, deps);
+        try {
+          return await repararContinuacao(db, tarefa, lido, decisao.seq, deps);
+        } catch (err) {
+          if (deps.tentativa < TASK_MAX_ATTEMPTS - 1) throw err;
+          return repararNaUltimaTentativaLi(db, tarefa, decisao.seq, err, deps);
+        }
       case 'revisao':
         await pedirRevisaoDeDepositoLi(
           lido.run?.contadores[CONTADOR_DEPOSITO_MUDOU_LI] ?? 0,
@@ -351,12 +365,21 @@ export async function despacharReconcileEstoqueLi(
           else deps.logger.warn(linha, meta);
         }
         const raizes = await contasDoRunLi(db, deps, tarefa.execucaoId);
-        const tomada = await assumirLeaseReconcileLi(db, {
-          lido,
-          tarefa,
-          agoraMs: deps.agoraMs(),
-          raizes,
-        });
+        let tomada: ResultadoAssumirLi;
+        try {
+          tomada = await assumirLeaseReconcileLi(db, {
+            lido,
+            tarefa,
+            agoraMs: deps.agoraMs(),
+            raizes,
+          });
+        } catch (err) {
+          // A take that LANDED behind its error holds the lease with no slice running.
+          if (deps.tentativa >= TASK_MAX_ATTEMPTS - 1) {
+            await liberarAntesDeFalharLi(db, tarefa, err, deps);
+          }
+          throw err;
+        }
         if (tomada.tipo === 'perdido') {
           tomadas += 1;
           if (tomadas >= MAX_TENTATIVAS_ASSUMIR_LI) {
@@ -394,49 +417,119 @@ export async function despacharReconcileEstoqueLi(
 }
 
 /**
- * The queue's LAST attempt failed with an error no retry could change (module header,
- * "Failures"): a run still at this slice's `seq` with the lease held is released with ONE ERROR,
- * the error's class only, and asks for its depósito re-run. The caller rethrows the ORIGINAL error
- * whatever happens here; a Firestore failure of this release, or another writer winning it, is
- * left to the lease's expiry.
+ * The queue's LAST attempt is about to rethrow `err` (module header, "Failures"): a run still at
+ * `seq` (this task's, unless the repair's) with the lease held is released first, from a FRESH
+ * read — ONE ERROR with the error's class only, `falha-nao-retentavel` for a coding bug,
+ * `tentativas-esgotadas` for a take a retry could have changed. The caller rethrows the ORIGINAL
+ * error whatever happens here; a Firestore failure of this release is left to the lease's expiry.
  */
 async function liberarAntesDeFalharLi(
   db: Firestore,
   tarefa: TarefaReconcileEstoqueLi,
   err: unknown,
   deps: DepsReconcileEstoqueLi,
+  seq = tarefa.seq,
 ): Promise<void> {
   try {
-    const relido = await lerRunReconcileLi(db);
-    const run = relido.run;
-    if (
-      run === null ||
-      relido.versao === null ||
-      run.execucaoId !== tarefa.execucaoId ||
-      run.seq !== tarefa.seq ||
-      run.emExecucaoAteMs === 0
-    ) {
-      return;
-    }
-    deps.logger.error(`${TAG} falha na última tentativa — a execução solta a vez`, {
-      execucaoId: tarefa.execucaoId,
-      seq: tarefa.seq,
-      fase: run.fase,
-      motivo: 'falha-nao-retentavel',
-      classe: classeDoErroLi(err),
-    });
-    const estado: EstadoEscritaReconcileLi = {
-      execucaoId: tarefa.execucaoId,
-      seq: run.seq,
-      versaoRun: relido.versao,
-      runEsperado: relido.dados,
-    };
-    await liberar(db, estado, run.seq);
-    await pedirRevisaoDeDepositoLi(run.contadores[CONTADOR_DEPOSITO_MUDOU_LI] ?? 0, tarefa, deps);
+    await soltarNaUltimaTentativaLi(
+      db,
+      tarefa,
+      await lerRunReconcileLi(db),
+      seq,
+      deps,
+      'falha na última tentativa — a execução soltou a vez',
+      {
+        motivo: retentavel(err) ? 'tentativas-esgotadas' : 'falha-nao-retentavel',
+        classe: classeDoErroLi(err),
+      },
+    );
   } catch (falha) {
     if (isGrpcStatusError(falha) || falha instanceof LiReconcileEstoqueConcorrenteError) return;
     throw falha;
   }
+}
+
+/**
+ * A release on the queue's LAST attempt (module header, "Failures"), of `relido`'s run when it is
+ * still this task's at `seq` with the lease held. Only once the release LANDED: ONE ERROR (`linha`,
+ * `meta`), then the depósito re-run its counter names — after, so the re-run's first slice never
+ * meets this lease. `false` when the run is not this task's at `seq`, or another dispatch won the
+ * release (`parar`): nothing released, logged or asked.
+ */
+async function soltarNaUltimaTentativaLi(
+  db: Firestore,
+  tarefa: TarefaReconcileEstoqueLi,
+  relido: RunLidoLi,
+  seq: number,
+  deps: DepsReconcileEstoqueLi,
+  linha: string,
+  meta: Readonly<Record<string, unknown>>,
+): Promise<boolean> {
+  const run = relido.run;
+  if (
+    run === null ||
+    relido.versao === null ||
+    run.execucaoId !== tarefa.execucaoId ||
+    run.seq !== seq ||
+    run.emExecucaoAteMs === 0
+  ) {
+    return false;
+  }
+  const estado: EstadoEscritaReconcileLi = {
+    execucaoId: tarefa.execucaoId,
+    seq,
+    versaoRun: relido.versao,
+    runEsperado: relido.dados,
+  };
+  if (!(await liberar(db, estado, seq))) return false;
+  deps.logger.error(`${TAG} ${linha}`, {
+    execucaoId: tarefa.execucaoId,
+    seq,
+    fase: run.fase,
+    ...meta,
+  });
+  await pedirRevisaoDeDepositoLi(run.contadores[CONTADOR_DEPOSITO_MUDOU_LI] ?? 0, tarefa, deps);
+  return true;
+}
+
+/** A hand-off of the run at `seq` failed transiently on the queue's LAST attempt: released. */
+async function soltarAposPassagemLi(
+  db: Firestore,
+  tarefa: TarefaReconcileEstoqueLi,
+  relido: RunLidoLi,
+  seq: number,
+  deps: DepsReconcileEstoqueLi,
+): Promise<ResultadoReconcileLi> {
+  const solto = await soltarNaUltimaTentativaLi(
+    db,
+    tarefa,
+    relido,
+    seq,
+    deps,
+    'tentativas esgotadas na passagem — a execução soltou a vez',
+    { motivo: 'tentativas-esgotadas' },
+  );
+  return { kind: solto ? 'tentativas-esgotadas' : 'parado' };
+}
+
+/**
+ * The repair's hand-off of the stored `seq` (this task's + 1) failed on the queue's LAST attempt
+ * (module header, "Failures"): a transient Cloud Tasks failure releases the run, from a FRESH
+ * read; a coding bug releases it too and is rethrown; anything else (a Firestore failure of the
+ * closed valve's own release) is rethrown, the lease left to its expiry.
+ */
+async function repararNaUltimaTentativaLi(
+  db: Firestore,
+  tarefa: TarefaReconcileEstoqueLi,
+  seq: number,
+  err: unknown,
+  deps: DepsReconcileEstoqueLi,
+): Promise<ResultadoReconcileLi> {
+  if (err instanceof LiTarefasTransitoriasError) {
+    return soltarAposPassagemLi(db, tarefa, await lerRunReconcileLi(db), seq, deps);
+  }
+  if (!retentavel(err)) await liberarAntesDeFalharLi(db, tarefa, err, deps, seq);
+  throw err;
 }
 
 /** The class name of a failure, for its log line (never its message). */
@@ -932,13 +1025,21 @@ async function passarAdiante(
   return { kind: 'continua', fase, seq };
 }
 
-/** Releases the lease of a run at `seq`: lease 0, `seq + 1`, no candidate. */
+/**
+ * Releases the lease of a run at `seq`: lease 0, `seq + 1`, no candidate. `true` when the release
+ * LANDED; `false` when the lease is no longer this slice's (`parar`): nothing was released.
+ */
 async function liberar(
   db: Firestore,
   estado: EstadoEscritaReconcileLi,
   seq: number,
-): Promise<void> {
-  await gravarLoteReconcileLi(db, estado, { emExecucaoAteMs: 0, seq: seq + 1, candidatos: [] });
+): Promise<boolean> {
+  const r = await gravarLoteReconcileLi(db, estado, {
+    emExecucaoAteMs: 0,
+    seq: seq + 1,
+    candidatos: [],
+  });
+  return r.tipo === 'gravado';
 }
 
 /** The repair (`continuacao`): the stored `seq`'s named task at the conservative 60 s, nothing else. */
@@ -986,27 +1087,28 @@ async function encerrarNaUltimaTentativaLi(
     await pedirRevisaoDeDepositoLi(run.contadores[CONTADOR_DEPOSITO_MUDOU_LI] ?? 0, tarefa, deps);
     return { kind: 'revisao' };
   }
+  if (run.seq === tarefa.seq) {
+    const solto = await soltarNaUltimaTentativaLi(
+      db,
+      tarefa,
+      relido,
+      run.seq,
+      deps,
+      'tentativas esgotadas — a execução soltou a vez',
+      { motivo: 'tentativas-esgotadas' },
+    );
+    return { kind: solto ? 'tentativas-esgotadas' : 'parado' };
+  }
+  if (run.seq !== tarefa.seq + 1) return { kind: 'parado' };
+  // ONE seq ahead: ours (our end patch landed behind the error) with our delay, else a courtesy.
+  const nosso = rastro.patchDoFim !== null && guardaOPatchLi(relido.dados, rastro.patchDoFim);
+  const atraso = nosso ? rastro.atrasoDoFim : ATRASO_PAUSA_429_IMPORTACAO_LI_S;
   const estado: EstadoEscritaReconcileLi = {
     execucaoId: tarefa.execucaoId,
     seq: run.seq,
     versaoRun: relido.versao,
     runEsperado: relido.dados,
   };
-  if (run.seq === tarefa.seq) {
-    deps.logger.error(`${TAG} tentativas esgotadas — a execução solta a vez`, {
-      execucaoId: tarefa.execucaoId,
-      seq: tarefa.seq,
-      fase: run.fase,
-      motivo: 'tentativas-esgotadas',
-    });
-    await liberar(db, estado, run.seq);
-    await pedirRevisaoDeDepositoLi(run.contadores[CONTADOR_DEPOSITO_MUDOU_LI] ?? 0, tarefa, deps);
-    return { kind: 'tentativas-esgotadas' };
-  }
-  if (run.seq !== tarefa.seq + 1) return { kind: 'parado' };
-  // ONE seq ahead: ours (our end patch landed behind the error) with our delay, else a courtesy.
-  const nosso = rastro.patchDoFim !== null && guardaOPatchLi(relido.dados, rastro.patchDoFim);
-  const atraso = nosso ? rastro.atrasoDoFim : ATRASO_PAUSA_429_IMPORTACAO_LI_S;
   try {
     return await passarAdiante(
       db,
@@ -1019,13 +1121,8 @@ async function encerrarNaUltimaTentativaLi(
     );
   } catch (err) {
     if (!(err instanceof LiTarefasTransitoriasError)) throw err;
-    deps.logger.error(`${TAG} tentativas esgotadas na passagem — a execução solta a vez`, {
-      execucaoId: tarefa.execucaoId,
-      seq: run.seq,
-      motivo: 'tentativas-esgotadas',
-    });
-    await liberar(db, estado, run.seq);
-    return { kind: 'tentativas-esgotadas' };
+    // Released from the same read: the failed enqueue wrote nothing.
+    return soltarAposPassagemLi(db, tarefa, relido, run.seq, deps);
   }
 }
 
