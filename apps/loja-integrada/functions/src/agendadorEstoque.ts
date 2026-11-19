@@ -12,8 +12,9 @@ import { getAdminApp } from './lib/admin';
 
 /**
  * The COMPOSITION ROOT of the STOCK-queue producer for this functions codebase (master plan
- * step 12, PR 12-e): today the send run's one `deriva` follow-up enqueues through it; the stock
- * trigger and the reconcile join it later. What a rejection means, the window, the task name and
+ * step 12, PR 12-e): the send run's one `deriva` follow-up, the stock trigger and its kit fan-out
+ * (PR 12-f) and the daily reconcile's queue phase (PR 12-g) enqueue through it. The manual push
+ * (PR 12-h) enqueues from App Hosting, through that backend's own root (`lib/firebase/filasLi.ts`). What a rejection means, the window, the task name and
  * the schedule are the pure module's (`lib/lojaIntegrada/estoque/agendadorEstoque.ts`); this
  * file only binds the Admin SDK's task queue, mapping the producer's `agendarParaMs` onto the
  * SDK's `scheduleTime`.

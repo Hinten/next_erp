@@ -346,6 +346,64 @@ describe('CODIGO_ERRO_LI', () => {
     expect(new Set(tresCodigos).size).toBe(3);
     expect(CODIGO_ERRO_LI.rotaEmConflito).not.toBe(CODIGO_ERRO_LI.estacionamentoEmConflito);
   });
+
+  it('the stock routes’ codes are pinned to their wire strings (step 12, PR 12-h)', () => {
+    // The web's stock provider keys its rows on these strings: a whole-request "not attempted"
+    // for the valves, a conta-level limit row for the cap.
+    expect({
+      estoqueDesligado: CODIGO_ERRO_LI.estoqueDesligado,
+      tarefasDesligadas: CODIGO_ERRO_LI.tarefasDesligadas,
+      reconcileEmAndamento: CODIGO_ERRO_LI.reconcileEmAndamento,
+      contaSemDeposito: CODIGO_ERRO_LI.contaSemDeposito,
+      selecaoExcedeLimite: CODIGO_ERRO_LI.selecaoExcedeLimite,
+    }).toEqual({
+      estoqueDesligado: 'LI_ESTOQUE_DESLIGADO',
+      tarefasDesligadas: 'LI_TAREFAS_DESLIGADAS',
+      reconcileEmAndamento: 'LI_RECONCILE_EM_ANDAMENTO',
+      contaSemDeposito: 'LI_CONTA_SEM_DEPOSITO',
+      selecaoExcedeLimite: 'LI_SELECAO_EXCEDE_LIMITE',
+    });
+  });
+
+  it('⚠️ NEAR-MISS: the stock valve, the Cloud Tasks valve and the read switch are three 503s with three causes', () => {
+    const tres = [
+      CODIGO_ERRO_LI.estoqueDesligado,
+      CODIGO_ERRO_LI.tarefasDesligadas,
+      CODIGO_ERRO_LI.chamadasDesligadas,
+    ];
+    expect(new Set(tres).size).toBe(3);
+    // A running reconcile (wait for it) is not a running import (attach to it).
+    expect(CODIGO_ERRO_LI.reconcileEmAndamento).not.toBe(CODIGO_ERRO_LI.importacaoEmAndamento);
+    // A selection over the push's cap is not a catalogue list over the read's.
+    expect(CODIGO_ERRO_LI.selecaoExcedeLimite).not.toBe(CODIGO_ERRO_LI.catalogoExcedeLimite);
+  });
+
+  it('the envelope carries the running execucaoId and the push’s limit, and parses without them', () => {
+    expect(
+      erroContaLojaIntegradaSchema.parse({
+        error: 'x',
+        code: CODIGO_ERRO_LI.reconcileEmAndamento,
+        execucaoId: 'estoque-reconcile-20261119',
+      }).execucaoId,
+    ).toBe('estoque-reconcile-20261119');
+    expect(
+      erroContaLojaIntegradaSchema.parse({
+        error: 'x',
+        code: CODIGO_ERRO_LI.selecaoExcedeLimite,
+        limite: 30,
+        solicitados: 31,
+      }),
+    ).toMatchObject({ limite: 30, solicitados: 31 });
+    const sem = erroContaLojaIntegradaSchema.parse({ error: 'x', code: 'LI_X' });
+    expect([sem.execucaoId, sem.limite, sem.solicitados]).toEqual([
+      undefined,
+      undefined,
+      undefined,
+    ]);
+    expect(
+      erroContaLojaIntegradaSchema.safeParse({ error: 'x', code: 'LI_X', limite: 1.5 }).success,
+    ).toBe(false);
+  });
 });
 
 describe('barrel', () => {

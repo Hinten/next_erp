@@ -5,11 +5,14 @@
  * the stock trigger (an `estoque` task per child and per flagged kit, and the ONE `estoque-kits`
  * fan-out of a component with more store kits than the eager ceiling), that fan-out's consumer
  * (an `estoque` task per kit, paced on the global slot), the daily reconcile's queue phase (PR
- * 12-g: an `estoque` task per candidate, paced on the same slot), and later the manual push.
+ * 12-g: an `estoque` task per candidate, paced on the same slot), and the manual push (PR 12-h:
+ * `POST …/enviar-estoque`, an `estoque` task per linked child, `origem: manual`, named by the
+ * clock like an event's).
  *
- * The queue itself is bound by a composition root in the functions codebase, never here: it
- * resolves the region-qualified queue path and reads the sweep-only valve, and passes both in
- * as {@link OpcoesAgendadorEstoqueLi}. Nothing in this module reads the process environment
+ * The queue itself is bound by a composition root, never here — the functions codebase's
+ * (`functions/src/agendadorEstoque.ts`) and, for the manual push, App Hosting's
+ * (`lib/firebase/filasLi.ts`, since PR 12-h): each resolves the region-qualified queue path and
+ * reads the sweep-only valve, and passes both in as {@link OpcoesAgendadorEstoqueLi}. Nothing in this module reads the process environment
  * (`estrutura.test.ts`).
  *
  * ## Windows, names, schedules (root `CLAUDE.md` rule 7, tier 0)

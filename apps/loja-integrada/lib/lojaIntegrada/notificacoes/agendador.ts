@@ -3,11 +3,19 @@
  * `filaLeituraLojaIntegrada` means, with the transport handed in.
  *
  * The queue itself is bound by a COMPOSITION ROOT, never here: the functions
- * codebase's `functions/src/agendador.ts` today (the order poller enqueues), and
- * from step 4 an App Hosting root beside the inbound webhook. Each root resolves
- * the region-qualified queue path, reads the sweep-only valve and passes both in
+ * codebase's `functions/src/agendador.ts` (the order poller, the product import
+ * and the daily stock reconcile enqueue through it), and since step 12 (PR 12-h)
+ * the App Hosting root `lib/firebase/filasLi.ts` (the operator's stock reconcile
+ * route enqueues a run's first slice through it; step 4's inbound webhook will
+ * join it). Each root resolves the region-qualified queue path, reads the
+ * sweep-only valve through {@link valvulaDeTarefasLiFechada} and passes both in
  * as {@link OpcoesAgendadorLi}. Nothing in this module reads the process
  * environment (`estrutura.test.ts`).
+ *
+ * {@link FILA_LEITURA_LI} lives HERE, not in `./notificacao` (which re-exports
+ * it): that module reaches the context loader, the park, the pacer and the
+ * package, so an App Hosting root that imported the name from it would pull the
+ * whole reads pipeline into a route that only enqueues.
  *
  * ## What a rejection MEANS — part of the contract
  *
@@ -49,6 +57,26 @@ import { FirebaseAppError } from 'firebase-admin/app';
 import { FirebaseFunctionsError } from 'firebase-admin/functions';
 
 import type { PayloadNotificacaoLi } from './notificacao';
+
+/**
+ * The reads queue: the deployed `onTaskDispatched` function name, which is ALSO
+ * its auto-provisioned Cloud Tasks queue name — the producer builds the
+ * region-qualified queue path from it and the functions codebase's export must
+ * be named exactly this (asserted there). Fixed at the first deploy. One
+ * function for every read task, dispatching on `tipo`.
+ */
+export const FILA_LEITURA_LI = 'filaLeituraLojaIntegrada';
+
+/**
+ * The sweep-only valve of every Loja Integrada queue, as a root read it:
+ * `LOJA_INTEGRADA_TASKS_DISABLED` EXACTLY `'1'` closes it. Unset, blank,
+ * `'true'`, `'1 '` and `' 1'` all leave enqueuing on — never trim or case-fold a
+ * valve. The ONE copy of the rule: the functions root and the App Hosting root
+ * each read the variable on their own surface and hand the value here.
+ */
+export function valvulaDeTarefasLiFechada(valor: string | undefined): boolean {
+  return valor === '1';
+}
 
 /**
  * The transport, as a root binds it — structurally, the Admin SDK's

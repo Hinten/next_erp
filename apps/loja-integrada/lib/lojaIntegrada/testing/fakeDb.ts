@@ -64,7 +64,11 @@
  *    `FieldValue` is left as it was before (no write of this app hands one to this fake);
  *  - `collection().where(campo, '==', valor)`, `where(campo, '<', valor)` (step
  *    3: the shared sweep's lane query), `where(campo, 'in', [...])` (step 5: the
- *    link-doc lookup over every stored form of the conta ref), `orderBy`,
+ *    link-doc lookup over every stored form of the conta ref),
+ *    `where(campo, 'array-contains', valor)` (step 12, PR 12-h: the manual stock push's children
+ *    that name the conta — a stored ARRAY holding an element `===` the value; a missing field, a
+ *    non-array or an array of other values never matches; the value must be a string or a
+ *    number, anything else throws), `orderBy`,
  *    `limit`, `startAfter(doc)` and `get()` → `{ docs, empty, size, readTime }`
  *    — see "Queries" below. Each result doc carries its `ref`, whose
  *    `parent.parent` is the owning document (`ref.parent.parent.id`);
@@ -339,7 +343,7 @@ interface Stored {
 }
 
 /** The operators this fake models (module header). */
-type OperadorFake = '==' | '<' | 'in';
+type OperadorFake = '==' | '<' | 'in' | 'array-contains';
 
 /** The SDK's cap on an `in` filter's values. */
 const MAX_VALORES_IN = 30;
@@ -355,6 +359,8 @@ function satisfaz(armazenado: unknown, f: Filtro): boolean {
   if (f.op === '==') return armazenado === f.valor;
   // `in`: equality with ANY of the values (`===`), so a missing field never matches.
   if (f.op === 'in') return (f.valor as readonly unknown[]).some((v) => armazenado === v);
+  // `array-contains`: a stored ARRAY with an element strictly equal to the value; anything else none.
+  if (f.op === 'array-contains') return Array.isArray(armazenado) && armazenado.includes(f.valor);
   // `<`: same type only — a null, a missing field or another type never matches.
   if (typeof f.valor === 'number') return typeof armazenado === 'number' && armazenado < f.valor;
   return typeof armazenado === 'string' && armazenado < (f.valor as string);
@@ -1081,8 +1087,13 @@ export class FakeDb {
       this.consulta(colecao, grupo, { ...estado, ...mudanca });
     return {
       where: (campo: string, op: string, valor: unknown) => {
-        if (op !== '==' && op !== '<' && op !== 'in') {
+        if (op !== '==' && op !== '<' && op !== 'in' && op !== 'array-contains') {
           throw new Error(`FakeDb: operador '${op}' em where('${campo}') não é modelado`);
+        }
+        if (op === 'array-contains' && typeof valor !== 'string' && typeof valor !== 'number') {
+          throw new Error(
+            `FakeDb: 'array-contains' em where('${campo}') só é modelado para número ou texto`,
+          );
         }
         if (op === '<' && typeof valor !== 'number' && typeof valor !== 'string') {
           throw new Error(`FakeDb: '<' em where('${campo}') só é modelado para número ou texto`);

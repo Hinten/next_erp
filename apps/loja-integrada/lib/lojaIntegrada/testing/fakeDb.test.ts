@@ -1072,6 +1072,48 @@ describe('FakeDb — select (step 9: the create-time SKU probe projects `sku`)',
   });
 });
 
+describe('FakeDb — array-contains (step 12, PR 12-h: the manual push’s children that name the conta)', () => {
+  it('matches a stored ARRAY holding an element strictly equal to the value, and records the filter', async () => {
+    const db = new FakeDb();
+    db.seed('integracao/a', { contas: ['C1', 'C2'] });
+    db.seed('integracao/b', { contas: ['C2'] });
+    db.seed('integracao/c', { contas: [] });
+    db.seed('integracao/d', {});
+    const snap = await integracaoCollection
+      .ref(asDb(db), {})
+      .where('contas', 'array-contains', 'C1')
+      .get();
+    expect(snap.docs.map((d) => d.id)).toEqual(['a']);
+    expect(db.consultas.at(-1)?.filtros).toEqual([['contas', 'array-contains', 'C1']]);
+  });
+
+  it('⚠️ NEAR-MISS: a scalar equal to the value, another type, a prefix or a nested array never match', async () => {
+    const db = new FakeDb();
+    db.seed('integracao/escalar', { contas: 'C1' });
+    db.seed('integracao/numero', { contas: [1] });
+    db.seed('integracao/prefixo', { contas: ['C10'] });
+    db.seed('integracao/aninhado', { contas: [['C1']] });
+    db.seed('integracao/certo', { contas: ['C1'], n: [1] });
+    const ref = integracaoCollection.ref(asDb(db), {});
+    expect((await ref.where('contas', 'array-contains', 'C1').get()).docs.map((d) => d.id)).toEqual(
+      ['certo'],
+    );
+    // `1` is not `'1'`.
+    expect((await ref.where('n', 'array-contains', '1').get()).docs).toEqual([]);
+    expect((await ref.where('n', 'array-contains', 1).get()).docs.map((d) => d.id)).toEqual([
+      'certo',
+    ]);
+  });
+
+  it('refuses a value it does not model (an object, an array, null)', () => {
+    const ref = integracaoCollection.ref(asDb(new FakeDb()), {});
+    expect(() => ref.where('x', 'array-contains', { a: 1 })).toThrow(/array-contains/);
+    expect(() => ref.where('x', 'array-contains', ['a'])).toThrow(/array-contains/);
+    expect(() => ref.where('x', 'array-contains', null)).toThrow(/array-contains/);
+    expect(() => ref.where('x', 'array-contains-any', ['a'])).toThrow(/operador/);
+  });
+});
+
 describe('FakeDb.getAll (step 12: the stock send run’s masked produto read and its component records)', () => {
   it('one snapshot per ref, in order, each path recorded as a read; a missing doc is exists:false', async () => {
     const db = new FakeDb();

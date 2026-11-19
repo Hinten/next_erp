@@ -756,9 +756,10 @@ describe('⚠️ the µs boundary: two converting modules, every conversion coun
     expect(arquivos.length).toBeGreaterThan(5);
     expect(arquivos).toContain(avisos);
     expect(arquivos).toContain(dataLi);
-    // The three credential routes, the four catalogue reads (step 10) and the product import's
-    // five route files (step 9: start and list, status, cancel, report, tax-review list).
-    expect(rotas.filter((r) => r.includes('conta'))).toHaveLength(12);
+    // The three credential routes, the four catalogue reads (step 10), the product import's
+    // five route files (step 9: start and list, status, cancel, report, tax-review list) and the
+    // operator's stock reconcile (step 12, PR 12-h).
+    expect(rotas.filter((r) => r.includes('conta'))).toHaveLength(13);
   });
 
   it('this module calls the ms → µs converter exactly twice (agoraUsDe, prazoUsDe)', () => {

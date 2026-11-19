@@ -363,6 +363,8 @@ describe('the backend cross-check note', () => {
     ['shopee', 'SHOPEE_TASKS_REGION'],
     // The push receiver enqueues from App Hosting (step 3, PR 3-c).
     ['amazon', 'AMAZON_TASKS_REGION'],
+    // The two stock routes enqueue from App Hosting (step 12, PR 12-h).
+    ['loja-integrada', 'LOJA_INTEGRADA_TASKS_REGION'],
   ])('%s gets a note naming the backend variable and its manifest', (codebase, backendVar) => {
     // ⚠️ Assert the NOTE, not just the table entry. An earlier version of these
     // tests checked `CODEBASES[x].backendVar` only, and reverting the function to
@@ -468,14 +470,23 @@ describe('the backend cross-check note', () => {
     expect(crossCheckNote('storage', 'us-east1')).toBeNull();
   });
 
-  it('has no backend note for loja-integrada until its App Hosting enqueuer exists', () => {
-    // Step 3 enqueues only from inside the functions (the order poller), so there
-    // is no `apphosting.yaml` row to cross-check. Step 4 adds the first App
-    // Hosting enqueuer: it sets both values, moves this codebase into the
-    // `it.each` above and deletes this test — a deliberate edit, not a drift.
-    expect(CODEBASES['loja-integrada'].backendVar).toBeNull();
-    expect(CODEBASES['loja-integrada'].backendManifest).toBeNull();
-    expect(crossCheckNote('loja-integrada', 'us-east1')).toBeNull();
+  it('sends loja-integrada to the console, never to its manifest — which keeps the variable as a comment row only', () => {
+    // apps/loja-integrada/apphosting.yaml has no `env:` block at all and names
+    // LOJA_INTEGRADA_TASKS_REGION in a comment row: a value there reaches EVERY
+    // project's backend, and unset is the safe state (both stock routes answer
+    // 500 before any read). A note telling the operator to add the row would undo
+    // that the moment it was obeyed.
+    const note = crossCheckNote('loja-integrada', 'us-east1');
+    const manifest = CODEBASES['loja-integrada'].backendManifest;
+
+    expect(note).toContain("THIS project's App Hosting console");
+    expect(note).toContain(`never in ${manifest}`);
+    expect(note).not.toContain(`Set it in ${manifest}`);
+    const linhas = readFileSync(resolve(REPO_ROOT, manifest), 'utf8').split(/\r?\n/);
+    const naoComentadas = linhas.filter((l) => !l.trimStart().startsWith('#'));
+    expect(naoComentadas.some((l) => l.includes('LOJA_INTEGRADA_TASKS_REGION'))).toBe(false);
+    // Anti-vacuity: the manifest does document it, as a comment row.
+    expect(linhas.some((l) => /^#\s+LOJA_INTEGRADA_TASKS_REGION\b/.test(l))).toBe(true);
   });
 
   it('surfaces the runtime override on the queue that has no sweep', () => {

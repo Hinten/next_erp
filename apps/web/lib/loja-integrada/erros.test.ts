@@ -262,13 +262,27 @@ describe('descreverFalhaCredencialLi — every code the credential routes answer
     CODIGO_ERRO_LI.importacaoEmConflito,
   ]);
 
+  /**
+   * The codes only the stock routes answer (step 12: the manual push and the
+   * operator's reconcile). The credential panel never calls those routes; their
+   * copy belongs to the stock push's provider, keyed on the same codes.
+   */
+  const SO_DAS_ROTAS_DE_ESTOQUE = new Set<string>([
+    CODIGO_ERRO_LI.estoqueDesligado,
+    CODIGO_ERRO_LI.tarefasDesligadas,
+    CODIGO_ERRO_LI.reconcileEmAndamento,
+    CODIGO_ERRO_LI.contaSemDeposito,
+    CODIGO_ERRO_LI.selecaoExcedeLimite,
+  ]);
+
   it.each(
     Object.values(CODIGO_ERRO_LI).filter(
       (c) =>
         !SO_DOS_FLUXOS.has(c) &&
         !SO_DAS_ROTAS_DE_PEDIDO.has(c) &&
         !SO_DAS_ROTAS_DO_CATALOGO.has(c) &&
-        !SO_DAS_ROTAS_DA_IMPORTACAO.has(c),
+        !SO_DAS_ROTAS_DA_IMPORTACAO.has(c) &&
+        !SO_DAS_ROTAS_DE_ESTOQUE.has(c),
     ),
   )('%s is described by its code, never by the backend sentence', (code) => {
     // The status is one no branch keys on, so only the code can pick the copy.

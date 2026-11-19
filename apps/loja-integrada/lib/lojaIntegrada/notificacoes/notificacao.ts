@@ -189,13 +189,11 @@ export { MAX_TENTATIVAS, MAX_TENTATIVAS_DEFERRED, TASK_MAX_ATTEMPTS };
 export type { ReprocessOptions, ReprocessResult };
 
 /**
- * The reads queue: the deployed `onTaskDispatched` function name, which is ALSO
- * its auto-provisioned Cloud Tasks queue name — the producer builds the
- * region-qualified queue path from it and the functions codebase's export must
- * be named exactly this (asserted there). Fixed at the first deploy (Q1). One
- * function for every read task, dispatching on `tipo` (§4.23).
+ * The reads queue's name (`./agendador`, where it lives so an enqueue-only root
+ * can name it without loading this pipeline), re-exported here so no importer
+ * changed.
  */
-export const FILA_LEITURA_LI = 'filaLeituraLojaIntegrada';
+export { FILA_LEITURA_LI } from './agendador';
 
 /** The log prefix the shared core renders as `[loja-integrada] …`. */
 export const CANAL_LOG_LI = 'loja-integrada';

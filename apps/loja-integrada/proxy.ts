@@ -11,7 +11,8 @@ import { NextResponse, type NextRequest } from 'next/server';
 //
 // The methods are the routes' verbs: GET (status, the catalogue, the product
 // imports), PUT (save and renew a credential, route a label), DELETE (remove a
-// credential) and POST (start and cancel a product import, master plan step 9).
+// credential) and POST (start and cancel a product import, master plan step 9; the manual
+// stock push and the stock reconcile, step 12).
 // POST is CORS-safelisted, but these calls carry `Authorization` and a JSON body,
 // so the browser preflights them and the preflight must list it.
 

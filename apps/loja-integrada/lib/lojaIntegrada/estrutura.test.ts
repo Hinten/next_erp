@@ -53,6 +53,15 @@
  *    closure (the stock producer's root seen as a leaf) reaches no context loader, park, pacer,
  *    write engine or send run, names no client, calls no `fetch`, and loads the package only
  *    where an allow-list says why;
+ *  - the two operator STOCK routes (`ROTAS_DE_ENFILEIRAMENTO_ESTOQUE_LI`: the manual push
+ *    `POST …/enviar-estoque` and the reconcile `POST …/conta/[id]/estoque/reconciliar`, step 12,
+ *    PR 12-h) only enqueue: walked with the stock trigger's rules — the App Hosting producer root
+ *    `lib/firebase/filasLi.ts` WALKED, not a leaf — plus a ban on every credential module and
+ *    `core/contas.ts`, so they read no credential either;
+ *  - the app's `getFunctions(` callers are exactly its four composition roots, and each binds only
+ *    its own queues: the App Hosting root the stock and reads queues, never the writes queue (the
+ *    one codebase-wide `TASKS_INVOKER_SA` list grants it enqueue there too, so this pin is what
+ *    keeps it off);
  *  - the write chokepoint (the write engine's requirement 9, step 7), matched by FULL path in
  *    non-test source: only `core/contextoEscrita.ts` builds a write client; only
  *    `core/escrita.ts` names a package write operation or a write-client method; the write
@@ -572,6 +581,39 @@ const CAMINHO_DO_INICIO_DO_RECONCILE = [
   'functions/src/onIntegracaoLojaIntegradaChanged.ts',
 ] as const;
 
+/** The manual stock push (step 12, PR 12-h): enqueue-only, through the App Hosting root. */
+const ROTA_ENVIO_ESTOQUE = 'app/api/marketplace/loja-integrada/enviar-estoque/route.ts';
+
+/** The operator's stock reconcile (step 12, PR 12-h): ONE named first slice on the reads queue. */
+const ROTA_RECONCILIAR_ESTOQUE = `${PASTA_DA_CONTA}/estoque/reconciliar/route.ts`;
+
+/** The App Hosting composition root of both routes' producers: WALKED by their walk, never a leaf. */
+const RAIZ_DO_APP_HOSTING = 'lib/firebase/filasLi.ts';
+
+/**
+ * The operator's stock routes (step 12, PR 12-h), with the core each delegates to: each only
+ * ENQUEUES, so it is walked with the stock trigger's rules (no context, park, pacer, write engine or
+ * send run; no client named; no `fetch`; the package loaded only for the link reader's constants)
+ * PLUS {@link MODULOS_DE_CREDENCIAL_DAS_ROTAS_DE_ESTOQUE}. A new enqueue-only route joins this list,
+ * or its closure goes unwalked. They cannot join `ROTAS_SEM_CHAMADA_LI`: both read the stock valve
+ * (`core/valvulas.ts`, which that roster bans with the read switch) and the push reads links
+ * through the module that loads the package's constants.
+ */
+const ROTAS_DE_ENFILEIRAMENTO_ESTOQUE_LI: readonly (readonly [string, string])[] = [
+  [ROTA_ENVIO_ESTOQUE, 'lib/lojaIntegrada/estoque/envioManualEstoqueLi.ts'],
+  [ROTA_RECONCILIAR_ESTOQUE, 'lib/lojaIntegrada/estoque/reconcile/reconcileManualLi.ts'],
+];
+
+/**
+ * What those routes may additionally never reach: every module that holds the credential, and
+ * `core/contas.ts` (its wrong-store guard loads the credential store and the fingerprint). The
+ * stock trigger's rules alone prove no Loja Integrada call; this proves no credential read.
+ */
+const MODULOS_DE_CREDENCIAL_DAS_ROTAS_DE_ESTOQUE = [
+  ...MODULOS_DE_CREDENCIAL,
+  'lib/lojaIntegrada/core/contas.ts',
+];
+
 /** `ler` without type-only imports, each producer root in `folhas` read as a file importing nothing. */
 function leitorDoGatilhoDeEstoque(
   lerBruto: LeitorDeFonte,
@@ -594,6 +636,8 @@ function violacoesDoGatilhoDeEstoque(
   entradas: readonly string[],
   lerBruto: LeitorDeFonte,
   folhas: readonly string[] = [RAIZ_DO_PRODUTOR_DE_ESTOQUE],
+  /** Modules this walk bans ON TOP of the trigger's own (the operator routes: the credential). */
+  proibidosAlemDoGatilho: readonly string[] = [],
 ): string[] {
   const ler = leitorDoGatilhoDeEstoque(lerBruto, folhas);
   const fecho = fechoDeImportacoes(entradas, ler, resolverAliasDoApp(ler));
@@ -610,7 +654,12 @@ function violacoesDoGatilhoDeEstoque(
     }
   }
   for (const arquivo of fecho.arquivos) {
-    if (MODULOS_FORA_DO_GATILHO_DE_ESTOQUE.includes(arquivo)) violacoes.push(`reaches ${arquivo}`);
+    if (
+      MODULOS_FORA_DO_GATILHO_DE_ESTOQUE.includes(arquivo) ||
+      proibidosAlemDoGatilho.includes(arquivo)
+    ) {
+      violacoes.push(`reaches ${arquivo}`);
+    }
     const texto = lerBruto(arquivo) ?? '';
     if (/\bfetch\s*\(/.test(texto)) violacoes.push(`${arquivo} calls fetch`);
     if (NOMES_DE_CHAMADA_DO_GATILHO_DE_ESTOQUE.test(semComentarios(texto))) {
@@ -1270,6 +1319,139 @@ describe('lib/lojaIntegrada layout', () => {
     },
   );
 
+  it.each(ROTAS_DE_ENFILEIRAMENTO_ESTOQUE_LI)(
+    'the operator stock route %s (step 12, PR 12-h) only ENQUEUES: no context, park, pacer, write engine, send run, credential or conta guard, no client named, no fetch — the App Hosting root walked',
+    { timeout: 30_000 },
+    (rota, nucleo) => {
+      expect(lerDoApp(rota), rota).not.toBeNull();
+      expect(
+        violacoesDoGatilhoDeEstoque(
+          [rota],
+          lerDoApp,
+          [],
+          MODULOS_DE_CREDENCIAL_DAS_ROTAS_DE_ESTOQUE,
+        ),
+      ).toEqual([]);
+      // Anti-vacuity: the walk entered the route's core, the valves, the producer root and its pure
+      // producers, the uncached conta read, the auth and the answers.
+      const ler = leitorDoGatilhoDeEstoque(lerDoApp, []);
+      const fecho = fechoDeImportacoes([rota], ler, resolverAliasDoApp(ler));
+      expect(fecho.arquivos).toEqual(
+        expect.arrayContaining([
+          rota,
+          nucleo,
+          RAIZ_DO_APP_HOSTING,
+          'lib/lojaIntegrada/core/valvulas.ts',
+          'lib/lojaIntegrada/estoque/agendadorEstoque.ts',
+          'lib/lojaIntegrada/estoque/reconcile/agendadorReconcile.ts',
+          'lib/lojaIntegrada/notificacoes/agendador.ts',
+          'lib/lojaIntegrada/estoque/contaDoEstoqueLi.ts',
+          'lib/lojaIntegrada/core/leituraDaConta.ts',
+          'lib/lojaIntegrada/core/respond.ts',
+          'lib/auth/verifyCaller.ts',
+        ]),
+      );
+      expect(fecho.externos).toEqual(
+        expect.arrayContaining(['firebase-admin/functions', '@delfrance/core/region']),
+      );
+      // The reads queue's pipeline (context, park, pacer, package) is never pulled in by its name.
+      expect(fecho.arquivos).not.toContain('lib/lojaIntegrada/notificacoes/notificacao.ts');
+    },
+  );
+
+  it('the push reads links through the send run’s own reader and plan; the reconcile through the run document’s module', () => {
+    const ler = leitorDoGatilhoDeEstoque(lerDoApp, []);
+    const doEnvio = fechoDeImportacoes([ROTA_ENVIO_ESTOQUE], ler, resolverAliasDoApp(ler));
+    expect(doEnvio.arquivos).toEqual(
+      expect.arrayContaining([
+        'lib/lojaIntegrada/estoque/leituraEstoqueErp.ts',
+        'lib/lojaIntegrada/estoque/planoEstoqueLi.ts',
+        ...CARREGAM_O_PACOTE_NO_GATILHO_DE_ESTOQUE,
+      ]),
+    );
+    const doReconcile = fechoDeImportacoes(
+      [ROTA_RECONCILIAR_ESTOQUE],
+      ler,
+      resolverAliasDoApp(ler),
+    );
+    expect(doReconcile.arquivos).toContain(
+      'lib/lojaIntegrada/estoque/reconcile/execucaoReconcile.ts',
+    );
+    // The slice itself (its store phase calls Loja Integrada) is never reached.
+    expect(doReconcile.arquivos).not.toContain(
+      'lib/lojaIntegrada/estoque/reconcile/despachoReconcile.ts',
+    );
+  });
+
+  it('the operator routes’ extra ban BITES: a route reaching core/contas.ts or the credential store fails it, and only it; the send run fails the trigger’s rules', () => {
+    const fontes: Record<string, string> = {
+      'app/x-contas/route.ts':
+        "import { lerContaLojaIntegrada } from '@/lib/lojaIntegrada/core/contas';\nexport const c = lerContaLojaIntegrada;\n",
+      'lib/lojaIntegrada/core/contas.ts':
+        "import { lerCredencial } from './credentialStore';\nexport const l = lerCredencial;\n",
+      'lib/lojaIntegrada/core/credentialStore.ts': 'export const lerCredencial = 1;\n',
+    };
+    const ler: LeitorDeFonte = (c) => fontes[c] ?? null;
+    expect(
+      violacoesDoGatilhoDeEstoque(
+        ['app/x-contas/route.ts'],
+        ler,
+        [],
+        MODULOS_DE_CREDENCIAL_DAS_ROTAS_DE_ESTOQUE,
+      ).sort(),
+    ).toEqual([
+      'reaches lib/lojaIntegrada/core/contas.ts',
+      'reaches lib/lojaIntegrada/core/credentialStore.ts',
+    ]);
+    // ⚠️ NEAR-MISS: the trigger's rules alone let it through — the extra ban is what catches it.
+    expect(violacoesDoGatilhoDeEstoque(['app/x-contas/route.ts'], ler, [])).toEqual([]);
+    expect(
+      violacoesDoGatilhoDeEstoque(
+        ['lib/lojaIntegrada/estoque/processarEstoque.ts'],
+        lerDoApp,
+        [],
+        MODULOS_DE_CREDENCIAL_DAS_ROTAS_DE_ESTOQUE,
+      ).length,
+    ).toBeGreaterThan(0);
+  });
+
+  it(
+    'the app’s getFunctions( callers are exactly its FOUR composition roots, and each binds only its own queues — the App Hosting root the stock and reads queues, never the writes queue',
+    { timeout: 30_000 },
+    () => {
+      const chamaGetFunctions = (texto: string) =>
+        /\bgetFunctions\s*\(/.test(semComentarios(texto));
+      const fontesDoApp = arquivosTs(RAIZ_APP).map(relApp).filter(ehFonteQueNaoTesta);
+      const raizes = fontesDoApp.filter((p) => chamaGetFunctions(lerDoApp(p) ?? '')).sort();
+      expect(raizes).toEqual(
+        [
+          'functions/src/agendador.ts',
+          'functions/src/agendadorEscrita.ts',
+          'functions/src/agendadorEstoque.ts',
+          RAIZ_DO_APP_HOSTING,
+        ].sort(),
+      );
+      const filas = Object.fromEntries(
+        raizes.map((r) => [
+          r,
+          [
+            ...new Set(
+              [...semComentarios(lerDoApp(r) ?? '').matchAll(/\b(FILA_[A-Z]+_LI)\b/g)].map(
+                (m) => m[1] ?? '',
+              ),
+            ),
+          ].sort(),
+        ]),
+      );
+      expect(filas).toEqual({
+        'functions/src/agendador.ts': ['FILA_LEITURA_LI'],
+        'functions/src/agendadorEscrita.ts': ['FILA_ESCRITA_LI'],
+        'functions/src/agendadorEstoque.ts': ['FILA_ESTOQUE_LI'],
+        [RAIZ_DO_APP_HOSTING]: ['FILA_ESTOQUE_LI', 'FILA_LEITURA_LI'],
+      });
+    },
+  );
+
   it('the stock trigger’s rules each BITE on their own (synthetic sources): a fetch call, a client named in code, the package loaded outside the allow-list — and none for the near-misses', () => {
     const fontes: Record<string, string> = {
       'lib/lojaIntegrada/estoque/x-fetch.ts':
@@ -1300,12 +1482,13 @@ describe('lib/lojaIntegrada layout', () => {
     expect(de(CARREGAM_O_PACOTE_NO_GATILHO_DE_ESTOQUE[0] ?? '')).toEqual([]);
   });
 
-  it('every route file under the conta folder is in ROTAS_DE_LEITURA_LI, ROTAS_SEM_CHAMADA_LI or one of the credential routes (a new route cannot skip the walk)', () => {
+  it('every route file under the conta folder is in ROTAS_DE_LEITURA_LI, ROTAS_SEM_CHAMADA_LI, ROTAS_DE_ENFILEIRAMENTO_ESTOQUE_LI or one of the credential routes (a new route cannot skip the walk)', () => {
     const naPasta = arquivosTs(RAIZ_APP)
       .map(relApp)
       .filter((p) => p.startsWith(`${PASTA_DA_CONTA}/`) && p.endsWith('/route.ts'));
     const listadas = new Set(ROTAS_DE_LEITURA_LI.map(([rota]) => rota));
     const semChamada = new Set(ROTAS_SEM_CHAMADA_LI.map(([rota]) => rota));
+    const deEnfileiramento = new Set(ROTAS_DE_ENFILEIRAMENTO_ESTOQUE_LI.map(([rota]) => rota));
     // The status route calls nothing, and the credential routes read the conta uncached and
     // validate a candidate token: each has its own guard (`prazos.test.ts`), and none goes
     // through the context loader.
@@ -1315,13 +1498,21 @@ describe('lib/lojaIntegrada layout', () => {
       `${PASTA_DA_CONTA}/credencial/validade/route.ts`,
     ]);
     expect(
-      naPasta.filter((p) => !listadas.has(p) && !semChamada.has(p) && !daCredencial.has(p)),
+      naPasta.filter(
+        (p) =>
+          !listadas.has(p) &&
+          !semChamada.has(p) &&
+          !daCredencial.has(p) &&
+          !deEnfileiramento.has(p),
+      ),
     ).toEqual([]);
     // Anti-vacuity: the scan found the four catalogue routes and the import's start, the import's
     // four job routes (status, cancel, report, tax-review list), and the three credential ones.
     expect(naPasta.filter((p) => listadas.has(p))).toHaveLength(5);
     expect(naPasta.filter((p) => semChamada.has(p))).toHaveLength(4);
     expect(naPasta.filter((p) => daCredencial.has(p))).toHaveLength(3);
+    // The operator's stock reconcile (step 12, PR 12-h); the push lives outside the conta folder.
+    expect(naPasta.filter((p) => deEnfileiramento.has(p))).toEqual([ROTA_RECONCILIAR_ESTOQUE]);
   });
 
   it('the write chokepoint: only core/contextoEscrita.ts builds a write client, only core/escrita.ts calls a write operation or method, no source imports a package subpath', () => {

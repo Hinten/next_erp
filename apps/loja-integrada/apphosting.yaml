@@ -69,11 +69,15 @@ runConfig:
 #                                          at all then, so no import job is created). The
 #                                          import's start itself calls nothing: its reads
 #                                          run in the functions codebase, whose every
-#                                          dispatch passes the same switch. The label
-#                                          routing route and the import's status, cancel
-#                                          and report routes (…/importacoes/[jobId],
-#                                          …/cancelar, …/itens) read no switch: they call
-#                                          nothing.
+#                                          dispatch passes the same switch. The manual
+#                                          stock push (POST …/enviar-estoque, step 12)
+#                                          refuses with it off too, before any read: every
+#                                          send run it would enqueue needs its deciding
+#                                          GET. The label routing route and the import's
+#                                          status, cancel and report routes
+#                                          (…/importacoes/[jobId], …/cancelar, …/itens)
+#                                          read no switch: they call nothing; the stock
+#                                          reconcile route reads it only to REPORT it.
 #   LOJA_INTEGRADA_MODO_ESTOQUE            Write valves, `off | dry-run | on`; only the
 #   LOJA_INTEGRADA_MODO_PRECO              exact `on` writes and the exact `dry-run`
 #   LOJA_INTEGRADA_MODO_ANUNCIO            diffs. Read from step 7 onward.
@@ -93,17 +97,40 @@ runConfig:
 #                                          (PR 12-e) the ESTOQUE pair is read by the
 #                                          functions codebase's stock queue too (and,
 #                                          since PR 12-f, its stock trigger and kit
-#                                          fan-out), and this backend has no reader of
-#                                          it yet.
+#                                          fan-out). Since PR 12-h this backend reads
+#                                          LOJA_INTEGRADA_MODO_ESTOQUE as well — both
+#                                          stock routes answer 503 LI_ESTOQUE_DESLIGADO
+#                                          with it `off` — so set it ALIKE on both
+#                                          surfaces; LOJA_INTEGRADA_CANARIO_ESTOQUE still
+#                                          has no reader here (the send run applies it).
+#
+# This backend's Cloud Tasks producers (step 12, PR 12-h: the two stock routes,
+# through `lib/firebase/filasLi.ts`). Console values of THIS backend only, never an
+# `env:` row — a value here would reach EVERY project's backend, and unset is the
+# safe state (every enqueue throws MissingRegionError and both routes answer 500
+# before any read). The functions codebase reads its own copies from
+# `functions/.env.deploy`:
+#
+#   LOJA_INTEGRADA_TASKS_REGION            The region of the stock queue
+#                                          (filaEstoqueLojaIntegrada, the manual push)
+#                                          and the reads queue (filaLeituraLojaIntegrada,
+#                                          the reconcile's first slice). It MUST equal
+#                                          the FUNCTIONS_REGION the functions bundle was
+#                                          built for (`node tools/deploy-env/preflight.mjs
+#                                          loja-integrada` prints it): a well-formed wrong
+#                                          region drops every task silently (#1108). Falls
+#                                          back to FUNCTIONS_REGION; NO default.
+#   LOJA_INTEGRADA_TASKS_DISABLED          OPTIONAL. Exactly `1` closes this backend's
+#                                          producers: both stock routes answer 503
+#                                          LI_TAREFAS_DESLIGADAS having read nothing. It
+#                                          does not stop the functions codebase's own
+#                                          enqueues (set its copy there).
 #
 # Read ONLY by the nested functions codebase (step 3), so a row for any of them
-# here would be read by nothing: LOJA_INTEGRADA_TASKS_REGION,
-# LOJA_INTEGRADA_TASKS_DISABLED, LOJA_INTEGRADA_POLL_LOOKBACK_H and — since step
+# here would be read by nothing: LOJA_INTEGRADA_POLL_LOOKBACK_H and — since step
 # 12, the stock upper cap, the stock trigger's eager kit ceiling and the daily
 # reconcile's page size — LOJA_INTEGRADA_ESTOQUE_MAX,
 # LOJA_INTEGRADA_ESTOQUE_KITS_IMEDIATO_MAX and LOJA_INTEGRADA_ESTOQUE_LIMITE_PAGINA
-# live in `functions/.env.deploy`. This backend gets its own LOJA_INTEGRADA_TASKS_REGION
-# (and the sweep-only valve) in step 4, with its first Cloud Tasks enqueuer, and
-# it must then equal the FUNCTIONS_REGION the functions bundle was built for.
+# live in `functions/.env.deploy`.
 #
 # No `env:` block: nothing here needs a value baked into the manifest.

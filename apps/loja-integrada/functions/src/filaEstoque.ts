@@ -170,7 +170,8 @@ async function despachar(
  *    the run, and the quantity is derived when the task RUNS, never carried. Its producers, all
  *    through `./agendadorEstoque`: the stock trigger (`./onEstoqueLojaIntegrada`: a linked child's
  *    move, an eager kit), the `estoque-kits` fan-out below (one per kit at 0), and the run's own
- *    `deriva` follow-up; the reconcile and the manual push later.
+ *    `deriva` follow-up, the daily reconcile's queue phase (PR 12-g) and — from App Hosting, PR
+ *    12-h — the manual push `POST …/enviar-estoque` (`origem: manual`).
  *  - `estoque-kits`: the fan-out of ONE component with more store kits than the eager ceiling
  *    (`lib/lojaIntegrada/estoque/processarKitsEstoque.ts`), enqueued by the stock trigger: it
  *    reads the component's stock, its kits map, and enqueues an `estoque` task per kit the
@@ -208,8 +209,9 @@ async function despachar(
  *   (20 s) ends before the platform cuts the attempt.
  * - NO `secrets:`. The token lives per conta in Firestore.
  * - `...tasksInvokerOptions()`: `roles/run.invoker` on this service and `roles/cloudtasks.enqueuer`
- *   on its queue, applied at deploy time from `TASKS_INVOKER_SA` (#1133). Its enqueuers are all
- *   the functions runtime SA: the stock trigger, the fan-out and the `deriva` follow-up. Absent
+ *   on its queue, applied at deploy time from `TASKS_INVOKER_SA` (#1133). Its enqueuers: the
+ *   functions runtime SA (the stock trigger, the fan-out, the `deriva` follow-up, the reconcile) and,
+ *   since PR 12-h, the App Hosting runtime SA (the manual push) — the list must name BOTH. Absent
  *   when unset.
  *
  * No Firestore write on a send run's success, and no failure store: a run that cannot finish
