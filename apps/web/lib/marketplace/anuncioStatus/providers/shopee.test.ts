@@ -27,6 +27,7 @@ function input(
     deps: {
       mercadoLivre: null,
       shopee: definirStatusAnuncios === null ? null : shopeeClientFalso({ definirStatusAnuncios }),
+      lojaIntegrada: null,
     },
     ...over,
   };

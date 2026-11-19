@@ -35,7 +35,7 @@ function run(
     false,
     {
       db,
-      deps: { mercadoLivre: null, shopee: null },
+      deps: { mercadoLivre: null, shopee: null, lojaIntegrada: null },
       lerIntegracoes: lerIntegracoes as never,
       signal,
     },

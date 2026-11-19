@@ -14,7 +14,7 @@ function input(over: Partial<PricePushInput> = {}): PricePushInput {
     nomePorProdutoId: new Map([['p1', 'Camiseta']]),
     baixarPreco: false,
     incluirNaoPublicados: true,
-    deps: { mercadoLivre: null, shopee: null },
+    deps: { mercadoLivre: null, shopee: null, lojaIntegrada: null },
     ...over,
   };
 }

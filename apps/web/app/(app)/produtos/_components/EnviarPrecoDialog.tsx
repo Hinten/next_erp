@@ -4,6 +4,7 @@ import { Checkbox, Stack } from '@mantine/core';
 import { useIntegracoes } from '@/lib/data/useIntegracoes';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useMercadoLivreClient } from '@/lib/mercado-livre/client';
+import { useLojaIntegradaClient } from '@/lib/loja-integrada/client';
 import { useShopeeClient } from '@/lib/shopee/client';
 import { AvisoCanaisNaoSuportados } from '@/lib/marketplace/caps/AvisoCanaisNaoSuportados';
 import { PushProgressDialog } from '@/lib/marketplace/push/PushProgressDialog';
@@ -34,6 +35,7 @@ export interface EnviarPrecoDialogProps {
 export function EnviarPrecoDialog({ opened, alvos, onClose }: EnviarPrecoDialogProps) {
   const mercadoLivre = useMercadoLivreClient();
   const shopee = useShopeeClient();
+  const lojaIntegrada = useLojaIntegradaClient();
   // The same shared `['integracoes']` entry `/produtos` already holds — this
   // resolves the selection's conta ids to a tipo at no extra read.
   const { byId, status } = useIntegracoes(getFirebaseFirestore());
@@ -106,7 +108,7 @@ export function EnviarPrecoDialog({ opened, alvos, onClose }: EnviarPrecoDialogP
         enviarPrecoParaMarketplaces(
           alvos,
           opcoes,
-          { db: getFirebaseFirestore(), deps: { mercadoLivre, shopee }, signal },
+          { db: getFirebaseFirestore(), deps: { mercadoLivre, shopee, lojaIntegrada }, signal },
           onProgress,
         )
       }

@@ -531,7 +531,8 @@ the wipe. Create `apps/loja-integrada/functions/.env.deploy` (gitignored):
 # ⚠️ Leave it COMMENTED OUT. Setting it is a migration-window decision (master
 # plan §5 item 1, root CLAUDE.md rule 8) made by a person after the legacy app is
 # OFF, and it must be set ALIKE here and in the App Hosting console of
-# apps/loja-integrada, whose credential routes read it too.
+# apps/loja-integrada, whose credential routes read it too (and, since PR
+# 12-h, the manual stock push, which refuses with it off).
 # LOJA_INTEGRADA_CHAMADAS=on
 
 # The region of the reads queue. LEAVE IT UNSET: blank or unset = the
@@ -540,7 +541,9 @@ the wipe. Create `apps/loja-integrada/functions/.env.deploy` (gitignored):
 # nowhere else, so any other value names a queue that does not exist: every
 # enqueue is dropped while it reports success (#1108). If you set it at all, set
 # it to exactly the FUNCTIONS_REGION the deploying shell exported. App Hosting's
-# copy (step 4) must equal the same region.
+# own copy (a CONSOLE value of that backend since PR 12-h, whose two stock
+# routes enqueue: "App Hosting enqueues since PR 12-h" below) must equal the
+# same region.
 # LOJA_INTEGRADA_TASKS_REGION=
 
 # Sweep-only mode. Exactly `1` makes the poller's enqueue throw, so each
@@ -550,7 +553,8 @@ the wipe. Create `apps/loja-integrada/functions/.env.deploy` (gitignored):
 # It closes the WRITES queue's producers too (step 7): the history trigger
 # persists each write event `failed`, and the varredura timer cannot enqueue its
 # sweep — so NOTHING writes while it is set; the rows wait and do not age, and
-# drain once it is cleared.
+# drain once it is cleared. It does NOT close the App Hosting backend's own
+# producers: that backend has its own console copy (PR 12-h).
 # LOJA_INTEGRADA_TASKS_DISABLED=1
 
 # How far back, in HOURS, the poller's first window reaches for a conta with no
@@ -576,9 +580,11 @@ the wipe. Create `apps/loja-integrada/functions/.env.deploy` (gitignored):
 #   - `off` (or unset) RECORDS NOTHING: a posting made while it is off is never
 #     written back. It keeps what was already recorded, but the deploy that opens
 #     operations must already carry `dry-run`.
-# The ESTOQUE pair is READ since step 12 (PR 12-e), by this codebase ONLY (the
-# stock queue's send run and, since PR 12-f, the stock trigger and the kit
-# fan-out; App Hosting has no reader of it yet): `off` (or unset) makes every
+# The ESTOQUE pair is READ since step 12 (PR 12-e) by this codebase (the stock
+# queue's send run and, since PR 12-f, the stock trigger and the kit fan-out),
+# and since PR 12-h LOJA_INTEGRADA_MODO_ESTOQUE by the App Hosting backend too
+# (its two stock routes answer 503 with it `off`; the canary list has no reader
+# there): `off` (or unset) makes every
 # stock run, every trigger event and every fan-out return before any read;
 # `dry-run` makes the trigger and the fan-out enqueue (and pace) exactly as `on`
 # does, and each send run then reads, plans and logs one diff line with nothing
@@ -590,9 +596,9 @@ the wipe. Create `apps/loja-integrada/functions/.env.deploy` (gitignored):
 # or `*`, such a conta would WRITE to a real store while the legacy app is still
 # its only writer. So: NO Loja Integrada token is saved or renewed in staging, or
 # locally, before the window (D17), and these lines stay commented out. Set them
-# ALIKE here and in the App Hosting console (the rastreio pair, and the estoque
-# pair until PR 12-h gives App Hosting a reader: here only), and only in the
-# window.
+# ALIKE here and in the App Hosting console where that backend reads one (since
+# PR 12-h: LOJA_INTEGRADA_MODO_ESTOQUE; the rest, LOJA_INTEGRADA_CANARIO_ESTOQUE
+# included, are read here only), and only in the window.
 # LOJA_INTEGRADA_MODO_ESTOQUE=
 # LOJA_INTEGRADA_MODO_PRECO=
 # LOJA_INTEGRADA_MODO_ANUNCIO=
@@ -669,14 +675,15 @@ baked in plaintext into the Cloud Run revision.
 
 In master-plan step 3 the **functions runtime service account** is the only
 identity that enqueues: the order poller puts its synthetic notifications onto
-`filaLeituraLojaIntegrada`. The App Hosting runtime service account starts
-enqueuing in step 4 (the inbound order webhook), and the credential routes never
-enqueue — they only re-drive rows already in Firestore.
+`filaLeituraLojaIntegrada`. **Since master-plan step 12 (PR 12-h) the App Hosting
+runtime service account of `apps/loja-integrada` enqueues too** — see "App
+Hosting enqueues since PR 12-h" below. The credential routes never enqueue —
+they only re-drive rows already in Firestore.
 
-The enqueuing identity needs **three** grants. In step 3 `<enqueuing-sa>` is the
-functions runtime SA, the identity the poller runs as (by default
-`PROJECT_NUMBER-compute@developer.gserviceaccount.com`); step 4 revisits this
-block when the App Hosting runtime SA joins.
+The enqueuing identity needs **three** grants. `<enqueuing-sa>` is each
+enqueuing identity in turn: the functions runtime SA, the identity the poller
+runs as (by default `PROJECT_NUMBER-compute@developer.gserviceaccount.com`), and
+since PR 12-h the App Hosting runtime SA.
 
 **The product import (master-plan step 9) needs NO new Cloud Tasks grant** (its
 photos need a STORAGE grant: "Photos: the runtime SA writes the default bucket"
@@ -702,8 +709,8 @@ queue.** `filaEstoqueLojaIntegrada` is enqueued by the stock trigger
 `onEstoqueLojaIntegrada`, the kit fan-out (an `estoque-kits` task enqueuing one
 send per kit) and the send run's own `deriva` follow-up, all running as the
 functions runtime SA, as does the daily reconcile's queue phase (PR 12-g); the
-manual push joins under the App Hosting runtime SA. Run grant 1 with the queue
-`filaEstoqueLojaIntegrada` and grant 3 with the service
+manual push (PR 12-h) enqueues onto it as the App Hosting runtime SA. Run grant 1
+with the queue `filaEstoqueLojaIntegrada` and grant 3 with the service
 `filaestoquelojaintegrada` (or let `TASKS_INVOKER_SA` apply them); grant 2 is
 already in place for the functions runtime SA.
 
@@ -712,14 +719,13 @@ queue functions spread the same `tasksInvokerOptions()`, and `TASKS_INVOKER_SA`
 is ONE authoritative list for the whole codebase: every identity named in it
 gets `roles/cloudtasks.enqueuer` on EVERY queue and `roles/run.invoker` on EVERY
 queue's service (three of each since master-plan step 12: the stock queue
-spreads the same options). Today that is the functions runtime SA alone. When
-step 4 adds the App Hosting runtime SA (the inbound order webhook, an enqueuer
-of the READS queue), that identity will hold the same rights on the writes and
-stock queues — the two queues that write to Loja Integrada — although nothing in
-App Hosting enqueues onto the writes queue (step 12's manual stock push will
-enqueue onto the stock queue).
-Step 4 decides whether to accept that or to give each queue its own invoker
-list; until then the list names one identity and the question does not arise.
+spreads the same options). Since PR 12-h that list names the App Hosting runtime
+SA too, so that identity holds the same rights on the writes queue — one of the
+two queues that write to Loja Integrada — although nothing in App Hosting
+enqueues onto it (the code pin in "App Hosting enqueues since PR 12-h" below is
+what keeps it so). PR 12-h accepts that
+rather than giving each queue its own invoker list; splitting the list is the
+fix if the exposure ever matters.
 
 ⚠️ **A queue name and its Cloud Run service name differ in CASE.** Cloud Tasks
 keeps the function's name (`filaEscritaLojaIntegrada`); the gen2 function's Cloud
@@ -769,6 +775,55 @@ principal is the enqueuer's own identity, and a gen2 function is a Cloud Run
 service, so that principal needs `run.invoker` ON THE SERVICE. Without it the
 task is created and delivered and the service answers 403 `run.routes.invoke`,
 with NO failure document written anywhere.
+
+### App Hosting enqueues since PR 12-h
+
+The two operator stock routes of the `apps/loja-integrada` App Hosting backend
+enqueue through `lib/firebase/filasLi.ts`: the manual stock push
+(`POST …/enviar-estoque`) onto the STOCK queue `filaEstoqueLojaIntegrada`, the
+operator's reconcile (`POST …/conta/[id]/estoque/reconciliar`) its first slice
+onto the READS queue `filaLeituraLojaIntegrada`. Neither ever enqueues onto the
+writes queue (`estrutura.test.ts` pins each root's queue set). Before either
+route is used on a project, the App Hosting runtime SA needs:
+
+1. **Grants 1 and 3 on the reads and stock queues** — name it in
+   `TASKS_INVOKER_SA` beside the functions runtime SA (below), and the deploy
+   applies both. Without it the enqueue is refused (the push answers 500 or a
+   `falha` row) or the task is created and its dispatch 403s with no failure
+   document anywhere.
+2. **Grant 2 on ITSELF** — the Admin SDK stamps the task's OIDC token with the
+   enqueuer's own identity, so the App Hosting runtime SA needs
+   `roles/iam.serviceAccountUser` on the App Hosting runtime SA. No deploy makes
+   it:
+
+   ```bash
+   gcloud iam service-accounts add-iam-policy-binding <apphosting-runtime-sa> \
+     --project=<project-id> \
+     --member="serviceAccount:<apphosting-runtime-sa>" \
+     --role="roles/iam.serviceAccountUser"
+   ```
+
+3. **Two console values on that backend** (never an `apphosting.yaml` `env:`
+   row): `LOJA_INTEGRADA_TASKS_REGION` set to exactly this codebase's
+   `FUNCTIONS_REGION` (the preflight prints the cross-check; unset is the safe
+   state — both routes answer 500 before any read — and a well-formed WRONG
+   region drops every task while the route answers success, #1108), and
+   optionally `LOJA_INTEGRADA_TASKS_DISABLED=1` (both routes answer 503,
+   nothing read). `LOJA_INTEGRADA_MODO_ESTOQUE` and `LOJA_INTEGRADA_CHAMADAS`
+   are set ALIKE on both surfaces, and only in the window.
+
+**Deploy order:** this functions codebase first (the queues' consumers and the
+invoker list naming both SAs), then the `apps/loja-integrada` App Hosting
+backend, then `apps/web` (whose stock provider stays unreachable until the
+step-22 caps flip anyway).
+
+**Verify, on staging with the stock valve at `dry-run` on BOTH surfaces:** POST
+the reconcile route for one conta and confirm that
+`reconcileEstoqueLojaIntegrada/atual` takes its lease under an
+`estoque-reconcile-manual-…` id within minutes; for the push, find the stock
+queue's dispatch line for the queued child in the functions log (it says
+dry-run — `desligado` means the valve is off on the functions side), and no 403
+on dispatch (a missing `run.invoker`).
 
 ### Photos: the runtime SA writes the default bucket (master-plan step 9)
 
@@ -833,12 +888,11 @@ Run it by hand any time; it changes nothing:
 node tools/deploy-env/preflight.mjs loja-integrada
 ```
 
-ℹ️ **The step-3 preflight prints no backend cross-check.** Other channels' preflight
-ends with a note naming the `*_TASKS_REGION` row their `apphosting.yaml` must
-carry, because an App Hosting enqueuer reads it. Nothing in `apps/loja-integrada`
-enqueues yet, so a note would send the operator to set a row that nothing reads.
-Step 4 adds the App Hosting enqueuer, sets the row's `backendVar` and
-`backendManifest`, and this paragraph goes.
+ℹ️ **Since PR 12-h it ends with the backend cross-check**: a note naming
+`LOJA_INTEGRADA_TASKS_REGION` and the region it must equal, to be set in the
+App Hosting CONSOLE of `apps/loja-integrada` — never as a row of its
+`apphosting.yaml`, which deliberately has none (the Shopee shape: a manifest
+value would reach every project's backend, and unset is the safe state).
 
 ⚠️ It does **not** run in CI. `predeploy` hooks are skipped under
 `emulators:exec`, which is deliberate — the emulators have no IAM layer.
@@ -854,7 +908,7 @@ the act-as on the functions runtime SA: that one stays a manual `gcloud` grant
 with or without this variable.
 
 ```bash
-export TASKS_INVOKER_SA="<functions-runtime-sa>"
+export TASKS_INVOKER_SA="<functions-runtime-sa>,<apphosting-runtime-sa>"
 firebase deploy --only functions:loja-integrada \
   --config firebase.loja-integrada.deploy.json \
   --project <project-id>
@@ -862,10 +916,11 @@ firebase deploy --only functions:loja-integrada \
 
 ⚠️ **The list is AUTHORITATIVE: name every enqueuer, comma-separated** — drop the
 duplicate when two are the same identity. A deploy **replaces** the members of
-both bindings, so an identity left out **loses** the role. Today that is the
-functions runtime SA alone; step 4 adds the App Hosting runtime SA, and a later
-deploy that forgets it removes its role. If steps 3 and 4 reach a project in the
-same window, name both from the first deploy.
+both bindings, so an identity left out **loses** the role. Since PR 12-h that is
+the functions runtime SA AND the App Hosting runtime SA of `apps/loja-integrada`
+(its two stock routes enqueue), and a later deploy that forgets the second
+removes its role: the manual push and the reconcile route then fail to enqueue,
+or their tasks 403 on dispatch. Name both from the first deploy into a project.
 
 ⚠️ **Unset ⇒ the option is omitted entirely.** The build prints a warning and
 grants 1 and 3 above become manual too. It never guesses a value: a wrong one
@@ -964,7 +1019,9 @@ of this section passes.
    `gcloud run services list` first, as the IAM section says) — and
    `gcloud iam service-accounts get-iam-policy <functions-runtime-sa>` lists
    `roles/iam.serviceAccountUser` for each of them (grant 2, which no deploy
-   makes).
+   makes). Since PR 12-h the App Hosting runtime SA enqueues as ITSELF, so
+   `gcloud iam service-accounts get-iam-policy <apphosting-runtime-sa>` must list
+   that role for the App Hosting runtime SA too.
 3. The Firestore index `notificacoesLojaIntegrada (status, processedAt)` and
    `(status, contaId)` are READY, and so are
    `int_frete (tipo, contaLojaIntegradaEnviosOuterRef, ativo, dataCadastro DESC)`

@@ -25,6 +25,7 @@ function input(
           ? null
           : ({ definirStatusAnuncios } as unknown as MercadoLivreClient),
       shopee: null,
+      lojaIntegrada: null,
     },
     ...over,
   };

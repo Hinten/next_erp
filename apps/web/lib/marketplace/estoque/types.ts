@@ -16,7 +16,11 @@ import type { PushDeps, PushIntegracao, PushOutcome, PushRowBase } from '../push
  * what stays here is the stock payload and this operation's own vocabulary.
  */
 
-/** How one listing ended up. Mirrors the backend's `PushEstoqueOutcome`. */
+/**
+ * How one listing ended up. The Mercado Livre and Shopee backends answer four of
+ * these (`PushEstoqueOutcome` in apps/mercado-livre); Loja Integrada's QUEUES the
+ * send and answers `enfileirado` instead of `enviado` (step 12).
+ */
 export type StockPushOutcome = PushOutcome;
 
 /**
@@ -46,7 +50,12 @@ export type StockPushDeps = PushDeps;
 
 export interface StockPushInput {
   integracao: StockPushIntegracao;
-  /** Family anchors or variation children — every registered channel's backend resolves a child one `paiId` hop to its anchor, and its rows name the ANCHOR. */
+  /**
+   * Family anchors or variation children. The Mercado Livre and Shopee backends
+   * resolve a child one `paiId` hop to its anchor, and their rows name the
+   * ANCHOR; Loja Integrada's goes the other way — an anchor is expanded to its
+   * children, and its rows name each CHILD (each one is its own listing there).
+   */
   produtoIds: readonly string[];
   /** Names for the report, so a skip row can still say which produto it was. */
   nomePorProdutoId: ReadonlyMap<string, string>;

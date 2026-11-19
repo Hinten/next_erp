@@ -1,0 +1,289 @@
+import { ZodError } from 'zod';
+import {
+  CODIGO_ERRO_LI,
+  INTEGRACAO_TIPO,
+  MAX_PRODUTOS_ENVIO_ESTOQUE_LI,
+  RESULTADO_ENVIO_ESTOQUE_LI,
+  type RespostaEnvioEstoqueLi,
+  type ResultadoEnvioEstoqueLi,
+} from '@delfrance/schemas';
+import {
+  LojaIntegradaClientHttpError,
+  LojaIntegradaClientNetworkError,
+  LojaIntegradaClientRespostaInvalidaError,
+  LojaIntegradaClientTempoEsgotadoError,
+} from '@/lib/loja-integrada/client';
+
+import { makeRowKeyer } from '../../push/types';
+import type {
+  StockPushChannelResult,
+  StockPushInput,
+  StockPushOutcome,
+  StockPushProvider,
+  StockPushRow,
+} from '../types';
+
+/**
+ * Loja Integrada stock push — `POST /api/marketplace/loja-integrada/enviar-estoque`
+ * on the apps/loja-integrada backend (master plan step 12).
+ *
+ * ⚠️ UNREACHABLE until the step-22 caps flip: the caps row still says
+ * `implementado: false`, and `resolveStockPushProvider` asks the caps BEFORE the
+ * provider map, so every Loja Integrada conta gets the placeholder's
+ * `canal-nao-implementado` row today (`caps/registriesAlinhadas.test.ts` pins
+ * that middle state, the Shopee rows-first precedent).
+ *
+ * ⚠️ The backend QUEUES, it does not send. Each row it answers is one CHILD
+ * (every Loja Integrada child is its own listing): `enfileirado` means its send
+ * task is on the channel's stock queue, and the send run decides minutes later,
+ * from fresh reads, whether anything is written. So this provider never says
+ * `enviado` — the shared dialog renders `enfileirado` with its own label.
+ *
+ * A thin adapter otherwise, like the other providers: the backend owns every
+ * row's pt-BR `mensagem` and its skip vocabulary; the answer is READ against the
+ * shared contract (`respostaEnvioEstoqueLiSchema` in `@delfrance/schemas`), so a
+ * malformed or older backend's answer is a failure row, never a cast.
+ *
+ * - **`reenviarComErro` is not forwarded**: this channel keeps no refusal latch
+ *   for a manual push to bypass, and the route's strict body has no such key.
+ * - **The selection is sliced** into requests of at most
+ *   `MAX_PRODUTOS_ENVIO_ESTOQUE_LI` distinct ids, sent one after the other: a
+ *   supported channel receives the WHOLE /produtos selection (`push/run.ts`),
+ *   and the body's cap would otherwise make the client throw and break every
+ *   conta after this one. Each slice is bounded by the backend on its own
+ *   (`LI_SELECAO_EXCEDE_LIMITE` refuses a slice whole).
+ * - **A conta-level answer is one row per requested id of that slice**: the
+ *   backend switched off (read switch, stock valve, its task queues) or the
+ *   slice over the children bound ⇒ `nao-tentado` (nothing was queued); any
+ *   other refusal ⇒ `falha` with the backend's sentence.
+ * - **An outcome nobody can confirm** — a 2xx the contract refuses, a 5xx, the
+ *   deadline, the network — is `falha`, saying it may have been queued and that
+ *   repeating is safe (inside the minute the backend's task names collide).
+ * - **A cancel** returns the slices already answered and nothing more; the run
+ *   reports the cancellation itself.
+ *
+ * ⚠️ Narrowed by CLASS, subclasses FIRST: `RespostaInvalida` extends the HTTP
+ * error and `TempoEsgotado` the network error. Anything unrecognised is
+ * rethrown (root `CLAUDE.md` rule 6).
+ */
+
+/** The selected produto ids one request carries at most (the route's body cap). */
+export const FATIA_ENVIO_ESTOQUE_LI = MAX_PRODUTOS_ENVIO_ESTOQUE_LI;
+
+/** The row a backend answer's `resultado` becomes — `enfileirado` stays itself. */
+const OUTCOME_DO_RESULTADO: Record<ResultadoEnvioEstoqueLi, StockPushOutcome> = {
+  [RESULTADO_ENVIO_ESTOQUE_LI.enfileirado]: 'enfileirado',
+  [RESULTADO_ENVIO_ESTOQUE_LI.pulado]: 'pulado',
+  [RESULTADO_ENVIO_ESTOQUE_LI.falha]: 'falha',
+};
+
+/**
+ * The codes that mean NOTHING was attempted for the whole slice: the backend is
+ * switched off for this (until the migration, or by configuration), or the
+ * slice reaches more children than one push may queue. The backend's sentence
+ * says which, and what to do.
+ */
+const CODIGOS_NAO_TENTADO: ReadonlySet<string> = new Set<string>([
+  CODIGO_ERRO_LI.chamadasDesligadas,
+  CODIGO_ERRO_LI.estoqueDesligado,
+  CODIGO_ERRO_LI.tarefasDesligadas,
+  CODIGO_ERRO_LI.selecaoExcedeLimite,
+]);
+
+/** No client: logged out, or this build cannot reach the backend safely. */
+export const MENSAGEM_SEM_CLIENTE_LI =
+  'O backend da Loja Integrada não está disponível nesta sessão (faça login de novo ou avise o suporte).';
+
+/** The network copy — the other providers' sentence, naming this channel's backend. */
+export const MENSAGEM_REDE_LI = 'Não foi possível contatar o backend da Loja Integrada.';
+
+/** A body the shared schema refused before any request (a malformed conta or produto id). */
+export const MENSAGEM_SELECAO_INVALIDA_LI =
+  'A seleção tem um identificador que o backend da Loja Integrada não aceita. Nada foi enfileirado.';
+
+/**
+ * Appended when the outcome is UNKNOWN — the route may have queued some children
+ * before the answer was lost or unreadable. Repeating is safe: inside the same
+ * minute the task names collide, after it each child gets one more send run,
+ * which re-reads everything before writing anything.
+ */
+export const SUFIXO_RESULTADO_INCERTO_LI =
+  ' Não foi possível confirmar se o estoque foi enfileirado; repetir o envio é seguro.';
+
+/** What a failed slice turned into. */
+type FalhaDaFatia =
+  | { readonly tipo: 'cancelado' }
+  | {
+      readonly tipo: 'fatia';
+      readonly outcome: 'falha' | 'nao-tentado';
+      readonly motivo: string;
+      readonly mensagem: string;
+    };
+
+/** Classify a failed push call. `null` ⇒ not ours: the caller rethrows. */
+function classificarFalha(err: unknown, signal: AbortSignal | undefined): FalhaDaFatia | null {
+  // A cancel is told apart by the SIGNAL, never by the error's shape (the
+  // `lib/shopee/falhaDoEnvio.ts` rule): the caller's abort comes back as the
+  // abort itself, and a real network failure while nobody cancelled stays one.
+  if (
+    signal?.aborted === true &&
+    (err instanceof LojaIntegradaClientNetworkError ||
+      (err instanceof DOMException && err.name === 'AbortError'))
+  ) {
+    return { tipo: 'cancelado' };
+  }
+  if (err instanceof ZodError) {
+    return {
+      tipo: 'fatia',
+      outcome: 'falha',
+      motivo: 'selecao-invalida',
+      mensagem: MENSAGEM_SELECAO_INVALIDA_LI,
+    };
+  }
+  // ⚠️ BEFORE the HTTP error, its parent: a 2xx this build cannot read may well
+  // have queued every child it was about to describe.
+  if (err instanceof LojaIntegradaClientRespostaInvalidaError) {
+    return {
+      tipo: 'fatia',
+      outcome: 'falha',
+      motivo: 'resposta-invalida',
+      mensagem: err.message + SUFIXO_RESULTADO_INCERTO_LI,
+    };
+  }
+  if (err instanceof LojaIntegradaClientHttpError) {
+    if (err.code !== null && CODIGOS_NAO_TENTADO.has(err.code)) {
+      return { tipo: 'fatia', outcome: 'nao-tentado', motivo: err.code, mensagem: err.message };
+    }
+    return {
+      tipo: 'fatia',
+      outcome: 'falha',
+      motivo: err.code ?? 'erro-http',
+      // A 5xx may come after some tasks landed (the route's own header).
+      mensagem: err.status >= 500 ? err.message + SUFIXO_RESULTADO_INCERTO_LI : err.message,
+    };
+  }
+  // ⚠️ BEFORE the network error, its parent.
+  if (err instanceof LojaIntegradaClientTempoEsgotadoError) {
+    return {
+      tipo: 'fatia',
+      outcome: 'falha',
+      motivo: 'tempo-esgotado',
+      mensagem: err.message + SUFIXO_RESULTADO_INCERTO_LI,
+    };
+  }
+  if (err instanceof LojaIntegradaClientNetworkError) {
+    return {
+      tipo: 'fatia',
+      outcome: 'falha',
+      motivo: 'rede',
+      mensagem: MENSAGEM_REDE_LI + SUFIXO_RESULTADO_INCERTO_LI,
+    };
+  }
+  return null;
+}
+
+/** `ids` in consecutive slices of at most `tamanho`, in order. */
+function fatiar(ids: readonly string[], tamanho: number): string[][] {
+  const fatias: string[][] = [];
+  for (let i = 0; i < ids.length; i += tamanho) fatias.push(ids.slice(i, i + tamanho));
+  return fatias;
+}
+
+export const lojaIntegradaStockProvider: StockPushProvider = {
+  tipos: [INTEGRACAO_TIPO.lojaIntegrada],
+
+  async enviarEstoque(input: StockPushInput): Promise<StockPushChannelResult> {
+    const { integracao, deps } = input;
+    const client = deps.lojaIntegrada;
+    // Distinct, in selection order: `solicitados` on the backend counts the same.
+    const ids = [...new Set(input.produtoIds)];
+
+    const chave = makeRowKeyer();
+    const linha = (
+      over: Partial<StockPushRow> & Pick<StockPushRow, 'produtoId'>,
+    ): StockPushRow => ({
+      key: chave(over.produtoId, integracao.id, over.anuncioId ?? null),
+      produtoNome: input.nomePorProdutoId.get(over.produtoId) ?? null,
+      integracaoId: integracao.id,
+      integracaoNome: integracao.nome,
+      anuncioId: null,
+      linkDocId: null,
+      outcome: 'falha',
+      motivo: null,
+      mensagem: '',
+      quantidade: null,
+      ...over,
+    });
+
+    /** One slice's answer, as display rows. */
+    const linhasDaResposta = (res: RespostaEnvioEstoqueLi): StockPushRow[] => {
+      const rows = res.listings.map((l) =>
+        linha({
+          // The CHILD — its own listing on this channel; the store product id
+          // tells two children of one family apart.
+          produtoId: l.produtoId,
+          // The child's own name when the backend read it; else the name of the
+          // id the operator SELECTED (its parent, or itself).
+          produtoNome:
+            l.produtoNome ??
+            input.nomePorProdutoId.get(l.solicitadoId) ??
+            input.nomePorProdutoId.get(l.produtoId) ??
+            null,
+          anuncioId: l.idLi,
+          outcome: OUTCOME_DO_RESULTADO[l.resultado],
+          motivo: l.motivo,
+          mensagem: l.mensagem,
+        }),
+      );
+      // A selected id none of whose children made a row: ONE row, under the id
+      // the operator asked for.
+      for (const p of res.produtosSemEnvio) {
+        rows.push(
+          linha({
+            produtoId: p.produtoId,
+            produtoNome: p.produtoNome ?? input.nomePorProdutoId.get(p.produtoId) ?? null,
+            outcome: 'pulado',
+            motivo: p.motivo,
+            mensagem: p.mensagem,
+          }),
+        );
+      }
+      return rows;
+    };
+
+    /** A slice-level verdict, as one row per requested id of that slice. */
+    const fatiaInteira = (
+      fatia: readonly string[],
+      outcome: StockPushOutcome,
+      motivo: string,
+      mensagem: string,
+    ): StockPushRow[] => fatia.map((produtoId) => linha({ produtoId, outcome, motivo, mensagem }));
+
+    if (!client) {
+      return {
+        pausadoAte: null,
+        rows: fatiaInteira(ids, 'falha', 'sem-cliente', MENSAGEM_SEM_CLIENTE_LI),
+      };
+    }
+
+    const rows: StockPushRow[] = [];
+    for (const fatia of fatiar(ids, FATIA_ENVIO_ESTOQUE_LI)) {
+      // Cancelled between slices: what was answered stands, the run reports it.
+      if (input.signal?.aborted === true) break;
+      try {
+        const res = await client.enviarEstoque(
+          { contaId: integracao.id, produtoIds: fatia },
+          input.signal === undefined ? {} : { sinal: input.signal },
+        );
+        rows.push(...linhasDaResposta(res));
+      } catch (err) {
+        const falha = classificarFalha(err, input.signal);
+        if (falha === null) throw err; // never a generic catch (repo rule 6)
+        if (falha.tipo === 'cancelado') break;
+        rows.push(...fatiaInteira(fatia, falha.outcome, falha.motivo, falha.mensagem));
+      }
+    }
+    // This channel's backend never pauses a conta for a quota: it queues.
+    return { rows, pausadoAte: null };
+  },
+};

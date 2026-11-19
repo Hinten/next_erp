@@ -1,4 +1,5 @@
 import type { IntegracaoTipo } from '@delfrance/schemas';
+import type { LojaIntegradaClient } from '@/lib/loja-integrada/client';
 import type { MercadoLivreClient } from '@/lib/mercado-livre/client';
 import type { ShopeeClient } from '@/lib/shopee/client';
 
@@ -22,8 +23,17 @@ import type { ShopeeClient } from '@/lib/shopee/client';
  * operator ticks in the dialog.
  */
 
-/** How one listing ended up. Every channel backend answers in these terms. */
-export type PushOutcome = 'enviado' | 'pulado' | 'falha' | 'nao-tentado';
+/**
+ * How one listing ended up. Every channel backend answers in these terms.
+ *
+ * ⚠️ `enfileirado` is NOT a kind of `enviado`. It is the answer of a backend
+ * that only QUEUES the work (Loja Integrada's stock push, step 12): the route
+ * sent nothing, and the channel's own queue decides minutes later, from fresh
+ * reads, whether anything is written. Rendering it as "Enviado" would tell the
+ * operator the store already shows the number. The channels that send inline
+ * (Mercado Livre, Shopee) never answer it.
+ */
+export type PushOutcome = 'enviado' | 'enfileirado' | 'pulado' | 'falha' | 'nao-tentado';
 
 /**
  * The part of a result row that is the same for every operation.
@@ -88,6 +98,11 @@ export interface PushDeps {
   mercadoLivre: MercadoLivreClient | null;
   /** Null while logged out — same contract (#1529, step 21). */
   shopee: ShopeeClient | null;
+  /**
+   * Null while logged out, or when this build cannot reach the backend safely
+   * (`useBackendLojaIntegrada`'s `indisponivel`) — same contract (step 12).
+   */
+  lojaIntegrada: LojaIntegradaClient | null;
 }
 
 /**

@@ -7,7 +7,7 @@
  * (`lib/whatsapp/client.ts`): `null` while logged out, so the panel can disable
  * its buttons, and `() => user.getIdToken()` so a refreshed ID token propagates.
  *
- * Fourteen calls, one per route (`apps/loja-integrada/app/api/marketplace/loja-integrada/…`):
+ * Fifteen calls, one per route (`apps/loja-integrada/app/api/marketplace/loja-integrada/…`):
  *
  * | call | route | answer |
  * | --- | --- | --- |
@@ -25,12 +25,26 @@
  * | `revisaoImportacao(id, jobId, depois, opcoes)` | `GET …/conta/[id]/importacoes/[jobId]/revisao` | `respostaRevisaoFiscalLiSchema` |
  * | `rotearEtiqueta(pedidoId, corpo)` | `PUT …/pedidos/[pedidoId]/rota-etiqueta` | `respostaRotaEtiquetaLiSchema` |
  * | `conferirPagamento(pedidoId, opcoes)` | `GET …/pedidos/[pedidoId]/pagamento` | `respostaConferenciaPagamentoLiSchema` |
+ * | `enviarEstoque(corpo, opcoes)` | `POST …/enviar-estoque` | `respostaEnvioEstoqueLiSchema` |
  *
  * Every answer — the 2xx bodies AND the error envelope — is read against the ONE
  * shared contract in `@delfrance/schemas` (`contaLojaIntegrada.ts`,
  * `catalogoLojaIntegrada.ts`, `importacaoLojaIntegrada.ts`,
- * `rotaEtiquetaLojaIntegrada.ts`, `conferenciaPagamentoLojaIntegrada.ts`), the
- * same modules the routes build their answers with. Nothing here is cast.
+ * `rotaEtiquetaLojaIntegrada.ts`, `conferenciaPagamentoLojaIntegrada.ts`,
+ * `estoqueManualLojaIntegrada.ts`), the same modules the routes build their
+ * answers with. Nothing here is cast.
+ *
+ * ## The manual stock push (master plan step 12)
+ *
+ * `enviarEstoque` is the produtos table's "Enviar estoque" for one conta. The
+ * route ENQUEUES one send task per linked child and sends nothing itself, so its
+ * rows say `enfileirado`, never "sent"; it calls no Loja Integrada endpoint
+ * either. The body is rebuilt by name and parsed through the shared strict
+ * schema before the token is asked for (a body it refuses throws `ZodError`
+ * with no request). Bounded by {@link PRAZO_ENVIO_ESTOQUE_LI_MS} and the
+ * caller's signal. Repeating one is safe: inside the same minute the backend's
+ * task names collide, after it the queue runs one more send per child, which
+ * re-reads everything before writing anything.
  *
  * ## The two catalogue reads (master plan step 10)
  *
@@ -92,6 +106,7 @@
  * | {@link PRAZO_IMPORTACAO_LI_MS} | the six import calls | no Loja Integrada call: a cold start |
  * | {@link PRAZO_ROTA_ETIQUETA_LI_MS} | `rotearEtiqueta` | no Loja Integrada call: a cold start |
  * | {@link PRAZO_CONFERENCIA_PAGAMENTO_LI_MS} | `conferirPagamento` | one paced read |
+ * | {@link PRAZO_ENVIO_ESTOQUE_LI_MS} | `enviarEstoque` | no Loja Integrada call: Firestore reads and enqueues in rounds |
  *
  * The conta routes have none.
  *
@@ -121,6 +136,7 @@ import { useMemo } from 'react';
 import type { z } from 'zod';
 import {
   ACAO_IMPORTACAO_LI,
+  type CorpoEnvioEstoqueLi,
   type CorpoRenovarValidadeLi,
   type CorpoRotaEtiquetaLi,
   type CorpoSalvarCredencialLi,
@@ -128,6 +144,7 @@ import {
   type OpcoesImportacaoLi,
   type RespostaConferenciaPagamentoLi,
   type RespostaCredencialLojaIntegrada,
+  type RespostaEnvioEstoqueLi,
   type RespostaGradeLi,
   type RespostaGradesLi,
   type RespostaImportacaoLi,
@@ -138,10 +155,12 @@ import {
   type RespostaRevisaoFiscalLi,
   type RespostaRotaEtiquetaLi,
   type StatusContaLojaIntegrada,
+  corpoEnvioEstoqueLiSchema,
   erroContaLojaIntegradaSchema,
   opcoesImportacaoLiSchema,
   respostaConferenciaPagamentoLiSchema,
   respostaCredencialLojaIntegradaSchema,
+  respostaEnvioEstoqueLiSchema,
   respostaGradeLiSchema,
   respostaGradesLiSchema,
   respostaImportacaoLiSchema,
@@ -165,6 +184,20 @@ const CONTA_PATH = '/api/marketplace/loja-integrada/conta';
 
 /** The pedidos route family (master plan step 15): label routing and the paid re-check. */
 const PEDIDOS_PATH = '/api/marketplace/loja-integrada/pedidos';
+
+/** The manual stock push (master plan step 12): conta-scoped by its BODY, not its path. */
+const ENVIO_ESTOQUE_PATH = '/api/marketplace/loja-integrada/enviar-estoque';
+
+/**
+ * How long the manual stock push may take, in ms. The route calls nothing
+ * outside: its worst case is Firestore reads and Cloud Tasks enqueues in
+ * bounded rounds, about 34 s at today's bounds
+ * (`apps/loja-integrada/lib/lojaIntegrada/prazos.test.ts`), so this covers that
+ * plus a cold start and the CORS preflight. A timeout is safe to retry (the
+ * header, "The manual stock push") — but its rows cannot say whether the
+ * children were queued.
+ */
+export const PRAZO_ENVIO_ESTOQUE_LI_MS = 60_000;
 
 /**
  * How long the label routing call may take, in ms. The route reads the ERP and
@@ -334,6 +367,31 @@ export interface OpcoesLeituraImportacaoLi {
   readonly sinal?: AbortSignal;
 }
 
+/** Options of the manual stock push. */
+export interface OpcoesEnvioEstoqueLi {
+  /** Aborts the call (the operator's Cancelar); the abort comes back as itself. */
+  readonly sinal?: AbortSignal;
+}
+
+/**
+ * The push body exactly as sent: rebuilt BY NAME (the route's body is strict,
+ * so a caller object carrying one more key must not reach it — there is no
+ * `reenviarComErro` on this channel) and parsed through the shared
+ * {@link corpoEnvioEstoqueLiSchema}.
+ *
+ * ⚠️ Throws `ZodError` for a body the schema refuses — no id, more than
+ * `MAX_PRODUTOS_ENVIO_ESTOQUE_LI` ids, an id Firestore could not hold, a
+ * malformed conta id. The caller slices and narrows before it gets here (the
+ * stock provider does); like {@link corpoInicioImportacaoLi}, it is not one of
+ * this client's error classes.
+ */
+export function corpoEnvioEstoqueLi(corpo: CorpoEnvioEstoqueLi): CorpoEnvioEstoqueLi {
+  return corpoEnvioEstoqueLiSchema.parse({
+    contaId: corpo.contaId,
+    produtoIds: [...corpo.produtoIds],
+  });
+}
+
 /**
  * The start options as a caller builds them: `modo`, `alvo` and `acao` always,
  * the rest optional (the shared schema's INPUT, so its defaults apply).
@@ -478,6 +536,20 @@ export interface LojaIntegradaClient {
     pedidoId: string,
     opcoes?: OpcoesConferenciaPagamentoLi,
   ): Promise<RespostaConferenciaPagamentoLi>;
+  /**
+   * Queue the stock of the selected produtos for one conta
+   * (`PERM.integracao.write`): one row per CHILD, `enfileirado` / `pulado` /
+   * `falha`, plus the selected ids that produced none. The body is
+   * {@link corpoEnvioEstoqueLi}'s. The read switch off (every environment until
+   * the migration) rejects with `LI_CHAMADAS_DESLIGADAS`, the stock valve off
+   * with `LI_ESTOQUE_DESLIGADO`, a selection reaching too many children with
+   * `LI_SELECAO_EXCEDE_LIMITE` — nothing queued in each. Bounded by
+   * {@link PRAZO_ENVIO_ESTOQUE_LI_MS}.
+   */
+  enviarEstoque(
+    corpo: CorpoEnvioEstoqueLi,
+    opcoes?: OpcoesEnvioEstoqueLi,
+  ): Promise<RespostaEnvioEstoqueLi>;
 }
 
 /**
@@ -835,6 +907,15 @@ export function createLojaIntegradaClient(config: {
           ...(opcoes?.sinal === undefined ? {} : { sinal: opcoes.sinal }),
         },
       ),
+    // The body is parsed BEFORE the token is asked for, so a refused body throws
+    // with no request at all.
+    enviarEstoque: async (corpo, opcoes) => {
+      const enviado = corpoEnvioEstoqueLi(corpo);
+      return call('POST', ENVIO_ESTOQUE_PATH, respostaEnvioEstoqueLiSchema, enviado, {
+        prazoMs: PRAZO_ENVIO_ESTOQUE_LI_MS,
+        ...(opcoes?.sinal === undefined ? {} : { sinal: opcoes.sinal }),
+      });
+    },
   };
 }
 

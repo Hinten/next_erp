@@ -68,7 +68,7 @@ describe('definirStatusParaMarketplaces', () => {
         ACAO_STATUS_ANUNCIO.pausar,
         {
           db,
-          deps: { mercadoLivre: null, shopee: null },
+          deps: { mercadoLivre: null, shopee: null, lojaIntegrada: null },
           lerIntegracoes: lerIntegracoes as never,
         },
         vi.fn(),

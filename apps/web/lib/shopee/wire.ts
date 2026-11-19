@@ -728,7 +728,11 @@ export {
 //   job statuses, the report row's `resultado`/`fase`, `estadoAnuncio`, the
 //   pause/reactivate direction and the refusal's `acao`.
 
-/** The four outcomes of one listing of a push — the `PushOutcome` the three web registries share. */
+/**
+ * The four outcomes of one listing of a Shopee push — `PushOutcome` minus
+ * `enfileirado`, which only a backend that queues instead of sending answers
+ * (Loja Integrada's stock push). Shopee sends inline, so it stays four.
+ */
 const pushOutcomeShopeeSchema = z.enum(['enviado', 'pulado', 'falha', 'nao-tentado']);
 
 /** A requested produto that produced no listing at all, and why. Shared by all three pushes. */

@@ -23,6 +23,7 @@ function input(
       mercadoLivre:
         enviarEstoque == null ? null : ({ enviarEstoque } as unknown as MercadoLivreClient),
       shopee: null,
+      lojaIntegrada: null,
     },
     ...over,
   };

@@ -5,6 +5,7 @@ import { ACAO_STATUS_ANUNCIO } from '@delfrance/schemas';
 import { useIntegracoes } from '@/lib/data/useIntegracoes';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useMercadoLivreClient } from '@/lib/mercado-livre/client';
+import { useLojaIntegradaClient } from '@/lib/loja-integrada/client';
 import { useShopeeClient } from '@/lib/shopee/client';
 import { AvisoCanaisNaoSuportados } from '@/lib/marketplace/caps/AvisoCanaisNaoSuportados';
 import { PushProgressDialog } from '@/lib/marketplace/push/PushProgressDialog';
@@ -30,6 +31,7 @@ export interface PausarAnunciosDialogProps {
 export function PausarAnunciosDialog({ opened, alvos, onClose }: PausarAnunciosDialogProps) {
   const mercadoLivre = useMercadoLivreClient();
   const shopee = useShopeeClient();
+  const lojaIntegrada = useLojaIntegradaClient();
   // The same shared `['integracoes']` entry `/produtos` already holds — this
   // resolves the selection's conta ids to a tipo at no extra read.
   const { byId, status } = useIntegracoes(getFirebaseFirestore());
@@ -83,7 +85,7 @@ export function PausarAnunciosDialog({ opened, alvos, onClose }: PausarAnunciosD
         definirStatusParaMarketplaces(
           alvos,
           ACAO_STATUS_ANUNCIO.pausar,
-          { db: getFirebaseFirestore(), deps: { mercadoLivre, shopee }, signal },
+          { db: getFirebaseFirestore(), deps: { mercadoLivre, shopee, lojaIntegrada }, signal },
           onProgress,
         )
       }

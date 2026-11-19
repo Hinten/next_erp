@@ -11,7 +11,7 @@ const input = (over: Partial<AnuncioStatusInput> = {}): AnuncioStatusInput => ({
   produtoIds: ['p1', 'p2'],
   nomePorProdutoId: new Map([['p1', 'Camiseta']]),
   acao: 'pausar',
-  deps: { mercadoLivre: null, shopee: null },
+  deps: { mercadoLivre: null, shopee: null, lojaIntegrada: null },
   ...over,
 });
 

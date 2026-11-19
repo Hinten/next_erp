@@ -7,7 +7,7 @@ import { INTEGRACAO_TIPO } from '@delfrance/schemas';
 import { createMercadoLivreClient } from '@/lib/mercado-livre/client';
 
 import { enviarEstoqueParaMarketplaces } from '../estoque/enviarEstoqueRun';
-import { PushProgressDialog } from './PushProgressDialog';
+import { PushProgressDialog, linhaDeResumoDoEnvio } from './PushProgressDialog';
 import type { PushRowBase } from './types';
 
 /**
@@ -39,6 +39,7 @@ function renderDialog(
     signal: AbortSignal,
     onProgress: (rows: PushRowBase[]) => void,
   ) => Promise<{ rows: PushRowBase[]; cancelado: boolean }>,
+  rotuloSucesso?: { singular: string; plural: string },
 ) {
   render(
     <MantineTestProvider>
@@ -53,10 +54,79 @@ function renderDialog(
         opcaoInicial
         renderOpcao={() => null}
         executar={executar}
+        {...(rotuloSucesso === undefined ? {} : { rotuloSucesso })}
       />
     </MantineTestProvider>,
   );
 }
+
+describe('PushProgressDialog — a QUEUED row is never shown as sent (step 12)', () => {
+  it('⭐ the summary of a run with no queued row keeps its exact text (the e2e pin)', async () => {
+    renderDialog(() => Promise.resolve({ rows: [linha()], cancelado: false }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Enviar preços' }));
+
+    // `e2e/produtos-shopee-acoes.vendas.e2e.spec.ts` matches this byte for byte.
+    expect(await screen.findByText('Enviados 1 · Pulados 0 · Falhas 0')).toBeTruthy();
+    expect(screen.queryByText(/Enfileirados/)).toBeNull();
+  });
+
+  it('⭐ queued rows get their OWN badge and count — never "Enviado"', async () => {
+    renderDialog(() =>
+      Promise.resolve({
+        rows: [
+          linha({ key: 'f1:c1:1', produtoId: 'f1', outcome: 'enfileirado', mensagem: 'Na fila.' }),
+          linha({ key: 'f2:c1:2', produtoId: 'f2', outcome: 'enfileirado', mensagem: 'Na fila.' }),
+        ],
+        cancelado: false,
+      }),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Enviar preços' }));
+
+    expect(
+      await screen.findByText('Enviados 0 · Enfileirados 2 · Pulados 0 · Falhas 0'),
+    ).toBeTruthy();
+    const linhaDaFila = screen.getByTestId('envio-preco-row-f1:c1:1');
+    expect(linhaDaFila.textContent).toContain('Enfileirado');
+    expect(linhaDaFila.textContent).not.toContain('Enviado');
+  });
+
+  it('NEAR MISS — rotuloSucesso renames `enviado` alone; a queued row keeps "Enfileirado"', async () => {
+    renderDialog(
+      () =>
+        Promise.resolve({
+          rows: [
+            linha(),
+            linha({
+              key: 'f1:c1:1',
+              produtoId: 'f1',
+              outcome: 'enfileirado',
+              mensagem: 'Na fila.',
+            }),
+          ],
+          cancelado: false,
+        }),
+      { singular: 'Pausado', plural: 'Pausados' },
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Enviar preços' }));
+
+    expect(
+      await screen.findByText('Pausados 1 · Enfileirados 1 · Pulados 0 · Falhas 0'),
+    ).toBeTruthy();
+    expect(screen.getByTestId('envio-preco-row-p1:c1:-').textContent).toContain('Pausado');
+    expect(screen.getByTestId('envio-preco-row-f1:c1:1').textContent).toContain('Enfileirado');
+  });
+
+  it('linhaDeResumoDoEnvio: the queued count appears only above zero', () => {
+    const base = { enviados: 3, enfileirados: 0, pulados: 1, falhas: 2 };
+    expect(linhaDeResumoDoEnvio(base, 'Enviados')).toBe('Enviados 3 · Pulados 1 · Falhas 2');
+    expect(linhaDeResumoDoEnvio({ ...base, enfileirados: 1 }, 'Enviados')).toBe(
+      'Enviados 3 · Enfileirados 1 · Pulados 1 · Falhas 2',
+    );
+  });
+});
 
 describe('PushProgressDialog — a run that BREAKS', () => {
   it('reports a FirebaseError instead of an all-zeros summary', async () => {
@@ -153,7 +223,7 @@ describe('PushProgressDialog — cancellation', () => {
         reenviarComErro,
         {
           db: {} as Firestore,
-          deps: { mercadoLivre, shopee: null },
+          deps: { mercadoLivre, shopee: null, lojaIntegrada: null },
           lerIntegracoes: async () =>
             new Map([['c1', { nome: 'Loja ML', tipo: INTEGRACAO_TIPO.mercadoLivre, ativo: true }]]),
           signal,
