@@ -139,12 +139,6 @@ export function MotoboyFields({
           decimalScale={0}
           disabled={disabled}
         />
-        <FreteDateTimeField
-          form={form}
-          name="prazoDespacho"
-          label="Data máxima para despacho"
-          disabled={disabled}
-        />
       </Group>
 
       <FreteSwitchField form={form} name="ehReverso" label="Frete reverso" disabled={disabled} />
