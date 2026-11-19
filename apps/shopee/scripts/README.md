@@ -86,6 +86,15 @@ same rate limits.
 Add `--json` for the machine-readable form: the same redacted summary on stdout,
 with the preamble on stderr so the stdout stays parseable.
 
+Four more flags switch on the TEST buyer mode, sandbox only — `--importar-cliente`
+(the mode itself), and `--importar-endereco`, `--nome-teste <nome>` and
+`--cep-teste <8 dígitos>`, each refused without it. See
+[Simulação do comprador](#simulação-do-comprador----importar-cliente-sandbox-only).
+
+A boolean flag takes no value: `--live=false`, `--json=1` or
+`--importar-endereco=nao` is refused rather than read as the bare flag (which,
+for `--live=false`, would have run LIVE).
+
 ### 4. What to read in the output
 
 | line                  | what it tells you                                                                                                                          |
@@ -107,7 +116,13 @@ A STORED summary (the `--live` read-back) prints the ref as `integracaoFreteOute
 ⚠️ **The output carries no buyer data by construction** — no name, document,
 phone, address or e-mail, `observacoesInternas` shows only a character count,
 and the cliente/endereço appear as outer-ref ids. It is safe to paste into an
-issue. Keep it that way if you extend it.
+issue. Keep it that way if you extend it. The one exception is the buyer mode's
+dry run, which prints what Shopee sent in `recipient_address` to **stderr**
+only (below); stdout and `--json` stay paste-safe there too.
+
+In buyer mode the dry run adds a `### comprador — MODO DE TESTE` block (and
+`--json` a `comprador` key), and `--live` a `### comprador — MODO DE TESTE
+(gravado)` block — both described in the section below.
 
 ### 5. The live run
 
@@ -209,6 +224,123 @@ contaProdutoShopeeOuterRef)`, which is **#1532**, migration-window work. On
   `onPedidoEstoqueSync` reserves against — so wherever that trigger is deployed,
   writing the pedido is what sets it off. Deleting the pedido afterwards is not a
   clean undo.
+
+### Simulação do comprador — `--importar-cliente` (sandbox only)
+
+The SG sandbox order never captures a buyer: its order-level region is `SG`
+(`regiao:nao-br`), Shopee masks the recipient's name (`"****"`) and sends a
+6-digit postal code, so even a CPF would create nothing. This TEST mode shows
+whether the buyer and the address land, keeping the rest of Shopee's data:
+
+```bash
+pnpm --filter @delfrance/shopee-app importar:pedido --integracao int-1 --order-sn 220810QSK8S7BX --importar-cliente --importar-endereco --nome-teste "Comprador Sandbox" --cep-teste 01001000
+```
+
+| flag                      | effect                                                                                                                                                                                    |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--importar-cliente`      | the buyer adapter reads a SIMULATED row: region `BR`, Shopee's own CPF when usable, else the repo's fake `12345678909`. The real capture path creates (or matches) and links the cliente. |
+| `--importar-endereco`     | also writes the endereço. Without it the cliente is linked and no endereço is written.                                                                                                    |
+| `--nome-teste <nome>`     | replaces ONLY `recipient_address.name`. Non-empty.                                                                                                                                        |
+| `--cep-teste <8 dígitos>` | replaces ONLY `recipient_address.zipcode`. Exactly 8 digits, no hyphen.                                                                                                                   |
+
+The last three are refused without `--importar-cliente`. What stays REAL: the
+order-level region still drives `paisId` (the endereço's `pais` is `SG`),
+`bloquearEmissaoNFe` (still `true`) and every fiscal flag, and the order status
+still decides the capture window.
+
+**Refused — exit 1, before any buyer or pedido write** (the importer re-checks
+the first two itself, in its read half AND its write half):
+
+- without the sandbox override: `SHOPEE_SANDBOX=1` **and** the resolved sandbox
+  API host (`overrideDeSandboxAtivo`, the price push's own gate);
+- on an order whose REAL region is not exactly two uppercase letters other than
+  `BR` — `BR`, absent, blank or a lowercase `br` all refuse: a fake CPF must
+  never pair with a real buyer;
+- in `--live`, before any Shopee call, without an explicit `--project` equal to
+  the project the admin app resolved, AND a service account
+  (`FIREBASE_SERVICE_ACCOUNT` / `FIREBASE_SERVICE_ACCOUNT_PATH`) issued for it
+  (`tools/migrations`' rule). Application default credentials (a gcloud login)
+  name no project and are refused;
+- in `--live`, when the document already belongs to a cliente with ANOTHER name.
+  The refusal prints that cliente's id. The dev seed's cliente holds
+  `12345678909`: pass `--nome-teste "<that cliente's name>"` to reuse it, or
+  delete it. A holder with the SAME name (trimmed and whitespace-collapsed,
+  nothing else folded) converges — an idempotent re-run; note that
+  `findOrCreateCliente` may then rewrite that cliente's `nome` to the
+  collapsed form (bumping its `ultimaModificacao`) when the stored spelling
+  differed — a cosmetic write on a cliente that already existed;
+- in `--live`, when the pedido already LINKS a cliente (or an endereço) that is
+  not the test buyer — one an operator set on the pedido form, say. Over a
+  stored cliente the importer skips `findOrCreateCliente`, so the collision
+  check would protect nothing and the simulated address would land under that
+  cliente. A cliente linked by an earlier TEST run (same document, same name)
+  is fine;
+- in `--live`, when the pedido already exists and its capture leaves nothing to
+  do: `expirado` always — an SG order you already imported normally is
+  `expirado` — and `capturado` once the cliente is linked and either the
+  endereço is too or `--importar-endereco` was not passed. «use um pedido de
+  teste novo». A `capturado` pedido still missing its endereço is NOT refused
+  with `--importar-endereco`: run `--nome-teste` first, add the endereço later.
+
+**The dry run** prints everything §4 lists — `capturaComprador` there is the
+SIMULATED verdict, what this run would store — plus the buyer block:
+
+| line                    | what it tells you                                                                                                                                          |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `veredito real`         | what a normal import stores, e.g. `expirado regiao:nao-br`                                                                                                 |
+| `veredito simulado`     | what this run stores: `capturado`, or `pendente nome:mascarado`                                                                                            |
+| `CPF de teste aplicado` | `sim` / `não` — never the digits                                                                                                                           |
+| `endereço`              | `ok`, `sem-cep`, `uf-desconhecida — … seria recuperada pelo ViaCEP em --live`, or `não construído (<campo>:<veredito>)`                                    |
+| `CEP` / `UF` / `país`   | the CEP's DIGIT COUNT (`sem-cep — CEP precisa de 8 dígitos; veio com 6`), the UF and whether it is the builder's `AC` default because Shopee sent no state |
+| `fallbacks`             | the fields the builder filled: `numero=S/N`, `bairro=SEM BAIRRO`, `cidade=NAO INFORMADA`                                                                   |
+
+…and, on **stderr only**, the VALUES Shopee sent in `recipient_address` —
+`name`, `phone`, `full_address`, `zipcode`, `state`, `city`, `district`,
+`town` — to see how they arrive. Never on stdout, never in `--json`. The dry
+run calls no `findOrCreateCliente`, no `ensureEndereco` and no ViaCEP.
+
+**`--live`** runs the refusals, then the importer's WRITE half over the SAME
+read (`gravarPreparoPedidoShopee`), so it writes exactly the identity the
+refusals checked and spends `get_order_detail` + `get_escrow_detail` once —
+`findOrCreateCliente`, `ensureEndereco` and the pedido transaction's fill-once
+guards link `clientePedidoOuterRef`, `enderecoFiscalOuterRef` and
+`freteInicial.enderecoFreteOuterReference` (on create, or on the first fiscal
+fill). It adds the cliente id, `criado` and `matchedBy`, the endereço id, the
+pedido id and a `limpeza` line with the document paths the pedido now links —
+ids and paths only. ViaCEP runs only on `uf-desconhecida`, as in any import.
+
+**Expected on the SG order:**
+
+| flags                                            | result                                                                                                                                                                                                                                                                                                    |
+| ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--importar-cliente`                             | `pendente nome:mascarado`, endereço `não construído`, CEP `veio com 6`; nothing created. In `--live` the pedido stores `pendente` — not terminal, so a re-run may link it — **while the order is before `SHIPPED` / `COMPLETED` / `CANCELLED` / `TO_RETURN`**; past those it stores `expirado`, which is. |
+| `+ --nome-teste`                                 | `capturado`: a PF cliente under the test CPF; endereço `sem-cep`                                                                                                                                                                                                                                          |
+| `+ --nome-teste --cep-teste --importar-endereco` | cliente + endereço linked: UF `AC` (no state sent), país `SG`, fallbacks `S/N` / `SEM BAIRRO` / `NAO INFORMADA`; the delivery address is that endereço                                                                                                                                                    |
+
+⚠️ A pedido that already exists as `expirado` — every SG order a NORMAL import
+reached first, a code-3 push from the sandbox included — is refused, so the
+mode needs an order no import has stored yet.
+
+**Cleanup — the pedido is part of it.** The `--live` output's `limpeza` line
+lists the paths the pedido links. The test binding lives ON the pedido:
+`clientePedidoOuterRef`, `enderecoFiscalOuterRef` and
+`freteInicial.enderecoFreteOuterReference` are fill-once (a non-empty ref,
+dangling or not, is never refilled) and `capturaComprador` stays latched at
+`capturado`, while nothing durable says the buyer was a test one. So either
+delete `pedidos/<id>` with its `pagamentos` subcollection — remembering §5's
+caveat that deleting a pedido is not a clean stock undo — or null those three
+refs and `capturaComprador` in the console. Then delete the endereço
+(`clientes/<id>/enderecos/<id>`) and, **only when a test run CREATED it**
+(`criado=sim`), the cliente: when the run reused an existing cliente — the dev
+seed's, via `--nome-teste "<that name>"` — keep that cliente and delete only
+the endereço and the pedido. The leftover `clienteIdentidades` row is harmless:
+`findOrCreateCliente` re-reads every owner it lists and drops one that no
+longer exists.
+
+Rule 7: no new transaction. The collision check is a read OUTSIDE the cliente
+transaction, so a writer landing between the two is not excluded — accepted on a
+single-operator sandbox, where a lost race links the run to whichever holder
+`findOrCreateCliente` picks, exactly as a real import would.
 
 ---
 
