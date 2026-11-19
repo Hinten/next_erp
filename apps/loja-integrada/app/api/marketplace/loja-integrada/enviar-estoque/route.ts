@@ -25,7 +25,7 @@
  *     — zero Firestore reads up to here —
  *  6. the conta, read UNCACHED (one read): missing or not `tipo` 3 ⇒ 404 `LI_CONTA_NAO_ENCONTRADA`,
  *     inactive ⇒ 409 `LI_CONTA_INATIVA`, no depósito ⇒ 409 `LI_CONTA_SEM_DEPOSITO`;
- *  7. the core: 400 `LI_SELECAO_EXCEDE_LIMITE` (with `limite` and `solicitados`) when the selection
+ *  7. the core: 400 `LI_SELECAO_EXCEDE_LIMITE` (with `limite` and `encontrados`) when the selection
  *     reaches more children than one push may enqueue, nothing listed or enqueued; else 200.
  *
  * A 500 from the core (a Firestore failure, a deploy-shaped enqueue refusal) may come after some

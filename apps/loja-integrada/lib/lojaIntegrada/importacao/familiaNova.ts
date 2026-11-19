@@ -185,6 +185,7 @@ import {
   planejarPreenchimentoProdutoLi,
   valoresDoLiLi,
 } from './completar';
+import { paiArmazenadoLi } from '../produtos/paiArmazenadoLi';
 import type { FamiliaLi, FilhoDaFamiliaLi } from './familias';
 import {
   type CriacaoPlanejadaLi,
@@ -569,12 +570,6 @@ export const ESTADO_DO_ID_PLANEJADO_LI = {
   nosso: 'nosso',
   outro: 'outro',
 } as const satisfies Record<string, EstadoDoIdPlanejadoLi>;
-
-/** A stored `paiId` as a parent id: a non-empty string, else none (absent and `null` alike). */
-export function paiArmazenadoLi(dados: Readonly<Record<string, unknown>>): string | null {
-  const paiId = dados.paiId;
-  return typeof paiId === 'string' && paiId !== '' ? paiId : null;
-}
 
 /**
  * What a read of planned produto `p` found (module header, step 1). Equal (`nosso`): the stored

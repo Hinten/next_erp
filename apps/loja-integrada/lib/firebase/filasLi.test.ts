@@ -160,6 +160,25 @@ describe('the sweep-only valve', () => {
   );
 });
 
+describe('the manifest: both variables are CONSOLE-only', () => {
+  // A value in apps/loja-integrada/apphosting.yaml would reach EVERY project's backend, and unset
+  // is the safe state (a missing region refuses every enqueue; an absent valve leaves it open).
+  // The region's comment-only form is pinned by tools/deploy-env/preflight.test.js too.
+  const linhas = readFileSync(
+    fileURLToPath(new URL('../../apphosting.yaml', import.meta.url)),
+    'utf8',
+  ).split(/\r?\n/);
+  it.each([['LOJA_INTEGRADA_TASKS_REGION'], ['LOJA_INTEGRADA_TASKS_DISABLED']])(
+    '%s appears in no uncommented line, and IS documented as a comment row',
+    (nome) => {
+      const naoComentadas = linhas.filter((l) => !l.trimStart().startsWith('#'));
+      expect(naoComentadas.some((l) => l.includes(nome))).toBe(false);
+      // Anti-vacuity: the manifest does document it.
+      expect(linhas.some((l) => new RegExp(`^#\\s+${nome}\\b`).test(l))).toBe(true);
+    },
+  );
+});
+
 describe('the source', () => {
   const fonte = readFileSync(fileURLToPath(new URL('./filasLi.ts', import.meta.url)), 'utf8');
 

@@ -50,8 +50,17 @@ import type {
  *   `MAX_PRODUTOS_ENVIO_ESTOQUE_LI` distinct ids, sent one after the other: a
  *   supported channel receives the WHOLE /produtos selection (`push/run.ts`),
  *   and the body's cap would otherwise make the client throw and break every
- *   conta after this one. Each slice is bounded by the backend on its own
- *   (`LI_SELECAO_EXCEDE_LIMITE` refuses a slice whole).
+ *   conta after this one.
+ * - ⚠️ **At most ONE slice per run may queue anything.** The backend bounds the
+ *   children ONE request queues (`LI_SELECAO_EXCEDE_LIMITE` refuses a slice
+ *   whole above it) so that a manual push never holds the channel's single-file
+ *   stock queue long enough to delay the sends a sale triggers; that bound is
+ *   per REQUEST, so N slices would queue N times it. Once a slice MAY have
+ *   queued something — a row `enfileirado`, a `falha` row (it may have
+ *   landed), or an outcome nobody can confirm — every later id is
+ *   `nao-tentado` ({@link MOTIVO_UM_LOTE_POR_ENVIO_LI}). A slice that provably
+ *   queued nothing (only skips, or a refusal) lets the next one go: a sparse
+ *   /produtos selection still reaches the ids of this channel it carries.
  * - **A conta-level answer is one row per requested id of that slice**: the
  *   backend switched off (read switch, stock valve, its task queues) or the
  *   slice over the children bound ⇒ `nao-tentado` (nothing was queued); any
@@ -69,6 +78,15 @@ import type {
 
 /** The selected produto ids one request carries at most (the route's body cap). */
 export const FATIA_ENVIO_ESTOQUE_LI = MAX_PRODUTOS_ENVIO_ESTOQUE_LI;
+
+/** The motivo of an id left out because an earlier slice of this run already queued (header). */
+export const MOTIVO_UM_LOTE_POR_ENVIO_LI = 'um-lote-por-envio';
+
+/** Its copy: nothing was attempted for this id, and why repeating is the fix. */
+export const MENSAGEM_UM_LOTE_POR_ENVIO_LI =
+  'Não tentado: cada envio enfileira no máximo um lote por conta da Loja Integrada, para não ' +
+  'atrasar as outras atualizações de estoque da loja, e este envio já enfileirou o seu. ' +
+  'Selecione estes produtos e envie de novo.';
 
 /** The row a backend answer's `resultado` becomes — `enfileirado` stays itself. */
 const OUTCOME_DO_RESULTADO: Record<ResultadoEnvioEstoqueLi, StockPushOutcome> = {
@@ -118,6 +136,8 @@ type FalhaDaFatia =
       readonly outcome: 'falha' | 'nao-tentado';
       readonly motivo: string;
       readonly mensagem: string;
+      /** The outcome is UNKNOWN: the route may have queued some children (header). */
+      readonly podeTerEnfileirado: boolean;
     };
 
 /** Classify a failed push call. `null` ⇒ not ours: the caller rethrows. */
@@ -138,6 +158,7 @@ function classificarFalha(err: unknown, signal: AbortSignal | undefined): FalhaD
       outcome: 'falha',
       motivo: 'selecao-invalida',
       mensagem: MENSAGEM_SELECAO_INVALIDA_LI,
+      podeTerEnfileirado: false,
     };
   }
   // ⚠️ BEFORE the HTTP error, its parent: a 2xx this build cannot read may well
@@ -148,18 +169,27 @@ function classificarFalha(err: unknown, signal: AbortSignal | undefined): FalhaD
       outcome: 'falha',
       motivo: 'resposta-invalida',
       mensagem: err.message + SUFIXO_RESULTADO_INCERTO_LI,
+      podeTerEnfileirado: true,
     };
   }
   if (err instanceof LojaIntegradaClientHttpError) {
     if (err.code !== null && CODIGOS_NAO_TENTADO.has(err.code)) {
-      return { tipo: 'fatia', outcome: 'nao-tentado', motivo: err.code, mensagem: err.message };
+      return {
+        tipo: 'fatia',
+        outcome: 'nao-tentado',
+        motivo: err.code,
+        mensagem: err.message,
+        podeTerEnfileirado: false,
+      };
     }
+    // A 5xx may come after some tasks landed (the route's own header).
+    const incerto = err.status >= 500;
     return {
       tipo: 'fatia',
       outcome: 'falha',
       motivo: err.code ?? 'erro-http',
-      // A 5xx may come after some tasks landed (the route's own header).
-      mensagem: err.status >= 500 ? err.message + SUFIXO_RESULTADO_INCERTO_LI : err.message,
+      mensagem: incerto ? err.message + SUFIXO_RESULTADO_INCERTO_LI : err.message,
+      podeTerEnfileirado: incerto,
     };
   }
   // ⚠️ BEFORE the network error, its parent.
@@ -169,6 +199,7 @@ function classificarFalha(err: unknown, signal: AbortSignal | undefined): FalhaD
       outcome: 'falha',
       motivo: 'tempo-esgotado',
       mensagem: err.message + SUFIXO_RESULTADO_INCERTO_LI,
+      podeTerEnfileirado: true,
     };
   }
   if (err instanceof LojaIntegradaClientNetworkError) {
@@ -177,6 +208,7 @@ function classificarFalha(err: unknown, signal: AbortSignal | undefined): FalhaD
       outcome: 'falha',
       motivo: 'rede',
       mensagem: MENSAGEM_REDE_LI + SUFIXO_RESULTADO_INCERTO_LI,
+      podeTerEnfileirado: true,
     };
   }
   return null;
@@ -267,20 +299,39 @@ export const lojaIntegradaStockProvider: StockPushProvider = {
     }
 
     const rows: StockPushRow[] = [];
+    // Whether a slice of this run MAY have queued anything (header): then no other slice goes.
+    let loteEnfileirado = false;
     for (const fatia of fatiar(ids, FATIA_ENVIO_ESTOQUE_LI)) {
       // Cancelled between slices: what was answered stands, the run reports it.
       if (input.signal?.aborted === true) break;
+      if (loteEnfileirado) {
+        rows.push(
+          ...fatiaInteira(
+            fatia,
+            'nao-tentado',
+            MOTIVO_UM_LOTE_POR_ENVIO_LI,
+            MENSAGEM_UM_LOTE_POR_ENVIO_LI,
+          ),
+        );
+        continue;
+      }
       try {
         const res = await client.enviarEstoque(
           { contaId: integracao.id, produtoIds: fatia },
           input.signal === undefined ? {} : { sinal: input.signal },
         );
         rows.push(...linhasDaResposta(res));
+        loteEnfileirado = res.listings.some(
+          (l) =>
+            l.resultado === RESULTADO_ENVIO_ESTOQUE_LI.enfileirado ||
+            l.resultado === RESULTADO_ENVIO_ESTOQUE_LI.falha,
+        );
       } catch (err) {
         const falha = classificarFalha(err, input.signal);
         if (falha === null) throw err; // never a generic catch (repo rule 6)
         if (falha.tipo === 'cancelado') break;
         rows.push(...fatiaInteira(fatia, falha.outcome, falha.motivo, falha.mensagem));
+        loteEnfileirado = falha.podeTerEnfileirado;
       }
     }
     // This channel's backend never pauses a conta for a quota: it queues.

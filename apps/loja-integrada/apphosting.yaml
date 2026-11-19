@@ -101,8 +101,9 @@ runConfig:
 #                                          LOJA_INTEGRADA_MODO_ESTOQUE as well — both
 #                                          stock routes answer 503 LI_ESTOQUE_DESLIGADO
 #                                          with it `off` — so set it ALIKE on both
-#                                          surfaces; LOJA_INTEGRADA_CANARIO_ESTOQUE still
-#                                          has no reader here (the send run applies it).
+#                                          surfaces; LOJA_INTEGRADA_CANARIO_ESTOQUE is
+#                                          parsed here with the valve but never applied
+#                                          (the send run applies its own copy).
 #
 # This backend's Cloud Tasks producers (step 12, PR 12-h: the two stock routes,
 # through `lib/firebase/filasLi.ts`). Console values of THIS backend only, never an

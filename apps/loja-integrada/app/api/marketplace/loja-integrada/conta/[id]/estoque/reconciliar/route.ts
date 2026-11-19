@@ -21,12 +21,15 @@
  *  5. ONE masked read of the run document's lease fields: a run holding the lease ⇒ 409
  *     `LI_RECONCILE_EM_ANDAMENTO` with its `execucaoId`, nothing enqueued; otherwise ONE enqueue,
  *     `estoque-reconcile-manual-<ms of the request's minute>`, seq 0, delay 0 ⇒ 202. A repeat in
- *     the same minute names the same task (the same 202); a run released this minute makes the
- *     slice wait a minute (`adiar`), and the queue retries it.
+ *     the same minute names the same task (the same 202). A stored run that STARTED this minute
+ *     makes the slice `adiar` (the queue retries it at least 60 s later); a run that took the
+ *     lease after this read makes it drop as `ocupado`, and the running chain covers every conta
+ *     (`reconcileManualLi.ts`, step 2).
  *
  * ⚠️ The read switch `LOJA_INTEGRADA_CHAMADAS` is NOT a gate here, exactly as for the nightly start
  * and the depósito arm: with it off the run still rebuilds the ERP side and every store phase stops
- * at the switch — the staging measurement path. The 202 reports it (`chamadas`), informational.
+ * at the switch — the staging measurement path. The 202 reports THIS backend's copy (`chamadas`),
+ * informational: the run's store phase reads the functions codebase's own.
  *
  * A 500 (a Firestore failure, a Cloud Tasks failure of any kind) leaves the outcome unknown: the
  * task may exist, and a repeat within the minute collides with it harmlessly. ONE structured INFO
@@ -62,22 +65,15 @@ import {
   registrarValvulaLi,
 } from '@/lib/lojaIntegrada/core/valvulas';
 import { contaDoEstoqueLi } from '@/lib/lojaIntegrada/estoque/contaDoEstoqueLi';
-import { iniciarReconcileManualLi } from '@/lib/lojaIntegrada/estoque/reconcile/reconcileManualLi';
+import {
+  MENSAGEM_RECONCILE_MANUAL_LI,
+  iniciarReconcileManualLi,
+} from '@/lib/lojaIntegrada/estoque/reconcile/reconcileManualLi';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 const LOG = '[loja-integrada/estoque] reconcile manual';
-
-/** The 202's sentence, by whether the read switch is on. */
-const MENSAGEM_RECONCILE_LI = {
-  comChamadas:
-    'Reconciliação completa enfileirada: confere o estoque de todas as contas ativas com ' +
-    'depósito com o da loja.',
-  semChamadas:
-    'Reconciliação completa enfileirada só do lado do ERP: as chamadas à Loja Integrada estão ' +
-    'desligadas neste backend, então nenhuma loja é lida.',
-} as const;
 
 export async function POST(
   req: Request,
@@ -127,7 +123,9 @@ export async function POST(
     execucaoId: r.execucaoId,
     modo: valvula.modo,
     chamadas,
-    mensagem: chamadas ? MENSAGEM_RECONCILE_LI.comChamadas : MENSAGEM_RECONCILE_LI.semChamadas,
+    mensagem: chamadas
+      ? MENSAGEM_RECONCILE_MANUAL_LI.comChamadas
+      : MENSAGEM_RECONCILE_MANUAL_LI.semChamadas,
   });
   return NextResponse.json(corpo, { status: 202, headers: { 'Cache-Control': 'no-store' } });
 }

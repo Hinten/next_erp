@@ -16,6 +16,7 @@ import {
   respostaReconcileEstoqueLiSchema,
 } from '@delfrance/schemas';
 
+import { MENSAGEM_RECONCILE_MANUAL_LI } from '@/lib/lojaIntegrada/estoque/reconcile/reconcileManualLi';
 import { type DocData, FakeDb, asDb } from '@/lib/lojaIntegrada/testing/fakeDb';
 import { falhaDoFunctions } from '@/lib/lojaIntegrada/testing/falhaDeEnfileiramento';
 import { seedContaComDeposito } from '@/lib/lojaIntegrada/testing/reconcileEstoqueLi';
@@ -250,7 +251,7 @@ describe('POST …/estoque/reconciliar — 409 or 202', () => {
     ['an expired lease', { emExecucaoAteMs: AGORA - 1 }],
     ['a run started more than 48 h ago', { iniciadoEmMs: AGORA - 48 * 3_600_000 - 1 }],
     [
-      'a run released THIS minute (its slice will adiar; the queue retries)',
+      'a run that STARTED this minute and no longer holds the lease (its slice will adiar; the queue retries)',
       { emExecucaoAteMs: 0, iniciadoEmMs: MINUTO },
     ],
   ])(
@@ -278,12 +279,33 @@ describe('POST …/estoque/reconciliar — 409 or 202', () => {
 
   it('⚠️ the read switch is NOT a gate: off, the run is still enqueued (the ERP side runs); on, the answer says so', async () => {
     ambiente({ LOJA_INTEGRADA_CHAMADAS: 'off' });
-    expect((await post()).status).toBe(202);
+    const desligada = await post();
+    expect(desligada.status).toBe(202);
+    expect(respostaReconcileEstoqueLiSchema.parse(await corpoDe(desligada))).toMatchObject({
+      chamadas: false,
+      mensagem: MENSAGEM_RECONCILE_MANUAL_LI.semChamadas,
+    });
     ambiente({ LOJA_INTEGRADA_CHAMADAS: 'on', LOJA_INTEGRADA_MODO_ESTOQUE: 'on' });
     vi.setSystemTime(MINUTO + 60_000);
     const resposta = respostaReconcileEstoqueLiSchema.parse(await corpoDe(await post()));
-    expect(resposta).toMatchObject({ chamadas: true, modo: 'on' });
+    expect(resposta).toMatchObject({
+      chamadas: true,
+      modo: 'on',
+      mensagem: MENSAGEM_RECONCILE_MANUAL_LI.comChamadas,
+    });
     expect(h.tarefas).toHaveLength(2);
+  });
+
+  it('⚠️ NEAR-MISS: the two sentences differ, and neither claims what the run’s store phase does', () => {
+    const { comChamadas, semChamadas } = MENSAGEM_RECONCILE_MANUAL_LI;
+    expect(comChamadas).not.toBe(semChamadas);
+    expect(semChamadas).toContain('desligadas neste backend');
+    expect(comChamadas).toContain('ligadas neste backend');
+    expect(comChamadas).not.toContain('desligadas');
+    for (const frase of [comChamadas, semChamadas]) {
+      expect(frase).not.toContain('nenhuma loja é lida');
+      expect(frase).not.toContain('confere o estoque');
+    }
   });
 
   it('a repeat in the same minute: the same task (already-exists) and the same 202', async () => {

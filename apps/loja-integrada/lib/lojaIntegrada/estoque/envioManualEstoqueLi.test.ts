@@ -24,7 +24,7 @@ import {
 import { type DocData, FakeDb, asDb } from '../testing/fakeDb';
 import { falhaDoFunctions } from '../testing/falhaDeEnfileiramento';
 import { filaEstoqueGravadora, seedLinkFilho } from '../testing/reconcileEstoqueLi';
-import { idDaTarefaEstoqueLi, janelaEstoqueLi } from './agendadorEstoque';
+import { LiTarefasDesligadasError, idDaTarefaEstoqueLi, janelaEstoqueLi } from './agendadorEstoque';
 import {
   CAMPOS_FILHO_ENVIO_MANUAL_LI,
   CAMPOS_INDICE_FILHOS_ENVIO_MANUAL_LI,
@@ -118,7 +118,7 @@ function listagens(db: FakeDb): string[] {
 const expansoes = (db: FakeDb) => db.consultas.filter((c) => c.colecao === 'produtos');
 
 describe('the anchor expansion and its reads', () => {
-  it('an anchor with 3 linked children: ONE getAll, ONE expansion query, 3 listings, 0 produto doc reads, 3 tasks', async () => {
+  it('an anchor with 3 linked children: ONE getAll, ONE expansion query, 3 listings, 0 point reads beyond the selection, 3 tasks', async () => {
     const db = new FakeDb();
     seedPai(db, 'pai-1');
     seedFilho(db, 'f1', 'pai-1', 101);
@@ -133,7 +133,8 @@ describe('the anchor expansion and its reads', () => {
     expect(getAll.mock.calls[0]?.at(-1)).toEqual({
       fieldMask: [...CAMPOS_PRODUTO_ENVIO_MANUAL_LI],
     });
-    // The selection only: no child document is read (the expansion projects what it needs).
+    // No point read beyond the selection: the children come back from the expansion's PROJECTED
+    // query (billed as query results, never as a full document read).
     expect(db.leituras).toEqual(['produtos/pai-1']);
     expect(expansoes(db)).toHaveLength(1);
     expect(listagens(db).sort()).toEqual(['f1', 'f2', 'f3']);
@@ -177,6 +178,30 @@ describe('the anchor expansion and its reads', () => {
     // ⚠️ A queued row never says "sent": the send run decides later.
     expect(JSON.stringify(resposta)).not.toContain('enviado');
     expect(respostaEnvioEstoqueLiSchema.parse(resposta)).toEqual(resposta);
+  });
+
+  it('the masks are pinned LITERALLY — a wider one is billed on every selected produto and every child', () => {
+    expect(CAMPOS_PRODUTO_ENVIO_MANUAL_LI).toEqual([
+      'paiId',
+      'integracoesComProduto',
+      'statusProdutosMarketplace',
+      'nome',
+    ]);
+    expect(CAMPOS_FILHO_ENVIO_MANUAL_LI).toEqual(['statusProdutosMarketplace', 'nome']);
+  });
+
+  it("a root stored with paiId '' (a legacy spelling) is a ROOT: expanded to its children, never its own target", async () => {
+    const db = new FakeDb();
+    seedPai(db, 'pai-v', { paiId: '' });
+    seedFilho(db, 'v1', 'pai-v', 301);
+    seedFilho(db, 'v2', 'pai-v', 302);
+    const { r, fila } = await enviar(db, ['pai-v']);
+    expect(expansoes(db)).toHaveLength(1);
+    expect(respondido(r).listings.map((l) => [l.produtoId, l.resultado])).toEqual([
+      ['v1', RESULTADO_ENVIO_ESTOQUE_LI.enfileirado],
+      ['v2', RESULTADO_ENVIO_ESTOQUE_LI.enfileirado],
+    ]);
+    expect(fila.enviadas).toHaveLength(2);
   });
 
   it('the expansion is EXACTLY paiId == <anchor> AND integracoesComProduto array-contains <conta>, projected, limit = bound + 1', async () => {
@@ -409,6 +434,37 @@ describe('the classification: the send run’s own link-only plan', () => {
     expect(db.leituras).toEqual(['produtos/pai-1']);
   });
 
+  it('⚠️ NEAR-MISS: a family with ONE child queued and one whose only link is trashed ⇒ the row, and NO sem-vinculo entry for the anchor', async () => {
+    const db = new FakeDb();
+    seedPai(db, 'pai-1');
+    seedFilho(db, 'f1', 'pai-1', 101);
+    // Names the conta (the array is over-inclusive), but its only link is in the trash.
+    seedFilho(db, 'f2', 'pai-1', null);
+    seedLinkFilho(db, 'f2', 'l-f2', CONTA, 102, { removido: true });
+    const { r, fila } = await enviar(db, ['pai-1']);
+    const resposta = respondido(r);
+    expect(resposta.listings.map((l) => [l.produtoId, l.resultado])).toEqual([
+      ['f1', RESULTADO_ENVIO_ESTOQUE_LI.enfileirado],
+    ]);
+    expect(resposta.produtosSemEnvio).toEqual([]);
+    expect(listagens(db).sort()).toEqual(['f1', 'f2']);
+    expect(fila.enviadas).toHaveLength(1);
+  });
+
+  it('the entries keep SELECTION order across both sources: a later step-2 entry after an earlier final-loop one', async () => {
+    const db = new FakeDb();
+    // Passes step 2, then gets its sem-vinculo entry only in the final loop (trashed links)…
+    seedPai(db, 'pai-t');
+    seedFilho(db, 't1', 'pai-t', null);
+    seedLinkFilho(db, 't1', 'l-t1', CONTA, 100, { removido: true });
+    // …while a missing produto selected AFTER it gets its entry in step 2, pushed first.
+    const { r } = await enviar(db, ['pai-t', 'nao-existe']);
+    expect(respondido(r).produtosSemEnvio.map((p) => [p.produtoId, p.motivo])).toEqual([
+      ['pai-t', MOTIVO_ENVIO_ESTOQUE_LI.semVinculo],
+      ['nao-existe', MOTIVO_ENVIO_ESTOQUE_LI.produtoAusente],
+    ]);
+  });
+
   it('a family whose listed children have no counting link (trashed links) ⇒ exactly ONE sem-vinculo entry, no rows, no task', async () => {
     const db = new FakeDb();
     seedPai(db, 'pai-1');
@@ -506,6 +562,16 @@ describe('the tasks: named per minute, rejections as the producer’s contract',
     await expect(enviar(db, ['__x__'])).rejects.toBeInstanceOf(ZodError);
   });
 
+  it('⚠️ the CLOSED producer (the valve the route already checked) REJECTS the whole call with LiTarefasDesligadasError — never a row', async () => {
+    const db = new FakeDb();
+    seedPai(db, 'pai-1');
+    seedFilho(db, 'f1', 'pai-1', 101);
+    seedFilho(db, 'f2', 'pai-1', 102);
+    const fila = filaEstoqueGravadora({ desligado: true });
+    await expect(enviar(db, ['pai-1'], { fila })).rejects.toBeInstanceOf(LiTarefasDesligadasError);
+    expect(fila.tentativas).toEqual([]);
+  });
+
   it('dry-run: the same tasks, and the copy says test mode — nothing in the answer says sent', async () => {
     const db = new FakeDb();
     seedFilho(db, 'f1', null, 101);
@@ -548,6 +614,69 @@ describe('the bound', () => {
     expect(fila.tentativas).toEqual([]);
     // The query's own limit bounds what one family costs to find out.
     expect(expansoes(db)[0]?.limite).toBe(MAX_ALVOS_ENVIO_ESTOQUE_LI + 1);
+  });
+
+  it(`DIRECT path: exactly ${String(MAX_ALVOS_ENVIO_ESTOQUE_LI)} selected children are queued — no expansion`, async () => {
+    const db = new FakeDb();
+    seedPai(db, 'pai-d');
+    const filhos = Array.from({ length: MAX_ALVOS_ENVIO_ESTOQUE_LI }, (_, i) => `d${String(i)}`);
+    filhos.forEach((id, i) => seedFilho(db, id, 'pai-d', 2000 + i));
+    const { r, fila } = await enviar(db, filhos);
+    expect(r.tipo).toBe('respondido');
+    expect(expansoes(db)).toEqual([]);
+    expect(fila.enviadas).toHaveLength(MAX_ALVOS_ENVIO_ESTOQUE_LI);
+  });
+
+  it(`⚠️ NEAR-MISS, DIRECT path: ${String(MAX_ALVOS_ENVIO_ESTOQUE_LI + 1)} selected children ⇒ excede-limite, zero listings and zero tasks`, async () => {
+    const db = new FakeDb();
+    seedPai(db, 'pai-d');
+    const filhos = Array.from(
+      { length: MAX_ALVOS_ENVIO_ESTOQUE_LI + 1 },
+      (_, i) => `d${String(i)}`,
+    );
+    filhos.forEach((id, i) => seedFilho(db, id, 'pai-d', 2000 + i));
+    const { r, fila } = await enviar(db, filhos);
+    expect(r).toMatchObject({
+      tipo: 'excede-limite',
+      limite: MAX_ALVOS_ENVIO_ESTOQUE_LI,
+      alvos: MAX_ALVOS_ENVIO_ESTOQUE_LI + 1,
+    });
+    expect(expansoes(db)).toEqual([]);
+    expect(listagens(db)).toEqual([]);
+    expect(fila.tentativas).toEqual([]);
+  });
+
+  it('MIXED: an anchor with 15 children plus 16 selected children of another family (31 targets) is refused whole', async () => {
+    const db = new FakeDb();
+    familia(db, 'pai-m', 15);
+    seedPai(db, 'pai-o');
+    const diretos = Array.from({ length: 16 }, (_, i) => `o${String(i)}`);
+    diretos.forEach((id, i) => seedFilho(db, id, 'pai-o', 3000 + i));
+    expect(15 + diretos.length).toBe(MAX_ALVOS_ENVIO_ESTOQUE_LI + 1);
+    const { r, fila } = await enviar(db, ['pai-m', ...diretos]);
+    expect(r).toMatchObject({ tipo: 'excede-limite', alvos: MAX_ALVOS_ENVIO_ESTOQUE_LI + 1 });
+    expect(listagens(db)).toEqual([]);
+    expect(fila.tentativas).toEqual([]);
+  });
+
+  it('CHILDLESS roots (simple produtos) count ONE target each toward the early stop: the expansion stops at the round that passes the bound', async () => {
+    // Two full rounds pass the bound, one round does not: the third round is never queried.
+    expect(CONCORRENCIA_ENVIO_MANUAL_ESTOQUE_LI).toBeLessThanOrEqual(MAX_ALVOS_ENVIO_ESTOQUE_LI);
+    expect(2 * CONCORRENCIA_ENVIO_MANUAL_ESTOQUE_LI).toBeGreaterThan(MAX_ALVOS_ENVIO_ESTOQUE_LI);
+    const db = new FakeDb();
+    const simples = Array.from(
+      { length: 2 * CONCORRENCIA_ENVIO_MANUAL_ESTOQUE_LI + 1 },
+      (_, i) => `s${String(i)}`,
+    );
+    simples.forEach((id, i) => seedFilho(db, id, null, 4000 + i));
+    const { r, fila } = await enviar(db, simples);
+    expect(r).toMatchObject({
+      tipo: 'excede-limite',
+      alvos: 2 * CONCORRENCIA_ENVIO_MANUAL_ESTOQUE_LI,
+    });
+    expect(expansoes(db)).toHaveLength(2 * CONCORRENCIA_ENVIO_MANUAL_ESTOQUE_LI);
+    expect(listagens(db)).toEqual([]);
+    expect(fila.tentativas).toEqual([]);
   });
 
   it('several families over the bound together are refused too; the expansion stops at the round that passes it', async () => {

@@ -92,6 +92,30 @@ describe('PushProgressDialog — a QUEUED row is never shown as sent (step 12)',
     expect(linhaDaFila.textContent).not.toContain('Enviado');
   });
 
+  it('⭐ the queued badge has its OWN colour (blue) — NEAR MISS: never the sent badge’s green', async () => {
+    renderDialog(() =>
+      Promise.resolve({
+        rows: [
+          linha(),
+          linha({ key: 'f1:c1:1', produtoId: 'f1', outcome: 'enfileirado', mensagem: 'Na fila.' }),
+        ],
+        cancelado: false,
+      }),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Enviar preços' }));
+    await screen.findByText('Enviados 1 · Enfileirados 1 · Pulados 0 · Falhas 0');
+
+    // Mantine writes the colour into the badge's own CSS variables.
+    const corDoBadge = (testId: string) =>
+      screen.getByTestId(testId).querySelector('.mantine-Badge-root')?.getAttribute('style') ?? '';
+    const enfileirado = corDoBadge('envio-preco-row-f1:c1:1');
+    const enviado = corDoBadge('envio-preco-row-p1:c1:-');
+    expect(enfileirado).toContain('--mantine-color-blue');
+    expect(enfileirado).not.toContain('--mantine-color-green');
+    expect(enviado).toContain('--mantine-color-green');
+  });
+
   it('NEAR MISS — rotuloSucesso renames `enviado` alone; a queued row keeps "Enfileirado"', async () => {
     renderDialog(
       () =>

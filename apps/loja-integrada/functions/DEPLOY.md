@@ -583,8 +583,8 @@ the wipe. Create `apps/loja-integrada/functions/.env.deploy` (gitignored):
 # The ESTOQUE pair is READ since step 12 (PR 12-e) by this codebase (the stock
 # queue's send run and, since PR 12-f, the stock trigger and the kit fan-out),
 # and since PR 12-h LOJA_INTEGRADA_MODO_ESTOQUE by the App Hosting backend too
-# (its two stock routes answer 503 with it `off`; the canary list has no reader
-# there): `off` (or unset) makes every
+# (its two stock routes answer 503 with it `off`; the canary list is parsed there
+# with the valve but never applied): `off` (or unset) makes every
 # stock run, every trigger event and every fan-out return before any read;
 # `dry-run` makes the trigger and the fan-out enqueue (and pace) exactly as `on`
 # does, and each send run then reads, plans and logs one diff line with nothing
@@ -598,7 +598,11 @@ the wipe. Create `apps/loja-integrada/functions/.env.deploy` (gitignored):
 # locally, before the window (D17), and these lines stay commented out. Set them
 # ALIKE here and in the App Hosting console where that backend reads one (since
 # PR 12-h: LOJA_INTEGRADA_MODO_ESTOQUE; the rest, LOJA_INTEGRADA_CANARIO_ESTOQUE
-# included, are read here only), and only in the window.
+# included, are applied here only), and only in the window — with ONE exception
+# before it: LOJA_INTEGRADA_MODO_ESTOQUE=dry-run, alike on both surfaces, is the
+# daily reconcile's staging measurement path (above). With the read switch off
+# and no token saved it calls nothing and writes nothing to a store; `on`, any
+# canary entry and the read switch stay window decisions.
 # LOJA_INTEGRADA_MODO_ESTOQUE=
 # LOJA_INTEGRADA_MODO_PRECO=
 # LOJA_INTEGRADA_MODO_ANUNCIO=
@@ -809,21 +813,50 @@ route is used on a project, the App Hosting runtime SA needs:
    state — both routes answer 500 before any read — and a well-formed WRONG
    region drops every task while the route answers success, #1108), and
    optionally `LOJA_INTEGRADA_TASKS_DISABLED=1` (both routes answer 503,
-   nothing read). `LOJA_INTEGRADA_MODO_ESTOQUE` and `LOJA_INTEGRADA_CHAMADAS`
-   are set ALIKE on both surfaces, and only in the window.
+   nothing read). The set-alike pairs follow the `.env.deploy` rules above:
+   `LOJA_INTEGRADA_MODO_ESTOQUE=dry-run` on BOTH surfaces is the one value
+   allowed before the window (the reconcile's staging measurement path);
+   `LOJA_INTEGRADA_MODO_ESTOQUE=on` and `LOJA_INTEGRADA_CHAMADAS=on` are set
+   alike, and only in the window. Nothing cross-checks the two copies, and the
+   operator copy of both routes is written so that it promises nothing the
+   functions copy decides.
 
 **Deploy order:** this functions codebase first (the queues' consumers and the
 invoker list naming both SAs), then the `apps/loja-integrada` App Hosting
 backend, then `apps/web` (whose stock provider stays unreachable until the
 step-22 caps flip anyway).
 
-**Verify, on staging with the stock valve at `dry-run` on BOTH surfaces:** POST
-the reconcile route for one conta and confirm that
-`reconcileEstoqueLojaIntegrada/atual` takes its lease under an
-`estoque-reconcile-manual-…` id within minutes; for the push, find the stock
-queue's dispatch line for the queued child in the functions log (it says
-dry-run — `desligado` means the valve is off on the functions side), and no 403
-on dispatch (a missing `run.invoker`).
+**Verify, on staging** (the stock valve at `dry-run` on BOTH surfaces, the read
+switch unset on both, as the rules above require). ⚠️ **Only the reconcile route
+can be exercised end to end before the window**: the push refuses with the read
+switch off, by design.
+
+- **The reconcile route** (the reads queue): POST it for one conta and expect a
+  202 with `chamadas: false`; within minutes `reconcileEstoqueLojaIntegrada/atual`
+  takes its lease under an `estoque-reconcile-manual-…` id, and the functions
+  log shows no 403 on dispatch. That exercises what both routes share: the
+  region value, the act-as grant (2) and the `TASKS_INVOKER_SA` list the deploy
+  applied — on the reads queue only.
+- **The push** (the stock queue): POST it for one linked produto and expect 503
+  `LI_CHAMADAS_DESLIGADAS` with NO task created (nothing appears on
+  `filaEstoqueLojaIntegrada`). Its queue rights are verified READ-ONLY:
+
+  ```bash
+  gcloud tasks queues get-iam-policy filaEstoqueLojaIntegrada \
+    --location=<region> --project=<project-id>
+  gcloud run services get-iam-policy filaestoquelojaintegrada \
+    --region=<region> --project=<project-id>
+  ```
+
+  The first must list the App Hosting runtime SA under
+  `roles/cloudtasks.enqueuer`, the second under `roles/run.invoker`. A missing
+  `run.invoker` there is the SILENT case: the task is created, its dispatch
+  403s, and the push had answered `enfileirado`.
+
+- **In the window, once the read switch is `on` on both surfaces** (a runbook
+  step, never earlier): push ONE linked child and find the stock queue's
+  dispatch line for it in the functions log, with no 403 on dispatch — the
+  first time the App Hosting backend's stock-queue path runs end to end.
 
 ### Photos: the runtime SA writes the default bucket (master-plan step 9)
 

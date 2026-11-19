@@ -252,7 +252,7 @@ export const CODIGO_ERRO_LI = {
   contaSemDeposito: 'LI_CONTA_SEM_DEPOSITO',
   /**
    * 400 — the manual stock push would enqueue more children than one request may (the envelope's
-   * `limite` and `solicitados`). Refused whole, never truncated; nothing was enqueued.
+   * `limite` and `encontrados`). Refused whole, never truncated; nothing was enqueued.
    */
   selecaoExcedeLimite: 'LI_SELECAO_EXCEDE_LIMITE',
 } as const;
@@ -376,8 +376,9 @@ export type RespostaRemocaoCredencialLi = z.infer<typeof respostaRemocaoCredenci
  *   only, so the web attaches to it instead of starting another;
  * - `execucaoId` — the RUNNING stock reconcile, on `LI_RECONCILE_EM_ANDAMENTO`
  *   only (step 12);
- * - `limite` and `solicitados` — the manual stock push's cap and the children
- *   it would have enqueued, on `LI_SELECAO_EXCEDE_LIMITE` only (step 12).
+ * - `limite` and `encontrados` — the manual stock push's cap and the children
+ *   it found before it stopped looking (a LOWER bound), on
+ *   `LI_SELECAO_EXCEDE_LIMITE` only (step 12).
  *
  * `code` is a plain string rather than {@link CODIGO_ERRO_LI}'s union: a code a
  * newer backend adds must still parse in an older browser.
@@ -393,6 +394,6 @@ export const erroContaLojaIntegradaSchema = z.object({
   jobId: z.string().nullable().optional(),
   execucaoId: z.string().nullable().optional(),
   limite: z.number().int().nullable().optional(),
-  solicitados: z.number().int().nullable().optional(),
+  encontrados: z.number().int().nullable().optional(),
 });
 export type ErroContaLojaIntegrada = z.infer<typeof erroContaLojaIntegradaSchema>;

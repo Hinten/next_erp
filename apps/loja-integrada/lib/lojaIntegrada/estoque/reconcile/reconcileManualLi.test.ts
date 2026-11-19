@@ -30,6 +30,8 @@ import { idExecucaoRedepositoLi } from './contasReconcile';
 import {
   ABANDONO_RECONCILE_ESTOQUE_LI_MS,
   LEASE_RECONCILE_ESTOQUE_LI_MS,
+  decidirSliceReconcileLi,
+  lerRunReconcileLi,
 } from './execucaoReconcile';
 import { idExecucaoDoDepositoLi } from './gatilhoDepositoLi';
 import {
@@ -98,6 +100,28 @@ describe('idExecucaoManualLi', () => {
   });
 });
 
+describe('what the enqueued first slice then decides (the header, through the decision itself)', () => {
+  async function decisaoDoSlice(over: Record<string, unknown>) {
+    const db = new FakeDb();
+    seedRun(db, over);
+    const { r } = await iniciar(db);
+    expect(r).toEqual({ tipo: 'enfileirado', execucaoId: ID_DO_MINUTO });
+    return decidirSliceReconcileLi(
+      await lerRunReconcileLi(asDb(db)),
+      { execucaoId: ID_DO_MINUTO, seq: 0 },
+      AGORA_RECONCILE_MS,
+    ).tipo;
+  }
+
+  it('a stored run that STARTED in this minute (lease released) ⇒ adiar', async () => {
+    expect(await decisaoDoSlice({ emExecucaoAteMs: 0, iniciadoEmMs: MINUTO })).toBe('adiar');
+  });
+
+  it('⚠️ NEAR-MISS: one RELEASED this minute but started in an earlier one ⇒ assumir at once', async () => {
+    expect(await decisaoDoSlice({ emExecucaoAteMs: 0, iniciadoEmMs: MINUTO - 1 })).toBe('assumir');
+  });
+});
+
 describe('iniciarReconcileManualLi', () => {
   it('a run HOLDING the lease ⇒ em-andamento with ITS id; one masked read, nothing enqueued', async () => {
     const db = new FakeDb();
@@ -132,7 +156,7 @@ describe('iniciarReconcileManualLi', () => {
       { iniciadoEmMs: AGORA_RECONCILE_MS - ABANDONO_RECONCILE_ESTOQUE_LI_MS - 1 },
     ],
     [
-      'a run released this minute (the slice will adiar, the queue retries)',
+      'a run that STARTED this minute and no longer holds the lease (the slice will adiar, the queue retries)',
       { emExecucaoAteMs: 0, iniciadoEmMs: MINUTO },
     ],
     ['a document off its schema', { seq: -1 }],

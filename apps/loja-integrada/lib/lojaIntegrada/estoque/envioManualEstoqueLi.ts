@@ -21,7 +21,15 @@
  *     nightly reconcile, which never read the array. This is what keeps a mixed selection — the
  *     whole /produtos selection reaches every supported channel — from paying a listing per child
  *     of every family that is not on this store.
- *  3. A selected CHILD (`paiId` set) is its own target. A selected ROOT that passed is expanded:
+ *     ⚠️ It also means a family is reached only through a ROOT whose own array names the conta:
+ *     a selected root that fails this test is never expanded. The anchor keeps each produto's
+ *     array from that produto's OWN links (a child's link sits under the child), so a family whose
+ *     root link is trashed or removed while its children's links still count is answered
+ *     `sem-vinculo` here, although the stock trigger and the reconcile still send those children
+ *     (they read only the child's own links). Selecting the children directly covers it. A
+ *     deviation from the approved design, which expanded every selected root; the owner confirms.
+ *  3. A selected CHILD (a stored parent id, `paiArmazenadoLi`: a non-empty string) is its own
+ *     target. A selected ROOT that passed is expanded:
  *     ONE query `produtos where paiId == <root> and integracoesComProduto array-contains <conta>`,
  *     projected to {@link CAMPOS_FILHO_ENVIO_MANUAL_LI}, `limit` {@link MAX_ALVOS_ENVIO_ESTOQUE_LI}
  *     + 1 — on the declared COLLECTION index `produtos (paiId, integracoesComProduto, __name__)`,
@@ -48,10 +56,12 @@
  *     deploy-shaped refusal, the closed valve the route already checked — is rethrown once the
  *     round settles: a 500 after which some tasks MAY exist.
  *
- * Cost per request: one conta read (the route's), one `getAll` of the selection, one index query
- * per selected root that names the conta, one listing per target (≤ {@link
+ * Cost per request: one conta read (the route's), one masked `getAll` of the selection, one
+ * projected index query per selected root that names the conta (it returns, and Enterprise bills,
+ * up to {@link MAX_ALVOS_ENVIO_ESTOQUE_LI} + 1 child produto documents, each projected to
+ * {@link CAMPOS_FILHO_ENVIO_MANUAL_LI}), one listing per target (≤ {@link
  * MAX_ALVOS_ENVIO_ESTOQUE_LI}, each about the size of its few link documents), one enqueue per
- * linked child. No produto read beyond the masked selection, no stock record, no Firestore write.
+ * linked child. No FULL produto document is read, no stock record, no Firestore write.
  *
  * ## What stays the SEND RUN's alone
  *
@@ -69,6 +79,10 @@
  * Tasks orders no ready tasks, so a larger batch would delay every event-driven send behind it
  * (an oversell window). The value is the owner's to change; a larger one should reserve its sends
  * on the global slot instead (`slotEstoqueLi.ts`), which queues them behind any reconcile.
+ *
+ * ⚠️ The bound is PER REQUEST: a caller that sends several requests in a row multiplies it. The web
+ * provider (`apps/web/lib/marketplace/estoque/providers/lojaIntegrada.ts`) therefore sends at most
+ * ONE request per conta and run that can enqueue anything.
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import { produtoCollection } from '@delfrance/data/admin/collections';
@@ -91,6 +105,7 @@ import {
   LiTarefasTransitoriasError,
   enfileirarTarefaEstoqueLi,
 } from './agendadorEstoque';
+import { paiArmazenadoLi } from '../produtos/paiArmazenadoLi';
 import { lerVinculosDoProdutoLi } from './leituraEstoqueErp';
 import { planoDosVinculosEstoqueLi } from './planoEstoqueLi';
 
@@ -120,13 +135,20 @@ export const CAMPOS_INDICE_FILHOS_ENVIO_MANUAL_LI = ['paiId', 'integracoesComPro
 /** What the expansion projects of each child: parity and the row's name. */
 export const CAMPOS_FILHO_ENVIO_MANUAL_LI = ['statusProdutosMarketplace', 'nome'] as const;
 
-/** The pt-BR sentence of a queued row, by the stock valve the route read. Never "enviado". */
+/** What every queued row says first: only what this route KNOWS (the task is on the queue). */
+const NA_FILA_LI =
+  'Na fila: em alguns minutos a fila de estoque relê o ERP e a loja e decide se envia.';
+
+/**
+ * The pt-BR sentence of a queued row, by the stock valve THIS backend read. Never "enviado", and
+ * never a promise about the store: what is written is decided by the send run, from its own reads
+ * and from the functions codebase's OWN copies of the valve and the canary (a set-alike pair that
+ * nothing cross-checks, and the canary is never applied on this surface), so a sentence derived
+ * from this backend's copy could contradict it. The dry-run clause names this backend's setting.
+ */
 export const MENSAGEM_ENFILEIRADO_LI: Readonly<Record<ModoEstoqueLi, string>> = {
-  [MODO_ESTOQUE_LI.on]:
-    'Na fila: em alguns minutos o estoque do ERP é conferido com a loja, que só é atualizada ' +
-    'se divergir.',
-  [MODO_ESTOQUE_LI.dryRun]:
-    'Na fila em modo de teste: o envio é só simulado, nada é gravado na loja.',
+  [MODO_ESTOQUE_LI.on]: NA_FILA_LI,
+  [MODO_ESTOQUE_LI.dryRun]: `${NA_FILA_LI} Este backend está com o estoque em modo de teste.`,
 };
 
 /** The pt-BR sentence of each skip and failure. */
@@ -285,12 +307,11 @@ export async function enviarEstoqueManualLi(
       semEnvio(id, nomeDe(dados), MOTIVO_ENVIO_ESTOQUE_LI.semVinculo);
       return;
     }
-    const paiId = proprio(dados, 'paiId');
     selecionados.push({
       id,
       nome: nomeDe(dados),
       dados,
-      raiz: typeof paiId !== 'string' || paiId === '',
+      raiz: paiArmazenadoLi(dados) === null,
       alvos: [],
     });
   });

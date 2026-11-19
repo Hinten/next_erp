@@ -265,6 +265,23 @@ describe('POST …/enviar-estoque — the refusal ladder (each before any read, 
     },
   );
 
+  it('the valve comes FIRST: with the valve AND the read switch off the answer is LI_ESTOQUE_DESLIGADO, with no chamada-bloqueada line', async () => {
+    ambiente({ LOJA_INTEGRADA_MODO_ESTOQUE: undefined, LOJA_INTEGRADA_CHAMADAS: undefined });
+    seedFamilia(db);
+    const escritas: string[] = [];
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation((t) => {
+      escritas.push(String(t));
+      return true;
+    });
+    const res = await post(corpo());
+    stdout.mockRestore();
+    expect(res.status).toBe(503);
+    expect(await codigoDe(res)).toBe(CODIGO_ERRO_LI.estoqueDesligado);
+    expect(escritas.filter((l) => l.includes('chamada-bloqueada'))).toEqual([]);
+    expect(db.leituras).toEqual([]);
+    expect(h.tarefas).toEqual([]);
+  });
+
   it("503 LI_TAREFAS_DESLIGADAS with TASKS_DISABLED exactly '1'; ⚠️ ' 1' leaves it open", async () => {
     seedFamilia(db);
     ambiente({ LOJA_INTEGRADA_TASKS_DISABLED: '1' });
@@ -369,7 +386,7 @@ describe('POST …/enviar-estoque — the push', () => {
     await expect(post(corpo())).rejects.toMatchObject({ code: 'functions/permission-denied' });
   });
 
-  it('400 LI_SELECAO_EXCEDE_LIMITE (limite, solicitados) for a family over the bound — nothing listed or enqueued', async () => {
+  it('400 LI_SELECAO_EXCEDE_LIMITE (limite, encontrados) for a family over the bound — nothing listed or enqueued', async () => {
     db.seed('produtos/grande', { nome: 'G', paiId: null, integracoesComProduto: [CONTA] });
     for (let i = 0; i < 40; i += 1) {
       db.seed(`produtos/g${String(i)}`, {
@@ -384,7 +401,7 @@ describe('POST …/enviar-estoque — the push', () => {
     expect(envelope).toMatchObject({
       code: CODIGO_ERRO_LI.selecaoExcedeLimite,
       limite: 30,
-      solicitados: 31,
+      encontrados: 31,
     });
     expect(db.consultas.filter((c) => c.colecao.endsWith('/produtolojaintegrada'))).toEqual([]);
     expect(h.tarefas).toEqual([]);

@@ -22,7 +22,8 @@ import type { StockPushInput } from '../types';
  *  - the body forwards the conta and the selection, never `reenviarComErro`;
  *  - a child row is the CHILD, named by its own name, else by the id selected;
  *  - the selection is sliced to the route's body cap, so no `ZodError` breaks
- *    the run's other contas;
+ *    the run's other contas — and once a slice MAY have queued anything, no
+ *    other slice of the run is sent (the backend's bound is per request);
  *  - the answer is validated by the CLIENT against the shared contract, and a
  *    2xx it refuses (an older or newer backend) is a `falha` row saying the
  *    outcome is unknown — RespostaInvalida is narrowed before its parent class;
@@ -46,6 +47,8 @@ const {
 const {
   FATIA_ENVIO_ESTOQUE_LI,
   MENSAGEM_SEM_CLIENTE_LI,
+  MENSAGEM_UM_LOTE_POR_ENVIO_LI,
+  MOTIVO_UM_LOTE_POR_ENVIO_LI,
   SUFIXO_RESULTADO_INCERTO_LI,
   lojaIntegradaStockProvider,
 } = await import('./lojaIntegrada');
@@ -100,7 +103,8 @@ const listing = (over: Partial<LinhaEnvioEstoqueLi> = {}): LinhaEnvioEstoqueLi =
   idLi: '182904918',
   resultado: RESULTADO_ENVIO_ESTOQUE_LI.enfileirado,
   motivo: null,
-  mensagem: 'Na fila em modo de teste: o envio é só simulado, nada é gravado na loja.',
+  mensagem:
+    'Na fila: em alguns minutos a fila de estoque relê o ERP e a loja e decide se envia. Este backend está com o estoque em modo de teste.',
   ...over,
 });
 
@@ -123,7 +127,8 @@ describe('lojaIntegradaStockProvider — the answer', () => {
     expect(res.rows[0]).toMatchObject({
       integracaoId: 'conta-li-1',
       integracaoNome: 'Loja LI',
-      mensagem: 'Na fila em modo de teste: o envio é só simulado, nada é gravado na loja.',
+      mensagem:
+        'Na fila: em alguns minutos a fila de estoque relê o ERP e a loja e decide se envia. Este backend está com o estoque em modo de teste.',
       quantidade: null,
       linkDocId: null,
     });
@@ -239,17 +244,24 @@ describe('lojaIntegradaStockProvider — the answer', () => {
 });
 
 describe('lojaIntegradaStockProvider — the selection is sliced to the body cap', () => {
-  it(`a selection of ${String(MAX_PRODUTOS_ENVIO_ESTOQUE_LI + 1)} distinct ids is TWO requests, in order, and no ZodError`, async () => {
+  const ids201 = () =>
+    Array.from({ length: MAX_PRODUTOS_ENVIO_ESTOQUE_LI + 1 }, (_, i) => `p${String(i)}`);
+
+  it(`a selection of ${String(MAX_PRODUTOS_ENVIO_ESTOQUE_LI + 1)} distinct ids whose first slice queues nothing is TWO requests, in order, and no ZodError`, async () => {
     expect(FATIA_ENVIO_ESTOQUE_LI).toBe(MAX_PRODUTOS_ENVIO_ESTOQUE_LI);
-    const ids = Array.from(
-      { length: MAX_PRODUTOS_ENVIO_ESTOQUE_LI + 1 },
-      (_, i) => `p${String(i)}`,
-    );
+    const ids = ids201();
+    // Only skips: nothing was queued, so the next slice may go.
     const enviarEstoque = vi.fn<EnviarEstoque>(async (corpo) =>
       resposta({
         solicitados: corpo.produtoIds.length,
         listings: corpo.produtoIds.map((id) =>
-          listing({ produtoId: id, solicitadoId: id, idLi: null }),
+          listing({
+            produtoId: id,
+            solicitadoId: id,
+            idLi: null,
+            resultado: RESULTADO_ENVIO_ESTOQUE_LI.pulado,
+            motivo: 'paridade',
+          }),
         ),
       }),
     );
@@ -262,6 +274,50 @@ describe('lojaIntegradaStockProvider — the selection is sliced to the body cap
     ]);
     expect(enviarEstoque.mock.calls.flatMap(([c]) => c.produtoIds)).toEqual(ids);
     expect(res.rows).toHaveLength(ids.length);
+  });
+
+  it.each([
+    ['a row enfileirado', RESULTADO_ENVIO_ESTOQUE_LI.enfileirado],
+    ['a falha row (it may have landed)', RESULTADO_ENVIO_ESTOQUE_LI.falha],
+  ])(
+    '⭐ once a slice answered %s, NO other slice of the run is sent: every later id is nao-tentado (the bound is per request)',
+    async (_caso, resultado) => {
+      const ids = ids201();
+      const enviarEstoque = vi
+        .fn<EnviarEstoque>()
+        .mockResolvedValue(
+          resposta({ listings: [listing({ produtoId: 'p0', solicitadoId: 'p0', resultado })] }),
+        );
+      const res = await lojaIntegradaStockProvider.enviarEstoque(
+        input(comEnvio(enviarEstoque), { produtoIds: ids }),
+      );
+      expect(enviarEstoque).toHaveBeenCalledTimes(1);
+      expect(res.rows.at(-1)).toMatchObject({
+        produtoId: `p${String(MAX_PRODUTOS_ENVIO_ESTOQUE_LI)}`,
+        outcome: 'nao-tentado',
+        motivo: MOTIVO_UM_LOTE_POR_ENVIO_LI,
+        mensagem: MENSAGEM_UM_LOTE_POR_ENVIO_LI,
+      });
+    },
+  );
+
+  it('⭐ a slice whose outcome is UNKNOWN (a 5xx) stops the run too: it may have queued', async () => {
+    const ids = ids201();
+    const enviarEstoque = vi
+      .fn<EnviarEstoque>()
+      .mockRejectedValue(
+        new LojaIntegradaClientHttpError('O backend falhou (HTTP 500).', 500, null),
+      );
+    const res = await lojaIntegradaStockProvider.enviarEstoque(
+      input(comEnvio(enviarEstoque), { produtoIds: ids }),
+    );
+    expect(enviarEstoque).toHaveBeenCalledTimes(1);
+    expect(res.rows).toHaveLength(ids.length);
+    expect(res.rows.slice(0, -1).every((r) => r.outcome === 'falha')).toBe(true);
+    expect(res.rows.at(-1)).toMatchObject({
+      outcome: 'nao-tentado',
+      motivo: MOTIVO_UM_LOTE_POR_ENVIO_LI,
+    });
   });
 
   it('NEAR MISS — through the REAL client, 201 ids reach the strict route as two valid bodies', async () => {
@@ -288,7 +344,7 @@ describe('lojaIntegradaStockProvider — the selection is sliced to the body cap
     expect(fetchGlobal).not.toHaveBeenCalled();
   });
 
-  it('a slice that fails does not stop the next one, and only ITS ids carry the verdict', async () => {
+  it('NEAR MISS — a slice REFUSED before queuing anything does not stop the next one, and only ITS ids carry the verdict', async () => {
     const ids = Array.from(
       { length: MAX_PRODUTOS_ENVIO_ESTOQUE_LI + 1 },
       (_, i) => `p${String(i)}`,

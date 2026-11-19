@@ -123,4 +123,6 @@ two channels:
   there — keyed by the store product id.
 - **No `reenviarComErro`** (no refusal latch on that channel), and the selection
   is sliced to the route's body cap (`MAX_PRODUTOS_ENVIO_ESTOQUE_LI`), one
-  request after the other.
+  request after the other — but at most ONE slice per run may queue anything:
+  the backend's children bound is per request, so once a slice may have queued,
+  every later id is `nao-tentado` (`um-lote-por-envio`).

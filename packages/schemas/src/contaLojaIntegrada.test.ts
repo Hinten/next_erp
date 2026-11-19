@@ -391,11 +391,11 @@ describe('CODIGO_ERRO_LI', () => {
         error: 'x',
         code: CODIGO_ERRO_LI.selecaoExcedeLimite,
         limite: 30,
-        solicitados: 31,
+        encontrados: 31,
       }),
-    ).toMatchObject({ limite: 30, solicitados: 31 });
+    ).toMatchObject({ limite: 30, encontrados: 31 });
     const sem = erroContaLojaIntegradaSchema.parse({ error: 'x', code: 'LI_X' });
-    expect([sem.execucaoId, sem.limite, sem.solicitados]).toEqual([
+    expect([sem.execucaoId, sem.limite, sem.encontrados]).toEqual([
       undefined,
       undefined,
       undefined,

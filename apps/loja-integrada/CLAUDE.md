@@ -1180,6 +1180,8 @@ the store's stock list (`li`), the sends (`fila`), the avisos (`fim`).
 - Push: ONE masked `getAll` of the selection, roots expanded on `produtos (paiId,
   integracoesComProduto, __name__)` (pinned), one link listing per target, classified by
   `planoDosVinculosEstoqueLi`; > 30 children ⇒ 400 `LI_SELECAO_EXCEDE_LIMITE`, refused whole.
+  The bound is PER REQUEST: the web sends one request that can enqueue per conta and run. The
+  operator copy states only what this backend knows (the functions copy of a pair decides).
   Reconcile: one lease read masked to 4 fields; a live lease ⇒ 409 with `execucaoId`; else
   `estoque-reconcile-manual-<minute ms>` seq 0 ⇒ 202.
 - App Hosting producer root `lib/firebase/filasLi.ts`: `LOJA_INTEGRADA_TASKS_REGION` /

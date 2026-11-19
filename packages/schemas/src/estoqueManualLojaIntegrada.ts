@@ -21,10 +21,12 @@ import { idDocumentoEstoqueLiSchema, idExecucaoEstoqueLiSchema } from './sincEst
  *
  * Their error envelope is `erroContaLojaIntegradaSchema`, with the `CODIGO_ERRO_LI` codes.
  *
- * ⚠️ The ANSWERS are deliberately not strict, and their `motivo` fields are plain strings: the
- * backend deploys BEFORE the web, so an older browser must still read a newer backend's answer —
- * a motivo a later step adds must not turn rows that WERE enqueued into a parse failure. Only the
- * per-row `resultado` is a closed enum, because the web decides on it.
+ * ⚠️ The ANSWERS are deliberately not strict — at every level: the answer, each row, each
+ * `produtosSemEnvio` entry — and their `motivo` and `modo` fields are plain strings: the backend
+ * deploys BEFORE the web, so an older browser must still read a newer backend's answer — a motivo
+ * or a valve mode a later step adds, or a field it adds to a row, must not turn rows that WERE
+ * enqueued into a parse failure. Only the per-row `resultado` is a closed enum, because the web
+ * decides on it.
  */
 
 /** The most produto ids one push request may name (the request body's cap). */
@@ -97,8 +99,11 @@ export const MOTIVO_ENVIO_ESTOQUE_LI = {
 } as const satisfies Record<string, MotivoEnvioEstoqueLi>;
 
 /**
- * The stock valve the route read: `dry-run` (every send run only diffs, nothing is written to the
- * store) or `on`. Never `off`: with the valve off the routes refuse and enqueue nothing.
+ * The stock valve the route read, as the backend PRODUCES it: `dry-run` or `on` — never `off`,
+ * with the valve off the routes refuse and enqueue nothing. It is the valve of the BACKEND that
+ * answered: what a send run writes is decided by the functions codebase's own copy. The answers
+ * carry it as a plain string (module header), so this enum is the producer's vocabulary, never
+ * the reader's gate.
  */
 export const modoEstoqueLiSchema = z.enum(['dry-run', 'on']);
 export type ModoEstoqueLi = z.infer<typeof modoEstoqueLiSchema>;
@@ -137,7 +142,7 @@ export type ProdutoSemEnvioEstoqueLi = z.infer<typeof produtoSemEnvioEstoqueLiSc
 /** The push's 200 answer. `solicitados` counts the DISTINCT selected ids. */
 export const respostaEnvioEstoqueLiSchema = z.object({
   contaId: z.string(),
-  modo: modoEstoqueLiSchema,
+  modo: z.string(),
   solicitados: z.number().int().nonnegative(),
   listings: z.array(linhaEnvioEstoqueLiSchema),
   produtosSemEnvio: z.array(produtoSemEnvioEstoqueLiSchema),
@@ -146,12 +151,12 @@ export type RespostaEnvioEstoqueLi = z.infer<typeof respostaEnvioEstoqueLiSchema
 
 /**
  * The reconcile route's 202 answer: the run it enqueued (or that this minute already enqueued),
- * the valve it read, and whether the read switch is on — with it off the run rebuilds the ERP side
- * only and reads no store (informational: the route does not gate on it).
+ * the valve it read, and whether THIS backend's read switch is on (informational: the route does
+ * not gate on it, and the run's store phase reads the functions codebase's own copy).
  */
 export const respostaReconcileEstoqueLiSchema = z.object({
   execucaoId: idExecucaoEstoqueLiSchema,
-  modo: modoEstoqueLiSchema,
+  modo: z.string(),
   chamadas: z.boolean(),
   mensagem: z.string(),
 });

@@ -1,7 +1,8 @@
 /**
  * The wire contract of the Loja Integrada stock sync's two operator routes (master plan step 12,
- * PR 12-h): the push's STRICT body and its bound, and the two answers — non-strict, with plain
- * string motivos, so an older browser still reads a newer backend.
+ * PR 12-h): the push's STRICT body and its bound, and the two answers — non-strict at EVERY level
+ * (the answer, each row, each entry), with plain-string motivos and modos, so an older browser still
+ * reads a newer backend.
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -102,6 +103,25 @@ describe('respostaEnvioEstoqueLiSchema — the push answer (non-strict)', () => 
     expect(respostaEnvioEstoqueLiSchema.safeParse(novo).success).toBe(true);
   });
 
+  // Each level on its own, so a schema turned strict names the level that broke.
+  it.each([
+    ['a field on the answer', { ...RESPOSTA, campoNovo: 1 }],
+    ['a field on a row', { ...RESPOSTA, listings: [{ ...LINHA, campoDaLinha: 1 }] }],
+    [
+      'a field on a produtosSemEnvio entry',
+      {
+        ...RESPOSTA,
+        produtosSemEnvio: [
+          { produtoId: 'p9', produtoNome: null, motivo: 'sem-vinculo', mensagem: 'x', campo: 'y' },
+        ],
+      },
+    ],
+    // A valve mode a later step adds (the web never decides on it).
+    ['a valve mode in modo', { ...RESPOSTA, modo: 'um-modo-de-amanha' }],
+  ])('%s, added by a newer backend, still parses', (_nivel, novo) => {
+    expect(respostaEnvioEstoqueLiSchema.safeParse(novo).success).toBe(true);
+  });
+
   it('⚠️ NEAR-MISS: an unknown RESULTADO is refused — the web decides on it', () => {
     for (const resultado of ['enviado', 'nao-tentado', '']) {
       expect(
@@ -112,9 +132,9 @@ describe('respostaEnvioEstoqueLiSchema — the push answer (non-strict)', () => 
         resultado,
       ).toBe(false);
     }
-    expect(respostaEnvioEstoqueLiSchema.safeParse({ ...RESPOSTA, modo: 'off' }).success).toBe(
-      false,
-    );
+    // …and a MISSING modo is refused: the answer must say which valve it read.
+    const { modo: _modo, ...semModo } = RESPOSTA;
+    expect(respostaEnvioEstoqueLiSchema.safeParse(semModo).success).toBe(false);
   });
 });
 
@@ -130,6 +150,17 @@ describe('respostaReconcileEstoqueLiSchema — the reconcile answer', () => {
     expect(respostaReconcileEstoqueLiSchema.safeParse({ ...r, execucaoId: 'a b' }).success).toBe(
       false,
     );
+  });
+
+  it('NEAR MISS — a field or a valve mode a newer backend adds still parses (non-strict)', () => {
+    const r = {
+      execucaoId: 'estoque-reconcile-manual-1763500000000',
+      modo: 'um-modo-de-amanha',
+      chamadas: true,
+      mensagem: 'x',
+      campoNovo: 1,
+    };
+    expect(respostaReconcileEstoqueLiSchema.safeParse(r).success).toBe(true);
   });
 });
 

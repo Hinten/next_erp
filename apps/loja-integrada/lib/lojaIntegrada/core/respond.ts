@@ -23,7 +23,7 @@
  *  - the stock routes' own (step 12, PR 12-h): the stock valve off, the Cloud
  *    Tasks valve closed, a running reconcile (with its `execucaoId`), a conta with
  *    no depósito, and a push over its children bound (with `limite` and
- *    `solicitados`).
+ *    `encontrados`).
  *
  * ⚠️ The ONE module under `lib/lojaIntegrada/` that imports `next/server`, and
  * therefore the one module step 3's functions bundle must never reach. Nothing
@@ -133,9 +133,12 @@ export interface ExtrasDoEnvelopeLi {
   readonly jobId?: string;
   /** The RUNNING stock reconcile, on `LI_RECONCILE_EM_ANDAMENTO` only. */
   readonly execucaoId?: string;
-  /** The manual push's bound and the children it would have enqueued, on `LI_SELECAO_EXCEDE_LIMITE`. */
+  /**
+   * The manual push's bound and the children it FOUND before it stopped looking (a lower bound),
+   * on `LI_SELECAO_EXCEDE_LIMITE`.
+   */
   readonly limite?: number;
-  readonly solicitados?: number;
+  readonly encontrados?: number;
 }
 
 /** One envelope. Every refusal below goes through here. */
@@ -155,7 +158,7 @@ export function respostaLi(
       ...(extras.jobId === undefined ? {} : { jobId: extras.jobId }),
       ...(extras.execucaoId === undefined ? {} : { execucaoId: extras.execucaoId }),
       ...(extras.limite === undefined ? {} : { limite: extras.limite }),
-      ...(extras.solicitados === undefined ? {} : { solicitados: extras.solicitados }),
+      ...(extras.encontrados === undefined ? {} : { encontrados: extras.encontrados }),
     },
     { status: httpStatus },
   );
@@ -455,15 +458,16 @@ export function respostaDaContaDoEstoqueLi(
 
 /**
  * 400 `LI_SELECAO_EXCEDE_LIMITE` — the manual push would enqueue more children than `limite`;
- * `solicitados` is how many it found. Refused whole, never truncated: nothing was enqueued.
+ * `encontrados` is how many it found before it stopped looking (a LOWER bound: the expansion stops
+ * at the round that passes the bound). Refused whole, never truncated: nothing was enqueued.
  */
-export function respostaSelecaoExcedeLimite(limite: number, solicitados: number): NextResponse {
+export function respostaSelecaoExcedeLimite(limite: number, encontrados: number): NextResponse {
   return respostaLi(
     400,
     CODIGO_ERRO_LI.selecaoExcedeLimite,
     `Selecione no máximo ${String(limite)} variações vinculadas desta conta para enviar o ` +
-      `estoque (a seleção tem pelo menos ${String(solicitados)}). Nada foi enfileirado.`,
-    { limite, solicitados },
+      `estoque (a seleção tem pelo menos ${String(encontrados)}). Nada foi enfileirado.`,
+    { limite, encontrados },
   );
 }
 

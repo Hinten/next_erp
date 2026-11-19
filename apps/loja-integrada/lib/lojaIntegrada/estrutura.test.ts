@@ -1431,17 +1431,43 @@ describe('lib/lojaIntegrada layout', () => {
           RAIZ_DO_APP_HOSTING,
         ].sort(),
       );
+      // Each queue by its constant OR by its name's literal value (read from the constant's own
+      // source, so a renamed queue moves both): a root binding a queue by a string literal through
+      // a generic helper names no constant at all.
+      const valorDaFila = (arquivo: string, constante: string): string => {
+        const m = new RegExp(`export const ${constante} = '([A-Za-z]+)';`).exec(
+          lerDoApp(arquivo) ?? '',
+        );
+        expect(m, `${constante} in ${arquivo}`).not.toBeNull();
+        return m?.[1] ?? '';
+      };
+      const FILAS: Readonly<Record<string, string>> = {
+        FILA_ESCRITA_LI: valorDaFila(
+          'lib/lojaIntegrada/rastreio/notificacaoEscrita.ts',
+          'FILA_ESCRITA_LI',
+        ),
+        FILA_ESTOQUE_LI: valorDaFila(
+          'lib/lojaIntegrada/estoque/agendadorEstoque.ts',
+          'FILA_ESTOQUE_LI',
+        ),
+        FILA_LEITURA_LI: valorDaFila(
+          'lib/lojaIntegrada/notificacoes/agendador.ts',
+          'FILA_LEITURA_LI',
+        ),
+      };
+      const filasDe = (codigo: string): string[] =>
+        [
+          ...new Set(
+            Object.entries(FILAS)
+              .filter(
+                ([constante, valor]) =>
+                  new RegExp(`\\b${constante}\\b`).test(codigo) || codigo.includes(valor),
+              )
+              .map(([constante]) => constante),
+          ),
+        ].sort();
       const filas = Object.fromEntries(
-        raizes.map((r) => [
-          r,
-          [
-            ...new Set(
-              [...semComentarios(lerDoApp(r) ?? '').matchAll(/\b(FILA_[A-Z]+_LI)\b/g)].map(
-                (m) => m[1] ?? '',
-              ),
-            ),
-          ].sort(),
-        ]),
+        raizes.map((r) => [r, filasDe(semComentarios(lerDoApp(r) ?? ''))]),
       );
       expect(filas).toEqual({
         'functions/src/agendador.ts': ['FILA_LEITURA_LI'],
@@ -1449,6 +1475,21 @@ describe('lib/lojaIntegrada layout', () => {
         'functions/src/agendadorEstoque.ts': ['FILA_ESTOQUE_LI'],
         [RAIZ_DO_APP_HOSTING]: ['FILA_ESTOQUE_LI', 'FILA_LEITURA_LI'],
       });
+      // ⚠️ The App Hosting SA holds enqueue rights on the WRITES queue anyway (`TASKS_INVOKER_SA`
+      // is one list): its root names neither that queue nor the writes producer, in any form.
+      const raizAppHosting = semComentarios(lerDoApp(RAIZ_DO_APP_HOSTING) ?? '');
+      expect(raizAppHosting).not.toMatch(/\bFILA_ESCRITA_LI\b/);
+      expect(raizAppHosting).not.toContain(FILAS.FILA_ESCRITA_LI ?? '');
+      expect(raizAppHosting).not.toMatch(/filaEscrita|agendadorEscrita|AgendadorEscrita/i);
+      // ⚠️ NEAR-MISS (synthetic): a literal-bound writes producer IS seen, a comment naming it is not.
+      expect(
+        filasDe(
+          semComentarios(
+            "// never 'filaEscritaLojaIntegrada' here\nconst f = () => fila('filaEscritaLojaIntegrada');\n",
+          ),
+        ),
+      ).toEqual(['FILA_ESCRITA_LI']);
+      expect(filasDe(semComentarios("// 'filaEscritaLojaIntegrada'\nconst x = 1;\n"))).toEqual([]);
     },
   );
 

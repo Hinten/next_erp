@@ -17,9 +17,14 @@
  *     (a second click, the nightly start, a depósito arm) reads as running, never as a new run.
  *  2. Otherwise ONE enqueue, run {@link idExecucaoManualLi} of the request's MINUTE: a repeat in
  *     the same minute names the same task (`li-<execucaoId>-0`; an answered already-exists is
- *     success, so the same 202), never a second full key walk. A stored run released this minute
- *     makes the slice `adiar` (two runs never share a minute window): it throws and the queue
- *     retries it a minute later, when it takes the lease.
+ *     success, so the same 202), never a second full key walk. The slice then decides as every
+ *     first slice does (`decidirSliceReconcileLi`): a stored run that STARTED in this minute
+ *     (past step 1, one no longer holding the lease) makes it `adiar`, so two runs never share a
+ *     minute window — it throws, and the queue retries it at least 60 s later (the reads queue's
+ *     `minBackoffSeconds`), when it takes the lease; a run that took the lease AFTER step 1's read
+ *     (another click, the nightly start, a depósito arm) makes it drop as `ocupado` — after one
+ *     `adiar` first when that run started in the same minute — and the running chain covers every
+ *     conta.
  *
  * The read switch is NOT read here, as in the nightly start and the depósito arm: with it off the
  * run still rebuilds the ERP side (the snapshot, the kits map) and every store phase stops at the
@@ -31,7 +36,7 @@
 import type { Firestore } from 'firebase-admin/firestore';
 import { TIPO_TAREFA_RECONCILE_ESTOQUE_LI } from '@delfrance/schemas';
 
-import { JANELA_ESTOQUE_LI_MS } from '../agendadorEstoque';
+import { JANELA_ESTOQUE_LI_MS, janelaEstoqueLi } from '../agendadorEstoque';
 import { PREFIXO_EXECUCAO_RECONCILE_LI } from './agendamentoReconcile';
 import { type AgendadorReconcileEstoqueLi, LiTarefasDesligadasError } from './agendadorReconcile';
 import { leaseReconcileVivoLi, lerLeaseRunReconcileLi } from './execucaoReconcile';
@@ -45,9 +50,29 @@ export const PREFIXO_EXECUCAO_MANUAL_LI = `${PREFIXO_EXECUCAO_RECONCILE_LI}-manu
  * the prefix), a depósito arm's (`…-deposito-`) or a release's (`…-redeposito-`).
  */
 export function idExecucaoManualLi(agoraMs: number): string {
-  const minuto = Math.floor(agoraMs / JANELA_ESTOQUE_LI_MS) * JANELA_ESTOQUE_LI_MS;
+  // The `adiar` rule's own window function: one minute, one id.
+  const minuto = janelaEstoqueLi(agoraMs) * JANELA_ESTOQUE_LI_MS;
   return `${PREFIXO_EXECUCAO_MANUAL_LI}-${String(minuto)}`;
 }
+
+/** The 202's shared opening: what the route KNOWS (a full run is queued, and what it covers). */
+const RECONCILE_ENFILEIRADO_LI =
+  'Reconciliação completa enfileirada: cobre todas as contas ativas com depósito.';
+
+/**
+ * The 202's pt-BR sentence, by THIS backend's read switch. Never a claim about the run's store
+ * phase: that phase reads the functions codebase's OWN copy of the switch (a set-alike pair that
+ * nothing cross-checks), so the sentence says only what this backend has and leaves the rest to
+ * the queue.
+ */
+export const MENSAGEM_RECONCILE_MANUAL_LI = {
+  comChamadas:
+    `${RECONCILE_ENFILEIRADO_LI} As chamadas à Loja Integrada estão ligadas neste backend ` +
+    '(a fila decide pela própria configuração se lê a loja).',
+  semChamadas:
+    `${RECONCILE_ENFILEIRADO_LI} As chamadas à Loja Integrada estão desligadas neste backend ` +
+    '(a fila decide pela própria configuração se lê a loja).',
+} as const;
 
 /** What the route did. */
 export type ResultadoReconcileManualLi =

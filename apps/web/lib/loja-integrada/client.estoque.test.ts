@@ -81,7 +81,8 @@ const RESPOSTA: RespostaEnvioEstoqueLi = {
       idLi: '182904918',
       resultado: RESULTADO_ENVIO_ESTOQUE_LI.enfileirado,
       motivo: null,
-      mensagem: 'Na fila em modo de teste: o envio é só simulado, nada é gravado na loja.',
+      mensagem:
+        'Na fila: em alguns minutos a fila de estoque relê o ERP e a loja e decide se envia. Este backend está com o estoque em modo de teste.',
     },
   ],
   produtosSemEnvio: [],
@@ -237,13 +238,13 @@ describe('enviarEstoque — the refusals', () => {
     expect((err as HttpError).message).toBe('Frase do backend. Nada foi enfileirado.');
   });
 
-  it('the bound refusal (400 LI_SELECAO_EXCEDE_LIMITE) parses with its limite and solicitados', async () => {
+  it('the bound refusal (400 LI_SELECAO_EXCEDE_LIMITE) parses with its limite and encontrados', async () => {
     const { c } = cliente(() =>
       json(400, {
         error: 'Selecione no máximo 30 variações vinculadas desta conta.',
         code: CODIGO_ERRO_LI.selecaoExcedeLimite,
         limite: 30,
-        solicitados: 31,
+        encontrados: 31,
       }),
     );
 
