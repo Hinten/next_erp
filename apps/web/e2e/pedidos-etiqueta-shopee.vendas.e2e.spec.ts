@@ -14,9 +14,10 @@ import { warmRoutes } from './helpers/warmup';
  * `EtiquetaAcaoHost.test.tsx`); this proves the four things only the real UI in
  * a real browser shows:
  *
- *   - REACHABILITY — the seeded pedido has no `int_frete` document at all, and
- *     its FreteCell HoverCard still offers both fetch entries off the frete
- *     block alone;
+ *   - REACHABILITY — the seeded pedido has no `int_frete` document at all (the
+ *     ref-less shape; see the fixture's comment in `_helpers/seed-data.ts`),
+ *     and its FreteCell HoverCard still offers both fetch entries off the
+ *     frete block alone;
  *   - NO posted-risk confirm — the frete sits at `error`, an estado the shared
  *     gates treat as already posted, and a Shopee reprint is the same document
  *     (`reimpressao: 'mesmo-documento'`), so the flow goes straight to the route;

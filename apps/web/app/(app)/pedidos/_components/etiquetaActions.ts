@@ -52,10 +52,12 @@ export interface EtiquetaRowStateInput {
   /**
    * The DISPATCH tipo (`tipoDeDespacho`, #1523): a marketplace-owned frete
    * block's tipo, else the int_frete doc's — null while still resolving / no
-   * integração. A Shopee pedido imported by THIS app carries no int_frete ref
-   * (step 5 sets none), so its block names it; a migrated legacy one carries the
-   * legacy FreteShopee doc's ref and dispatches as `'doc'` when that doc's tipo
-   * is `shopee` — the provider reads neither.
+   * integração. A Shopee pedido's block names it either way: one the importer
+   * created since 2026-11-18 for a conta with an active int_frete doc also
+   * carries that doc's ref (create-only), one created while its conta had none
+   * (or, on staging only, one imported earlier) carries none, and a migrated
+   * legacy one carries the legacy FreteShopee doc's ref — the provider reads
+   * neither the ref nor the doc.
    */
   readonly tipo: IntegracaoFrete | null;
   readonly printLabelId: string | null;

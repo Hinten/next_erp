@@ -30,13 +30,17 @@ import type { IntFreteResolvido } from './types';
  * (`apps/mercado-livre/app/api/marketplace/mercado-livre/etiqueta/route.ts`),
  * and Shopee's refuses one whose block names any other tipo
  * (`apps/shopee/lib/shopee/etiqueta/alvoEtiqueta.ts`) — so dispatching on a
- * document that disagrees would only reach a route that says no. A Shopee
- * pedido imported by THIS app carries no `int_frete` ref (step 5 sets none),
- * and an imported ML pedido whose ref was degraded to null is the same case.
- * ⚠️ A MIGRATED legacy Shopee pedido does carry one — the legacy FreteShopee
- * document's — and dispatches as `'doc'` when that document's tipo is
- * `shopee`; the Shopee provider reads neither, so nothing here may assume
- * "Shopee ⇒ `'bloco'`".
+ * document that disagrees would only reach a route that says no. Since
+ * 2026-11-18 (Lucas reversed step 20's Q1 (a)) a Shopee pedido the importer
+ * CREATES for a conta with an active `int_frete` doc carries that doc's ref —
+ * create-only, so one created while its conta had no active doc (or, on
+ * staging only, one imported earlier) keeps a `null` ref and dispatches as
+ * `'bloco'`; an imported ML pedido whose ref was degraded to null is the same
+ * case. A MIGRATED legacy Shopee pedido carries the legacy
+ * FreteShopee document's ref. Either ref dispatches as `'doc'` when its
+ * document's tipo is `shopee`. ⚠️ The Shopee provider reads neither shape, and
+ * both stay live, so nothing here may assume "Shopee ⇒ `'bloco'`" or
+ * "Shopee ⇒ `'doc'`".
  *
  * ⚠️ It WIDENS, never narrows. A block naming a NON-marketplace tipo (Melhor
  * Envio, motoboy, …) changes nothing: the document decides exactly as before,

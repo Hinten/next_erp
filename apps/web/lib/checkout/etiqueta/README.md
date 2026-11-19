@@ -177,11 +177,16 @@ that tipo is the dispatch, with or without an `int_frete` document:
 - otherwise — no `integracaoFreteOuterRef`, a dangling ref, a document of
   another tipo → `fonte: 'bloco'`, `id: null`, `data: null`.
 
-A Shopee pedido imported by THIS app carries no ref (step 5 sets none), so it
-dispatches as `'bloco'`. ⚠️ A MIGRATED legacy one carries the legacy
-FreteShopee document's ref and dispatches as `'doc'` when that document's tipo
-is `shopee`. The Shopee provider reads neither, so nothing may assume
-"Shopee ⇒ `'bloco'`" — that holds only for this app's own imports.
+Since 2026-11-18 (Lucas reversed step 20's Q1 (a)) a Shopee pedido the
+importer CREATES for a conta with an active `int_frete` doc carries that doc's
+ref and dispatches as `'doc'` — the document's tipo is `shopee`. The stamp is
+create-only and never backfilled, so a Shopee pedido created while its conta
+had no active doc (or, on staging only, one imported earlier) keeps a `null`
+ref and dispatches as `'bloco'`: still a supported case. A
+MIGRATED legacy one carries the legacy FreteShopee document's ref and dispatches
+as `'doc'` when that document's tipo is `shopee`. ⚠️ The Shopee provider reads
+neither shape, and both stay live, so nothing may assume "Shopee ⇒ `'bloco'`"
+or "Shopee ⇒ `'doc'`".
 
 It WIDENS, never narrows: a block naming a non-marketplace tipo changes
 nothing, and no document still means "sem integração". `'bloco'` therefore only
