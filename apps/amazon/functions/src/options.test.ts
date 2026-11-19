@@ -43,7 +43,7 @@ describe('options.ts — the inline guard', () => {
     await expect(import('./options')).rejects.toThrow(/FUNCTIONS_REGION/);
   });
 
-  it('registers the global options with the inlined region and the instance cap', async () => {
+  it('registers the global options with the inlined region, the instance cap and the 512-MiB stop-gap (#2194)', async () => {
     process.env.FUNCTIONS_REGION = 'xx-regiao1';
     const { setGlobalOptions } = await import('firebase-functions/v2');
 
@@ -52,6 +52,7 @@ describe('options.ts — the inline guard', () => {
     expect(setGlobalOptions).toHaveBeenCalledExactlyOnceWith({
       region: 'xx-regiao1',
       maxInstances: 10,
+      memory: '512MiB',
     });
   });
 });

@@ -25,7 +25,13 @@ if (!region) {
 // decoration either: `||` and `??` cannot be mixed bare.
 process.env.AMAZON_TASKS_REGION = (process.env.AMAZON_TASKS_REGION?.trim() || undefined) ?? region;
 
+// ⚠️ `memory: '512MiB'` is a STOP-GAP (Lucas, 2026-11-19), set together with the
+// Shopee codebase, whose one-bundle functions died at the 256-MiB default on
+// staging. This codebase has the same one-bundle shape; #2194 measures both and
+// brings the default back down. `processAmazonListingsJob` keeps its own `1GiB`
+// (a per-function `memory` overrides this one).
 setGlobalOptions({
   region,
   maxInstances: 10,
+  memory: '512MiB',
 });
