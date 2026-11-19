@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { MantineTestProvider } from '../testing/mantine';
 import { z } from 'zod';
 import type { CollectionHandle } from '@delfrance/data';
+import { millisSinceEpoch } from '@delfrance/schemas';
 
 const { docState, saveRecordMock, NothingChanged, notifyShow } = vi.hoisted(() => {
   class NothingChanged extends Error {}
@@ -336,6 +337,63 @@ describe('ObjectView validation feedback across tabs', () => {
       }),
     );
     expect(screen.getByRole('tab', { name: /Notas/ }).getAttribute('aria-selected')).toBe('true');
+  });
+});
+
+describe('ObjectView required creation date on edit', () => {
+  const editSchema = schema.extend({ dataCadastro: millisSinceEpoch('Data de cadastro') });
+
+  function renderEdit(data: Record<string, unknown>) {
+    docState.current = { data: { id: 'x1', data }, loading: false, error: undefined };
+    render(
+      <Wrap>
+        <ObjectView
+          schema={editSchema}
+          collection={fakeCollection() as never}
+          db={{} as never}
+          currentUserUid="u1"
+          recordId="x1"
+          excludedFields={['dataCadastro']}
+        />
+      </Wrap>,
+    );
+  }
+
+  async function saveEdit() {
+    const nome = screen.getByRole('textbox', { name: 'Nome' });
+    await act(async () => {
+      fireEvent.change(nome, { target: { value: 'Editado' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Salvar' }));
+    });
+  }
+
+  it.each([{}, { dataCadastro: null }])(
+    'lets an edit reach the transaction with %j',
+    async (data) => {
+      saveRecordMock.mockResolvedValue({ id: 'x1', patch: {}, documents: [] });
+      renderEdit({ nome: 'Original', obs: 'ok', ...data });
+
+      await saveEdit();
+
+      expect(saveRecordMock).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          recordId: 'x1',
+          createdAtField: 'dataCadastro',
+          stampUnit: 'ms',
+          values: { nome: 'Editado', obs: 'ok', ...data },
+          dirtyFields: { nome: true },
+        }),
+      );
+    },
+  );
+
+  it('still blocks an edit with an unrelated validation error', async () => {
+    renderEdit({ nome: 'Original', obs: '', dataCadastro: null });
+
+    await saveEdit();
+
+    expect(saveRecordMock).not.toHaveBeenCalled();
+    expect(screen.getByText('Informe a observação')).toBeTruthy();
   });
 });
 

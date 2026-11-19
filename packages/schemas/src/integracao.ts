@@ -422,8 +422,8 @@ export const integracaoSchema = z.object({
   operacaoDevolucaoOuterRef: outerRefSchema.nullable().default(null),
   depositoOuterRef: outerRefSchema.nullable().default(null),
 
-  // System stamps — `dataCadastro` create-only (nullish coalesce) and
-  // `ultimaModificacao` on every write; both stamped by `saveRecord`.
+  // `saveRecord` fills a missing `dataCadastro` and refreshes
+  // `ultimaModificacao` when it writes the integration document.
   dataCadastro: millisSinceEpoch().nullable().default(null),
   // `.default(null)`, never a bare `.optional()`: the TableView update-
   // monitor runs a CLASSIC `orderBy(ultimaModificacao, 'desc').limit(1)`,
