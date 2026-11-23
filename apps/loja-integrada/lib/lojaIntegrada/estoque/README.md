@@ -10,9 +10,11 @@ It ships INERT. The stock valve `LOJA_INTEGRADA_MODO_ESTOQUE`, its canary list a
 `LOJA_INTEGRADA_CHAMADAS` are unset today, so every trigger event, send run, fan-out and reconcile
 slice returns with zero reads. Before the migration window the valve may be set to `dry-run` and to
 nothing else (the staging measurement path, section 13); the canary list and the switch stay unset.
-No test can call the store: both vitest setups make a `fetch` to any non-local host throw, the
-suites that script the store pass a `deps.fetch`, and a function the emulator lane dispatches stops
-at the read switch (section 14).
+No test can call the store: this app's two vitest setups make a `fetch` to any non-local host
+throw, the suites that script the store pass a `deps.fetch`, and in the emulator lane a dispatched
+send run or reconcile store phase stops at the read switch while the fan-out makes no store call
+at all (section 14). The package's wire tests (`packages/integrations/loja-integrada`) inject or
+stub their own `fetch`.
 
 This file is the reference. The rules an agent must not break before touching stock code are the
 short list in [`apps/loja-integrada/CLAUDE.md`](../../../CLAUDE.md), "Stock sync (step 12)". Also:

@@ -41,7 +41,7 @@ Master plan: `.master_plans/loja-integrada/loja-integrada-marketplace-integratio
   call here, no inventory row. ⚠️ The add reads nothing, so one handled after its link's close
   (Eventarc gives no order; a retried create can land late) leaves a conta listed with no
   counting link, and nothing here removes it — accepted as the over-inclusive direction (one
-  skipped sweep row); the trigger's docblock says what closing it would cost. One trigger
+  wasted link listing in the manual push); the trigger's docblock says what closing it would cost. One trigger
   serves parents and children (a child's link sits under the ERP child). `database`
   `default`, `retry: true`, no secrets, no Loja Integrada call.
   PR 9-c, the import: the job routes `conta/[id]/importacoes…` (below),

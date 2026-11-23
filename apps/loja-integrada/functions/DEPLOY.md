@@ -428,8 +428,9 @@ narrowed by the core) and writes nothing — a deleted produto is never
 re-created. One residual it does leave: its add reads nothing, and Eventarc
 guarantees no order, so an add handled AFTER its link's close (a late or retried
 create) lists a conta with no counting link, and nothing automatic removes it.
-That is the cheap direction — one skipped sweep row per run, never a silent
-outage — and only a hand fix clears it (the window's anchor census looks for
+That is the cheap direction — one wasted link listing in the manual stock push
+(no sweep reads this channel's entries of the array), never a silent outage —
+and only a hand fix clears it (the window's anchor census looks for
 the opposite gap, a counting link whose conta is missing).
 
 ⚠️ **The pacer.** Every Loja Integrada call made through a context waits 2,000 ms
@@ -599,12 +600,14 @@ the wipe. Create `apps/loja-integrada/functions/.env.deploy` (gitignored):
 #   - `off` (or unset) RECORDS NOTHING: a posting made while it is off is never
 #     written back. It keeps what was already recorded, but the deploy that opens
 #     operations must already carry `dry-run`.
-# The ESTOQUE pair is READ since step 12 (PR 12-e) by this codebase (the stock
-# queue's send run; since PR 12-f the stock trigger and the kit fan-out; since
-# PR 12-g every daily-reconcile slice, the nightly reconcile start and the conta
-# trigger's depósito arm), and since PR 12-h LOJA_INTEGRADA_MODO_ESTOQUE by the
-# App Hosting backend too (its two stock routes answer 503 with it `off`; the
-# canary list is parsed there with the valve but never applied): `off` (or
+# Since step 12 this codebase reads LOJA_INTEGRADA_MODO_ESTOQUE in the stock
+# queue's send run (PR 12-e), the stock trigger and the kit fan-out (PR 12-f),
+# every daily-reconcile slice, the nightly reconcile start and the conta
+# trigger's depósito arm (PR 12-g); it reads LOJA_INTEGRADA_CANARIO_ESTOQUE in
+# the send run and the daily reconcile only (below). Since PR 12-h the App
+# Hosting backend reads LOJA_INTEGRADA_MODO_ESTOQUE too (its two stock routes
+# answer 503 with it `off`; the canary list is parsed there with the valve but
+# never applied): `off` (or
 # unset) makes every stock run, every trigger event, every fan-out and every
 # reconcile slice return before any read, and the nightly start and the
 # depósito arm enqueue nothing;
@@ -1245,10 +1248,11 @@ of this section passes.
     Firestore service-agent grants serving the other four serve it too. A
     trigger bound to `(default)` deploys fine and never fires, and then no ERP
     stock change reaches the stock queue: only the nightly reconcile sends. With
-    the stock valve at `dry-run`, one change of a linked child's available
-    quantity at its conta's depósito enqueues one `estoque` task on
-    `filaEstoqueLojaIntegrada`, whose send run goes no further than the read
-    switch while it is off. The whole stock sync is
+    the stock valve at `dry-run`, watch the next real stock movement of a linked
+    child at its conta's depósito (never hand-edit a real record): it enqueues at
+    least one `estoque` task on `filaEstoqueLojaIntegrada` (more for a kit
+    component, or a depósito two contas share), whose send run goes no further
+    than the read switch while it is off. The whole stock sync is
     `lib/lojaIntegrada/estoque/README.md`.
 
 ## The status write-back in the window (master-plan step 7)

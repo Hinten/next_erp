@@ -67,9 +67,10 @@ import { getDb } from './lib/admin';
  * this channel runs no audit that drops stale entries. Only a manual fix clears it (the window's
  * anchor census looks for the opposite gap: a counting link whose conta is missing).
  * Accepted (the core's event-derived tier-0 add, as Shopee's trigger makes it): it is the
- * over-inclusive direction, one skipped sweep row per run, never the silent outage. Closing it
- * would mean routing the event's add through the core's guarded `adicionarContaSeViva` — one
- * more guarded write and survivor read per add that moves membership.
+ * over-inclusive direction — one wasted link listing in the manual push, since no sweep reads
+ * this channel's entries of the array — never the silent outage. Closing it would mean routing
+ * the event's add through the core's guarded `adicionarContaSeViva` — one more guarded write and
+ * survivor read per add that moves membership.
  *
  * No `region:` — `options.ts` sets it globally. NO `secrets:` — this trigger never calls Loja
  * Integrada (D17), and a needless binding is one more Secret Manager grant that can fail the
