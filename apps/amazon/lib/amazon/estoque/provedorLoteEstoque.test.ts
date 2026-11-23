@@ -29,6 +29,7 @@ import {
   MARKETPLACE_ID_BR,
   MAX_BYTES_FEED,
   MAX_MENSAGENS_FEED,
+  type MensagemListingsFeed,
   type SpApiEscritaClient,
   URL_BASE_SP_API,
   URL_TOKEN_LWA,
@@ -119,7 +120,6 @@ import {
   type ProvedorLoteEstoqueAmazon,
   criarProvedorLoteEstoqueAmazon,
   mensagemEstoqueAmazon,
-  patchEstoqueAmazon,
 } from './provedorLoteEstoque';
 import {
   type DepsTickEstoqueAmazon,
@@ -690,7 +690,27 @@ describe('the factory and its parity pins', () => {
     for (const f of Object.values(espias)) expect(f).not.toHaveBeenCalled();
   });
 
-  it('★ a feed message’s merge is EXACTLY the body the package’s own patchListingsItem helper sends', async () => {
+  /**
+   * A stock feed document of ONE message, frozen as bytes: the header, then one
+   * `PATCH` under `PRODUCT` carrying the MFN availability merge. A change in the
+   * provider's message or in either of the package's builders (the merge's, the
+   * document's) moves these bytes.
+   */
+  const DOCUMENTO_ESTOQUE_CONGELADO =
+    `{"header":{"sellerId":"${SPID_A}","version":"2.0","issueLocale":"pt_BR"},` +
+    '"messages":[{"messageId":1,"sku":"SKU-P","operationType":"PATCH","productType":"PRODUCT",' +
+    '"patches":[{"op":"merge","path":"/attributes/fulfillment_availability",' +
+    '"value":[{"fulfillment_channel_code":"DEFAULT","quantity":7}]}]}]}';
+
+  const documentoDe = (mensagens: readonly MensagemListingsFeed[]) =>
+    new TextDecoder().decode(montarDocumentoListingsFeed({ sellerId: SPID_A, mensagens }).bytes);
+
+  it('★ the stock feed document’s bytes did not move: one provider message builds EXACTLY the frozen document, and its merge is EXACTLY the one the package’s own patchListingsItem helper sends', async () => {
+    const mensagem = mensagemEstoqueAmazon('SKU-P', 7);
+    expect(documentoDe([mensagem])).toBe(DOCUMENTO_ESTOQUE_CONGELADO);
+    // The message names no product type of its own: the document stamps PRODUCT.
+    expect(Object.keys(mensagem)).toEqual(['sku', 'patches']);
+
     const patch = vi.fn((pedido: { corpo: string }) => {
       void pedido;
       return Promise.resolve({ dados: { status: 'ACCEPTED', submissionId: 's', sku: 'SKU-P' } });
@@ -700,10 +720,13 @@ describe('the factory and its parity pins', () => {
       sku: 'SKU-P',
       quantidade: 7,
     });
-    const corpo = JSON.parse(patch.mock.calls[0]?.[0].corpo ?? '{}') as { patches: unknown[] };
-    expect(corpo.patches).toEqual([patchEstoqueAmazon(7)]);
-    // NEAR-MISS: another quantity is another body.
-    expect(corpo.patches).not.toEqual([patchEstoqueAmazon(8)]);
+    expect(patch.mock.calls[0]?.[0].corpo).toBe(
+      `{"productType":"PRODUCT","patches":[${JSON.stringify(mensagem.patches[0])}]}`,
+    );
+    // NEAR-MISS: another quantity is another document and another merge.
+    const outra = mensagemEstoqueAmazon('SKU-P', 8);
+    expect(documentoDe([outra])).not.toBe(DOCUMENTO_ESTOQUE_CONGELADO);
+    expect(patch.mock.calls[0]?.[0].corpo).not.toContain(JSON.stringify(outra.patches[0]));
   });
 
   it('★ the report’s per-SKU problem cap equals the link outcome’s: a feed write-back never truncates twice', () => {
@@ -720,9 +743,27 @@ describe('★ the block batch cap: the worst document a capped batch builds, thr
   /**
    * No ceiling on the quantity: the longest JSON rendering of a non-negative
    * number (the shared core floors the quantity and clamps it at 0, pinned by
-   * `familiaEstoque.test.ts`'s `−3 ⇒ 0`).
+   * `familiaEstoque.test.ts`'s `−3 ⇒ 0`). An UPPER bound: the package's stock
+   * builder sends only a safe integer, so every message the provider builds
+   * renders a shorter one.
    */
   const QUANTIDADE_PIOR = Number.MAX_VALUE;
+
+  /**
+   * The provider's own message for `sku`, with its quantity rendered as
+   * {@link QUANTIDADE_PIOR}: no message the provider builds is longer (the
+   * worst-case pin below shows the builder refuses that quantity).
+   */
+  function mensagemPior(sku: string): MensagemListingsFeed {
+    const real = mensagemEstoqueAmazon(sku, 0);
+    return {
+      sku,
+      patches: real.patches.map((p) => ({
+        ...p,
+        value: p.value?.map((v) => ({ ...v, quantity: QUANTIDADE_PIOR })),
+      })),
+    };
+  }
 
   /**
    * SKU `i` of the worst case: 40 code points (the most a member a sent feed
@@ -737,7 +778,7 @@ describe('★ the block batch cap: the worst document a capped batch builds, thr
   function documentoPior(blocos: number) {
     const mensagens = Array.from(
       { length: blocos * MAX_ITENS_DIVERGENCIA_ESTOQUE_AMAZON },
-      (_v, i) => mensagemEstoqueAmazon(skuPior(i), QUANTIDADE_PIOR),
+      (_v, i) => mensagemPior(skuPior(i)),
     );
     return () => montarDocumentoListingsFeed({ sellerId: SELLER_PIOR, mensagens });
   }
@@ -753,6 +794,17 @@ describe('★ the block batch cap: the worst document a capped batch builds, thr
     expect(JSON.stringify(QUANTIDADE_PIOR).length).toBeGreaterThan(
       JSON.stringify(Number.MAX_SAFE_INTEGER).length,
     );
+    // An upper bound: the provider's builder refuses that quantity, and its
+    // longest accepted one renders shorter in an otherwise identical message.
+    expect(() => mensagemEstoqueAmazon(sku, QUANTIDADE_PIOR)).toThrow(AmazonConfigError);
+    const maiorAceita = JSON.stringify(mensagemEstoqueAmazon(sku, Number.MAX_SAFE_INTEGER));
+    expect(JSON.stringify(mensagemPior(sku))).toBe(
+      maiorAceita.replace(
+        `"quantity":${String(Number.MAX_SAFE_INTEGER)}`,
+        `"quantity":${JSON.stringify(QUANTIDADE_PIOR)}`,
+      ),
+    );
+    expect(JSON.stringify(mensagemPior(sku)).length).toBeGreaterThan(maiorAceita.length);
     expect(sellingPartnerIdValido(SELLER_PIOR)).toBe(true);
     expect(JSON.stringify(SELLER_PIOR)).toHaveLength(2 + 2 * 64);
   });
@@ -824,7 +876,7 @@ describe('★ the block batch cap: the worst document a capped batch builds, thr
         sellerId: SELLER_PIOR,
         mensagens: Array.from(
           { length: MAX_PARTES_LOTE_BLOCOS_FEED_AMAZON * MAX_ITENS_DIVERGENCIA_ESTOQUE_AMAZON },
-          (_v, i) => mensagemEstoqueAmazon(String(i).padStart(bytes, 'x'), QUANTIDADE_PIOR),
+          (_v, i) => mensagemPior(String(i).padStart(bytes, 'x')),
         ),
       });
     expect(alvoValido(FLUXO_AMAZON.estoque, 'x'.repeat(400))).toBe(false);

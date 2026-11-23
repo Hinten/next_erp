@@ -238,6 +238,8 @@ describe('the class hierarchy', () => {
       'base64',
       'sku',
       'quantidade',
+      'oferta',
+      'tipo-produto',
       'feed',
     ];
     const mensagens = new Set<string>();

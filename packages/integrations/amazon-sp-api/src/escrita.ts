@@ -3,9 +3,10 @@
  * to the Selling Partner API, kept apart from the read client (`client.ts`) on
  * purpose. Its consumers are the Delivery invoice upload (`entrega.ts`,
  * `enviarNotaFiscal`), the RDT mint (`tokens.ts`, `criarTokenRestrito`), the
- * Easy Ship bulk (`easyShip.ts`, `agendarPacotesEasyShip`), the listings stock
- * patch (`listings.ts`, `enviarDisponibilidadeAmazon`) and the two feed
- * submissions (`feeds.ts`, `criarDocumentoFeedAmazon` and `criarFeedAmazon`);
+ * Easy Ship bulk (`easyShip.ts`, `agendarPacotesEasyShip`), the two listings
+ * patches (`listings.ts`, `enviarDisponibilidadeAmazon` and
+ * `enviarOfertaAmazon`) and the two feed submissions (`feeds.ts`,
+ * `criarDocumentoFeedAmazon` and `criarFeedAmazon`);
  * the app builds it in exactly one place, its write engine.
  *
  * ## Two methods, `post` and `patch`

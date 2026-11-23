@@ -12,6 +12,8 @@ import {
   CONTENT_TYPE_FEED_JSON,
   criarDocumentoFeedAmazon,
   criarFeedAmazon,
+  DADOS_RELATORIO_FEED,
+  type DadoRelatorioFeed,
   FEED_ID_AMAZON_REGEX,
   feedAmazonSchema,
   feedCriadoSchema,
@@ -31,6 +33,12 @@ import {
   TIPO_FEED_LISTINGS,
   VERSAO_FEED_LISTINGS,
 } from '../src/feeds';
+import {
+  type FaixaOfertaAmazon,
+  patchDisponibilidadeAmazon,
+  patchOfertaAmazon,
+  VERSAO_API_LISTINGS,
+} from '../src/listings';
 import {
   documentoFeed200,
   documentoFeedCriado201,
@@ -641,5 +649,305 @@ describe('lerRelatorioProcessamentoListings', () => {
   it('NEAR-MISS: a report with an empty issue list and no header parses', () => {
     const r = lerRelatorioProcessamentoListings(JSON.stringify({ summary: relatorio.summary }));
     expect(r.summary.messagesProcessed).toBe(3);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*            A message's product type, the report header, the items          */
+/* -------------------------------------------------------------------------- */
+
+const FAIXA: FaixaOfertaAmazon = { base: 129.9, minimo: 119.9, maximo: 129.9 };
+
+/** Refused by the document builder: the thrown config error, or a failure. */
+function recusaDoDocumento(entrada: Parameters<typeof montarDocumentoListingsFeed>[0]) {
+  try {
+    montarDocumentoListingsFeed(entrada);
+  } catch (e) {
+    if (e instanceof AmazonConfigError) return e;
+    throw e;
+  }
+  throw new Error('esperava uma recusa');
+}
+
+interface DocumentoLido {
+  readonly header: EsquemaJson;
+  readonly messages: EsquemaJson[];
+}
+
+const documentoDe = (entrada: Parameters<typeof montarDocumentoListingsFeed>[0]): DocumentoLido =>
+  JSON.parse(textoDe(montarDocumentoListingsFeed(entrada).bytes)) as DocumentoLido;
+
+/** The stock document of one message, byte for byte: a golden, since a change here moves every stock feed. */
+const DOCUMENTO_ESTOQUE_A3 =
+  '{"header":{"sellerId":"SELLER-TESTE","version":"2.0","issueLocale":"pt_BR"},"messages":[{"messageId":1,"sku":"A","operationType":"PATCH","productType":"PRODUCT","patches":[{"op":"merge","path":"/attributes/fulfillment_availability","value":[{"fulfillment_channel_code":"DEFAULT","quantity":3}]}]}]}';
+
+describe('montarDocumentoListingsFeed: a message’s product type', () => {
+  it('★ a message with productType carries it; one without carries PRODUCT', () => {
+    const doc = documentoDe({
+      sellerId: SELLER,
+      mensagens: [
+        { sku: 'A', productType: 'LUGGAGE', patches: [patchOfertaAmazon(FAIXA)] },
+        mensagem('B', 2),
+      ],
+    });
+    expect(doc.messages.map((m) => [m.sku, m.productType])).toEqual([
+      ['A', 'LUGGAGE'],
+      ['B', 'PRODUCT'],
+    ]);
+  });
+
+  it('★ the stock document’s bytes did not move, and the package’s stock builder builds the same bytes', () => {
+    const bytes = (patches: readonly PatchListingAmazon[]) =>
+      textoDe(
+        montarDocumentoListingsFeed({ sellerId: SELLER, mensagens: [{ sku: 'A', patches }] }).bytes,
+      );
+    expect(bytes(patchEstoque(3))).toBe(DOCUMENTO_ESTOQUE_A3);
+    expect(bytes([patchDisponibilidadeAmazon(3)])).toBe(DOCUMENTO_ESTOQUE_A3);
+    // NEAR-MISS: another quantity is other bytes.
+    expect(bytes([patchDisponibilidadeAmazon(4)])).not.toBe(DOCUMENTO_ESTOQUE_A3);
+  });
+
+  it('★ an offer message carries the offer patch whole, under the listing’s type', () => {
+    const doc = documentoDe({
+      sellerId: SELLER,
+      mensagens: [{ sku: 'A', productType: 'LUGGAGE', patches: [patchOfertaAmazon(FAIXA)] }],
+    });
+    expect(doc.messages).toStrictEqual([
+      {
+        messageId: 1,
+        sku: 'A',
+        operationType: 'PATCH',
+        productType: 'LUGGAGE',
+        patches: [patchOfertaAmazon(FAIXA)],
+      },
+    ]);
+  });
+
+  it.each<[string, unknown]>([
+    ['lower case', 'luggage'],
+    ['empty', ''],
+    ['padded', ' LUGGAGE'],
+    ['a hyphen', 'SHOE-X'],
+    ['65 characters', `A${'B'.repeat(64)}`],
+    ['null (a cast)', null],
+    ['a number (a cast)', 1],
+    // A regex test would coerce this to "LUGGAGE": only a string is a product type.
+    ['an array (a cast)', ['LUGGAGE']],
+  ])('★ NEAR-MISS: a product type %s refuses the document whole (feed)', (_caso, productType) => {
+    const err = recusaDoDocumento({
+      sellerId: SELLER,
+      mensagens: [mensagem('A'), { ...mensagem('B'), productType: productType as string }],
+    });
+    expect(err).toMatchObject({ motivo: 'feed', refCredencial: null });
+  });
+});
+
+describe('montarDocumentoListingsFeed: the report header', () => {
+  it('★ relatorio asks the report for each item’s issues: { includedData: [issues], apiVersion }', () => {
+    const doc = documentoDe({
+      sellerId: SELLER,
+      mensagens: [mensagem('A')],
+      relatorio: { incluir: [DADOS_RELATORIO_FEED.issues] },
+    });
+    expect(doc.header).toStrictEqual({
+      sellerId: SELLER,
+      version: '2.0',
+      issueLocale: 'pt_BR',
+      report: { includedData: ['issues'], apiVersion: '2021-08-01' },
+    });
+    expect(VERSAO_API_LISTINGS).toBe('2021-08-01');
+    expect(DADOS_RELATORIO_FEED).toStrictEqual({ issues: 'issues' });
+  });
+
+  it('★ NEAR-MISS: no relatorio, no report key at all (the bytes are the stock document’s)', () => {
+    const doc = documentoDe({ sellerId: SELLER, mensagens: [mensagem('A')] });
+    expect(Object.keys(doc.header)).toEqual(['sellerId', 'version', 'issueLocale']);
+    expect(
+      textoDe(
+        montarDocumentoListingsFeed({ sellerId: SELLER, mensagens: [mensagem('A', 3)] }).bytes,
+      ),
+    ).toBe(DOCUMENTO_ESTOQUE_A3);
+  });
+
+  it.each<[string, readonly DadoRelatorioFeed[]]>([
+    ['an empty list (the schema’s minItems is 1)', []],
+    ['only a dataset the closed set does not name (a cast)', ['offers' as DadoRelatorioFeed]],
+  ])('★ NEAR-MISS: relatorio with %s refuses the document (feed)', (_caso, incluir) => {
+    expect(
+      recusaDoDocumento({ sellerId: SELLER, mensagens: [mensagem('A')], relatorio: { incluir } }),
+    ).toMatchObject({ motivo: 'feed' });
+  });
+
+  it('a repeated or a cast dataset beside a known one is written once, from the constants', () => {
+    const doc = documentoDe({
+      sellerId: SELLER,
+      mensagens: [mensagem('A')],
+      relatorio: { incluir: ['offers' as DadoRelatorioFeed, 'issues', 'issues'] },
+    });
+    expect(doc.header.report).toStrictEqual({ includedData: ['issues'], apiVersion: '2021-08-01' });
+  });
+});
+
+describe('★ the committed feed schemas: the report header, the offer message, the report items', () => {
+  const feed = ler(ESQUEMA_FEED);
+  const cabecalho = em(feed, 'properties', 'header');
+  const report = em(cabecalho, 'properties', 'report');
+  const mensagemDoEsquema = em(feed, 'properties', 'messages', 'items');
+  const ramoPatch = (mensagemDoEsquema.oneOf as readonly EsquemaJson[]).find(
+    (r) => em(r, 'properties', 'operationType').const === 'PATCH',
+  );
+
+  it('pins what the header builder relies on: report’s two required keys, includedData’s minItems and enum, apiVersion’s enum', () => {
+    expect(report.type).toBe('object');
+    expect(report.required).toEqual(['includedData', 'apiVersion']);
+    const includedData = em(report, 'properties', 'includedData');
+    expect(includedData).toMatchObject({ type: 'array', minItems: 1 });
+    expect(em(includedData, 'items').enum).toEqual(
+      expect.arrayContaining(Object.values(DADOS_RELATORIO_FEED)),
+    );
+    expect(em(report, 'properties', 'apiVersion').enum).toEqual([VERSAO_API_LISTINGS]);
+    expect(em(mensagemDoEsquema, 'properties', 'productType')).toMatchObject({
+      type: 'string',
+      minLength: 1,
+    });
+    expect(ramoPatch?.required).toEqual(['productType', 'patches']);
+  });
+
+  it('a header with a report and offer messages satisfy those rules (a hand-written structural check)', () => {
+    const doc = documentoDe({
+      sellerId: SELLER,
+      mensagens: [
+        { sku: 'A', productType: 'LUGGAGE', patches: [patchOfertaAmazon(FAIXA)] },
+        {
+          sku: 'B',
+          productType: 'HOME_BED_AND_BATH',
+          patches: [patchOfertaAmazon({ base: 10, minimo: 10, maximo: 10 })],
+        },
+        mensagem('C', 1),
+      ],
+      relatorio: { incluir: [DADOS_RELATORIO_FEED.issues] },
+    });
+    for (const k of cabecalho.required as string[]) expect(doc.header).toHaveProperty(k);
+    expect(Object.keys(doc.header).every((k) => k in em(cabecalho, 'properties'))).toBe(true);
+    const lido = em(doc.header, 'report');
+    for (const k of report.required as string[]) expect(lido).toHaveProperty(k);
+    expect(Object.keys(lido).every((k) => k in em(report, 'properties'))).toBe(true);
+    const permitidos = em(report, 'properties', 'includedData', 'items').enum as string[];
+    const dados = lido.includedData as string[];
+    expect(dados.length).toBeGreaterThanOrEqual(1);
+    for (const d of dados) expect(permitidos).toContain(d);
+    expect(em(report, 'properties', 'apiVersion').enum).toContain(lido.apiVersion);
+
+    const permitidas = Object.keys(em(mensagemDoEsquema, 'properties'));
+    const ops = em(mensagemDoEsquema, 'properties', 'patches', 'items', 'properties', 'op')
+      .enum as string[];
+    for (const m of doc.messages) {
+      for (const k of [
+        ...(mensagemDoEsquema.required as string[]),
+        ...(ramoPatch?.required as string[]),
+      ]) {
+        expect(m).toHaveProperty(k);
+      }
+      expect(Object.keys(m).every((k) => permitidas.includes(k))).toBe(true);
+      expect(typeof m.productType === 'string' && m.productType.length >= 1).toBe(true);
+      for (const p of m.patches as EsquemaJson[]) {
+        expect(ops).toContain(p.op);
+        expect(typeof p.path).toBe('string');
+        expect(Array.isArray(p.value)).toBe(true);
+        for (const v of p.value as unknown[]) {
+          expect(typeof v === 'object' && v !== null && !Array.isArray(v)).toBe(true);
+        }
+      }
+    }
+  });
+
+  it('pins what the report parser relies on for items: a list of objects, none of whose keys is required', () => {
+    const relatorio = ler(ESQUEMA_RELATORIO);
+    expect(relatorio.required).not.toContain('items');
+    const items = em(relatorio, 'properties', 'items');
+    expect(items.type).toBe('array');
+    const item = em(items, 'items');
+    expect(item).toMatchObject({ type: 'object', additionalProperties: true });
+    expect(item.required).toBeUndefined();
+  });
+});
+
+describe('lerRelatorioProcessamentoListings: the items', () => {
+  const resumo = {
+    errors: 0,
+    warnings: 1,
+    messagesProcessed: 1,
+    messagesAccepted: 1,
+    messagesInvalid: 0,
+  };
+
+  it('★ a report whose item carries price issues parses, categories kept', () => {
+    const r = lerRelatorioProcessamentoListings(
+      JSON.stringify({
+        header: { sellerId: SELLER, version: '2.0', feedId: '3485934' },
+        issues: [],
+        summary: resumo,
+        items: [
+          {
+            sku: 'A',
+            issues: [
+              {
+                code: '19037',
+                message: 'x',
+                severity: 'ERROR',
+                attributeNames: ['purchasable_offer'],
+                categories: ['INVALID_PRICE'],
+              },
+            ],
+            status: ['BUYABLE'],
+          },
+        ],
+      }),
+    );
+    expect(r.items).toHaveLength(1);
+    expect(r.items?.[0]).toMatchObject({
+      sku: 'A',
+      issues: [{ code: '19037', severity: 'ERROR', categories: ['INVALID_PRICE'] }],
+    });
+    // `.passthrough()`: a key the package does not read is kept.
+    expect(r.items?.[0]).toHaveProperty('status', ['BUYABLE']);
+  });
+
+  it('★ NEAR-MISS: a report without items parses, with items absent', () => {
+    const r = lerRelatorioProcessamentoListings(JSON.stringify({ issues: [], summary: resumo }));
+    expect(r.items).toBeUndefined();
+  });
+
+  it('an item without sku or issues parses (Amazon requires no key of an item)', () => {
+    const r = lerRelatorioProcessamentoListings(
+      JSON.stringify({ summary: resumo, items: [{ attributes: {} }, { sku: 'B' }] }),
+    );
+    expect(r.items?.map((i) => i.sku)).toEqual([undefined, 'B']);
+  });
+
+  it('★ an explicit null for items, or for an item’s issues, parses as null (both are nullish)', () => {
+    expect(
+      lerRelatorioProcessamentoListings(JSON.stringify({ summary: resumo, items: null })).items,
+    ).toBeNull();
+    const r = lerRelatorioProcessamentoListings(
+      JSON.stringify({ summary: resumo, items: [{ sku: 'A', issues: null }] }),
+    );
+    expect(r.items).toStrictEqual([{ sku: 'A', issues: null }]);
+  });
+
+  it.each<[string, unknown]>([
+    ['items as an object', { a: 1 }],
+    ['an item whose sku is a number', [{ sku: 123 }]],
+    ['an item issue whose categories is a string', [{ sku: 'A', issues: [{ categories: 'X' }] }]],
+    ['an item whose issues is not a list', [{ sku: 'A', issues: { code: '1' } }]],
+  ])('★ %s is relatorio-invalido, never a silent drop', (_caso, items) => {
+    let err: unknown;
+    try {
+      lerRelatorioProcessamentoListings(JSON.stringify({ summary: resumo, items }));
+    } catch (e) {
+      if (!(e instanceof AmazonDocumentoFeedError)) throw e;
+      err = e;
+    }
+    expect(err).toMatchObject({ motivo: 'relatorio-invalido' });
   });
 });

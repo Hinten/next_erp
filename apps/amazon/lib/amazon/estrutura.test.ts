@@ -145,9 +145,11 @@
  *    {@link IMPORTADORES_DE_ESTOQUE}; under it only the write-back (its one
  *    precondition update) and, since PR 12-e2, the tick (its lease and its
  *    final write on the sync document) make a Firestore WRITE call;
- *    `listings/listingsAmazon.ts` is the ONE caller of the package's three
- *    listings helpers; the App Hosting union walk reaches none of
- *    {@link MODULOS_DE_ESTOQUE_FORA_DO_APP_HOSTING}; and the stock root
+ *    `listings/listingsAmazon.ts` is the ONE caller of the package's listings
+ *    helpers (since step 13, four; every exported function of the package
+ *    module, async or not, is either a listed helper or a listed pure one, so
+ *    a new one reds until classified); the App Hosting union walk reaches
+ *    none of {@link MODULOS_DE_ESTOQUE_FORA_DO_APP_HOSTING}; and the stock root
  *    (`functions/src/agendadorEstoque.ts`) binds the jobs and the stock queues;
  *  - (step 12, PR 12-e2) the tick (`estoque/sincronizacaoEstoque.ts`), the
  *    movement window's reads (`estoque/descobertaFirestore.ts`) and the
@@ -1554,14 +1556,47 @@ const ESCRITORES_EM_FEEDS: Readonly<Record<string, number>> = {
 /* --------------------- step 12 (PR 12-e1): the listings wire --------------------- */
 
 /**
- * The ONE module that may call the SP-API package's three listings helpers
- * (`getListingsItem`, `searchListingsItems` and the availability
- * `patchListingsItem`): a second caller would spend the listings operations'
- * small rates outside the stock queue's serial dispatch, and a second PATCH
- * path would sit behind no budget and no ordering guard. Step 13 imports this
- * module for its own bodies.
+ * The ONE module that may call the SP-API package's listings helpers
+ * (`getListingsItem`, `searchListingsItems`, and `patchListingsItem` with the
+ * availability or, since step 13, the offer body): a second caller would spend
+ * the listings operations' small rates outside the queues' serial dispatch, and
+ * a second PATCH path would sit behind no budget and no ordering guard.
  */
 const CHAMADOR_DOS_LISTINGS = 'lib/amazon/listings/listingsAmazon.ts';
+
+/**
+ * The package's listings helpers, by name: each an exported function of
+ * {@link MODULO_DOS_LISTINGS_NO_PACOTE} that calls Amazon. The call scan below
+ * is built from this list. A pin partitions EVERY exported function of the
+ * module, async or not, between this list and {@link PUROS_DOS_LISTINGS}: a
+ * function the package adds reds until it is classified, and one listed as
+ * pure that is async or takes an SP-API client reds too, so a helper never
+ * escapes the single-caller scan by its export form or by dropping `async`.
+ */
+const AJUDANTES_DOS_LISTINGS: readonly string[] = [
+  'lerListingAmazon',
+  'buscarListingsAmazon',
+  'enviarDisponibilidadeAmazon',
+  'enviarOfertaAmazon',
+];
+
+/**
+ * The module's PURE exported functions, by name: they take no SP-API client,
+ * are not async and call nothing (the SKU predicates, the two patch builders,
+ * the offer reader), so any module may import them and the call scan leaves
+ * them out.
+ */
+const PUROS_DOS_LISTINGS: readonly string[] = [
+  'segmentoSkuAmazon',
+  'skuTemCaminhoAmazon',
+  'skuBuscavelAmazon',
+  'patchDisponibilidadeAmazon',
+  'patchOfertaAmazon',
+  'ofertaDoListingAmazon',
+];
+
+/** The package module that declares the listings helpers (repository-relative). */
+const MODULO_DOS_LISTINGS_NO_PACOTE = 'packages/integrations/amazon-sp-api/src/listings.ts';
 
 /**
  * Production files that NAME a listings operation without calling it, each with
@@ -1582,15 +1617,172 @@ const NOMEIAM_LISTINGS_SEM_CHAMAR = [
 ];
 
 /**
- * A listings call site, in comment-free code: any of the three package helpers,
- * the three operation-name constants, the path constant, the three answer
- * schemas, any of the three operation names as a WHOLE string, or a listings
- * path anywhere in a string.
+ * A listings call site, in comment-free code: any of the package helpers
+ * ({@link AJUDANTES_DOS_LISTINGS}), the three operation-name constants, the
+ * path constant, the three answer schemas, any of the three operation names as
+ * a WHOLE string, or a listings path anywhere in a string. The pure builders and
+ * the offer reader call nothing, so they are not in it.
  */
-const CHAMADA_DOS_LISTINGS =
-  /\b(?:lerListingAmazon|buscarListingsAmazon|enviarDisponibilidadeAmazon|OPERACAO_LER_LISTING|OPERACAO_BUSCAR_LISTINGS|OPERACAO_ENVIAR_LISTING|CAMINHO_LISTINGS|listingAmazonSchema|buscaListingsAmazonSchema|envioListingAmazonSchema)\b|['"`](?:getListingsItem|searchListingsItems|patchListingsItem)['"`]|\/listings\/2021-08-01\//;
+const NOMES_DA_CHAMADA_DOS_LISTINGS = [
+  ...AJUDANTES_DOS_LISTINGS,
+  'OPERACAO_LER_LISTING',
+  'OPERACAO_BUSCAR_LISTINGS',
+  'OPERACAO_ENVIAR_LISTING',
+  'CAMINHO_LISTINGS',
+  'listingAmazonSchema',
+  'buscaListingsAmazonSchema',
+  'envioListingAmazonSchema',
+].join('|');
+
+const CHAMADA_DOS_LISTINGS = new RegExp(
+  `\\b(?:${NOMES_DA_CHAMADA_DOS_LISTINGS})\\b|['"\`](?:getListingsItem|searchListingsItems|patchListingsItem)['"\`]|\\/listings\\/2021-08-01\\/`,
+);
 
 const nomeiaOsListings = (texto: string) => CHAMADA_DOS_LISTINGS.test(semComentarios(texto));
+
+/** What the pin reads off one exported function. */
+interface FuncaoExportada {
+  readonly assincrona: boolean;
+  /** Some parameter's declared type names one of the package's SP-API clients. */
+  readonly recebeCliente: boolean;
+}
+
+/** A parameter type naming an SP-API client of the package (the read or the write one). */
+const TIPO_CLIENTE_SP_API = /\bSpApi\w*Client\b/;
+
+/**
+ * A module's top-level exported FUNCTIONS by exported name, async or not, each
+ * with whether it is async and whether it takes an SP-API client: a function
+ * declaration (`export default` as `default`), an exported `const` bound to an
+ * arrow or function expression (through parentheses, `as` and `satisfies`), a
+ * local one of either kind exported by an `export { … }` list or by
+ * `export default <name>`, and an `export default` arrow or function
+ * expression. An overload's signatures and body are one function. A re-export
+ * from another module (`export { a } from`, `export * from` as `*`; type-only
+ * ones aside) maps to `null`: this parse cannot see what it is. A private
+ * function is never here, whatever it does.
+ */
+function funcoesExportadas(texto: string): ReadonlyMap<string, FuncaoExportada | null> {
+  const fonte = ts.createSourceFile('x.ts', texto, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const tem = (no: ts.Node, tipo: ts.SyntaxKind) =>
+    (ts.canHaveModifiers(no) ? (ts.getModifiers(no) ?? []) : []).some((m) => m.kind === tipo);
+  const descrever = (f: ts.SignatureDeclarationBase): FuncaoExportada => ({
+    assincrona: tem(f, ts.SyntaxKind.AsyncKeyword),
+    recebeCliente: f.parameters.some(
+      (p) => p.type !== undefined && TIPO_CLIENTE_SP_API.test(p.type.getText(fonte)),
+    ),
+  });
+  const funcaoDe = (valor: ts.Expression): ts.ArrowFunction | ts.FunctionExpression | null => {
+    let e = valor;
+    while (
+      ts.isParenthesizedExpression(e) ||
+      ts.isAsExpression(e) ||
+      ts.isSatisfiesExpression(e) ||
+      ts.isTypeAssertionExpression(e)
+    ) {
+      e = e.expression;
+    }
+    return ts.isArrowFunction(e) || ts.isFunctionExpression(e) ? e : null;
+  };
+  const juntar = (mapa: Map<string, FuncaoExportada | null>, nome: string, f: FuncaoExportada) => {
+    const antes = mapa.get(nome);
+    mapa.set(
+      nome,
+      antes === undefined || antes === null
+        ? f
+        : {
+            assincrona: antes.assincrona || f.assincrona,
+            recebeCliente: antes.recebeCliente || f.recebeCliente,
+          },
+    );
+  };
+  /** Every top-level function by LOCAL name, exported or not (an export list may name it). */
+  const locais = new Map<string, FuncaoExportada | null>();
+  const exportadas = new Map<string, FuncaoExportada | null>();
+  for (const declaracao of fonte.statements) {
+    const exportada = tem(declaracao, ts.SyntaxKind.ExportKeyword);
+    if (ts.isFunctionDeclaration(declaracao)) {
+      const f = descrever(declaracao);
+      if (declaracao.name !== undefined) juntar(locais, declaracao.name.text, f);
+      if (exportada) {
+        const nome = tem(declaracao, ts.SyntaxKind.DefaultKeyword)
+          ? 'default'
+          : (declaracao.name?.text ?? 'default');
+        juntar(exportadas, nome, f);
+      }
+      continue;
+    }
+    if (!ts.isVariableStatement(declaracao)) continue;
+    for (const variavel of declaracao.declarationList.declarations) {
+      const funcao = variavel.initializer === undefined ? null : funcaoDe(variavel.initializer);
+      if (!ts.isIdentifier(variavel.name) || funcao === null) continue;
+      juntar(locais, variavel.name.text, descrever(funcao));
+      if (exportada) juntar(exportadas, variavel.name.text, descrever(funcao));
+    }
+  }
+  for (const declaracao of fonte.statements) {
+    if (ts.isExportAssignment(declaracao) && declaracao.isExportEquals !== true) {
+      const funcao = funcaoDe(declaracao.expression);
+      const local = ts.isIdentifier(declaracao.expression)
+        ? locais.get(declaracao.expression.text)
+        : undefined;
+      if (funcao !== null) juntar(exportadas, 'default', descrever(funcao));
+      else if (local !== undefined && local !== null) juntar(exportadas, 'default', local);
+      continue;
+    }
+    if (!ts.isExportDeclaration(declaracao) || declaracao.isTypeOnly) continue;
+    const clausula = declaracao.exportClause;
+    if (declaracao.moduleSpecifier !== undefined) {
+      if (clausula === undefined) {
+        exportadas.set('*', null);
+      } else if (ts.isNamespaceExport(clausula)) {
+        exportadas.set(clausula.name.text, null);
+      } else {
+        for (const e of clausula.elements) if (!e.isTypeOnly) exportadas.set(e.name.text, null);
+      }
+      continue;
+    }
+    if (clausula === undefined || !ts.isNamedExports(clausula)) continue;
+    for (const elemento of clausula.elements) {
+      const local = locais.get((elemento.propertyName ?? elemento.name).text);
+      if (!elemento.isTypeOnly && local !== undefined && local !== null) {
+        juntar(exportadas, elemento.name.text, local);
+      }
+    }
+  }
+  return exportadas;
+}
+
+/**
+ * What the single-caller guard gets wrong about a version of the package's
+ * listings module. `faltam`: an exported function it does not cover — a listed
+ * helper ({@link AJUDANTES_DOS_LISTINGS}) the call scan
+ * ({@link CHAMADA_DOS_LISTINGS}) does not match as a call; any other exported
+ * function not listed as pure ({@link PUROS_DOS_LISTINGS}), or listed as pure
+ * but async or taking an SP-API client; a re-export this parse cannot see into.
+ * `sobram`: a listed name the module no longer exports as a function. Both
+ * empty is the pin. The lists and the scan are parameters only so a test can
+ * hand it other ones.
+ */
+function divergenciasDosAjudantes(
+  textoDoModulo: string,
+  ajudantes: readonly string[] = AJUDANTES_DOS_LISTINGS,
+  puros: readonly string[] = PUROS_DOS_LISTINGS,
+  nomeia: (texto: string) => boolean = nomeiaOsListings,
+): { readonly faltam: readonly string[]; readonly sobram: readonly string[] } {
+  const exportadas = funcoesExportadas(textoDoModulo);
+  const faltam = [...exportadas]
+    .filter(([nome, f]) =>
+      ajudantes.includes(nome)
+        ? !nomeia(`await ${nome}(x);`)
+        : f === null || !puros.includes(nome) || f.assincrona || f.recebeCliente,
+    )
+    .map(([nome]) => nome);
+  return {
+    faltam: faltam.sort(),
+    sobram: [...ajudantes, ...puros].filter((nome) => !exportadas.has(nome)).sort(),
+  };
+}
 
 /** The source text of the top-level function `nome` in `texto`, or `null`. */
 function textoDaFuncao(texto: string, nome: string): string | null {
@@ -2786,7 +2978,7 @@ const ARQUIVOS_DO_ENVIO_MANUAL_ESTOQUE = [
  * partition).
  */
 const PROIBIDOS_NO_ENVIO_MANUAL_ESTOQUE =
-  /\b(?:lerValvula|decidirAlvo|decidirLote|lerModo|lerCanario|VALVULA_ENV_AMAZON|CANARIO_ENV_AMAZON|AMAZON_MODO_ESTOQUE|AMAZON_CANARIO_ESTOQUE|loadAmazonContext|criarClienteSpApi|criarClienteEscritaSpApi|executarEscritaAmazon|executarLoteEscritaAmazon|lerListingAmazon|buscarListingsAmazon|enviarDisponibilidadeAmazon|lerListingNaAmazon|buscarListingsNaAmazon|enviarDisponibilidadeNaAmazon|listingsAmazon|estoqueCollection|lerFamiliaEstoqueAmazon|lerFamiliasEstoqueAmazon|lerMembrosEstoqueAmazon|quantidadeEstoqueAmazon|quantidadeDoMembroCore|planejarEstoqueAmazon|processarEstoqueAmazon|integracoesComProduto|fetch)\b/g;
+  /\b(?:lerValvula|decidirAlvo|decidirLote|lerModo|lerCanario|VALVULA_ENV_AMAZON|CANARIO_ENV_AMAZON|AMAZON_MODO_ESTOQUE|AMAZON_CANARIO_ESTOQUE|loadAmazonContext|criarClienteSpApi|criarClienteEscritaSpApi|executarEscritaAmazon|executarLoteEscritaAmazon|lerListingAmazon|buscarListingsAmazon|enviarDisponibilidadeAmazon|enviarOfertaAmazon|lerListingNaAmazon|buscarListingsNaAmazon|enviarDisponibilidadeNaAmazon|enviarOfertaNaAmazon|listingsAmazon|estoqueCollection|lerFamiliaEstoqueAmazon|lerFamiliasEstoqueAmazon|lerMembrosEstoqueAmazon|quantidadeEstoqueAmazon|quantidadeDoMembroCore|planejarEstoqueAmazon|processarEstoqueAmazon|integracoesComProduto|fetch)\b/g;
 
 describe('the step-12 manual push route guards (12-g)', () => {
   it('★ neither the route nor its body names the stock valve, its canary, any way to reach Amazon, the quantity or the anchor list', () => {
@@ -2826,6 +3018,8 @@ describe('the step-12 manual push route guards (12-g)', () => {
       ['await lerListingNaAmazon(c, s)', 'lerListingNaAmazon'],
       ['await buscarListingsNaAmazon(c, s)', 'buscarListingsNaAmazon'],
       ['await enviarDisponibilidadeNaAmazon(c, s)', 'enviarDisponibilidadeNaAmazon'],
+      ['await enviarOfertaNaAmazon(c, s)', 'enviarOfertaNaAmazon'],
+      ['await enviarOfertaAmazon(c, s)', 'enviarOfertaAmazon'],
       ["import { x } from '../listings/listingsAmazon';", 'listingsAmazon'],
     ] as const) {
       expect(fonte.match(PROIBIDOS_NO_ENVIO_MANUAL_ESTOQUE), fonte).toEqual([achado]);
@@ -4229,7 +4423,7 @@ describe('the step-12 patch path guards (12-e1)', () => {
 
   // An app-wide parse: CI headroom, not a budget.
   it(
-    `★ the three listings helpers have exactly ONE caller module under lib/amazon, app/, functions/src and scripts/: ${CHAMADOR_DOS_LISTINGS}`,
+    `★ the package’s listings helpers have exactly ONE caller module under lib/amazon, app/, functions/src and scripts/: ${CHAMADOR_DOS_LISTINGS}`,
     { timeout: 30_000 },
     () => {
       const fontes = fontesDoChamadorDeSearchOrders();
@@ -4241,20 +4435,15 @@ describe('the step-12 patch path guards (12-e1)', () => {
         CHAMADOR_DOS_LISTINGS,
       ]);
       // Anti-vacuity: the scan sees every exempt mention, by name; the one caller
-      // really calls all three helpers, and the exempt task calls none of them.
+      // really calls every helper, and the exempt task calls none of them.
       expect(nomeiam).toEqual(expect.arrayContaining(NOMEIAM_LISTINGS_SEM_CHAMAR));
       const chamador = semComentarios(lerDoApp(CHAMADOR_DOS_LISTINGS) ?? '');
-      for (const ajudante of [
-        'lerListingAmazon',
-        'buscarListingsAmazon',
-        'enviarDisponibilidadeAmazon',
-      ]) {
+      expect(AJUDANTES_DOS_LISTINGS).toHaveLength(4);
+      for (const ajudante of AJUDANTES_DOS_LISTINGS) {
         expect(chamador, ajudante).toMatch(new RegExp(`\\b${ajudante}\\s*\\(`));
       }
       const tarefa = semComentarios(lerDoApp('lib/amazon/estoque/processarEstoque.ts') ?? '');
-      expect(tarefa).not.toMatch(
-        /\b(?:lerListingAmazon|buscarListingsAmazon|enviarDisponibilidadeAmazon)\b/,
-      );
+      expect(tarefa).not.toMatch(new RegExp(`\\b(?:${AJUDANTES_DOS_LISTINGS.join('|')})\\b`));
       expect(tarefa).toMatch(/\bOPERACAO_ENVIAR_LISTING\b/);
       expect(fontes.map(relApp)).toEqual(
         expect.arrayContaining(['functions/src/index.ts', 'scripts/sanitizar.ts']),
@@ -4262,11 +4451,143 @@ describe('the step-12 patch path guards (12-e1)', () => {
     },
   );
 
+  it('★ (step 13) every exported function of the package listings module is classified: the helpers EQUAL the async or client-taking ones, and every other one is listed pure', () => {
+    const texto = readFileSync(
+      join(RAIZ_REPO, ...MODULO_DOS_LISTINGS_NO_PACOTE.split('/')),
+      'utf8',
+    );
+    const exportadas = funcoesExportadas(texto);
+    expect([...exportadas.keys()].sort()).toEqual(
+      [...AJUDANTES_DOS_LISTINGS, ...PUROS_DOS_LISTINGS].sort(),
+    );
+    expect(
+      [...exportadas]
+        .filter(([, f]) => f !== null && (f.assincrona || f.recebeCliente))
+        .map(([nome]) => nome)
+        .sort(),
+    ).toEqual([...AJUDANTES_DOS_LISTINGS].sort());
+    expect(AJUDANTES_DOS_LISTINGS.filter((nome) => PUROS_DOS_LISTINGS.includes(nome))).toEqual([]);
+    // Every helper takes a client; no pure export does, and none is async.
+    for (const nome of AJUDANTES_DOS_LISTINGS) {
+      expect(exportadas.get(nome), nome).toMatchObject({ recebeCliente: true });
+    }
+    for (const nome of PUROS_DOS_LISTINGS) {
+      expect(exportadas.get(nome), nome).toStrictEqual({ assincrona: false, recebeCliente: false });
+    }
+    expect(divergenciasDosAjudantes(texto)).toEqual({ faltam: [], sobram: [] });
+    // Anti-vacuity: the module's private PATCH path exists, and is no export.
+    expect(texto).toMatch(/\nasync function enviarPatchListing\(/);
+    expect(exportadas.has('enviarPatchListing')).toBe(false);
+  });
+
+  it('★ the fail-closed pin: a fixture copy of the package module with ONE more exported function reds until it is classified, async or not, in each export form; NEAR-MISS: a private one, a type or a constant does not, nor a pure one once listed pure', () => {
+    const real = readFileSync(join(RAIZ_REPO, ...MODULO_DOS_LISTINGS_NO_PACOTE.split('/')), 'utf8');
+    const com = (extra: string) => `${real}\n${extra}\n`;
+    for (const extra of [
+      'export async function enviarNovoAmazon(): Promise<void> {}',
+      'export const enviarNovoAmazon = async (): Promise<void> => {};',
+      'export const enviarNovoAmazon = async function (): Promise<void> {};',
+      'async function enviarLocal(): Promise<void> {}\nexport { enviarLocal as enviarNovoAmazon };',
+      // Not async: a plain function handing back the client's own promise.
+      'export function enviarNovoAmazon(escritor: SpApiEscritaClient): Promise<unknown> { return escritor.patch({} as never); }',
+      'export const enviarNovoAmazon = (escritor: SpApiEscritaClient) => escritor.patch({} as never);',
+      'export const enviarNovoAmazon = ((e: SpApiEscritaClient) => e.patch({} as never)) as (e: SpApiEscritaClient) => Promise<unknown>;',
+      'function enviarLocal(e: SpApiEscritaClient) { return e.patch({} as never); }\nexport { enviarLocal as enviarNovoAmazon };',
+      'const enviarLocal = (e: SpApiEscritaClient) => e.patch({} as never);\nexport { enviarLocal as enviarNovoAmazon };',
+      // Nothing about it says helper, and it still reds: only the list says pure.
+      'export function enviarNovoAmazon(): Promise<void> { return Promise.resolve(); }',
+      // A re-export from another module cannot be seen into.
+      "export { lerFeedAmazon as enviarNovoAmazon } from './feeds';",
+    ]) {
+      expect(divergenciasDosAjudantes(com(extra)), extra).toEqual({
+        faltam: ['enviarNovoAmazon'],
+        sobram: [],
+      });
+    }
+    expect(divergenciasDosAjudantes(com("export * from './feeds';"))).toEqual({
+      faltam: ['*'],
+      sobram: [],
+    });
+    for (const padrao of [
+      'export default function (e: SpApiEscritaClient) { return e.patch({} as never); }',
+      'export default async () => {};',
+      'function enviarLocal(e: SpApiEscritaClient) { return e.patch({} as never); }\nexport default enviarLocal;',
+    ]) {
+      expect(divergenciasDosAjudantes(com(padrao)), padrao).toEqual({
+        faltam: ['default'],
+        sobram: [],
+      });
+    }
+    // Listed as pure is not enough for a function that is async or takes a client.
+    const comoPuro = [...PUROS_DOS_LISTINGS, 'enviarNovoAmazon'];
+    for (const extra of [
+      'export async function enviarNovoAmazon(): Promise<void> {}',
+      'export function enviarNovoAmazon(escritor: SpApiEscritaClient): Promise<unknown> { return escritor.patch({} as never); }',
+      'export function enviarNovoAmazon(leitor: SpApiLeituraClient): Promise<unknown> { return leitor.get({} as never); }',
+      // An overload's signatures are one function: the client in any of them counts.
+      'export function enviarNovoAmazon(e: SpApiEscritaClient): unknown;\nexport function enviarNovoAmazon(e: unknown): unknown { return e; }',
+    ]) {
+      expect(divergenciasDosAjudantes(com(extra), AJUDANTES_DOS_LISTINGS, comoPuro), extra).toEqual(
+        { faltam: ['enviarNovoAmazon'], sobram: [] },
+      );
+    }
+    // A listed name the module no longer exports, helper or pure, is stale.
+    const semOferta = real.replace(
+      'export async function enviarOfertaAmazon(',
+      'async function enviarOfertaAmazon(',
+    );
+    expect(semOferta).not.toBe(real);
+    expect(divergenciasDosAjudantes(semOferta)).toEqual({
+      faltam: [],
+      sobram: ['enviarOfertaAmazon'],
+    });
+    const semLeitor = real.replace(
+      'export function ofertaDoListingAmazon(',
+      'function ofertaDoListingAmazon(',
+    );
+    expect(semLeitor).not.toBe(real);
+    expect(divergenciasDosAjudantes(semLeitor)).toEqual({
+      faltam: [],
+      sobram: ['ofertaDoListingAmazon'],
+    });
+    // A name the list holds but the call scan misses is a gap too.
+    const scanSemOferta = (texto: string) =>
+      nomeiaOsListings(texto) && !texto.includes('enviarOfertaAmazon');
+    expect(
+      divergenciasDosAjudantes(real, AJUDANTES_DOS_LISTINGS, PUROS_DOS_LISTINGS, scanSemOferta),
+    ).toEqual({ faltam: ['enviarOfertaAmazon'], sobram: [] });
+    for (const quase of [
+      'async function enviarPrivadoAmazon(): Promise<void> {}',
+      'function enviarPrivadoAmazon(e: SpApiEscritaClient) { return e.patch({} as never); }',
+      'export type EnviarNovoAmazon = (e: SpApiEscritaClient) => Promise<unknown>;',
+      'export const MONTAR_NOVO_AMAZON = 1;',
+    ]) {
+      expect(divergenciasDosAjudantes(com(quase)), quase).toEqual({ faltam: [], sobram: [] });
+    }
+    for (const puro of [
+      'export function montarNovoAmazon(): number { return 1; }',
+      'export const montarNovoAmazon = (): number => 1;',
+    ]) {
+      expect(divergenciasDosAjudantes(com(puro)), puro).toEqual({
+        faltam: ['montarNovoAmazon'],
+        sobram: [],
+      });
+      expect(
+        divergenciasDosAjudantes(com(puro), AJUDANTES_DOS_LISTINGS, [
+          ...PUROS_DOS_LISTINGS,
+          'montarNovoAmazon',
+        ]),
+        puro,
+      ).toEqual({ faltam: [], sobram: [] });
+    }
+  });
+
   it('the listings scan finds every call shape, and nothing alike (near-misses)', () => {
     for (const fonte of [
       'await lerListingAmazon(cliente, entrada);',
       'const r = await buscarListingsAmazon(contexto.cliente, entrada);',
       'await enviarDisponibilidadeAmazon(escritor, entrada);',
+      'await enviarOfertaAmazon(escritor, entrada);',
       'cliente.get({ operacao: OPERACAO_LER_LISTING, caminho: c, schema });',
       "escritor.patch({ operacao: 'patchListingsItem', caminho: c, corpo });",
       'const c = `/listings/2021-08-01/items/${sellerId}`;',
@@ -4280,6 +4601,10 @@ describe('the step-12 patch path guards (12-e1)', () => {
       '/** the ONE `patchListingsItem` of a run */ const y = 1;',
       'await lerListingNaAmazon(contexto, entrada);',
       'await enviarDisponibilidadeNaAmazon(escritor, entrada);',
+      'await enviarOfertaNaAmazon(escritor, entrada);',
+      // The package's pure builders and its offer reader call nothing.
+      'const p = patchDisponibilidadeAmazon(3); const q = patchOfertaAmazon(f);',
+      'const o = ofertaDoListingAmazon(listing.attributes, agoraMs);',
       "const metodos = { getListingsItem: ['GET', 'PATCH'] };",
       "const nome = 'getListingsItems';",
       'const l: ListingAmazon = x;',

@@ -15,11 +15,14 @@
  * download of the Easy Ship label document and the extraction of its one ZPL
  * label (`documentosEasyShip.ts`, step 15), the listings reads and the stock
  * patch, `getListingsItem`, `searchListingsItems` and `patchListingsItem`
- * (`listings.ts`, step 12a), the `JSON_LISTINGS_FEED` submission,
- * `createFeedDocument`, `createFeed`, `getFeed` and `getFeedDocument`, with the
- * document builder and the report parser (`feeds.ts`, step 12a), the feed
- * document upload and the report download (`documentosFeed.ts`, step 12a), the
- * per-call deadlines, the typed errors, and the wire schemas those consume.
+ * (`listings.ts`, step 12a), with the offer patch, its builder and the
+ * fail-closed offer reader (`listings.ts`, step 13), the `JSON_LISTINGS_FEED`
+ * submission, `createFeedDocument`, `createFeed`, `getFeed` and
+ * `getFeedDocument`, with the document builder and the report parser
+ * (`feeds.ts`, step 12a; a message's own product type and the report's items,
+ * step 13), the feed document upload and the report download
+ * (`documentosFeed.ts`, step 12a), the per-call deadlines, the typed errors, and
+ * the wire schemas those consume.
  * Everything stateful (the credential store, the OAuth routes, the access-token
  * cache, the sweeps) is driven by the App Hosting backend `apps/amazon`, which
  * holds the Firestore/Admin-SDK dependency.

@@ -191,6 +191,8 @@ export type MotivoConfigAmazon =
   | 'base64'
   | 'sku'
   | 'quantidade'
+  | 'oferta'
+  | 'tipo-produto'
   | 'feed';
 
 /**
@@ -233,18 +235,25 @@ export type MotivoConfigAmazon =
  *   more than 40 code points), or a list that is empty, longer than 20 or holds a
  *   duplicate.
  * - `'quantidade'` — the stock patch's quantity is not a safe integer ≥ 0.
+ * - `'oferta'` — an offer patch's price range (`listings.ts`) holds a price that
+ *   is not a finite number above zero with at most two decimals, or a floor above
+ *   the price or a price above the ceiling.
+ * - `'tipo-produto'` — the offer patch's product type does not match
+ *   `TIPO_PRODUTO_LISTING_REGEX` (`listings.ts`).
  * - `'feed'` — a feed helper (`feeds.ts`) was handed a feed document over one of
  *   its limits (no message, more than 25,000, a duplicate or empty SKU, a message
- *   without patches, an empty `sellerId`, more bytes than allowed), a `feedId`
- *   outside `FEED_ID_AMAZON_REGEX`, or a document id that cannot be ONE path
- *   segment (or is empty).
+ *   without patches, a message product type outside `TIPO_PRODUTO_LISTING_REGEX`,
+ *   a report request with no known dataset, an empty `sellerId`, more bytes than
+ *   allowed), a `feedId` outside `FEED_ID_AMAZON_REGEX`, or a document id that
+ *   cannot be ONE path segment (or is empty).
  *
  * `'application-id'` and `'state'` are raised by `montarUrlConsentimento`
  * (`consentimento.ts`), which builds a URL and sends nothing; `'pedido'` by a
  * Delivery or Easy Ship helper (`entrega.ts`, `easyShip.ts`), `'md5'` and
- * `'base64'` by the Delivery upload, and `'sku'`, `'quantidade'` and `'feed'` by
- * the listings and feeds helpers (`listings.ts`, `feeds.ts`), before the
- * credential is read: "no request was made" holds trivially there.
+ * `'base64'` by the Delivery upload, and `'sku'`, `'quantidade'`, `'oferta'`,
+ * `'tipo-produto'` and `'feed'` by the listings and feeds helpers (`listings.ts`,
+ * `feeds.ts`), before the credential is read: "no request was made" holds
+ * trivially there.
  *
  * ⚠️ The message never echoes the offending value: a rejected token is still a
  * token, a rejected `ref` may contain one, a rejected path may carry a query, and
@@ -299,8 +308,12 @@ function mensagemDeConfig(motivo: MotivoConfigAmazon, operacao: string): string 
       return `${prefixo} o SKU não pode viajar nesta requisição: vazio, com / ou \\, com "..", igual a ".", com vírgula ou espaço numa busca, ou uma lista de busca vazia, repetida ou com mais de 20. ${nada}`;
     case 'quantidade':
       return `${prefixo} a quantidade precisa ser um inteiro seguro maior ou igual a zero. ${nada}`;
+    case 'oferta':
+      return `${prefixo} a faixa de preço da oferta é inválida: cada preço precisa ser um número finito maior que zero com no máximo duas casas decimais, e o mínimo não pode passar do preço nem o preço do máximo. ${nada}`;
+    case 'tipo-produto':
+      return `${prefixo} o tipo de produto do anúncio está fora do formato aceito (letras maiúsculas, dígitos e _, começando por letra, até 64 caracteres). ${nada}`;
     case 'feed':
-      return `${prefixo} o documento do feed passa de um limite (mensagens, bytes, SKU repetido ou vazio, mensagem sem patches, sellerId vazio), ou o id do feed ou do documento está fora do formato aceito. ${nada}`;
+      return `${prefixo} o documento do feed passa de um limite (mensagens, bytes, SKU repetido ou vazio, mensagem sem patches, tipo de produto fora do formato, relatório sem dado conhecido, sellerId vazio), ou o id do feed ou do documento está fora do formato aceito. ${nada}`;
   }
 }
 

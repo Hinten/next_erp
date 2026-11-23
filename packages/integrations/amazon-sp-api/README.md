@@ -17,7 +17,7 @@ What ships here:
 | `tokens.ts`             | Tokens: `criarTokenRestrito`, the Restricted Data Token for the ONE resource (the Easy Ship bulk)      |
 | `easyShip.ts`           | Easy Ship: `agendarPacotesEasyShip` (one order, no `packageDetails`, `labelFormat` always `ZPL`)       |
 | `documentosEasyShip.ts` | The label zip: `baixarDocumentosEasyShip` (header-free GET) and `extrairEtiquetaZplEasyShip`           |
-| `listings.ts`           | Listings: `lerListingAmazon`, `buscarListingsAmazon` (≤ 20 SKUs), `enviarDisponibilidadeAmazon`        |
+| `listings.ts`           | Listings: two reads, `enviarDisponibilidadeAmazon`, `enviarOfertaAmazon`, `ofertaDoListingAmazon`      |
 | `feeds.ts`              | `JSON_LISTINGS_FEED`: the four feed operations, `montarDocumentoListingsFeed`, the report parser       |
 | `documentosFeed.ts`     | The feed document upload (`PUT`) and the bounded, verified report download                             |
 | `prazos.ts`             | `PRAZO_AMAZON_MS`, the per-call deadline keyed on the operation class                                  |
@@ -43,6 +43,7 @@ Every SP-API operation this package can call, with the model's default usage pla
 | `getListingsItem`                   | `lerListingAmazon`            | `/listings/2021-08-01/items/{sellerId}/{sku}`  | `marketplaceIds`, `includedData` (the closed `DADOS_LISTING_AMAZON`), `issueLocale=pt_BR`                                    | 5           | 10    |
 | `searchListingsItems`               | `buscarListingsAmazon`        | `/listings/2021-08-01/items/{sellerId}`        | `marketplaceIds`, `identifiers` (≤ 20 SKUs, `,`-joined), `identifiersType=SKU`, `includedData`, `pageSize=20`, `issueLocale` | 5           | 5     |
 | `patchListingsItem` (PATCH)         | `enviarDisponibilidadeAmazon` | `/listings/2021-08-01/items/{sellerId}/{sku}`  | `marketplaceIds`, `issueLocale`; body: the stock `merge` (below)                                                             | 5           | 5     |
+| `patchListingsItem` (PATCH)         | `enviarOfertaAmazon`          | `/listings/2021-08-01/items/{sellerId}/{sku}`  | `marketplaceIds`, `issueLocale`, `mode=VALIDATION_PREVIEW` when asked; body: the offer `merge` (below)                       | 5           | 5     |
 | `createFeedDocument` (POST)         | `criarDocumentoFeedAmazon`    | `/feeds/2021-06-30/documents`                  | none; body: `contentType` (`CONTENT_TYPE_FEED_JSON`)                                                                         | 0.5         | 15    |
 | `createFeed` (POST)                 | `criarFeedAmazon`             | `/feeds/2021-06-30/feeds`                      | none; body: `feedType: 'JSON_LISTINGS_FEED'`, `marketplaceIds` (BR only), `inputFeedDocumentId`                              | 0.0083 (\*) | 15    |
 | `getFeed`                           | `lerFeedAmazon`               | `/feeds/2021-06-30/feeds/{feedId}`             | none                                                                                                                         | 2           | 15    |
@@ -81,10 +82,11 @@ Every SP-API operation this package can call, with the model's default usage pla
   product and price may be absent (a cancelled order), and money amounts stay unread
   (`unknown`) for the app's one money reader.
 
-## Listings: the stock patch and its reads
+## Listings: the reads and the two patches
 
-`listings.ts` (step 12a) holds the three listings operations the stock sync rides. Nothing in
-the app calls them yet.
+`listings.ts` (step 12a; the offer patch and the offer reader, step 13) holds the three listings
+operations the stock sync rides and the price push will ride. The app calls them only through
+`apps/amazon/lib/amazon/listings/listingsAmazon.ts`.
 
 - **The SKU travels in the path, so it must be ONE segment.** `segmentoSkuAmazon` is the
   reviewed encoder: `encodeURIComponent`, and `null` for a SKU that is empty, holds `/` or
@@ -103,7 +105,28 @@ path: '/attributes/fulfillment_availability', value: [{ fulfillment_channel_code
 quantity }] }] }`, from named keys and constants. Never `replace` (Amazon's `replace` drops
   every field the body omits, such as a lead time), never a lead time, never a `marketplace_id`
   inside `value`, never a `mode`. The quantity must be a safe integer ≥ 0
-  (`AmazonConfigError('quantidade')`, nothing sent).
+  (`AmazonConfigError('quantidade')`, nothing sent). `patchDisponibilidadeAmazon` is its pure
+  builder, the one a feed message carries too.
+- **The offer body is EXACTLY one `merge`** of `/attributes/purchasable_offer` (`patchOfertaAmazon`,
+  pure, the same builder for the PATCH and a feed message): ONE element with the three selectors
+  Amazon's purchasable-offer guide identifies an offer element by (`marketplace_id` of the BR
+  store, `currency: 'BRL'`, `audience: 'ALL'`) and the three prices, `our_price`,
+  `minimum_seller_allowed_price` and `maximum_seller_allowed_price`, each
+  `[{ schedule: [{ value_with_tax }] }]`. No `discounted_price`, no offer dates, no business price.
+  A price that is not a finite number above zero with at most two decimals, a floor above the
+  price or a price above the ceiling is `AmazonConfigError('oferta')`. `enviarOfertaAmazon` sends
+  it under the caller's `tipoProduto` (held to `TIPO_PRODUTO_LISTING_REGEX`, else
+  `'tipo-produto'`), with `mode=VALIDATION_PREVIEW` only when `modo` asks for it.
+- **The offer read is fail-closed** (`ofertaDoListingAmazon`, pure): `attributes` is free-form in
+  the model and Amazon publishes no read example, so the reader assumes the documented write shape.
+  Ours is chosen by its three selectors, never by position; `ausente` only for an `attributes`
+  object with no offer or whose elements all name another store, currency or audience (a
+  selector names another only as an upper-case code with no padding, the guide's form);
+  `ilegivel` for anything it cannot read safely (no `attributes`, no element naming ours while
+  some element's selectors cannot rule it out, an unreadable `our_price`); `ambigua` when two
+  elements name ours, or one names ours beside one that may be ours too. Every price goes
+  through the shared wire-number reader. Counters (`temPrecoComDesconto`,
+  `temOfertaB2B`, `fechada`) describe what was read and decide nothing.
 - **The answers are tolerant**: every number through `wireInt()`, every enum an open string,
   every field nullish except the item's `sku`. A `getListingsItem` 404 is the client's
   `AmazonNotFoundError`.
@@ -117,16 +140,21 @@ and the report parser; `documentosFeed.ts` holds the two pre-signed transfers.
   (a `createFeed` answer outside it is the client's `AmazonSchemaError`: the feed MAY have been
   created) and so does `lerFeedAmazon` before anything is sent (`AmazonConfigError('feed')`).
 - **The document** (`montarDocumentoListingsFeed`): a header `{ sellerId, version: '2.0',
-issueLocale: 'pt_BR' }` (no `report`), then one `PATCH` message per input in the caller's
-  order, `messageId` its 1-based position, `productType: 'PRODUCT'`; minified, encoded once, and
-  refused whole (never split) on an empty `sellerId`, no message, more than 25,000, an empty or
-  duplicate SKU, a message without patches, or more than `MAX_BYTES_FEED` UTF-8 BYTES.
+issueLocale: 'pt_BR' }`, plus `report: { includedData, apiVersion: '2021-08-01' }` only when
+  the caller passes `relatorio` (no `report` key at all otherwise), then one `PATCH` message per
+  input in the caller's order, `messageId` its 1-based position, `productType` the message's own
+  (held to `TIPO_PRODUTO_LISTING_REGEX`) or `'PRODUCT'` when it names none; minified, encoded
+  once, and refused whole (never split) on an empty `sellerId`, no message, more than 25,000, an
+  empty or duplicate SKU, a message without patches, a malformed product type, a `relatorio`
+  with no known dataset, or more than `MAX_BYTES_FEED` UTF-8 BYTES.
 - **The schemas**: Amazon's two published listings-feed JSON schemas are committed verbatim as
   test fixtures (`test/_fixtures/`, sha256-pinned, out of Prettier's reach), and the tests check
   the builder against them structurally, with no JSON-schema dependency.
 - **The report** (`lerRelatorioProcessamentoListings`): `summary` and its five counts required
   (through `wireInt()`), every issue field optional (an issue may carry no `messageId`, `sku` or
-  `code`); empty or non-JSON text is `'json-invalido'`, a JSON that is not a report
+  `code`), and the optional `items` (only when the document asked for a `report`) each with an
+  optional `sku` and optional `issues` of the listings `Issue` shape, `categories` included;
+  empty or non-JSON text is `'json-invalido'`, a JSON that is not a report
   `'relatorio-invalido'`.
 - **The upload** (`enviarDocumentoFeedAmazon`): the pre-signed URL guard, then ONE `PUT` with
   exactly one header, `content-type: application/json; charset=UTF-8` (the value the document
@@ -253,6 +281,7 @@ anything left is the catch-all.
 | A write body holding the token or not text; a Delivery or Easy Ship order id, MD5 or base64 of the wrong shape | `AmazonConfigError` — nothing was sent                                      |
 | The Easy Ship label document: its URL, download or zip (`documentosEasyShip.ts`)                               | `AmazonDocumentoEasyShipError` (`motivo`; `status` for an HTTP answer)      |
 | A listings SKU or quantity, or a feed document or id, of the wrong shape (`listings.ts`, `feeds.ts`)           | `AmazonConfigError` (`sku`, `quantidade`, `feed`) — nothing was sent        |
+| An offer patch's price range or product type (`listings.ts`)                                                   | `AmazonConfigError` (`oferta`, `tipo-produto`) — nothing was sent           |
 | A feed document upload or report download (`documentosFeed.ts`, `feeds.ts`)                                    | `AmazonDocumentoFeedError` (`motivo`; `status`, `codigoS3` for an HTTP one) |
 
 `AmazonAuthError` is the INPUT to the app's parking decision, not the decision: an
