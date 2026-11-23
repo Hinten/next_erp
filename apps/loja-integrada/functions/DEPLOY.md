@@ -141,9 +141,15 @@ exists — so nothing is ever written to Loja Integrada before the window.
   deploy", item 7). The anchor trigger derives `integracoesComProduto` from
   link WRITES, and the data import writes none it sees, so a migrated link
   whose produto's array lacks the conta is invisible to every flow that
-  pre-filters on that array — this app's manual stock push answers it
-  `sem-vinculo`, silently, never an error (the stock trigger and the nightly
-  stock reconcile read the links themselves and still send it). The trigger needs
+  pre-filters on that array — this app's manual stock push skips it silently,
+  never with an error: a selected produto answers `sem-vinculo` when another
+  selected produto names the conta and gets no Loja Integrada row when none
+  does (the web picks the contas to call from the selection's arrays), and a
+  child of a selected root is never found by the root's expansion, which
+  filters on the array too (it is left out, or, when no child of that root
+  names the conta, the root itself becomes the target and is usually answered
+  `pai`). The stock trigger and the nightly stock reconcile read the links
+  themselves and still send it. The trigger needs
   no index of its own: its survivor read takes the produto's whole
   `produtolojaintegrada` subcollection, a handful of documents, and filters in
   code.

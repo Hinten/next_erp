@@ -842,8 +842,10 @@ the planning figures stay estimates until then.
 
 ## 18. Window items and open owner decisions
 
-No tracking issue exists yet. Each item below becomes a phase step of #1208 only on a separate yes;
-agents never run any of them (root `CLAUDE.md` rule 8).
+The window operations are tracked in #2199, linked from the cutover runbook #1208, with the exact
+commands and checks: item 2 is its step 1; items 1 and 3–5 are its steps 10–13; item 9 is its
+step 14, before the widening to `*`; items 6–8 are its steps 15–17; and item 10 is folded into
+step 15's bootstrap. Agents never run any of them (root `CLAUDE.md` rule 8).
 
 1. The legacy app's own stock push turned OFF before the valve reaches `on`.
 2. The six indexes READY in the new project, the permanent key index kept.

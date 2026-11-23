@@ -23,12 +23,14 @@ import {
  * so for those channels a conta missing from it is a produto that conta's sweeps
  * never visit: a silent stock and price outage. Loja Integrada's stock sync
  * (master plan step 12) reads the links instead; its only reader of the array is
- * the manual stock push, which answers such a produto `sem-vinculo`, silently;
- * any later flow that pre-filters on the array would miss it the same way. The
- * link triggers keep it in step with the link docs, but a Firestore import fires
- * no triggers for any channel, so after the production data moves nothing
- * derives it on arrival. This census finds the gaps; the `--apply` leg adds the
- * Loja Integrada ones.
+ * the manual stock push, which skips such a produto silently (a selected produto
+ * answers `sem-vinculo` or gets no Loja Integrada row, as the web picks the contas
+ * to call from the selection's arrays; a child of a selected root is left out of
+ * the root's expansion, which filters on the array too); any later flow that
+ * pre-filters on the array would miss it the same way. The link triggers keep it
+ * in step with the link docs, but a Firestore import fires no triggers for any
+ * channel, so after the production data moves nothing derives it on arrival.
+ * This census finds the gaps; the `--apply` leg adds the Loja Integrada ones.
  *
  * ## The rule, and where each half comes from
  *

@@ -20,8 +20,13 @@ outage**: the produto is never selected and nothing logs a reason.
 Loja Integrada's stock sync (master plan step 12) reads the links instead: its
 stock trigger and nightly stock reconcile never read the array, so a gap here
 no longer hides a produto from them. Its only reader of the array is the manual
-stock push, which answers a produto whose array lacks the conta `sem-vinculo`:
-silently, never an error. Any later flow that pre-filters on the array (step
+stock push, which skips a produto whose array lacks the conta silently, never
+with an error. A selected produto answers `sem-vinculo` when another selected
+produto names the conta and gets no Loja Integrada row when none does (the web
+picks the contas to call from the selection's arrays). A child of a selected
+root is never found by the root's expansion, which filters on the array too: it
+is left out, or, when no child of that root names the conta, the root itself
+becomes the target and is usually answered `pai`. Any later flow that pre-filters on the array (step
 13's price sync is not built yet) would miss that produto the same way.
 
 The Loja Integrada link trigger (`onProdutoLojaIntegradaLinkChanged`, in the

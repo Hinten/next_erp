@@ -25,8 +25,13 @@ import { getDb } from './lib/admin';
  * `lib/lojaIntegrada/estoque/envioManualEstoqueLi.ts`). This app's stock trigger and nightly stock
  * reconcile read the links themselves and never read the array. A conta listed with no counting
  * link costs one wasted read (the push still classifies the produto by its links); a counting link
- * with no conta entry makes the manual push answer that produto `sem-vinculo` — silently, never an
- * error — and hides it from any later flow that pre-filters on the array.
+ * with no conta entry makes the manual push skip that produto silently, never with an error — a
+ * selected produto answers `sem-vinculo` when another selected produto names the conta and gets no
+ * Loja Integrada row when none does (the web picks the contas to call from the selection's arrays);
+ * a child of a selected root is never found by the root's expansion, which filters on the array
+ * too (left out, or, when no child of that root names the conta, the root itself becomes the
+ * target and is usually answered `pai`) — and hides it from any later flow that pre-filters on
+ * the array.
  *
  * ONE trigger serves parents and children: a Loja Integrada child's link sits under the ERP
  * CHILD produto in the same leaf collection (`produtolojaintegrada`) as a parent's link under the
