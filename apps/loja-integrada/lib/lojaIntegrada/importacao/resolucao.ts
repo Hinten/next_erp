@@ -7,12 +7,12 @@
  * ## The import's own cascade, never the order resolver's
  *
  * The order import's SKU stage answers the SELLABLE UNIT (a família-de-um root hops to its member);
- * a link must sit on the ROOT, which the other channels' sweeps and this app's manual stock push
- * pre-filter on (master plan step 12; the stock trigger and reconcile read the links). So the
- * rungs here are the import's own, narrowest first, and every probe that could answer "exactly
- * one" asks for two (`limit(2)`: the second document is the ambiguity detector). The only piece
- * shared with the order import is the link lookup itself, {@link vinculoDoProdutoLi}, used for
- * EVERY link lookup here.
+ * a link must sit on the ROOT: this app's manual stock push reaches a family only through a root
+ * whose own `integracoesComProduto` names the conta (master plan step 12; the stock trigger and
+ * the reconcile read the links). So the rungs here are the import's own, narrowest first, and
+ * every probe that could answer "exactly one" asks for two (`limit(2)`: the second document is
+ * the ambiguity detector). The only piece shared with the order import is the link lookup itself,
+ * {@link vinculoDoProdutoLi}, used for EVERY link lookup here.
  *
  * ### The root (a parent or a simple product), {@link resolverRaizLi}
  *

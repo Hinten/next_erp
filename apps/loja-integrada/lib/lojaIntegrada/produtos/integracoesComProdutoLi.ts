@@ -9,11 +9,12 @@
  * over-include), the race discipline of the two writes (rule 7: the add is tier 0, an
  * `arrayUnion`; the remove is tier 1, re-derived inside the core's guarded write from the
  * survivor read of point 3), and why only the array key is ever written. Nothing here restates
- * it, except what master plan step 12 (PR 12-h) changed for THIS channel: no Loja Integrada sweep
- * reads the array. The stock trigger and the nightly stock reconcile read the links themselves,
- * and the manual stock push is the array's only reader here, so a missing conta makes the push
- * answer that produto `sem-vinculo` (silently, never an error) and an extra one costs it one
- * wasted link listing. The direction holds: when in doubt, over-include.
+ * it, except what master plan step 12 changed for THIS channel: no Loja Integrada sweep reads the
+ * array. The stock trigger and the nightly stock reconcile read the links themselves, and the
+ * manual stock push is the array's only reader here, so a missing conta makes the push answer
+ * that produto `sem-vinculo` (silently, never an error) and an extra one costs it a wasted link
+ * listing (plus, for a selected root, its expansion query). The direction holds: when in doubt,
+ * over-include.
  * The Shopee binding (`apps/shopee/lib/shopee/anuncios/integracoesComProdutoShopee.ts`) is the
  * shape this file mirrors.
  *
