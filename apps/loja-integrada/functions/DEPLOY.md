@@ -600,14 +600,19 @@ the wipe. Create `apps/loja-integrada/functions/.env.deploy` (gitignored):
 #     written back. It keeps what was already recorded, but the deploy that opens
 #     operations must already carry `dry-run`.
 # The ESTOQUE pair is READ since step 12 (PR 12-e) by this codebase (the stock
-# queue's send run and, since PR 12-f, the stock trigger and the kit fan-out),
-# and since PR 12-h LOJA_INTEGRADA_MODO_ESTOQUE by the App Hosting backend too
-# (its two stock routes answer 503 with it `off`; the canary list is parsed there
-# with the valve but never applied): `off` (or unset) makes every
-# stock run, every trigger event and every fan-out return before any read;
+# queue's send run; since PR 12-f the stock trigger and the kit fan-out; since
+# PR 12-g every daily-reconcile slice, the nightly reconcile start and the conta
+# trigger's depósito arm), and since PR 12-h LOJA_INTEGRADA_MODO_ESTOQUE by the
+# App Hosting backend too (its two stock routes answer 503 with it `off`; the
+# canary list is parsed there with the valve but never applied): `off` (or
+# unset) makes every stock run, every trigger event, every fan-out and every
+# reconcile slice return before any read, and the nightly start and the
+# depósito arm enqueue nothing;
 # `dry-run` makes the trigger and the fan-out enqueue (and pace) exactly as `on`
 # does, and each send run then reads, plans and logs one diff line with nothing
-# sent. LOJA_INTEGRADA_CANARIO_ESTOQUE is applied by the send run and, per
+# sent; a reconcile run at `dry-run` reads and diffs every conta, but its queue
+# phase enqueues nothing and its end writes no aviso.
+# LOJA_INTEGRADA_CANARIO_ESTOQUE is applied by the send run and, per
 # conta, by the daily reconcile: its queue phase drops the candidates outside
 # the list (counted `foraDoCanario`), and its end writes avisos only for a conta
 # the list admits (`*`, or an entry of that conta). The whole stock sync is
@@ -649,6 +654,10 @@ the wipe. Create `apps/loja-integrada/functions/.env.deploy` (gitignored):
 # The value itself is a window decision, made by a person. Since PR 12-f the
 # stock trigger and the kit fan-out read it too: an invalid value is ONE ERROR
 # line per event at a Loja Integrada depósito (nothing enqueued) and per fan-out.
+# Since PR 12-g every daily-reconcile slice reads it too, right after the valve:
+# an invalid value is ONE ERROR line per slice and zero reads (`teto-invalido`),
+# and no continuation is enqueued, so the reconcile chain stops until the value
+# is fixed; the next nightly start after the fix runs the whole reconcile again.
 # LOJA_INTEGRADA_ESTOQUE_MAX=
 
 # The EAGER ceiling of the stock trigger's kit path (step 12, PR 12-f): a
@@ -1220,6 +1229,27 @@ of this section passes.
    thumbnails (the `storage` codebase's resize trigger made the derivatives).
    Why the window: the production project and its bucket exist only then, and
    before the switch no import runs.
+
+10. **The stock trigger (master-plan step 12, PR 12-f).** The console lists
+    `onEstoqueLojaIntegrada` as a Firestore trigger on database `default`, and
+    the Eventarc trigger carries that filter:
+
+    ```bash
+    gcloud eventarc triggers list --project <project-id>
+    # expect a trigger for onestoquelojaintegrada,
+    # event type google.cloud.firestore.document.v1.written,
+    # filtered to database 'default' + the produtos/*/estoques/* document path
+    ```
+
+    It is this codebase's fifth Firestore trigger: confirm that the Eventarc and
+    Firestore service-agent grants serving the other four serve it too. A
+    trigger bound to `(default)` deploys fine and never fires, and then no ERP
+    stock change reaches the stock queue: only the nightly reconcile sends. With
+    the stock valve at `dry-run`, one change of a linked child's available
+    quantity at its conta's depósito enqueues one `estoque` task on
+    `filaEstoqueLojaIntegrada`, whose send run goes no further than the read
+    switch while it is off. The whole stock sync is
+    `lib/lojaIntegrada/estoque/README.md`.
 
 ## The status write-back in the window (master-plan step 7)
 

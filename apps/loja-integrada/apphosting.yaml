@@ -105,13 +105,17 @@ runConfig:
 #                                          (PR 12-e) the ESTOQUE pair is read by the
 #                                          functions codebase's stock queue too (and,
 #                                          since PR 12-f, its stock trigger and kit
-#                                          fan-out). Since PR 12-h this backend reads
+#                                          fan-out; since PR 12-g, every slice of
+#                                          the daily reconcile, its nightly start
+#                                          and the conta trigger's depósito arm).
+#                                          Since PR 12-h this backend reads
 #                                          LOJA_INTEGRADA_MODO_ESTOQUE as well — both
 #                                          stock routes answer 503 LI_ESTOQUE_DESLIGADO
 #                                          with it `off` — so set it ALIKE on both
 #                                          surfaces; LOJA_INTEGRADA_CANARIO_ESTOQUE is
 #                                          parsed here with the valve but never applied
-#                                          (the send run applies its own copy).
+#                                          (the send run and the daily reconcile apply
+#                                          the functions codebase's own copy).
 #
 # This backend's Cloud Tasks producers (step 12, PR 12-h: the two stock routes,
 # through `lib/firebase/filasLi.ts`). Console values of THIS backend only, never an

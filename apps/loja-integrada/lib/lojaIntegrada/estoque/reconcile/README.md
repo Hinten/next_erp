@@ -56,12 +56,13 @@ on the reads queue `filaLeituraLojaIntegrada`, delay 0:
   WARNING. An answered already-exists is success; the closed sweep-only valve is ONE WARNING; a
   transient enqueue failure rethrows for the Scheduler's retry. The minute 23 is one no other
   schedule of this codebase fires at (`functions/src/index.test.ts` computes it).
-- **The read switch is NOT read** by any start (the approved design): with it off the run's ERP
-  side still rebuilds the snapshot and the kits map every night — the stock trigger's eager kit
-  sends and zero-crossing fan-out read that map (no header ⇒ `nenhum`), so gating the start on the
-  switch would leave every kit listing without event-driven sends from the moment the switch goes
-  `on` until a run completed after it — and every store phase stops at the switch. That is also
-  how the run's cost is measured on staging before the window.
+- **No start is GATED on the read switch** (the approved design; the operator route only REPORTS
+  it, as `chamadas` in its 202): with it off the run's ERP side still rebuilds the snapshot and the
+  kits map every night — the stock trigger's eager kit sends and zero-crossing fan-out read that
+  map (no header ⇒ `nenhum`), so gating the start on the switch would leave every kit listing
+  without event-driven sends from the moment the switch goes `on` until a run completed after it —
+  and every store phase stops at the switch. That is also how the run's cost is measured on
+  staging before the window.
 - **Task names** are `li-<execucaoId>-<seq>` (`idTarefaReconcileEstoqueLi`), derived from the
   payload, never passed in: a scheduler retry, a retried slice re-enqueueing its successor and the
   continuation repair all enqueue the SAME task. A duplicate that slips past the name finds the run
@@ -81,7 +82,8 @@ on the reads queue `filaLeituraLojaIntegrada`, delay 0:
 `execucaoId`, `iniciadoEmMs` (the avisos' clock), the lease `emExecucaoAteMs` (0 = free), `seq`
 (the dispatch the next slice must carry), `fase`, `contas` (processing order), `idxConta`, the
 walk's cursor `walk`, `candidatos`, the run's counters `contadores`, and the global stagger slot
-`proximoSlotMs`, which the kit fan-out writes too (`../README.md`, "Kits and the global slot").
+`proximoSlotMs`, which the kit fan-out writes too (`../README.md`, section 8, "Kits: the map, the
+eager path, the fan-out and the global slot").
 
 A slice, after its payload, valve and cap (zero reads each; section 3), reads the document and
 decides (`execucaoReconcile.ts`):

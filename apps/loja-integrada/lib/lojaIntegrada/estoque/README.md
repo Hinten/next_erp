@@ -7,9 +7,12 @@ situações (lead times are overwritten by design). Never a parent's row, never 
 has no batch stock route.
 
 It ships INERT. The stock valve `LOJA_INTEGRADA_MODO_ESTOQUE`, its canary list and the read switch
-`LOJA_INTEGRADA_CHAMADAS` are unset everywhere until the migration window, so every trigger event,
-send run, fan-out and reconcile slice returns with zero reads, and no test calls the store (every
-suite stubs `fetch` to throw).
+`LOJA_INTEGRADA_CHAMADAS` are unset today, so every trigger event, send run, fan-out and reconcile
+slice returns with zero reads. Before the migration window the valve may be set to `dry-run` and to
+nothing else (the staging measurement path, section 13); the canary list and the switch stay unset.
+No test can call the store: both vitest setups make a `fetch` to any non-local host throw, the
+suites that script the store pass a `deps.fetch`, and a function the emulator lane dispatches stops
+at the read switch (section 14).
 
 This file is the reference. The rules an agent must not break before touching stock code are the
 short list in [`apps/loja-integrada/CLAUDE.md`](../../../CLAUDE.md), "Stock sync (step 12)". Also:
@@ -91,9 +94,11 @@ Elsewhere in the app:
 
 - `functions/src/filaEstoque.ts` (`filaEstoqueLojaIntegrada`), `functions/src/agendadorEstoque.ts`
   (the stock producer's functions root, through the reads root's region and valve readers),
-  `functions/src/depsEscrita.ts` (`depsDeEstoqueLi` and `depsDeKitsEstoqueLi` spread the writes
-  run's deps, so the two write queues cannot disagree on the environment, the clock, the pacer or
-  the deadline), `functions/src/onEstoqueLojaIntegrada.ts` (the trigger),
+  `functions/src/depsEscrita.ts` (`depsDeEstoqueLi` spreads the writes run's deps, so the two
+  write queues cannot disagree on the environment, the clock, the pacer's sleep or the write
+  deadline; `depsDeKitsEstoqueLi` takes only the environment, the clock, the attempt and the
+  producer from it — no pacer, no deadline: the fan-out makes no store call),
+  `functions/src/onEstoqueLojaIntegrada.ts` (the trigger),
   `functions/src/reconciliarEstoque.ts` (the nightly start), `functions/src/depsReconcileEstoque.ts`,
   the `estoque-reconcile` arm of `functions/src/filaLeitura.ts`, the reconcile producer root in
   `functions/src/agendador.ts`, and the depósito-change arm of
@@ -519,11 +524,11 @@ ERP side (`erp`: the key walk of every link, the snapshot, the kits map), the st
 (`li`: read whole and diffed, rows out of step become candidates), the sends (`fila`: the safety
 gate, then the candidates enqueued over-advertising first on the global slot), the avisos (`fim`).
 It starts four ways — nightly at 04:23 São Paulo, the conta trigger's depósito arm, the operator's
-route, and a release that saw a depósito change — and none of them reads the read switch: with it
-off the ERP side still rebuilds the kits map the trigger reads, and every store phase stops at the
-switch. A dry-run enqueues nothing and never touches the slot. The 5% safety gate is decided in
-every valve mode. A missed trigger, the cutover import and the bulk sends' drift are each bounded by
-it: at most 24 h.
+route, and a release that saw a depósito change — and none of them is gated on the read switch
+(the operator route only reports it): with it off the ERP side still rebuilds the kits map the
+trigger reads, and every store phase stops at the switch. A dry-run enqueues nothing and never
+touches the slot. The 5% safety gate is decided in every valve mode. A missed trigger, the cutover
+import and the bulk sends' drift are each bounded by it: at most 24 h.
 
 Everything else — the run document's decision and write protocol, the phases, the budget, the
 failures and the last attempt — is [`reconcile/README.md`](reconcile/README.md).
@@ -732,11 +737,15 @@ on. So a suite that writes stock records or contas:
 - never moves a record from positive to 0 under a sharded or over-ceiling kits header, nor creates a
   CANONICAL record below that header's `qMax` (its before-side is unknown, so it fires);
 - deletes its kits map before its records;
-- wipes `reconcileEstoqueLojaIntegrada/atual` before AND after each case, awaiting the slot write of a
-  fan-out it caused;
+- when it seeds a kits header (so a fan-out it causes can write the slot), moves a conta's depósito
+  or asserts on the run document, wipes `reconcileEstoqueLojaIntegrada/atual` before AND after each
+  case, awaiting the slot write of a fan-out it caused (the trigger and reconcile suites do; the
+  send-run suite seeds no kits header, so nothing it causes writes the slot, and it never touches
+  the run document);
 - also keeps the anchor trigger's rules (`apps/loja-integrada/CLAUDE.md`, CI) when it writes links;
-- tears down in order: the conta's sync documents, then links (the anchor awaited), records,
-  produtos, contas, avisos.
+- deletes its links (the anchor awaited) before their produtos. The reconcile suite's teardown is
+  the full pattern, in order: the contas' sync documents, the run document, then links (the anchor
+  awaited), records and produtos, contas, avisos.
 
 **What the lane cannot prove**: Cloud Scheduler firing (`onSchedule` is ignored),
 `scheduleDelaySeconds` and `scheduleTime` (firebase-tools#8254), index declarations, that the
@@ -786,7 +795,12 @@ Nothing here is run by an agent; `functions/DEPLOY.md` is the runbook ("Function
   runtime SA needs `roles/iam.serviceAccountUser` on ITSELF, which no deploy grants.
 - **Console values** on the App Hosting backend: `LOJA_INTEGRADA_TASKS_REGION` equal to this
   codebase's `FUNCTIONS_REGION` (the preflight prints the cross-check), optionally
-  `LOJA_INTEGRADA_TASKS_DISABLED`.
+  `LOJA_INTEGRADA_TASKS_DISABLED`; and, since PR 12-h, the stock valve and the read switch set ALIKE
+  with the functions side (`dry-run` and unset before the window; section 13).
+- **The stock trigger's binding**: on its first deploy, `onEstoqueLojaIntegrada` (this codebase's
+  fifth Firestore trigger) is listed on database `default` and fires, on the grants serving the
+  other four; one bound to `(default)` deploys fine and never fires (`functions/DEPLOY.md`,
+  "Verifying a first deploy", item 10).
 - **Indexes, READY before the valve leaves `off`** (all declared; no new one): collection group
   `produtolojaintegrada (contaLojaIntegrada, id)`; collection group `produtolojaintegrada (__name__)`,
   PERMANENT; collection group `estoques (parentId, depositoOuterRef, ultimaModificacao)`; collection
@@ -834,8 +848,9 @@ agents never run any of them (root `CLAUDE.md` rule 8).
 3. Each conta's depósito mapping checked (the master plan's window gate: more than about 5% of a
    conta's linked children with no record at its depósito means the mapping is wrong — fix it
    before `on`), with the operação stock flags the counts audit (#2163) reports.
-4. Day 0: one `dry-run` full run per conta, reviewed for differing rows, held, duplicate and
-   ambiguous links, the kits histogram and the 5% gate.
+4. Day 0: one `dry-run` full run (a run is global: it covers every active conta with a depósito),
+   reviewed per conta for differing rows, held, duplicate and ambiguous links, the kits histogram
+   and the 5% gate.
 5. Canary store ids plus `on`, the first real PUT and its read-back reviewed (the PUT path form is
    unproven; only the GET path form was observed).
 6. The canary widened to `*` and the bootstrap, over-advertising first; operators told the store

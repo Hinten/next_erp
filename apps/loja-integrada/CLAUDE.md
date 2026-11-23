@@ -1147,7 +1147,8 @@ firebase.loja-integrada.tasks.json --only firestore,functions,tasks` (ports 8085
   moves a Loja Integrada conta's depósito. So a suite that writes stock records or contas follows
   `lib/lojaIntegrada/estoque/README.md` ("The emulator lane"): produtos and contas no other suite
   seeds, contas seeded by a create, no positive → 0 move or canonical create below `qMax` under a
-  sharded or over-ceiling kits header, its kits map deleted before its records, and
+  sharded or over-ceiling kits header, its kits map deleted before its records, and — when it seeds
+  a kits header, moves a depósito or asserts on the run document — the run document
   `reconcileEstoqueLojaIntegrada/atual` wiped before and after each case (awaiting the slot write a
   fan-out it caused makes).
 - The lane cannot prove: Cloud Scheduler firing (`onSchedule` is ignored),

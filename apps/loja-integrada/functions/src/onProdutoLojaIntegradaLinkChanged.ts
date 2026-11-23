@@ -20,10 +20,13 @@ import { getDb } from './lib/admin';
  * and the race discipline are argued. This file is the thin wrapper, the shape of Shopee's
  * `onProdutoShopeeLinkChanged`.
  *
- * Why it exists: that array is the ANCHOR PRE-FILTER the stock and price sweeps open with, so its
- * accuracy IS stock and price coverage. A conta listed with no counting link costs one skipped
- * sweep row; a counting link with no conta entry is a SILENT outage — the produto is never
- * selected and nothing logs a reason.
+ * Why it exists: that array is the ANCHOR PRE-FILTER the other channels' stock and price sweeps
+ * open with and, for Loja Integrada, the manual stock push's (master plan step 12, PR 12-h,
+ * `lib/lojaIntegrada/estoque/envioManualEstoqueLi.ts`). This app's stock trigger and nightly stock
+ * reconcile read the links themselves and never read the array. A conta listed with no counting
+ * link costs one wasted read (the push still classifies the produto by its links); a counting link
+ * with no conta entry makes the manual push answer that produto `sem-vinculo` — silently, never an
+ * error — and hides it from any later flow that pre-filters on the array.
  *
  * ONE trigger serves parents and children: a Loja Integrada child's link sits under the ERP
  * CHILD produto in the same leaf collection (`produtolojaintegrada`) as a parent's link under the
