@@ -11,11 +11,18 @@ from #1208.
 
 ## Why it exists
 
-`produtos.integracoesComProduto` is the pre-filter every marketplace stock and
-price sweep opens with (`paiId == null AND integracoesComProduto array-contains <conta>`).
+`produtos.integracoesComProduto` is the pre-filter the Mercado Livre and Shopee
+stock and price sweeps open with (`paiId == null AND integracoesComProduto array-contains <conta>`).
 A conta id in it means _"this account's sweeps visit this produto every run"_,
-so a conta missing from it is a **silent stock and price outage**: the produto
-is never selected and nothing logs a reason.
+so for those channels a conta missing from it is a **silent stock and price
+outage**: the produto is never selected and nothing logs a reason.
+
+Loja Integrada's stock sync (master plan step 12) reads the links instead: its
+stock trigger and nightly stock reconcile never read the array, so a gap here
+no longer hides a produto from them. Its only reader of the array is the manual
+stock push, which answers a produto whose array lacks the conta `sem-vinculo`:
+silently, never an error. Any later flow that pre-filters on the array (step
+13's price sync is not built yet) would miss that produto the same way.
 
 The Loja Integrada link trigger (`onProdutoLojaIntegradaLinkChanged`, in the
 `loja-integrada` functions codebase) keeps the array in step with the link docs
@@ -30,7 +37,7 @@ produto carrying a Loja Integrada link.
 | #   | Read                                                                                                                                                                                                              | Index                                                                                     |
 | --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
 | 1   | `integracao`, masked to `tipo`                                                                                                                                                                                    | none (a handful of docs)                                                                  |
-| 2   | every `produtolojaintegrada` doc: a collection-group walk by document key, masked to `contaLojaIntegrada, id, removido`, pages of 300                                                                             | **`produtolojaintegrada (__name__ ASC)`, collection group** — declared for this walk only |
+| 2   | every `produtolojaintegrada` doc: a collection-group walk by document key, masked to `contaLojaIntegrada, id, removido`, pages of 300                                                                             | **`produtolojaintegrada (__name__ ASC)`, collection group** — permanent (stock reconcile) |
 | 3   | the produtos those links name: point reads (`getAll`, 200 at a time) masked to `integracoesComProduto, paiId`                                                                                                     | none                                                                                      |
 | 4   | for each produto that exists, its OWN `produtoMercadoLivre`, `variacaoMercadoLivre` and `prodshopee` docs: three unfiltered, unordered reads, 8 produtos at a time. `variashopee` and `prodAmazon` are never read | none                                                                                      |
 
@@ -97,7 +104,7 @@ then class, so two dry runs over the same data are byte-identical.
 | `li-conta-ilegivel`                 | no      | no      | a counting link whose conta ref reads as no conta at all (malformed, absent, another collection's). Invisible to the trigger, the sweeps and the order import alike: a person reads the ref                           |
 | `li-produto-ausente`                | no      | no      | an orphan link: its produto doc does not exist                                                                                                                                                                        |
 | `li-caminho-inesperado`             | no      | no      | a link doc that is not at `produtos/<id>/produtolojaintegrada/<doc>`                                                                                                                                                  |
-| `li-raiz-sem-vinculo`               | no      | no      | a child holds a counting link of the conta, its root holds none: a sweep anchored on roots never visits the family. The product import's link pass (`soVincular`), or a person, fixes it                              |
+| `li-raiz-sem-vinculo`               | no      | no      | a child holds a counting link of the conta, its root holds none: a manual stock push of the root skips the family (the stock sync sends it). The product import's link pass (`soVincular`), or a person, fixes it     |
 | `li-id-texto`                       | no      | no      | a counting link whose `id` is stored as TEXT. It keeps its conta in the anchor, but the order import looks links up by the NUMBER id, and the text matches nothing there                                              |
 | `li-dono-duplicado`                 | no      | no      | two existing produtos hold a link with the same (conta, stored number id), trashed or not: the order import answers "ambiguous" for that store product. One row per store product, naming every produto               |
 | `entrada-em-forma-de-caminho`       | no      | no      | the array holds an `integracao/<id>`-shaped entry. Inert for every sweep, and left in place                                                                                                                           |
@@ -240,21 +247,22 @@ those channels' valves have gates of their own.
   its commit is lost. In sequence the two are safe in either order: the
   reconcile passes every non-Mercado Livre id through.
 - **Before the Loja Integrada stock and price valves reach `on`.**
-- **Re-runs** (after each conta's first product import, and after the sweeps
-  switch to reading the anchor) need a **quiet conta**: no import job
-  `pendente` or `executando` for it. The trigger is asynchronous, so a link the
-  import wrote moments before the walk can read as `li-ausente` before its own
-  add lands. A transient row that slips through is harmless to `--apply`: the
-  guarded add only confirms a link that counts.
+- **Re-runs** (after each conta's first product import) need a **quiet
+  conta**: no import job `pendente` or `executando` for it. The trigger is
+  asynchronous, so a link the import wrote moments before the walk can read as
+  `li-ausente` before its own add lands. A transient row that slips through is
+  harmless to `--apply`: the guarded add only confirms a link that counts.
 
-## ⚠️ The key index must outlive the cutover
+## The key index is permanent
 
-`produtolojaintegrada (__name__ ASC)` is migration-only, and its
-`key-walks.json` row puts it in the set #1896 deletes "after the cutover". But
-this census is re-run after each conta's first import, after the sweeps switch
-to the anchor, possibly weeks later. **#1896 must keep it until the last
-re-run.** A re-run after the delete is the whole-group scan per page that the
-key indexes exist to prevent.
+`produtolojaintegrada (__name__ ASC)` was declared for this walk, and since
+#2185 (master plan step 12) it is **permanent**: the Loja Integrada daily stock
+reconcile walks every link doc by key on it every night while its stock valve
+is not `off` (`apps/loja-integrada/lib/lojaIntegrada/estoque/reconcile/caminhadaVinculos.ts`).
+`src/keyWalks.indexes.test.ts` lists it in `PERMANENTES`, so #1896's
+post-cutover cleanup keeps it although its `key-walks.json` rows name it, and
+every re-run, after each conta's first import, rides it however many weeks
+later it comes.
 
 ## Out of scope
 

@@ -18,13 +18,17 @@ import {
  *
  * ## Why the anchor can be missing a conta
  *
- * The array is the pre-filter every marketplace stock and price sweep opens with
- * (`paiId == null AND integracoesComProduto array-contains <conta>`), so a conta
- * missing from it is a produto that conta's sweeps never visit: a silent stock
- * and price outage. The link triggers keep it in step with the link docs, but a
- * Firestore import fires no triggers for any channel, so after the production
- * data moves nothing derives it on arrival. This census finds the gaps; the
- * `--apply` leg adds the Loja Integrada ones.
+ * The array is the pre-filter the Mercado Livre and Shopee stock and price sweeps
+ * open with (`paiId == null AND integracoesComProduto array-contains <conta>`),
+ * so for those channels a conta missing from it is a produto that conta's sweeps
+ * never visit: a silent stock and price outage. Loja Integrada's stock sync
+ * (master plan step 12) reads the links instead; its only reader of the array is
+ * the manual stock push, which answers such a produto `sem-vinculo`, silently;
+ * any later flow that pre-filters on the array would miss it the same way. The
+ * link triggers keep it in step with the link docs, but a Firestore import fires
+ * no triggers for any channel, so after the production data moves nothing
+ * derives it on arrival. This census finds the gaps; the `--apply` leg adds the
+ * Loja Integrada ones.
  *
  * ## The rule, and where each half comes from
  *
@@ -541,7 +545,7 @@ export function censar(entrada: EntradaDoCenso): ResultadoDoCenso {
         });
       }
 
-      // A root-anchored sweep visits a family through its root only.
+      // The manual stock push expands a family only through a root whose array names the conta.
       if (
         raiz !== null &&
         !(entrada.produtos.get(raiz)?.existe === true && contasLiDoProduto.get(raiz)?.has(contaId))

@@ -1757,7 +1757,7 @@ Each item below becomes an issue **only after Lucas says yes to opening it**. Th
    - **Phase:** Phase 4, before item 3's `on`.
    - **Action:** a one-shot read-only census script (`tools/migrations`) lists produtos whose LI link doc exists but whose anchor lacks the conta; a backfill only for the gaps, run by a person. The census finds link docs by field query, since their doc ids are mixed (§3). **Widened by step 9:** for every produto carrying a Loja Integrada link, it also reports whether EACH channel's conta that has a live link on that produto is in its anchor, not only Loja Integrada's: an import fires no trigger for any channel.
    - **Verify:** the census re-run returns 0.
-   - **Why:** an import fires no triggers. A gap is invisible to stock and price discovery, which is a silent outage.
+   - **Why:** an import fires no triggers. A gap hides the produto, silently, from every flow that pre-filters on the array. Since step 12 that is only the manual stock push, which answers it `sem-vinculo`: the stock trigger and the nightly reconcile read the links and still send it. A later flow that pre-filters on the array (step 13 is not built) would miss it the same way.
 7. **Seed the poll cursor by look-back.**
    - **Phase:** Phase 3 step 1 (set before the functions deploy).
    - **Action:** read the newest legacy `integracao/{contaId}/pedManager` `lastTimeStamp` per conta (from the export or the legacy console). Set `LOJA_INTEGRADA_POLL_LOOKBACK_H` = hours since the **older** of the two, + 24 h margin, in the functions `.env.deploy`. If the legacy import stops early for any reason, for example an unrenewed legacy token (§0), this look-back covers the gap the same way.
