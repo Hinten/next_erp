@@ -575,7 +575,7 @@ per target, one enqueue per linked child; no full produto document, no stock rec
   component's eager kits; a larger batch would delay every sale-driven send behind it. ⚠️ The bound
   is PER REQUEST: the web provider sends at most ONE request per conta and run that can enqueue
   anything. The number is the owner's to change; a larger one should reserve its sends on the slot.
-- ⚠️ **A deviation from the approved design, awaiting the owner's confirmation**: a family is reached
+- ⚠️ **A deviation from the approved design, flagged in PR 12-h and merged with it**: a family is reached
   only through a ROOT whose own array names the conta. The anchor keeps each produto's array from its
   OWN links, so a family whose root link is trashed or removed while its children's links still count
   answers `sem-vinculo` here, although the trigger and the reconcile still send those children.
@@ -864,10 +864,11 @@ agents never run any of them (root `CLAUDE.md` rule 8).
 10. A Firestore import fires no trigger: the migrated stock reaches the store only through the first
     reconcile run with the read switch on.
 
-**Decisions awaiting the owner's confirmation** (each PR's "please confirm" list): the manual push's
-pre-filter invariant (section 10), the 30-child bound, the web's one-enqueuing-slice rule, the
-fan-out's per-firing cost or a pre-filter for it, and whether the fan-out at `dry-run` should enqueue
-exactly like `on` (today it does; the reconcile's dry-run enqueues nothing).
+**Owner decisions flagged in the PR bodies** (each PR merged with its "please confirm" list; revisit
+one here if it should change): the manual push's pre-filter invariant (section 10), the 30-child
+bound, the web's one-enqueuing-slice rule, the fan-out's per-firing cost or a pre-filter for it, and
+whether the fan-out at `dry-run` should enqueue exactly like `on` (today it does; the reconcile's
+dry-run enqueues nothing).
 
 ## 19. Accepted residuals
 
