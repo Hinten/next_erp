@@ -114,8 +114,7 @@
  *
  * PURE: no Firestore, no clock, no network.
  */
-import { contaRefForms } from '@delfrance/data/admin/produtos';
-import { CONTA_ID_AMAZON_REGEX, type TimestampLike, naoDocId } from '@delfrance/schemas';
+import type { TimestampLike } from '@delfrance/schemas';
 
 import { partesDoCaminhoEstoqueAmazon } from './familiaEstoque';
 
@@ -403,51 +402,11 @@ export function produtosDaJanela(
 }
 
 /**
- * The produtos whose link partition can hold a SKU for `produtoId` (module
- * header): itself, then its parent when `paiId` names one. `raw` is the
- * produto's document, or `null` when it is gone (then only itself).
- *
- * @throws {RangeError} `produtoId` is not a document id.
+ * The probe set of a produto and the conta's SKUs among a partition listing
+ * (module header): the shared helpers of `listings/sondasVinculos.ts`, under
+ * the stock names.
  */
-export function sondasDoProduto(
-  produtoId: string,
-  raw: Readonly<Record<string, unknown>> | null,
-): readonly string[] {
-  if (naoDocId(produtoId)) {
-    throw new RangeError('descobertaEstoque.ts: produtoId não é um id de documento');
-  }
-  const paiId = raw?.paiId;
-  if (typeof paiId === 'string' && !naoDocId(paiId) && paiId !== produtoId) {
-    return [produtoId, paiId];
-  }
-  return [produtoId];
-}
-
-/**
- * The SKUs of ONE conta among the link docs of one partition listing (module
- * header): a doc whose `contaAmazonOuterRef` is EXACTLY one of the conta's two
- * stored forms, with a non-empty string `sku`. Distinct, code-unit sorted.
- *
- * @throws {RangeError} `contaId` outside the conta id grammar.
- */
-export function skusDaConta(
-  links: readonly Readonly<Record<string, unknown>>[],
-  contaId: string,
-): readonly string[] {
-  if (!CONTA_ID_AMAZON_REGEX.test(contaId)) {
-    throw new RangeError('descobertaEstoque.ts: contaId fora de CONTA_ID_AMAZON_REGEX');
-  }
-  const formas: readonly string[] = contaRefForms(contaId);
-  const skus = new Set<string>();
-  for (const link of links) {
-    const ref = link.contaAmazonOuterRef;
-    const sku = link.sku;
-    if (typeof ref !== 'string' || !formas.includes(ref)) continue;
-    if (typeof sku !== 'string' || sku === '') continue;
-    skus.add(sku);
-  }
-  return [...skus].sort(compararTexto);
-}
+export { skusDaConta, sondasDoProduto } from '../listings/sondasVinculos';
 
 /** One SKU's observation: the delta task's identity, and whether it is forced. */
 export interface ObservacaoEstoqueAmazon {
