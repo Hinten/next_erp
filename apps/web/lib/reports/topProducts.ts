@@ -12,14 +12,11 @@ import {
   field,
   greaterThanOrEqual,
   isType,
-  lessThan,
   lessThanOrEqual,
   map,
   mapEntries,
-  or,
   sum,
 } from 'firebase/firestore/pipelines';
-import { MICROS_LOWER_BOUND, MILLIS_UPPER_BOUND } from '@delfrance/core/datetime';
 import {
   componentesKitEntries,
   estadoPedidoSchema,
@@ -34,10 +31,13 @@ import {
 } from '@delfrance/schemas';
 import { coverArquivoIds } from '@/lib/produtos/fotoRefs';
 import { checkoutDateRange } from './checkouts';
+import {
+  pedidoReportAccounts,
+  pedidoReportTimestamp,
+  type PedidoReportDateRange,
+} from './pedidoReportPredicates';
 
-export interface TopProductsFilters {
-  startUs: number;
-  endExclusiveUs: number;
+export interface TopProductsFilters extends PedidoReportDateRange {
   estados: readonly EstadoPedido[];
   /** Integration document IDs; an empty selection includes every account. */
   accountIds: readonly string[];
@@ -158,34 +158,12 @@ export function normalizeTopProductsFilters(filters: TopProductsFilters): TopPro
  */
 export function buildTopProductsPipeline(db: Firestore, input: TopProductsFilters) {
   const filters = normalizeTopProductsFilters(input);
-  const predicates = [
-    equal(field('ehSaida'), filters.ehSaida),
-    // Match the numeric-unit heuristic used by schema tolerant reads. Both
-    // branches seek bounded timestamp ranges; their unit domains do not overlap.
-    or(
-      and(
-        greaterThanOrEqual(field('timestamp'), Math.max(filters.startUs, MICROS_LOWER_BOUND)),
-        lessThan(field('timestamp'), filters.endExclusiveUs),
-      ),
-      and(
-        greaterThanOrEqual(field('timestamp'), Math.ceil(filters.startUs / 1000)),
-        lessThan(
-          field('timestamp'),
-          Math.min(Math.ceil(filters.endExclusiveUs / 1000), MILLIS_UPPER_BOUND + 1),
-        ),
-      ),
-    ),
-  ];
+  const predicates = [equal(field('ehSaida'), filters.ehSaida), pedidoReportTimestamp(filters)];
   if (filters.estados.length > 0) {
     predicates.push(equalAny(field('estado'), [...filters.estados]));
   }
   if (filters.accountIds.length > 0) {
-    predicates.push(
-      equalAny(
-        field('integracaoPedidoOuterRef'),
-        filters.accountIds.flatMap((id) => ['documents/integracao/' + id, 'integracao/' + id]),
-      ),
-    );
+    predicates.push(pedidoReportAccounts(filters.accountIds));
   }
   // A malformed legacy bucket is represented by one invalid line, so it is
   // visible in diagnostics instead of disappearing behind unnest/sum semantics.
