@@ -17,6 +17,7 @@ import {
 
 import {
   ETAPA_PUBLICACAO,
+  MOTIVO_PROBLEMA_PUBLICACAO,
   MOTIVO_PUBLICACAO_BLOQUEADA,
   ShopeePublishBlockedError,
   ShopeePublishRejectedError,
@@ -335,7 +336,7 @@ describe('shopeeErrorResponse — as duas recusas de PUBLICAÇÃO (step 11)', ()
     ]);
   });
 
-  it('11 — um ShopeePublishRejectedError vira 422 SHOPEE_PUBLISH_REJECTED com etapa e shopeeCode', async () => {
+  it('11 — um ShopeePublishRejectedError vira 422 com etapa, código e recusa da Shopee', async () => {
     const res = shopeeErrorResponse(
       publicacaoRecusada([
         { campo: 'tier_variation', motivo: 'opcoes-demais', mensagem: 'demais' },
@@ -351,15 +352,42 @@ describe('shopeeErrorResponse — as duas recusas de PUBLICAÇÃO (step 11)', ()
       'itemId',
       'problemas',
       'produtoId',
+      'recusadaPelaShopee',
       'shopeeCode',
     ]);
     expect(corpo.code).toBe('SHOPEE_PUBLISH_REJECTED');
-    // A etapa é o extra carregado: ela diz o que EXISTE no canal agora. Uma
-    // recusa em `init_tier_variation` deixa um item UNLIST sem modelos.
+    // A etapa indica onde a publicação parou.
     expect(corpo.etapa).toBe('init_tier_variation');
+    expect(corpo.recusadaPelaShopee).toBe(true);
     // ⚠️ VERBATIM, prefixo de módulo e tudo — igual ao braço do ShopeeApiError.
     expect(corpo.shopeeCode).toBe('product.error_param');
     expect(corpo.itemId).toBe(ITEM_ID);
+  });
+
+  it('preserva recusadaPelaShopee: false na interrupção da foto da tabela de medidas', async () => {
+    const problema: ProblemaPublicacao = {
+      campo: 'size_chart_info',
+      motivo: MOTIVO_PROBLEMA_PUBLICACAO.tabelaDeMedidasFotoRecusada,
+      mensagem: 'não foi possível enviar a foto da tabela de medidas',
+    };
+    const res = shopeeErrorResponse(
+      new ShopeePublishRejectedError({
+        etapa: ETAPA_PUBLICACAO.fotos,
+        shopeeCode: '',
+        produtoId: PRODUTO_ID,
+        itemId: ITEM_ID,
+        problemas: [problema],
+        recusadaPelaShopee: false,
+      }),
+    );
+
+    expect(res.status).toBe(422);
+    await expect(res.json()).resolves.toMatchObject({
+      code: 'SHOPEE_PUBLISH_REJECTED',
+      etapa: 'fotos',
+      problemas: [problema],
+      recusadaPelaShopee: false,
+    });
   });
 
   it('12 — ⛔ NEAR-MISS: a ORDEM importa — abaixo do braço base as duas seriam 500', async () => {

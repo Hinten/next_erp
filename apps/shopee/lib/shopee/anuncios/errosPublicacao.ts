@@ -842,16 +842,9 @@ export function cabecalhoDaRecusa(
 }
 
 /**
- * Shopee refused a call, and the refusal was classified onto request fields.
- *
- * ⚠️ Writes may already have landed — that is the whole difference from
- * {@link ShopeePublishBlockedError}, and why {@link etapa} is not optional.
- *
- * ⚠️ ONE producer is not a Shopee answer: step 18's size-chart photo that never
- * uploaded is refused HERE too (etapa `fotos`, before any listing write — a
- * Blocked error may not carry its motivo), with
- * {@link ShopeePublishRejectedError.recusadaPelaShopee} `false` when Shopee never
- * saw the photo.
+ * A publish failure classified onto request fields at a known step. Earlier
+ * writes may already have landed. A size-chart photo failure stops at `fotos`
+ * before any listing write, after item and option images may have been uploaded.
  */
 export class ShopeePublishRejectedError extends ShopeeError {
   readonly etapa: EtapaPublicacao;
@@ -876,11 +869,9 @@ export class ShopeePublishRejectedError extends ShopeeError {
    */
   readonly problemas: readonly ProblemaPublicacao[];
   /**
-   * `false` ONLY for step 18's size-chart photo that never reached Shopee's
-   * judgement — a failed download (a network blip included), a file the
-   * publisher skips, a missing arquivo. The publish is still refused (Lucas's
-   * Q1c, etapa `fotos`), but the headline must not say Shopee refused it:
-   * Shopee never saw the photo. Every other producer is a Shopee answer.
+   * `false` for a size-chart photo failure without an explicit Shopee refusal:
+   * a failed download, a skipped or missing file, or an upload response
+   * without an image ID. This keeps the publish headline neutral.
    */
   readonly recusadaPelaShopee: boolean;
 

@@ -717,9 +717,10 @@ export interface ShopeeClient {
    * The ERP's own refusal is a 422 `SHOPEE_PUBLISH_BLOCKED` — usually decided
    * before any Shopee write, but the model leg of an UPDATE refuses AFTER
    * `update_item`, and the body names no etapa that would tell the two apart;
-   * a refusal classified onto a Shopee call is a 422 `SHOPEE_PUBLISH_REJECTED`
-   * (`detalhes.etapa`, where it landed). Both carry `detalhes.problemas`, each
-   * with its machine-readable `acao`. 404
+   * a failure at a known publish step is a 422 `SHOPEE_PUBLISH_REJECTED`
+   * (`detalhes.etapa`), including a photo interruption without a Shopee refusal
+   * (`detalhes.recusadaPelaShopee === false`). Both carry `detalhes.problemas`,
+   * each with its machine-readable `acao`. 404
    * `SHOPEE_ANUNCIO_NAO_ENCONTRADO` when the conta holds no such link — for a
    * draft, one discarded meanwhile. A draft's lock answers the 409s of
    * `CODIGO_FALHA_SHOPEE`'s #1911 block (`publicacaoEmAndamento`,

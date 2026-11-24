@@ -31,6 +31,7 @@ import {
   ShopeeClientHttpError,
   ShopeeClientNetworkError,
   ShopeeClientRespostaInvalidaError,
+  createShopeeClient,
   type ShopeeClient,
 } from '@/lib/shopee/client';
 import {
@@ -2071,6 +2072,67 @@ describe('ShopeeEditor — republish an existing link, never a first publish', (
       expect(within(bloco('L1')).queryByText(/Na Shopee agora/)).toBeNull();
     },
   );
+
+  const problemaDaFoto = {
+    campo: 'size_chart_info',
+    motivo: 'tabela-de-medidas-foto-recusada',
+    mensagem: 'não foi possível enviar a foto da tabela de medidas — tente de novo (envio: http)',
+  };
+  const recusaDaFoto = {
+    error: 'Falha ao publicar o produto',
+    code: CODIGO_FALHA_SHOPEE.publicacaoRecusada,
+    etapa: 'fotos',
+    problemas: [problemaDaFoto],
+  };
+
+  it.each([
+    {
+      caso: 'an interrupted photo upload',
+      corpo: { ...recusaDaFoto, recusadaPelaShopee: false },
+      titulo: 'Publicação interrompida',
+    },
+    {
+      caso: 'a Shopee refusal',
+      corpo: { ...recusaDaFoto, recusadaPelaShopee: true },
+      titulo: 'A Shopee recusou a publicação',
+    },
+    {
+      caso: 'a refusal from an older backend',
+      corpo: recusaDaFoto,
+      titulo: 'A Shopee recusou a publicação',
+    },
+    {
+      caso: 'an ERP block',
+      corpo: {
+        error: 'Publicação bloqueada',
+        code: CODIGO_FALHA_SHOPEE.publicacaoBloqueada,
+        motivo: 'sem-peso',
+        problemas: [{ campo: 'weight', motivo: 'sem-peso', mensagem: 'O produto não tem peso.' }],
+      },
+      titulo: 'Publicação bloqueada pelo ERP',
+    },
+  ])('shows the correct Republicar heading for $caso', async ({ corpo, titulo }) => {
+    comEscrita();
+    const { publicar } = createShopeeClient({
+      baseUrl: 'http://localhost:3009',
+      getAuthToken: async () => 'token',
+      fetch: async () => Response.json(corpo, { status: 422 }),
+    });
+    h.client = shopeeClientFalso({ publicar });
+    h.links = [link('L1')];
+    renderEditor();
+
+    fireEvent.click(botao('L1', 'Republicar'));
+
+    const painel = within(bloco('L1'));
+    expect(await painel.findByText(titulo)).toBeDefined();
+    if ('recusadaPelaShopee' in corpo && corpo.recusadaPelaShopee === false) {
+      expect(painel.queryByText('A Shopee recusou a publicação')).toBeNull();
+      expect(painel.queryByText('Publicação bloqueada pelo ERP')).toBeNull();
+      expect(painel.getByText(/não foi possível enviar a foto da tabela de medidas/)).toBeDefined();
+      expect(painel.getByText(/envio das fotos.*use "Reverificar" antes de repetir/)).toBeDefined();
+    }
+  });
 });
 
 describe('ShopeeEditor — re-verify, and one write at a time', () => {

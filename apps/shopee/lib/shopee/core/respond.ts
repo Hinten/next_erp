@@ -272,10 +272,8 @@ function toResponse(err: KnownError): NextResponse {
     );
   }
   if (err instanceof ShopeePublishRejectedError) {
-    // The post-write twin: Shopee refused a call and the refusal was classified
-    // onto request fields. `etapa` is the load-bearing extra — it says what
-    // exists on the channel NOW (a rejection at `init_tier_variation` leaves an
-    // UNLIST item with no models), which no HTTP status can carry.
+    // `etapa` is the step where publishing stopped. `recusadaPelaShopee`
+    // distinguishes a Shopee refusal from a size-chart photo interruption.
     //
     // `shopeeCode` preserves the provider code, including its module prefix.
     return NextResponse.json(
@@ -283,6 +281,7 @@ function toResponse(err: KnownError): NextResponse {
         error: err.message,
         code: 'SHOPEE_PUBLISH_REJECTED',
         etapa: err.etapa,
+        recusadaPelaShopee: err.recusadaPelaShopee,
         shopeeCode: err.shopeeCode,
         produtoId: err.produtoId,
         itemId: err.itemId,

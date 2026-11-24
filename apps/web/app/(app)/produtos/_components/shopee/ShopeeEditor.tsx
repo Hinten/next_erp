@@ -790,6 +790,7 @@ function desfechoDaFalha(
         // The ERP's own 422 — never "before any Shopee write": the model leg
         // refuses on an update AFTER `update_item` (review R7-roundtrip#0).
         bloqueadaPeloErp: code === CODIGO_FALHA_SHOPEE.publicacaoBloqueada,
+        recusadaPelaShopee: detalhes.recusadaPelaShopee,
         // An attested publish's look-up rows answer a CHANGED situation (§I1).
         respondeAtestacao: pedido?.confirmarCriacaoIncerta === true,
         etapa: detalhes.etapa,
