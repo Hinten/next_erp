@@ -1,5 +1,9 @@
 /**
- * A fake Admin-SDK Firestore, **for tests only**.
+ * A fake Admin-SDK Firestore, **for tests only** — with ONE sanctioned
+ * non-test consumer, outside `lib/`: `scripts/reproduzir-pedido.ts`, the
+ * offline replay of captured real order bodies. That script must never reach a
+ * real Firestore, and handing the importer this double IS that guarantee; a
+ * test pins it as the only non-test importer (`reproduzirPedidoCli.test.ts`).
  *
  * ⚠️ Nothing under `lib/shopee/**` outside a `*.test.ts` may import this module,
  * and nothing does — the precedent is `apps/web/lib/testing`. It ships in the

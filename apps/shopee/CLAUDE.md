@@ -483,7 +483,7 @@ a page of the 3-day queue irreversibly.
 - `functions/` — the nested Cloud Functions codebase (a deploy-artifact
   sub-build; see `functions/DEPLOY.md`). Covered by this app's
   typecheck/lint/test tasks. Mirrors `apps/mercado-pago/functions`.
-- `scripts/` — **thirteen** dev-only CLIs, **never run by an agent** (root CLAUDE.md
+- `scripts/` — **fourteen** dev-only CLIs, thirteen **never run by an agent** (root CLAUDE.md
   rule 8), with the runbook in `scripts/README.md`: `oauth-url.ts` mints a
   consent URL without the web UI, `importar-pedido.ts` imports ONE named
   order through the real step-5 path, `liquidar-pagamentos.ts` (step 6)
@@ -499,7 +499,9 @@ a page of the 3-day queue irreversibly.
   `etiqueta.ts` (step 15) the label of ONE pedido and `importar-devolucao.ts`
   (step 17) ONE return; the ten before it **dry-run by default**, `--live` to
   write, and it is read-only. `reverificar-anuncio.ts` (step 19) re-reads ONE
-  listing and writes the reading — NO dry run. Their pure halves (arg parsing,
+  listing and writes the reading — NO dry run. `reproduzir-pedido.ts` replays
+  captured order bodies offline (FakeDb, no network; an agent: fake captures
+  only). Their pure halves (arg parsing,
   the redacted summary, the renderer, the error describer) live in
   `lib/shopee/pedidos/importarPedidoCli.ts`,
   `lib/shopee/pedidos/liquidarPagamentosCli.ts`,
@@ -1920,7 +1922,8 @@ or register `localhost`.
 
 The other twelve CLIs are, like `oauth:url`, **never run by an agent** (root
 CLAUDE.md rule 8); eleven are **dry-run by default**, `reverificar:anuncio` has
-none — the flags, the expected output and the runbook for each live in
+none; `reproduzir:pedido` (offline, no dry run) an agent runs on fake captures
+only — the flags, the expected output and the runbook for each live in
 `scripts/README.md`:
 
 ```bash

@@ -18,6 +18,7 @@ runs them, from this worktree, against the project the environment points at.
 | `etiqueta.ts`            | downloads the label of ONE pedido, arranging it first (step 15)    | only with `--live`        |
 | `importar-devolucao.ts`  | rehearses the import of ONE return (step 17) — dry run ONLY        | never — there is no live  |
 | `reverificar-anuncio.ts` | re-reads ONE listing, how a Seller-Centre delete is learned (19)   | the READING — no modes    |
+| `reproduzir-pedido.ts`   | replays CAPTURED real order bodies through step 5, fully offline   | in-memory only — never    |
 
 ⚠️ No `--` separator in any command below: pnpm forwards that token into the
 script, which parses `process.argv` itself and rejects it.
@@ -2546,3 +2547,166 @@ ERP). An identical reading writes nothing on the link, so a re-run is safe.
 
 **Never run by an agent** (root `CLAUDE.md` rule 8) — it signs a real Shopee
 call with a real conta's token and writes what it reads.
+
+---
+
+## `reproduzir:pedido` — replaying a REAL order offline (CPF and address capture)
+
+The SG sandbox order carries no Brazilian buyer, so the buyer half of step 5 —
+`buyer_cpf_id`, the recipient's name, the endereço gates, the ViaCEP fallback and
+the `capturaComprador` diary — has never run against a body Shopee really sends
+for a BR order. This command runs it: you capture the raw responses of a REAL
+production order, and the replay feeds those bytes to the real step-5 importer
+as if Shopee had just answered them. Everything after the `fetch` is production
+code — the wire schema, the escrow containment, the mappers, `findOrCreateCliente`,
+`ensureEndereco`, the pedido / pagamento / frete writes and the incidentes.
+
+What it guarantees, structurally (`scripts/reproduzir-pedido.ts` and
+`lib/shopee/pedidos/reproduzirPedido{,Cli}.ts`):
+
+- **No Shopee call.** The client's `fetch` answers the two captured paths and
+  rejects every other one; the API host is an `.invalid` name that resolves
+  nowhere, and the credentials are fixed fakes.
+- **No Firestore.** The database is the in-memory `FakeDb`, seeded with a fixture
+  conta (`int-1`, shop `987654`) and its active `int_frete` doc. No `.env.local`,
+  no service account, no project — the package script runs without `dotenv`.
+- **Nothing leaves the machine.** `globalThis.fetch` is replaced, before anything
+  else loads, by a guard that refuses every host; under `--viacep` it lets
+  `https://viacep.com.br` through and nothing else.
+- **Nothing printed carries a buyer value.** The report is an allow-list (verdicts,
+  counts, field NAMES, ids), and it is then SCANNED for the capture's own buyer
+  values — CPF/CNPJ in any punctuation, phone, CEP, name, address, the buyer's
+  handle and id, the message to the seller, the escrow's buyer name. A hit
+  withholds the WHOLE report (stdout stays empty, exit 1, stderr names the leaking
+  FIELDS); a log line that leaks is suppressed and counted. The `order_sn` is
+  printed as `«order_sn»` plus its first six characters and its length. The
+  endereço's document id never prints (`«endereco_id»`): it is the legacy
+  `makeEnderecoId`, an unsalted sha1 of the address, so one guess would confirm
+  the address it hides.
+- **Raw captures stay outside every checkout.** `--detalhe`, `--escrow` and
+  `--saida` take ABSOLUTE paths only, and are refused when any ancestor
+  directory — of the path as typed or of its real location behind a junction or
+  symlink — holds a `.git` (a worktree's is a FILE) or a `pnpm-workspace.yaml`.
+
+⚠️ **An agent never reads a real capture.** You run the command on your machine
+and paste its stdout; the report is built to be pasted.
+
+### 19.1 The captures — what to call, exactly
+
+Per order, two read-only, **shop-signed** GETs against the PRODUCTION BR shop,
+with whatever tool you already use to call the live app (the Open Platform
+console's API test tool works):
+
+1. `GET /api/v2/order/get_order_detail` with
+   - `order_sn_list=<order_sn>` — one order per file is simplest (several work,
+     then pass `--order-sn`; only the chosen row is served, as production's
+     one-order call would answer, so a sibling row is never parsed);
+   - `request_order_status_pending=true`;
+   - `response_optional_fields=` **exactly** the importer's list — this string,
+     no spaces, nothing added or removed:
+
+     ```text
+     item_list,recipient_address,buyer_cpf_id,buyer_username,buyer_user_id,pay_time,payment_method,payment_info,total_amount,package_list,invoice_data,actual_shipping_fee,estimated_shipping_fee,shipping_carrier,order_chargeable_weight_gram,cancel_by,cancel_reason,buyer_cancel_reason,edt,pickup_done_time,fulfillment_flag,return_request_due_date,note,note_update_time
+     ```
+
+     An optional field that is not named comes back ABSENT, not empty — a capture
+     without `recipient_address` / `buyer_cpf_id` / `item_list` describes the
+     capture, not the order, and the report says so in capitals.
+
+2. `GET /api/v2/payment/get_escrow_detail` with `order_sn=<order_sn>` in the
+   query string (the transport settled in step 6). An unpaid order answers an
+   error envelope — save it anyway; the replay serves it and the importer prices
+   from the detail, exactly as it would live.
+
+Save each **raw response body** — the whole `{"error":"","message":"","response":{…}}`,
+as UTF-8 JSON — into a folder OUTSIDE every checkout (a BOM is tolerated). Do
+**not** redact it: the replay needs the buyer's real values to judge them, and
+what leaves your machine is the redacted report, never the file. A file that is
+only the `response` object, or the output of another tool, is refused naming its
+top-level KEYS.
+
+**Which orders to capture:**
+
+| order                                                                    | what the report should say                                                                                                                           |
+| ------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| a recent PAID, not yet shipped CPF order (`READY_TO_SHIP` / `PROCESSED`) | `capturaComprador capturado`, documento `utilizável — 11 dígitos, DV válidos, PF`, a cliente created, an endereço linked                             |
+| a CNPJ buyer, if the shop has one                                        | the same, with `14 dígitos … PJ (CNPJ)`                                                                                                              |
+| an OLD `COMPLETED` order                                                 | masked ⇒ `expirado`, `nome:mascarado` / `cpf_cnpj:mascarado`, no cliente — a CLEAR one is itself a finding (the window is wider than step 5 assumes) |
+| optionally, an `UNPAID` order                                            | `pendente` while masked, and the escrow as an error envelope                                                                                         |
+
+### 19.2 Running it
+
+```bash
+pnpm --filter @delfrance/shopee-app reproduzir:pedido --detalhe <fora-do-checkout>/pedido-a.detalhe.json --escrow <fora-do-checkout>/pedido-a.escrow.json
+```
+
+Every path is **absolute** (`C:\Users\<você>\capturas-shopee\pedido-a.detalhe.json`):
+`pnpm --filter` runs the script inside `apps/shopee`, so a relative path would
+resolve somewhere other than where you typed it, and is refused.
+
+| flag                  | meaning                                                                                                                                 |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `--detalhe <arquivo>` | **required** — the raw `get_order_detail` body                                                                                          |
+| `--escrow <arquivo>`  | the raw `get_escrow_detail` body of the SAME order (compared, refused when it is another's). Without it the import uses detail prices   |
+| `--order-sn <sn>`     | picks the order when the detail capture holds several                                                                                   |
+| `--viacep`            | the REAL ViaCEP for an `uf-desconhecida` endereço — the CEP leaves the machine in that one case. Default: a stub that answers "unknown" |
+| `--saida <arquivo>`   | writes the read-back documents WITH the buyer's values to a NEW JSON file outside every checkout (never overwrites)                     |
+| `--help`, `-h`        | usage, exit `0`                                                                                                                         |
+
+The importer runs TWICE on the same bytes, the second time at a clock 5 minutes
+later: that pass is the idempotence probe the backfill's 5-minute overlap (or a
+Cloud Tasks retry) would be. A production redelivery never shares the first
+clock, so a rewrite driven by the clock (a zero-filled `update_time` falls back
+to it) shows up here instead of hiding.
+
+### 19.3 What to read in the output
+
+stdout is the report; stderr carries the importer's own log lines (each scanned
+first) and the warnings.
+
+| section                     | what it tells you                                                                                                                                                                     |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `A captura`                 | region, status, currency, how many item lines, whether the escrow was captured, and every optional field that did NOT arrive                                                          |
+| `O que a reprodução serviu` | one `get_order_detail` and one `get_escrow_detail` per pass; any other path is listed — it would be a call the replay does not model                                                  |
+| `1ª passada`                | `criado` (or `ignorado-inexistente`), the pagamento and frete outcomes, the unbound lines                                                                                             |
+| `Comprador`                 | the stored `capturaComprador` (verdict + refused field NAMES), and the document and name as Shopee sent them: absent / MASCARADO / inválido / utilizável                              |
+| `Cliente`                   | linked or not, created by this run, which fields are filled — by NAME                                                                                                                 |
+| `Endereço`                  | the builder's outcome over the capture (`ok` / `sem-cep` / `uf-desconhecida`), the gates, the CEP's digit count, the stored UF (closed set), `pais`, `codigoMunicipio`, the fallbacks |
+| the pedido summary          | the same allow-listed summary `importar:pedido --live` prints — the `int_frete` ref and the delivery endereço included                                                                |
+| `Incidentes`                | one per line: the in-memory catálogo is empty, so every line is EXPECTED unbound                                                                                                      |
+| `ViaCEP`                    | the mode and how many CEPs the importer asked about — a count, never a CEP                                                                                                            |
+| `2ª passada`                | `ignorado-sem-mudanca`, `documentos alterados 0` and one cliente — anything else is an idempotence finding, EXCEPT the stub case below                                                |
+
+⚠️ **The ViaCEP stub changes the address verdict.** When the recipient's `state`
+maps to no UF (an unaccented `Sao Paulo`, say), the importer asks ViaCEP for the
+CEP's UF. Production asks the real ViaCEP, which normally answers; the default
+replay asks a STUB that answers "unknown", so the report shows `uf-desconhecida`,
+`UF gravada AC` (the builder's fallback) and `endereco:uf-desconhecida` in the
+diary — and the second pass then changes the pedido's diary (the linked endereço
+is not re-evaluated on a redelivery), which is NOT an idempotence finding. The
+report says so in capitals whenever the stub was consulted; rerun with `--viacep`
+to see what production stores.
+
+**Expected for a paid CPF order inside the window:** `capturado`, a cliente
+`criado nesta execução sim`, an endereço `ok` with UF in the closed set, the
+pedido's `freteInicial` delivery endereço equal to the fiscal one,
+`integracaoFreteOuterRef` pointing at `documents/int_frete/shopee-int-1`, and the
+second pass `ignorado-sem-mudanca` with `documentos alterados 0` (with the stub
+consulted, see the caveat above).
+
+### 19.4 `--saida`, and cleaning up
+
+`--saida` is the one output with values: the pedido, pagamentos, incidentes,
+cliente and endereço exactly as the import wrote them, for you to read locally.
+The script says on stderr where it wrote it. Never paste it, never commit it.
+
+There is nothing to clean in Firestore — the database lived in memory. When you
+are done, **delete the capture folder and every `--saida` file**: they hold a
+real buyer's CPF, name, phone and address.
+
+| code | when                                                                                                |
+| ---- | --------------------------------------------------------------------------------------------------- |
+| `0`  | any import outcome — `ignorado-inexistente` included                                                |
+| `1`  | a bad command line, a relative path or one inside a checkout, a missing file, an existing `--saida` |
+| `1`  | a capture that is not a Shopee envelope, has no order, or pairs two different orders                |
+| `1`  | a WITHHELD report (residue found), or any throw — described by CLASS and field PATHS, never a value |
