@@ -57,7 +57,8 @@
  * `ShopeeApiError`, so the subclass checks come first: containing a dead grant
  * would import the order at detail-only prices and report success, and
  * containing a burst limit would spend the retry on a payload we already know is
- * incomplete.
+ * incomplete. That list is `escrowNaoContido.ts`'s, shared with `capturar:pedido`
+ * (which must not save an escrow the replay would fail on).
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import { millisToMicros } from '@delfrance/core/datetime';
@@ -84,8 +85,6 @@ import {
   ShopeeApiError,
   ShopeeHttpError,
   ShopeeNetworkError,
-  ShopeeRateLimitError,
-  ShopeeReauthRequiredError,
   ShopeeSchemaError,
   type ShopeeClient,
   type ShopeeEscrowDetail,
@@ -112,6 +111,7 @@ import {
   type PortoesEnderecoShopee,
   type SimulacaoCompradorShopee,
 } from './comprador';
+import { falhaDeEscrowNaoContida } from './escrowNaoContido';
 import { registrarLinhasSemProduto, type LinhaSemProdutoShopee } from './incidentesProduto';
 import { mapearItensShopee, type ItensMapeadosShopee } from './itens';
 import { mapearFreteInicialShopee, type PesoBrutoObservado } from './orderFreteMapping';
@@ -267,7 +267,8 @@ async function clienteShopee(
  * The escrow, or `null` — the ONE contained wire failure in this module.
  *
  * ⚠️ Order matters: the two subclasses that must NEVER be contained are checked
- * first (see the module header).
+ * first (see the module header) — through `falhaDeEscrowNaoContida`, the ONE
+ * list `capturar:pedido` reads too.
  */
 async function lerEscrowContido(
   client: ShopeeClient,
@@ -276,8 +277,7 @@ async function lerEscrowContido(
   try {
     return await client.getEscrowDetail({ orderSn });
   } catch (err) {
-    if (err instanceof ShopeeReauthRequiredError) throw err;
-    if (err instanceof ShopeeRateLimitError) throw err;
+    if (falhaDeEscrowNaoContida(err)) throw err;
     if (err instanceof ShopeeSchemaError) {
       // ⚠️ Shopee's own doc sample sends `0.1` for every `kit_items` id, and the
       // wire schema declares them as integers — so a genuinely fractional id

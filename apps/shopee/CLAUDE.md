@@ -483,7 +483,7 @@ a page of the 3-day queue irreversibly.
 - `functions/` — the nested Cloud Functions codebase (a deploy-artifact
   sub-build; see `functions/DEPLOY.md`). Covered by this app's
   typecheck/lint/test tasks. Mirrors `apps/mercado-pago/functions`.
-- `scripts/` — **fourteen** dev-only CLIs, thirteen **never run by an agent** (root CLAUDE.md
+- `scripts/` — **fifteen** dev-only CLIs, fourteen **never run by an agent** (root CLAUDE.md
   rule 8), with the runbook in `scripts/README.md`: `oauth-url.ts` mints a
   consent URL without the web UI, `importar-pedido.ts` imports ONE named
   order through the real step-5 path, `liquidar-pagamentos.ts` (step 6)
@@ -1920,9 +1920,9 @@ Open the printed URL, log in with the sandbox shop, and the browser lands on
 app, leave the sandbox redirect-URL domain EMPTY (Shopee then validates nothing)
 or register `localhost`.
 
-The other twelve CLIs are, like `oauth:url`, **never run by an agent** (root
-CLAUDE.md rule 8); eleven are **dry-run by default**, `reverificar:anuncio` has
-none; `reproduzir:pedido` (offline, no dry run) an agent runs on fake captures
+The other thirteen CLIs are, like `oauth:url`, **never run by an agent** (root
+CLAUDE.md rule 8); eleven are **dry-run by default**, `reverificar:anuncio` and
+`capturar:pedido` have none; `reproduzir:pedido` (offline, no dry run) an agent runs on fake captures
 only — the flags, the expected output and the runbook for each live in
 `scripts/README.md`:
 

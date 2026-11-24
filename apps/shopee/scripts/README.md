@@ -3,22 +3,23 @@
 Dev-only CLIs. **Never run by an agent** (root `CLAUDE.md` rule 8) — a human
 runs them, from this worktree, against the project the environment points at.
 
-| script                   | what it does                                                       | writes?                   |
-| ------------------------ | ------------------------------------------------------------------ | ------------------------- |
-| `oauth-url.ts`           | mints a Shopee consent URL without the web UI                      | one `oauthState` document |
-| `importar-pedido.ts`     | imports ONE order through the real step-5 path                     | only with `--live`        |
-| `liquidar-pagamentos.ts` | rehearses the weekly escrow settlement (step 6)                    | only with `--live`        |
-| `rastrear-pedido.ts`     | rehearses the shipment merge of ONE order (step 7)                 | only with `--live`        |
-| `varrer-reservas.ts`     | rehearses the weekly stuck-reservation sweep (step 8)              | only with `--live`        |
-| `importar-anuncio.ts`    | imports ONE anúncio through the real step-9 path                   | only with `--live`        |
-| `publicar-anuncio.ts`    | publishes ONE produto (step 11), or as a native kit (step 19)      | only with `--live`        |
-| `enviar-estoque.ts`      | sends the stock of up to 50 produtos through the real step-12 path | only with `--live`        |
-| `enviar-precos.ts`       | sends the price of up to 50 produtos through the real step-13 path | only with `--live`        |
-| `enviar-nfe.ts`          | uploads the approved NF-e of up to 50 pedidos (step 14)            | only with `--live`        |
-| `etiqueta.ts`            | downloads the label of ONE pedido, arranging it first (step 15)    | only with `--live`        |
-| `importar-devolucao.ts`  | rehearses the import of ONE return (step 17) — dry run ONLY        | never — there is no live  |
-| `reverificar-anuncio.ts` | re-reads ONE listing, how a Seller-Centre delete is learned (19)   | the READING — no modes    |
-| `reproduzir-pedido.ts`   | replays CAPTURED real order bodies through step 5, fully offline   | in-memory only — never    |
+| script                   | what it does                                                                 | writes?                                         |
+| ------------------------ | ---------------------------------------------------------------------------- | ----------------------------------------------- |
+| `oauth-url.ts`           | mints a Shopee consent URL without the web UI                                | one `oauthState` document                       |
+| `importar-pedido.ts`     | imports ONE order through the real step-5 path                               | only with `--live`                              |
+| `liquidar-pagamentos.ts` | rehearses the weekly escrow settlement (step 6)                              | only with `--live`                              |
+| `rastrear-pedido.ts`     | rehearses the shipment merge of ONE order (step 7)                           | only with `--live`                              |
+| `varrer-reservas.ts`     | rehearses the weekly stuck-reservation sweep (step 8)                        | only with `--live`                              |
+| `importar-anuncio.ts`    | imports ONE anúncio through the real step-9 path                             | only with `--live`                              |
+| `publicar-anuncio.ts`    | publishes ONE produto (step 11), or as a native kit (step 19)                | only with `--live`                              |
+| `enviar-estoque.ts`      | sends the stock of up to 50 produtos through the real step-12 path           | only with `--live`                              |
+| `enviar-precos.ts`       | sends the price of up to 50 produtos through the real step-13 path           | only with `--live`                              |
+| `enviar-nfe.ts`          | uploads the approved NF-e of up to 50 pedidos (step 14)                      | only with `--live`                              |
+| `etiqueta.ts`            | downloads the label of ONE pedido, arranging it first (step 15)              | only with `--live`                              |
+| `importar-devolucao.ts`  | rehearses the import of ONE return (step 17) — dry run ONLY                  | never — there is no live                        |
+| `reverificar-anuncio.ts` | re-reads ONE listing, how a Seller-Centre delete is learned (19)             | the READING — no modes                          |
+| `reproduzir-pedido.ts`   | replays CAPTURED real order bodies through step 5, fully offline             | in-memory only — never                          |
+| `capturar-pedido.ts`     | captures those two raw bodies from the PRODUCTION BR shop, read-only (§19.1) | two NEW local files — never Shopee or Firestore |
 
 ⚠️ No `--` separator in any command below: pnpm forwards that token into the
 script, which parses `process.argv` itself and rejects it.
@@ -2591,39 +2592,155 @@ What it guarantees, structurally (`scripts/reproduzir-pedido.ts` and
 ⚠️ **An agent never reads a real capture.** You run the command on your machine
 and paste its stdout; the report is built to be pasted.
 
-### 19.1 The captures — what to call, exactly
+### 19.1 The captures — `capturar:pedido`
 
-Per order, two read-only, **shop-signed** GETs against the PRODUCTION BR shop,
-with whatever tool you already use to call the live app (the Open Platform
-console's API test tool works):
+Per order, the capture is the importer's own two read-only, **shop-signed** GETs
+against the PRODUCTION BR shop — and `capturar:pedido` makes them through the
+same package client the importer uses, so the bodies are what the import would
+have read (`lib/shopee/pedidos/capturarPedidoCli.ts`; its test records both
+requests next to `prepararImportacaoPedidoShopee`'s and pins them equal):
 
-1. `GET /api/v2/order/get_order_detail` with
-   - `order_sn_list=<order_sn>` — one order per file is simplest (several work,
-     then pass `--order-sn`; only the chosen row is served, as production's
-     one-order call would answer, so a sibling row is never parsed);
-   - `request_order_status_pending=true`;
-   - `response_optional_fields=` **exactly** the importer's list — this string,
-     no spaces, nothing added or removed:
+1. `GET /api/v2/order/get_order_detail` with `order_sn_list=<order_sn>`,
+   `request_order_status_pending=true` and `response_optional_fields=` exactly
+   the importer's list:
 
-     ```text
-     item_list,recipient_address,buyer_cpf_id,buyer_username,buyer_user_id,pay_time,payment_method,payment_info,total_amount,package_list,invoice_data,actual_shipping_fee,estimated_shipping_fee,shipping_carrier,order_chargeable_weight_gram,cancel_by,cancel_reason,buyer_cancel_reason,edt,pickup_done_time,fulfillment_flag,return_request_due_date,note,note_update_time
-     ```
+   ```text
+   item_list,recipient_address,buyer_cpf_id,buyer_username,buyer_user_id,pay_time,payment_method,payment_info,total_amount,package_list,invoice_data,actual_shipping_fee,estimated_shipping_fee,shipping_carrier,order_chargeable_weight_gram,cancel_by,cancel_reason,buyer_cancel_reason,edt,pickup_done_time,fulfillment_flag,return_request_due_date,note,note_update_time
+   ```
 
-     An optional field that is not named comes back ABSENT, not empty — a capture
-     without `recipient_address` / `buyer_cpf_id` / `item_list` describes the
-     capture, not the order, and the report says so in capitals.
+   An optional field that is not named comes back ABSENT, not empty — a capture
+   without `recipient_address` / `buyer_cpf_id` / `item_list` describes the
+   capture, not the order, and the replay's report says so in capitals.
 
 2. `GET /api/v2/payment/get_escrow_detail` with `order_sn=<order_sn>` in the
-   query string (the transport settled in step 6). An unpaid order answers an
-   error envelope — save it anyway; the replay serves it and the importer prices
-   from the detail, exactly as it would live.
+   query string — asked only once the detail is on disk. An unpaid order answers
+   an error envelope: it is saved anyway; the replay serves it and the importer
+   prices from the detail, exactly as it would live. A rate limit or a dead
+   authorisation is NOT saved: the importer rethrows those (the list is
+   `lib/shopee/pedidos/escrowNaoContido.ts`, shared by both), so the replay
+   would fail — the command then prints the next step without `--escrow`.
 
-Save each **raw response body** — the whole `{"error":"","message":"","response":{…}}`,
-as UTF-8 JSON — into a folder OUTSIDE every checkout (a BOM is tolerated). Do
-**not** redact it: the replay needs the buyer's real values to judge them, and
-what leaves your machine is the redacted report, never the file. A file that is
-only the `response` object, or the output of another tool, is refused naming its
-top-level KEYS.
+What the command guarantees, structurally (`scripts/capturar-pedido.ts`):
+
+- **Those two requests and nothing else.** Before anything else runs,
+  `globalThis.fetch` is replaced by a guard that lets through only a `GET` to
+  `https://openplatform.shopee.com.br` on those two paths, and follows no
+  redirect (a 3xx fails the call; nothing is saved). The token endpoints live
+  on that same host and are refused like everything else, so the command
+  **cannot renew the token**: the access token is the one you typed, used as is.
+- **Only the four `SHOPEE_CAP_*` variables.** It loads no `.env.local` and reads
+  none of this app's own Shopee variables (those are the staging sandbox app's).
+- **The bytes Shopee sent.** Each file is the raw response body, written as it
+  arrived (never re-serialised, never redacted), and never over an existing
+  file. The write is atomic — a `<arquivo>.parcial` first, then the final name,
+  then the partial is removed — so a full disk or a dropped network folder
+  leaves nothing under the final name, and the output says which file was
+  saved and which was not.
+- **Outside every checkout.** `--pasta` and both files go through the replay's
+  own guards (as typed and behind any junction), before any credential is used.
+- **Nothing printed carries a value.** No URL, token, key, sign, shop id or body
+  value — paths, statuses, error codes, counts, tokens and booleans only.
+
+#### Where the four values come from
+
+From the **live app the legacy ERP uses** — the BR shop is not authorised on
+this repo's staging app.
+
+| value          | where to find it                                                                                                                                        |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `partner_id`   | that app's page in the Shopee Open Platform Console                                                                                                     |
+| `partner_key`  | the same Console page                                                                                                                                   |
+| `shop_id`      | legacy Firestore, collection `integracao`: the Shopee conta document, field `shop_id`                                                                   |
+| `access_token` | the same conta document, subcollection **`actokshopee`**: the newest document by `expirationDate` — copy **only** `access_token`, never `refresh_token` |
+
+Before you use the token, check its document: `expirationDate` at least about
+**75 minutes** in the future, and `isExpired` not `true`. ⚠️ **Never renew it** —
+not here, not anywhere: Shopee's refresh token is single-use and rotating, and a
+renewal by anyone but the legacy app can break the live integration. If it is
+expired or too close, **stop and tell us**; only the legacy app renews its own
+token, when it next needs one. If a newer document with a future
+`expirationDate` appears there on its own, you may use that one.
+
+#### The credentials, in this window only
+
+One Windows PowerShell window, kept open for every order you capture:
+
+```powershell
+function Ler-Segredo([string]$rotulo) {
+  $s = Read-Host -Prompt $rotulo -AsSecureString
+  $b = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($s)
+  try { [Runtime.InteropServices.Marshal]::PtrToStringBSTR($b) } finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($b) }
+}
+$env:SHOPEE_CAP_PARTNER_ID   = Ler-Segredo 'partner_id (app ao vivo)'
+$env:SHOPEE_CAP_PARTNER_KEY  = Ler-Segredo 'partner_key (app ao vivo)'
+$env:SHOPEE_CAP_SHOP_ID      = Ler-Segredo 'shop_id (loja BR)'
+$env:SHOPEE_CAP_ACCESS_TOKEN = Ler-Segredo 'access_token (valido agora)'
+```
+
+- What you type is masked and stays out of the PowerShell history; the variables
+  die with the window.
+- Type the ids as digits only — no quotes, no leading zero. The command refuses
+  anything else, naming the VARIABLE and never its value.
+- Your PC clock must be right: Shopee refuses a timestamp more than 5 minutes off.
+
+#### One order, one command
+
+The folder must already exist, OUTSIDE every checkout and outside OneDrive
+(`Documents` and `Desktop` are often synced — use a folder straight under your
+user profile). The command runs from INSIDE the checkout that has this script,
+so the first line moves the window there (the variables above survive it):
+
+```powershell
+Set-Location <the checkout that has scripts\capturar-pedido.ts>
+New-Item -ItemType Directory -Force C:\Users\<você>\capturas-shopee-pedidos | Out-Null
+pnpm --filter @delfrance/shopee-app capturar:pedido --order-sn <order_sn> --pasta C:\Users\<você>\capturas-shopee-pedidos --nome pedido-cpf-1
+```
+
+⚠️ If the command prints **nothing at all** and returns, the window is not
+inside the checkout: outside a pnpm workspace `--filter` matches no project,
+and pnpm says nothing and exits `0`. Run the `Set-Location` line, then the
+command again. (The same holds for `reproduzir:pedido`.)
+
+| flag              | meaning                                                                                                           |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `--order-sn <sn>` | **required** — the order, as Shopee shows it (upper-case letters and digits, 6 to 32 characters)                  |
+| `--pasta <pasta>` | **required** — an ABSOLUTE path to an existing folder outside every checkout                                      |
+| `--nome <rótulo>` | **required** — names the two files `<rótulo>.detalhe.json` / `<rótulo>.escrow.json` (`a-z`, `0-9`, `-`, up to 40) |
+| `--help`, `-h`    | usage, exit `0`                                                                                                   |
+
+A label is used once: an existing file is never overwritten, so a second capture
+of the same order takes a new `--nome`. (A failed write leaves no file under the
+label, so the same `--nome` serves again; a leftover `<arquivo>.parcial` — an
+interrupted capture, buyer data inside — is refused until you delete it.) The
+output shows, per call, the API
+**path**, the HTTP status and Shopee's envelope `error` code; for the detail also
+how many rows `order_list` holds, whether the asked order came, its `region` and
+`order_status`, and whether `recipient_address`, `buyer_cpf_id` and `item_list`
+arrived; then which files were SAVED, and the exact `reproduzir:pedido` command
+to run next with both absolute paths. Exit `0` when the detail was saved (even
+if the escrow is an error envelope), `1` otherwise.
+
+**Stop conditions** — the output names each one, and nothing else is called
+after a failed detail:
+
+| you see                                                                                     | do                                                                                                                  |
+| ------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `🛑 PARE` — `error_auth`, `invalid_acceess_token` (Shopee's spelling), a dead authorisation | the token expired or is wrong: **stop, never renew it**, change nothing; send us only the code                      |
+| `🛑 PARE` — `error_sign`                                                                    | check the PC clock and re-enter the four variables ONCE; if it repeats, stop and send the code                      |
+| `🛑 PARE` — `source_ip_undeclared`, `error_permission`, or an HTTP 4xx with no Shopee body  | the live app restricts IPs or lacks a permission: **stop and change nothing in the Console**; send us only the code |
+| `⏸ ShopeeRateLimitError (burst)` / `(daily)`                                                | wait a minute and run again with a new `--nome` / the daily quota resets at 00:00 UTC+8 (13:00 in Brasília)         |
+| `ShopeeNetworkError`, or `⚠️ ShopeeHttpError` with a 5xx                                    | nothing was saved for that call; run once more with a new `--nome`                                                  |
+| `a order pedida … NÃO veio`                                                                 | a wrong `order_sn`, or an order of another shop: nothing was saved                                                  |
+| `NÃO salvo — a gravação falhou (<código>)`                                                  | Shopee answered but the disk did not take it (full, a network folder): fix that; nothing was left under the name    |
+| `sobrou o arquivo parcial …`                                                                | delete that file now — it holds the buyer's data                                                                    |
+
+The manual alternative — the Open Platform console's API test tool, sending
+exactly the two requests above and saving each raw body untouched — still works.
+
+Never edit or redact a saved file: the replay needs the buyer's real values to
+judge them, and what leaves your machine is the replay's redacted report, never
+the file. (A file that is only the `response` object, or another tool's output,
+is refused naming its top-level KEYS.)
 
 **Which orders to capture:**
 
