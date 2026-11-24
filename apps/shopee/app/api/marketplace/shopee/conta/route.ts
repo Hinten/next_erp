@@ -227,7 +227,6 @@ async function readLoja(ctx: ShopeeContext): Promise<ShopeeLoja | null> {
         integracaoId: ctx.integracaoId,
         shopId: ctx.conta.shop_id,
         erro: err.name,
-        mensagem: err.message,
       });
       return null;
     }

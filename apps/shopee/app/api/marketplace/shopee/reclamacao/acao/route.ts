@@ -71,9 +71,7 @@
  *   a DEFINITE Shopee refusal, which the panel does not read as `incerto`.
  *   `error` is always OUR sentence (`FRASE_RECUSA_DEVOLUCAO`), never Shopee's.
  * - The other `ShopeeApiError` kinds (re-auth, rate limits, Shopee's
- *   transients) keep `shopeeErrorResponse`'s status and code, through
- *   `devolucoes/respostaReclamacao.ts`'s `semFraseDaShopee`: the package puts Shopee's sentence
- *   into EVERY envelope error's `message`, and the mapper logs and returns it.
+ *   transients) use `shopeeErrorResponse` for their status, code and safe copy.
  * - Everything else `isShopeeError` names (the network, a non-envelope HTTP
  *   answer, a schema drift, the conta and its credential) carries OUR sentence
  *   only ⇒ `shopeeErrorResponse` unchanged; anything else rethrows (rule 6).
@@ -125,7 +123,6 @@ import {
 import {
   CODIGO_FALHA_SHOPEE,
   CODIGO_INEXISTENTE,
-  semFraseDaShopee,
 } from '@/lib/shopee/devolucoes/respostaReclamacao';
 import { codigoSeguro } from '@/lib/shopee/nfe/redacaoNfe';
 import { notificacaoSinteticaDeDevolucao } from '@/lib/shopee/notificacoes/notificacaoSintetica';
@@ -410,8 +407,6 @@ function respostaDaFalha(err: unknown, pedido: PedidoDeAcaoDevolucao): NextRespo
     );
   }
 
-  // The other kinds keep the mapper's status and code, never Shopee's sentence.
-  if (err instanceof ShopeeApiError) return shopeeErrorResponse(semFraseDaShopee(err));
   return isShopeeError(err) ? shopeeErrorResponse(err) : null;
 }
 

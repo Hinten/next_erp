@@ -15,6 +15,7 @@ import {
 } from '@/lib/shopee/anuncios/corpoPublicacao';
 import type { AnuncioStatusResponse } from '@/lib/shopee/anuncios/pausarAnuncio';
 import { type DocData, FakeDb, asDb } from '@/lib/shopee/testing/fakeDb';
+import { falhaDeEnvelope, verificarEnvelopeRedigido } from '@/lib/shopee/testing/falhaDeEnvelope';
 
 type ModuloPausar = typeof import('@/lib/shopee/anuncios/pausarAnuncio');
 
@@ -435,19 +436,11 @@ describe('(7) a cota DIÁRIA da Shopee', () => {
 
   it('um limite de RAJADA, ao contrário, propaga e o respond o mapeia', async () => {
     semearProdutoELink(db);
-    h.unlistItem.mockRejectedValue(
-      new ShopeeRateLimitError('rajada', {
-        code: 'error_limit',
-        kind: SHOPEE_ERROR_KIND.burst,
-        httpStatus: 429,
-        path: '/api/v2/product/unlist_item',
-      }),
-    );
-
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const falha = falhaDeEnvelope('/api/v2/product/unlist_item', 'error_rate_limit', 429);
+    h.unlistItem.mockRejectedValue(falha);
     const res = await POST(req(corpoValido(), AUTORIZADO));
-
-    expect(res.status).not.toBe(200);
-    expect([502, 503]).toContain(res.status);
+    await verificarEnvelopeRedigido(res, falha, 502);
   });
 
   it('um ShopeeSchemaError vira 502 pela escada do respond', async () => {

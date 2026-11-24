@@ -35,11 +35,8 @@
  *   `SHOPEE_RECLAMACAO_FALHA_SHOPEE` `{ codigoShopee }`, the `acao` route's
  *   code and shape, with OUR sentence. A read has no remedy to offer, so the
  *   classifier's other motivos are logged, never answered as a 409.
- * - The other kinds (re-auth, rate limits, Shopee's transients) keep
- *   `shopeeErrorResponse`'s status and code, but through
- *   `devolucoes/respostaReclamacao.ts`'s `semFraseDaShopee`: the package builds EVERY envelope error's
- *   `message` as `Shopee <path> respondeu <code> (HTTP n) — <Shopee's
- *   sentence>`, and the mapper logs and returns `message` verbatim.
+ * - The other kinds (re-auth, rate limits, Shopee's transients) use
+ *   `shopeeErrorResponse` for their status, code and safe copy.
  * - Every other class `isShopeeError` names (the network, a non-envelope HTTP
  *   answer, a schema drift, the conta and its credential) carries OUR sentence
  *   only ⇒ `shopeeErrorResponse` unchanged. Anything else rethrows (rule 6).
@@ -70,7 +67,6 @@ import {
 import {
   CODIGO_FALHA_SHOPEE,
   CODIGO_INEXISTENTE,
-  semFraseDaShopee,
 } from '@/lib/shopee/devolucoes/respostaReclamacao';
 import { codigoSeguro } from '@/lib/shopee/nfe/redacaoNfe';
 
@@ -158,7 +154,6 @@ async function responder(req: Request): Promise<NextResponse> {
         { status: 502 },
       );
     }
-    if (err instanceof ShopeeApiError) return shopeeErrorResponse(semFraseDaShopee(err));
     if (isShopeeError(err)) return shopeeErrorResponse(err);
     throw err;
   }
