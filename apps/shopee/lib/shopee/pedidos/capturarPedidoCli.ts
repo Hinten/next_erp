@@ -91,6 +91,7 @@ import {
   urlDaRequisicao,
   type DepsDoCaminho,
 } from './reproduzirPedidoCli';
+import { recusaDoEscrowNaReproducao } from './envelopeCapturado';
 import { falhaDeEscrowNaoContida } from './escrowNaoContido';
 
 export { ArgumentoInvalidoError, ArquivoRecusadoError, urlDaRequisicao };
@@ -755,16 +756,6 @@ export function codigoDoEnvelope(texto: string): string {
   return typeof erro === 'string' && FORMA_CODIGO.test(erro) ? erro : '(formato inesperado)';
 }
 
-/**
- * Whether the text is a Shopee ENVELOPE — a JSON object with `error` or
- * `response` at the top. The replay refuses anything else, so a body that is
- * not one (an edge HTML page) is never saved as the escrow.
- */
-export function ehEnvelope(texto: string): boolean {
-  const envelope = objeto(lerJson(texto));
-  return envelope !== null && ('error' in envelope || 'response' in envelope);
-}
-
 /** What the report says about a `get_order_detail` body — counts, tokens and booleans. */
 export interface ResumoDoDetalhe {
   /** Entries in `response.order_list`, or `null` when there is no such list. */
@@ -818,6 +809,12 @@ export interface ChamadaDaCaptura {
   readonly gravacao: ResultadoDaGravacao | null;
   /** The file is on disk under its final name, complete. */
   readonly salva: boolean;
+  /**
+   * The escrow only: the sentence `reproduzir:pedido` would refuse this body
+   * with ({@link recusaDoEscrowNaReproducao}, the replay's own checks), or
+   * `null` when it would serve it. Always `null` for the detail.
+   */
+  readonly recusaDaReproducao: string | null;
 }
 
 export interface ResultadoDaCaptura {
@@ -874,13 +871,30 @@ export interface EntradaDaCaptura {
 }
 
 /**
- * Whether a captured escrow body can be REPLAYED: a Shopee envelope at all, and
- * not a failure the importer rethrows ({@link falhaDeEscrowNaoContida} — the
- * importer's own list). A rate-limit or dead-grant envelope served back to the
- * importer would fail the replay the report tells the operator to run.
+ * Whether a captured escrow body can be REPLAYED for `orderSn`. Two lists, each
+ * the ONE copy its owner keeps:
+ *
+ *  - the REPLAY's own pre-checks ({@link recusaDoEscrowNaReproducao}, shared
+ *    with `reproduzirPedido.ts`): a Shopee envelope at all, and either an error
+ *    envelope or a `response` for THIS order. `{"error":"","response":null}` or
+ *    a `response` with no `order_sn` would be refused by the replay before the
+ *    importer ever ran, so the next-step command with `--escrow` would fail;
+ *  - the IMPORTER's rethrow list ({@link falhaDeEscrowNaoContida}): a
+ *    rate-limit or dead-grant envelope served back would fail the replay too.
+ *
+ * Not replayable ⇒ not saved, and the next step goes without `--escrow`: the
+ * importer then prices from the detail, the same path it takes live for an
+ * escrow it cannot read.
  */
-export function escrowReproduzivel(c: Pick<ChamadaDaCaptura, 'resposta' | 'erro'>): boolean {
-  return c.resposta !== null && ehEnvelope(c.resposta.texto) && !falhaDeEscrowNaoContida(c.erro);
+export function escrowReproduzivel(
+  c: Pick<ChamadaDaCaptura, 'resposta' | 'erro'>,
+  orderSn: string,
+): boolean {
+  return (
+    c.resposta !== null &&
+    !falhaDeEscrowNaoContida(c.erro) &&
+    recusaDoEscrowNaReproducao(c.resposta.texto, orderSn) === null
+  );
 }
 
 /**
@@ -940,6 +954,7 @@ export async function executarCaptura(e: EntradaDaCaptura): Promise<ResultadoDaC
     ...d,
     gravacao: gravacaoDoDetalhe,
     salva: gravacaoDoDetalhe?.salvo === true,
+    recusaDaReproducao: null,
   };
 
   if (!detalhe.salva) {
@@ -947,8 +962,12 @@ export async function executarCaptura(e: EntradaDaCaptura): Promise<ResultadoDaC
   }
 
   const x = await chamar(() => e.client.getEscrowDetail({ orderSn: e.orderSn }));
+  const recusaDaReproducao =
+    x.resposta === null ? null : recusaDoEscrowNaReproducao(x.resposta.texto, e.orderSn);
   const gravacaoDoEscrow =
-    escrowReproduzivel(x) && x.resposta !== null ? e.gravar('escrow', x.resposta.texto) : null;
+    escrowReproduzivel(x, e.orderSn) && x.resposta !== null
+      ? e.gravar('escrow', x.resposta.texto)
+      : null;
   return {
     detalhe,
     resumoDoDetalhe: resumo,
@@ -957,6 +976,7 @@ export async function executarCaptura(e: EntradaDaCaptura): Promise<ResultadoDaC
       ...x,
       gravacao: gravacaoDoEscrow,
       salva: gravacaoDoEscrow?.salvo === true,
+      recusaDaReproducao,
     },
     linhasDeLogSuprimidas: contador.n,
   };
@@ -1153,6 +1173,12 @@ function linhasDaChamada(c: ChamadaDaCaptura, arquivo: string): string[] {
       linhas.push(
         '  (o importador NÃO contém esta falha do escrow: salvo, o arquivo faria a reprodução ' +
           'falhar. Para ter o par, capture de novo com OUTRO --nome quando a condição acima passar.)',
+      );
+    } else if (c.papel === 'escrow' && c.recusaDaReproducao !== null) {
+      linhas.push(
+        `  (a reprodução recusaria este escrow — ${c.recusaDaReproducao} Por isso ele não ` +
+          'foi salvo: sem --escrow, o importador usa os preços do detalhe, o mesmo caminho de um ' +
+          'escrow que ele não consegue ler ao vivo.)',
       );
     }
   }

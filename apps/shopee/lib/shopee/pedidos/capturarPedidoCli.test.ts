@@ -112,7 +112,11 @@ import {
   linhasDeSemente,
   reproduzirPedidoShopee,
 } from './reproduzirPedido';
-import { encontrarResiduos, valoresSensiveisDaCaptura } from './reproduzirPedidoCli';
+import {
+  CapturaInvalidaError,
+  encontrarResiduos,
+  valoresSensiveisDaCaptura,
+} from './reproduzirPedidoCli';
 
 /* -------------------------------------------------------------------------- */
 /*                                  vectors                                    */
@@ -1154,8 +1158,38 @@ describe('§7b o que a captura salva e o comando que ela imprime, a reprodução
 
   const escrowRate = erroTexto('error_rate_limit');
 
+  /** The SG escrow fixture with its `response` patched — the replay's own pre-checks decide. */
+  function escrowComResposta(patch: Record<string, unknown> | null): string {
+    const envelope = JSON.parse(ESCROW_SG_TEXTO) as Record<string, unknown>;
+    const resposta = envelope.response as Record<string, unknown>;
+    return JSON.stringify({
+      ...envelope,
+      response: patch === null ? null : { ...resposta, ...patch },
+    });
+  }
+  /** `{"error":"","response":null}` — the replay refuses it before the importer runs. */
+  const escrowRespostaNula = escrowComResposta(null);
+  /** A `response` for ANOTHER order — the replay refuses the pair. */
+  const escrowOutraOrder = escrowComResposta({ order_sn: 'OUTRAORDER01' });
+  /** A `response` with NO `order_sn` at all — the replay cannot pair it, and refuses. */
+  const escrowSemOrderSn = JSON.stringify({
+    error: '',
+    message: '',
+    response: { order_income: {} },
+  });
+  /**
+   * QUASE-ERRO: the SAME order, a field the wire schema refuses — the replay
+   * SERVES it, the client throws `ShopeeSchemaError` and the importer contains
+   * it (detail prices), exactly as live. It must be saved.
+   */
+  const escrowSchemaInvalidoMesmaOrder = escrowComResposta({ order_income: 'não é um objeto' });
+
   /** Each escrow outcome, and whether the capture must save it. */
   const SAIDAS_DO_ESCROW: readonly [string, Corpo, boolean][] = [
+    ['response null com error vazio (a reprodução recusa)', { texto: escrowRespostaNula }, false],
+    ['response de OUTRA order (a reprodução recusa o par)', { texto: escrowOutraOrder }, false],
+    ['response sem order_sn (a reprodução recusa o par)', { texto: escrowSemOrderSn }, false],
+    ['schema inválido na MESMA order (contido)', { texto: escrowSchemaInvalidoMesmaOrder }, true],
     ['sucesso', { texto: ESCROW_SG_TEXTO }, true],
     ['order.order_not_paid', { texto: erroTexto('order.order_not_paid') }, true],
     ['error_server (transitório, contido)', { texto: erroTexto('error_server') }, true],
@@ -1196,7 +1230,11 @@ describe('§7b o que a captura salva e o comando que ela imprime, a reprodução
       });
       expect(r.primeira.acao).toBe('criado');
       expect(r.escrowCapturado).toBe(
-        !salvo ? 'ausente' : escrow.texto === ESCROW_SG_TEXTO ? 'resposta' : 'erro',
+        !salvo
+          ? 'ausente'
+          : (JSON.parse(escrow.texto) as { response?: unknown }).response == null
+            ? 'erro'
+            : 'resposta',
       );
     },
   );
@@ -1228,11 +1266,52 @@ describe('§7b o que a captura salva e o comando que ela imprime, a reprodução
       httpStatus: 200,
       path: SHOPEE_GET_ESCROW_DETAIL_PATH,
     });
-    expect(escrowReproduzivel({ resposta, erro: limite })).toBe(false);
+    expect(escrowReproduzivel({ resposta, erro: limite }, ORDER_SN)).toBe(false);
     // QUASE-ERRO: the same envelope text, classified as a plain failure, IS contained.
-    expect(escrowReproduzivel({ resposta, erro: comum })).toBe(true);
-    expect(escrowReproduzivel({ resposta, erro: null })).toBe(true);
-    expect(escrowReproduzivel({ resposta: null, erro: null })).toBe(false);
+    expect(escrowReproduzivel({ resposta, erro: comum }, ORDER_SN)).toBe(true);
+    expect(escrowReproduzivel({ resposta, erro: null }, ORDER_SN)).toBe(true);
+    expect(escrowReproduzivel({ resposta: null, erro: null }, ORDER_SN)).toBe(false);
+  });
+
+  it('escrowReproduzivel lê também as pré-checagens da REPRODUÇÃO — a mesma função, não uma cópia', async () => {
+    const com = (texto: string) => ({
+      resposta: { path: SHOPEE_GET_ESCROW_DETAIL_PATH, status: 200, texto },
+      erro: null,
+    });
+    expect(escrowReproduzivel(com(escrowRespostaNula), ORDER_SN)).toBe(false);
+    expect(escrowReproduzivel(com(escrowOutraOrder), ORDER_SN)).toBe(false);
+    expect(escrowReproduzivel(com(escrowSemOrderSn), ORDER_SN)).toBe(false);
+    // QUASE-ERRO: the very same body, asked for the order it DOES carry.
+    expect(escrowReproduzivel(com(escrowOutraOrder), 'OUTRAORDER01')).toBe(true);
+    expect(escrowReproduzivel(com(ESCROW_SG_TEXTO), ORDER_SN)).toBe(true);
+
+    // ÂNCORA: each body the capture refuses is one the replay itself refuses —
+    // and each it accepts, the replay serves (`CapturaInvalidaError` is the
+    // replay's pre-check class; anything else would be the importer's).
+    const veredito = async (texto: string): Promise<'servido' | 'recusado'> => {
+      const err: unknown = await reproduzirPedidoShopee(asDb(novoDbDaReproducao()), {
+        detalheTexto: detalheTexto(linhaBR()),
+        escrowTexto: texto,
+        orderSn: null,
+        nowMs: NOW_MS,
+        viaCep: { buscarCep: () => Promise.resolve(null) },
+      }).then(
+        () => null,
+        (e: unknown) => e,
+      );
+      return err instanceof CapturaInvalidaError ? 'recusado' : 'servido';
+    };
+    for (const texto of [
+      escrowRespostaNula,
+      escrowOutraOrder,
+      escrowSemOrderSn,
+      escrowSchemaInvalidoMesmaOrder,
+      ESCROW_SG_TEXTO,
+    ]) {
+      expect(await veredito(texto), texto).toBe(
+        escrowReproduzivel(com(texto), ORDER_SN) ? 'servido' : 'recusado',
+      );
+    }
   });
 
   it('o relatório de um escrow não reproduzível explica por que ficou de fora', async () => {
@@ -1243,6 +1322,29 @@ describe('§7b o que a captura salva e o comando que ela imprime, a reprodução
     expect(texto).toContain('o importador NÃO contém esta falha do escrow');
     expect(texto).toContain('(sem --escrow: o escrow não foi salvo');
     expect(texto).not.toContain(`--escrow ${CAMINHOS.escrow}`);
+  });
+
+  it('um escrow que a REPRODUÇÃO recusaria fica de fora, com a frase dela — e o comando vai sem --escrow', async () => {
+    const { texto, resultado, saida } = await capturar({
+      [SHOPEE_GET_ORDER_DETAIL_PATH]: { texto: DETALHE_SG_TEXTO },
+      [SHOPEE_GET_ESCROW_DETAIL_PATH]: { texto: escrowRespostaNula },
+    });
+    expect(resultado.escrow?.salva).toBe(false);
+    expect(resultado.escrow?.recusaDaReproducao).toContain('--escrow não traz "response"');
+    expect(texto).toContain('a reprodução recusaria este escrow');
+    // The FIRST line naming the command is the next step itself (the round-trip
+    // table finds it that way) — the note above it must not name it.
+    expect(
+      saida.linhas
+        .find((l) => l.includes('reproduzir:pedido'))
+        ?.trimStart()
+        .startsWith('pnpm '),
+    ).toBe(true);
+    expect(texto).toContain('--escrow não traz "response"');
+    expect(texto).toContain('(sem --escrow: o escrow não foi salvo');
+    expect(texto).not.toContain(`--escrow ${CAMINHOS.escrow}`);
+    // The rate-limit sentence is a DIFFERENT reason, and must not be borrowed.
+    expect(texto).not.toContain('o importador NÃO contém esta falha do escrow');
   });
 });
 
