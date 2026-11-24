@@ -75,6 +75,7 @@ vi.mock('@/lib/data/intFreteCollection', () => ({
 import { FreteTab } from './FreteTab';
 
 const db = {} as Firestore;
+const PRAZO_DESPACHO_US = new Date(2026, 11, 3, 14, 25).getTime() * 1_000;
 const DOC_LI = {
   id: 'lojaIntegrada-c1',
   data: { tipo: INTEGRACAO_FRETE.lojaIntegrada, nome: 'Conta da loja' },
@@ -119,7 +120,8 @@ const picker = () => screen.getByTestId('integracao-frete-select');
 const selectModalidade = () =>
   screen.getAllByLabelText('Modalidade de frete')[0] as HTMLInputElement;
 const selectStatus = () => screen.getAllByLabelText('Status do frete')[0] as HTMLInputElement;
-const campoPrazoDespacho = () => screen.queryByLabelText('Data máxima para despacho');
+const campoPrazoDespacho = () =>
+  screen.getByLabelText('Data máxima para despacho') as HTMLButtonElement;
 
 beforeEach(() => {
   document.body.innerHTML = '';
@@ -129,13 +131,18 @@ beforeEach(() => {
 
 describe('FreteTab — a pedido still on its Loja Integrada doc (the router panel)', () => {
   it('a PAID pedido: the read-only router panel, and the header locked by the estado lock', () => {
-    render(<Host frete={freteNoDocLi()} estado={ESTADO_PEDIDO.pago} />);
+    render(
+      <Host
+        frete={freteNoDocLi({ prazoDespacho: PRAZO_DESPACHO_US })}
+        estado={ESTADO_PEDIDO.pago}
+      />,
+    );
 
     expect(painelRoteado()?.textContent).toMatch(/Definir transportadora/);
     // Not the marketplace panel: the store does not own this freight.
     expect(alertaMarketplace()).toBeNull();
-    // The body is the panel, never an editable carrier body.
-    expect(campoPrazoDespacho()).toBeNull();
+    expect(campoPrazoDespacho().textContent).toBe('03/12/2026 14:25');
+    expect(campoPrazoDespacho().disabled).toBe(true);
     expect((screen.getByLabelText('Código de rastreio') as HTMLInputElement).readOnly).toBe(true);
     expect(picker().dataset.disabled).toBe('true');
     expect(selectModalidade().disabled).toBe(true);
@@ -146,6 +153,8 @@ describe('FreteTab — a pedido still on its Loja Integrada doc (the router pane
     render(<Host frete={freteNoDocLi()} estado={ESTADO_PEDIDO.iniciado} />);
 
     expect(painelRoteado()).not.toBeNull();
+    expect(campoPrazoDespacho().textContent).toBe('');
+    expect(campoPrazoDespacho().disabled).toBe(true);
     // The picker is the way off the router: it shows the doc and can re-point it.
     expect(picker().dataset.disabled).toBe('false');
     expect(picker().dataset.value).toBe(DOC_LI.id);

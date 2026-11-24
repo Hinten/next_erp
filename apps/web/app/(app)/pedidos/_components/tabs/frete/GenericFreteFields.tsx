@@ -137,12 +137,6 @@ export function GenericFreteFields({
         />
         <FreteDateTimeField
           form={form}
-          name="prazoDespacho"
-          label="Data máxima para despacho"
-          disabled={disabled}
-        />
-        <FreteDateTimeField
-          form={form}
           name="dataPrevisaoEntrega"
           label="Previsão de entrega"
           disabled={disabled}

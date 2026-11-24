@@ -27,7 +27,12 @@ import { intFreteCollection } from '@/lib/data/intFreteCollection';
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
 import type { FreteInicialFormState } from '../types';
 import { collectFreteErrors } from '../freteErrors';
-import { FreteSwitchField, fretePath, type PedidoFormHandle } from './frete/fields';
+import {
+  FreteDateTimeField,
+  FreteSwitchField,
+  fretePath,
+  type PedidoFormHandle,
+} from './frete/fields';
 
 import { isAtivacaoDeFrete, seedVolumePadrao } from './frete/seedVolumePadrao';
 import { notificarAvisoDimensoes } from './frete/notificarAviso';
@@ -274,6 +279,8 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
   const importadorDono = marketplaceOwned || roteado;
   const headerDisabled =
     disabled || marketplaceOwned || (integracaoRef != null && loadingIntegracao);
+  const prazoDespachoDisabled =
+    !temFrete || headerDisabled || roteado || (integracaoRef != null && !integracaoDoc);
 
   function renderTipoFields() {
     // BEFORE the `!integracaoRef` branch: ownership does not depend on the
@@ -388,6 +395,15 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
         <Text size="sm" c="dimmed">
           Sem ocorrência de transporte. Selecione outra modalidade para configurar o frete.
         </Text>
+      )}
+
+      {(temFrete || freteInicial?.prazoDespacho != null) && (
+        <FreteDateTimeField
+          form={form}
+          name="prazoDespacho"
+          label="Data máxima para despacho"
+          disabled={prazoDespachoDisabled}
+        />
       )}
 
       {temFrete && (
