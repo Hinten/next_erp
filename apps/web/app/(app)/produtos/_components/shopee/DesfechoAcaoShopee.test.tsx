@@ -239,6 +239,7 @@ function recusado(
   return {
     tipo: 'recusado',
     bloqueadaPeloErp: true,
+    recusadaPelaShopee: null,
     respondeAtestacao: false,
     etapa: null,
     problemas,

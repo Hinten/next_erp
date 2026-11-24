@@ -1996,6 +1996,25 @@ describe('step 21 — the error extras: every field on its own', () => {
       detalhesErroShopeeSchema.parse({ jobId: 7, linkDocId: 'link-1', solicitados: 'x' }),
     ).toMatchObject({ jobId: null, linkDocId: 'link-1', solicitados: null });
   });
+
+  it.each([
+    [true, true],
+    [false, false],
+    ['false', null],
+    [0, null],
+  ])('reads publish refusal attribution %j as %j', (recusadaPelaShopee, esperado) => {
+    expect(detalhesErroShopeeSchema.parse({ etapa: 'fotos', recusadaPelaShopee })).toMatchObject({
+      etapa: 'fotos',
+      recusadaPelaShopee: esperado,
+    });
+  });
+
+  it('reads a publish refusal from an older backend with no attribution', () => {
+    expect(detalhesErroShopeeSchema.parse({ etapa: 'fotos' })).toMatchObject({
+      etapa: 'fotos',
+      recusadaPelaShopee: null,
+    });
+  });
 });
 
 describe('step 21 — a stored-doc default is NOT a wire tolerance: a missing key is loud (C19)', () => {
