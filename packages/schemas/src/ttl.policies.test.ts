@@ -75,4 +75,15 @@ describe('firestore.indexes.json TTL policies', () => {
       { collectionGroup: 'feedsAmazon', fieldPath: TTL_FIELD, ttl: true, indexes: [] },
     ]);
   });
+
+  // Amazon step 13: the price run's parts, named, so the pair is pinned even if
+  // both were deleted together. The run document itself is never stamped.
+  it('pairs the Amazon price parts row (divergenciasPrecoAmazon) with its override', () => {
+    expect(registryGroups).toContain('divergenciasPrecoAmazon');
+    expect(ttlOverrides.filter((o) => o.collectionGroup === 'divergenciasPrecoAmazon')).toEqual([
+      { collectionGroup: 'divergenciasPrecoAmazon', fieldPath: TTL_FIELD, ttl: true, indexes: [] },
+    ]);
+    expect(registryGroups).not.toContain('precosAmazon');
+    expect(overrides.filter((o) => o.collectionGroup === 'precosAmazon')).toEqual([]);
+  });
 });
