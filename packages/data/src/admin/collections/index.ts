@@ -114,6 +114,11 @@ export {
   sincEstoqueLojaIntegradaCollection,
   snapshotEstoqueLiCollection,
 } from './sincEstoqueLojaIntegradaCollection';
+export {
+  paisErpSnapshotPrecoLiCollection,
+  sincPrecoLojaIntegradaCollection,
+  snapshotPrecoLiCollection,
+} from './sincPrecoLojaIntegradaCollection';
 export { notificacaoAmazonCollection } from './notificacaoAmazonCollection';
 export { pollPedidosAmazonCollection } from './pollPedidosAmazonCollection';
 export { feedAmazonCollection } from './feedAmazonCollection';

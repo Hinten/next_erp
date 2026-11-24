@@ -75,7 +75,9 @@
  * enumeration's read is left for the next tick, like an order-import row. The
  * stock sync's rows (step 12) follow the same rules: its per-conta chave is in
  * the existing set, its per-produto and per-motivo rows are matched by key
- * prefix, and all three are clocked by a run's own start.
+ * prefix, and all three are clocked by a run's own start. So do the price
+ * sync's (step 13): its two per-conta chaves, its per-produto and per-motivo
+ * rows, all four clocked by a run's own start.
  *
  * The cursor is the last row's snapshot, and the server seeks past its VALUES:
  * a row this pass resolved is no longer in the result, and paging continues
@@ -105,11 +107,14 @@ import {
   TIPOS_AVISO_IMPORTACAO_PRODUTOS_LI,
   TIPOS_AVISO_LI,
   TIPOS_AVISO_POR_ENTIDADE_LI,
+  TIPOS_AVISO_PRECO_LI,
   avisarReconexaoPendente,
   chaveEstoqueSemErpLi,
   chaveExpiracao,
   chaveImportacaoComPendenciasLi,
   chaveImportacaoParada,
+  chavePrecoNaoBaixadoLi,
+  chavePrecoSemErpLi,
   chaveReconexao,
   chaveRevisaoFiscalLi,
   prefixoDaContaNoAvisoLi,
@@ -304,9 +309,9 @@ export async function sweepLojaIntegradaTokenExpiry(
   // whose producer is the import job — not this sweep (module header).
   const chavesExistentes = new Set<string>();
   // The per-entity tipos (the order import's, step 5, the product import's
-  // per-category one, step 9, and the stock sync's per-produto and per-motivo
-  // ones, step 12) hold MANY rows per conta: matched by the conta's key prefix,
-  // recomputed per listed conta (`prefixoDaContaNoAvisoLi`).
+  // per-category one, step 9, and the stock and price syncs' per-produto and
+  // per-motivo ones, steps 12 and 13) hold MANY rows per conta: matched by the
+  // conta's key prefix, recomputed per listed conta (`prefixoDaContaNoAvisoLi`).
   const prefixosExistentes = new Set<string>();
   for (const conta of contas) {
     chavesExistentes.add(chaveExpiracao(conta.integracaoId));
@@ -315,6 +320,8 @@ export async function sweepLojaIntegradaTokenExpiry(
     chavesExistentes.add(chaveRevisaoFiscalLi(conta.integracaoId));
     chavesExistentes.add(chaveImportacaoComPendenciasLi(conta.integracaoId));
     chavesExistentes.add(chaveEstoqueSemErpLi(conta.integracaoId));
+    chavesExistentes.add(chavePrecoSemErpLi(conta.integracaoId));
+    chavesExistentes.add(chavePrecoNaoBaixadoLi(conta.integracaoId));
     for (const tipo of TIPOS_AVISO_POR_ENTIDADE_LI) {
       prefixosExistentes.add(prefixoDaContaNoAvisoLi(tipo, conta.integracaoId));
     }
@@ -358,12 +365,14 @@ export async function sweepLojaIntegradaTokenExpiry(
       if (chavesExistentes.has(doc.id)) continue;
       const prefixo = prefixoDoAvisoPorEntidadeLi(row.tipo, doc.id);
       if (prefixo !== null && prefixosExistentes.has(prefixo)) continue;
-      // A per-entity, product-import or stock row written AFTER the list was read may belong to a
-      // conta created after it: the next tick, which lists that conta, decides (module header).
+      // A per-entity, product-import, stock or price row written AFTER the list was read may
+      // belong to a conta created after it: the next tick, which lists that conta, decides
+      // (module header).
       const semRelogioDeLista =
         prefixo !== null ||
         (TIPOS_AVISO_IMPORTACAO_PRODUTOS_LI as ReadonlySet<string>).has(row.tipo) ||
-        (TIPOS_AVISO_ESTOQUE_LI as ReadonlySet<string>).has(row.tipo);
+        (TIPOS_AVISO_ESTOQUE_LI as ReadonlySet<string>).has(row.tipo) ||
+        (TIPOS_AVISO_PRECO_LI as ReadonlySet<string>).has(row.tipo);
       if (semRelogioDeLista && relogioDoDocumentoUs(doc.updateTime) > listaLidaEmUs) continue;
       try {
         if (await resolverAvisoDeContaRemovida(db, doc.id, listaLidaEmUs, avisoDeps)) {

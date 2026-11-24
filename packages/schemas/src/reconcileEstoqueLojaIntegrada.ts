@@ -61,6 +61,41 @@ import {
  * ({@link reconcileEstoqueLojaIntegradaBaseSchema}); a full write and every slice's read parse with
  * {@link reconcileEstoqueLojaIntegradaSchema}, which adds the cross-field invariants.
  *
+ * ## The price arm (step 13, PR 13-a amendment)
+ *
+ * The daily price reconcile is FOLDED into this run: one schedule, one lease, one key walk. Three
+ * price phases run between the stock `fila` and `fim`, in this order:
+ *
+ *  - `pais-preco`: the ERP parents of the price snapshot's children, read once, then every
+ *    child's target;
+ *  - `li-preco`: per conta, the store's price list read whole and diffed against the targets;
+ *  - `fila-preco`: the price candidates enqueued on the price queue at the price slot's instants.
+ *
+ * They are stored in their OWN field, {@link faseReconcilePrecoLiSchema} `fasePreco`, never as
+ * new members of `fase`: while the run is in its price arm, `fase` stays `fila` (the stock queue
+ * phase, its candidates gone) and `fasePreco` names the price phase; it is absent or `null`
+ * otherwise. {@link faseDoRunReconcileLi} reads the two as one ordered phase. A run of an older
+ * build never reaches the price arm, so a stored `fila` with no `fasePreco` is the stock queue
+ * phase exactly as before; a run whose valve of either flow is `off` skips that flow's phases.
+ *
+ * `precoSolicitado` is the operator's "Atualizar preços" request the run carries (the conta it
+ * names, and whether that conta's sends may lower a price): that conta's price phases bypass the
+ * mass-divergence gate and the in-transit deferral. Its first slice's task brings it
+ * (`tarefaReconcileEstoqueLiSchema`), and the first slice stores it here.
+ *
+ * Both fields are ADDITIVE and absent on every document an older build wrote: `.nullable()`
+ * `.optional()`, never a default, so a document written before them reads exactly as it did. The
+ * price per-conta state lives in `sincPrecoLojaIntegrada/{conta}` (`sincPrecoLojaIntegrada.ts`),
+ * never here: this document's candidates and byte budget are the stock's.
+ *
+ * ## The price slot (`slot-preco`)
+ *
+ * The price queue's bulk sends take their instants from a SECOND document of this collection,
+ * `reconcileEstoqueLojaIntegrada/{@link ID_SLOT_PRECO_RECONCILE_LI}`, through the same writer as
+ * the stock slot: it parses with this schema and holds only `proximoSlotMs`, every other field
+ * reading its default (no run is implied). A slot in the future means a bulk price drain is under
+ * way. Kept apart from `atual` so a price drain never moves the stock slot, and the reverse.
+ *
  * ## Units
  *
  * Every stamp is MILLISECONDS and says so in its name.
@@ -77,6 +112,9 @@ export const COLECAO_RECONCILE_ESTOQUE_LI = 'reconcileEstoqueLojaIntegrada';
 /** The one document's id. */
 export const ID_RECONCILE_ESTOQUE_LI = 'atual';
 
+/** The price slot's document id, beside the run document (module header). */
+export const ID_SLOT_PRECO_RECONCILE_LI = 'slot-preco';
+
 /** A run's phase (module header). */
 export const faseReconcileEstoqueLiSchema = z.enum(['erp', 'li', 'fila', 'fim']);
 export type FaseReconcileEstoqueLi = z.infer<typeof faseReconcileEstoqueLiSchema>;
@@ -88,6 +126,61 @@ export const FASE_RECONCILE_ESTOQUE_LI = {
   fila: 'fila',
   fim: 'fim',
 } as const satisfies Record<string, FaseReconcileEstoqueLi>;
+
+/** The price arm's phases (module header), in order. */
+export const faseReconcilePrecoLiSchema = z.enum(['pais-preco', 'li-preco', 'fila-preco']);
+export type FaseReconcilePrecoLi = z.infer<typeof faseReconcilePrecoLiSchema>;
+
+/** Named members of {@link faseReconcilePrecoLiSchema} — see `delfrance/prefer-schema-enum`. */
+export const FASE_RECONCILE_PRECO_LI = {
+  paisPreco: 'pais-preco',
+  liPreco: 'li-preco',
+  filaPreco: 'fila-preco',
+} as const satisfies Record<string, FaseReconcilePrecoLi>;
+
+/** One phase of the whole run, stock and price, as {@link faseDoRunReconcileLi} reads it. */
+export type FaseDoRunReconcileLi = FaseReconcileEstoqueLi | FaseReconcilePrecoLi;
+
+/** Every phase of the run, in the order a run goes through them. */
+export const ORDEM_FASES_RECONCILE_LI: readonly FaseDoRunReconcileLi[] = [
+  FASE_RECONCILE_ESTOQUE_LI.erp,
+  FASE_RECONCILE_ESTOQUE_LI.li,
+  FASE_RECONCILE_ESTOQUE_LI.fila,
+  FASE_RECONCILE_PRECO_LI.paisPreco,
+  FASE_RECONCILE_PRECO_LI.liPreco,
+  FASE_RECONCILE_PRECO_LI.filaPreco,
+  FASE_RECONCILE_ESTOQUE_LI.fim,
+];
+
+/**
+ * The run's phase as ONE value: `fasePreco` while the run is in its price arm (`fase` is then
+ * `fila`), else `fase` (`null` = no phase stored). Pure and total over the two stored fields.
+ */
+export function faseDoRunReconcileLi(run: {
+  readonly fase: FaseReconcileEstoqueLi | null;
+  readonly fasePreco?: FaseReconcilePrecoLi | null;
+}): FaseDoRunReconcileLi | null {
+  return run.fase === FASE_RECONCILE_ESTOQUE_LI.fila && run.fasePreco != null
+    ? run.fasePreco
+    : run.fase;
+}
+
+/** The fields of {@link precoSolicitadoReconcileLiSchema}, shared with the task's strict copy. */
+const CAMPOS_PRECO_SOLICITADO_LI = {
+  contaId: contaIdLiSchema,
+  /** May that conta's sends lower a price ("permitir baixar preços"; off by default)? */
+  permitirBaixar: z.boolean(),
+};
+
+/**
+ * The operator's "Atualizar preços" request a run carries (module header): one conta, and whether
+ * its sends may lower a price. An id and a flag — never a price.
+ */
+export const precoSolicitadoReconcileLiSchema = z.object(CAMPOS_PRECO_SOLICITADO_LI);
+export type PrecoSolicitadoReconcileLi = z.infer<typeof precoSolicitadoReconcileLiSchema>;
+
+/** The same request inside a STRICT task payload: an extra key is refused, never stripped. */
+export const precoSolicitadoTarefaReconcileLiSchema = z.strictObject(CAMPOS_PRECO_SOLICITADO_LI);
 
 /**
  * The ERP walk's cursor: the full path of the last store link document it read. The walk is
@@ -144,17 +237,28 @@ export const reconcileEstoqueLojaIntegradaBaseSchema = z.object({
   /** MS. The next free instant of the global stagger slot for bulk enqueues. */
   proximoSlotMs: millisSinceEpoch().nullable().default(null),
   contadores: contadoresEstoqueLiSchema.default({}),
+  /** Step 13 (module header): the price arm's phase; absent/null outside it. */
+  fasePreco: faseReconcilePrecoLiSchema.nullable().optional(),
+  /** Step 13 (module header): the "Atualizar preços" request the run carries; absent/null = none. */
+  precoSolicitado: precoSolicitadoReconcileLiSchema.nullable().optional(),
 });
 
 /**
  * {@link reconcileEstoqueLojaIntegradaBaseSchema} with its invariants: the conta index sits at most
- * one past the list (the `li` phase is done with every conta), and every candidate names a conta
- * of the list.
+ * one past the list (the `li` phase is done with every conta), every candidate names a conta of
+ * the list, and a price phase is stored only while `fase` is `fila` (step 13).
  */
 export const reconcileEstoqueLojaIntegradaSchema =
   reconcileEstoqueLojaIntegradaBaseSchema.superRefine((run, ctx) => {
     if (run.idxConta > run.contas.length) {
       ctx.addIssue({ code: 'custom', path: ['idxConta'], message: 'idxConta além das contas' });
+    }
+    if (run.fasePreco != null && run.fase !== FASE_RECONCILE_ESTOQUE_LI.fila) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['fasePreco'],
+        message: 'uma fase de preço só com fase = fila',
+      });
     }
     run.candidatos.forEach((candidato, n) => {
       if (candidato.c >= run.contas.length) {
