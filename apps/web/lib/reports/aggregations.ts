@@ -104,11 +104,13 @@ export interface EstadoSliceRow {
   receita: number;
 }
 
+type PedidoEstadoRow = { data: { estado: EstadoPedido } & Parameters<typeof pedidoTotal>[0] };
+
 /**
  * Count pedidos per ESTADOS_PEDIDO and sum their totals. Output is
  * ordered by count desc; pages can re-sort as needed.
  */
-export function porEstado(pedidos: PedidoLite[]): EstadoSliceRow[] {
+export function porEstado(pedidos: readonly PedidoEstadoRow[]): EstadoSliceRow[] {
   const map = new Map<EstadoPedido, EstadoSliceRow>();
   for (const { data } of pedidos) {
     const existing =
@@ -135,7 +137,7 @@ export interface BucketSummary {
   receita: number;
 }
 
-export function porBucket(pedidos: PedidoLite[]): BucketSummary[] {
+export function porBucket(pedidos: readonly PedidoEstadoRow[]): BucketSummary[] {
   const map = new Map<EstadoBucket, BucketSummary>([
     ['aberto', { bucket: 'aberto', count: 0, receita: 0 }],
     ['processo', { bucket: 'processo', count: 0, receita: 0 }],
