@@ -95,15 +95,19 @@ describe('the Loja Integrada price-sync handles (step 13)', () => {
       proximoSlotMs: 1,
     });
     // …and a price phase or "Atualizar preços" patch on the run document itself.
+    const precoSolicitado = { execucaoId: RUN, contaId: 'conta-li-1', permitirBaixar: false };
     expect(
       reconcileEstoqueLojaIntegradaCollection.parseMerge({
         fasePreco: 'li-preco',
+        precoSolicitado,
+      }),
+    ).toEqual({ fasePreco: 'li-preco', precoSolicitado });
+    // NEAR-MISS: a request with no run of its own is refused, never stored.
+    expect(() =>
+      reconcileEstoqueLojaIntegradaCollection.parseMerge({
         precoSolicitado: { contaId: 'conta-li-1', permitirBaixar: false },
       }),
-    ).toEqual({
-      fasePreco: 'li-preco',
-      precoSolicitado: { contaId: 'conta-li-1', permitirBaixar: false },
-    });
+    ).toThrow(ZodError);
   });
 
   it('the run handle validates the SHAPE; the price-phase invariant is the refined schema’s', () => {

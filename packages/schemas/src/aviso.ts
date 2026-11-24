@@ -1439,14 +1439,18 @@ export const TIPO_AVISO_LABELS = {
  *    closed (`conta-removida`).
  *
  * **`lojaIntegradaPrecoSemErp`** — linked children of the conta that are HELD:
- *    the map that prices them has no normal-tabela price now, or an entry they
- *    depend on is present but unreadable. Never pushed, not as 0 and not as
- *    nothing, so the store keeps its own price ("sem preço no ERP").
+ *    the map that prices them has no normal-tabela price now, an entry they
+ *    depend on is present but unreadable, or the parent they name is not there
+ *    (a deleted parent, or a parent id that names no document). Never pushed,
+ *    not as 0 and not as nothing, so the store keeps its own price ("sem preço
+ *    no ERP"). A child of a parent that propagates its price is priced from
+ *    the PARENT's entry, so the fix for it is the parent's price.
  *
  *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId })` — one row per conta.
- *  - **`params`**: `loja`, `produtos` (a NUMBER: the held children, unreadable
- *    ones included), `ilegiveis` (a NUMBER: of those, the ones held over an
- *    unreadable entry) and `amostra`.
+ *  - **`params`**: `loja`, `produtos` (a NUMBER: every held child),
+ *    `ilegiveis` (a NUMBER: of those, the ones held over an unreadable entry),
+ *    `semPai` (a NUMBER: of those, the ones whose parent is not there) and
+ *    `amostra` (every held child alike).
  *  - **Route**: the conta page (`ROTAS_AVISO.canalLojaIntegrada`).
  *  - **Machine resolvers**: the end of a later reconcile run that holds none;
  *    and the orphan pass once the conta is gone. A send run never writes it.
@@ -1487,12 +1491,12 @@ export const TIPO_AVISO_LABELS = {
  *
  * **`lojaIntegradaPrecoParado`** — the daily reconcile sent NOTHING for some
  *    children of the conta, one row per reason — a {@link MOTIVO_PRECO_PARADO_LI}
- *    CODE: more children differ from the ERP than the safety gate lets one
- *    night send (`divergencia-em-massa`: none of the conta's price sends of that
- *    run were enqueued; the count is the differing children), or a child was
- *    sent on each of the last two runs and still does not show the ERP price
- *    (`nao-converge`: it is not sent again until its ERP price or the store's
- *    value changes).
+ *    CODE: more children would be sent than the safety gate lets one night
+ *    send (`divergencia-em-massa`: none of the conta's price sends of that run
+ *    were enqueued; the count is the children that would have been), or a
+ *    child was sent on each of the last two runs and still does not show the
+ *    ERP price (`nao-converge`: it is not sent again until its ERP price or the
+ *    store's value changes).
  *
  *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId, entidade: motivo })`
  *    — one row per (conta, motivo).
@@ -2127,11 +2131,12 @@ export const MOTIVO_PRECO_RECUSADO_LI = {
  * renders (a wording fix is retroactive):
  *
  *  - `divergencia-em-massa`: the safety gate — more of the conta's children
- *    differ from the ERP than one night may send (more than the larger of 50
- *    and 10% of the evaluated children; deferred and non-converging ones are
- *    not counted), the signature of a tabela re-point or a whole-catalogue
- *    reprice nobody pushed, so NONE of the conta's price sends of that run were
- *    enqueued. "Atualizar preços" is the reviewed way to send them;
+ *    would be enqueued than one night may send (more than the larger of 50
+ *    and 10% of the evaluated children; refused lowerings, deferred rows and
+ *    non-converging ones are not counted), the signature of a tabela
+ *    re-point or a whole-catalogue reprice nobody pushed, so NONE of the
+ *    conta's price sends of that run were enqueued. "Atualizar preços" is the
+ *    reviewed way to send them;
  *  - `nao-converge`: a child sent on each of the last two runs, with the same
  *    target and the same store value both times, still does not show the ERP
  *    price; it is not sent again until either changes.

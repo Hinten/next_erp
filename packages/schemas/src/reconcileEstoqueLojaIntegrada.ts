@@ -81,12 +81,28 @@ import {
  * `precoSolicitado` is the operator's "Atualizar preços" request the run carries (the conta it
  * names, and whether that conta's sends may lower a price): that conta's price phases bypass the
  * mass-divergence gate and the in-transit deferral. Its first slice's task brings it
- * (`tarefaReconcileEstoqueLiSchema`), and the first slice stores it here.
+ * (`tarefaReconcileEstoqueLiSchema`), and the first slice — the lease take — stores it here,
+ * stamped with the run's `execucaoId`; {@link precoSolicitadoDoRunLi} is its one reader.
  *
  * Both fields are ADDITIVE and absent on every document an older build wrote: `.nullable()`
  * `.optional()`, never a default, so a document written before them reads exactly as it did. The
  * price per-conta state lives in `sincPrecoLojaIntegrada/{conta}` (`sincPrecoLojaIntegrada.ts`),
  * never here: this document's candidates and byte budget are the stock's.
+ *
+ * ## The lease take (⚠️ both fields belong to ONE run)
+ *
+ * The take validates its patch against an EMPTY expected document and `update`s only the fields
+ * the patch names, so it never sees what a dead run left stored. Left out of the patch, a dead
+ * run's `fasePreco` would stand beside the new run's `fase: 'erp'` — which the invariant below
+ * refuses, so the shared run document would stop parsing and the stock reconcile with it — and a
+ * dead run's `precoSolicitado` would hand the operator's "permitir baixar preços" to a nightly
+ * nobody asked to lower. So the take ALWAYS writes both, through
+ * {@link camposPrecoDaTomadaReconcileLi} (`fasePreco: null`; the task's request stamped with its
+ * run, or `null`), and the request is read only through {@link precoSolicitadoDoRunLi}, which
+ * ignores one of another `execucaoId` — a second guard for a write that skipped the first. A
+ * build that predates the price arm never writes either field: a document it took over while a
+ * price build's dead run held a price phase fails the invariant, reads as out of format, and the
+ * next take (which resets both) recovers it.
  *
  * ## The price slot (`slot-preco`)
  *
@@ -165,7 +181,7 @@ export function faseDoRunReconcileLi(run: {
     : run.fase;
 }
 
-/** The fields of {@link precoSolicitadoReconcileLiSchema}, shared with the task's strict copy. */
+/** The fields of the "Atualizar preços" request, shared by the task's copy and the run's. */
 const CAMPOS_PRECO_SOLICITADO_LI = {
   contaId: contaIdLiSchema,
   /** May that conta's sends lower a price ("permitir baixar preços"; off by default)? */
@@ -173,14 +189,77 @@ const CAMPOS_PRECO_SOLICITADO_LI = {
 };
 
 /**
- * The operator's "Atualizar preços" request a run carries (module header): one conta, and whether
- * its sends may lower a price. An id and a flag — never a price.
+ * The operator's "Atualizar preços" request inside the reconcile slice's STRICT task payload
+ * (module header): one conta, and whether its sends may lower a price. An id and a flag — never a
+ * price; an extra key is refused, never stripped. The task names its run itself.
  */
-export const precoSolicitadoReconcileLiSchema = z.object(CAMPOS_PRECO_SOLICITADO_LI);
+export const precoSolicitadoTarefaReconcileLiSchema = z.strictObject(CAMPOS_PRECO_SOLICITADO_LI);
+export type PrecoSolicitadoTarefaReconcileLi = z.infer<
+  typeof precoSolicitadoTarefaReconcileLiSchema
+>;
+
+/**
+ * The same request as the run document stores it: the request, plus the `execucaoId` of the run
+ * that stored it. It belongs to THAT run only — {@link precoSolicitadoDoRunLi} reads a request of
+ * another `execucaoId` as none, so a request a dead run left behind never reaches the next one
+ * (module header, "The lease take").
+ */
+export const precoSolicitadoReconcileLiSchema = z.object({
+  execucaoId: idExecucaoEstoqueLiSchema,
+  ...CAMPOS_PRECO_SOLICITADO_LI,
+});
 export type PrecoSolicitadoReconcileLi = z.infer<typeof precoSolicitadoReconcileLiSchema>;
 
-/** The same request inside a STRICT task payload: an extra key is refused, never stripped. */
-export const precoSolicitadoTarefaReconcileLiSchema = z.strictObject(CAMPOS_PRECO_SOLICITADO_LI);
+/**
+ * The "Atualizar preços" request THIS run carries: the stored one when it was stored by the run
+ * the document names, else `null` — another run's request, none stored, or no run. The ONE reader:
+ * a slice never reads `precoSolicitado` raw.
+ *
+ * Equal (⇒ the request): `precoSolicitado.execucaoId === run.execucaoId`. Distinct (⇒ `null`):
+ * another run's id, however close (`…-20271115` vs `…-20271116`), `null`/absent, and a run
+ * document with no run (`execucaoId: null`, the price slot's document).
+ */
+export function precoSolicitadoDoRunLi(run: {
+  readonly execucaoId: string | null;
+  readonly precoSolicitado?: PrecoSolicitadoReconcileLi | null;
+}): PrecoSolicitadoTarefaReconcileLi | null {
+  const pedido = run.precoSolicitado;
+  if (pedido == null || run.execucaoId === null || pedido.execucaoId !== run.execucaoId) {
+    return null;
+  }
+  return { contaId: pedido.contaId, permitirBaixar: pedido.permitirBaixar };
+}
+
+/** What {@link camposPrecoDaTomadaReconcileLi} returns: the price arm's fields of a new run. */
+export interface CamposPrecoDaTomadaReconcileLi {
+  readonly fasePreco: null;
+  readonly precoSolicitado: PrecoSolicitadoReconcileLi | null;
+}
+
+/**
+ * The price arm's fields the lease TAKE writes for a new run (module header, "The lease take"):
+ * `fasePreco: null` (a new run starts in the stock `erp` phase) and the request the run's first
+ * task carries, stamped with that task's run — or `null`, which ERASES a request of a dead run.
+ * The take spreads this into its patch beside the stock fields, always: a take that left either
+ * field out would hand the dead run's value to the new one.
+ */
+export function camposPrecoDaTomadaReconcileLi(tarefa: {
+  readonly execucaoId: string;
+  readonly precoSolicitado?: PrecoSolicitadoTarefaReconcileLi | null;
+}): CamposPrecoDaTomadaReconcileLi {
+  const pedido = tarefa.precoSolicitado ?? null;
+  return {
+    fasePreco: null,
+    precoSolicitado:
+      pedido === null
+        ? null
+        : {
+            execucaoId: tarefa.execucaoId,
+            contaId: pedido.contaId,
+            permitirBaixar: pedido.permitirBaixar,
+          },
+  };
+}
 
 /**
  * The ERP walk's cursor: the full path of the last store link document it read. The walk is

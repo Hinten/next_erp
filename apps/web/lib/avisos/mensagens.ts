@@ -1232,13 +1232,21 @@ export const MENSAGENS_POR_TIPO: Record<TipoAviso, MensagemAviso> = {
     titulo: 'Produtos da Loja Integrada sem preço no ERP',
     corpo: (params) => {
       const ilegiveis = contagemPositiva(params, 'ilegiveis');
+      const semPai = contagemPositiva(params, 'semPai');
+      const partes = [
+        ilegiveis === null ? null : `${ilegiveis} deles com um preço que o ERP não consegue ler`,
+        semPai === null
+          ? null
+          : `${semPai} deles apontando para um produto pai que não existe no ERP`,
+      ].filter((parte): parte is string => parte !== null);
       return (
         `${p(params, 'produtos')} produto(s) vinculado(s) à loja ${p(params, 'loja')} não têm ` +
         'preço na tabela de preço da conta no ERP' +
-        `${ilegiveis === null ? '' : ` (${ilegiveis} deles com um preço que o ERP não consegue ler)`}` +
+        `${partes.length === 0 ? '' : ` (${partes.join('; ')})`}` +
         ', por isso o ERP não envia o preço deles e a Loja Integrada mantém o preço que já ' +
-        `tinha.${fraseAmostra(params)} Cadastre o preço deles na tabela da conta; o aviso se ` +
-        'encerra quando a conferência diária de preços não encontrar mais nenhum.'
+        `tinha.${fraseAmostra(params)} Cadastre o preço deles na tabela da conta (no produto ` +
+        'pai, quando ele propaga o preço às variações, pois então é o preço do pai que vale); ' +
+        'o aviso se encerra quando a conferência diária de preços não encontrar mais nenhum.'
       );
     },
   },

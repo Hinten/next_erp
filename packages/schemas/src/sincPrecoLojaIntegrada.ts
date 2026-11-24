@@ -49,11 +49,14 @@ import {
  *
  *  1. the shared key walk (`erp`) writes `p`, `f` and, for a valid child, its parent (`pai`) and
  *     its OWN two readings (`n`, `pr`) — the produto's own `precos` read through
- *     `leituraTabelaPrecoLi` at the run's tabelas, in centavos;
+ *     `leituraTabelaPrecoLi` at the run's tabelas, in centavos. A child whose `paiId` names a
+ *     parent that is NOT an ERP document id (`paiDoProdutoErp` returns it, the entry's `pai`
+ *     refuses it) is no root: the walk stores it already held, `a: { r: 'pai-ausente' }`, with no
+ *     `pai`, `n` or `pr` — what `precoAlvoLi` answers for it, with no parent to read;
  *  2. the parents unit (`pais-preco`) reads every distinct `pai` once into `paisErp`, then
- *     computes each valid entry's target `a` by replaying the readings through `precoAlvoLi`
- *     (`precosDasLeiturasLi` rebuilds a map that reads back exactly as the stored readings), never
- *     through a second copy of the rule;
+ *     computes the target `a` of each valid entry the walk left without one, by replaying the
+ *     readings through `precoAlvoLi` (`precosDasLeiturasLi` rebuilds a map that reads back exactly
+ *     as the stored readings), never through a second copy of the rule;
  *  3. the store's list walk (`li-preco`) diffs each row against `a`;
  *  4. the queue phase (`fila-preco`) defers a row in transit (`t`), skips a non-converging one,
  *     and enqueues the rest.
@@ -154,8 +157,8 @@ export type UltimoReconcilePrecoLi = z.infer<typeof ultimoReconcilePrecoLiSchema
 
 /**
  * The reasons a run keeps a SAMPLE of ERP produto ids for: `retido` (the "sem preço no ERP" aviso:
- * held children, unreadable ones included), `nao-baixado` (the refused lowerings) and every
- * `lojaIntegradaPrecoParado` motivo.
+ * held children — no price, an unreadable entry, a parent that is not there), `nao-baixado` (the
+ * refused lowerings) and every `lojaIntegradaPrecoParado` motivo.
  */
 export const motivoAmostraPrecoLiSchema = z.enum([
   'retido',
@@ -297,11 +300,13 @@ export type AlvoSnapshotPrecoLi = z.infer<typeof alvoSnapshotPrecoLiSchema>;
  *
  * and, on a `v` entry only (absent otherwise, to keep the entry short):
  *
- *  - `pai`: the parent `paiDoProdutoErp` names, `null`/absent for a root;
+ *  - `pai`: the parent `paiDoProdutoErp` names, `null`/absent for a root — or for a child the
+ *    walk stored already held, whose `a` then says `pai-ausente` (the life of an entry, 1);
  *  - `n`, `pr`: the produto's OWN normal and promo readings ({@link leituraSnapshotPrecoLiSchema})
  *    at the run's tabelas — read even under propagation, because whether the parent propagates is
  *    known only once the parents unit has read it;
- *  - `a`: the target ({@link alvoSnapshotPrecoLiSchema}), written by the parents unit;
+ *  - `a`: the target ({@link alvoSnapshotPrecoLiSchema}), written by the parents unit — or by
+ *    the walk, for that one hold;
  *  - `ap`: the previous run's `a`, carried at first touch — `a` ≠ `ap` is "the ERP target moved
  *    since the previous run";
  *  - `t`: `true` when THIS run deferred the row as in transit; `tp`: the previous run did (a row

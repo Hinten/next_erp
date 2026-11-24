@@ -1,12 +1,12 @@
 import { z } from 'zod';
-import { centavosDeReais, roundReais } from '@delfrance/core/money';
+import { centavosDeReais } from '@delfrance/core/money';
 import { parseWireDecimal } from '@delfrance/core/wire';
-import { segmentoDeCaminhoLi } from './estoqueErpLojaIntegrada';
 import {
   precoDaTabela,
   precoDoFilhoNaTabela,
   propagaPrecoAosFilhos,
 } from './produto/pureLogic/precoCalculo';
+import { idDocumentoEstoqueLiSchema } from './sincEstoqueLojaIntegrada';
 
 /**
  * The ONE price function of the Loja Integrada price sync (master plan step 13, PR 13-a), shared
@@ -19,9 +19,10 @@ import {
  *
  * Built ONLY from the shared pieces: `precoDaTabela`, `propagaPrecoAosFilhos` and
  * `precoDoFilhoNaTabela` (`produto/pureLogic/precoCalculo.ts`, the readers and the child rule
- * every other channel's price sender binds), `roundReais` / `centavosDeReais`
- * (`@delfrance/core/money`) and `parseWireDecimal` (`@delfrance/core/wire`). No second rounding,
- * no second decimal grammar.
+ * every other channel's price sender binds), `centavosDeReais` (`@delfrance/core/money`, which
+ * applies `roundReais`), `parseWireDecimal` (`@delfrance/core/wire`) and the ERP document-id
+ * grammar `idDocumentoEstoqueLiSchema` (`sincEstoqueLojaIntegrada.ts`). No second rounding, no
+ * second decimal grammar, no second id check.
  *
  * ## Money is INTEGER CENTAVOS here
  *
@@ -71,10 +72,13 @@ function tabelaInformada(tabelaId: string | null): tabelaId is string {
  * self-parent (`paiId === id`) and any other shape are roots.
  *
  * Bound by the trigger, the send run, the reconcile's parent set and {@link precoAlvoLi}: a ref is
- * never built from a raw `paiId`. It returns the id AS STORED and is not a path check: a value
- * that is not one path segment (`a/b`) names no document, so {@link precoAlvoLi} holds such a
- * child as `pai-ausente` without needing the parent, and a caller that reads the parent checks
- * `segmentoDeCaminhoLi` first.
+ * never built from a raw `paiId`. It returns the id AS STORED and is not an id check: a value
+ * that is not an ERP document id (`idDocumentoEstoqueLiSchema`: `a/b`, `.`, `..`, `__x__`, over
+ * 1 500 bytes) names no document. ONE check decides that, everywhere: {@link precoAlvoLi} holds
+ * such a child as `pai-ausente` without needing the parent, a caller that reads the parent checks
+ * the same schema first (never a looser path test), and the reconcile snapshot's `pai` refuses
+ * it, so its key walk stores such a child as held `pai-ausente`, never as a root
+ * (`sincPrecoLojaIntegrada.ts`).
  *
  * Equal (a root): absent, `null`, `''`, `paiId === id`, a number. Distinct: `'P1'` on `'p1'` is a
  * child of `'P1'` (ids are exact), and `' '` is a child of `' '` (no trim: an id is not folded).
@@ -99,11 +103,12 @@ export type LeituraTabelaPrecoLi = { readonly valor: number } | 'ausente' | 'ile
  *
  *  - `{ valor }` exactly when `precoDaTabela` answers a price (the same rounded, positive reais);
  *  - `'ausente'` — nothing to read: no tabela id, a `precos` that is not a plain object, no OWN
- *    key for the tabela (an inherited key is no entry), or a finite `valor` that ROUNDS TO 0
- *    (`0`, `0.004`, `-0.004`);
+ *    key for the tabela (an inherited key is no entry), or a finite `valor` that is not negative
+ *    and ROUNDS TO 0 (`0`, `-0`, `0.004`);
  *  - `'ilegivel'` — an OWN key whose entry is not a plain object (a legacy bare number), whose
- *    `valor` is not a finite number (`'10'`, `NaN`, absent), or a `valor` that rounds to a
- *    NEGATIVE amount.
+ *    `valor` is not a finite number (`'10'`, `NaN`, absent), or a NEGATIVE `valor` — judged on the
+ *    stored value, before any rounding, so `-0.004` is negative too (the sign is what
+ *    {@link valorPrecoLi} judges, the same way).
  *
  * ## The decision on a stored `valor` ≤ 0 (pinned by test)
  *
@@ -116,9 +121,11 @@ export type LeituraTabelaPrecoLi = { readonly valor: number } | 'ausente' | 'ile
  *    (`precoDaTabela`: positivity after rounding), so this channel never disagrees with Mercado
  *    Livre and Shopee about whether a produto has a promo; and a 0 promo IS the binding text's
  *    "no positive promo", whose answer is the clear. A clear never lowers what the buyer pays.
- *  - A NEGATIVE value is `'ilegivel'`. No reading of a negative price is a promotion or its
- *    absence, so holding — the reversible direction, which lists the child in the "sem preço no
- *    ERP" aviso — is the only safe one; a clear decided over corrupt data would act on a guess.
+ *  - A NEGATIVE value is `'ilegivel'`, however small (`-0.004`, which rounds to 0, included). No
+ *    reading of a negative price is a promotion or its absence, so holding — the reversible
+ *    direction, which lists the child in the "sem preço no ERP" aviso — is the only safe one; a
+ *    clear decided over corrupt data would act on a guess. Rounding first would let `-0.004`
+ *    clear a promotion that `-0.01` holds.
  *
  * An unreadable SHAPE is held for the same reason: a bare-number legacy entry may be a real price
  * the operator set, and reading it as "no promo" would clear a promotion they meant to keep.
@@ -138,7 +145,7 @@ export function leituraTabelaPrecoLi(
   // Read exactly as `precoDaTabela` reads it.
   const bruto = (entrada as { valor?: unknown }).valor;
   if (typeof bruto !== 'number' || !Number.isFinite(bruto)) return 'ilegivel';
-  return roundReais(bruto) < 0 ? 'ilegivel' : 'ausente';
+  return bruto < 0 ? 'ilegivel' : 'ausente';
 }
 
 /**
@@ -176,9 +183,13 @@ function leituraDoFilhoNaTabelaLi(
  *  - `sem-preco`: the map that prices the child has no normal-tabela price NOW (the produto
  *    document cannot tell "never had one" from "removed": clearing an entry deletes it);
  *  - `ilegivel`: an entry the child depends on (normal or promo) is present but unreadable;
- *  - `pai-ausente`: the produto names a parent that is not there.
+ *  - `pai-ausente`: the produto names a parent that is not there (or a parent id that names no
+ *    document).
  *
- * `sem-preco` and `ilegivel` are what the "sem preço no ERP" aviso lists.
+ * `sem-preco`, `ilegivel` and `pai-ausente` are what the "sem preço no ERP" aviso lists (each a
+ * child the store keeps its own price for; the two latter counted apart). `sem-tabela` is a fact
+ * of the conta, not of a child: the routes refuse such a conta and the reconcile does not price
+ * it.
  */
 export const motivoRetencaoPrecoLiSchema = z.enum([
   'sem-tabela',
@@ -231,7 +242,7 @@ export interface ProdutoPrecoLi {
  *
  *  - a ROOT ({@link paiDoProdutoErp} is `null`: no parent, `''`, a self-parent) ⇒ its own `precos`;
  *  - a CHILD ⇒ `pai` is the parent's raw data (`null` = not found ⇒ held `pai-ausente`; so is a
- *    parent id that is not one path segment, whatever `pai` says). Under the PARENT's flag
+ *    parent id `idDocumentoEstoqueLiSchema` refuses, whatever `pai` says). Under the PARENT's flag
  *    (`propagaPrecoAosFilhos`: anything but a stored literal `false` propagates) the child reads
  *    the PARENT's entries only — a parent without a normal-tabela price holds the child even when
  *    the child has one; otherwise the child's own entries, and the parent is not consulted.
@@ -266,7 +277,7 @@ export function precoAlvoLi(args: {
     const precos = proprio(produto.dados, 'precos');
     ler = (tabelaId) => leituraTabelaPrecoLi(precos, tabelaId);
   } else {
-    if (args.pai === null || !segmentoDeCaminhoLi(paiId)) {
+    if (args.pai === null || !idDocumentoEstoqueLiSchema.safeParse(paiId).success) {
       return { tipo: 'retido', motivo: MOTIVO_RETENCAO_PRECO_LI.paiAusente };
     }
     const regra = {
@@ -333,8 +344,9 @@ export type ValorPrecoLi = { readonly centavos: number } | 'vazio' | 'ilegivel';
  *
  *  - a JSON NUMBER ⇒ `centavosDeReais` (`274.42` ⇒ 27442; the ERP's `10.004` ⇒ 1000);
  *  - a STRING ⇒ the ONE wire decimal rule, `parseWireDecimal` (`'274.42'`, `'259.9'`, a padded
- *    `'160.0000'` — the price resource's response form — `'+10.00'` and `'.5'` all read; a
- *    second grammar is never written here);
+ *    4-decimal string such as `'160.0000'` — the form the store's order lines carry; the owner's
+ *    read-only price capture checks the price list — `'+10.00'` and `'.5'` all read; a second
+ *    grammar is never written here);
  *  - `null` or absent ⇒ `'vazio'`;
  *  - a NEGATIVE value (number or string), a non-finite number, a string the wire rule refuses
  *    (`'1,50'`, `'1e3'`, `''`, `'abc'`), an amount whose centavos are past a safe integer, and any
@@ -454,6 +466,16 @@ function validarEnvioPrecoLi(alvo: EnvioPrecoLi, quem: string): void {
  *  - `promocional`: both promotions are positive and the new one is below the store's;
  *  - `efetivo`: the new buyer price ({@link efetivoPrecoLi} of the target) is below the store's —
  *    which catches a NEW promotion where the store shows none.
+ *
+ * The three leaves are the owner's rule as approved, each applied literally. ⚠️ So the
+ * `promocional` leaf compares two positive promotions even when the store's is ABOVE its own full
+ * price, where {@link efetivoPrecoLi} assumes the buyer pays the full price: a store at 60.00
+ * with a promotion of 70.00 and a target of 65.00 / 68.00 is `baixa` (`promocional` only),
+ * although under that reading the buyer price rises. Deliberate: whether the store charges a
+ * promotion that is not below its full price is not known (the owner's read-only price capture
+ * counts such rows), and under either reading the literal rule lets no lowering through — the
+ * cost is a raise held for an operator's "permitir baixar preços", never a lower price sent
+ * unasked.
  *
  * A CLEAR never counts as lowering by itself: it can only raise the buyer price. A current value
  * that is present but unreadable is `atual-ilegivel`, reported apart — never "lowers", never

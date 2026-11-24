@@ -136,6 +136,22 @@ describe('respostaEnvioPrecoLiSchema — the push answer (non-strict)', () => {
     expect(respostaEnvioPrecoLiSchema.safeParse(novo).success).toBe(true);
   });
 
+  it('a row with no name read and no store id (a produto with no link) parses as given', () => {
+    const semVinculo = {
+      ...RESPOSTA,
+      listings: [
+        {
+          ...LINHA,
+          produtoNome: null,
+          idLi: null,
+          resultado: RESULTADO_ENVIO_PRECO_LI.pulado,
+          motivo: MOTIVO_ENVIO_PRECO_LI.semVinculo,
+        },
+      ],
+    };
+    expect(respostaEnvioPrecoLiSchema.parse(semVinculo)).toEqual(semVinculo);
+  });
+
   it.each([
     ['a field on the answer', { ...RESPOSTA, campoNovo: 1 }],
     ['a field on a row', { ...RESPOSTA, listings: [{ ...LINHA, campoDaLinha: 1 }] }],

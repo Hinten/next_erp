@@ -24,6 +24,7 @@ import {
   precoDoFilhoNaTabela,
   propagaPrecoAosFilhos,
 } from './produto/pureLogic/precoCalculo';
+import { idDocumentoEstoqueLiSchema } from './sincEstoqueLojaIntegrada';
 
 /**
  * The Loja Integrada price function (master plan step 13): every equal pair and near-miss of the
@@ -127,12 +128,14 @@ describe('leituraTabelaPrecoLi (one tabela entry)', () => {
   });
 
   it('⚠️ DECISION: a stored valor that rounds to 0 is ausente; a NEGATIVE one is ilegivel', () => {
-    for (const valor of [0, 0.004, -0.004, -0]) {
+    for (const valor of [0, 0.004, -0]) {
       expect(leituraTabelaPrecoLi({ [NORMAL]: entrada(valor) }, NORMAL), String(valor)).toBe(
         'ausente',
       );
     }
-    for (const valor of [-1, -0.01, -0.006]) {
+    // NEAR-MISS: the sign is judged BEFORE rounding — a negative that rounds to 0 is still
+    // negative, as `valorPrecoLi` reads it.
+    for (const valor of [-1, -0.01, -0.006, -0.004, -0.001, -Number.MIN_VALUE]) {
       expect(leituraTabelaPrecoLi({ [NORMAL]: entrada(valor) }, NORMAL), String(valor)).toBe(
         'ilegivel',
       );
@@ -271,8 +274,18 @@ describe('precoAlvoLi (the price a linked child must show)', () => {
 
   it('a missing parent ⇒ pai-ausente, never a guess; so is a parent id that names no document', () => {
     expect(alvo(filho({ [NORMAL]: entrada(70) }), null)).toEqual(retido('pai-ausente'));
-    const produto = { id: 'f1', dados: { paiId: 'a/b', precos: { [NORMAL]: entrada(70) } } };
-    expect(alvo(produto, { precos: { [NORMAL]: entrada(50) } })).toEqual(retido('pai-ausente'));
+    const pai = { precos: { [NORMAL]: entrada(50) } };
+    // The ERP document-id grammar the snapshot's `pai` uses — one check, never a looser one.
+    for (const paiId of ['a/b', '.', '..', '__x__', '____', 'x'.repeat(1501), 'é'.repeat(751)]) {
+      const produto = { id: 'f1', dados: { paiId, precos: { [NORMAL]: entrada(70) } } };
+      expect(alvo(produto, pai), paiId.slice(0, 8)).toEqual(retido('pai-ausente'));
+      expect(idDocumentoEstoqueLiSchema.safeParse(paiId).success, paiId.slice(0, 8)).toBe(false);
+    }
+    // NEAR-MISS: an odd but valid id names a document — the child is priced from that parent.
+    for (const paiId of ['a.b', '_x_', '__x', 'x'.repeat(1500), '…']) {
+      const produto = { id: 'f1', dados: { paiId, precos: { [NORMAL]: entrada(70) } } };
+      expect(alvo(produto, pai), paiId.slice(0, 8)).toEqual(enviar(5000, 'limpar'));
+    }
   });
 
   it("⚠️ NEAR-MISS: a `''` or self parent is a ROOT — its own map, and a passed parent is ignored", () => {
@@ -289,18 +302,59 @@ describe('precoAlvoLi (the price a linked child must show)', () => {
     expect(alvo(kit)).toEqual(enviar(12000, 'limpar'));
   });
 
-  it('⚠️ NO custo: a custo on the produto or the parent changes nothing, and none is returned', () => {
-    const semCusto = alvo(filho({ [NORMAL]: entrada(70) }), {
-      precos: {},
-      propagatePriceToChildren: false,
-    });
-    const comCusto = alvo(filho({ [NORMAL]: entrada(70) }, { custo: 12.5 }), {
-      precos: {},
-      propagatePriceToChildren: false,
-      custo: 30,
-    });
-    expect(comCusto).toEqual(semCusto);
-    expect(JSON.stringify(comCusto)).not.toMatch(/custo/i);
+  it('⚠️ NO custo: a custo on the produto or the parent never decides, never prices, never returns', () => {
+    // Below, equal to and above the price, a centavo either side of it, huge, negative, text,
+    // null — on the produto AND on the parent, for every kind of child the rule knows.
+    const custos: unknown[] = [undefined, 0.01, 30, 69.99, 70, 70.01, 1e6, -3, '30', null];
+    const casos: readonly [
+      string,
+      { id: string; dados: Record<string, unknown> },
+      Record<string, unknown> | null,
+    ][] = [
+      ['a root with a price', raiz({ [NORMAL]: entrada(70) }), null],
+      ['a root with a promotion', raiz({ [NORMAL]: entrada(70), [PROMO]: entrada(50) }), null],
+      ['a root with NO price', raiz({}), null],
+      [
+        'a child of a propagating parent',
+        filho({ [NORMAL]: entrada(99) }),
+        { precos: { [NORMAL]: entrada(70) } },
+      ],
+      [
+        'a child of a propagating parent with NO price',
+        filho({ [NORMAL]: entrada(99) }),
+        { precos: {} },
+      ],
+      [
+        'a child of a non-propagating parent',
+        filho({ [NORMAL]: entrada(70) }),
+        { precos: {}, propagatePriceToChildren: false },
+      ],
+      [
+        'a child with NO price of a non-propagating parent',
+        filho({}),
+        { precos: { [NORMAL]: entrada(70) }, propagatePriceToChildren: false },
+      ],
+    ];
+    for (const [nome, produto, pai] of casos) {
+      const semCusto = alvo(produto, pai);
+      for (const custoProduto of custos) {
+        for (const custoPai of custos) {
+          const comCusto = alvo(
+            custoProduto === undefined
+              ? produto
+              : { id: produto.id, dados: { ...produto.dados, custo: custoProduto } },
+            pai === null || custoPai === undefined ? pai : { ...pai, custo: custoPai },
+          );
+          const rotulo = `${nome}: ${String(custoProduto)} / ${String(custoPai)}`;
+          expect(comCusto, rotulo).toEqual(semCusto);
+          expect(JSON.stringify(comCusto), rotulo).not.toMatch(/custo/i);
+        }
+      }
+    }
+    // Pinned outright, so the matrix above is not vacuous: no price ⇒ held, whatever the custo.
+    expect(alvo(raiz({}, { custo: 30 }))).toEqual(retido('sem-preco'));
+    expect(alvo(raiz({ [NORMAL]: entrada(10) }, { custo: 30 }))).toEqual(enviar(1000, 'limpar'));
+    expect(alvo(filho({}, { custo: 30 }), { precos: {}, custo: 40 })).toEqual(retido('sem-preco'));
   });
 
   it('the price sent IS the shared child rule’s, and a hold is exactly its "no price"', () => {
@@ -528,6 +582,37 @@ describe('decidirBaixaPrecoLi (no-lower, integer centavos)', () => {
       efetivo: true,
     });
     expect(decidir(5000, { centavos: 4000 }, 50, 40)).toEqual({ tipo: 'nao-baixa' });
+  });
+
+  it('⚠️ a store promo EQUAL to its full price is a stored promotion: a lower one lowers the promo leaf', () => {
+    // The promo the store holds equal to `cheio` is not a clear (the fold's own near-miss), so
+    // a lower target promo names the promo leaf too.
+    expect(decidir(5000, { centavos: 4500 }, 50, '50.00')).toEqual({
+      tipo: 'baixa',
+      cheio: false,
+      promocional: true,
+      efetivo: true,
+    });
+    // NEAR-MISS: the same target against a store with NO promotion lowers the buyer price only.
+    expect(decidir(5000, { centavos: 4500 }, 50, null)).toEqual({
+      tipo: 'baixa',
+      cheio: false,
+      promocional: false,
+      efetivo: true,
+    });
+  });
+
+  it('⚠️ DECISION: the promo leaf compares promotions even when the store’s is ABOVE its full price', () => {
+    // The approved rule applied literally: whether the store charges a promotion above its full
+    // price is unmeasured, and under either reading this refusal lets no lowering through.
+    expect(decidir(6500, { centavos: 6800 }, 60, 70)).toEqual({
+      tipo: 'baixa',
+      cheio: false,
+      promocional: true,
+      efetivo: false,
+    });
+    // NEAR-MISS: the same raise with a target promotion not below the store's passes.
+    expect(decidir(6500, { centavos: 7000 }, 60, 70)).toEqual({ tipo: 'nao-baixa' });
   });
 
   it('⚠️ any lower buyer price: a NEW promo where the store shows none lowers it — refused', () => {

@@ -87,6 +87,62 @@ describe('sincPrecoLojaIntegradaSchema (the per-conta root)', () => {
     expect(Object.hasOwn(execucao, 'custo')).toBe(false);
   });
 
+  it('⚠️ NO custo survives at the NESTED levels either: a candidate, a target, a parent', () => {
+    const semCusto = (v: unknown, onde: string) => {
+      expect(typeof v === 'object' && v !== null, onde).toBe(true);
+      expect(Object.hasOwn(v as object, 'custo'), onde).toBe(false);
+    };
+    const execucao = execucaoContaPrecoLiSchema.parse({
+      execucaoId: RUN,
+      tabelas: TABELAS,
+      candidatos: [{ i: '1', p: 'p1', d: 0, custo: 5 }],
+    });
+    semCusto(execucao.candidatos[0], 'candidato');
+    const entrada = entradaSnapshotPrecoLiSchema.parse({
+      p: 'p1',
+      f: 'v',
+      a: { c: 5000, q: null, custo: 1250 },
+      ap: { c: 5100, q: 3999, custo: 1250 },
+    });
+    semCusto(entrada.a, 'a');
+    semCusto(entrada.ap, 'ap');
+    semCusto(entrada, 'entrada');
+    const pais = paisErpSnapshotPrecoLiSchema.parse({
+      execucaoId: RUN,
+      pais: { pai1: { pp: true, custo: 3 } },
+    });
+    semCusto(pais.pais.pai1, 'pai');
+  });
+
+  it('a run state stored with only its id and tabelas reads with an EMPTY walk, never a crash', () => {
+    const vazio = { execucaoId: RUN, tabelas: TABELAS };
+    const esperado = { ...vazio, vistos: [], amostras: {}, contadores: {}, candidatos: [] };
+    expect(execucaoContaPrecoLiSchema.parse(vazio)).toEqual(esperado);
+    expect(sincPrecoLojaIntegradaSchema.parse({ execucaoPreco: vazio }).execucaoPreco).toEqual(
+      esperado,
+    );
+  });
+
+  it('⚠️ NEAR-MISS: a run id is the stock run grammar on EVERY price document', () => {
+    const ok = {
+      execucaoPreco: (execucaoId: unknown) =>
+        execucaoContaPrecoLiSchema.safeParse({ execucaoId, tabelas: TABELAS }).success,
+      ultimoReconcilePreco: (execucaoId: unknown) =>
+        sincPrecoLojaIntegradaSchema.safeParse({
+          ultimoReconcilePreco: { execucaoId, iniciadoEmMs: AGORA_MS, concluidoEmMs: AGORA_MS },
+        }).success,
+      balde: (execucaoId: unknown) => snapshotPrecoLiSchema.safeParse({ execucaoId }).success,
+      paisErp: (execucaoId: unknown) =>
+        paisErpSnapshotPrecoLiSchema.safeParse({ execucaoId }).success,
+    };
+    for (const [onde, aceita] of Object.entries(ok)) {
+      expect(aceita(RUN), onde).toBe(true);
+      for (const ruim of ['', 'a b', 'a/b', 'x'.repeat(101), 7, null]) {
+        expect(aceita(ruim), `${onde}: ${String(ruim)}`).toBe(false);
+      }
+    }
+  });
+
   it('a last run stored without tabelas or counters reads with none, never as a refusal', () => {
     const ultimoReconcilePreco = {
       execucaoId: RUN,
@@ -246,6 +302,17 @@ describe('the snapshot (the stock’s buckets, the price entries)', () => {
       expect(ok({ p: 'p1', f: 'dup', ...campo }), JSON.stringify(campo)).toBe(false);
       expect(ok({ p: 'p1', f: 'v', ...campo }), JSON.stringify(campo)).toBe(true);
     }
+  });
+
+  it('⚠️ NEAR-MISS: an entry’s produto and parent name ONE document — never a path or a reserved id', () => {
+    const ok = (entrada: unknown) => entradaSnapshotPrecoLiSchema.safeParse(entrada).success;
+    expect(ok({ p: 'p1', f: 'v', pai: 'pai1' })).toBe(true);
+    for (const ruim of ['a/b', '..', '.', '', '__x__', 'x'.repeat(1501)]) {
+      expect(ok({ p: 'p1', f: 'v', pai: ruim }), `pai ${ruim.slice(0, 8)}`).toBe(false);
+      expect(ok({ p: ruim, f: 'v' }), `p ${ruim.slice(0, 8)}`).toBe(false);
+    }
+    // Such a child is stored already HELD by the walk — no `pai`, so never mistaken for a root.
+    expect(ok({ p: 'f1', f: 'v', a: { r: 'pai-ausente' } })).toBe(true);
   });
 
   it('⚠️ NEAR-MISS: a reading is positive integer centavos or `il` — never reais, 0 or a word', () => {

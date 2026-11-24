@@ -54,15 +54,46 @@ describe('the price-sync avisos', () => {
     expect(texto).not.toContain('undefined');
   });
 
-  it('near-miss: no unreadable share (absent or 0) and no sample ⇒ neither clause, never a dash', () => {
+  it('⚠️ "sem preço no ERP" sends a child of a propagating parent to the PARENT’s price', () => {
+    // Under propagation the child's own entry never prices it: the copy must not send the
+    // operator to an edit the ERP refuses.
+    const texto = corpo(TIPO_AVISO.lojaIntegradaPrecoSemErp, { loja: 'Conta A', produtos: 1 });
+    expect(texto).toContain('Cadastre o preço deles na tabela da conta');
+    expect(texto).toContain('no produto pai, quando ele propaga o preço às variações');
+  });
+
+  it('"sem preço no ERP" counts the children whose parent is not there, beside the unreadable ones', () => {
+    const ambos = corpo(TIPO_AVISO.lojaIntegradaPrecoSemErp, {
+      loja: 'Conta A',
+      produtos: 5,
+      ilegiveis: 2,
+      semPai: 1,
+    });
+    expect(ambos).toContain(
+      '(2 deles com um preço que o ERP não consegue ler; 1 deles apontando para um produto pai ' +
+        'que não existe no ERP)',
+    );
+    const soSemPai = corpo(TIPO_AVISO.lojaIntegradaPrecoSemErp, {
+      loja: 'Conta A',
+      produtos: 1,
+      semPai: 1,
+    });
+    expect(soSemPai).toContain('(1 deles apontando para um produto pai que não existe no ERP)');
+    expect(soSemPai).not.toContain('não consegue ler');
+  });
+
+  it('near-miss: no unreadable or parentless share (absent or 0) and no sample ⇒ no such clause', () => {
     const casos: Record<string, string | number>[] = [
       { loja: 'Conta A', produtos: 1 },
       { loja: 'Conta A', produtos: 1, ilegiveis: 0 },
+      { loja: 'Conta A', produtos: 1, ilegiveis: 0, semPai: 0 },
     ];
     for (const params of casos) {
       const texto = corpo(TIPO_AVISO.lojaIntegradaPrecoSemErp, params);
       expect(texto).not.toContain('não consegue ler');
+      expect(texto).not.toContain('não existe no ERP');
       expect(texto).not.toContain('Os primeiros');
+      expect(texto).not.toContain('ERP (');
       expect(texto).not.toContain('—');
       expect(texto).not.toContain('undefined');
     }

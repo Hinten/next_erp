@@ -120,6 +120,17 @@ describe('tarefaPrecoLiSchema (one send run)', () => {
     expect(tarefaPrecoLiSchema.safeParse({ ...deriva, geracao: 0 }).success).toBe(false);
     expect(tarefaPrecoLiSchema.safeParse({ ...EVENTO, geracao: 1 }).success).toBe(false);
     expect(tarefaPrecoLiSchema.safeParse({ ...deriva, geracao: 2 }).success).toBe(false);
+    // NEAR-MISS: the generation is 0 or 1 on EVERY origin — the type refuses the rest, not only
+    // the deriva refine.
+    for (const geracao of [2, 3, -1, 0.5, '0', null]) {
+      expect(tarefaPrecoLiSchema.safeParse({ ...EVENTO, geracao }).success, String(geracao)).toBe(
+        false,
+      );
+      expect(
+        tarefaPrecoLiSchema.safeParse({ ...RECONCILE, geracao }).success,
+        String(geracao),
+      ).toBe(false);
+    }
   });
 
   it('⚠️ the tabela ids ride EXACTLY on a bulk send — the promo one may be null there', () => {

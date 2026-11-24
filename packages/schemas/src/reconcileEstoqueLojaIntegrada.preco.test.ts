@@ -6,9 +6,11 @@ import {
   ID_RECONCILE_ESTOQUE_LI,
   ID_SLOT_PRECO_RECONCILE_LI,
   ORDEM_FASES_RECONCILE_LI,
+  camposPrecoDaTomadaReconcileLi,
   faseDoRunReconcileLi,
   faseReconcileEstoqueLiSchema,
   faseReconcilePrecoLiSchema,
+  precoSolicitadoDoRunLi,
   precoSolicitadoReconcileLiSchema,
   reconcileEstoqueLojaIntegradaBaseSchema,
   reconcileEstoqueLojaIntegradaSchema,
@@ -130,8 +132,8 @@ describe('the run document, step 13 (additive)', () => {
     ).toBe(true);
   });
 
-  it('the "Atualizar preços" request rides the run: a conta and a flag, never a price', () => {
-    const precoSolicitado = { contaId: 'conta-b', permitirBaixar: true };
+  it('the "Atualizar preços" request rides the run: its run, a conta and a flag, never a price', () => {
+    const precoSolicitado = { execucaoId: RUN, contaId: 'conta-b', permitirBaixar: true };
     const doc = { ...RUN_DO_ESTOQUE, precoSolicitado };
     expect(reconcileEstoqueLojaIntegradaSchema.parse(doc)).toEqual(doc);
     expect(reconcileEstoqueLojaIntegradaSchema.parse({ ...doc, precoSolicitado: null })).toEqual({
@@ -143,10 +145,14 @@ describe('the run document, step 13 (additive)', () => {
       precoSolicitado,
     );
     for (const ruim of [
-      { contaId: 'conta-b' },
-      { permitirBaixar: true },
-      { contaId: 'a/b', permitirBaixar: true },
-      { contaId: 'conta-b', permitirBaixar: 'true' },
+      { execucaoId: RUN, contaId: 'conta-b' },
+      { execucaoId: RUN, permitirBaixar: true },
+      { execucaoId: RUN, contaId: 'a/b', permitirBaixar: true },
+      { execucaoId: RUN, contaId: 'conta-b', permitirBaixar: 'true' },
+      // A request the document cannot tie to its run is refused, never read as this run's.
+      { contaId: 'conta-b', permitirBaixar: true },
+      { execucaoId: 'a b', contaId: 'conta-b', permitirBaixar: true },
+      { execucaoId: null, contaId: 'conta-b', permitirBaixar: true },
     ]) {
       expect(
         reconcileEstoqueLojaIntegradaSchema.safeParse({ ...RUN_DO_ESTOQUE, precoSolicitado: ruim })
@@ -154,6 +160,92 @@ describe('the run document, step 13 (additive)', () => {
         JSON.stringify(ruim),
       ).toBe(false);
     }
+  });
+});
+
+describe('the lease take: both price fields belong to ONE run', () => {
+  const NOVA = 'estoque-reconcile-20271116';
+
+  /** A dead run's document: mid price arm, carrying an operator's "permitir baixar preços". */
+  const MORTO = {
+    ...RUN_DO_ESTOQUE,
+    candidatos: [],
+    fasePreco: FASE_RECONCILE_PRECO_LI.liPreco,
+    precoSolicitado: { execucaoId: RUN, contaId: 'conta-b', permitirBaixar: true },
+  };
+
+  /** The stock fields a take writes today (`execucaoReconcile.ts`), for a new run. */
+  const TOMADA_DO_ESTOQUE = {
+    execucaoId: NOVA,
+    iniciadoEmMs: AGORA_MS + 86_400_000,
+    emExecucaoAteMs: AGORA_MS + 86_500_000,
+    seq: 0,
+    fase: FASE_RECONCILE_ESTOQUE_LI.erp,
+    contas: ['conta-a', 'conta-b'],
+    idxConta: 0,
+    walk: null,
+    candidatos: [],
+    contadores: {},
+  };
+
+  it('the request is THIS run’s only: another run’s, none, or no run reads as null', () => {
+    const pedido = { contaId: 'conta-b', permitirBaixar: true };
+    expect(precoSolicitadoDoRunLi(MORTO)).toEqual(pedido);
+    expect(precoSolicitadoDoRunLi({ ...MORTO, execucaoId: NOVA })).toBeNull();
+    expect(precoSolicitadoDoRunLi({ ...MORTO, precoSolicitado: null })).toBeNull();
+    expect(precoSolicitadoDoRunLi(RUN_DO_ESTOQUE)).toBeNull();
+    expect(precoSolicitadoDoRunLi({ ...MORTO, execucaoId: null })).toBeNull();
+  });
+
+  it('the take’s fields: no price phase, and the task’s request stamped with its run — or none', () => {
+    expect(camposPrecoDaTomadaReconcileLi({ execucaoId: NOVA })).toEqual({
+      fasePreco: null,
+      precoSolicitado: null,
+    });
+    expect(camposPrecoDaTomadaReconcileLi({ execucaoId: NOVA, precoSolicitado: null })).toEqual({
+      fasePreco: null,
+      precoSolicitado: null,
+    });
+    expect(
+      camposPrecoDaTomadaReconcileLi({
+        execucaoId: NOVA,
+        precoSolicitado: { contaId: 'conta-a', permitirBaixar: false },
+      }),
+    ).toEqual({
+      fasePreco: null,
+      precoSolicitado: { execucaoId: NOVA, contaId: 'conta-a', permitirBaixar: false },
+    });
+  });
+
+  it.each([
+    ['a nightly', { execucaoId: NOVA }, null],
+    [
+      'an "Atualizar preços" run',
+      { execucaoId: NOVA, precoSolicitado: { contaId: 'conta-a', permitirBaixar: false } },
+      { contaId: 'conta-a', permitirBaixar: false },
+    ],
+  ] as const)(
+    '⚠️ a take over a DEAD run’s price arm (%s): the document parses, and no request leaks',
+    (_nome, tarefa, esperado) => {
+      // As Firestore applies an `update`: the stored fields, the patch's over them.
+      const depois = {
+        ...MORTO,
+        ...TOMADA_DO_ESTOQUE,
+        ...camposPrecoDaTomadaReconcileLi(tarefa),
+      };
+      const lido = reconcileEstoqueLojaIntegradaSchema.parse(depois);
+      expect(faseDoRunReconcileLi(lido)).toBe('erp');
+      expect(precoSolicitadoDoRunLi(lido)).toEqual(esperado);
+    },
+  );
+
+  it('⚠️ NEAR-MISS: the same take WITHOUT the price fields breaks the shared document', () => {
+    const depois = { ...MORTO, ...TOMADA_DO_ESTOQUE };
+    expect(reconcileEstoqueLojaIntegradaSchema.safeParse(depois).success).toBe(false);
+    // …and even where the shape survived, the dead run's request is not the new run's.
+    const semFase = { ...depois, fasePreco: null };
+    expect(reconcileEstoqueLojaIntegradaSchema.safeParse(semFase).success).toBe(true);
+    expect(precoSolicitadoDoRunLi(reconcileEstoqueLojaIntegradaSchema.parse(semFase))).toBeNull();
   });
 });
 
@@ -223,5 +315,7 @@ describe('the reconcile slice task, step 13 (additive)', () => {
     expect(barrel.faseDoRunReconcileLi).toBe(faseDoRunReconcileLi);
     expect(barrel.ID_SLOT_PRECO_RECONCILE_LI).toBe(ID_SLOT_PRECO_RECONCILE_LI);
     expect(barrel.precoSolicitadoReconcileLiSchema).toBe(precoSolicitadoReconcileLiSchema);
+    expect(barrel.precoSolicitadoDoRunLi).toBe(precoSolicitadoDoRunLi);
+    expect(barrel.camposPrecoDaTomadaReconcileLi).toBe(camposPrecoDaTomadaReconcileLi);
   });
 });
