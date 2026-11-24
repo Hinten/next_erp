@@ -21,9 +21,11 @@
  * {@link sincronizarAvisosDaContaAmazon} (PR 5-d), called by the order import,
  * which decides which motivos to raise and which to resolve. Since step 12 the
  * stock sync raises and resolves its five per-conta motivos one at a time
- * through {@link sincronizarAvisoContaEstoqueAmazon}. Their motivos, resolvers
- * and residues are in the tipos' docblock entries
- * (`packages/schemas/src/aviso.ts`).
+ * through {@link sincronizarAvisoContaEstoqueAmazon}; since step 13 (PR 13-b)
+ * that is the stock binding of {@link sincronizarAvisoContaListingsAmazon},
+ * which takes the listings flow and holds each flow to its OWN closed motivo
+ * set. Their motivos, resolvers and residues are in the tipos' docblock
+ * entries (`packages/schemas/src/aviso.ts`).
  *
  * Every raise is in-app only: no `escalar` is ever passed. Every param is
  * structured (a name, a number, a civil date) — the wording lives in
@@ -128,6 +130,7 @@ import {
 } from '@delfrance/schemas';
 
 import { type LoggerAmazon, warnNaoTipado } from '../core/log';
+import { FLUXO_LISTING_AMAZON, type FluxoListingAmazon } from '../listings/fluxoListing';
 
 /** The motivos every machine resolution of these tipos is stamped with. */
 export const MOTIVO_AVISO_AMAZON = {
@@ -919,57 +922,86 @@ export const MOTIVOS_CONTA_ESTOQUE_AMAZON = [
 ] as const satisfies readonly MotivoContaAmazon[];
 export type MotivoContaEstoqueAmazon = (typeof MOTIVOS_CONTA_ESTOQUE_AMAZON)[number];
 
-/** What {@link sincronizarAvisoContaEstoqueAmazon} does with its motivo. */
-export const ACAO_AVISO_CONTA_ESTOQUE_AMAZON = {
+/**
+ * The `amazonContaPrecisaAtencao` motivos each listings flow owns (step 13, PR
+ * 13-b): ONE closed set per flow, so a flow's raiser never writes another
+ * flow's row, nor the order import's. Stock owns its five; price owns none yet.
+ */
+export const MOTIVOS_CONTA_LISTINGS_AMAZON = {
+  [FLUXO_LISTING_AMAZON.estoque]: MOTIVOS_CONTA_ESTOQUE_AMAZON,
+  [FLUXO_LISTING_AMAZON.preco]: [],
+} as const satisfies Record<FluxoListingAmazon, readonly MotivoContaAmazon[]>;
+
+/** The motivos flow `F` owns ({@link MOTIVOS_CONTA_LISTINGS_AMAZON}): `never` while it owns none. */
+export type MotivoContaListingsAmazon<F extends FluxoListingAmazon> =
+  (typeof MOTIVOS_CONTA_LISTINGS_AMAZON)[F][number];
+
+/** The refusal of a motivo outside a flow's set, per flow (never the motivo itself). */
+const RECUSA_DO_MOTIVO_POR_FLUXO = {
+  [FLUXO_LISTING_AMAZON.estoque]: 'avisos.ts: motivo fora dos cinco do estoque',
+  [FLUXO_LISTING_AMAZON.preco]: 'avisos.ts: motivo fora dos do preço',
+} as const satisfies Record<FluxoListingAmazon, string>;
+
+/** What {@link sincronizarAvisoContaListingsAmazon} does with its motivo. */
+export const ACAO_AVISO_CONTA_LISTINGS_AMAZON = {
   levantar: 'levantar',
   resolver: 'resolver',
 } as const;
-export type AcaoAvisoContaEstoqueAmazon =
-  (typeof ACAO_AVISO_CONTA_ESTOQUE_AMAZON)[keyof typeof ACAO_AVISO_CONTA_ESTOQUE_AMAZON];
+export type AcaoAvisoContaListingsAmazon =
+  (typeof ACAO_AVISO_CONTA_LISTINGS_AMAZON)[keyof typeof ACAO_AVISO_CONTA_LISTINGS_AMAZON];
 
-/** What {@link sincronizarAvisoContaEstoqueAmazon} did. */
-export type SincroniaAvisoContaEstoqueAmazon =
+/** What {@link sincronizarAvisoContaListingsAmazon} did. */
+export type SincroniaAvisoContaListingsAmazon =
   | { readonly acao: 'levantado'; readonly resultado: ResultadoAviso }
   | { readonly acao: 'resolvido'; readonly fechou: boolean };
 
+/** What {@link sincronizarAvisoContaEstoqueAmazon} does with its motivo: the listings flows' actions. */
+export const ACAO_AVISO_CONTA_ESTOQUE_AMAZON = ACAO_AVISO_CONTA_LISTINGS_AMAZON;
+export type AcaoAvisoContaEstoqueAmazon = AcaoAvisoContaListingsAmazon;
+
+/** What {@link sincronizarAvisoContaEstoqueAmazon} did. */
+export type SincroniaAvisoContaEstoqueAmazon = SincroniaAvisoContaListingsAmazon;
+
 /**
- * Raise or resolve ONE of the stock sync's per-conta rows
- * ({@link MOTIVOS_CONTA_ESTOQUE_AMAZON}), CLOCKED by `relogio` — a Firestore
- * read time the RAISER took (the tick's read of its sync document, the
- * reconcile's first read, the patch task's link-doc read, …), converted HERE
- * by {@link relogioDoDocumentoUs}. An equal clock is dropped by both the
+ * Raise or resolve ONE of a listings flow's per-conta rows
+ * ({@link MOTIVOS_CONTA_LISTINGS_AMAZON} of `e.fluxo`), CLOCKED by `relogio` —
+ * a Firestore read time the RAISER took (the tick's read of its sync document,
+ * the reconcile's first read, the patch task's link-doc read, …), converted
+ * HERE by {@link relogioDoDocumentoUs}. An equal clock is dropped by both the
  * writer and the resolver, so a retried raiser writes nothing new.
  *
  * Unlike {@link sincronizarAvisosDaContaAmazon}, the resolve SEEDS: an absent
  * row becomes a resolved row carrying the clock, so a raise clocked by an
  * OLDER observation that lands after it is dropped instead of opening a row
  * whose next resolver may be a day away (the reconcile). It costs at most one
- * document per (conta, motivo) — five per conta — never one per SKU. Stamped
+ * document per (conta, motivo), never one per SKU. Stamped
  * `condicao-encerrada`, the tipo's machine resolution. `params` are exactly the
  * motivo, as for every per-conta row.
  *
- * @throws {RangeError} a motivo outside the five (the order import's two are
- *   raised by the import alone), nothing read or written.
+ * @throws {RangeError} a motivo outside the flow's own set (another flow's, or
+ *   the order import's two), nothing read or written.
  */
-export async function sincronizarAvisoContaEstoqueAmazon(
+export async function sincronizarAvisoContaListingsAmazon<F extends FluxoListingAmazon>(
   db: Firestore,
   deps: AvisoDepsAmazon,
   e: {
+    readonly fluxo: F;
     readonly integracaoId: string;
-    readonly motivo: MotivoContaEstoqueAmazon;
-    readonly acao: AcaoAvisoContaEstoqueAmazon;
+    /** Typed by the flow's own set; the run-time check below holds a cast caller to it too. */
+    readonly motivo: MotivoContaListingsAmazon<F>;
+    readonly acao: AcaoAvisoContaListingsAmazon;
     readonly relogio: CommitDoDocumento;
   },
-): Promise<SincroniaAvisoContaEstoqueAmazon> {
-  if (!(MOTIVOS_CONTA_ESTOQUE_AMAZON as readonly string[]).includes(e.motivo)) {
-    throw new RangeError('avisos.ts: motivo fora dos cinco do estoque');
+): Promise<SincroniaAvisoContaListingsAmazon> {
+  if (!(MOTIVOS_CONTA_LISTINGS_AMAZON[e.fluxo] as readonly string[]).includes(e.motivo)) {
+    throw new RangeError(RECUSA_DO_MOTIVO_POR_FLUXO[e.fluxo]);
   }
   const plano = sementeContaPrecisaAtencao(
     e.integracaoId,
     e.motivo,
     relogioDoDocumentoUs(e.relogio),
   );
-  if (e.acao === ACAO_AVISO_CONTA_ESTOQUE_AMAZON.levantar) {
+  if (e.acao === ACAO_AVISO_CONTA_LISTINGS_AMAZON.levantar) {
     const { resultado } = await escreverAviso(db, plano, depsDeEscrita(deps));
     return { acao: 'levantado', resultado };
   }
@@ -981,6 +1013,35 @@ export async function sincronizarAvisoContaEstoqueAmazon(
     plano,
   );
   return { acao: 'resolvido', fechou };
+}
+
+/**
+ * Raise or resolve ONE of the stock sync's per-conta rows
+ * ({@link MOTIVOS_CONTA_ESTOQUE_AMAZON}): the stock binding of
+ * {@link sincronizarAvisoContaListingsAmazon} (its docblock holds the clock and
+ * the seeding resolve).
+ *
+ * @throws {RangeError} a motivo outside the five (the order import's two are
+ *   raised by the import alone, a price motivo by the price flow), nothing read
+ *   or written.
+ */
+export function sincronizarAvisoContaEstoqueAmazon(
+  db: Firestore,
+  deps: AvisoDepsAmazon,
+  e: {
+    readonly integracaoId: string;
+    readonly motivo: MotivoContaEstoqueAmazon;
+    readonly acao: AcaoAvisoContaEstoqueAmazon;
+    readonly relogio: CommitDoDocumento;
+  },
+): Promise<SincroniaAvisoContaEstoqueAmazon> {
+  return sincronizarAvisoContaListingsAmazon(db, deps, {
+    fluxo: FLUXO_LISTING_AMAZON.estoque,
+    integracaoId: e.integracaoId,
+    motivo: e.motivo,
+    acao: e.acao,
+    relogio: e.relogio,
+  });
 }
 
 /* -------------------------------------------------------------------------- */

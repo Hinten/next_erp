@@ -7,6 +7,8 @@ import {
   ESTADO_BUCKET_LABELS,
   ESTADO_PEDIDO,
   ESTADO_PEDIDO_LABELS,
+  INTEGRACAO_TIPO,
+  INTEGRACAO_TIPO_LABELS,
   MODALIDADE_FRETE,
   pedidoSchema,
   seedFreteInicial,
@@ -14,8 +16,11 @@ import {
   type EstadoPedido,
 } from '@delfrance/schemas';
 import { db } from '@delfrance/test-fixtures';
+import { salesReportDateRange } from '../../lib/reports/salesReport';
 import { readEmulatorAccessConfig } from '../_helpers/verify-emulator-access';
 
+const REPORT_DAY = '2025-06-12';
+const REPORT_VARIANTS = ['before', 'after', 'other-channel', 'incoming'] as const;
 const REPORT_STATES = [
   { estado: ESTADO_PEDIDO.iniciado, count: 1, price: 15 },
   { estado: ESTADO_PEDIDO.emAnalise, count: 2, price: 25 },
@@ -24,12 +29,21 @@ const REPORT_STATES = [
 ] as const;
 
 function reportOrders(prefix: string) {
-  return REPORT_STATES.flatMap(({ estado, count }) =>
+  const outgoing = REPORT_STATES.flatMap(({ estado, count, price }) =>
     Array.from({ length: count }, (_, index) => ({
       id: `${prefix}-report-${estado}-${index}`,
       estado,
+      price,
+      variant: estado === ESTADO_PEDIDO.iniciado ? ('legacy' as const) : ('outgoing' as const),
     })),
   );
+  const other = REPORT_VARIANTS.map((variant) => ({
+    id: `${prefix}-report-${variant}`,
+    estado: ESTADO_PEDIDO.pago,
+    price: 97,
+    variant,
+  }));
+  return { outgoing, other };
 }
 
 /** Both independent writes must land before a later delete can be safely swept. */
@@ -55,38 +69,55 @@ async function expectReportOrderCreationSettled(id: string, estado: EstadoPedido
     .toBe(true);
 }
 
-/** Eight display-only orders cover every report bucket without a large trigger backlog. */
+/** Historical orders in a private channel isolate the report from concurrent suites. */
 export async function seedThemeReportFixtures(prefix: string) {
   readEmulatorAccessConfig();
+  const range = salesReportDateRange(REPORT_DAY, REPORT_DAY);
+  if (!range) throw new RangeError('Invalid date for sales report fixtures.');
+  const accountId = prefix + '-report-channel';
+  const accountName = prefix + ' Loja';
+  const { outgoing, other } = reportOrders(prefix);
+  const orders = [...outgoing, ...other];
   const batch = db().batch();
-  const timestamp = millisToMicros(Date.now());
-  for (const { estado, count, price } of REPORT_STATES) {
-    for (let index = 0; index < count; index += 1) {
-      const id = `${prefix}-report-${estado}-${index}`;
-      batch.set(
-        db().collection('pedidos').doc(id),
-        pedidoSchema.parse({
-          estado,
-          // The real report reads numero DESC, limited to 500. Retain the e2e
-          // prefix on the ID for cancelled-run reclamation, and put these few
-          // orders inside that window without excluding another suite's rows.
-          numero: `zzz-${id}`,
-          timestamp,
-          ultimaModificacao: timestamp,
-          valorCobrado: price,
-          itens: { NONE: [{ quantidade: 1, precoDeVenda: price, nomeDeVenda: id }] },
-          // No stock, payment or provider binding: these settled display
-          // fixtures exercise the report, never an integration workflow.
-        }),
-      );
-    }
+  batch.set(db().collection('integracao').doc(accountId), {
+    nome: accountName,
+    tipo: INTEGRACAO_TIPO.balcao,
+    ativo: false,
+  });
+  for (const { id, estado, price, variant } of orders) {
+    const timestamps = {
+      legacy: range.startUs / 1000,
+      outgoing: range.endExclusiveUs - 1,
+      before: range.startUs - 1,
+      after: range.endExclusiveUs / 1000,
+      'other-channel': range.startUs,
+      incoming: range.startUs,
+    };
+    const { ehSaida, ...order } = pedidoSchema.parse({
+      estado,
+      ehSaida: variant !== 'incoming',
+      ultimaModificacao: millisToMicros(Date.now()),
+      valorCobrado: price + 10,
+      itens: { NONE: [{ quantidade: 2, precoDeVenda: price / 2 + 2, descontoUnitario: 2 }] },
+    });
+    batch.set(db().collection('pedidos').doc(id), {
+      ...order,
+      timestamp: timestamps[variant],
+      integracaoPedidoOuterRef:
+        variant === 'legacy'
+          ? 'integracao/' + accountId
+          : 'documents/integracao/' +
+            (variant === 'other-channel' ? accountId + '-other' : accountId),
+      ...(variant === 'legacy' ? {} : { ehSaida }),
+    });
   }
   await batch.commit();
-  await Promise.all(
-    reportOrders(prefix).map(({ id, estado }) => expectReportOrderCreationSettled(id, estado)),
-  );
+  await Promise.all(orders.map(({ id, estado }) => expectReportOrderCreationSettled(id, estado)));
   return {
-    orderIds: reportOrders(prefix).map(({ id }) => id),
+    day: REPORT_DAY,
+    accountLabel: `${accountName} (${INTEGRACAO_TIPO_LABELS[INTEGRACAO_TIPO.balcao]}) — inativo`,
+    total: outgoing.length,
+    incomingRevenue: other.find(({ variant }) => variant === 'incoming')!.price,
     states: REPORT_STATES.map(({ estado, count, price }) => ({
       estado,
       label: ESTADO_PEDIDO_LABELS[estado],
@@ -97,29 +128,16 @@ export async function seedThemeReportFixtures(prefix: string) {
   };
 }
 
-/** Prove our orders are in the actual unscoped report window before browser assertions. */
-export async function expectThemeReportFixturesInRecentWindow(
-  fixtures: Awaited<ReturnType<typeof seedThemeReportFixtures>>,
-): Promise<void> {
-  readEmulatorAccessConfig();
-  const snapshot = await db().collection('pedidos').orderBy('numero', 'desc').limit(500).get();
-  expect(snapshot.docs.map(({ id }) => id)).toEqual(expect.arrayContaining(fixtures.orderIds));
-  for (const state of fixtures.states) {
-    const own = snapshot.docs.filter(
-      (document) =>
-        fixtures.orderIds.includes(document.id) && document.data().estado === state.estado,
-    );
-    expect(own, `The report window must contain this worker's ${state.label} orders`).toHaveLength(
-      state.count,
-    );
-  }
-}
-
 /** Delete only this worker's orders and wait for deletion history before sweeping descendants. */
 export async function cleanupThemeReportFixtures(prefix: string): Promise<void> {
   readEmulatorAccessConfig();
-  await Promise.all(
-    reportOrders(prefix).map(async ({ id, estado }) => {
+  const { outgoing, other } = reportOrders(prefix);
+  await Promise.all([
+    db()
+      .collection('integracao')
+      .doc(prefix + '-report-channel')
+      .delete(),
+    ...[...outgoing, ...other].map(async ({ id, estado }) => {
       const reference = db().collection('pedidos').doc(id);
       const existed = (await reference.get()).exists;
       // Repeat the seed settlement here: beforeAll may have failed after the
@@ -152,7 +170,7 @@ export async function cleanupThemeReportFixtures(prefix: string): Promise<void> 
         expect(result.truncated).toBe(false);
       }
     }),
-  );
+  ]);
 }
 
 const CHECKOUT_FIXTURE_COUNT = 3;

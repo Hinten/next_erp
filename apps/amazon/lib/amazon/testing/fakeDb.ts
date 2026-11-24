@@ -38,7 +38,7 @@
  *  - (step 12, PR 12-e1) `getAll(...refs, { fieldMask })` — see "Field masks
  *    and projections" below. Any OTHER read option, an option that is not the
  *    LAST argument, or a mask that is not a list of plain top-level field
- *    names throws;
+ *    names and (step 13, PR 13-b) two-segment `FieldPath`s throws;
  *  - (step 5) `batch()` — see "The batch" below;
  *  - (step 5) every document ref, and every query result's `ref`, carries
  *    `parent` (the collection) and `parent.parent` (its owning document, or
@@ -59,8 +59,15 @@
  *    server returns only the document names). A later `select` replaces an
  *    earlier one, as in the SDK. A projection changes no index the query
  *    needs, so the shape table below ignores it;
- *  - a field path is a plain top-level name: a dotted path or a `FieldPath`
- *    object is not modelled and throws;
+ *  - a field path is a plain top-level name: a dotted STRING is not modelled
+ *    and throws (a server reads it as a nested path);
+ *  - (step 13, PR 13-b) a `getAll` mask may also name ONE entry of a top-level
+ *    map as a two-segment `FieldPath` (`new FieldPath(mapa, chave)`): the
+ *    snapshot then holds `{ [mapa]: { [chave]: … } }` when the document's
+ *    `mapa` is a map holding `chave`, and nothing of `mapa` otherwise; a `chave`
+ *    holding a dot is ONE key, as on the server. A `FieldPath` of any other
+ *    length, and one in a query's `select`, throws. The log records such an
+ *    entry as the pair `[mapa, chave]`;
  *  - {@link FakeDb.exigirMascaraEm} makes ONE collection's documents refuse
  *    any read without a mask: a `get()`, an unmasked `getAll`, or a query on
  *    it without a `select` throws. A suite opts in for the collections whose
@@ -452,9 +459,15 @@ export interface LeituraFake {
   readonly via: 'get' | 'getAll';
   /** The `getAll` call it belongs to (1, 2, … per fake); absent on a `get`. */
   readonly chamada?: number;
-  /** The field mask it carried (`[]` = the keys alone), or `null` for the whole document. */
-  readonly mascara: readonly string[] | null;
+  /**
+   * The field mask it carried (`[]` = the keys alone), or `null` for the whole
+   * document. A two-segment `FieldPath` is logged as its pair `[mapa, chave]`.
+   */
+  readonly mascara: readonly CampoMascaraFake[] | null;
 }
+
+/** One field of a `getAll` mask (module header, "Field masks"): a top-level name, or a map's ONE entry. */
+export type CampoMascaraFake = string | readonly [mapa: string, chave: string];
 
 /** The operations of one fake, counted (module header, "The operation log"). */
 export interface ContagemFake {
@@ -481,11 +494,56 @@ function validarCampo(campo: unknown, onde: string): string {
   return campo;
 }
 
+/**
+ * The segment list of a `FieldPath`, recognised by its SDK reader `toArray`
+ * (a copy; the public type declares no reader), or `null` for anything else.
+ * Structural on purpose: the fake loads no value of the SDK, so a suite that
+ * mocks `firebase-admin/firestore` still masks by plain names.
+ */
+function segmentosDoFieldPath(campo: unknown): unknown {
+  if (typeof campo !== 'object' || campo === null) return null;
+  const toArray: unknown = (campo as { readonly toArray?: unknown }).toArray;
+  return typeof toArray === 'function' ? (toArray as () => unknown).call(campo) : null;
+}
+
+/**
+ * A `getAll` mask's field (module header, "Field masks"): a plain top-level
+ * name as {@link validarCampo} has it, or a `FieldPath` of EXACTLY two
+ * non-empty segments, read as its pair. Anything else throws, synchronously.
+ */
+function validarCampoDaMascara(campo: unknown, onde: string): CampoMascaraFake {
+  const segmentos = segmentosDoFieldPath(campo);
+  if (segmentos === null) return validarCampo(campo, onde);
+  if (
+    !Array.isArray(segmentos) ||
+    segmentos.length !== 2 ||
+    !segmentos.every((s) => typeof s === 'string' && s !== '')
+  ) {
+    throw new Error(`FakeDb: ${onde} só modela um FieldPath de dois segmentos (mapa, chave)`);
+  }
+  return [segmentos[0] as string, segmentos[1] as string];
+}
+
+/** Whether `valor` is a map a nested mask can read an entry of. */
+function ehMapa(valor: unknown): valor is DocData {
+  return typeof valor === 'object' && valor !== null && !Array.isArray(valor);
+}
+
 /** `dados` holding only the fields of `campos` it has (module header, "Field masks"). */
-function projetar(dados: DocData, campos: readonly string[]): DocData {
+function projetar(dados: DocData, campos: readonly CampoMascaraFake[]): DocData {
   const saida: DocData = {};
   for (const campo of campos) {
-    if (Object.hasOwn(dados, campo)) saida[campo] = dados[campo];
+    if (typeof campo === 'string') {
+      if (Object.hasOwn(dados, campo)) saida[campo] = dados[campo];
+      continue;
+    }
+    // A map's entry merges into what the mask already holds of that map (a
+    // top-level name of the same map, before or after it, keeps it whole).
+    const [mapa, chave] = campo;
+    const origem = Object.hasOwn(dados, mapa) ? dados[mapa] : undefined;
+    if (!ehMapa(origem) || !Object.hasOwn(origem, chave)) continue;
+    const destino = saida[mapa];
+    saida[mapa] = { ...(ehMapa(destino) ? destino : {}), [chave]: origem[chave] };
   }
   return saida;
 }
@@ -760,13 +818,13 @@ function ehOpcoesDeLeitura(v: unknown): v is Readonly<Record<string, unknown>> {
 }
 
 /** The ONE read option modelled, `{ fieldMask: [...] }`, read; any other shape throws. */
-function mascaraDasOpcoes(opcoes: Readonly<Record<string, unknown>>): readonly string[] {
+function mascaraDasOpcoes(opcoes: Readonly<Record<string, unknown>>): readonly CampoMascaraFake[] {
   const chaves = Object.keys(opcoes);
   const mascara: unknown = opcoes.fieldMask;
   if (chaves.length !== 1 || chaves[0] !== 'fieldMask' || !Array.isArray(mascara)) {
     throw new Error('FakeDb: getAll() com opções de leitura não é modelado (só { fieldMask })');
   }
-  return mascara.map((campo: unknown) => validarCampo(campo, 'getAll({ fieldMask })'));
+  return mascara.map((campo: unknown) => validarCampoDaMascara(campo, 'getAll({ fieldMask })'));
 }
 
 /** `ref.parent` (the collection) and `ref.parent.parent` (its owning doc, or `null` at the root). */
@@ -835,7 +893,7 @@ export class FakeDb {
   }
 
   /** Throws when `caminho`'s collection requires a mask and the read carries none. */
-  private conferirMascara(caminho: string, mascara: readonly string[] | null): void {
+  private conferirMascara(caminho: string, mascara: readonly CampoMascaraFake[] | null): void {
     if (mascara === null && this.mascarasExigidas.has(colecaoDoCaminho(caminho))) {
       throw new Error(`FakeDb: leitura de ${caminho} sem máscara de campos (exigirMascaraEm)`);
     }
@@ -1000,7 +1058,11 @@ export class FakeDb {
    * One snapshot of `caminho`, read NOW, holding only the masked fields when
    * `mascara` is not `null` (the read is logged by the caller).
    */
-  private snapshot(caminho: string, readTime: CarimboFake, mascara: readonly string[] | null) {
+  private snapshot(
+    caminho: string,
+    readTime: CarimboFake,
+    mascara: readonly CampoMascaraFake[] | null,
+  ) {
     const atual = this.store.get(caminho);
     const inteiro = atual === undefined ? undefined : clonar(atual.data);
     const dados = inteiro === undefined || mascara === null ? inteiro : projetar(inteiro, mascara);

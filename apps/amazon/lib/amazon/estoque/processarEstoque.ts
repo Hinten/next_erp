@@ -142,17 +142,11 @@
  * refuses first), and a PATCH also needs the stock valve `on` and a canary hit.
  */
 import type { Firestore } from 'firebase-admin/firestore';
-import { MissingRegionError } from '@delfrance/core/region';
 import { vezFeedAmazonCollection } from '@delfrance/data/admin/collections';
-import { isGrpcStatusError } from '@delfrance/data/admin/grpcErrors';
 import {
-  AmazonAuthError,
   AmazonHttpError,
-  AmazonNetworkError,
-  AmazonSchemaError,
   AmazonThrottleError,
   type EnvioListingAmazon,
-  OPERACAO_ENVIAR_LISTING,
   skuTemCaminhoAmazon,
 } from '@delfrance/integrations-amazon-sp-api';
 import {
@@ -170,11 +164,6 @@ import {
 import type { ContextoAmazon, ContextoAmazonDeps } from '../core/contexto';
 import { type ResultadoEscritaAmazon, executarEscritaAmazon } from '../core/escrita';
 import {
-  AmazonTarefasTransitoriasError,
-  descreverFalhaDoSdkDeTarefasAmazon,
-  ehFalhaDoSdkDeTarefasAmazon,
-} from '../core/filaTarefas';
-import {
   type CamposLogAmazon,
   type LoggerAmazon,
   type SeveridadeAmazon,
@@ -190,6 +179,15 @@ import {
   registrarValvulaAmazon,
 } from '../core/valvulas';
 import type { AmbienteAmazon } from '../env';
+import {
+  classeDaFalhaListingAmazon,
+  contextoDaEscritaComOrcamentoListingAmazon,
+  contidoListingAmazon,
+  envioRecusadoListingAmazon,
+  envioTalvezAplicadoListingAmazon,
+  falhaContidaListingAmazon,
+  pausarListingAmazon,
+} from '../listings/escritaListing';
 import {
   type LeituraListingNaAmazon,
   enviarDisponibilidadeNaAmazon,
@@ -582,45 +580,30 @@ function retentar(
 /* -------------------------------------------------------------------------- */
 
 /**
- * The failures the no-throw boundary contains (module header): a Firestore
- * error and the stock producer's own. Anything else is an unnamed bug, and
- * crosses.
+ * The failures the no-throw boundary contains (module header): the listings
+ * flows' shared classifier (`listings/escritaListing.ts`, rung 2) bound to the
+ * stock producer's own classes. Anything else is an unnamed bug, and crosses.
  */
-function ehFalhaContida(err: unknown): boolean {
-  return (
-    isGrpcStatusError(err) ||
-    err instanceof AmazonTarefasTransitoriasError ||
-    err instanceof AmazonEstoqueTarefasDesligadasError ||
-    err instanceof MissingRegionError ||
-    err instanceof AmazonEstoqueRegiaoDaFilaInvalidaError ||
-    ehFalhaDoSdkDeTarefasAmazon(err)
-  );
-}
+const ehFalhaContida = falhaContidaListingAmazon([
+  AmazonEstoqueTarefasDesligadasError,
+  AmazonEstoqueRegiaoDaFilaInvalidaError,
+]);
 
 /** A failure's CLASS — its `name`, a Firestore one with its gRPC code, an SDK one described; never a message. */
-function classeDoErro(err: unknown): string {
-  if (isGrpcStatusError(err)) return `Firestore/${String(err.code)}`;
-  if (ehFalhaDoSdkDeTarefasAmazon(err)) return descreverFalhaDoSdkDeTarefasAmazon(err);
-  const nome = typeof err === 'object' && err !== null ? (err as { name?: unknown }).name : null;
-  return typeof nome === 'string' ? nome : 'desconhecido';
-}
+const classeDoErro = classeDaFalhaListingAmazon;
 
 /**
  * ONE side effect inside the boundary: its value, or — for a contained failure
  * — `null`, with the FIRST loss recorded for the line.
  */
-async function protegido<T>(
+function protegido<T>(
   e: Execucao,
   efeito: EfeitoPerdidoEstoqueAmazon,
   fn: () => Promise<T>,
 ): Promise<T | null> {
-  try {
-    return await fn();
-  } catch (err) {
-    if (!ehFalhaContida(err)) throw err;
-    e.perda ??= { efeito, erro: classeDoErro(err) };
-    return null;
-  }
+  return contidoListingAmazon(fn, ehFalhaContida, (erro) => {
+    e.perda ??= { efeito, erro };
+  });
 }
 
 /** The SKU's link docs, as the write-back takes them (the `dono`'s, by path). */
@@ -752,12 +735,15 @@ async function pausar(
   e: Execucao,
   extra: Partial<ResultadoTarefaEstoqueAmazon>,
 ): Promise<ResultadoTarefaEstoqueAmazon> {
-  try {
-    await e.deps.produtor().enfileirarPausa(e.t);
-  } catch (err) {
-    if (!ehFalhaContida(err)) throw err;
-    e.perda ??= { efeito: 'pausa', erro: classeDoErro(err) };
-    return retentar(e, MOTIVO_ESTOQUE_AMAZON.pausado, err, extra);
+  // The listings flows' shared pause (`listings/escritaListing.ts`, rung 3),
+  // bound to the stock producer and the stock boundary.
+  const pausa = await pausarListingAmazon(
+    () => e.deps.produtor().enfileirarPausa(e.t),
+    ehFalhaContida,
+  );
+  if (pausa.tipo === 'retentar') {
+    e.perda ??= { efeito: 'pausa', erro: pausa.classe };
+    return retentar(e, MOTIVO_ESTOQUE_AMAZON.pausado, pausa.causa, extra);
   }
   return resultado(e, {
     ...extra,
@@ -800,22 +786,6 @@ async function falhaDeLeitura(e: Execucao, err: unknown): Promise<ResultadoTaref
   }
 }
 
-/**
- * Whether the PATCH's OWN failure means it MAY HAVE LANDED: a 5xx, a dropped
- * connection or a timeout, or a 2xx off its schema — each of the SP-API's
- * answer to `patchListingsItem` itself, never an LWA exchange's.
- */
-function patchIncerto(err: unknown): boolean {
-  if (err instanceof AmazonAuthError || err instanceof AmazonThrottleError) return false;
-  if (err instanceof AmazonHttpError) {
-    return err.transitorio && err.destino === 'sp-api' && err.operacao === OPERACAO_ENVIAR_LISTING;
-  }
-  if (err instanceof AmazonNetworkError || err instanceof AmazonSchemaError) {
-    return err.destino === 'sp-api' && err.operacao === OPERACAO_ENVIAR_LISTING;
-  }
-  return false;
-}
-
 /** A failure once the PATCH was reached (module header, P9). */
 async function falhaDeEscrita(
   e: Execucao,
@@ -830,8 +800,10 @@ async function falhaDeEscrita(
   };
   // A 429 was not processed.
   if (err instanceof AmazonThrottleError) return pausar(e, extra);
-  // It MAY HAVE LANDED: the provisional outcome FIRST, then the retry.
-  if (patchIncerto(err)) {
+  // It MAY HAVE LANDED (the listings flows' shared reading of the PATCH's own
+  // failure, `listings/escritaListing.ts`, rung 4): the provisional outcome
+  // FIRST, then the retry.
+  if (envioTalvezAplicadoListingAmazon(err)) {
     const gravacao = await gravarEnvio(e, vinculo, envioIncerto(emMs, plano.quantidade));
     return retentar(e, MOTIVO_ESTOQUE_AMAZON.escritaIncerta, err, {
       ...extra,
@@ -841,11 +813,7 @@ async function falhaDeEscrita(
   }
   // Amazon answered the PATCH with a definite refusal: a 4xx (a second 401/403
   // after the forced refresh included), a 3xx never followed.
-  if (
-    err instanceof AmazonHttpError &&
-    err.destino === 'sp-api' &&
-    err.operacao === OPERACAO_ENVIAR_LISTING
-  ) {
+  if (envioRecusadoListingAmazon(err)) {
     return encerrar(e, MOTIVO_ESTOQUE_AMAZON.escritaFalhou, extra);
   }
   // Not the PATCH's own answer (the forced refresh's LWA exchange, a parked
@@ -996,21 +964,20 @@ async function executar(
     emMs: null,
   };
   // The write's credential getter — the one the write client awaits before
-  // every PATCH, and the forced refresh's — wrapped: the budget is checked and
-  // `emMs` stamped with the credential IN HAND, the last await before a PATCH
-  // leaves (module header, P6). The live read keeps the context's own client.
-  const contextoDaEscrita: Pick<ContextoAmazon, 'integracaoId' | 'obterAcesso'> = {
-    integracaoId: contexto.integracaoId,
-    obterAcesso: async (opcoes) => {
-      const credencial = await contexto.obterAcesso(opcoes);
-      const agoraMs = deps.agora();
-      if (agoraMs - e.inicioMs > ORCAMENTO_ANTES_DO_PATCH_MS) {
-        throw new AmazonEstoquePrazoDaTarefaError();
-      }
+  // every PATCH, and the forced refresh's — wrapped by the listings flows'
+  // shared rung (`listings/escritaListing.ts`, rung 1): the budget is checked
+  // and `emMs` stamped with the credential IN HAND, the last await before a
+  // PATCH leaves (module header, P6). The live read keeps the context's own
+  // client.
+  const contextoDaEscrita = contextoDaEscritaComOrcamentoListingAmazon(contexto, {
+    agora: deps.agora,
+    inicioMs: e.inicioMs,
+    orcamentoMs: ORCAMENTO_ANTES_DO_PATCH_MS,
+    prazoEsgotado: () => new AmazonEstoquePrazoDaTarefaError(),
+    carimbar: (agoraMs) => {
       corrida.emMs = agoraMs;
-      return credencial;
     },
-  };
+  });
   let r: ResultadoEscritaAmazon<LeituraListingNaAmazon, PlanoEstoqueAmazon, EnvioListingAmazon>;
   try {
     r = await executarEscritaAmazon({

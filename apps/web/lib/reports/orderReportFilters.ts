@@ -1,19 +1,13 @@
-import {
-  and,
-  equal,
-  equalAny,
-  field,
-  greaterThanOrEqual,
-  lessThan,
-  or,
-} from 'firebase/firestore/pipelines';
-import { MICROS_LOWER_BOUND, MILLIS_UPPER_BOUND } from '@delfrance/core/datetime';
+import { and, equal, equalAny, field } from 'firebase/firestore/pipelines';
 import { estadoPedidoSchema, naoDocId, type EstadoPedido } from '@delfrance/schemas';
 import { checkoutDateRange } from './checkouts';
+import {
+  pedidoReportAccounts,
+  pedidoReportTimestamp,
+  type PedidoReportDateRange,
+} from './pedidoReportPredicates';
 
-export interface OrderReportFilters {
-  startUs: number;
-  endExclusiveUs: number;
+export interface OrderReportFilters extends PedidoReportDateRange {
   estados: readonly EstadoPedido[];
   /** Integration document IDs. An empty selection includes every account. */
   accountIds: readonly string[];
@@ -66,33 +60,10 @@ export function normalizeOrderReportFilters(filters: OrderReportFilters): OrderR
 
 export function orderReportPredicate(input: OrderReportFilters) {
   const filters = normalizeOrderReportFilters(input);
-  // The two timestamp branches match the tolerant schema's numeric-unit heuristic.
-  const conditions = [
-    equalAny(field('estado'), [...filters.estados]),
-    ...(filters.accountIds.length === 0
-      ? []
-      : [
-          equalAny(
-            field('integracaoPedidoOuterRef'),
-            filters.accountIds.flatMap((id) => [`documents/integracao/${id}`, `integracao/${id}`]),
-          ),
-        ]),
-  ];
   return and(
     equal(field('ehSaida'), filters.ehSaida),
-    or(
-      and(
-        greaterThanOrEqual(field('timestamp'), Math.max(filters.startUs, MICROS_LOWER_BOUND)),
-        lessThan(field('timestamp'), filters.endExclusiveUs),
-      ),
-      and(
-        greaterThanOrEqual(field('timestamp'), Math.ceil(filters.startUs / 1000)),
-        lessThan(
-          field('timestamp'),
-          Math.min(Math.ceil(filters.endExclusiveUs / 1000), MILLIS_UPPER_BOUND + 1),
-        ),
-      ),
-    ),
-    ...conditions,
+    pedidoReportTimestamp(filters),
+    equalAny(field('estado'), [...filters.estados]),
+    ...(filters.accountIds.length > 0 ? [pedidoReportAccounts(filters.accountIds)] : []),
   );
 }

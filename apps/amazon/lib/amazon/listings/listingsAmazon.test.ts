@@ -1,34 +1,46 @@
 /**
- * The Listings Items calls (step 12, PR 12-e1): the two reads through the REAL
- * context over the fake db and a scripted `fetch` (the forced-refresh-once
- * rule, the "not listed" reading of the read's own 404), and the patch through
- * a RECORDING write client (exactly one PATCH, no refresh rule of its own).
+ * The Listings Items calls (step 12, PR 12-e1; the offer patch since step 13):
+ * the two reads through the REAL context over the fake db and a scripted `fetch`
+ * (the forced-refresh-once rule, the "not listed" reading of the read's own
+ * 404, the price read's datasets), and the two patches through a RECORDING
+ * write client (exactly one PATCH, no refresh rule of their own).
  *
  * ⚠️ D11: the global `fetch` refuses; the scripted one serves model shapes.
  */
 import {
+  AmazonAuthError,
   AmazonHttpError,
   AmazonNotFoundError,
   AmazonThrottleError,
   CAMINHO_LISTINGS,
   DADOS_LISTING_AMAZON,
+  type EntradaOfertaListing,
+  LOCALIDADE_ISSUES_LISTINGS,
   MARKETPLACE_ID_BR,
+  MODO_ENVIO_LISTING_AMAZON,
+  type ModoEnvioListingAmazon,
   OPERACAO_BUSCAR_LISTINGS,
+  OPERACAO_ENVIAR_LISTING,
   OPERACAO_LER_LISTING,
   type SpApiEscritaClient,
+  TIPO_OFERTA_LISTING_AMAZON,
+  ofertaDoListingAmazon,
 } from '@delfrance/integrations-amazon-sp-api';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
 
 import { __setRelogioDoCacheParaTestes } from '../core/contaCache';
+import { REDIGIDO } from '../core/redacao';
 import { MOTIVO_ESTOQUE_AMAZON } from '../estoque/motivosEstoque';
-import { AGORA_MS, SPID_A } from '../testing/fixtures';
+import { AGORA_MS, SPID_A, linhasDeChamada } from '../testing/fixtures';
 import { harnessImportador } from '../testing/importadorAmazon';
 import {
   type ContextoDosListingsAmazon,
+  INCLUIR_LEITURA_PRECO,
   NAO_LISTADO_AMAZON,
   buscarListingsNaAmazon,
   enviarDisponibilidadeNaAmazon,
+  enviarOfertaNaAmazon,
   lerListingNaAmazon,
 } from './listingsAmazon';
 
@@ -268,5 +280,185 @@ describe('enviarDisponibilidadeNaAmazon — the engine’s `escrever`', () => {
       enviarDisponibilidadeNaAmazon(cliente, { sellerId: SPID_A, sku: SKU, quantidade: -1 }),
     ).rejects.toMatchObject({ name: 'AmazonConfigError' });
     expect(patch).not.toHaveBeenCalled();
+  });
+});
+
+describe('INCLUIR_LEITURA_PRECO — the datasets of a price read (step 13)', () => {
+  /** Our offer element as Amazon's purchasable-offer guide writes it (synthetic prices). */
+  const OFERTA = {
+    marketplace_id: MARKETPLACE_ID_BR,
+    currency: 'BRL',
+    audience: 'ALL',
+    our_price: [{ schedule: [{ value_with_tax: 129.9 }] }],
+    minimum_seller_allowed_price: [{ schedule: [{ value_with_tax: 119.9 }] }],
+    maximum_seller_allowed_price: [{ schedule: [{ value_with_tax: 129.9 }] }],
+  };
+  const LISTING_COM_OFERTA = {
+    sku: SKU,
+    summaries: LISTING.summaries,
+    attributes: { purchasable_offer: [OFERTA] },
+    issues: [],
+  };
+
+  it('★ is EXACTLY the summaries, the attributes, the issues and the relationships, by the package’s constants', () => {
+    expect(INCLUIR_LEITURA_PRECO).toEqual([
+      DADOS_LISTING_AMAZON.resumos,
+      DADOS_LISTING_AMAZON.atributos,
+      DADOS_LISTING_AMAZON.issues,
+      DADOS_LISTING_AMAZON.relacoes,
+    ]);
+    expect(INCLUIR_LEITURA_PRECO).toEqual(['summaries', 'attributes', 'issues', 'relationships']);
+    // NEAR-MISS: a price read asks for no stock and no `offers` (no floor or ceiling there).
+    expect(INCLUIR_LEITURA_PRECO).not.toContain(DADOS_LISTING_AMAZON.disponibilidade);
+    expect(INCLUIR_LEITURA_PRECO).not.toContain('offers');
+  });
+
+  it('★ ONE GET asks Amazon for exactly those datasets, and the listing’s attributes reach the offer reader as Amazon sent them', async () => {
+    const { h, contexto: c } = await contexto({ status: 200, corpo: LISTING_COM_OFERTA });
+    const lido = await lerListingNaAmazon(c, {
+      sellerId: SPID_A,
+      sku: SKU,
+      incluir: INCLUIR_LEITURA_PRECO,
+    });
+    expect(h.gets).toHaveLength(1);
+    // The package joins them in its own constants' order.
+    expect(h.gets[0]?.searchParams.get('includedData')).toBe(
+      'summaries,attributes,relationships,issues',
+    );
+    if (lido === NAO_LISTADO_AMAZON) throw new Error('teste: listado');
+    expect(lido.attributes).toEqual(LISTING_COM_OFERTA.attributes);
+    expect(ofertaDoListingAmazon(lido.attributes, AGORA_MS)).toMatchObject({
+      tipo: TIPO_OFERTA_LISTING_AMAZON.lida,
+      base: 129.9,
+      minimo: 119.9,
+      maximo: 129.9,
+    });
+    // The call line's excerpt keeps the offer's shape and none of its values
+    // (the deny row for `attributes.*` itself is pinned by `redacao.test.ts`).
+    const chamadas = linhasDeChamada(h.log.linhas);
+    expect(chamadas).toHaveLength(1);
+    const trecho = String(chamadas[0]?.trechoCorpo);
+    expect(trecho).toContain(`"our_price":[{"schedule":[{"value_with_tax":"${REDIGIDO}"}]}]`);
+    expect(trecho).toContain(`"currency":"${REDIGIDO}"`);
+    expect(trecho).not.toMatch(/129\.9|119\.9|"BRL"|"ALL"/);
+  });
+
+  it('a search asks for the same datasets', async () => {
+    const { h, contexto: c } = await contexto({
+      status: 200,
+      corpo: { numberOfResults: 1, items: [LISTING_COM_OFERTA] },
+    });
+    const busca = await buscarListingsNaAmazon(c, {
+      sellerId: SPID_A,
+      skus: [SKU],
+      incluir: INCLUIR_LEITURA_PRECO,
+    });
+    expect(busca.itens[0]?.attributes).toEqual(LISTING_COM_OFERTA.attributes);
+    expect(h.gets[0]?.searchParams.get('includedData')).toBe(
+      'summaries,attributes,relationships,issues',
+    );
+  });
+});
+
+describe('enviarOfertaNaAmazon — the engine’s `escrever` (step 13)', () => {
+  function escritor(resposta: () => Promise<unknown>) {
+    const patch = vi.fn((..._args: unknown[]) => resposta());
+    return { cliente: { patch } as unknown as SpApiEscritaClient, patch };
+  }
+  const aceito = () =>
+    Promise.resolve({
+      status: 200,
+      dados: { sku: SKU, status: 'ACCEPTED', submissionId: 'sub-oferta-1', issues: [] },
+      correlationId: 'c',
+    });
+  const FAIXA = { base: 129.9, minimo: 119.9, maximo: 129.9 } as const;
+  const entrada = (extra: Partial<EntradaOfertaListing> = {}): EntradaOfertaListing => ({
+    sellerId: SPID_A,
+    sku: SKU,
+    faixa: FAIXA,
+    tipoProduto: 'LUGGAGE',
+    ...extra,
+  });
+  /** The offer body, frozen as bytes: the BR/BRL/ALL element and the three prices, one merge. */
+  const CORPO_LUGGAGE =
+    '{"productType":"LUGGAGE","patches":[{"op":"merge","path":"/attributes/purchasable_offer",' +
+    `"value":[{"marketplace_id":"${MARKETPLACE_ID_BR}","currency":"BRL","audience":"ALL",` +
+    '"our_price":[{"schedule":[{"value_with_tax":129.9}]}],' +
+    '"minimum_seller_allowed_price":[{"schedule":[{"value_with_tax":119.9}]}],' +
+    '"maximum_seller_allowed_price":[{"schedule":[{"value_with_tax":129.9}]}]}]}]}';
+
+  type PedidoGravado = { caminho: string; corpo: string; query: Record<string, unknown> };
+
+  it('★ ONE PATCH of the offer merge: the SKU’s path, the caller’s product type, the body EXACTLY as bytes, no mode; Amazon’s answer returned', async () => {
+    const { cliente, patch } = escritor(aceito);
+    await expect(enviarOfertaNaAmazon(cliente, entrada())).resolves.toEqual({
+      sku: SKU,
+      status: 'ACCEPTED',
+      submissionId: 'sub-oferta-1',
+      issues: [],
+    });
+    expect(patch).toHaveBeenCalledTimes(1);
+    const pedido = patch.mock.calls[0]?.[0] as PedidoGravado;
+    expect(pedido.caminho).toBe(`${CAMINHO_LISTINGS}/${SPID_A}/${SKU}`);
+    expect(pedido.corpo).toBe(CORPO_LUGGAGE);
+    // NEAR-MISS: without `modo`, no `mode` key at all — a real write.
+    expect(pedido.query).toEqual({
+      marketplaceIds: MARKETPLACE_ID_BR,
+      issueLocale: LOCALIDADE_ISSUES_LISTINGS,
+    });
+    expect(Object.keys(pedido.query)).not.toContain('mode');
+  });
+
+  it('★ `modo: VALIDATION_PREVIEW` is carried to the query, the body unchanged', async () => {
+    const { cliente, patch } = escritor(aceito);
+    await enviarOfertaNaAmazon(cliente, entrada({ modo: MODO_ENVIO_LISTING_AMAZON.validacao }));
+    const pedido = patch.mock.calls[0]?.[0] as PedidoGravado;
+    expect(pedido.query).toEqual({
+      marketplaceIds: MARKETPLACE_ID_BR,
+      issueLocale: LOCALIDADE_ISSUES_LISTINGS,
+      mode: 'VALIDATION_PREVIEW',
+    });
+    expect(pedido.corpo).toBe(CORPO_LUGGAGE);
+  });
+
+  it('★ the caller’s product type is the body’s, whatever it is (PRODUCT included); NEAR-MISS: a lower-case one is refused and nothing is sent', async () => {
+    const { cliente, patch } = escritor(aceito);
+    await enviarOfertaNaAmazon(cliente, entrada({ tipoProduto: 'PRODUCT' }));
+    const corpo = (patch.mock.calls[0]?.[0] as PedidoGravado).corpo;
+    expect(corpo).toBe(CORPO_LUGGAGE.replace('"LUGGAGE"', '"PRODUCT"'));
+
+    const recusa = escritor(aceito);
+    await expect(
+      enviarOfertaNaAmazon(recusa.cliente, entrada({ tipoProduto: 'luggage' })),
+    ).rejects.toMatchObject({ name: 'AmazonConfigError', motivo: 'tipo-produto' });
+    expect(recusa.patch).not.toHaveBeenCalled();
+  });
+
+  it('a price range or a mode the package refuses sends nothing', async () => {
+    const { cliente, patch } = escritor(aceito);
+    await expect(
+      enviarOfertaNaAmazon(cliente, entrada({ faixa: { base: 10, minimo: 11, maximo: 12 } })),
+    ).rejects.toMatchObject({ name: 'AmazonConfigError', motivo: 'oferta' });
+    await expect(
+      enviarOfertaNaAmazon(cliente, entrada({ modo: 'PERSIST' as ModoEnvioListingAmazon })),
+    ).rejects.toBeInstanceOf(TypeError);
+    expect(patch).not.toHaveBeenCalled();
+  });
+
+  it('★ a refused credential (an SP-API 401) is thrown UNTOUCHED after ONE PATCH: no refresh rule of its own, never repeated here', async () => {
+    const recusa = new AmazonAuthError({
+      metodo: 'PATCH',
+      caminho: '/x',
+      correlationId: 'corr-teste',
+      requestIdAmazon: null,
+      refCredencial: 'ref-teste',
+      status: 401,
+      destino: 'sp-api',
+      operacao: OPERACAO_ENVIAR_LISTING,
+      codigoLwa: null,
+    });
+    const { cliente, patch } = escritor(() => Promise.reject(recusa));
+    await expect(enviarOfertaNaAmazon(cliente, entrada())).rejects.toBe(recusa);
+    expect(patch).toHaveBeenCalledTimes(1);
   });
 });

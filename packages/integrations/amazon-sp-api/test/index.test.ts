@@ -59,10 +59,25 @@ describe('the constants', () => {
     expect(barril.LOCALIDADE_ISSUES_LISTINGS).toBe('pt_BR');
     expect(barril.DADOS_LISTING_AMAZON).toEqual({
       resumos: 'summaries',
+      atributos: 'attributes',
       disponibilidade: 'fulfillmentAvailability',
       relacoes: 'relationships',
       issues: 'issues',
     });
+    // The offer (step 13).
+    expect(barril.VERSAO_API_LISTINGS).toBe('2021-08-01');
+    expect(barril.CAMINHO_ATRIBUTO_OFERTA).toBe('/attributes/purchasable_offer');
+    expect(barril.MOEDA_OFERTA_BR).toBe('BRL');
+    expect(barril.PUBLICO_OFERTA_TODOS).toBe('ALL');
+    expect(barril.TIPO_PRODUTO_LISTING_REGEX.source).toBe('^[A-Z][A-Z0-9_]{0,63}$');
+    expect(barril.MODO_ENVIO_LISTING_AMAZON).toEqual({ validacao: 'VALIDATION_PREVIEW' });
+    expect(barril.TIPO_OFERTA_LISTING_AMAZON).toEqual({
+      lida: 'lida',
+      ausente: 'ausente',
+      ambigua: 'ambigua',
+      ilegivel: 'ilegivel',
+    });
+    expect(barril.DADOS_RELATORIO_FEED).toEqual({ issues: 'issues' });
     // Feeds (step 12a).
     expect(barril.OPERACAO_CRIAR_DOCUMENTO_FEED).toBe('createFeedDocument');
     expect(barril.OPERACAO_CRIAR_FEED).toBe('createFeed');
@@ -112,6 +127,10 @@ describe('the barrel', () => {
       'lerListingAmazon',
       'buscarListingsAmazon',
       'enviarDisponibilidadeAmazon',
+      'enviarOfertaAmazon',
+      'patchDisponibilidadeAmazon',
+      'patchOfertaAmazon',
+      'ofertaDoListingAmazon',
       'criarDocumentoFeedAmazon',
       'criarFeedAmazon',
       'lerFeedAmazon',
@@ -140,6 +159,7 @@ describe('the barrel', () => {
       'listingAmazonSchema',
       'buscaListingsAmazonSchema',
       'envioListingAmazonSchema',
+      'issueListingAmazonSchema',
       'documentoFeedCriadoSchema',
       'feedCriadoSchema',
       'feedAmazonSchema',

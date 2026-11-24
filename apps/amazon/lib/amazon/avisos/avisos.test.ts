@@ -9,6 +9,7 @@ import {
   CANAL_AVISO,
   FUSO_FISCAL,
   MOTIVO_CONTA_AMAZON,
+  type MotivoContaAmazon,
   MOTIVO_IMPORTACAO_PARADA_AMAZON,
   MOTIVO_PEDIDO_AMAZON,
   ROTAS_AVISO,
@@ -18,11 +19,14 @@ import {
   motivoContaAmazonSchema,
 } from '@delfrance/schemas';
 
+import { FLUXO_LISTING_AMAZON } from '../listings/fluxoListing';
 import { FakeDb, asDb, increment } from '../testing/fakeDb';
 import { AGORA_MS, DIA_MS, caminhoAviso } from '../testing/fixtures';
 import {
   ACAO_AVISO_CONTA_ESTOQUE_AMAZON,
+  ACAO_AVISO_CONTA_LISTINGS_AMAZON,
   MOTIVOS_CONTA_ESTOQUE_AMAZON,
+  MOTIVOS_CONTA_LISTINGS_AMAZON,
   MOTIVO_AVISO_AMAZON,
   type MotivoContaEstoqueAmazon,
   SEVERIDADE_MOTIVO_PEDIDO_AMAZON,
@@ -54,6 +58,7 @@ import {
   resolverSegredoLwaRecusado,
   semearResolucaoDoPedidoAmazon,
   sincronizarAvisoContaEstoqueAmazon,
+  sincronizarAvisoContaListingsAmazon,
   sincronizarAvisoDeReautorizacao,
 } from './avisos';
 
@@ -1056,5 +1061,158 @@ describe('step 12 (12-e1): the stock sync’s per-conta rows — one motivo at a
     expect(h.resolverAviso).toHaveBeenCalledTimes(1);
     const semente = h.resolverAviso.mock.calls[0]?.[4] as { relogioEvento?: number } | undefined;
     expect(semente?.relogioEvento).toBe(relogioDoDocumentoUs(T1));
+  });
+});
+
+describe('step 13 (13-b): the per-conta rows of each LISTINGS flow — one closed motivo set per flow', () => {
+  const T1 = { seconds: 41, nanoseconds: 1_000 };
+  /** A motivo the price flow will own, not yet in the schema: what a stock raiser must refuse. */
+  const MOTIVO_DE_PRECO = 'feed-preco-falhou' as MotivoContaAmazon;
+  const sincronizarFluxo = (
+    alvo: FakeDb,
+    fluxo: (typeof FLUXO_LISTING_AMAZON)[keyof typeof FLUXO_LISTING_AMAZON],
+    motivo: MotivoContaAmazon,
+    acao: 'levantar' | 'resolver',
+  ) =>
+    sincronizarAvisoContaListingsAmazon(asDb(alvo), deps(), {
+      fluxo,
+      integracaoId: ID,
+      // Past the compile-time set on purpose: these cases drive the run-time check.
+      motivo: motivo as never,
+      acao,
+      relogio: T1,
+    });
+
+  it('the per-flow sets: stock owns its five (the very list), price owns NONE yet; the actions are the stock binding’s', () => {
+    expect(MOTIVOS_CONTA_LISTINGS_AMAZON.estoque).toBe(MOTIVOS_CONTA_ESTOQUE_AMAZON);
+    expect(MOTIVOS_CONTA_LISTINGS_AMAZON.preco).toEqual([]);
+    expect(Object.keys(MOTIVOS_CONTA_LISTINGS_AMAZON).sort()).toEqual(['estoque', 'preco']);
+    expect(ACAO_AVISO_CONTA_ESTOQUE_AMAZON).toBe(ACAO_AVISO_CONTA_LISTINGS_AMAZON);
+  });
+
+  it.each(['levantar', 'resolver'] as const)(
+    '★ the STOCK binding refuses a price motivo (%s ⇒ RangeError), nothing read or written',
+    async (acao) => {
+      await expect(
+        sincronizarAvisoContaEstoqueAmazon(asDb(db), deps(), {
+          integracaoId: ID,
+          motivo: MOTIVO_DE_PRECO as MotivoContaEstoqueAmazon,
+          acao,
+          relogio: T1,
+        }),
+      ).rejects.toBeInstanceOf(RangeError);
+      expect(db.operacoes).toBe(0);
+    },
+  );
+
+  it.each(['levantar', 'resolver'] as const)(
+    '★ fluxo: estoque with a price motivo (%s) throws, nothing read or written',
+    async (acao) => {
+      await expect(
+        sincronizarFluxo(db, FLUXO_LISTING_AMAZON.estoque, MOTIVO_DE_PRECO, acao),
+      ).rejects.toBeInstanceOf(RangeError);
+      expect(db.operacoes).toBe(0);
+    },
+  );
+
+  it.each(MOTIVOS_CONTA_ESTOQUE_AMAZON.map((m) => [m]))(
+    '★ fluxo: preco owns no motivo yet: a stock one (%s) throws, nothing read or written',
+    async (motivo) => {
+      await expect(
+        sincronizarFluxo(db, FLUXO_LISTING_AMAZON.preco, motivo, 'levantar'),
+      ).rejects.toBeInstanceOf(RangeError);
+      expect(db.operacoes).toBe(0);
+    },
+  );
+
+  it.each([[MOTIVO_CONTA_AMAZON.contaSemOperacao], [MOTIVO_CONTA_AMAZON.intermediadorDivergente]])(
+    'NEAR-MISS: the order import’s %s is refused under either flow',
+    async (motivo) => {
+      for (const fluxo of [FLUXO_LISTING_AMAZON.estoque, FLUXO_LISTING_AMAZON.preco]) {
+        await expect(sincronizarFluxo(db, fluxo, motivo, 'levantar')).rejects.toBeInstanceOf(
+          RangeError,
+        );
+      }
+      expect(db.operacoes).toBe(0);
+    },
+  );
+
+  it.each(['levantar', 'resolver'] as const)(
+    '★ NEAR-MISS: fluxo: estoque + feed-estoque-falhou (%s) writes exactly the stock row, byte-equal to the stock binding’s',
+    async (acao) => {
+      const motivo = MOTIVO_CONTA_AMAZON.feedEstoqueFalhou;
+      const pelaBinding = new FakeDb();
+      const r1 = await sincronizarAvisoContaEstoqueAmazon(asDb(pelaBinding), deps(), {
+        integracaoId: ID,
+        motivo,
+        acao,
+        relogio: T1,
+      });
+      const r2 = await sincronizarFluxo(db, FLUXO_LISTING_AMAZON.estoque, motivo, acao);
+      expect(r2).toEqual(r1);
+      expect(r2).toEqual(
+        acao === 'levantar'
+          ? { acao: 'levantado', resultado: 'criado' }
+          : { acao: 'resolvido', fechou: false },
+      );
+      const caminho = caminhoAviso(chaveContaPrecisaAtencao(ID, motivo));
+      // The whole row, as a literal: a raise, or the seeded resolved row.
+      const agoraUs = AGORA_MS * 1000;
+      expect(db.ler(caminho)).toEqual({
+        tipo: TIPO_AVISO.amazonContaPrecisaAtencao,
+        severidade: SEVERIDADE_AVISO.atencao,
+        canal: CANAL_AVISO.amazon,
+        params: { motivo },
+        motivo,
+        destinatarioUid: null,
+        urlInterna: { rota: ROTAS_AVISO.canalAmazon.build(ID), campo: null },
+        urlExterna: null,
+        prazo: null,
+        criadoEm: agoraUs,
+        atualizadoEm: agoraUs,
+        ocorrencias: 1,
+        relogioEvento: relogioDoDocumentoUs(T1),
+        resolvidoEm: acao === 'levantar' ? null : agoraUs,
+        resolucaoMotivo: acao === 'levantar' ? null : MOTIVO_AVISO_AMAZON.condicaoEncerrada,
+      });
+      expect(JSON.stringify(db.ler(caminho))).toBe(JSON.stringify(pelaBinding.ler(caminho)));
+    },
+  );
+
+  it('★ each refusal names its flow’s set, never the motivo', async () => {
+    await expect(
+      sincronizarAvisoContaEstoqueAmazon(asDb(db), deps(), {
+        integracaoId: ID,
+        motivo: MOTIVO_DE_PRECO as MotivoContaEstoqueAmazon,
+        acao: 'levantar',
+        relogio: T1,
+      }),
+    ).rejects.toThrow(new RangeError('avisos.ts: motivo fora dos cinco do estoque'));
+    await expect(
+      sincronizarFluxo(db, FLUXO_LISTING_AMAZON.estoque, MOTIVO_DE_PRECO, 'resolver'),
+    ).rejects.toThrow(new RangeError('avisos.ts: motivo fora dos cinco do estoque'));
+    await expect(
+      sincronizarFluxo(
+        db,
+        FLUXO_LISTING_AMAZON.preco,
+        MOTIVO_CONTA_AMAZON.feedEstoqueFalhou,
+        'levantar',
+      ),
+    ).rejects.toThrow(new RangeError('avisos.ts: motivo fora dos do preço'));
+    expect(db.operacoes).toBe(0);
+  });
+
+  it('the compile-time half: a flow’s raiser takes only that flow’s motivos', () => {
+    const naoCompila = () =>
+      sincronizarAvisoContaListingsAmazon(asDb(db), deps(), {
+        fluxo: FLUXO_LISTING_AMAZON.preco,
+        integracaoId: ID,
+        // @ts-expect-error — price owns no motivo yet: a stock one does not type-check.
+        motivo: MOTIVO_CONTA_AMAZON.feedEstoqueFalhou,
+        acao: 'levantar',
+        relogio: T1,
+      });
+    expect(typeof naoCompila).toBe('function');
+    expect(db.operacoes).toBe(0);
   });
 });

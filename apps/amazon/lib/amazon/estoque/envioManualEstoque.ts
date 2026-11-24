@@ -47,7 +47,8 @@
  *    Amazon conta, or inactive ⇒ 404 `AMAZON_ESTOQUE_CONTA_NAO_ENCONTRADA`; its
  *    depósito through the ONE parse (`depositoIdDaContaEstoqueAmazon`) names
  *    none ⇒ 400 `AMAZON_ESTOQUE_CONTA_SEM_DEPOSITO`;
- * 5. per selected produto, ONE masked read of its `paiId` and `nome`; a
+ * 5. (rungs 5 and 6 are the shared selection read, `listings/selecaoManual.ts`)
+ *    per selected produto, ONE masked read of its `paiId` and `nome`; a
  *    variation child hops ONE level to its anchor (the probe set's parent,
  *    `sondasDoProduto`), and every row names the ANCHOR, with the anchor's
  *    own `nome` (`produtoNome`); an anchor no selected id IS gets ONE more
@@ -113,11 +114,7 @@
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import { MissingRegionError } from '@delfrance/core/region';
-import {
-  integracaoCollection,
-  produtoAmazonLinkCollection,
-  produtoCollection,
-} from '@delfrance/data/admin/collections';
+import { integracaoCollection } from '@delfrance/data/admin/collections';
 import { skuTemCaminhoAmazon } from '@delfrance/integrations-amazon-sp-api';
 import {
   CODIGO_ERRO_AMAZON,
@@ -135,8 +132,6 @@ import {
   type UnidadeLimiteEnvioEstoqueManualAmazon,
   type integracaoSchema,
   naoDocId,
-  type produtoAmazonLinkSchema,
-  type produtoSchema,
 } from '@delfrance/schemas';
 import { type ZodError, z } from 'zod';
 
@@ -153,8 +148,15 @@ import {
   registrarChamadaBloqueadaAmazon,
 } from '../core/valvulas';
 import { type AmbienteAmazon, TASKS_REGION_ENV } from '../env';
+import {
+  CAMPOS_INDICE_FILHOS_SELECAO_MANUAL_AMAZON,
+  CAMPOS_PRODUTO_SELECAO_MANUAL_AMAZON,
+  CAMPOS_ROTULO_ANCORA_SELECAO_MANUAL_AMAZON,
+  CAMPOS_VINCULO_SELECAO_MANUAL_AMAZON,
+  LARGURA_LEITURAS_SELECAO_MANUAL_AMAZON,
+  lerSelecaoManualAmazon,
+} from '../listings/selecaoManual';
 import { lerCorpoLimitado } from '../notificacoes/corpo';
-import { skusDaConta, sondasDoProduto } from './descobertaEstoque';
 import { depositoIdDaContaEstoqueAmazon } from './familiaEstoque';
 import {
   AmazonEstoqueRegiaoDaFilaInvalidaError,
@@ -195,8 +197,11 @@ export const MAX_CORPO_ENVIO_MANUAL_ESTOQUE_BYTES = 64 * 1024;
  */
 export const ORCAMENTO_ENVIO_MANUAL_ESTOQUE_MS = 40_000;
 
-/** The most Firestore reads rungs 5 and 6 keep in flight. */
-export const LARGURA_LEITURAS_ENVIO_MANUAL_ESTOQUE = 16;
+/**
+ * The most Firestore reads rungs 5 and 6 keep in flight: the shared selection's
+ * (`listings/selecaoManual.ts`), under the stock name.
+ */
+export const LARGURA_LEITURAS_ENVIO_MANUAL_ESTOQUE = LARGURA_LEITURAS_SELECAO_MANUAL_AMAZON;
 
 /** The conta fields rung 4 reads (its by-id read is masked to them). */
 export const CAMPOS_CONTA_ENVIO_MANUAL_ESTOQUE_AMAZON = [
@@ -206,40 +211,21 @@ export const CAMPOS_CONTA_ENVIO_MANUAL_ESTOQUE_AMAZON = [
 ] as const satisfies ReadonlyArray<keyof typeof integracaoSchema.shape>;
 
 /** The produto fields rung 5 reads off a SELECTED produto: the parent pointer and the label. */
-export const CAMPOS_PRODUTO_ENVIO_MANUAL_ESTOQUE_AMAZON = [
-  'paiId',
-  'nome',
-] as const satisfies ReadonlyArray<keyof typeof produtoSchema.shape>;
+export const CAMPOS_PRODUTO_ENVIO_MANUAL_ESTOQUE_AMAZON = CAMPOS_PRODUTO_SELECAO_MANUAL_AMAZON;
 
-/**
- * The ONE field rung 5 reads off an anchor no selected id IS: its label for the
- * rows. No `paiId`, so that read can never become a second hop; whether the
- * document exists is what it also answers.
- */
-export const CAMPOS_ROTULO_ANCORA_ENVIO_MANUAL_ESTOQUE_AMAZON = [
-  'nome',
-] as const satisfies ReadonlyArray<keyof typeof produtoSchema.shape>;
+/** The ONE field rung 5 reads off an anchor no selected id IS: its label for the rows. */
+export const CAMPOS_ROTULO_ANCORA_ENVIO_MANUAL_ESTOQUE_AMAZON =
+  CAMPOS_ROTULO_ANCORA_SELECAO_MANUAL_AMAZON;
 
 /** The link fields `skusDaConta` reads (rung 6's partition listings are projected to them). */
-export const CAMPOS_VINCULO_ENVIO_MANUAL_ESTOQUE_AMAZON = [
-  'contaAmazonOuterRef',
-  'sku',
-] as const satisfies ReadonlyArray<keyof typeof produtoAmazonLinkSchema.shape>;
+export const CAMPOS_VINCULO_ENVIO_MANUAL_ESTOQUE_AMAZON = CAMPOS_VINCULO_SELECAO_MANUAL_AMAZON;
 
 /**
  * The children seek's fields, in the declared composite's order: the equality
- * on the parent, then the order the index is sorted by.
- *
- * ⚠️ The order also filters: a child stored WITHOUT `nome` is not returned, so
- * an anchor's family misses its links unless that child was SELECTED (a
- * selected produto is always a member of its anchor's family). The produto
- * schema requires `nome` on every document, so such a child exists only
- * outside the schema.
+ * on the parent, then the order the index is sorted by (rung 6).
  */
-export const CAMPOS_INDICE_FILHOS_ENVIO_MANUAL_ESTOQUE_AMAZON = [
-  'paiId',
-  'nome',
-] as const satisfies ReadonlyArray<keyof typeof produtoSchema.shape>;
+export const CAMPOS_INDICE_FILHOS_ENVIO_MANUAL_ESTOQUE_AMAZON =
+  CAMPOS_INDICE_FILHOS_SELECAO_MANUAL_AMAZON;
 
 /** Why a row or a produto was answered the way it was: the sentence it carries. */
 export const MOTIVO_ENVIO_MANUAL_ESTOQUE_AMAZON = {
@@ -498,182 +484,6 @@ function excedeLimite(
   });
 }
 
-/* -------------------------------------------------------------------------- */
-/*                            rungs 5 and 6: reads                            */
-/* -------------------------------------------------------------------------- */
-
-/**
- * At most `largura` calls of `executar` running at once; a freed slot passes
- * straight to the next waiter, so the bound holds under any interleaving.
- */
-function limitador(largura: number): <T>(fn: () => Promise<T>) => Promise<T> {
-  let ativos = 0;
-  const espera: (() => void)[] = [];
-  return async <T>(fn: () => Promise<T>): Promise<T> => {
-    if (ativos < largura) ativos += 1;
-    else await new Promise<void>((liberar) => espera.push(liberar));
-    try {
-      return await fn();
-    } finally {
-      const proximo = espera.shift();
-      if (proximo === undefined) ativos -= 1;
-      else proximo();
-    }
-  };
-}
-
-/**
- * Every promise SETTLED — none left running behind the answer — then the
- * values, or the rejection of the EARLIEST one in list order, unchanged.
- */
-async function todosOuPrimeiraFalha<T>(promessas: readonly Promise<T>[]): Promise<T[]> {
-  const saidas = await Promise.allSettled(promessas);
-  const valores: T[] = [];
-  for (const saida of saidas) {
-    if (saida.status === 'rejected') throw saida.reason;
-    valores.push(saida.value);
-  }
-  return valores;
-}
-
-/** Code-unit order, never a locale's. */
-function compararTexto(a: string, b: string): number {
-  if (a < b) return -1;
-  return a > b ? 1 : 0;
-}
-
-/** What rungs 5 and 6 read: each selected id's anchor, the labels, and each anchor's SKUs of the conta. */
-interface SelecaoLidaEstoque {
-  /** Selected id → its anchor; NO entry when the produto has no document. */
-  readonly ancoraDe: ReadonlyMap<string, string>;
-  /**
-   * Every produto read that has a document (each selected one, each anchor
-   * reached) → its stored `nome` when usable, else `null`.
-   */
-  readonly nomeDe: ReadonlyMap<string, string | null>;
-  /** Anchors a selected child's `paiId` names that have NO document: no family is read for them. */
-  readonly ancorasAusentes: ReadonlySet<string>;
-  /**
-   * EXISTING anchor → its family's SKUs of the conta, sorted; anchors in
-   * first-seen request order.
-   */
-  readonly skusDaAncora: ReadonlyMap<string, readonly string[]>;
-}
-
-/** A stored `nome`, when it is a usable label: a blank one is an absence, never an empty label. */
-function nomeDoProduto(dados: Readonly<Record<string, unknown>>): string | null {
-  const nome = dados.nome;
-  return typeof nome === 'string' && nome.trim() !== '' ? nome : null;
-}
-
-/** One member's `prodAmazon` partition, whole and projected (rung 6). */
-async function lerVinculosDoMembro(
-  db: Firestore,
-  produtoId: string,
-): Promise<Readonly<Record<string, unknown>>[]> {
-  const snap = await produtoAmazonLinkCollection
-    .ref(db, { produtoId })
-    .select(...CAMPOS_VINCULO_ENVIO_MANUAL_ESTOQUE_AMAZON)
-    .get();
-  return snap.docs.map((d) => d.data());
-}
-
-/** The anchor's children, keys only (rung 6). */
-async function lerFilhosDaAncora(db: Firestore, ancoraId: string): Promise<string[]> {
-  const [campoPai, campoOrdem] = CAMPOS_INDICE_FILHOS_ENVIO_MANUAL_ESTOQUE_AMAZON;
-  const snap = await produtoCollection
-    .ref(db, {})
-    .where(campoPai, '==', ancoraId)
-    .orderBy(campoOrdem)
-    .select()
-    .get();
-  return snap.docs.map((d) => d.id);
-}
-
-/** Rungs 5 and 6 (module header), every read through ONE limiter. */
-async function lerSelecao(
-  db: Firestore,
-  contaId: string,
-  produtoIds: readonly string[],
-): Promise<SelecaoLidaEstoque> {
-  const executar = limitador(LARGURA_LEITURAS_ENVIO_MANUAL_ESTOQUE);
-  /** One produto by id, masked to `campos`: its fields, or `null` with no document. */
-  const lerProduto = (id: string, campos: readonly string[]) =>
-    executar(async () => {
-      const [snap] = await db.getAll(produtoCollection.docRef(db, {}, id), {
-        fieldMask: [...campos],
-      });
-      return snap?.exists === true ? ((snap.data() ?? {}) as Record<string, unknown>) : null;
-    });
-
-  // 5. Each selected produto's parent pointer and label, by id, masked.
-  const lidos = await todosOuPrimeiraFalha(
-    produtoIds.map((id) => lerProduto(id, CAMPOS_PRODUTO_ENVIO_MANUAL_ESTOQUE_AMAZON)),
-  );
-  const ancoraDe = new Map<string, string>();
-  const nomeDe = new Map<string, string | null>();
-  const semDocumento = new Set<string>();
-  for (const [i, id] of produtoIds.entries()) {
-    const dados = lidos[i] ?? null;
-    if (dados === null) {
-      semDocumento.add(id);
-      continue;
-    }
-    nomeDe.set(id, nomeDoProduto(dados));
-    // The probe set is the produto, then the parent its `paiId` names: the
-    // parent, when there is one, is the anchor — ONE hop, never more.
-    ancoraDe.set(id, sondasDoProduto(id, dados)[1] ?? id);
-  }
-  const distintas = [...new Set(ancoraDe.values())];
-
-  // 5b. An anchor no selected id IS: ONE label read, which also says whether
-  // it exists. A selected id already read is never read again.
-  const ancorasAusentes = new Set(distintas.filter((a) => semDocumento.has(a)));
-  const naoLidas = distintas.filter((a) => !nomeDe.has(a) && !semDocumento.has(a));
-  const rotulos = await todosOuPrimeiraFalha(
-    naoLidas.map((a) => lerProduto(a, CAMPOS_ROTULO_ANCORA_ENVIO_MANUAL_ESTOQUE_AMAZON)),
-  );
-  for (const [i, ancora] of naoLidas.entries()) {
-    const dados = rotulos[i] ?? null;
-    if (dados === null) ancorasAusentes.add(ancora);
-    else nomeDe.set(ancora, nomeDoProduto(dados));
-  }
-  const existentes = distintas.filter((a) => !ancorasAusentes.has(a));
-
-  // 6. Each existing anchor's family: its children and every selected produto
-  // that resolved to it (a selected child the seek does not return is still a
-  // member), then every member's partition.
-  const familias = await todosOuPrimeiraFalha(
-    existentes.map(async (ancora) => {
-      const [filhos, daAncora] = await Promise.allSettled([
-        executar(() => lerFilhosDaAncora(db, ancora)),
-        executar(() => lerVinculosDoMembro(db, ancora)),
-      ]);
-      if (filhos.status === 'rejected') throw filhos.reason;
-      if (daAncora.status === 'rejected') throw daAncora.reason;
-      const membros = new Set([
-        ...filhos.value,
-        ...produtoIds.filter((id) => ancoraDe.get(id) === ancora),
-      ]);
-      membros.delete(ancora);
-      const dosMembros = await todosOuPrimeiraFalha(
-        [...membros].map((membro) => executar(() => lerVinculosDoMembro(db, membro))),
-      );
-      const skus = new Set(skusDaConta(daAncora.value, contaId));
-      for (const lista of dosMembros) {
-        for (const sku of skusDaConta(lista, contaId)) skus.add(sku);
-      }
-      return [...skus].sort(compararTexto);
-    }),
-  );
-  return {
-    ancoraDe,
-    nomeDe,
-    ancorasAusentes,
-    skusDaAncora: new Map(existentes.map((a, i) => [a, familias[i] ?? []] as const)),
-  };
-}
-
 /**
  * What the caller RETHROWS for an enqueue failure other than the queue valve
  * (module header, "An enqueue that fails"), after ONE ERROR line for a failure
@@ -805,7 +615,7 @@ export async function enviarEstoqueManualAmazon(
   }
 
   // ---- 5 and 6. the selection's anchors and their families' SKUs. ----
-  const selecao = await lerSelecao(db, contaId, produtoIds);
+  const selecao = await lerSelecaoManualAmazon(db, contaId, produtoIds);
   const skus = [...new Set([...selecao.skusDaAncora.values()].flat())];
   // Every selected produto leaves in exactly ONE place: its anchor's rows, or
   // its own entry here (no document, a parent with no document, or no listing
