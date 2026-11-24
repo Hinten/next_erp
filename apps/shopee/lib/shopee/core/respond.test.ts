@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   SHOPEE_ERROR_KIND,
+  SHOPEE_SURFACE,
   ShopeeApiError,
   ShopeeConfigError,
   ShopeeError,
@@ -11,6 +12,7 @@ import {
   ShopeeRateLimitError,
   ShopeeReauthRequiredError,
   ShopeeSchemaError,
+  shopeeErrorFromEnvelope,
 } from '@delfrance/integrations-shopee';
 
 import {
@@ -136,6 +138,60 @@ describe('shopeeErrorResponse — a cadeia existente', () => {
     expect(reauth).toBeInstanceOf(ShopeeApiError);
     expect(shopeeErrorResponse(reauth).status).toBe(409);
   });
+});
+
+describe('shopeeErrorResponse — erros do envelope (#1770)', () => {
+  it.each([
+    ['shop_access_expired', 'shop_access_expired', SHOPEE_ERROR_KIND.reauth, 200, 409],
+    ['error_rate_limit', 'error_rate_limit', SHOPEE_ERROR_KIND.burst, 429, 502],
+    ['error_limit', 'error_limit', SHOPEE_ERROR_KIND.daily, 200, 502],
+    ['error_server', 'error_server', SHOPEE_ERROR_KIND.transient, 503, 502],
+    [' product.error_param\t', 'product.error_param', SHOPEE_ERROR_KIND.other, 200, 502],
+    ['product.error_123456', 'product.error_123456', SHOPEE_ERROR_KIND.other, 200, 502],
+    ['product.error_1234567', '<nao-token>', SHOPEE_ERROR_KIND.other, 200, 502],
+    ['invalid code\nfrom Shopee', '<nao-token>', SHOPEE_ERROR_KIND.other, 200, 502],
+  ] as const)(
+    'publica apenas os campos seguros de %j',
+    async (rawCode, shopeeCode, kind, upstreamStatus, status) => {
+      const err = shopeeErrorFromEnvelope(
+        { error: rawCode, message: PROSA, warning: 'aviso cru', request_id: 'id cru' },
+        {
+          path: PATH,
+          httpStatus: upstreamStatus,
+          surface: SHOPEE_SURFACE.business,
+          retryAfterSeconds: 7,
+        },
+      );
+      expect(err.message).toContain(PROSA);
+      expect(err.providerMessage).toBe(PROSA);
+
+      const res = shopeeErrorResponse(err);
+      const error = `Shopee ${PATH} respondeu ${shopeeCode} (HTTP ${String(upstreamStatus)}).`;
+      const line = `[shopee/api] ${err.name} -> HTTP ${String(status)} path=${PATH} code=${shopeeCode} kind=${kind} upstream=${String(upstreamStatus)}`;
+
+      expect(res.status).toBe(status);
+      expect(res.headers.get('Retry-After')).toBeNull();
+      if (status === 409) {
+        await expect(res.json()).resolves.toEqual({
+          error,
+          code: 'SHOPEE_REAUTH_REQUIRED',
+          shopeeCode,
+        });
+        expect(vi.mocked(console.warn).mock.calls).toEqual([[line]]);
+        expect(console.error).not.toHaveBeenCalled();
+      } else {
+        await expect(res.json()).resolves.toEqual({
+          error,
+          code: 'SHOPEE_HTTP_ERROR',
+          upstreamStatus,
+          shopeeCode,
+          kind,
+        });
+        expect(vi.mocked(console.error).mock.calls).toEqual([[line]]);
+        expect(console.warn).not.toHaveBeenCalled();
+      }
+    },
+  );
 });
 
 describe('shopeeErrorResponse — ShopeeImportBlockedError (step 9)', () => {

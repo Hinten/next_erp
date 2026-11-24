@@ -30,6 +30,8 @@ import {
 } from '@delfrance/integrations-shopee';
 
 import { ShopeePublishBlockedError, ShopeePublishRejectedError } from '../anuncios/errosPublicacao';
+import { MARCADOR_NAO_TOKEN } from '../devolucoes/tokenParaLog';
+import { codigoSeguro } from '../nfe/redacaoNfe';
 import { ShopeeImportBlockedError } from '../produtos/errosImportacao';
 import { ShopeeCredencialInvalidaError } from './credentialStore';
 import { ShopeeContaNotConfiguredError } from './shopee';
@@ -97,30 +99,55 @@ export function isShopeeError(err: unknown): err is KnownError {
  * `mercadoLivreErrorResponse` was written to end.
  */
 export function shopeeErrorResponse(err: KnownError): NextResponse {
+  if (err instanceof ShopeeApiError) return apiErrorResponse(err);
+
   const res = toResponse(err);
   logErrorResponse(err, res.status);
   return res;
 }
 
+function apiErrorResponse(err: ShopeeApiError): NextResponse {
+  const shopeeCode = codigoSeguro(err.code) ?? MARCADOR_NAO_TOKEN;
+  const error = `Shopee ${err.path} respondeu ${shopeeCode} (HTTP ${String(err.httpStatus)}).`;
+  const reauth = err instanceof ShopeeReauthRequiredError;
+  const status = reauth ? 409 : 502;
+  const line = `[shopee/api] ${err.name} -> HTTP ${String(status)} path=${err.path} code=${shopeeCode} kind=${err.kind} upstream=${String(err.httpStatus)}`;
+
+  // The original error and its stack contain the provider's message (#1770).
+  if (reauth) {
+    console.warn(line);
+    return NextResponse.json({ error, code: 'SHOPEE_REAUTH_REQUIRED', shopeeCode }, { status });
+  }
+
+  console.error(line);
+  return NextResponse.json(
+    {
+      error,
+      code: 'SHOPEE_HTTP_ERROR',
+      upstreamStatus: err.httpStatus,
+      shopeeCode,
+      kind: err.kind,
+    },
+    { status },
+  );
+}
+
 /**
- * One line per failed request, at a level matching whose fault it is: a 5xx is
- * ours (or Shopee's) and carries the error object so the stack survives; a 4xx
- * is the caller's and stays a warning.
+ * Log failures handled outside the API envelope branch. A 5xx includes the
+ * error object for its stack, and a 4xx uses a warning.
  *
  * ⚠️ Field PATHS for a schema failure, never the body. On this channel the body
  * behind a schema failure can BE the token response (#1015).
  */
 function logErrorResponse(err: KnownError, status: number): void {
   const detail =
-    err instanceof ShopeeApiError
-      ? ` path=${err.path} code=${err.code} kind=${err.kind} upstream=${String(err.httpStatus)}`
-      : err instanceof ShopeeSchemaError
-        ? ` path=${err.path} campos=${safeJson(err.campos)}`
-        : err instanceof ShopeeCredencialInvalidaError
-          ? ` campos=${safeJson(err.campos)}`
-          : err instanceof ShopeeHttpError
-            ? ` path=${err.path} upstream=${String(err.httpStatus)}`
-            : '';
+    err instanceof ShopeeSchemaError
+      ? ` path=${err.path} campos=${safeJson(err.campos)}`
+      : err instanceof ShopeeCredencialInvalidaError
+        ? ` campos=${safeJson(err.campos)}`
+        : err instanceof ShopeeHttpError
+          ? ` path=${err.path} upstream=${String(err.httpStatus)}`
+          : '';
   const line = `[shopee/api] ${err.name} -> HTTP ${String(status)}: ${err.message}${detail}`;
   if (status >= 500) {
     console.error(line, err);
@@ -202,29 +229,6 @@ function toResponse(err: KnownError): NextResponse {
       { status: 502 },
     );
   }
-  if (err instanceof ShopeeReauthRequiredError) {
-    // ⚠️ ABOVE the `ShopeeApiError` arm it extends, or a dead grant would be
-    // reported as a generic 502 upstream failure and the operator would never
-    // be told to reconnect (ML parity — `ML_REAUTH_REQUIRED`).
-    return NextResponse.json(
-      { error: err.message, code: 'SHOPEE_REAUTH_REQUIRED', shopeeCode: err.code },
-      { status: 409 },
-    );
-  }
-  if (err instanceof ShopeeApiError) {
-    // ⚠️ `upstreamStatus` is diagnostics only: a FAILING Shopee call is
-    // routinely HTTP 200, so it is `error`/`kind` that carry the verdict.
-    return NextResponse.json(
-      {
-        error: err.message,
-        code: 'SHOPEE_HTTP_ERROR',
-        upstreamStatus: err.httpStatus,
-        shopeeCode: err.code,
-        kind: err.kind,
-      },
-      { status: 502 },
-    );
-  }
   if (err instanceof ShopeeNetworkError) {
     return NextResponse.json({ error: err.message, code: 'SHOPEE_NETWORK_ERROR' }, { status: 503 });
   }
@@ -273,9 +277,7 @@ function toResponse(err: KnownError): NextResponse {
     // exists on the channel NOW (a rejection at `init_tier_variation` leaves an
     // UNLIST item with no models), which no HTTP status can carry.
     //
-    // ⚠️ `shopeeCode` is Shopee's own string VERBATIM, prefix and all, exactly as
-    // the `ShopeeApiError` arm reports its `code`. The stripped form is a
-    // classification detail and never leaves the classifier.
+    // `shopeeCode` preserves the provider code, including its module prefix.
     return NextResponse.json(
       {
         error: err.message,

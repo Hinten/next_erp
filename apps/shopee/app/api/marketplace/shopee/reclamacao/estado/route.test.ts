@@ -4,7 +4,7 @@
  * client — their own suites own the estado's content; what is pinned here is the
  * ROUTE's: the PERM bit, the query ladder, `Cache-Control: no-store` on every
  * answer, the 404 and 502 mappings, the passthrough of every other error
- * WITHOUT Shopee's sentence (`semFraseDaShopee`, review R3-2), and zero
+ * with redaction in the shared mapper, and zero
  * Firestore traffic.
  *
  * Mutants killed here: M109 (read/write PERM bits swapped — this route's half),
@@ -18,13 +18,9 @@ import { PERM } from '@delfrance/auth';
 import {
   SHOPEE_GET_AVAILABLE_SOLUTIONS_PATH,
   SHOPEE_GET_RETURN_DETAIL_PATH,
-  SHOPEE_ERROR_KIND,
   SHOPEE_SURFACE,
-  ShopeeApiError as ShopeeApiErrorClasse,
   ShopeeHttpError,
   ShopeeNetworkError,
-  ShopeeRateLimitError,
-  ShopeeReauthRequiredError,
   shopeeErrorFromEnvelope,
   shopeeReturnAvailableSolutionsSchema,
   shopeeReturnDetailSchema,
@@ -44,8 +40,6 @@ import {
   FRASE_RECUSA_DEVOLUCAO,
   MOTIVO_RECUSA_DEVOLUCAO,
 } from '@/lib/shopee/devolucoes/recusaDevolucao';
-import { semFraseDaShopee } from '@/lib/shopee/devolucoes/respostaReclamacao';
-import { MARCADOR_NAO_TOKEN } from '@/lib/shopee/devolucoes/tokenParaLog';
 import { makePedidoIdShopee } from '@/lib/shopee/pedidos/orderIds';
 import { FakeDb, asDb } from '@/lib/shopee/testing/fakeDb';
 
@@ -534,7 +528,6 @@ describe('os erros', () => {
       expect(res.cache).toBe('no-store');
       expect(JSON.stringify(res.body)).not.toContain(FRASE_DA_SHOPEE);
       expect(logs()).not.toContain(FRASE_DA_SHOPEE);
-      // The mapper DID run (its `[shopee/api]` line), on the sentence-free twin.
       expect(logs()).toContain('[shopee/api]');
     },
   );
@@ -561,75 +554,12 @@ describe('os erros', () => {
     contexto({ detalhe: new TypeError('bug') });
     await expect(GET(new Request(url(QUERY), { headers: AUTORIZADO }))).rejects.toThrow(TypeError);
   });
-});
 
-describe('semFraseDaShopee — o mesmo erro, sem a frase da Shopee', () => {
-  const PATH = SHOPEE_GET_RETURN_DETAIL_PATH;
-
-  it('a mensagem do PACOTE carrega a frase — é por isso que o gêmeo existe', () => {
-    const original = recusa('error_server', FRASE_DA_SHOPEE, PATH);
-    expect(original.message).toContain(FRASE_DA_SHOPEE);
-    expect(original.providerMessage).toBe(FRASE_DA_SHOPEE);
-  });
-
-  it.each<[string, () => ShopeeApiError, new (...a: never[]) => ShopeeApiError]>([
-    [
-      're-auth',
-      () => recusa('shop_access_expired', FRASE_DA_SHOPEE, PATH),
-      ShopeeReauthRequiredError,
-    ],
-    [
-      'limite (burst)',
-      () => recusa('error_rate_limit', FRASE_DA_SHOPEE, PATH, 7),
-      ShopeeRateLimitError,
-    ],
-    ['cota diária', () => recusa('error_limit', FRASE_DA_SHOPEE, PATH), ShopeeRateLimitError],
-    ['transitório', () => recusa('error_server', FRASE_DA_SHOPEE, PATH), ShopeeApiErrorClasse],
-  ])(
-    '%s: a MESMA classe e o mesmo kind/status/path; nada da Shopee além do código',
-    (_t, criar, classe) => {
-      const original = criar();
-      const gemeo = semFraseDaShopee(original);
-      expect(gemeo).toBeInstanceOf(classe);
-      expect(gemeo.name).toBe(original.name);
-      expect(gemeo.kind).toBe(original.kind);
-      expect(gemeo.httpStatus).toBe(original.httpStatus);
-      expect(gemeo.path).toBe(original.path);
-      expect(gemeo.code).toBe(original.code);
-      expect(gemeo.message).toBe(`Shopee ${PATH} respondeu ${original.code} (HTTP 200).`);
-      expect(gemeo.providerMessage).toBeNull();
-      expect(gemeo.warning).toBeNull();
-      expect(gemeo.requestId).toBeNull();
-      expect(JSON.stringify({ ...gemeo, message: gemeo.message })).not.toContain(FRASE_DA_SHOPEE);
-    },
-  );
-
-  it('QUASE-IGUAL: um rate limit leva o retryAfterSeconds; a classe base NÃO vira subclasse', () => {
-    const limite = semFraseDaShopee(recusa('error_rate_limit', FRASE_DA_SHOPEE, PATH, 7));
-    expect(limite).toBeInstanceOf(ShopeeRateLimitError);
-    expect((limite as ShopeeRateLimitError).retryAfterSeconds).toBe(7);
-    expect(limite.kind).toBe(SHOPEE_ERROR_KIND.burst);
-
-    const base = semFraseDaShopee(recusa('error_server', FRASE_DA_SHOPEE, PATH));
-    expect(base).not.toBeInstanceOf(ShopeeRateLimitError);
-    expect(base).not.toBeInstanceOf(ShopeeReauthRequiredError);
-  });
-
-  it('o código passa por codigoSeguro: PAR aparado; QUASE-IGUAL 7 dígitos ⇒ o marcador, nunca o valor', () => {
-    expect(semFraseDaShopee(recusa(' error_server\t', FRASE_DA_SHOPEE, PATH)).code).toBe(
-      'error_server',
-    );
-    const seteDigitos = semFraseDaShopee(recusa('error_1234567', null, PATH));
-    expect(seteDigitos.code).toBe(MARCADOR_NAO_TOKEN);
-    expect(seteDigitos.message).not.toContain('1234567');
-    expect(semFraseDaShopee(recusa('error_123456', null, PATH)).code).toBe('error_123456');
-  });
-
-  it('um erro que NÃO é de envelope segue sem gêmeo: a mensagem já é nossa', async () => {
+  it('um erro de HTTP sem envelope mantém a mensagem do app', async () => {
     contexto({
       detalhe: new ShopeeHttpError('Shopee respondeu HTTP 403 sem um corpo JSON.', {
         httpStatus: 403,
-        path: PATH,
+        path: SHOPEE_GET_RETURN_DETAIL_PATH,
       }),
     });
     const res = await responder();

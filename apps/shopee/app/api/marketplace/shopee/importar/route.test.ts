@@ -13,6 +13,7 @@ import { MSG_ITEM_ID_STRING } from '@/lib/shopee/produtos/corpoImportacao';
 import { MOTIVO_IMPORT_BLOQUEADO } from '@/lib/shopee/produtos/errosImportacao';
 import { limparTaxonomiaShopee } from '@/lib/shopee/taxonomia/cache';
 import { FakeDb, asDb } from '@/lib/shopee/testing/fakeDb';
+import { falhaDeEnvelope, verificarEnvelopeRedigido } from '@/lib/shopee/testing/falhaDeEnvelope';
 
 const h = vi.hoisted(() => ({
   verifyIdToken: vi.fn(),
@@ -102,7 +103,6 @@ function ctxDouble() {
 }
 
 let db: FakeDb;
-let spyWarn: ReturnType<typeof vi.spyOn>;
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -113,12 +113,12 @@ beforeEach(() => {
   h.loadCtx.mockResolvedValue(ctxDouble());
   h.getItemBaseInfo.mockResolvedValue(payload(LINHA_SIMPLES));
   h.getCategory.mockResolvedValue({ category_list: ARVORE });
-  spyWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
 });
 
 afterEach(() => {
   limparTaxonomiaShopee();
-  spyWarn.mockRestore();
+  vi.restoreAllMocks();
 });
 
 describe('autenticação e corpo', () => {
@@ -160,6 +160,15 @@ describe('autenticação e corpo', () => {
 });
 
 describe('os erros da conta e do anúncio', () => {
+  it('uma falha transitória da consulta retorna 502 com o código seguro', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const falha = falhaDeEnvelope('/api/v2/product/get_item_base_info', 'error_server');
+    h.getItemBaseInfo.mockRejectedValue(falha);
+
+    const res = await POST(req(corpoValido(), AUTORIZADO));
+    await verificarEnvelopeRedigido(res, falha, 502);
+  });
+
   it('uma conta inexistente ou de outro tipo responde 404', async () => {
     h.loadCtx.mockRejectedValue(new ShopeeContaNotConfiguredError('Integração int-1 não existe.'));
 
