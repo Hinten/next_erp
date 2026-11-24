@@ -3,12 +3,13 @@ import { ESTADO_PEDIDO } from '@delfrance/schemas';
 import type { ItemDoPedido, Pedido } from '@delfrance/schemas';
 import {
   type PedidoLite,
+  aggregateProductSales,
   overview,
   porBucket,
   porEstado,
-  topProdutos,
   checkoutsPorUsuario,
   rankCheckoutUsers,
+  rankProductSales,
 } from './aggregations';
 
 describe('checkoutsPorUsuario', () => {
@@ -111,7 +112,16 @@ function p(estado: Pedido['estado'], itens: Pedido['itens']): PedidoLite {
   };
 }
 
-describe('topProdutos', () => {
+function topProdutos(pedidos: PedidoLite[], topN = 10) {
+  const lines = pedidos.flatMap(({ id: pedidoId, data }) =>
+    Object.entries(data.itens).flatMap(([produtoUid, items]) =>
+      items.map((item) => ({ ...item, pedidoId, produtoUid })),
+    ),
+  );
+  return rankProductSales(aggregateProductSales(lines), 'quantidade', topN);
+}
+
+describe('product sales aggregation', () => {
   it('ranks by total quantity sold across pedidos', () => {
     const dataset: PedidoLite[] = [
       p(ESTADO_PEDIDO.pago, {

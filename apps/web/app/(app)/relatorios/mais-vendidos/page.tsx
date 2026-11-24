@@ -31,6 +31,7 @@ import {
   isUsingFirebaseEmulator,
 } from '@/lib/firebase/client';
 import { useIntegracoes } from '@/lib/data/useIntegracoes';
+import { defaultOrderReportDates } from '@/lib/reports/orderReportFilters';
 import { topProductsDateRange, type TopProductsFilters } from '@/lib/reports/topProducts';
 import { topProductsCacheKey, topProductsRunner } from '@/lib/reports/topProductsSession';
 import type { ReportCacheScope } from '@/lib/reports/reportCache';
@@ -38,12 +39,6 @@ import { TopProductsResults, formatQuantity } from './_components/TopProductsRes
 
 const REPORT_PERMISSIONS = PERM.pedido.read | PERM.produto.read | PERM.integracao.read;
 const STATES = Object.entries(ESTADO_PEDIDO_LABELS).map(([value, label]) => ({ value, label }));
-
-function defaultDates(): [string, string] {
-  const now = new Date();
-  const month = String(now.getFullYear()) + '-' + String(now.getMonth() + 1).padStart(2, '0');
-  return [month + '-01', month + '-' + String(now.getDate()).padStart(2, '0')];
-}
 
 interface Submission {
   filters: TopProductsFilters;
@@ -56,7 +51,7 @@ interface Submission {
 function ReportContent({ scope }: { scope: ReportCacheScope }) {
   const db = getFirebaseFirestore();
   const integrations = useIntegracoes(db);
-  const [dates, setDates] = useState(defaultDates);
+  const [dates, setDates] = useState(defaultOrderReportDates);
   const [estados, setEstados] = useState<EstadoPedido[]>([
     ESTADO_PEDIDO.pago,
     ESTADO_PEDIDO.finalizado,

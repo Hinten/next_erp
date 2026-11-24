@@ -6,43 +6,33 @@ import {
   conditional,
   constant,
   documentId,
-  equal,
-  equalAny,
   execute,
   field,
   greaterThanOrEqual,
   isType,
-  lessThan,
   lessThanOrEqual,
   map,
   mapEntries,
-  or,
   sum,
 } from 'firebase/firestore/pipelines';
-import { MICROS_LOWER_BOUND, MILLIS_UPPER_BOUND } from '@delfrance/core/datetime';
 import {
   componentesKitEntries,
-  estadoPedidoSchema,
   fotoSchema,
   fotosForVariacao,
   naoDocId,
   toDocPathOrNull,
   toOuterRefOrNull,
   type ComponentesKit,
-  type EstadoPedido,
   type Foto,
 } from '@delfrance/schemas';
 import { coverArquivoIds } from '@/lib/produtos/fotoRefs';
-import { checkoutDateRange } from './checkouts';
+import { orderReportPredicate, type OrderReportFilters } from './orderReportFilters';
 
-export interface TopProductsFilters {
-  startUs: number;
-  endExclusiveUs: number;
-  estados: readonly EstadoPedido[];
-  /** Integration document IDs; an empty selection includes every account. */
-  accountIds: readonly string[];
-  ehSaida: boolean;
-}
+export {
+  normalizeOrderReportFilters as normalizeTopProductsFilters,
+  orderReportDateRange as topProductsDateRange,
+  type OrderReportFilters as TopProductsFilters,
+} from './orderReportFilters';
 
 export interface TopProductsSaleGroup {
   produtoId: string | null;
@@ -113,80 +103,12 @@ function validId(value: unknown): value is string {
   return typeof value === 'string' && !naoDocId(value);
 }
 
-/** Same inclusive calendar-day behavior as Checkouts, converted to pedido's µs unit. */
-export function topProductsDateRange(start: string | null, end: string | null) {
-  const range = checkoutDateRange(start, end);
-  if (!range) return null;
-  const startUs = range.startMs * 1000;
-  const endExclusiveUs = range.endExclusiveMs * 1000;
-  return Number.isSafeInteger(startUs) && Number.isSafeInteger(endExclusiveUs)
-    ? { startUs, endExclusiveUs }
-    : null;
-}
-
-/** Canonical selection order also gives the persistent cache a stable request key. */
-export function normalizeTopProductsFilters(filters: TopProductsFilters): TopProductsFilters {
-  if (
-    !Number.isSafeInteger(filters.startUs) ||
-    !Number.isSafeInteger(filters.endExclusiveUs) ||
-    filters.startUs >= filters.endExclusiveUs ||
-    typeof filters.ehSaida !== 'boolean'
-  ) {
-    throw new RangeError('Selecione um período válido para o relatório.');
-  }
-  if (filters.estados.length === 0) {
-    throw new RangeError('Selecione pelo menos um estado de pedido.');
-  }
-  for (const state of filters.estados) {
-    if (!estadoPedidoSchema.safeParse(state).success) {
-      throw new RangeError('Estado de pedido inválido.');
-    }
-  }
-  if (filters.accountIds.some((id) => !validId(id))) {
-    throw new RangeError('Conta de marketplace inválida.');
-  }
-  return {
-    ...filters,
-    estados: [...new Set(filters.estados)].sort(),
-    accountIds: [...new Set(filters.accountIds)].sort(),
-  };
-}
-
 /**
  * Filter BEFORE expanding arrays. Only grouped SKU totals cross the wire;
  * neither complete pedidos nor the whole product catalog are downloaded.
  */
-export function buildTopProductsPipeline(db: Firestore, input: TopProductsFilters) {
-  const filters = normalizeTopProductsFilters(input);
-  const predicates = [
-    equal(field('ehSaida'), filters.ehSaida),
-    // Match the numeric-unit heuristic used by schema tolerant reads. Both
-    // branches seek bounded timestamp ranges; their unit domains do not overlap.
-    or(
-      and(
-        greaterThanOrEqual(field('timestamp'), Math.max(filters.startUs, MICROS_LOWER_BOUND)),
-        lessThan(field('timestamp'), filters.endExclusiveUs),
-      ),
-      and(
-        greaterThanOrEqual(field('timestamp'), Math.ceil(filters.startUs / 1000)),
-        lessThan(
-          field('timestamp'),
-          Math.min(Math.ceil(filters.endExclusiveUs / 1000), MILLIS_UPPER_BOUND + 1),
-        ),
-      ),
-    ),
-  ];
-  if (filters.estados.length > 0) {
-    predicates.push(equalAny(field('estado'), [...filters.estados]));
-  }
-  if (filters.accountIds.length > 0) {
-    predicates.push(
-      equalAny(
-        field('integracaoPedidoOuterRef'),
-        filters.accountIds.flatMap((id) => ['documents/integracao/' + id, 'integracao/' + id]),
-      ),
-    );
-  }
+export function buildTopProductsPipeline(db: Firestore, input: OrderReportFilters) {
+  const predicate = orderReportPredicate(input);
   // A malformed legacy bucket is represented by one invalid line, so it is
   // visible in diagnostics instead of disappearing behind unnest/sum semantics.
   const items = field('itens').ifAbsent({}).ifNull(false);
@@ -203,7 +125,7 @@ export function buildTopProductsPipeline(db: Firestore, input: TopProductsFilter
   return db
     .pipeline()
     .collection('pedidos')
-    .where(and(predicates[0]!, predicates[1]!, ...predicates.slice(2)))
+    .where(predicate)
     .select(groups.as('itemGroups'))
     .unnest(field('itemGroups'))
     .unnest(conditional(isType(groupItems, 'array'), groupItems, array([{}])).as('item'))
@@ -428,7 +350,7 @@ async function readProjectedDocuments(
 
 export async function loadTopProductsReport(
   db: Firestore,
-  filters: TopProductsFilters,
+  filters: OrderReportFilters,
 ): Promise<TopProductsReport> {
   const snapshot = await execute(buildTopProductsPipeline(db, filters));
   const groups = snapshot.results.map((result) => topProductsGroupFromResult(result.data()));

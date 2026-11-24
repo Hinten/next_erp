@@ -49,6 +49,18 @@ beforeEach(() => {
   }));
 });
 
+it('ends the selected day at the next midnight after a daylight-saving jump', () => {
+  vi.stubEnv('TZ', 'America/Sao_Paulo');
+  try {
+    expect(checkoutDateRange('2018-11-04', '2018-11-04')).toEqual({
+      startMs: Date.UTC(2018, 10, 4, 3),
+      endExclusiveMs: Date.UTC(2018, 10, 5, 2),
+    });
+  } finally {
+    vi.unstubAllEnvs();
+  }
+});
+
 describe('checkout pipeline', () => {
   it('filters the collection group by a millisecond range, then counts all rows grouped by user', () => {
     const mock = database();
