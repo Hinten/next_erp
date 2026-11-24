@@ -2,19 +2,16 @@
  * The stock OUTCOME write-back of the Amazon stock sync (step 12, PR 12-d),
  * pure: the three shapes a link doc's `envioEstoqueAmazon` field takes, and
  * whether a new one replaces the stored one. Its reader and the preconditioned
- * `update` live in `envioEstoqueFirestore.ts` (PR 12-e1).
+ * `update` are `envioEstoqueFirestore.ts`'s binding of the listings flows'
+ * shared write-back (`listings/envioListingFirestore.ts`).
  *
  * ## The watermark: `emMs`, strictly newer wins
  *
- * {@link decidirGravacaoEnvioEstoque} writes iff nothing is stored or the
- * stored `emMs` is STRICTLY older than the new one; an EQUAL `emMs` keeps the
- * stored. `emMs` is OUR submission instant (a patch: right before the PATCH; a
- * feed: right before `createFeed`), so a feed report read hours after its
- * submission can never overwrite the outcome of a patch submitted after it,
- * and a provisional `incerto` is replaced by its own retry's outcome (a later
- * submission). The winner writes its own `emMs`, so the watermark always
- * advances. A stored value whose `emMs` cannot be read (not an object, or no
- * non-negative safe integer there) is no watermark: the new outcome replaces it.
+ * {@link decidirGravacaoEnvioEstoque} binds the listings flows' shared
+ * watermark (`listings/envioListing.ts`, whose header holds the rule) to the
+ * stock outcome. `emMs` is OUR submission instant (a patch: right before the
+ * PATCH; a feed: right before `createFeed`), so a provisional `incerto` is
+ * replaced by its own retry's outcome (a later submission).
  *
  * ## The three shapes (each parsed by `envioEstoqueAmazonSchema`)
  *
@@ -46,6 +43,8 @@ import {
   envioEstoqueAmazonSchema,
 } from '@delfrance/schemas';
 
+import { decidirGravacaoEnvioListing } from '../listings/envioListing';
+
 /** The two submission statuses a PATCH answer is read by, as the model spells them. */
 export const STATUS_ENVIO_LISTING_AMAZON = {
   aceito: 'ACCEPTED',
@@ -74,23 +73,17 @@ export interface RespostaPatchEstoqueAmazon {
   readonly issues?: readonly ProblemaEnvioEstoqueAmazon[] | null;
 }
 
-/** The stored `emMs`, when the stored value has a readable one (module header). */
-function emMsArmazenado(armazenado: unknown): number | null {
-  if (typeof armazenado !== 'object' || armazenado === null) return null;
-  const emMs = (armazenado as { readonly emMs?: unknown }).emMs;
-  return typeof emMs === 'number' && Number.isSafeInteger(emMs) && emMs >= 0 ? emMs : null;
-}
-
 /**
  * Whether `novo` replaces the stored outcome (module header): nothing readable
- * stored, or a STRICTLY older `emMs`. Equal keeps the stored.
+ * stored, or a STRICTLY older `emMs`. Equal keeps the stored. The listings
+ * flows' shared watermark (`listings/envioListing.ts`), bound to the stock
+ * outcome.
  */
 export function decidirGravacaoEnvioEstoque(
   armazenado: unknown,
   novo: EnvioEstoqueAmazon,
 ): boolean {
-  const anterior = emMsArmazenado(armazenado);
-  return anterior === null || anterior < novo.emMs;
+  return decidirGravacaoEnvioListing(armazenado, novo);
 }
 
 /** An issue in the link shape: every field present, `null` when Amazon left it out. */

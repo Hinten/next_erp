@@ -35,41 +35,25 @@
  *
  * ## Amazon's live read
  *
- *  - A SKU the search can carry (`skuBuscavelAmazon`) is read by
- *    `searchListingsItems`, {@link MAX_SKUS_POR_BUSCA} (20) SKUs a call, sorted,
- *    the calls at least {@link INTERVALO_BUSCAS_ESTOQUE_AMAZON_MS} (220 ms)
- *    apart: ≤ 4.5 a second against the operation's 5/5.
- *  - A requested SKU missing from an answer is not "not listed": a page may be
- *    truncated. When the answer is flagged truncated (a `nextToken`, or a
- *    `numberOfResults` other than its item count), each of its missing SKUs is
- *    searched AGAIN, alone, before any GET. A SKU still missing — from an
- *    untruncated answer, or from its own re-search — is confirmed by ONE
- *    `getListingsItem`: only that read's own 404 is `nao-listado`; a listing
- *    found is counted `confirmadoPorGet`.
- *  - A SKU the search cannot carry is read alone by `getListingsItem` when a
- *    path can carry it (`skuTemCaminhoAmazon`), else it ends `sem-caminho`
- *    (nothing can read it, so nothing may send it).
+ * Read 6 is the listings flows' shared batched read
+ * (`listings/leituraLoteListings.ts`, step 13, PR 13-b; its header holds the
+ * searches, the re-search of a truncated answer, the confirming GET, the
+ * pacing, the GET cap and the search lines), bound here to the stock datasets
+ * (`DADOS_LEITURA_ESTOQUE_AMAZON`) and the stock flow, so every search writes
+ * ONE `evento: 'estoque'` line. What the stock evaluator adds:
+ *
+ *  - `maxGets` is `null` for a reconcile page (every miss confirmed) and
+ *    {@link MAX_GETS_LOTE_JANELA} (60, ≈ 20 s) for a window build. Past the cap
+ *    — or for a missed SKU no path can carry — the SKU ends `nao-confirmado`
+ *    and is NOT sent (fail closed: the daily reconcile, which confirms every
+ *    miss, handles it). Nothing remembers `nao-listado` between batches, so
+ *    without the cap a stale link Amazon no longer lists would cost a GET in
+ *    every busy window. A SKU no read can carry ends `sem-caminho`.
  *  - A SKU the search read but no path can carry stays enviável: a feed
  *    carries what the patch path cannot (the patch task refuses it on its own).
- *  - The GETs — the confirmations and the single reads, sorted by SKU — are at
- *    least {@link INTERVALO_GETS_ESTOQUE_AMAZON_MS} (334 ms) apart: ≤ 3 a second,
- *    because `getListingsItem`'s per-seller 5 a second is SHARED with the stock
- *    queue's own reads (≤ 2 a second), and they share ONE cap, `maxGets`:
- *    `null` for a reconcile page (every miss confirmed), {@link MAX_GETS_LOTE_JANELA}
- *    (60, ≈ 20 s) for a window build. Past the cap — or for a missed SKU no
- *    path can carry — the SKU ends `nao-confirmado` and is NOT sent (fail
- *    closed: the daily reconcile, which confirms every miss, handles it).
- *    Nothing remembers `nao-listado` between batches, so without the cap a
- *    stale link Amazon no longer lists would cost a GET in every busy window.
- *  - Every search writes ONE `evento: 'estoque'` line (`fase: 'busca'`): the
- *    SKU count, the items, `truncada`, whether it was a re-search, and the
- *    rate Amazon applied (`limiteTaxa`). Never a SKU list.
- *  - A failed Amazon call (a 429, a 5xx, a refusal) is thrown UNTOUCHED, with
- *    its own class: what a failure means for a walk page or a feed build is
- *    its caller's to decide.
- *
- * The pacing waits on the caller's sleep (`esperar`), measured on the caller's
- * clock (`agora`), so a test drives both.
+ *  - A listing a confirming GET found is counted `confirmadoPorGet`.
+ *  - A failed Amazon call is thrown UNTOUCHED: what a failure means for a walk
+ *    page or a feed build is its caller's to decide.
  *
  * ## The deadline
  *
@@ -101,28 +85,26 @@
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import type { MembroDaFamilia } from '@delfrance/data/admin/estoque';
-import {
-  type ListingAmazon,
-  MAX_SKUS_POR_BUSCA,
-  skuBuscavelAmazon,
-  skuTemCaminhoAmazon,
-} from '@delfrance/integrations-amazon-sp-api';
 import { CONTA_ID_AMAZON_REGEX } from '@delfrance/schemas';
 
 import type { ContextoAmazon } from '../core/contexto';
-import { type CamposLogAmazon, type LoggerAmazon, registrarEventoAmazon } from '../core/log';
-import { FLUXO_AMAZON } from '../core/valvulas';
+import type { LoggerAmazon } from '../core/log';
 import {
   LARGURA_CONSULTAS_VINCULOS_AMAZON,
   avaliarVinculosEmLoteAmazon,
   lerVinculosDosSkusListingAmazon,
 } from '../listings/avaliacaoLoteVinculos';
+import { FLUXO_LISTING_AMAZON } from '../listings/fluxoListing';
 import {
-  type ContextoDosListingsAmazon,
-  type LeituraListingNaAmazon,
-  buscarListingsNaAmazon,
-  lerListingNaAmazon,
-} from '../listings/listingsAmazon';
+  DESFECHO_LEITURA_LOTE_LISTINGS_AMAZON,
+  DESFECHO_SKU_LEITURA_LOTE_LISTINGS_AMAZON,
+  ETAPA_LEITURA_LOTE_LISTINGS_AMAZON,
+  FASE_BUSCA_LISTINGS_AMAZON,
+  INTERVALO_BUSCAS_LISTINGS_AMAZON_MS,
+  INTERVALO_GETS_LISTINGS_AMAZON_MS,
+  lerListingsEmLoteAmazon,
+} from '../listings/leituraLoteListings';
+import type { ContextoDosListingsAmazon } from '../listings/listingsAmazon';
 import {
   type LeituraVinculosDoSkuAmazon,
   mascaraDosDonosAmazon,
@@ -161,11 +143,11 @@ import {
 /*                                  contract                                  */
 /* -------------------------------------------------------------------------- */
 
-/** The floor between two searches, in ms (module header): ≤ 4.5 a second against 5/5. */
-export const INTERVALO_BUSCAS_ESTOQUE_AMAZON_MS = 220;
+/** The floor between two searches, in ms: the shared read's (module header). */
+export const INTERVALO_BUSCAS_ESTOQUE_AMAZON_MS = INTERVALO_BUSCAS_LISTINGS_AMAZON_MS;
 
-/** The floor between two listing GETs, in ms (module header): ≤ 3 a second, the rest the stock queue's. */
-export const INTERVALO_GETS_ESTOQUE_AMAZON_MS = 334;
+/** The floor between two listing GETs, in ms: the shared read's (module header). */
+export const INTERVALO_GETS_ESTOQUE_AMAZON_MS = INTERVALO_GETS_LISTINGS_AMAZON_MS;
 
 /**
  * The GET cap of a WINDOW batch's build (module header): the confirmations and
@@ -193,8 +175,8 @@ export const CAMPOS_LEITURA_UNIDADES_AVALIACAO_ESTOQUE_AMAZON: readonly string[]
   ...new Set<string>([...CAMPOS_UNIDADE_VINCULO_ESTOQUE_AMAZON, ...CAMPOS_UNIDADE_ESTOQUE_AMAZON]),
 ];
 
-/** The `fase` of a search's line. */
-export const FASE_BUSCA_ESTOQUE_AMAZON = 'busca';
+/** The `fase` of a search's line: the shared read's. */
+export const FASE_BUSCA_ESTOQUE_AMAZON = FASE_BUSCA_LISTINGS_AMAZON;
 
 /** The stage a deadline stopped before (module header, "The deadline"). */
 export const ETAPA_AVALIACAO_ESTOQUE_AMAZON = {
@@ -340,13 +322,6 @@ export type AvaliacaoLoteEstoqueAmazon =
 /*                                   helpers                                  */
 /* -------------------------------------------------------------------------- */
 
-/** `itens` in consecutive slices of at most `tamanho`. */
-function fatias<T>(itens: readonly T[], tamanho: number): T[][] {
-  const saida: T[][] = [];
-  for (let i = 0; i < itens.length; i += tamanho) saida.push(itens.slice(i, i + tamanho));
-  return saida;
-}
-
 /** Code-unit order (a SKU is compared as exact bytes). */
 function porTexto(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
@@ -368,28 +343,6 @@ function exigirEntrada(ctx: ContextoAvaliacaoEstoqueAmazon, opcoes: OpcoesAvalia
   if (opcoes.maxGets !== null && (!Number.isSafeInteger(opcoes.maxGets) || opcoes.maxGets < 0)) {
     throw new RangeError('avaliacaoLoteEstoque.ts: maxGets deve ser null ou um inteiro >= 0');
   }
-}
-
-/** The floor between two calls of one kind, on the caller's clock and sleep. */
-interface RitmoAmazon {
-  /** Waits until the floor since the previous call's start has passed. */
-  aguardar(): Promise<void>;
-  /** A call starts now. */
-  marcar(): void;
-}
-
-function ritmo(ctx: ContextoAvaliacaoEstoqueAmazon, intervaloMs: number): RitmoAmazon {
-  let inicioAnteriorMs: number | null = null;
-  return {
-    async aguardar() {
-      if (inicioAnteriorMs === null) return;
-      const falta = inicioAnteriorMs + intervaloMs - ctx.agora();
-      if (falta > 0) await ctx.esperar(falta);
-    },
-    marcar() {
-      inicioAnteriorMs = ctx.agora();
-    },
-  };
 }
 
 /** Counters being summed. */
@@ -532,115 +485,50 @@ export async function avaliarSkusEstoqueAmazon(
     });
   }
 
-  // ---- 6. Amazon's live listing of every SKU still standing. ----
-  const aLerNaAmazon = [...quantidades.keys()].sort(porTexto);
-  const leituraAmazon = new Map<string, LeituraListingNaAmazon>();
-  const confirmados = new Set<string>();
-  const ritmoBuscas = ritmo(ctx, INTERVALO_BUSCAS_ESTOQUE_AMAZON_MS);
-  const ritmoGets = ritmo(ctx, INTERVALO_GETS_ESTOQUE_AMAZON_MS);
-
-  /** ONE search, paced, logged: the requested SKUs found, and whether the page may lack some. */
-  const buscar = async (
-    grupo: readonly string[],
-    rebusca: boolean,
-  ): Promise<{ achados: Map<string, ListingAmazon>; truncada: boolean } | null> => {
-    await ritmoBuscas.aguardar();
-    if (venceu()) return null;
-    ritmoBuscas.marcar();
-    const resposta = await buscarListingsNaAmazon(ctx.contexto, {
-      sellerId: ctx.sellerId,
-      skus: grupo,
-      incluir: DADOS_LEITURA_ESTOQUE_AMAZON,
-    });
-    lidos.buscas += 1;
-    if (rebusca) lidos.rebuscas += 1;
-    const pedidos = new Set(grupo);
-    const achados = new Map<string, ListingAmazon>();
-    for (const item of resposta.itens) {
-      if (pedidos.has(item.sku) && !achados.has(item.sku)) achados.set(item.sku, item);
-    }
-    registrarBusca(ctx.logger, contaId, {
-      fase: FASE_BUSCA_ESTOQUE_AMAZON,
-      rebusca,
-      skus: grupo.length,
-      itens: resposta.itens.length,
-      encontrados: achados.size,
-      truncada: resposta.truncada,
-      limiteTaxa: resposta.limiteTaxa,
-    });
-    return { achados, truncada: resposta.truncada };
-  };
-
-  const buscaveis = aLerNaAmazon.filter((sku) => skuBuscavelAmazon(sku));
-  const aRebuscar: string[] = [];
-  const aConfirmar: string[] = [];
-  for (const grupo of fatias(buscaveis, MAX_SKUS_POR_BUSCA)) {
-    const r = await buscar(grupo, false);
-    if (r === null) return prazo(ETAPA_AVALIACAO_ESTOQUE_AMAZON.busca);
-    for (const sku of grupo) {
-      const item = r.achados.get(sku);
-      if (item !== undefined) leituraAmazon.set(sku, item);
-      else if (r.truncada) aRebuscar.push(sku);
-      else aConfirmar.push(sku);
-    }
-  }
-  for (const sku of aRebuscar) {
-    const r = await buscar([sku], true);
-    if (r === null) return prazo(ETAPA_AVALIACAO_ESTOQUE_AMAZON.busca);
-    const item = r.achados.get(sku);
-    if (item !== undefined) leituraAmazon.set(sku, item);
-    else aConfirmar.push(sku);
-  }
-
-  // The GETs: the confirmations and the single reads, sorted, under ONE cap.
-  const confirmacoes = new Set(aConfirmar);
-  const sozinhos = aLerNaAmazon.filter((sku) => !skuBuscavelAmazon(sku));
-  const aLerPorGet = [...aConfirmar, ...sozinhos].sort(porTexto);
-  for (const sku of aLerPorGet) {
-    const vinculo = aptos.get(sku) ?? null;
-    const quantidadeErp = quantidades.get(sku)?.quantidade ?? null;
-    if (!skuTemCaminhoAmazon(sku)) {
-      recusar(
-        sku,
-        confirmacoes.has(sku)
-          ? MOTIVO_ESTOQUE_AMAZON.naoConfirmado
-          : MOTIVO_ESTOQUE_AMAZON.semCaminho,
-        vinculo,
-        quantidadeErp,
-      );
-      continue;
-    }
-    if (opcoes.maxGets !== null && lidos.gets >= opcoes.maxGets) {
-      recusar(sku, MOTIVO_ESTOQUE_AMAZON.naoConfirmado, vinculo, quantidadeErp);
-      continue;
-    }
-    await ritmoGets.aguardar();
-    if (venceu()) return prazo(ETAPA_AVALIACAO_ESTOQUE_AMAZON.leitura);
-    ritmoGets.marcar();
-    const lido = await lerListingNaAmazon(ctx.contexto, {
-      sellerId: ctx.sellerId,
+  // ---- 6. Amazon's live listing of every SKU still standing: the shared read, bound to stock. ----
+  const leitura = await lerListingsEmLoteAmazon(ctx, [...quantidades.keys()], {
+    fluxo: FLUXO_LISTING_AMAZON.estoque,
+    incluir: DADOS_LEITURA_ESTOQUE_AMAZON,
+    prazoMs: opcoes.prazoMs,
+    maxGets: opcoes.maxGets,
+  });
+  lidos.buscas += leitura.chamadas.buscas;
+  lidos.rebuscas += leitura.chamadas.rebuscas;
+  lidos.gets += leitura.chamadas.gets;
+  for (const [sku, lido] of leitura.porSku) {
+    if (lido.tipo === DESFECHO_SKU_LEITURA_LOTE_LISTINGS_AMAZON.lido) continue;
+    recusar(
       sku,
-      incluir: DADOS_LEITURA_ESTOQUE_AMAZON,
-    });
-    lidos.gets += 1;
-    leituraAmazon.set(sku, lido);
-    // Counted only on an enviável SKU below: a 404 is refused by the gate, so
-    // `confirmadoPorGet` is always a miss the GET FOUND.
-    if (confirmacoes.has(sku)) confirmados.add(sku);
+      lido.tipo === DESFECHO_SKU_LEITURA_LOTE_LISTINGS_AMAZON.semCaminho
+        ? MOTIVO_ESTOQUE_AMAZON.semCaminho
+        : MOTIVO_ESTOQUE_AMAZON.naoConfirmado,
+      aptos.get(sku) ?? null,
+      quantidades.get(sku)?.quantidade ?? null,
+    );
+  }
+  if (leitura.tipo === DESFECHO_LEITURA_LOTE_LISTINGS_AMAZON.prazo) {
+    return prazo(
+      leitura.etapa === ETAPA_LEITURA_LOTE_LISTINGS_AMAZON.busca
+        ? ETAPA_AVALIACAO_ESTOQUE_AMAZON.busca
+        : ETAPA_AVALIACAO_ESTOQUE_AMAZON.leitura,
+    );
   }
 
   // ---- 7. The listing gate per SKU read. ----
-  for (const [sku, leitura] of leituraAmazon) {
+  for (const [sku, lido] of leitura.porSku) {
+    if (lido.tipo !== DESFECHO_SKU_LEITURA_LOTE_LISTINGS_AMAZON.lido) continue;
     const vinculo = aptos.get(sku);
     const q = quantidades.get(sku);
     if (vinculo === undefined || q === undefined) continue;
-    const gate = avaliarListingEstoqueAmazon(leitura, vinculo);
+    const gate = avaliarListingEstoqueAmazon(lido.leitura, vinculo);
     if (!gate.enviavel) {
       recusar(sku, gate.motivo, vinculo, q.quantidade);
       continue;
     }
     const contagens = new Set<ContadorEstoqueAmazon>([...vinculo.contagens, ...gate.contagens]);
-    if (confirmados.has(sku)) contagens.add(CONTADOR_ESTOQUE_AMAZON.confirmadoPorGet);
+    // Counted only on an enviável SKU: a 404 is refused by the gate, so
+    // `confirmadoPorGet` is always a miss the GET FOUND.
+    if (lido.confirmadoPorGet) contagens.add(CONTADOR_ESTOQUE_AMAZON.confirmadoPorGet);
     if (q.semLinha && q.quantidade === 0) contagens.add(CONTADOR_ESTOQUE_AMAZON.zeroSemLinha);
     resultados.set(sku, {
       sku,
@@ -692,16 +580,4 @@ function contagemDe(
     }
   }
   return { skus, enviaveis, zeroSemLinha, recusasHumanas, porChave, leituras: { ...lidos } };
-}
-
-/** A search's line (module header): counts, the flags and the rate; never a SKU. */
-function registrarBusca(logger: LoggerAmazon, contaId: string, campos: CamposLogAmazon): void {
-  registrarEventoAmazon(
-    logger,
-    'estoque',
-    'INFO',
-    '[amazon/estoque] busca de listings de um lote',
-    campos,
-    { conta: contaId, fluxo: FLUXO_AMAZON.estoque },
-  );
 }

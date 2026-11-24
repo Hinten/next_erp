@@ -4,6 +4,7 @@
  * near-miss it must NOT allow. Documents are addressed through the real
  * collection handles, as the app does.
  */
+import { FieldPath } from 'firebase-admin/firestore';
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   avisoCollection,
@@ -1139,5 +1140,134 @@ describe('step 12 (12-f): stored stamps', () => {
       .commit();
     expect(r?.writeTime).toBe(antes);
     expect(db.carimboDe(CAMINHO)).toBe(antes);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*          step 13 (PR 13-b): a map's ONE entry as a two-segment mask         */
+/* -------------------------------------------------------------------------- */
+
+describe('step 13 (13-b): getAll with a two-segment FieldPath mask', () => {
+  /** Three tabelas' entries, a dotted id beside its NESTED look-alike, a label and a flag. */
+  const PRODUTO = {
+    nome: 'P',
+    propagatePriceToChildren: true,
+    precos: {
+      normal: { valor: 10 },
+      'pro.mo': { valor: 8 },
+      outra: { valor: 99 },
+      pro: { mo: { valor: 1 } },
+    },
+  };
+
+  it('★ projects { [mapa]: { [chave]: … } } with ONLY the asked entries — a dotted chave is ONE key, never its nested look-alike', async () => {
+    db.seed('produtos/p', PRODUTO);
+    const [snap] = await db.getAll(produtoRef('p'), {
+      fieldMask: [new FieldPath('precos', 'normal'), new FieldPath('precos', 'pro.mo')],
+    });
+    expect(snap?.data()).toEqual({ precos: { normal: { valor: 10 }, 'pro.mo': { valor: 8 } } });
+    expect(Object.keys((snap?.data()?.precos ?? {}) as object).sort()).toEqual([
+      'normal',
+      'pro.mo',
+    ]);
+    expect(snap?.data()?.nome).toBeUndefined();
+  });
+
+  it('★ beside top-level names: each kept; a top-level name of the SAME map answers the whole map', async () => {
+    db.seed('produtos/p', PRODUTO);
+    const [a] = await db.getAll(produtoRef('p'), {
+      fieldMask: [new FieldPath('precos', 'normal'), 'propagatePriceToChildren'],
+    });
+    expect(a?.data()).toEqual({
+      precos: { normal: { valor: 10 } },
+      propagatePriceToChildren: true,
+    });
+    const [b] = await db.getAll(produtoRef('p'), {
+      fieldMask: [new FieldPath('precos', 'normal'), 'precos'],
+    });
+    expect(b?.data()).toEqual({ precos: PRODUTO.precos });
+    const [c] = await db.getAll(produtoRef('p'), {
+      fieldMask: ['precos', new FieldPath('precos', 'normal')],
+    });
+    expect(c?.data()).toEqual({ precos: PRODUTO.precos });
+  });
+
+  it('an entry the map lacks, a map that is not a map, a document without the map: nothing of the map comes back', async () => {
+    db.seed('produtos/p', PRODUTO);
+    db.seed('produtos/q', { nome: 'Q', precos: 7 });
+    db.seed('produtos/r', { nome: 'R' });
+    const snaps = await db.getAll(produtoRef('p'), produtoRef('q'), produtoRef('r'), {
+      fieldMask: [new FieldPath('precos', 'ausente')],
+    });
+    expect(snaps.map((s) => s.data())).toEqual([{}, {}, {}]);
+    expect(snaps.map((s) => s.exists)).toEqual([true, true, true]);
+  });
+
+  it('★ NEAR-MISS: a top-level dotted STRING is still refused, exactly as before (a server reads it as a path)', () => {
+    expect(() => db.getAll(produtoRef('p'), { fieldMask: ['precos.normal'] })).toThrow(
+      /primeiro nível/,
+    );
+  });
+
+  it('refuses a FieldPath of any other length, and a FieldPath in a query select', () => {
+    expect(() => db.getAll(produtoRef('p'), { fieldMask: [new FieldPath('precos')] })).toThrow(
+      /dois segmentos/,
+    );
+    expect(() =>
+      db.getAll(produtoRef('p'), { fieldMask: [new FieldPath('precos', 'a', 'b')] }),
+    ).toThrow(/dois segmentos/);
+    expect(() =>
+      produtoAmazonLinkCollection.groupQuery(asDb(db)).select(new FieldPath('a', 'b') as never),
+    ).toThrow(/primeiro nível/);
+    expect(db.leituras).toEqual([]);
+  });
+
+  it('★ the log records the entry as its pair, and every counter moves exactly as for a top-level mask', async () => {
+    db.seed('produtos/p', PRODUTO);
+    await db.getAll(produtoRef('p'), produtoRef('q'), {
+      fieldMask: [new FieldPath('precos', 'pro.mo'), 'nome'],
+    });
+    expect(db.leiturasDetalhadas).toEqual([
+      { caminho: 'produtos/p', via: 'getAll', chamada: 1, mascara: [['precos', 'pro.mo'], 'nome'] },
+      { caminho: 'produtos/q', via: 'getAll', chamada: 1, mascara: [['precos', 'pro.mo'], 'nome'] },
+    ]);
+    expect(db.contagem).toEqual({ leituras: 2, chamadasGetAll: 1, consultas: 0, escritas: 0 });
+  });
+
+  it('a nested-only mask satisfies a collection that refuses unmasked reads; the snapshot keeps exists and updateTime', async () => {
+    const carimbo = db.seed('produtos/p', PRODUTO);
+    db.exigirMascaraEm('produtos');
+    const [snap] = await db.getAll(produtoRef('p'), {
+      fieldMask: [new FieldPath('precos', 'outra')],
+    });
+    expect(snap?.data()).toEqual({ precos: { outra: { valor: 99 } } });
+    expect(snap?.updateTime?.isEqual(carimbo)).toBe(true);
+    // The stored document is untouched by the projection.
+    expect(db.ler('produtos/p')).toEqual(PRODUTO);
+  });
+});
+
+describe('step 13 (13-b): a two-segment mask, its near-misses', () => {
+  it('★ NEAR-MISS: an ARRAY is no map — a two-segment mask over it returns nothing of it', async () => {
+    db.seed('produtos/p', { nome: 'P', precos: [{ valor: 1 }] });
+    const [snap] = await db.getAll(produtoRef('p'), { fieldMask: [new FieldPath('precos', '0')] });
+    expect(snap?.data()).toEqual({});
+  });
+
+  it('★ the fake loads no value of the SDK: a suite that mocks firebase-admin/firestore WITHOUT FieldPath still masks by plain names', async () => {
+    const { vi } = await import('vitest');
+    vi.resetModules();
+    vi.doMock('firebase-admin/firestore', () => ({ FieldValue: {} }));
+    try {
+      const { FakeDb: FakeIsolada, asDb: asDbIsolada } = await import('./fakeDb');
+      const isolada = new FakeIsolada();
+      isolada.seed('produtos/p', { nome: 'P', outro: 1 });
+      const ref = produtoCollection.docRef(asDbIsolada(isolada), {}, 'p');
+      const [snap] = await isolada.getAll(ref, { fieldMask: ['nome'] });
+      expect(snap?.data()).toEqual({ nome: 'P' });
+    } finally {
+      vi.doUnmock('firebase-admin/firestore');
+      vi.resetModules();
+    }
   });
 });

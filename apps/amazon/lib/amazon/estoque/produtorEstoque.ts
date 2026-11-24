@@ -14,6 +14,12 @@
  * two `agendadorEstoque.ts` files, one of them a root, would be one import typo
  * apart.
  *
+ * Since step 13 (PR 13-b) it binds the listings flows' shared producer core
+ * (`listings/produtorListing.ts`: the one enqueue, the whole-second delays and
+ * the batch) to this queue: its payload contract, its task names, its delay
+ * bound and its valve class. What stays here is the stock queue's own: the
+ * path, the two classes, the read-back and the pause.
+ *
  * ## Four entries, and which of them NAME their task
  *
  * A task NAME is a Cloud Tasks id: a create whose id the queue already holds is
@@ -43,11 +49,9 @@
  *
  * ## Delays: WHOLE seconds
  *
- * A delay is handed to Cloud Tasks as `scheduleDelaySeconds`: `undefined` or
- * `0` ⇒ none; a negative, fractional or non-finite value is a `RangeError`,
- * nothing enqueued. So is a delay past {@link MAX_ATRASO_ESTOQUE_S} (one hour,
- * three times the longest the stock flow asks for, the reconcile's 20-minute
- * send delay): a delay in that range is a value handed over in MILLISECONDS.
+ * The shared core's whole-second rule (its header), bound to this queue's
+ * bound {@link MAX_ATRASO_ESTOQUE_S}: one hour, three times the longest the
+ * stock flow asks for, the reconcile's 20-minute send delay.
  *
  * No entry sends a `uri` (under the emulator a supplied one would ship the task
  * to the deployed function). Every payload is re-checked against
@@ -57,14 +61,9 @@
  *
  * ## The batch
  *
- * {@link ProdutorEstoqueAmazon.enfileirarLote} starts the payloads in list
- * order, at most {@link LARGURA_LOTE_ESTOQUE_AMAZON} in flight. Before
- * STARTING each one it asks `continuar` (a producer's deadline): `false` ⇒
- * nothing more is started, and the ones never tried are counted
- * (`naoTentadas`) so the caller can tell a complete batch from a cut one. The
- * first rejection stops every worker from starting another payload; the ones
- * already in flight are awaited (never left running behind an answer), and the
- * rejection of the EARLIEST payload in list order is rethrown unchanged.
+ * {@link ProdutorEstoqueAmazon.enfileirarLote} is the shared core's batch (its
+ * header: the width, the deadline hook, the earliest rejection) over this
+ * producer's named enqueue, every payload checked before the first starts.
  * Because every payload is named, re-running a cut or failed batch enqueues
  * only what is missing.
  *
@@ -80,11 +79,20 @@
  * - anything else, rethrown EXACTLY as it was thrown (a broken deploy, a root's
  *   `MissingRegionError`, a coding bug).
  */
+import { regiaoDaFilaValidaAmazon } from '../core/filaTarefas';
 import {
-  ehTarefaJaExistenteAmazon,
-  enfileirarNomeandoFalhaTransitoriaAmazon,
-  regiaoDaFilaValidaAmazon,
-} from '../core/filaTarefas';
+  type FilaListingAmazon,
+  LARGURA_LOTE_LISTING_AMAZON,
+  type LimiteDeAtrasoListingAmazon,
+  type OpcoesDaTarefaListingAmazon,
+  type ResultadoEnfileiramentoListingAmazon,
+  type ResultadoLoteListingAmazon,
+  type VinculoFilaListingAmazon,
+  atrasoDaFilaListingAmazon,
+  enfileirarLoteListingAmazon,
+  enfileirarNaFilaListingAmazon,
+  opcoesDaTarefaListingAmazon,
+} from '../listings/produtorListing';
 import {
   ORIGEM_TAREFA_ESTOQUE_AMAZON,
   type TarefaEstoqueAmazon,
@@ -96,8 +104,8 @@ import {
 /** The stock queue's function name: the export `functions/src/index.ts` asserts at load. */
 export const FILA_ESTOQUE_AMAZON = 'processAmazonStockPatch';
 
-/** The most enqueues one batch keeps in flight (module header, "The batch"). */
-export const LARGURA_LOTE_ESTOQUE_AMAZON = 16;
+/** The most enqueues one batch keeps in flight (module header, "The batch"): the shared core's. */
+export const LARGURA_LOTE_ESTOQUE_AMAZON = LARGURA_LOTE_LISTING_AMAZON;
 
 /** The read-back's delay, in seconds: past the documented 0–15 min lag's typical 1–5 min. */
 export const ATRASO_VERIFICACAO_ESTOQUE_S = 360;
@@ -113,29 +121,19 @@ export const ATRASO_PAUSA_ESTOQUE_S = 60;
 export const MAX_ATRASO_ESTOQUE_S = 3_600;
 
 /** What one enqueue carries besides the payload: a delay, and a task id when named. */
-export interface OpcoesDaTarefaEstoqueAmazon {
-  readonly scheduleDelaySeconds?: number;
-  readonly id?: string;
-}
+export type OpcoesDaTarefaEstoqueAmazon = OpcoesDaTarefaListingAmazon;
 
 /**
  * The transport, as a root binds it — structurally, the Admin SDK's
  * `TaskQueue<TarefaEstoqueAmazon>`, of which only `enqueue(data, opts?)` is used.
  */
-export interface FilaEstoqueAmazon {
-  enqueue(payload: TarefaEstoqueAmazon, opcoes?: OpcoesDaTarefaEstoqueAmazon): Promise<void>;
-}
+export type FilaEstoqueAmazon = FilaListingAmazon<TarefaEstoqueAmazon>;
 
 /** What a NAMED enqueue did. */
-export type ResultadoEnfileiramentoEstoqueAmazon = 'enfileirada' | 'ja-enfileirada';
+export type ResultadoEnfileiramentoEstoqueAmazon = ResultadoEnfileiramentoListingAmazon;
 
 /** What a batch did, counted (module header, "The batch"). */
-export interface ResultadoLoteEstoqueAmazon {
-  readonly enfileiradas: number;
-  readonly jaEnfileiradas: number;
-  /** Payloads never started because `continuar` answered `false`. */
-  readonly naoTentadas: number;
-}
+export type ResultadoLoteEstoqueAmazon = ResultadoLoteListingAmazon;
 
 /** A batch's options: one delay for every payload, and the producer's deadline. */
 export interface OpcoesLoteEstoqueAmazon {
@@ -219,36 +217,15 @@ export class AmazonEstoqueTarefasDesligadasError extends Error {
 }
 
 /**
- * A delay as the transport takes it (module header): `undefined` or `0` ⇒
- * none, a whole number of seconds up to {@link MAX_ATRASO_ESTOQUE_S} ⇒
- * `scheduleDelaySeconds`.
- *
- * @throws {RangeError} a negative, fractional, non-finite or ms-sized delay.
+ * This queue's delay bound (module header), for the shared core's whole-second
+ * rule: `undefined` or `0` ⇒ none, a whole number of seconds up to
+ * {@link MAX_ATRASO_ESTOQUE_S} ⇒ `scheduleDelaySeconds`.
  */
-function atrasoValido(atrasoS: number | undefined): number | undefined {
-  if (atrasoS === undefined) return undefined;
-  if (!Number.isSafeInteger(atrasoS) || atrasoS < 0) {
-    throw new RangeError('produtorEstoque.ts: atraso fora de segundos inteiros não negativos');
-  }
-  if (atrasoS > MAX_ATRASO_ESTOQUE_S) {
-    throw new RangeError(
-      'produtorEstoque.ts: atraso acima de uma hora (milissegundos no lugar de segundos?)',
-    );
-  }
-  return atrasoS === 0 ? undefined : atrasoS;
-}
-
-/** The transport's options: the id when named, the delay when positive; none at all otherwise. */
-function opcoesDaTarefa(
-  id: string | null,
-  atrasoS: number | undefined,
-): OpcoesDaTarefaEstoqueAmazon | undefined {
-  if (id === null && atrasoS === undefined) return undefined;
-  return {
-    ...(id === null ? {} : { id }),
-    ...(atrasoS === undefined ? {} : { scheduleDelaySeconds: atrasoS }),
-  };
-}
+const LIMITE_DE_ATRASO_ESTOQUE: LimiteDeAtrasoListingAmazon = {
+  rotulo: 'produtorEstoque.ts',
+  maximoS: MAX_ATRASO_ESTOQUE_S,
+  descricao: 'uma hora',
+};
 
 /** One payload, checked and named, ready for the transport (module header). */
 interface EnvioPreparado {
@@ -272,7 +249,14 @@ function preparar(
 ): EnvioPreparado {
   const tarefa = tarefaEstoqueAmazonSchema.parse(payload);
   const id = nomeado ? nomeDaTarefaEstoque(tarefa) : null;
-  return { tarefa, id, extras: opcoesDaTarefa(id, atrasoValido(atrasoS)) };
+  return {
+    tarefa,
+    id,
+    extras: opcoesDaTarefaListingAmazon(
+      id,
+      atrasoDaFilaListingAmazon(atrasoS, LIMITE_DE_ATRASO_ESTOQUE),
+    ),
+  };
 }
 
 /**
@@ -284,32 +268,24 @@ function preparar(
 export function criarProdutorEstoqueAmazon(
   opcoes: OpcoesProdutorEstoqueAmazon,
 ): ProdutorEstoqueAmazon {
+  /**
+   * This queue, as the shared core's binding: the transport and the valve with
+   * its OWN class, both read off `opcoes` at EVERY enqueue.
+   */
+  const vinculo: VinculoFilaListingAmazon<TarefaEstoqueAmazon> = {
+    fila: () => opcoes.fila(),
+    get desligado() {
+      return opcoes.desligado;
+    },
+    desligada: () => new AmazonEstoqueTarefasDesligadasError(),
+  };
   /** One prepared enqueue; a NAMED one answers `ja-enfileirada` on a held id. */
-  const enviar = async ({
+  const enviar = ({
     tarefa,
     id,
     extras,
-  }: EnvioPreparado): Promise<ResultadoEnfileiramentoEstoqueAmazon> => {
-    if (opcoes.desligado) throw new AmazonEstoqueTarefasDesligadasError();
-    let jaExiste = false;
-    await enfileirarNomeandoFalhaTransitoriaAmazon(async () => {
-      try {
-        await (extras === undefined
-          ? opcoes.fila().enqueue(tarefa)
-          : opcoes.fila().enqueue(tarefa, extras));
-      } catch (err) {
-        // Read BEFORE the transient naming, which would call this 409 a
-        // hiccup: Cloud Tasks already holds this name (tier 0). Only a NAMED
-        // enqueue can meet it; an unnamed one's 409 is an ABORTED, a transient.
-        if (id !== null && ehTarefaJaExistenteAmazon(err)) {
-          jaExiste = true;
-          return;
-        }
-        throw err;
-      }
-    });
-    return jaExiste ? 'ja-enfileirada' : 'enfileirada';
-  };
+  }: EnvioPreparado): Promise<ResultadoEnfileiramentoEstoqueAmazon> =>
+    enfileirarNaFilaListingAmazon(vinculo, tarefa, id, extras);
 
   return {
     async enfileirar(payload, atrasoS) {
@@ -320,56 +296,7 @@ export function criarProdutorEstoqueAmazon(
       // Every payload is checked BEFORE the first enqueue: a bad one in the
       // middle never leaves a half-sent batch behind a ZodError.
       const preparados = payloads.map((p) => preparar(p, true, opcoesLote.atrasoS));
-      const continuar = opcoesLote.continuar ?? (() => true);
-      let proximo = 0;
-      let parar = false;
-      let enfileiradas = 0;
-      let jaEnfileiradas = 0;
-      let naoTentadas = 0;
-      const largura = Math.min(LARGURA_LOTE_ESTOQUE_AMAZON, Math.max(1, preparados.length));
-      /** The payload each worker started last: a rejected worker failed on it. */
-      const ultimoDoTrabalhador: number[] = [];
-      const trabalhador = async (t: number): Promise<void> => {
-        for (;;) {
-          if (parar) return;
-          const indice = proximo;
-          const preparado = preparados[indice];
-          if (preparado === undefined) return;
-          if (!continuar()) {
-            // The deadline: nothing more starts, and everything left is counted.
-            parar = true;
-            naoTentadas = preparados.length - indice;
-            return;
-          }
-          proximo += 1;
-          ultimoDoTrabalhador[t] = indice;
-          try {
-            const r = await enviar(preparado);
-            if (r === 'ja-enfileirada') jaEnfileiradas += 1;
-            else enfileiradas += 1;
-          } catch (erro) {
-            // Never contained: every worker stops starting another payload,
-            // and the rejection leaves through `allSettled` below.
-            parar = true;
-            throw erro;
-          }
-        }
-      };
-      // `allSettled`, never `all`: `all` would answer on the first rejection
-      // while the siblings' enqueues were still running behind the answer.
-      const saidas = await Promise.allSettled(
-        Array.from({ length: largura }, (_, t) => trabalhador(t)),
-      );
-      let primeira: { readonly indice: number; readonly erro: unknown } | null = null;
-      for (const [t, saida] of saidas.entries()) {
-        if (saida.status !== 'rejected') continue;
-        const indice = ultimoDoTrabalhador[t] ?? 0;
-        if (primeira === null || indice < primeira.indice) {
-          primeira = { indice, erro: saida.reason };
-        }
-      }
-      if (primeira !== null) throw primeira.erro;
-      return { enfileiradas, jaEnfileiradas, naoTentadas };
+      return enfileirarLoteListingAmazon(preparados, enviar, opcoesLote.continuar);
     },
 
     async enfileirarVerificacao(payload, submissionId) {

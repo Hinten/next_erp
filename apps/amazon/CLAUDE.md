@@ -117,7 +117,8 @@ dialog's Amazon provider comes after step 9b). See "Stock (step 12)".
   a route may reach the stock producer and its payload (to enqueue), never the task or its I/O.
   Since step 13 (PR 13-b) it also lists the shared listings wiring
   (`MODULOS_DE_LISTINGS_FORA_DO_APP_HOSTING`, derived from its I/O roster `E_S_EM_LISTINGS`); the
-  manual selection read `listings/selecaoManual.ts` stays reachable.
+  manual selection read `listings/selecaoManual.ts` and the producer core
+  `listings/produtorListing.ts` stay reachable.
   Since PR 12-g the manual stock route (`enviar-estoque`) is on this walk and does exactly that:
   it reaches the producer, the payload and its OWN body (`estoque/envioManualEstoque.ts`, the
   one I/O module of `estoque/` deliberately NOT on the list: it only reads and enqueues), never
@@ -741,9 +742,9 @@ dialog's Amazon provider comes after step 9b). See "Stock (step 12)".
   `divergenciasFirestore.ts`, `provedorLoteEstoque.ts` and (PR 12-g) `envioManualEstoque.ts`
   loads EXACTLY its listed modules as
   values (`E_S_EM_ESTOQUE`), no pure
-  module imports one, ONLY the write-back, the tick (its lease and its final write) and (PR
-  12-f) the drift blocks and the reconcile's one write helper make a Firestore WRITE call
-  (`ESCRITORES_EM_ESTOQUE`), and the production importers of `estoque/` are exactly the stock
+  module imports one, ONLY the tick (its lease and its final write) and (PR 12-f) the drift
+  blocks and the reconcile's one write helper make a Firestore WRITE call
+  (`ESCRITORES_EM_ESTOQUE`; the write-back's is the shared one it binds), and the production importers of `estoque/` are exactly the stock
   root, the stock queue, the stock tick's schedule, the functions index, the seam's root type,
   (PR 12-f) the jobs root and the daily reconcile's schedule, and (PR 12-g) the manual push
   route and the App Hosting root `lib/firebase/filaLeitura.ts` (`IMPORTADORES_DE_ESTOQUE`; the
@@ -769,11 +770,19 @@ dialog's Amazon provider comes after step 9b). See "Stock (step 12)".
   name their flow, and the batch refuses another flow's verdict), the batched reader
   `avaliacaoLoteVinculos.ts` (parity with the per-SKU one at both flows' masks; its by-id unit
   and parent reads exported for a reader that holds unit ids), the walk
-  and page core `varreduraVinculos.ts` (smallest-path dedupe, `ja-visto`), and the manual
-  selection `selecaoManual.ts` over the pure partition helpers `sondasVinculos.ts`. Each module is
-  pure, on the I/O roster `E_S_EM_LISTINGS` or the one listings caller; nothing there writes
-  Firestore (`ESCRITORES_EM_LISTINGS`) or reaches `estoque/`. The fake db models top-level
-  masks only: a `precos.<tabela>` mask runs in `avaliacaoLoteVinculos.firestore.test.ts`.
+  and page core `varreduraVinculos.ts` (smallest-path dedupe, `ja-visto`), the manual
+  selection `selecaoManual.ts` over the pure partition helpers `sondasVinculos.ts`, the batched
+  live read `leituraLoteListings.ts` (20 SKUs a search ≥ 220 ms apart, a miss confirmed by ONE
+  GET ≥ 334 ms apart, `maxGets`, the flow's datasets exactly as asked, one line per search under
+  the flow's event), the outcome watermark and write-back `envioListing.ts` +
+  `envioListingFirestore.ts` (the flow's field alone, parsed by its schema), the task rungs
+  `escritaListing.ts` (the budget in the credential getter, the boundary's classifier, the 429
+  pause, the PATCH's own failure) and the producer core `produtorListing.ts` (one enqueue, whole-second delays, the
+  batch); `avisos/avisos.ts`'s `sincronizarAvisoContaListingsAmazon` holds each flow to its own
+  closed motivo set (price: none yet). Each module is pure, on the I/O roster `E_S_EM_LISTINGS`
+  or the one listings caller; only the write-back writes Firestore (`ESCRITORES_EM_LISTINGS`);
+  nothing reaches `estoque/`. The fake db models a two-segment `FieldPath` mask (logged
+  `[mapa, chave]`), so the `precos.<tabela>` masks run offline too.
 
 ## Layout
 
@@ -950,7 +959,7 @@ dialog's Amazon provider comes after step 9b). See "Stock (step 12)".
 - The stock sync (step 12) lives in `lib/amazon/estoque/`. PR 12-d shipped its PURE half (by
   value it imports only its siblings, the shared quantity core, the schemas, the SP-API
   package, `zod`, of `@delfrance/data` only `sha256Hex` and `contaRefForms`, and since step
-  13 the PURE shared modules `listings/{fluxoListing,vinculoListing,gateListing,sondasVinculos}.ts`,
+  13 the PURE shared modules `listings/{fluxoListing,vinculoListing,gateListing,sondasVinculos,envioListing}.ts`,
   held to the same allow-list — `estrutura.test.ts`; both `@delfrance/data` barrels load Admin modules transitively, and no
   pure module calls one, nor imports the I/O half PR 12-e1 added — see "Stock (step 12)"):
   `opcoesEstoque.ts` (the core's
@@ -1244,7 +1253,7 @@ no `env:` block.
 | Receiver feed wake-up (step 12a) | — | no Firestore write: ONE named enqueue per (seller or `-`, feed); a failed one is ONE WARNING, never persisted |
 | Stock `patchListingsItem` (step 12, PR 12-e1) | provider-ordered, idempotent value | an ABSOLUTE quantity computed at dispatch from a fresh read, compared with Amazon's live read first; one conta's patches serialised by the queue's concurrency 1, and a task past its 200-s budget never PATCHes (concurrency bounds dispatches, not executions); a retry after a PATCH that may have landed re-reads and re-sends the current value |
 | Provisional `incerto` outcome (step 12) | 2 (via 1) | the write-back below, BEFORE the retry's throw, with the PATCH's own `emMs` and quantity: the retry's plan reads it as a recent send of that quantity, so a lost answer whose PATCH applies late is corrected, never taken for `igual`. ⚠️ Residue: written only once a failure is OBSERVED, so a dispatch that dies after its PATCH left, a write-back lost inside the boundary, or a provisional entry landing after the retry's read leaves no record, and a retry inside the 15-min lag may take `igual` over a late PATCH (the next movement or the daily reconcile corrects it) |
-| `envioEstoqueAmazon` on the link docs (step 12) | 2 (via 1) | `estoque/envioEstoqueFirestore.ts`: each link doc read with `getAll(…, { fieldMask: ['envioEstoqueAmazon'] })`, `decidirGravacaoEnvioEstoque` (strictly newer `emMs` wins, equal keeps the stored), `update({ envioEstoqueAmazon }, { lastUpdateTime })`; 9/5 ⇒ only the loser re-read and re-decided, ≤ 3, then ONE WARNING for the call, never a throw. An `emMs` more than 24 h ahead (µs, not ms) is a `RangeError`, nothing read |
+| `envioEstoqueAmazon` on the link docs (step 12) | 2 (via 1) | `estoque/envioEstoqueFirestore.ts`, the stock binding of `listings/envioListingFirestore.ts`: each link doc read with `getAll(…, { fieldMask: ['envioEstoqueAmazon'] })`, `decidirGravacaoEnvioListing` (strictly newer `emMs` wins, equal keeps the stored), `update({ envioEstoqueAmazon }, { lastUpdateTime })`; 9/5 ⇒ only the loser re-read and re-decided, ≤ 3, then ONE WARNING for the call, never a throw. An `emMs` more than 24 h ahead (µs, not ms) is a `RangeError`, nothing read |
 | Stock read-back task (step 12) | 0 | NAMED by (conta, Amazon's `submissionId`, SKU), 360 s later: a retried patch task enqueues it once; never chained (a read-back earns none), never for a reconcile's patch |
 | Stock-queue enqueues (step 12) | 0 / unnamed | NAMED per observation (`nomeDaTarefaEstoque`: origem, conta, reference, SKU); `ALREADY_EXISTS` = already durable. The tick's tasks and a recovery's unforced ones are named by the OBSERVATION (a re-read window dedupes; a row written again moves its commit time, so a new name), a recovery's FORCED ones by the recovered feed's reference; (PR 12-f) a window batch handed to patches by each SKU's observation, its FORCED ones `catch-up` by the batch's `execucaoId`. UNNAMED: the 429 pause (a name would collide with the running task). ⚠️ The pause carries no counter: a 429 that never ends re-pauses every 60 s until the stock valve is `off`, the read switch is not `on`, or a pause enqueue fails (then the queue's five attempts bound it) |
 | Stock conta avisos (step 12) | seam, tier 2 on the Firestore timeline | `sincronizarAvisoContaEstoqueAmazon` (`avisos/avisos.ts`, the five stock motivos only): a raise clocked by its raiser's Firestore read time (the patch task's `INVALID`: the write-back's link-doc read, raised only when that outcome won or is still in conflict; the tick's `estoque-sem-deposito`: its T4 sync-doc read, raised or resolved on the flag's transition, or by a run taking over an unreleased lease, and BEFORE the flag's write; PR 12-f: the reconcile's by its `relogioInicio`, the feed write-back's by its last link-doc read (else the record's `relogioDesfecho`), a refused automatic request's by the request read); a resolve SEEDS a resolved row when none exists, so an older raise arriving later is dropped |
