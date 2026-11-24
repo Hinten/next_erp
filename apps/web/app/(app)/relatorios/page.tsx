@@ -69,6 +69,9 @@ export default function RelatoriosIndexPage() {
         <Anchor component={Link} href="/relatorios/vendas">
           → Vendas por estado
         </Anchor>
+        <Anchor component={Link} href="/relatorios/vendas-estampas">
+          → Vendas por estampa
+        </Anchor>
       </Group>
     </Stack>
   );

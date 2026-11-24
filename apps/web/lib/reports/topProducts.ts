@@ -103,16 +103,19 @@ function validId(value: unknown): value is string {
   return typeof value === 'string' && !naoDocId(value);
 }
 
-/**
- * Filter BEFORE expanding arrays. Only grouped SKU totals cross the wire;
- * neither complete pedidos nor the whole product catalog are downloaded.
- */
-export function buildTopProductsPipeline(db: Firestore, input: OrderReportFilters) {
+export function buildSalesOrdersPipeline(db: Firestore, input: OrderReportFilters) {
   const predicate = orderReportPredicate(input);
   // A malformed legacy bucket is represented by one invalid line, so it is
   // visible in diagnostics instead of disappearing behind unnest/sum semantics.
   const items = field('itens').ifAbsent({}).ifNull(false);
-  const groups = mapEntries(conditional(isType(items, 'map'), items, map({ NONE: [{}] })));
+  return {
+    pipeline: db.pipeline().collection('pedidos').where(predicate),
+    groups: mapEntries(conditional(isType(items, 'map'), items, map({ NONE: [{}] }))),
+  };
+}
+
+function buildSalesItemsPipeline(db: Firestore, input: OrderReportFilters) {
+  const { pipeline: orders, groups } = buildSalesOrdersPipeline(db, input);
   // isType on absent/null values can itself be absent/error. Give it a
   // defined, non-null operand, then compare only the numeric projection.
   const rawQuantity = field('item.quantidade').ifAbsent(false).ifNull(false);
@@ -122,20 +125,23 @@ export function buildTopProductsPipeline(db: Firestore, input: OrderReportFilter
     greaterThanOrEqual(quantity, 0),
     lessThanOrEqual(quantity, Number.MAX_VALUE),
   );
-  return db
-    .pipeline()
-    .collection('pedidos')
-    .where(predicate)
+  const pipeline = orders
     .select(groups.as('itemGroups'))
     .unnest(field('itemGroups'))
-    .unnest(conditional(isType(groupItems, 'array'), groupItems, array([{}])).as('item'))
-    .aggregate({
-      groups: [field('itemGroups.k').as('produtoId')],
-      accumulators: [
-        sum(conditional(validQuantity, quantity, constant(0))).as('quantidade'),
-        sum(conditional(validQuantity, constant(0), constant(1))).as('invalidLines'),
-      ],
-    });
+    .unnest(conditional(isType(groupItems, 'array'), groupItems, array([{}])).as('item'));
+  return { pipeline, quantity, validQuantity };
+}
+
+/** Return grouped SKU totals after filtering the orders and expanding their items. */
+export function buildTopProductsPipeline(db: Firestore, input: OrderReportFilters) {
+  const { pipeline, quantity, validQuantity } = buildSalesItemsPipeline(db, input);
+  return pipeline.aggregate({
+    groups: [field('itemGroups.k').as('produtoId')],
+    accumulators: [
+      sum(conditional(validQuantity, quantity, constant(0))).as('quantidade'),
+      sum(conditional(validQuantity, constant(0), constant(1))).as('invalidLines'),
+    ],
+  });
 }
 
 /** Aggregate rows are ad-hoc records and bypass collection converters. */
@@ -321,7 +327,7 @@ export function aggregateTopProducts(
   return { rows, totalQuantidade, diagnostics };
 }
 
-async function readProjectedDocuments(
+export async function readProjectedDocuments(
   db: Firestore,
   collection: string,
   inputIds: readonly string[],
