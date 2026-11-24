@@ -15,9 +15,11 @@ import { FirebaseError } from 'firebase/app';
 import { roundReais } from '@delfrance/core/money';
 import {
   ESTADO_PEDIDO_LABELS,
+  INTEGRACAO_FRETE_LABELS,
   MODALIDADE_FRETE_LABELS,
   estoqueDisponivel,
   flattenPedidoItens,
+  isFreteMarketplaceOwned,
   itemSubtotal,
   makeEstoqueUid,
   nomeDoItem,
@@ -290,9 +292,14 @@ export async function buildPrintModel(
     pedido.valorCobrado ??
     roundReais(roundReais(subtotal - descontoTotal) + (frete?.valorCobrado ?? 0));
 
+  const tipoDoBloco = frete?.externalOptionIntegracao;
   const printFrete: PrintFrete | null = frete
     ? {
-        tipoNome: integracaoFrete?.nome ?? 'Genérico',
+        tipoNome:
+          integracaoFrete?.nome ??
+          (tipoDoBloco != null && isFreteMarketplaceOwned(tipoDoBloco)
+            ? INTEGRACAO_FRETE_LABELS[tipoDoBloco]
+            : 'Genérico'),
         modalidadeLabel: MODALIDADE_FRETE_LABELS[frete.modalidade] ?? frete.modalidade,
         servicoMelhorEnvio:
           integracaoFrete?.tipo === 'melhorEnvios'
