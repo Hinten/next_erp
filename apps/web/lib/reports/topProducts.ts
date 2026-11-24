@@ -6,8 +6,6 @@ import {
   conditional,
   constant,
   documentId,
-  equal,
-  equalAny,
   execute,
   field,
   greaterThanOrEqual,
@@ -19,30 +17,22 @@ import {
 } from 'firebase/firestore/pipelines';
 import {
   componentesKitEntries,
-  estadoPedidoSchema,
   fotoSchema,
   fotosForVariacao,
   naoDocId,
   toDocPathOrNull,
   toOuterRefOrNull,
   type ComponentesKit,
-  type EstadoPedido,
   type Foto,
 } from '@delfrance/schemas';
 import { coverArquivoIds } from '@/lib/produtos/fotoRefs';
-import { checkoutDateRange } from './checkouts';
-import {
-  pedidoReportAccounts,
-  pedidoReportTimestamp,
-  type PedidoReportDateRange,
-} from './pedidoReportPredicates';
+import { orderReportPredicate, type OrderReportFilters } from './orderReportFilters';
 
-export interface TopProductsFilters extends PedidoReportDateRange {
-  estados: readonly EstadoPedido[];
-  /** Integration document IDs; an empty selection includes every account. */
-  accountIds: readonly string[];
-  ehSaida: boolean;
-}
+export {
+  normalizeOrderReportFilters as normalizeTopProductsFilters,
+  orderReportDateRange as topProductsDateRange,
+  type OrderReportFilters as TopProductsFilters,
+} from './orderReportFilters';
 
 export interface TopProductsSaleGroup {
   produtoId: string | null;
@@ -113,67 +103,18 @@ function validId(value: unknown): value is string {
   return typeof value === 'string' && !naoDocId(value);
 }
 
-/** Same inclusive calendar-day behavior as Checkouts, converted to pedido's µs unit. */
-export function topProductsDateRange(start: string | null, end: string | null) {
-  const range = checkoutDateRange(start, end);
-  if (!range) return null;
-  const startUs = range.startMs * 1000;
-  const endExclusiveUs = range.endExclusiveMs * 1000;
-  return Number.isSafeInteger(startUs) && Number.isSafeInteger(endExclusiveUs)
-    ? { startUs, endExclusiveUs }
-    : null;
-}
-
-/** Canonical selection order also gives the persistent cache a stable request key. */
-export function normalizeTopProductsFilters(filters: TopProductsFilters): TopProductsFilters {
-  if (
-    !Number.isSafeInteger(filters.startUs) ||
-    !Number.isSafeInteger(filters.endExclusiveUs) ||
-    filters.startUs >= filters.endExclusiveUs ||
-    typeof filters.ehSaida !== 'boolean'
-  ) {
-    throw new RangeError('Selecione um período válido para o relatório.');
-  }
-  if (filters.estados.length === 0) {
-    throw new RangeError('Selecione pelo menos um estado de pedido.');
-  }
-  for (const state of filters.estados) {
-    if (!estadoPedidoSchema.safeParse(state).success) {
-      throw new RangeError('Estado de pedido inválido.');
-    }
-  }
-  if (filters.accountIds.some((id) => !validId(id))) {
-    throw new RangeError('Conta de marketplace inválida.');
-  }
-  return {
-    ...filters,
-    estados: [...new Set(filters.estados)].sort(),
-    accountIds: [...new Set(filters.accountIds)].sort(),
-  };
-}
-
-export function buildSalesOrdersPipeline(db: Firestore, input: TopProductsFilters) {
-  const filters = normalizeTopProductsFilters(input);
-  const predicates = [equal(field('ehSaida'), filters.ehSaida), pedidoReportTimestamp(filters)];
-  if (filters.estados.length > 0) {
-    predicates.push(equalAny(field('estado'), [...filters.estados]));
-  }
-  if (filters.accountIds.length > 0) {
-    predicates.push(pedidoReportAccounts(filters.accountIds));
-  }
+export function buildSalesOrdersPipeline(db: Firestore, input: OrderReportFilters) {
+  const predicate = orderReportPredicate(input);
   // A malformed legacy bucket is represented by one invalid line, so it is
   // visible in diagnostics instead of disappearing behind unnest/sum semantics.
   const items = field('itens').ifAbsent({}).ifNull(false);
   return {
-    pipeline: db
-      .pipeline()
-      .collection('pedidos')
-      .where(and(predicates[0]!, predicates[1]!, ...predicates.slice(2))),
+    pipeline: db.pipeline().collection('pedidos').where(predicate),
     groups: mapEntries(conditional(isType(items, 'map'), items, map({ NONE: [{}] }))),
   };
 }
 
-function buildSalesItemsPipeline(db: Firestore, input: TopProductsFilters) {
+function buildSalesItemsPipeline(db: Firestore, input: OrderReportFilters) {
   const { pipeline: orders, groups } = buildSalesOrdersPipeline(db, input);
   // isType on absent/null values can itself be absent/error. Give it a
   // defined, non-null operand, then compare only the numeric projection.
@@ -191,7 +132,8 @@ function buildSalesItemsPipeline(db: Firestore, input: TopProductsFilters) {
   return { pipeline, quantity, validQuantity };
 }
 
-export function buildTopProductsPipeline(db: Firestore, input: TopProductsFilters) {
+/** Return grouped SKU totals after filtering the orders and expanding their items. */
+export function buildTopProductsPipeline(db: Firestore, input: OrderReportFilters) {
   const { pipeline, quantity, validQuantity } = buildSalesItemsPipeline(db, input);
   return pipeline.aggregate({
     groups: [field('itemGroups.k').as('produtoId')],
@@ -414,7 +356,7 @@ export async function readProjectedDocuments(
 
 export async function loadTopProductsReport(
   db: Firestore,
-  filters: TopProductsFilters,
+  filters: OrderReportFilters,
 ): Promise<TopProductsReport> {
   const snapshot = await execute(buildTopProductsPipeline(db, filters));
   const groups = snapshot.results.map((result) => topProductsGroupFromResult(result.data()));

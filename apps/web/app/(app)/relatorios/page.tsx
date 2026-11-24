@@ -64,7 +64,7 @@ export default function RelatoriosIndexPage() {
 
       <Group>
         <Anchor component={Link} href="/relatorios/produtos">
-          → Produtos mais vendidos
+          → Vendas por produto
         </Anchor>
         <Anchor component={Link} href="/relatorios/vendas">
           → Vendas por estado
