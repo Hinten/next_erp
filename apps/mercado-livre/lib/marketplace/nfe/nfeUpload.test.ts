@@ -129,10 +129,9 @@ const NOW_MS = Date.parse('2026-07-01T12:00:00.000Z');
 const NOW_US = NOW_MS * 1000;
 const PAYLOAD: NfeUploadTaskPayload = { pedidoId: PEDIDO_ID, nfeId: NFE_ID };
 
-// infNFe/ide precedes protNFe, exactly like a real nfeProc — the '9'
-// protocol echo pins that the FIRST tpAmb wins.
 const XML_PROD =
-  '<nfeProc><NFe><infNFe><ide><cUF>35</cUF><tpAmb>1</tpAmb></ide></infNFe></NFe>' +
+  '<nfeProc><NFe><infNFe><ide><cUF>35</cUF><tpNF>1</tpNF><tpAmb>1</tpAmb><finNFe>1</finNFe>' +
+  '</ide></infNFe></NFe>' +
   '<protNFe><infProt><tpAmb>1</tpAmb></infProt></protNFe></nfeProc>';
 const XML_HOM =
   '<nfeProc><NFe><infNFe><ide><tpAmb>2</tpAmb></ide></infNFe></NFe>' +
@@ -358,7 +357,10 @@ describe('processNfeUploadTask — happy path + dispositions', () => {
 
     expect(result).toEqual({ outcome: 'enviado', motivo: null });
     expect(api.sendShipmentInvoiceData).toHaveBeenCalledExactlyOnceWith(SHIPMENT_ID, XML_PROD);
-    expect(allWrites(db)).toEqual([]);
+    expect(db.opLog).toEqual([
+      { op: 'get', path: `${NFE_COL}/${NFE_ID}` },
+      { op: 'get', path: `pedidos/${PEDIDO_ID}` },
+    ]);
     expect(db.docs('pedidos').get(PEDIDO_ID)).toEqual(pedidoBefore);
   });
 
@@ -411,6 +413,34 @@ describe('processNfeUploadTask — happy path + dispositions', () => {
     expect(result).toEqual({ outcome: 'erro-deterministico', motivo: 'xml-invalido' });
     expect(allWrites(db)).toEqual([]);
   });
+
+  it.each([
+    ['finNFe 2', XML_PROD.replace('finNFe>1', 'finNFe>2'), 'descartado', 'nfe-nao-e-de-venda'],
+    ['finNFe 3', XML_PROD.replace('finNFe>1', 'finNFe>3'), 'descartado', 'nfe-nao-e-de-venda'],
+    ['finNFe 4', XML_PROD.replace('finNFe>1', 'finNFe>4'), 'descartado', 'nfe-nao-e-de-venda'],
+    [
+      'missing purpose',
+      XML_PROD.replace('<finNFe>1</finNFe>', ''),
+      'erro-deterministico',
+      'xml-invalido',
+    ],
+  ])(
+    'stops before reading the pedido or calling ML for %s',
+    async (_case, xml, outcome, motivo) => {
+      const db = new FakeDb();
+      seedNfe(db, { xml_nfe_proc: xml });
+      seedPedido(db);
+      const api = makeApi();
+      const deps = makeDeps(db, api);
+
+      await expect(processNfeUploadTask(deps, PAYLOAD, 0)).resolves.toEqual({ outcome, motivo });
+
+      expect(db.opLog).toEqual([{ op: 'get', path: `${NFE_COL}/${NFE_ID}` }]);
+      expect(deps.resolveApi).not.toHaveBeenCalled();
+      expect(api.getShipment).not.toHaveBeenCalled();
+      expect(api.sendShipmentInvoiceData).not.toHaveBeenCalled();
+    },
+  );
 
   it('discards when the pedido is gone (zero writes)', async () => {
     const db = new FakeDb();
