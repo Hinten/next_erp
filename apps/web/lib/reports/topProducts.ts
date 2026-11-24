@@ -153,10 +153,10 @@ export function normalizeTopProductsFilters(filters: TopProductsFilters): TopPro
 }
 
 /**
- * Filter BEFORE expanding arrays. Only grouped SKU totals cross the wire;
- * neither complete pedidos nor the whole product catalog are downloaded.
+ * Filter orders before expanding their items. Each report aggregates the
+ * resulting item rows on the server before executing the pipeline.
  */
-export function buildTopProductsPipeline(db: Firestore, input: TopProductsFilters) {
+export function buildSalesItemsPipeline(db: Firestore, input: TopProductsFilters) {
   const filters = normalizeTopProductsFilters(input);
   const predicates = [
     equal(field('ehSaida'), filters.ehSaida),
@@ -200,20 +200,25 @@ export function buildTopProductsPipeline(db: Firestore, input: TopProductsFilter
     greaterThanOrEqual(quantity, 0),
     lessThanOrEqual(quantity, Number.MAX_VALUE),
   );
-  return db
+  const pipeline = db
     .pipeline()
     .collection('pedidos')
     .where(and(predicates[0]!, predicates[1]!, ...predicates.slice(2)))
     .select(groups.as('itemGroups'))
     .unnest(field('itemGroups'))
-    .unnest(conditional(isType(groupItems, 'array'), groupItems, array([{}])).as('item'))
-    .aggregate({
-      groups: [field('itemGroups.k').as('produtoId')],
-      accumulators: [
-        sum(conditional(validQuantity, quantity, constant(0))).as('quantidade'),
-        sum(conditional(validQuantity, constant(0), constant(1))).as('invalidLines'),
-      ],
-    });
+    .unnest(conditional(isType(groupItems, 'array'), groupItems, array([{}])).as('item'));
+  return { pipeline, quantity, validQuantity };
+}
+
+export function buildTopProductsPipeline(db: Firestore, input: TopProductsFilters) {
+  const { pipeline, quantity, validQuantity } = buildSalesItemsPipeline(db, input);
+  return pipeline.aggregate({
+    groups: [field('itemGroups.k').as('produtoId')],
+    accumulators: [
+      sum(conditional(validQuantity, quantity, constant(0))).as('quantidade'),
+      sum(conditional(validQuantity, constant(0), constant(1))).as('invalidLines'),
+    ],
+  });
 }
 
 /** Aggregate rows are ad-hoc records and bypass collection converters. */
@@ -399,7 +404,7 @@ export function aggregateTopProducts(
   return { rows, totalQuantidade, diagnostics };
 }
 
-async function readProjectedDocuments(
+export async function readProjectedDocuments(
   db: Firestore,
   collection: string,
   inputIds: readonly string[],
