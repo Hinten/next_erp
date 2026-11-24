@@ -264,7 +264,18 @@ export function parseArgsReproduzirPedido(argv: readonly string[]): ComandoRepro
 /*                              the path guards                                */
 /* -------------------------------------------------------------------------- */
 
-export type PapelDoArquivo = '--detalhe' | '--escrow' | '--saida';
+/**
+ * The role a refusal names — never the path itself. The last three are
+ * `capturar:pedido`'s (`capturarPedidoCli.ts`), which shares these guards
+ * rather than copying them.
+ */
+export type PapelDoArquivo =
+  | '--detalhe'
+  | '--escrow'
+  | '--saida'
+  | '--pasta'
+  | '<nome>.detalhe.json'
+  | '<nome>.escrow.json';
 
 /** The entries that make a directory a checkout: a worktree has a `.git` FILE, a clone a folder. */
 const MARCADORES_DE_CHECKOUT = ['.git', 'pnpm-workspace.yaml'] as const;
@@ -373,11 +384,18 @@ export function exigirArquivoExistente(
   if (!existe(absoluto)) throw new ArquivoRecusadoError(`${papel}: arquivo não encontrado.`);
 }
 
-/** `--saida` never overwrites — the script also writes with `flag: 'wx'`. */
-export function exigirSaidaNova(absoluto: string, existe: (caminho: string) => boolean): void {
+/**
+ * An output file never overwrites — both scripts also write with `flag: 'wx'`.
+ * `papel` names the file in the refusal; it defaults to the replay's `--saida`.
+ */
+export function exigirSaidaNova(
+  absoluto: string,
+  existe: (caminho: string) => boolean,
+  papel: PapelDoArquivo = '--saida',
+): void {
   if (existe(absoluto)) {
     throw new ArquivoRecusadoError(
-      '--saida já existe; a reprodução nunca sobrescreve. Use outro nome.',
+      `${papel} já existe; esta ferramenta nunca sobrescreve um arquivo. Use outro nome.`,
     );
   }
 }
