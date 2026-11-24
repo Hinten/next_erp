@@ -356,9 +356,9 @@ export type ValorPrecoLi = { readonly centavos: number } | 'vazio' | 'ilegivel';
  *  - a STRING ⇒ the ONE wire decimal rule, `parseWireDecimal` (`'274.42'`, `'259.9'`, a padded
  *    4-decimal string such as `'160.0000'` — the form the store's order lines and its price
  *    resource carry: the owner's read-only price capture (2026-11-24, both stores) found every
- *    price-resource value to be text with exactly four decimals, or `null`, with no fraction of a
- *    centavo, while the produto detail carries the same values as JSON numbers — `'+10.00'` and
- *    `'.5'` all read; a second grammar is never written here);
+ *    price-resource value it read to be text with exactly four decimals, or `null`, with no
+ *    fraction of a centavo, while the produto detail carries the same values as JSON numbers —
+ *    `'+10.00'` and `'.5'` all read; a second grammar is never written here);
  *  - `null` or absent ⇒ `'vazio'`;
  *  - a NEGATIVE value (number or string), a non-finite number, a string the wire rule refuses
  *    (`'1,50'`, `'1e3'`, `''`, `'abc'`), an amount whose centavos are past a safe integer, and any
@@ -487,10 +487,9 @@ function validarEnvioPrecoLi(alvo: EnvioPrecoLi, quem: string): void {
  * with a promotion of 70.00 and a target of 65.00 / 68.00 is `baixa` (`promocional` only),
  * although under that reading the buyer price rises. Deliberate: whether the store charges a
  * promotion that is not below its full price is not known (the owner's read-only price capture
- * found no such row on either store, so this case meets no current row), and under either reading
- * the literal rule lets no lowering through — the
- * cost is a raise held for an operator's "permitir baixar preços", never a lower price sent
- * unasked.
+ * found no such row among the rows it read on either store), and under either reading the literal
+ * rule lets no lowering through — the cost is a raise held for an operator's "permitir baixar
+ * preços", never a lower price sent unasked.
  *
  * A CLEAR never counts as lowering by itself: it can only raise the buyer price. A current value
  * that is present but unreadable is `atual-ilegivel`, reported apart — never "lowers", never

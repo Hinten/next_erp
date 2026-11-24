@@ -549,6 +549,8 @@ describe('promocionalLimpoLi (a cleared promotion)', () => {
     ['0.0100'],
     [0.01],
     [0.005],
+    // The text twin of the number above: half a centavo rounds the same way on both paths.
+    ['0.0050'],
     ['-1.00'],
     [-1],
     ['1,50'],

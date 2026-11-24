@@ -1437,12 +1437,23 @@ export const TIPO_AVISO_LABELS = {
  *    order, joined by `, `; the NUMBER beside it is the full count.
  *  - All four join the expiry sweep's orphan pass: a deleted conta's rows are
  *    closed (`conta-removida`).
- *  - **A linked child the nightly's by-id price read does not get back** (the
- *    answer lists it as not found, or leaves it out) raises none of the four:
- *    it is counted and logged. While the stock flow runs, the stock
- *    reconcile's `lojaIntegradaEstoqueVinculo` (`sem-linha-na-loja`) reports
- *    such a link, for up to {@link MAX_AMOSTRA_AVISO_ESTOQUE_LI} a conta a
- *    night.
+ *  - **A linked child the nightly's by-id price read does not get back**
+ *    raises none of the four: it is counted and logged. One the answer lists
+ *    as NOT FOUND was not returned to this conta; when the store has no such
+ *    product, the stock reconcile's `lojaIntegradaEstoqueVinculo`
+ *    (`sem-linha-na-loja`) reports that link while the stock flow runs, for
+ *    up to {@link MAX_AMOSTRA_AVISO_ESTOQUE_LI} a conta a night. One the
+ *    answer leaves out, or a batch failure skipped, has no aviso of its own:
+ *    only its count and the log line (the stock reconcile reports such a
+ *    link only when the store has no such product).
+ *  - **The by-id read must have FINISHED** for the two tipos it decides
+ *    (`lojaIntegradaPrecoNaoBaixado`, and `lojaIntegradaPrecoParado` with
+ *    both motivos): they are raised or resolved only for a conta whose by-id
+ *    read reached its end. A conta whose read never started (parked before
+ *    it) or ended early (a park mid-read, a second id the store keeps
+ *    failing) leaves both untouched, as the stock reconcile leaves
+ *    `sem-linha-na-loja`: a part read would resolve a case it never looked
+ *    at, or store a count below the real one.
  *
  * **`lojaIntegradaPrecoSemErp`** — linked children of the conta that are HELD:
  *    the map that prices them has no normal-tabela price now, an entry they
@@ -1491,9 +1502,9 @@ export const TIPO_AVISO_LABELS = {
  *    down since the previous run — a lowering the event path should have
  *    carried) and `amostra`.
  *  - **Route**: the conta page (`ROTAS_AVISO.canalLojaIntegrada`).
- *  - **Machine resolvers**: the end of a later reconcile run that counts none
- *    for the conta (an "Atualizar preços" run that may lower counts none); and
- *    the orphan pass once the conta is gone.
+ *  - **Machine resolvers**: the end of a later reconcile run whose by-id read
+ *    of the conta finished and counts none (an "Atualizar preços" run that may
+ *    lower counts none); and the orphan pass once the conta is gone.
  *
  * **`lojaIntegradaPrecoParado`** — the daily reconcile sent NOTHING for some
  *    children of the conta, one row per reason — a {@link MOTIVO_PRECO_PARADO_LI}
@@ -1509,10 +1520,10 @@ export const TIPO_AVISO_LABELS = {
  *  - **`params`**: `loja`, `motivo` (the code; `motivo` the field too),
  *    `produtos` (a NUMBER: the cases) and `amostra`.
  *  - **Route**: the conta page (`ROTAS_AVISO.canalLojaIntegrada`).
- *  - **Machine resolvers**: the end of a later reconcile run that counts zero
- *    cases of that motivo for the conta (each run raises or resolves every
- *    motivo once; "Atualizar preços" passes the gate for its conta); and the
- *    orphan pass once the conta is gone.
+ *  - **Machine resolvers**: the end of a later reconcile run whose by-id read
+ *    of the conta finished and counts zero cases of that motivo (each such
+ *    run raises or resolves every motivo once; "Atualizar preços" passes the
+ *    gate for its conta); and the orphan pass once the conta is gone.
  */
 export const tipoAvisoSchema = z
   .enum([

@@ -76,15 +76,16 @@ import {
  *  3. the store read (`li-preco`) goes through the conta's buckets in order, `'00'` to `'31'`, and
  *     inside each through its ids by numeric value, asking the store — at most
  *     {@link MAX_IDS_SET_PRECO_LI} ids a call, one call spanning buckets — for every `v` entry
- *     whose `a` is a target `{ c, q }`; a held entry and every other flag are never asked. Each
- *     row of the answer is matched to an asked id by the produto it names, never by its position,
- *     and diffed against that entry's `a`. No-lower is decided HERE, the only phase holding the
- *     store row (a refused lowering is counted and sampled, never a candidate), and so is each
- *     candidate's send key `h`. An asked id the answer lists as not found was not returned to this
- *     conta: counted, nothing to diff, never a candidate. One the answer neither returns nor lists
- *     is counted as unanswered, and is never read as "no row". The store read writes no bucket: one
- *     still of another run here is a broken ERP phase, counted with ONE ERROR, its entries never
- *     asked;
+ *     whose `a` is a target `{ c, q }`; a held entry and every other flag are never asked. A `v`
+ *     entry the read reaches with no `a` at all is a broken parents unit: never asked, counted,
+ *     with ONE ERROR for the conta. Each row of the answer is matched to an asked id by the
+ *     produto it names, never by its position, and diffed against that entry's `a`. No-lower is
+ *     decided HERE, the only phase holding the store row (a refused lowering is counted and
+ *     sampled, never a candidate), and so is each candidate's send key `h`. An asked id the
+ *     answer lists as not found was not returned to this conta: counted, nothing to diff, never a
+ *     candidate. One the answer neither returns nor lists is counted as unanswered, and is never
+ *     read as "no row". The store read writes no bucket: one still of another run here is a
+ *     broken ERP phase, counted with ONE ERROR, its entries never asked;
  *  4. the queue phase (`fila-preco`) defers a row in transit (`t`), holds back a non-converging
  *     one (its key `h` enqueued on each of the last two runs), enqueues the rest, and writes the
  *     memory.
@@ -98,6 +99,20 @@ import {
  * ## Units
  *
  * Every stamp is MILLISECONDS and says so in its name (`…Ms`); every price is integer CENTAVOS.
+ *
+ * ## Size
+ *
+ * The root carries three lists that grow with the conta's valid children: `candidatos`,
+ * `execucaoPreco.mantidos` and `enviadosPreco`. In Firestore's sizing a candidate takes
+ * 19 + |i| + |p| + |h| bytes and a memory row (`mantidos` alike) 16 + |i| + |h|, about 60 and 45
+ * at the measured id widths with a key of about 20 characters. `candidatos` and `mantidos` never
+ * share an id, and the memory holds one row per id, so the three together take about 105 bytes
+ * per valid child at most: about 0.73 MB of the 1 MiB document limit at the larger store's 6,946
+ * linked children, on the rare night when every child differs beside a full memory (a re-point
+ * right after a bootstrap). So the store read caps the stored candidates by BYTES, counting the
+ * memory and `mantidos` already on the root (never a fixed candidate budget like the stock run's,
+ * which leaves the memory out), so that the root stays under 900 000 bytes; a row dropped by the
+ * cap is counted and found again the next night, as the stock run does with its own.
  *
  * ## Writers (root `CLAUDE.md` rule 7)
  *
@@ -155,8 +170,11 @@ export const MAX_IDS_SET_PRECO_LI = 100;
  * id the store cannot answer must not stop the rest of the conta every night: a call that fails
  * for its batch halves `lote`, and the next call asks the first half of the same ids; an answered
  * call doubles it back, up to {@link MAX_IDS_SET_PRECO_LI}; an id that still fails alone is
- * skipped for this run (counted) and `lote` starts again at the bound. Which failures halve it is
- * the store read's rule (master plan step 13).
+ * skipped for this run (counted) and `lote` starts again at the bound. A SECOND such id in one run
+ * ends the conta's read there, which bounds a read that fails outright at about 14 calls; so two
+ * ids the store keeps failing stop the conta's nightly read at the same point every night until
+ * one clears (a named residual). Which failures halve it is the store read's rule (master plan
+ * step 13).
  */
 export const reconcileContaPrecoLiSchema = z
   .object({
@@ -269,11 +287,13 @@ export type EnviadoPrecoLi = z.infer<typeof enviadoPrecoLiSchema>;
  *    document, whose byte budget is the stock's);
  *  - `mantidos`: the memory rows (`enviadosPreco`) of the ids the store read asked for and could
  *    not evaluate (not found, unanswered, unreadable, answered twice, skipped alone), copied as
- *    they were so the queue phase keeps them unchanged: never larger than the memory, and never
- *    an id of `candidatos`.
+ *    they were so the queue phase keeps them unchanged: never larger than the memory, never one
+ *    id twice, and never an id of `candidatos`. That is the store read's guarantee, pinned by the
+ *    reconcile's own test and never refused here: a refusal would fail the slice's one batch, the
+ *    stock flow's writes included, over one bookkeeping row.
  *
- * There is no seen-set: the by-id read never repeats an asked id, names the ones it does not get
- * back itself, and the cursor says what is done.
+ * There is no seen-set: the cursor says which ids are settled (a call that fails settles none of
+ * its ids, so asking them again is no repeat), and the read names the ones it does not get back.
  */
 export const execucaoContaPrecoLiSchema = z.object({
   execucaoId: idExecucaoEstoqueLiSchema,
@@ -295,10 +315,15 @@ export const sincPrecoLojaIntegradaSchema = z.object({
   ultimoReconcilePreco: ultimoReconcilePrecoLiSchema.nullable().default(null),
   execucaoPreco: execucaoContaPrecoLiSchema.nullable().default(null),
   /**
-   * The non-convergence memory: survives runs, replaced whole by each run that reaches its queue
-   * phase, with the rows of the candidates it enqueued or held back as non-converging, plus
-   * `execucaoPreco.mantidos` and, when the conta's store read did not finish, every row of an id
-   * past the cursor: an id the run did not evaluate keeps its row as it was.
+   * The non-convergence memory, one row per id: survives runs, replaced whole by each run that
+   * reaches its queue phase, with the rows of the candidates it enqueued or held back as
+   * non-converging, plus `execucaoPreco.mantidos` and, when the conta's store read did not finish,
+   * every row of an id past the cursor. So an id the store read asked for and could not evaluate,
+   * or never reached, keeps its row as it was; every other row is dropped: an id evaluated and
+   * neither enqueued nor held back (reflected, a refused lowering, deferred in transit), and an id
+   * the read did not ask (held, with no target at all, in a bucket still of another run, no longer
+   * a valid child, unlinked). One row per id is the queue phase's guarantee, never refused here
+   * (as `mantidos`'s rules are the store read's).
    */
   enviadosPreco: z.array(enviadoPrecoLiSchema).default([]),
 });

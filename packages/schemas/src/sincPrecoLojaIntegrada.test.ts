@@ -152,9 +152,23 @@ describe('sincPrecoLojaIntegradaSchema (the per-conta root)', () => {
     };
     for (const [onde, aceita] of Object.entries(ok)) {
       expect(aceita(RUN), onde).toBe(true);
-      for (const ruim of ['', 'a b', 'a/b', 'x'.repeat(101), 7, null]) {
+      for (const ruim of ['', 'a b', 'a/b', 'x'.repeat(101), 7, null, undefined]) {
         expect(aceita(ruim), `${onde}: ${String(ruim)}`).toBe(false);
       }
+    }
+  });
+
+  it('⚠️ NEAR-MISS: a cursor always names its run and its start — neither is ever left out', () => {
+    const completo = { execucaoId: RUN, balde: 0, apos: null, lote: 100, iniciadoEmMs: AGORA_MS };
+    const ok = (reconcilePreco: unknown) =>
+      sincPrecoLojaIntegradaSchema.safeParse({ reconcilePreco }).success;
+    expect(ok(completo)).toBe(true);
+    for (const campo of ['execucaoId', 'iniciadoEmMs'] as const) {
+      const semCampo = Object.fromEntries(Object.entries(completo).filter(([k]) => k !== campo));
+      expect(Object.hasOwn(semCampo, campo), campo).toBe(false);
+      expect(ok(semCampo), `sem ${campo}`).toBe(false);
+      expect(ok({ ...completo, [campo]: undefined }), `${campo} undefined`).toBe(false);
+      expect(ok({ ...completo, [campo]: null }), `${campo} null`).toBe(false);
     }
   });
 
@@ -185,6 +199,8 @@ describe('sincPrecoLojaIntegradaSchema (the per-conta root)', () => {
     [{ balde: 7, apos: '39' }],
     [{ balde: 31, apos: '31' }],
     [{ balde: 1, apos: '1000000033' }],
+    // The id modulo 32 — never its last two digits, which would put 100 in bucket 0.
+    [{ balde: 4, apos: '100' }],
     [{ balde: BALDES_SNAPSHOT_ESTOQUE_LI, apos: null }],
   ] as const)('EQUAL: the cursor %j is a position in OUR snapshot', (campos) => {
     expect(cursorOk(campos)).toBe(true);
@@ -201,6 +217,7 @@ describe('sincPrecoLojaIntegradaSchema (the per-conta root)', () => {
 
   it.each([
     [{ balde: 0, apos: '33' }],
+    [{ balde: 0, apos: '100' }],
     [{ balde: 1, apos: '32' }],
     [{ balde: 32, apos: '32' }],
     [{ balde: 32, apos: '64' }],
@@ -274,6 +291,7 @@ describe('sincPrecoLojaIntegradaSchema (the per-conta root)', () => {
     expect(ok({ i: '7', h: '5000:0:4990:0', n: 2 })).toBe(true);
     for (const ruim of [
       { i: '7', h: '5000:0:4990', n: 1 },
+      { i: '7', h: '05000:0:4990:0', n: 1 },
       { i: '7', h: '5000:0:4990:0', n: 0 },
       { i: '07', h: '5000:0:4990:0', n: 1 },
       { i: '7', h: '5000:0:4990:0' },
@@ -341,7 +359,18 @@ describe('sincPrecoLojaIntegradaSchema (the per-conta root)', () => {
         ),
       ),
     ).toBe(true);
-    for (const ruim of [undefined, null, '', '5000:0:4750', '50.00:0:47.50:0', 5000]) {
+    // A leading zero, or a part past 16 digits, is no key `assinaturaEnvioPrecoLi` can return:
+    // compared as an exact string, it would never match and never trip `nao-converge`.
+    for (const ruim of [
+      undefined,
+      null,
+      '',
+      '5000:0:4750',
+      '50.00:0:47.50:0',
+      '05000:0:4750:0',
+      '12345678901234567:0:0:0',
+      5000,
+    ]) {
       expect(ok(ruim), String(ruim)).toBe(false);
     }
   });
@@ -353,6 +382,7 @@ describe('sincPrecoLojaIntegradaSchema (the per-conta root)', () => {
     for (const ruim of [
       { i: '7', h: '5000:0:4990', n: 1 },
       { i: '7', h: '50.00:0:49.90:0', n: 1 },
+      { i: '7', h: '05000:0:4990:0', n: 1 },
       { i: '7', h: 'abc', n: 1 },
       { i: '7', h: '5000:0:4990:0', n: 0 },
       { i: '7', h: '5000:0:4990:0', n: 1.5 },
@@ -430,6 +460,11 @@ describe('the snapshot (the stock’s buckets, the price entries)', () => {
     // The stock's "no link" entry has no price twin: a store row the ERP did not name is never read.
     expect(ok({ p: 'p1', f: 'x' })).toBe(false);
     expect(ok({ p: null, f: 'x' })).toBe(false);
+    // Every flag but `v` — not only `dup`: a target stamped on a parent would be carried forward.
+    const naoValidas = flagEntradaPrecoLiSchema.options.filter(
+      (x) => x !== FLAG_ENTRADA_PRECO_LI.valido,
+    );
+    expect(naoValidas).toHaveLength(4);
     for (const campo of [
       { pai: 'pai1' },
       { n: 5000 },
@@ -439,7 +474,9 @@ describe('the snapshot (the stock’s buckets, the price entries)', () => {
       { t: true },
       { tp: true },
     ]) {
-      expect(ok({ p: 'p1', f: 'dup', ...campo }), JSON.stringify(campo)).toBe(false);
+      for (const f of naoValidas) {
+        expect(ok({ p: 'p1', f, ...campo }), `${f} ${JSON.stringify(campo)}`).toBe(false);
+      }
       expect(ok({ p: 'p1', f: 'v', ...campo }), JSON.stringify(campo)).toBe(true);
     }
   });
