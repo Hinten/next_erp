@@ -115,6 +115,9 @@ dialog's Amazon provider comes after step 9b). See "Stock (step 12)".
   since PR 12-e2 `estoque/{descobertaFirestore,sincronizacaoEstoque,deltaEstoque}.ts`, and since
   PR 12-f `estoque/{avaliacaoLoteEstoque,reconciliacaoEstoque,divergenciasFirestore,provedorLoteEstoque}.ts`):
   a route may reach the stock producer and its payload (to enqueue), never the task or its I/O.
+  Since step 13 (PR 13-b) it also lists the shared listings wiring
+  (`MODULOS_DE_LISTINGS_FORA_DO_APP_HOSTING`, derived from its I/O roster `E_S_EM_LISTINGS`); the
+  manual selection read `listings/selecaoManual.ts` stays reachable.
   Since PR 12-g the manual stock route (`enviar-estoque`) is on this walk and does exactly that:
   it reaches the producer, the payload and its OWN body (`estoque/envioManualEstoque.ts`, the
   one I/O module of `estoque/` deliberately NOT on the list: it only reads and enqueues), never
@@ -748,10 +751,29 @@ dialog's Amazon provider comes after step 9b). See "Stock (step 12)".
   touch only its sync document (no other module of `estoque/` names that handle; the aviso goes
   through the avisos seam) and that it only reads the conta; that every production READ of a
   `depositoOuterRef` is the ONE parse's sole argument (an object-literal key is not a read); and
-  that no module of `estoque/` names the produto's `integracoesComProduto`: a SKU is found
+  that no module of `estoque/` or `listings/` names the produto's `integracoesComProduto`: a SKU is found
   through the link partition. Since PR 12-f, across the app, the run and request handles are
   named by the reconcile alone and the drift handle by `divergenciasFirestore.ts` alone (a
   `set`, read back by id, never queried).
+
+## Listings (shared, step 13)
+
+- `lib/amazon/listings/` holds each rule the stock and price flows share ONCE, parameterised by
+  the flow (`fluxoListing.ts`, a light closed set equal to the valves' batch flows); the stock
+  modules keep their names as thin BINDINGS, so their suites stay unedited. PR 13-b: the link
+  verdict `vinculoListing.ts` (refusals 1–4 for every flow, 5 stock's; each flow reads its own
+  outcome field), the listing gate `gateListing.ts` (`nao-listado`, `pai`, `asin-divergente`;
+  a binding's own refusal at its point of the order), the per-SKU reader `resolverVinculo.ts`
+  (`camposDoResolverListingAmazon`: price reads `envioPrecoAmazon`, no dono field, one
+  `precos.<tabela>` entry per tabela as a two-segment path, and the unit's parent; the masks
+  name their flow, and the batch refuses another flow's verdict), the batched reader
+  `avaliacaoLoteVinculos.ts` (parity with the per-SKU one at both flows' masks; its by-id unit
+  and parent reads exported for a reader that holds unit ids), the walk
+  and page core `varreduraVinculos.ts` (smallest-path dedupe, `ja-visto`), and the manual
+  selection `selecaoManual.ts` over the pure partition helpers `sondasVinculos.ts`. Each module is
+  pure, on the I/O roster `E_S_EM_LISTINGS` or the one listings caller; nothing there writes
+  Firestore (`ESCRITORES_EM_LISTINGS`) or reaches `estoque/`. The fake db models top-level
+  masks only: a `precos.<tabela>` mask runs in `avaliacaoLoteVinculos.firestore.test.ts`.
 
 ## Layout
 
@@ -927,8 +949,9 @@ dialog's Amazon provider comes after step 9b). See "Stock (step 12)".
   (`estrutura.test.ts`).
 - The stock sync (step 12) lives in `lib/amazon/estoque/`. PR 12-d shipped its PURE half (by
   value it imports only its siblings, the shared quantity core, the schemas, the SP-API
-  package, `zod`, and of `@delfrance/data` only `sha256Hex` and `contaRefForms` —
-  `estrutura.test.ts`; both `@delfrance/data` barrels load Admin modules transitively, and no
+  package, `zod`, of `@delfrance/data` only `sha256Hex` and `contaRefForms`, and since step
+  13 the PURE shared modules `listings/{fluxoListing,vinculoListing,gateListing,sondasVinculos}.ts`,
+  held to the same allow-list — `estrutura.test.ts`; both `@delfrance/data` barrels load Admin modules transitively, and no
   pure module calls one, nor imports the I/O half PR 12-e1 added — see "Stock (step 12)"):
   `opcoesEstoque.ts` (the core's
   options, PINNED: component-min, no virtual-kit skip, no ceiling); `familiaEstoque.ts` (since
@@ -942,9 +965,10 @@ dialog's Amazon provider comes after step 9b). See "Stock (step 12)".
   `vinculoEstoque.ts` (the link verdict over the order import's OWN resolution, taken as given:
   a gone `dono`'s doc ignored, an unreadable or dangling parent pointer refused, a child carrying
   its parent's SKU or ASIN, a unit with variations (a kit root's own sole member is not one),
-  `enviarEstoque === false` under this conta's key only); `gateListing.ts` (the live listing:
-  not listed in BR, a BR `VARIATION` parent, any non-`DEFAULT` channel, two differing ASINs;
-  NOT BUYABLE at 0 stays enviável);
+  `enviarEstoque === false` under this conta's key only — since 13-b the shared verdict bound to
+  stock, refusal 5 stock's alone); `gateListing.ts` (the live listing: not listed in BR, a BR
+  `VARIATION` parent, any non-`DEFAULT` channel, two differing ASINs; NOT BUYABLE at 0 stays
+  enviável — since 13-b the shared gate plus stock's own `afn` and quantity);
   `planoEstoque.ts` (the engine's plan: write iff enviável and the ERP differs from Amazon's
   live read — or the read is not yet trusted: our own `patch` of another quantity, `incerto`
   included, or the conta's last stock feed's end, inside the documented 15-min lag; a `feed`
@@ -1154,7 +1178,7 @@ no `env:` block.
   it only enqueues per-SKU tasks, and the stock task reads the pair FIRST on every dispatch. So
   no App Hosting code reads the stock pair: every reader of it (the task, the tick, the
   reconcile, the feed provider and the feed send) is on the union walk's forbidden list, and
-  `estrutura.test.ts` pins that neither the route nor its body names it. Step 15 (PR 15-c) is the SECOND
+  `estrutura.test.ts` pins that neither the route, its body nor its selection read names it. Step 15 (PR 15-c) is the SECOND
   caller: the scheduling task `processAmazonEasyShipSchedule` reads the scheduling pair FIRST
   on every dispatch (before any Firestore read: `off` reads nothing at all) and decides its
   target `<contaId>:<orderId>` from the payload alone; its two entries never read the pair. The

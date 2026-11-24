@@ -73,20 +73,15 @@
  *    conta cache's and the claim's was raw: else the run is closed `truncada`
  *    (a walk never mixes depósitos), after a request for a fresh run that the
  *    close then starts;
- *  - **2** — the walk: per conta ref form, in sequence, ONE `==` query
- *    (`contaAmazonOuterRef == forma`, ordered by `__name__`, after the stored
- *    cursor, projected to {@link CAMPOS_VARREDURA_VINCULOS_ESTOQUE_AMAZON}), up
- *    to {@link PAGINA_VARREDURA_ESTOQUE_AMAZON} link docs a page over both forms
- *    (the collection-group index `prodAmazon (contaAmazonOuterRef,
- *    __name__)`). A form whose query answers fewer docs than it asked for is
- *    done. A full page whose LAST doc is not under a produto cannot store its
- *    cursor: the run is closed `truncada`;
- *  - **3** — the DEDUPE, stateless: each distinct SKU's link docs, read through
- *    the evaluator's own query ({@link lerVinculosDosSkusEstoqueAmazon}); the
- *    SKU is evaluated only on the page holding the SMALLEST path among its
- *    docs, and counted `ja-visto` on every other page. (A SKU whose docs reach
- *    the order import's limit is ambiguous: no full doc list exists, so it is
- *    refused on every page holding one of its docs — a count, never a send.);
+ *  - **2** and **3** — the walk (one page of the conta's link docs,
+ *    {@link PAGINA_VARREDURA_ESTOQUE_AMAZON} at most, projected to
+ *    {@link CAMPOS_VARREDURA_VINCULOS_ESTOQUE_AMAZON}) and its dedupe (`ja-visto`):
+ *    the listings flows' shared page core (`listings/varreduraVinculos.ts`, step
+ *    13, PR 13-b; its header holds the query, its index and the dedupe rule),
+ *    bound here to the stock masks ({@link CAMPOS_RESOLVER_ESTOQUE_AMAZON}). The
+ *    links its dedupe read go on to step 4, never read twice. A walk that cannot
+ *    go on (the budget, or a full page whose last doc cannot be a cursor) closes
+ *    the run `truncada`;
  *  - **4** — the evaluator (`avaliarSkusEstoqueAmazon`, no GET cap), with the
  *    docs step 3 read, at the run's depósito. A 429 ⇒ the run's `progressoEmMs`
  *    stamped (tier 1 on step 0's read, this page still the run's next; lost ⇒
@@ -193,7 +188,6 @@ import { MissingRegionError } from '@delfrance/core/region';
 import {
   integracaoCollection,
   pedidoReconciliacaoEstoqueAmazonCollection,
-  produtoAmazonLinkCollection,
   reconciliacaoEstoqueAmazonCollection,
 } from '@delfrance/data/admin/collections';
 import {
@@ -202,15 +196,10 @@ import {
   isGrpcStatusError,
   isNotFound,
 } from '@delfrance/data/admin/grpcErrors';
-import { contaRefForms } from '@delfrance/data/admin/produtos';
 import { AmazonThrottleError } from '@delfrance/integrations-amazon-sp-api';
 import {
-  CAMINHO_VINCULO_ESTOQUE_AMAZON_REGEX,
-  CAMPOS_INDICE_VARREDURA_VINCULOS_AMAZON,
   CONTA_ID_AMAZON_REGEX,
   type ContagensReconciliacaoEstoqueAmazon,
-  type CursorVarreduraEstoqueAmazon,
-  type CursoresVarreduraEstoqueAmazon,
   ESTADO_VEZ_FEED_AMAZON,
   FASE_RECONCILIACAO_ESTOQUE_AMAZON,
   ID_LOTE_FEED_AMAZON_REGEX,
@@ -287,6 +276,13 @@ import {
 import { faseDaVez } from '../feeds/vezFeed';
 import { AmazonVezFeedInvalidaError, lerVezFeed } from '../feeds/vezFeedFirestore';
 import {
+  CAMPOS_VARREDURA_VINCULOS_AMAZON,
+  CONTADOR_VARREDURA_VINCULOS_AMAZON,
+  PAGINA_VARREDURA_VINCULOS_AMAZON,
+  paginaVarreduraVinculosAmazon,
+  varreduraVinculosConcluida,
+} from '../listings/varreduraVinculos';
+import {
   FALHA_LEITURA_AMAZON,
   classificarFalhaDeLeituraAmazon,
 } from '../pedidos/falhaLeituraAmazon';
@@ -294,7 +290,6 @@ import {
   type AvaliacaoSkuEstoqueAmazon,
   DESFECHO_AVALIACAO_ESTOQUE_AMAZON,
   avaliarSkusEstoqueAmazon,
-  lerVinculosDosSkusEstoqueAmazon,
 } from './avaliacaoLoteEstoque';
 import {
   gravarBlocoDivergenciaEstoqueAmazon,
@@ -308,6 +303,7 @@ import {
 import { MOTIVO_ESTOQUE_AMAZON } from './motivosEstoque';
 import { CAMINHO_LOTE_ESTOQUE_AMAZON, caminhoDoLote } from './planoEstoque';
 import type { ProdutorEstoqueAmazon } from './produtorEstoque';
+import { CAMPOS_RESOLVER_ESTOQUE_AMAZON } from './resolverEstoque';
 import {
   ORIGEM_TAREFA_ESTOQUE_AMAZON,
   type TarefaEstoqueAmazon,
@@ -327,8 +323,8 @@ export const RECLAMACAO_RECONCILIACAO_MS = 7_200_000;
 /** One page's work budget (400 s), inside the jobs queue's 540-s timeout. */
 export const ORCAMENTO_PAGINA_RECONCILIACAO_MS = 400_000;
 
-/** The link docs one page reads, over both ref forms: one drift block's bound. */
-export const PAGINA_VARREDURA_ESTOQUE_AMAZON = 300;
+/** The link docs one page reads, over both ref forms: one drift block's bound (the shared walk's). */
+export const PAGINA_VARREDURA_ESTOQUE_AMAZON = PAGINA_VARREDURA_VINCULOS_AMAZON;
 
 /** Every reconcile send is delayed 20 minutes after the walk (module header, Decide). */
 export const ATRASO_ENVIO_RECONCILIACAO_S = 1_200;
@@ -349,7 +345,7 @@ export const MAX_AMOSTRA_DRY_RUN = 20;
 export const MAX_TENTATIVAS_RECONCILIACAO = 3;
 
 /** The walk's projection (module header, step 2): the SKU is all the walk reads off a doc. */
-export const CAMPOS_VARREDURA_VINCULOS_ESTOQUE_AMAZON = ['sku'] as const;
+export const CAMPOS_VARREDURA_VINCULOS_ESTOQUE_AMAZON = CAMPOS_VARREDURA_VINCULOS_AMAZON;
 
 /** The producer label of a reconcile's block batches, on each `feed-enviar`. */
 export const ORIGEM_LOTE_RECONCILIACAO_ESTOQUE_AMAZON = 'reconciliacao';
@@ -402,12 +398,12 @@ export const ORIGEM_PEDIDO_RECONCILIACAO_ESTOQUE_AMAZON = {
 export type OrigemPedidoReconciliacaoEstoqueAmazon =
   (typeof ORIGEM_PEDIDO_RECONCILIACAO_ESTOQUE_AMAZON)[keyof typeof ORIGEM_PEDIDO_RECONCILIACAO_ESTOQUE_AMAZON];
 
-/** The walk's own counter keys, besides the stock vocabulary's. */
+/** The walk's own counter keys, besides the stock vocabulary's (the shared page core's). */
 export const CONTADOR_VARREDURA_ESTOQUE_AMAZON = {
   /** A link doc whose `sku` is not a non-empty string: nothing to evaluate. */
-  semSku: 'sem-sku',
+  semSku: CONTADOR_VARREDURA_VINCULOS_AMAZON.semSku,
   /** A link doc that is not `produtos/<id>/prodAmazon/<id>`: no produto owns it. */
-  foraDeProduto: 'fora-de-produto',
+  foraDeProduto: CONTADOR_VARREDURA_VINCULOS_AMAZON.foraDeProduto,
 } as const;
 
 /* -------------------------------------------------------------------------- */
@@ -1581,110 +1577,6 @@ async function depositoDaContaSemCache(db: Firestore, contaId: string): Promise<
 
 /* ------------------------------ steps 2 to 7 ------------------------------- */
 
-/** One link doc as the walk read it. */
-interface DocDaVarredura {
-  /** Its full path: `produtos/<id>/prodAmazon/<id>` for every doc a produto owns. */
-  readonly caminho: string;
-  /** Its SKU, or `null` when it holds none. */
-  readonly sku: string | null;
-}
-
-/** Two document keys in the server's order: segment by segment, a shorter path first. */
-function compararCaminhos(a: string, b: string): number {
-  const sa = a.split('/');
-  const sb = b.split('/');
-  for (let i = 0; i < Math.min(sa.length, sb.length); i += 1) {
-    const x = sa[i] ?? '';
-    const y = sb[i] ?? '';
-    if (x !== y) return x < y ? -1 : 1;
-  }
-  return sa.length - sb.length;
-}
-
-/** The walk's conta ref forms, in walk order, each with its cursor key. */
-function formasDaVarredura(
-  contaId: string,
-): readonly (readonly [keyof CursoresVarreduraEstoqueAmazon, string])[] {
-  const [canonica, nua] = contaRefForms(contaId);
-  return [
-    ['canonica', canonica],
-    ['nua', nua],
-  ];
-}
-
-/** A stored cursor path as the handle's document reference (the walk's `startAfter`). */
-function refDoCursor(db: Firestore, caminho: string): DocumentReference {
-  const [, produtoId = '', , linkId = ''] = caminho.split('/');
-  return produtoAmazonLinkCollection.docRef(db, { produtoId }, linkId);
-}
-
-/**
- * Step 2 (module header): up to one page of link docs over the forms not yet
- * done, and the cursors after them; or why the run must be truncated: the
- * budget ran out before a query (`prazo`), or a full page ends on a doc whose
- * path cannot be a cursor (`cursor-ilegivel`). A form that ends short leaves
- * the rest of the page to the next form, so a page never holds more than
- * {@link PAGINA_VARREDURA_ESTOQUE_AMAZON} docs.
- */
-async function lerPaginaDaVarredura(
-  e: Execucao,
-  cursores: CursoresVarreduraEstoqueAmazon,
-): Promise<
-  | { readonly docs: readonly DocDaVarredura[]; readonly cursores: CursoresVarreduraEstoqueAmazon }
-  | MotivoTruncamentoReconciliacao
-> {
-  const [campoConta] = CAMPOS_INDICE_VARREDURA_VINCULOS_AMAZON;
-  const docs: DocDaVarredura[] = [];
-  const novos: Record<keyof CursoresVarreduraEstoqueAmazon, CursorVarreduraEstoqueAmazon> = {
-    canonica: cursores.canonica,
-    nua: cursores.nua,
-  };
-  for (const [chave, forma] of formasDaVarredura(e.t.contaId)) {
-    const cursor = novos[chave];
-    if (cursor.concluida) continue;
-    const restantes = PAGINA_VARREDURA_ESTOQUE_AMAZON - docs.length;
-    if (e.deps.agora() >= e.prazoMs) return MOTIVO_TRUNCAMENTO_RECONCILIACAO.prazo;
-    const base = produtoAmazonLinkCollection
-      .groupQuery(e.db)
-      .where(campoConta, '==', forma)
-      .orderBy('__name__');
-    const aposCursor =
-      cursor.ultimoCaminho === null
-        ? base
-        : base.startAfter(refDoCursor(e.db, cursor.ultimoCaminho));
-    const snap = await aposCursor
-      .select(...CAMPOS_VARREDURA_VINCULOS_ESTOQUE_AMAZON)
-      .limit(restantes)
-      .get();
-    for (const d of snap.docs) {
-      const sku: unknown = d.data().sku;
-      docs.push({ caminho: d.ref.path, sku: typeof sku === 'string' && sku !== '' ? sku : null });
-    }
-    const ultimo = snap.docs.at(-1)?.ref.path ?? null;
-    if (snap.docs.length < restantes) {
-      novos[chave] = { ultimoCaminho: ultimoValido(ultimo, cursor.ultimoCaminho), concluida: true };
-      continue;
-    }
-    // A full page: its LAST doc is where the next page starts.
-    if (ultimo === null || !CAMINHO_VINCULO_ESTOQUE_AMAZON_REGEX.test(ultimo)) {
-      return MOTIVO_TRUNCAMENTO_RECONCILIACAO.cursorIlegivel;
-    }
-    novos[chave] = { ultimoCaminho: ultimo, concluida: false };
-    break;
-  }
-  return { docs, cursores: novos };
-}
-
-/** A done form's stored cursor: its last doc when that can be one, else the previous. */
-function ultimoValido(ultimo: string | null, anterior: string | null): string | null {
-  return ultimo !== null && CAMINHO_VINCULO_ESTOQUE_AMAZON_REGEX.test(ultimo) ? ultimo : anterior;
-}
-
-/** Whether both forms are done. */
-function varreduraConcluida(c: CursoresVarreduraEstoqueAmazon): boolean {
-  return c.canonica.concluida && c.nua.concluida;
-}
-
 /** The counters of nothing. */
 function contagensVazias(): ContagensReconciliacaoEstoqueAmazon {
   return {
@@ -1748,57 +1640,22 @@ async function caminhar(
   }
   const escrito: RunEscrito = { estado: run, updateTime: lida.updateTime };
 
-  // ---- 2: the walk. ----
-  const pagina = await lerPaginaDaVarredura(e, run.cursores);
-  if (typeof pagina === 'string') {
-    return fechar(e, escrito, FASE_RECONCILIACAO_ESTOQUE_AMAZON.truncada, pagina, {});
+  // ---- 2–3: the walk, its grouping and the dedupe (the shared page core). ----
+  const pagina = await paginaVarreduraVinculosAmazon(db, t.contaId, run.cursores, {
+    campos: CAMPOS_RESOLVER_ESTOQUE_AMAZON,
+    prazo: { agora: deps.agora, prazoMs: e.prazoMs },
+  });
+  if (pagina.tipo === 'truncada') {
+    return fechar(e, escrito, FASE_RECONCILIACAO_ESTOQUE_AMAZON.truncada, pagina.motivo, {});
   }
   const contagem = contagensVazias();
-  const porChave: Record<string, number> = {};
+  const porChave: Record<string, number> = { ...pagina.porChave };
   const somar = (chave: string, n = 1) => {
     porChave[chave] = (porChave[chave] ?? 0) + n;
   };
-  contagem.vinculosLidos = pagina.docs.length;
-  const daPagina = new Map<string, string[]>();
-  for (const doc of pagina.docs) {
-    if (!CAMINHO_VINCULO_ESTOQUE_AMAZON_REGEX.test(doc.caminho)) {
-      somar(CONTADOR_VARREDURA_ESTOQUE_AMAZON.foraDeProduto);
-      continue;
-    }
-    if (doc.sku === null) {
-      somar(CONTADOR_VARREDURA_ESTOQUE_AMAZON.semSku);
-      continue;
-    }
-    daPagina.set(doc.sku, [...(daPagina.get(doc.sku) ?? []), doc.caminho]);
-  }
-  const skus = [...daPagina.keys()];
-
-  // ---- 3: the dedupe, over each SKU's own link docs. ----
-  const leituras = await lerVinculosDosSkusEstoqueAmazon(db, t.contaId, skus, {
-    agora: deps.agora,
-    prazoMs: e.prazoMs,
-  });
-  if (leituras === null) {
-    return fechar(
-      e,
-      escrito,
-      FASE_RECONCILIACAO_ESTOQUE_AMAZON.truncada,
-      MOTIVO_TRUNCAMENTO_RECONCILIACAO.prazo,
-      {},
-    );
-  }
-  const aAvaliar: string[] = [];
-  for (const sku of skus) {
-    const proprios = daPagina.get(sku) ?? [];
-    const leitura = leituras.get(sku);
-    const todos =
-      leitura?.tipo === 'docs'
-        ? leitura.docs.map((d) => `produtos/${d.donoId}/prodAmazon/${d.linkId}`)
-        : [];
-    const menor = [...todos, ...proprios].sort(compararCaminhos)[0];
-    if (menor !== undefined && proprios.includes(menor)) aAvaliar.push(sku);
-    else somar(MOTIVO_ESTOQUE_AMAZON.jaVisto);
-  }
+  contagem.vinculosLidos = pagina.vinculos;
+  const { skus, aAvaliar } = pagina;
+  const leituras = pagina.vinculosLidos;
 
   // ---- 4: the evaluator. ----
   let avaliados: readonly AvaliacaoSkuEstoqueAmazon[] = [];
@@ -1883,7 +1740,7 @@ async function caminhar(
   });
 
   // ---- 6: the state update, tier 1 on step 0's read. ----
-  const concluiu = varreduraConcluida(pagina.cursores);
+  const concluiu = varreduraVinculosConcluida(pagina.cursores);
   const relogioInicio = lida.readTime;
   const depois = await atualizarRun(db, t.contaId, escrito, donoDaPagina(t), (estado) => ({
     cursores: pagina.cursores,

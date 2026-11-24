@@ -14,34 +14,17 @@
  *
  * ## The reads, in order
  *
- *  1. The link docs of every SKU: the order import's OWN query and ambiguity
- *     detector (`lerVinculosDoSkuAmazon`), ONE per SKU, projected to the
- *     verdict's fields (`CAMPOS_LEITURA_VINCULOS_ESTOQUE_AMAZON`, the link
- *     doc's product payload never comes back), at most
- *     {@link LARGURA_CONSULTAS_AVALIACAO_ESTOQUE_AMAZON} in flight
- *     ({@link lerVinculosDosSkusEstoqueAmazon}). A SKU the caller already read
- *     that way (`vinculosLidos`) is not read again.
- *  2. The donos of every SKU, DEDUPLICATED across the SKUs, through the order
- *     import's own by-id read and gone-dono rule (`lerDonosAmazon`), in `getAll`
- *     calls of at most `MAX_REFS_GETALL_ESTOQUE_AMAZON` refs, masked to
- *     {@link CAMPOS_LEITURA_DONOS_AVALIACAO_ESTOQUE_AMAZON}: the hop's and the
- *     verdict's fields AND the family read's, because a dono is usually its own
- *     unit, which is then never read again.
- *  3. The resolution per SKU (`resolucaoPorUnidadesAmazon`: gone donos dropped,
- *     two live ⇒ ambiguous), then, for every SKU it binds:
- *     - the units no read holds yet, deduplicated, in `getAll` slices of at
- *       most 300, masked to {@link CAMPOS_LEITURA_UNIDADES_AVALIACAO_ESTOQUE_AMAZON}
- *       (refusal 4's fields and the family read's);
- *     - each distinct unit's children (`lerFilhosDaUnidadeEstoqueAmazon`: keys
- *       only, at most two), at most 16 in flight;
- *     - the parent pointers of the bound dono's links, deduplicated across the
- *       SKUs by their bare path (a 20-child parent's pointer is ONE read), in
- *       calls of at most 300 distinct refs (`lerPaisDosLinksEstoqueAmazon`).
- *     A unit id that is not a document id (a corrupt `filhoUnicoId`) is never
- *     read: its SKU ends `unidade-ausente`, so one corrupt produto cannot stop
- *     a batch.
- *  4. The verdict per SKU, over exactly the input the patch task's resolver
- *     (`lerVinculoEstoqueAmazon`) hands it: a parity test proves it.
+ *  1–4. The link verdict of every SKU: the listings flows' shared batch reader
+ *     (`listings/avaliacaoLoteVinculos.ts`, step 13, PR 13-b; its header holds
+ *     the reads, their bounds and their deadline checks), bound here to the
+ *     stock masks (`CAMPOS_RESOLVER_ESTOQUE_AMAZON`), the stock verdict
+ *     (`REGRA_VINCULO_ESTOQUE_AMAZON`) and, as its extras, the family read's
+ *     fields, so the donos' mask is
+ *     {@link CAMPOS_LEITURA_DONOS_AVALIACAO_ESTOQUE_AMAZON} and the other units'
+ *     {@link CAMPOS_LEITURA_UNIDADES_AVALIACAO_ESTOQUE_AMAZON}: a dono that is
+ *     its own unit is read once. Read 1 alone, at the stock projection, is
+ *     {@link lerVinculosDosSkusEstoqueAmazon}. A unit the shared reader never
+ *     reads (an id that is not a document id) ends its SKU `unidade-ausente`.
  *  5. The ERP quantity of every apt SKU's unit, through the family reader for
  *     units ALREADY READ (`lerMembrosEstoqueAmazon`: estoque rows only, every
  *     component row once however many kits share it), so each produto is read
@@ -118,18 +101,22 @@
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import type { MembroDaFamilia } from '@delfrance/data/admin/estoque';
-import { produtoCollection } from '@delfrance/data/admin/collections';
 import {
   type ListingAmazon,
   MAX_SKUS_POR_BUSCA,
   skuBuscavelAmazon,
   skuTemCaminhoAmazon,
 } from '@delfrance/integrations-amazon-sp-api';
-import { CONTA_ID_AMAZON_REGEX, naoDocId } from '@delfrance/schemas';
+import { CONTA_ID_AMAZON_REGEX } from '@delfrance/schemas';
 
 import type { ContextoAmazon } from '../core/contexto';
 import { type CamposLogAmazon, type LoggerAmazon, registrarEventoAmazon } from '../core/log';
 import { FLUXO_AMAZON } from '../core/valvulas';
+import {
+  LARGURA_CONSULTAS_VINCULOS_AMAZON,
+  avaliarVinculosEmLoteAmazon,
+  lerVinculosDosSkusListingAmazon,
+} from '../listings/avaliacaoLoteVinculos';
 import {
   type ContextoDosListingsAmazon,
   type LeituraListingNaAmazon,
@@ -137,23 +124,15 @@ import {
   lerListingNaAmazon,
 } from '../listings/listingsAmazon';
 import {
-  type DocVinculoAmazon,
-  type DonoLidoAmazon,
   type LeituraVinculosDoSkuAmazon,
-  RESOLUCAO_LIMITE_VINCULOS_AMAZON,
-  type ResolucaoVinculoAmazon,
-  donosDosVinculosAmazon,
-  lerDonosAmazon,
   mascaraDosDonosAmazon,
-  resolucaoPorUnidadesAmazon,
-  lerVinculosDoSkuAmazon,
 } from '../pedidos/vinculoProdutoAmazon';
 import {
   CAMPOS_UNIDADE_ESTOQUE_AMAZON,
   formasRefDepositoEstoqueAmazon,
   quantidadeEstoqueAmazon,
 } from './familiaEstoque';
-import { MAX_REFS_GETALL_ESTOQUE_AMAZON, lerMembrosEstoqueAmazon } from './familiaEstoqueFirestore';
+import { lerMembrosEstoqueAmazon } from './familiaEstoqueFirestore';
 import {
   DADOS_LEITURA_ESTOQUE_AMAZON,
   type VeredictoListingEstoqueAmazon,
@@ -168,20 +147,14 @@ import {
   type RecusaVinculoEstoqueAmazon,
 } from './motivosEstoque';
 import {
-  CAMPOS_LEITURA_DONOS_ESTOQUE_AMAZON,
   CAMPOS_LEITURA_VINCULOS_ESTOQUE_AMAZON,
-  lerFilhosDaUnidadeEstoqueAmazon,
-  lerPaisDosLinksEstoqueAmazon,
+  CAMPOS_RESOLVER_ESTOQUE_AMAZON,
 } from './resolverEstoque';
 import {
-  type AlvoDoPaiEstoqueAmazon,
   CAMPOS_DONO_ESTOQUE_AMAZON,
   CAMPOS_UNIDADE_VINCULO_ESTOQUE_AMAZON,
-  type EntradaVinculoEstoqueAmazon,
-  type UnidadeDoVinculoEstoqueAmazon,
+  REGRA_VINCULO_ESTOQUE_AMAZON,
   type VinculoAptoEstoqueAmazon,
-  avaliarVinculoEstoqueAmazon,
-  ponteiroPaiDoVinculoEstoqueAmazon,
 } from './vinculoEstoque';
 
 /* -------------------------------------------------------------------------- */
@@ -201,21 +174,21 @@ export const INTERVALO_GETS_ESTOQUE_AMAZON_MS = 334;
  */
 export const MAX_GETS_LOTE_JANELA = 60;
 
-/** Link queries and children seeks in flight at once. */
-export const LARGURA_CONSULTAS_AVALIACAO_ESTOQUE_AMAZON = 16;
+/** Link queries and children seeks in flight at once (the shared batch reader's). */
+export const LARGURA_CONSULTAS_AVALIACAO_ESTOQUE_AMAZON = LARGURA_CONSULTAS_VINCULOS_AMAZON;
 
 /** What the donos' read carries besides the hop's own fields: the verdict's, then the family read's. */
 const CAMPOS_EXTRAS_DOS_DONOS = [...CAMPOS_DONO_ESTOQUE_AMAZON, ...CAMPOS_UNIDADE_ESTOQUE_AMAZON];
 
 /**
- * The donos' mask (module header, read 2): the hop's and the verdict's fields
+ * The donos' mask (module header, reads 1–4): the hop's and the verdict's fields
  * (`resolverEstoque.ts`'s own), then the family read's, so a dono that is its
  * own unit is read once.
  */
 export const CAMPOS_LEITURA_DONOS_AVALIACAO_ESTOQUE_AMAZON: readonly string[] =
   mascaraDosDonosAmazon(CAMPOS_EXTRAS_DOS_DONOS);
 
-/** The other units' mask (module header, read 3): refusal 4's fields, then the family read's. */
+/** The other units' mask (module header, reads 1–4): refusal 4's fields, then the family read's. */
 export const CAMPOS_LEITURA_UNIDADES_AVALIACAO_ESTOQUE_AMAZON: readonly string[] = [
   ...new Set<string>([...CAMPOS_UNIDADE_VINCULO_ESTOQUE_AMAZON, ...CAMPOS_UNIDADE_ESTOQUE_AMAZON]),
 ];
@@ -268,11 +241,11 @@ export interface OpcoesAvaliacaoEstoqueAmazon {
    */
   readonly maxGets: number | null;
   /**
-   * The link docs the caller ALREADY read for some of the SKUs, through
-   * {@link lerVinculosDosSkusEstoqueAmazon} (read 1, the same query and the
-   * same projection): a reconcile page reads them first to apply its dedupe
-   * rule, so a SKU's query runs once per page. A SKU absent here is read as
-   * usual; an entry for a SKU not asked is ignored.
+   * The link docs the caller ALREADY read for some of the SKUs, through read 1
+   * at the stock projection ({@link lerVinculosDosSkusEstoqueAmazon}, or the
+   * shared page core bound to the stock masks): a reconcile page reads them
+   * first to apply its dedupe rule, so a SKU's query runs once per page. A SKU
+   * absent here is read as usual; an entry for a SKU not asked is ignored.
    */
   readonly vinculosLidos?: ReadonlyMap<string, LeituraVinculosDoSkuAmazon>;
 }
@@ -379,21 +352,6 @@ function porTexto(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
-/** `raw` holding only the fields of `campos` it has. */
-function projetar(
-  raw: Readonly<Record<string, unknown>>,
-  campos: readonly string[],
-): Record<string, unknown> {
-  const saida: Record<string, unknown> = {};
-  for (const campo of campos) {
-    if (Object.hasOwn(raw, campo)) saida[campo] = raw[campo];
-  }
-  return saida;
-}
-
-/** A unit no read named: no fields, no children. */
-const SEM_UNIDADE: UnidadeDoVinculoEstoqueAmazon = { raw: {}, filhosIds: [] };
-
 /**
  * The context and options checked before anything is read.
  *
@@ -434,14 +392,6 @@ function ritmo(ctx: ContextoAvaliacaoEstoqueAmazon, intervaloMs: number): RitmoA
   };
 }
 
-/** One SKU's resolution: the order import's answer, its link docs, the dono it binds. */
-interface ResolucaoDoSku {
-  readonly resolucao: ResolucaoVinculoAmazon;
-  readonly docs: readonly DocVinculoAmazon[];
-  /** The ONE live dono the resolution names, or `null`. */
-  readonly dono: DonoLidoAmazon | null;
-}
-
 /** Counters being summed. */
 interface Contadores {
   consultas: number;
@@ -458,38 +408,26 @@ interface Contadores {
 /* -------------------------------------------------------------------------- */
 
 /**
- * Read 1 of the module header ON ITS OWN: every SKU's link docs through the
- * order import's OWN query (`lerVinculosDoSkuAmazon`), projected to
- * `CAMPOS_LEITURA_VINCULOS_ESTOQUE_AMAZON`, at most
- * {@link LARGURA_CONSULTAS_AVALIACAO_ESTOQUE_AMAZON} in flight, the deadline
- * read before every batch. The evaluator reads its SKUs through it, and a
- * reconcile page reads a whole page's SKUs through it BEFORE evaluating (its
- * dedupe rule needs each SKU's link-doc paths), handing the answer back as
- * `vinculosLidos`. `null` when the deadline passed before a batch started.
+ * Read 1 of the module header ON ITS OWN: the shared batch reader's read 1
+ * (`lerVinculosDosSkusListingAmazon`), bound to the stock link projection
+ * (`CAMPOS_LEITURA_VINCULOS_ESTOQUE_AMAZON`). A stock caller that needs a
+ * batch's link docs BEFORE evaluating (a feed build) reads them through it and
+ * hands the answer back as `vinculosLidos`. `null` when the deadline passed
+ * before a batch started.
  */
-export async function lerVinculosDosSkusEstoqueAmazon(
+export function lerVinculosDosSkusEstoqueAmazon(
   db: Firestore,
   contaId: string,
   skus: readonly string[],
   prazo: { readonly agora: () => number; readonly prazoMs: number },
 ): Promise<Map<string, LeituraVinculosDoSkuAmazon> | null> {
-  const leituras = new Map<string, LeituraVinculosDoSkuAmazon>();
-  for (const fatia of fatias([...new Set(skus)], LARGURA_CONSULTAS_AVALIACAO_ESTOQUE_AMAZON)) {
-    if (prazo.agora() >= prazo.prazoMs) return null;
-    const lidas = await Promise.all(
-      fatia.map(
-        async (sku) =>
-          [
-            sku,
-            await lerVinculosDoSkuAmazon(db, contaId, sku, {
-              campos: CAMPOS_LEITURA_VINCULOS_ESTOQUE_AMAZON,
-            }),
-          ] as const,
-      ),
-    );
-    for (const [sku, lida] of lidas) leituras.set(sku, lida);
-  }
-  return leituras;
+  return lerVinculosDosSkusListingAmazon(
+    db,
+    contaId,
+    skus,
+    CAMPOS_LEITURA_VINCULOS_ESTOQUE_AMAZON,
+    prazo,
+  );
 }
 
 /* -------------------------------------------------------------------------- */
@@ -537,134 +475,35 @@ export async function avaliarSkusEstoqueAmazon(
     quantidadeErp: number | null,
   ) => resultados.set(sku, { sku, enviavel: false, motivo, vinculo, quantidadeErp });
 
-  // ---- 1. Every SKU's link docs: THE query, projected (unless the caller read them). ----
-  const leituras = new Map<string, LeituraVinculosDoSkuAmazon>();
-  for (const sku of skus) {
-    const lida = opcoes.vinculosLidos?.get(sku);
-    if (lida !== undefined) leituras.set(sku, lida);
-  }
-  const aConsultar = skus.filter((sku) => !leituras.has(sku));
-  if (aConsultar.length > 0) {
-    const lidas = await lerVinculosDosSkusEstoqueAmazon(db, contaId, aConsultar, {
-      agora: ctx.agora,
-      prazoMs: opcoes.prazoMs,
-    });
-    if (lidas === null) return prazo(ETAPA_AVALIACAO_ESTOQUE_AMAZON.vinculos);
-    lidos.consultas += aConsultar.length;
-    for (const [sku, lida] of lidas) leituras.set(sku, lida);
-  }
-
-  // ---- 2. The donos, deduplicated across the SKUs, masked, sliced. ----
-  /** Every produto read so far: its masked raw, or `null` when it does not exist. */
-  const produtos = new Map<string, Readonly<Record<string, unknown>> | null>();
-  const donosVivos = new Map<string, DonoLidoAmazon>();
-  const donoIds = [
-    ...new Set(
-      [...leituras.values()].flatMap((l) =>
-        l.tipo === 'docs' ? donosDosVinculosAmazon(l.docs) : [],
-      ),
-    ),
-  ].sort(porTexto);
-  for (const fatia of fatias(donoIds, MAX_REFS_GETALL_ESTOQUE_AMAZON)) {
-    if (venceu()) return prazo(ETAPA_AVALIACAO_ESTOQUE_AMAZON.donos);
-    const lidas = await lerDonosAmazon(db, fatia, { campos: CAMPOS_EXTRAS_DOS_DONOS });
-    lidos.produtos += fatia.length;
-    for (const [i, id] of fatia.entries()) {
-      const dono = lidas[i] ?? null;
-      produtos.set(id, dono === null ? null : dono.raw);
-      if (dono !== null) donosVivos.set(id, dono);
-    }
-  }
-
-  // ---- 3. The resolution per SKU; then the units, their children, the pointers. ----
-  const resolucoes = new Map<string, ResolucaoDoSku>();
-  for (const [sku, leitura] of leituras) {
-    if (leitura.tipo === 'limite') {
-      resolucoes.set(sku, { resolucao: RESOLUCAO_LIMITE_VINCULOS_AMAZON, docs: [], dono: null });
+  // ---- 1–4. The link verdict per SKU: the shared batch reader, bound to stock. ----
+  const vinculos = await avaliarVinculosEmLoteAmazon(db, contaId, skus, {
+    campos: CAMPOS_RESOLVER_ESTOQUE_AMAZON,
+    regra: REGRA_VINCULO_ESTOQUE_AMAZON,
+    extras: { dono: CAMPOS_UNIDADE_ESTOQUE_AMAZON, unidade: CAMPOS_UNIDADE_ESTOQUE_AMAZON },
+    prazo: { agora: ctx.agora, prazoMs: opcoes.prazoMs },
+    ...(opcoes.vinculosLidos === undefined ? {} : { vinculosLidos: opcoes.vinculosLidos }),
+  });
+  lidos.consultas += vinculos.leituras.consultas;
+  lidos.produtos += vinculos.leituras.produtos;
+  lidos.filhos += vinculos.leituras.filhos;
+  lidos.ponteiros += vinculos.leituras.ponteiros;
+  if (vinculos.tipo === 'prazo') return prazo(vinculos.etapa);
+  const aptos = new Map<string, VinculoAptoEstoqueAmazon>();
+  /** Each apt SKU's unit document, as the batch read it (the family read's fields among them). */
+  const unidadeDoSku = new Map<string, Readonly<Record<string, unknown>> | null>();
+  for (const v of vinculos.skus) {
+    if (!v.veredicto.apto) {
+      recusar(v.sku, v.veredicto.motivo, null, null);
       continue;
     }
-    const vivos = donosDosVinculosAmazon(leitura.docs)
-      .map((id) => donosVivos.get(id))
-      .filter((d): d is DonoLidoAmazon => d !== undefined);
-    const resolucao = resolucaoPorUnidadesAmazon(vivos.map((d) => d.unidadeId));
-    const [dono] = vivos;
-    resolucoes.set(sku, {
-      resolucao,
-      docs: leitura.docs,
-      dono: resolucao.produtoId === null || dono === undefined ? null : dono,
-    });
-  }
-  const ligados = [...resolucoes.values()].flatMap((r) => (r.dono === null ? [] : [r.dono]));
-
-  // The units no read holds yet (a corrupt id is never read).
-  const unidadesLegiveis = [
-    ...new Set(ligados.map((d) => d.unidadeId).filter((id) => !naoDocId(id))),
-  ].sort(porTexto);
-  const aLer = unidadesLegiveis.filter((id) => !produtos.has(id));
-  for (const fatia of fatias(aLer, MAX_REFS_GETALL_ESTOQUE_AMAZON)) {
-    if (venceu()) return prazo(ETAPA_AVALIACAO_ESTOQUE_AMAZON.unidades);
-    const snaps = await db.getAll(...fatia.map((id) => produtoCollection.docRef(db, {}, id)), {
-      fieldMask: [...CAMPOS_LEITURA_UNIDADES_AVALIACAO_ESTOQUE_AMAZON],
-    });
-    lidos.produtos += fatia.length;
-    for (const [i, id] of fatia.entries()) {
-      const snap = snaps[i];
-      produtos.set(
-        id,
-        snap?.exists === true ? ((snap.data() ?? {}) as Record<string, unknown>) : null,
-      );
-    }
-  }
-
-  // Each distinct unit's children, a bounded batch at a time.
-  const filhos = new Map<string, readonly string[]>();
-  for (const fatia of fatias(unidadesLegiveis, LARGURA_CONSULTAS_AVALIACAO_ESTOQUE_AMAZON)) {
-    if (venceu()) return prazo(ETAPA_AVALIACAO_ESTOQUE_AMAZON.unidades);
-    const lidas = await Promise.all(
-      fatia.map(async (id) => [id, await lerFilhosDaUnidadeEstoqueAmazon(db, id)] as const),
-    );
-    lidos.filhos += fatia.length;
-    for (const [id, ids] of lidas) filhos.set(id, ids);
-  }
-
-  // The bound donos' parent pointers, deduplicated by path, ≤ 300 distinct refs a call.
-  const representantes = new Map<string, DocVinculoAmazon>();
-  for (const r of resolucoes.values()) {
-    if (r.dono === null) continue;
-    for (const doc of r.docs) {
-      if (doc.donoId !== r.dono.id) continue;
-      const ponteiro = ponteiroPaiDoVinculoEstoqueAmazon(doc.dados.produtoAmazonPaiOuterRef);
-      if (ponteiro.tipo === 'caminho' && !representantes.has(ponteiro.caminho)) {
-        representantes.set(ponteiro.caminho, doc);
-      }
-    }
-  }
-  const pais = new Map<string, AlvoDoPaiEstoqueAmazon>();
-  const ordenados = [...representantes.entries()].sort(([a], [b]) => porTexto(a, b));
-  for (const fatia of fatias(ordenados, MAX_REFS_GETALL_ESTOQUE_AMAZON)) {
-    if (venceu()) return prazo(ETAPA_AVALIACAO_ESTOQUE_AMAZON.unidades);
-    const lidas = await lerPaisDosLinksEstoqueAmazon(
-      db,
-      fatia.map(([, doc]) => doc),
-    );
-    lidos.ponteiros += fatia.length;
-    for (const [caminho, alvo] of lidas) pais.set(caminho, alvo);
-  }
-
-  // ---- 4. The verdict per SKU, over the resolver's own input shape. ----
-  const aptos = new Map<string, VinculoAptoEstoqueAmazon>();
-  for (const [sku, r] of resolucoes) {
-    const veredicto = avaliarVinculoEstoqueAmazon(
-      entradaDoVinculo(contaId, sku, r, produtos, filhos, pais),
-    );
-    if (!veredicto.apto) recusar(sku, veredicto.motivo, null, null);
-    else aptos.set(sku, veredicto);
+    aptos.set(v.sku, v.veredicto);
+    unidadeDoSku.set(v.sku, v.unidade);
   }
 
   // ---- 5. The ERP quantity of every apt SKU's unit, each produto read once. ----
   const unidadesVivas = new Map<string, Readonly<Record<string, unknown>>>();
-  for (const vinculo of aptos.values()) {
-    const raw = naoDocId(vinculo.unidadeId) ? null : (produtos.get(vinculo.unidadeId) ?? null);
+  for (const [sku, vinculo] of aptos) {
+    const raw = unidadeDoSku.get(sku) ?? null;
     if (raw !== null) unidadesVivas.set(vinculo.unidadeId, raw);
   }
   let membros = new Map<string, MembroDaFamilia>();
@@ -826,58 +665,6 @@ export async function avaliarSkusEstoqueAmazon(
     tipo: DESFECHO_AVALIACAO_ESTOQUE_AMAZON.completa,
     skus: saida,
     contagem: contagemDe(skus.length, resultados, lidos),
-  };
-}
-
-/**
- * One SKU's verdict input (module header, read 4): exactly what
- * `lerVinculoEstoqueAmazon` hands the verdict — the dono projected to the
- * resolver's dono mask, the unit to refusal 4's fields, the bound dono's own
- * pointers only.
- */
-function entradaDoVinculo(
-  contaId: string,
-  sku: string,
-  r: ResolucaoDoSku,
-  produtos: ReadonlyMap<string, Readonly<Record<string, unknown>> | null>,
-  filhos: ReadonlyMap<string, readonly string[]>,
-  pais: ReadonlyMap<string, AlvoDoPaiEstoqueAmazon>,
-): EntradaVinculoEstoqueAmazon {
-  const { resolucao, docs, dono } = r;
-  if (dono === null) {
-    return {
-      contaId,
-      sku,
-      resolucao,
-      dono: null,
-      linksDoSku: docs,
-      paisDosLinks: new Map(),
-      unidade: SEM_UNIDADE,
-    };
-  }
-  const caminhos = new Set<string>();
-  for (const doc of docs) {
-    if (doc.donoId !== dono.id) continue;
-    const ponteiro = ponteiroPaiDoVinculoEstoqueAmazon(doc.dados.produtoAmazonPaiOuterRef);
-    if (ponteiro.tipo === 'caminho') caminhos.add(ponteiro.caminho);
-  }
-  const paisDoSku = new Map<string, AlvoDoPaiEstoqueAmazon>();
-  for (const caminho of [...caminhos].sort(porTexto)) {
-    const alvo = pais.get(caminho);
-    if (alvo !== undefined) paisDoSku.set(caminho, alvo);
-  }
-  const rawUnidade = naoDocId(dono.unidadeId) ? null : (produtos.get(dono.unidadeId) ?? null);
-  return {
-    contaId,
-    sku,
-    resolucao,
-    dono: { id: dono.id, raw: projetar(dono.raw, CAMPOS_LEITURA_DONOS_ESTOQUE_AMAZON) },
-    linksDoSku: docs,
-    paisDosLinks: paisDoSku,
-    unidade: {
-      raw: projetar(rawUnidade ?? {}, CAMPOS_UNIDADE_VINCULO_ESTOQUE_AMAZON),
-      filhosIds: filhos.get(dono.unidadeId) ?? [],
-    },
   };
 }
 
