@@ -255,7 +255,9 @@ export interface ProdutoPrecoLi {
  *    is absent or rounds to 0 (D10). A promo at or above `cheio` is sent literally (signal
  *    `promoNaoMenor`);
  *  - any entry it depends on that is `ilegivel` ⇒ held `ilegivel` (it wins over `sem-preco`: the
- *    more specific fact, and fixing the missing price would still meet it).
+ *    more specific fact, and fixing the missing price would still meet it). So is a price whose
+ *    centavos are past a safe integer (a corrupt stored value): every target sent is one
+ *    {@link decidirBaixaPrecoLi} accepts.
  *
  * `pai` is ignored for a root. Kits are ordinary store products here: a kit's own `precos`.
  * Every price goes through `precoDaTabela` or `precoDoFilhoNaTabela`, then `centavosDeReais`.
@@ -287,12 +289,20 @@ export function precoAlvoLi(args: {
     };
     ler = (tabelaId) => leituraDoFilhoNaTabelaLi(regra, tabelaId);
   }
+  // A price whose centavos are past a safe integer is no price a send can carry: the shared reader
+  // answers it, but `valorPrecoLi` reads the same value as unreadable on the store side, and
+  // `decidirBaixaPrecoLi` would throw on it at every retry. Held as unreadable, before `sem-preco`.
+  const lerEnviavel = (tabelaId: string): LeituraTabelaPrecoLi => {
+    const lida = ler(tabelaId);
+    if (typeof lida === 'string') return lida;
+    return Number.isSafeInteger(centavosDeReais(lida.valor)) ? lida : 'ilegivel';
+  };
 
-  const normal = ler(tabelaNormalId);
+  const normal = lerEnviavel(tabelaNormalId);
   const promoIgualNormal = tabelaPromocionalId === tabelaNormalId;
   const promo: LeituraTabelaPrecoLi =
     tabelaInformada(tabelaPromocionalId) && !promoIgualNormal
-      ? ler(tabelaPromocionalId)
+      ? lerEnviavel(tabelaPromocionalId)
       : 'ausente';
   if (normal === 'ilegivel' || promo === 'ilegivel') {
     return { tipo: 'retido', motivo: MOTIVO_RETENCAO_PRECO_LI.ilegivel };

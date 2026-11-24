@@ -219,6 +219,24 @@ describe('precoAlvoLi (the price a linked child must show)', () => {
     expect(alvo(raiz({ [NORMAL]: entrada(50), [PROMO]: entrada(-1) }))).toEqual(retido('ilegivel'));
     // It wins over sem-preco: fixing the missing price would still meet it.
     expect(alvo(raiz({ [PROMO]: entrada('39.99') }))).toEqual(retido('ilegivel'));
+    // A price past a safe integer of centavos is unreadable too, so no target sent is one
+    // decidirBaixaPrecoLi refuses; on the normal tabela, the promo one, and under a parent.
+    for (const precos of [
+      { [NORMAL]: entrada(1e17) },
+      { [NORMAL]: entrada(50), [PROMO]: entrada(Number.MAX_VALUE) },
+      { [PROMO]: entrada(1e17) },
+    ]) {
+      expect(alvo(raiz(precos)), JSON.stringify(precos)).toEqual(retido('ilegivel'));
+      expect(alvo(filho({}), { precos }), JSON.stringify(precos)).toEqual(retido('ilegivel'));
+    }
+    // NEAR-MISS: the largest whole-reais price whose centavos are still a safe integer is sent.
+    const maior = Math.floor(Number.MAX_SAFE_INTEGER / 100);
+    const r = alvo(raiz({ [NORMAL]: entrada(maior) }));
+    expect(r).toMatchObject({ tipo: 'enviar', cheioCentavos: centavosDeReais(maior) });
+    if (r.tipo !== 'enviar') throw new Error('unreachable');
+    expect(() =>
+      decidirBaixaPrecoLi({ alvo: r, atual: { cheio: null, promocional: null } }),
+    ).not.toThrow();
     // NEAR-MISS: an unreadable entry of a tabela the conta does not use is not read.
     expect(alvo(raiz({ [NORMAL]: entrada(50), outra: 7 }))).toEqual(enviar(5000, 'limpar'));
     expect(alvo(raiz({ [NORMAL]: entrada(50), [PROMO]: 7 }), null, null)).toEqual(
