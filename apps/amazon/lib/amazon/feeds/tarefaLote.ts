@@ -165,12 +165,14 @@ export const DESFECHO_RECUPERACAO_FEED_AMAZON = {
  * minified UTF-8 bytes — every valid entry with it, and a batch rebuilt the
  * same way the next day is refused again.
  *
- * Derived for the worst document the stock provider can build: 50 full blocks
- * are 15,000 messages (60% of the message cap); each message at most 393 bytes
- * plus its comma — a SKU of 40 code points (`alvoValido`'s bound on a member a
- * submitted feed carries) of 4-byte characters, the longest JSON rendering of
- * a non-negative number (`Number.MAX_VALUE`, 23 characters: the quantity has
- * no ceiling, and the shared core floors it and clamps it at 0), a five-digit
+ * Derived for an upper bound of the worst document the stock provider can
+ * build: 50 full blocks are 15,000 messages (60% of the message cap); each
+ * message at most 393 bytes plus its comma — a SKU of 40 code points
+ * (`alvoValido`'s bound on a member a submitted feed carries) of 4-byte
+ * characters, the longest JSON rendering of a non-negative number
+ * (`Number.MAX_VALUE`, 23 characters: the shared core floors the quantity and
+ * clamps it at 0 but sets no ceiling, and the package's stock builder sends
+ * only a safe integer, which renders shorter), a five-digit
  * `messageId` — and the header with a 64-character seller id of escaped
  * characters: 5,899,099 bytes (62% of the byte cap). The tightest cap is 80
  * blocks (bytes bind first: 81 worst-case blocks exceed 9.5 MB); 50 keeps the

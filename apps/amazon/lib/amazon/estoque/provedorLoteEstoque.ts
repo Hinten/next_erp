@@ -144,10 +144,8 @@ import type { DocumentSnapshot } from 'firebase-admin/firestore';
 import { produtoCollection } from '@delfrance/data/admin/collections';
 import {
   AmazonThrottleError,
-  CAMINHO_ATRIBUTO_DISPONIBILIDADE,
-  CANAL_MFN,
   type MensagemListingsFeed,
-  type PatchListingAmazon,
+  patchDisponibilidadeAmazon,
 } from '@delfrance/integrations-amazon-sp-api';
 import {
   type ItemDivergenciaEstoqueAmazon,
@@ -303,22 +301,16 @@ function fatias<T>(itens: readonly T[], tamanho: number): T[][] {
 }
 
 /**
- * The stock merge of ONE SKU's quantity as a feed message carries it: the
- * MFN fulfillment-availability merge, built from the package's named keys.
- * `provedorLoteEstoque.test.ts` pins it to the body the package's own
- * `patchListingsItem` helper sends.
+ * ONE SKU's feed message: its SKU and the package's stock merge
+ * (`patchDisponibilidadeAmazon`, the one builder the per-SKU `patchListingsItem`
+ * sends too), with no product type of its own, so the document stamps
+ * `PRODUCT`. The only message this provider builds. A quantity that is not a
+ * safe integer ≥ 0 is the builder's `AmazonConfigError('quantidade')`, which
+ * ends the send as a refused document; the shared core floors and clamps every
+ * quantity first. `provedorLoteEstoque.test.ts` pins the document's bytes.
  */
-export function patchEstoqueAmazon(quantidade: number): PatchListingAmazon {
-  return {
-    op: 'merge',
-    path: CAMINHO_ATRIBUTO_DISPONIBILIDADE,
-    value: [{ fulfillment_channel_code: CANAL_MFN, quantity: quantidade }],
-  };
-}
-
-/** ONE SKU's feed message: its SKU and its stock merge, the only message this provider builds. */
 export function mensagemEstoqueAmazon(sku: string, quantidade: number): MensagemListingsFeed {
-  return { sku, patches: [patchEstoqueAmazon(quantidade)] };
+  return { sku, patches: [patchDisponibilidadeAmazon(quantidade)] };
 }
 
 /** The abort of a build past the shared budget (module header). */

@@ -494,7 +494,9 @@ dialog's Amazon provider comes after step 9b). See "Stock (step 12)".
   gone unit ⇒ `unidade-ausente`, never a derived 0; `lerMembrosEstoqueAmazon` runs the same
   row reads for units a caller already read, so a batch reads each produto once). **P5**
   `skuTemCaminhoAmazon` false ⇒ `sem-caminho`. **P6** the engine
-  (`listings/listingsAmazon.ts` is the ONE caller of the package's three listings helpers:
+  (`listings/listingsAmazon.ts` is the ONE caller of the package's four listings helpers, step
+  13's offer patch included; `estrutura.test.ts` classifies every exported function of the
+  package module, async or not, as a listed helper or a listed pure one. The engine runs:
   the live read — its own SP-API 404 ⇒ `nao-listado` —, the gate, `planejarEstoqueAmazon` with
   the link's last outcome, `forcar` for a catch-up only, and `feedRecenteEmMs` from ONE by-id
   read of the stock lease masked to `ultimoFeedConcluidoEmMs`); right before EVERY PATCH, the

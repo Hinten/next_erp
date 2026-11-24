@@ -43,10 +43,14 @@
  *   the feed type and the BR store being constants. No `feedOptions`, no second
  *   marketplace;
  * - the feed document: a `header` (`sellerId`, `version: '2.0'`,
- *   `issueLocale: 'pt_BR'`, no `report`: nothing reads the report's `items`) and
+ *   `issueLocale: 'pt_BR'`, and a `report` ONLY when the caller asks for one:
+ *   `{ includedData, apiVersion: '2021-08-01' }`, so the processing report also
+ *   carries each message's listings item with those datasets, its `items`) and
  *   one `PATCH` message per input, in the caller's order, `messageId` its 1-based
- *   position, minified and counted in UTF-8 BYTES. It is refused whole, never
- *   split: splitting is the caller's decision.
+ *   position, `productType` the message's own (held to
+ *   `TIPO_PRODUTO_LISTING_REGEX`) or `PRODUCT` when it names none, minified and
+ *   counted in UTF-8 BYTES. It is refused whole, never split: splitting is the
+ *   caller's decision.
  *
  * ## The responses are TOLERANT where nothing is decided on them
  *
@@ -56,7 +60,10 @@
  * and the 202 requires its `feedId` under the grammar above. The processing
  * report requires its `summary` and the five counts (every number through
  * `wireInt()`); every issue field is optional (an issue may carry no
- * `messageId`, `sku` or `code`), and every object is `.passthrough()`.
+ * `messageId`, `sku` or `code`), and every object is `.passthrough()`. Its
+ * `items` (present only when the document asked for a `report`) are optional
+ * too, and so is each item's `sku` and `issues`; an item issue has the listings
+ * `Issue` shape, `categories` included.
  *
  * A write that failed its schema, a 5xx, a timeout or a dropped connection MAY
  * HAVE LANDED (`escrita.ts`): `createFeed` has no idempotency key, so the caller
@@ -73,7 +80,12 @@ import {
 } from './client';
 import type { SpApiEscritaClient } from './escrita';
 import { AmazonConfigError, AmazonDocumentoFeedError } from './errors';
-import { TIPO_PRODUTO_OFERTA } from './listings';
+import {
+  issueListingAmazonSchema,
+  TIPO_PRODUTO_LISTING_REGEX,
+  TIPO_PRODUTO_OFERTA,
+  VERSAO_API_LISTINGS,
+} from './listings';
 
 /** The model's `operationId`s, each call's label on the observer's event. */
 export const OPERACAO_CRIAR_DOCUMENTO_FEED = 'createFeedDocument';
@@ -107,6 +119,17 @@ export const VERSAO_FEED_LISTINGS = '2.0';
 
 /** The locale the feed's issues are asked in. */
 export const LOCALIDADE_ISSUES_FEED = 'pt_BR';
+
+/** The datasets a feed's processing report may carry per item (`report.includedData`), by name. */
+export const DADOS_RELATORIO_FEED = {
+  issues: 'issues',
+} as const satisfies Record<string, string>;
+
+/** One `report.includedData` value this module writes: a closed set, from the constant above. */
+export type DadoRelatorioFeed = (typeof DADOS_RELATORIO_FEED)[keyof typeof DADOS_RELATORIO_FEED];
+
+/** The constants in the order they are written into `includedData`. */
+const ORDEM_DADOS_RELATORIO: readonly DadoRelatorioFeed[] = Object.values(DADOS_RELATORIO_FEED);
 
 /** `processingStatus`, as the model lists it. An OPEN set: the schema reads any string. */
 export const STATUS_FEED_AMAZON = {
@@ -185,6 +208,18 @@ const issueRelatorioSchema = z
   })
   .passthrough();
 
+/**
+ * One report item: the listings item the processing produced, present only when
+ * the document's header asked for a `report`. Amazon's schema requires no key of
+ * it; this package reads its `sku` and its `issues` (the listings `Issue`).
+ */
+const itemRelatorioSchema = z
+  .object({
+    sku: z.string().nullish(),
+    issues: z.array(issueListingAmazonSchema).nullish(),
+  })
+  .passthrough();
+
 /** The listings feed processing report (module header): `summary` and its five counts required. */
 export const relatorioProcessamentoListingsSchema = z
   .object({
@@ -197,6 +232,7 @@ export const relatorioProcessamentoListingsSchema = z
       .passthrough()
       .nullish(),
     issues: z.array(issueRelatorioSchema).nullish(),
+    items: z.array(itemRelatorioSchema).nullish(),
     summary: z
       .object({
         errors: wireInt(),
@@ -325,10 +361,15 @@ export interface PatchListingAmazon {
   readonly value?: readonly Readonly<Record<string, unknown>>[];
 }
 
-/** One listings message as the caller hands it: the SKU and its patches. */
+/** One listings message as the caller hands it: the SKU, its patches and, optionally, its product type. */
 export interface MensagemListingsFeed {
   readonly sku: string;
   readonly patches: readonly PatchListingAmazon[];
+  /**
+   * The listing's product type, under `TIPO_PRODUTO_LISTING_REGEX`; absent, the
+   * message goes under `PRODUCT`.
+   */
+  readonly productType?: string;
 }
 
 /** What one feed document is built from. */
@@ -337,6 +378,11 @@ export interface EntradaDocumentoListingsFeed {
   readonly sellerId: string;
   /** 1 to {@link MAX_MENSAGENS_FEED} messages, one per distinct SKU, in send order. */
   readonly mensagens: readonly MensagemListingsFeed[];
+  /**
+   * The header's `report`: the datasets the processing report carries per item.
+   * Absent, the header has no `report` key at all.
+   */
+  readonly relatorio?: { readonly incluir: readonly DadoRelatorioFeed[] };
 }
 
 /** A built feed document: its UTF-8 bytes (minified JSON) and its message count. */
@@ -346,21 +392,50 @@ export interface DocumentoListingsFeed {
 }
 
 /**
- * The `JSON_LISTINGS_FEED` document (module header): the header, then one
- * `PATCH` message per input with `messageId` = its 1-based position and
- * `productType: 'PRODUCT'`, the patches copied by named keys. Refused whole
- * (`AmazonConfigError('feed')`): an empty `sellerId`, no message, more than
- * {@link MAX_MENSAGENS_FEED}, an empty or duplicate SKU, a message without
- * patches, or more than {@link MAX_BYTES_FEED} UTF-8 bytes once minified.
+ * The header's `report`, from named keys: `includedData` joined from
+ * {@link DADOS_RELATORIO_FEED} in its order (a value the closed type does not
+ * name, a cast, never reaches the document), and the listings API version. No
+ * known dataset at all is `AmazonConfigError('feed')`: Amazon's schema requires
+ * at least one.
+ */
+function relatorioDoCabecalho(incluir: readonly DadoRelatorioFeed[]): {
+  readonly includedData: readonly DadoRelatorioFeed[];
+  readonly apiVersion: string;
+} {
+  const includedData = ORDEM_DADOS_RELATORIO.filter((d) => incluir.includes(d));
+  if (includedData.length === 0) throw recusarFeed(OPERACAO_MONTAR_DOCUMENTO);
+  return { includedData, apiVersion: VERSAO_API_LISTINGS };
+}
+
+/** A message's product type: its own when it matches the grammar, `PRODUCT` when it names none. */
+function tipoProdutoDaMensagem(m: MensagemListingsFeed): string {
+  if (m.productType === undefined) return TIPO_PRODUTO_OFERTA;
+  if (typeof m.productType !== 'string' || !TIPO_PRODUTO_LISTING_REGEX.test(m.productType)) {
+    throw recusarFeed(OPERACAO_MONTAR_DOCUMENTO);
+  }
+  return m.productType;
+}
+
+/**
+ * The `JSON_LISTINGS_FEED` document (module header): the header (with a
+ * `report` only when `relatorio` asks for one), then one `PATCH` message per
+ * input with `messageId` = its 1-based position and the message's own
+ * `productType` (`PRODUCT` when it names none), the patches copied by named
+ * keys. Refused whole (`AmazonConfigError('feed')`): an empty `sellerId`, no
+ * message, more than {@link MAX_MENSAGENS_FEED}, an empty or duplicate SKU, a
+ * message without patches, a product type outside `TIPO_PRODUTO_LISTING_REGEX`,
+ * a `relatorio` with no known dataset, or more than {@link MAX_BYTES_FEED} UTF-8
+ * bytes once minified.
  */
 export function montarDocumentoListingsFeed(
   entrada: EntradaDocumentoListingsFeed,
 ): DocumentoListingsFeed {
-  const { sellerId, mensagens } = entrada;
+  const { sellerId, mensagens, relatorio } = entrada;
   if (typeof sellerId !== 'string' || sellerId === '') throw recusarFeed(OPERACAO_MONTAR_DOCUMENTO);
   if (mensagens.length === 0 || mensagens.length > MAX_MENSAGENS_FEED) {
     throw recusarFeed(OPERACAO_MONTAR_DOCUMENTO);
   }
+  const report = relatorio === undefined ? undefined : relatorioDoCabecalho(relatorio.incluir);
   const vistos = new Set<string>();
   const mensagensDoDocumento = mensagens.map((m, i) => {
     if (typeof m.sku !== 'string' || m.sku === '' || vistos.has(m.sku) || m.patches.length === 0) {
@@ -371,7 +446,7 @@ export function montarDocumentoListingsFeed(
       messageId: i + 1,
       sku: m.sku,
       operationType: 'PATCH',
-      productType: TIPO_PRODUTO_OFERTA,
+      productType: tipoProdutoDaMensagem(m),
       patches: m.patches.map((p) => ({
         op: p.op,
         path: p.path,
@@ -381,7 +456,12 @@ export function montarDocumentoListingsFeed(
   });
 
   const texto = JSON.stringify({
-    header: { sellerId, version: VERSAO_FEED_LISTINGS, issueLocale: LOCALIDADE_ISSUES_FEED },
+    header: {
+      sellerId,
+      version: VERSAO_FEED_LISTINGS,
+      issueLocale: LOCALIDADE_ISSUES_FEED,
+      ...(report === undefined ? {} : { report }),
+    },
     messages: mensagensDoDocumento,
   });
   const bytes = new TextEncoder().encode(texto);

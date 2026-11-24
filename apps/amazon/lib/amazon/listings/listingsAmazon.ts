@@ -1,23 +1,24 @@
 /**
- * The Listings Items calls of this app (step 12, PR 12-e1): the ONE module that
- * calls the package's listing read (`lerListingAmazon`, `getListingsItem`),
- * listing search (`buscarListingsAmazon`, `searchListingsItems`) and
- * availability patch (`enviarDisponibilidadeAmazon`, `patchListingsItem`),
- * across `lib/`, `app/`, `functions/src` and `scripts/`. The stock sync reaches
- * Amazon's listings through here and nowhere else (a later listings flow comes
- * through here too), so no script can spend the seller's per-seller listings
+ * The Listings Items calls of this app (step 12, PR 12-e1; the offer patch since
+ * step 13): the ONE module that calls the package's listing read
+ * (`lerListingAmazon`, `getListingsItem`), listing search
+ * (`buscarListingsAmazon`, `searchListingsItems`), availability patch
+ * (`enviarDisponibilidadeAmazon`) and offer patch (`enviarOfertaAmazon`, both
+ * `patchListingsItem`), across `lib/`, `app/`, `functions/src` and `scripts/`.
+ * The stock sync reaches Amazon's listings through here and nowhere else, and so
+ * does every price send, so no script can spend the seller's per-seller listings
  * budget beside them.
  *
- * ## The two reads ride their own refresh rule; the patch rides the engine's
+ * ## The two reads ride their own refresh rule; the patches ride the engine's
  *
  * - {@link lerListingNaAmazon} and {@link buscarListingsNaAmazon} read through
  *   the context's READ client under the forced-refresh-once rule
  *   (`core/renovacaoUnica.ts`): a 401/403 refreshes once and reads once more.
- * - {@link enviarDisponibilidadeNaAmazon} is a write engine's `escrever`
- *   (`core/escrita.ts`): it runs through the write client the engine built,
- *   inside the engine's own forced-refresh-once rule. ⚠️ It never wraps itself
- *   in that rule a second time: two nested rules would turn one 401 into two
- *   refreshes and up to four PATCHes.
+ * - {@link enviarDisponibilidadeNaAmazon} and {@link enviarOfertaNaAmazon} are a
+ *   write engine's `escrever` (`core/escrita.ts`): each runs through the write
+ *   client the engine built, inside the engine's own forced-refresh-once rule.
+ *   ⚠️ Neither ever wraps itself in that rule a second time: two nested rules
+ *   would turn one 401 into two refreshes and up to four PATCHes.
  *
  * ## "Not listed"
  *
@@ -31,23 +32,27 @@
  *
  * ## Thin on purpose
  *
- * The SKU checks, the query keys, the body and the tolerant response schemas
- * are the package's; this module adds the context, the refresh rule and the
- * 404 reading, and returns Amazon's parsed answer. A PATCH that failed its
- * schema, a 5xx, a timeout or a dropped connection MAY HAVE LANDED: its error is
- * thrown untouched, and never repeated here.
+ * The SKU checks, the query keys, the bodies, the price range, the product type
+ * and the mode checks, and the tolerant response schemas are the package's; this
+ * module adds the context, the refresh rule and the 404 reading, and returns
+ * Amazon's parsed answer. A PATCH that failed its schema, a 5xx, a timeout or a
+ * dropped connection MAY HAVE LANDED: its error is thrown untouched, and never
+ * repeated here.
  */
 import {
   AmazonNotFoundError,
+  DADOS_LISTING_AMAZON,
   type EntradaBuscaListings,
   type EntradaDisponibilidadeListing,
   type EntradaLeituraListing,
+  type EntradaOfertaListing,
   type EnvioListingAmazon,
   type ListingAmazon,
   OPERACAO_LER_LISTING,
   type SpApiEscritaClient,
   buscarListingsAmazon,
   enviarDisponibilidadeAmazon,
+  enviarOfertaAmazon,
   lerListingAmazon,
 } from '@delfrance/integrations-amazon-sp-api';
 
@@ -56,6 +61,21 @@ import { executarComRenovacaoUnica } from '../core/renovacaoUnica';
 
 /** What the two reads need of a context: its read client and the access getter. */
 export type ContextoDosListingsAmazon = Pick<ContextoAmazon, 'cliente' | 'obterAcesso'>;
+
+/**
+ * The datasets every live read of a price send asks for (step 13), one listing
+ * read or a search alike: the BR summaries (the status and the listing's own
+ * product type), the attributes (the offer, read by the package's
+ * `ofertaDoListingAmazon`), the issues (Amazon's price refusals) and the
+ * relationships (a variation parent is never priced). Never the availability: a
+ * price read decides nothing on stock.
+ */
+export const INCLUIR_LEITURA_PRECO = [
+  DADOS_LISTING_AMAZON.resumos,
+  DADOS_LISTING_AMAZON.atributos,
+  DADOS_LISTING_AMAZON.issues,
+  DADOS_LISTING_AMAZON.relacoes,
+] as const satisfies EntradaLeituraListing['incluir'];
 
 /** The read's answer when Amazon has no listing of the SKU for this seller (module header). */
 export const NAO_LISTADO_AMAZON = 'nao-listado';
@@ -137,5 +157,22 @@ export async function enviarDisponibilidadeNaAmazon(
   entrada: EntradaDisponibilidadeListing,
 ): Promise<EnvioListingAmazon> {
   const { dados } = await enviarDisponibilidadeAmazon(escritor, entrada);
+  return dados;
+}
+
+/**
+ * ONE `patchListingsItem` with the offer merge (module header): a write
+ * engine's `escrever`, through the write client the engine built, under the
+ * caller's `tipoProduto` and, only when `modo` asks for it, Amazon's validation
+ * preview (nothing persisted). The package refuses a price range, a product type
+ * or a mode it does not send before anything is sent. Amazon's parsed submission
+ * answer (`ACCEPTED`, `VALID` or `INVALID`, the caller reads which); any failure
+ * thrown untouched.
+ */
+export async function enviarOfertaNaAmazon(
+  escritor: SpApiEscritaClient,
+  entrada: EntradaOfertaListing,
+): Promise<EnvioListingAmazon> {
+  const { dados } = await enviarOfertaAmazon(escritor, entrada);
   return dados;
 }
