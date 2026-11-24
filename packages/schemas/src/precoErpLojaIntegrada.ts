@@ -354,9 +354,11 @@ export type ValorPrecoLi = { readonly centavos: number } | 'vazio' | 'ilegivel';
  *
  *  - a JSON NUMBER ⇒ `centavosDeReais` (`274.42` ⇒ 27442; the ERP's `10.004` ⇒ 1000);
  *  - a STRING ⇒ the ONE wire decimal rule, `parseWireDecimal` (`'274.42'`, `'259.9'`, a padded
- *    4-decimal string such as `'160.0000'` — the form the store's order lines carry; the owner's
- *    read-only price capture checks the price list — `'+10.00'` and `'.5'` all read; a second
- *    grammar is never written here);
+ *    4-decimal string such as `'160.0000'` — the form the store's order lines and its price
+ *    resource carry: the owner's read-only price capture (2026-11-24, both stores) found every
+ *    price-resource value to be text with exactly four decimals, or `null`, with no fraction of a
+ *    centavo, while the produto detail carries the same values as JSON numbers — `'+10.00'` and
+ *    `'.5'` all read; a second grammar is never written here);
  *  - `null` or absent ⇒ `'vazio'`;
  *  - a NEGATIVE value (number or string), a non-finite number, a string the wire rule refuses
  *    (`'1,50'`, `'1e3'`, `''`, `'abc'`), an amount whose centavos are past a safe integer, and any
@@ -385,7 +387,8 @@ function positivoLi(v: ValorPrecoLi): number | null {
  * store already shows it" and a send is skipped, so folding too much drops a real price edit.
  *
  * EQUAL: `'10.00'` ≡ `10`; `274.42` ≡ `'274.42'`; `'259.9'` ≡ `259.90`; the ERP's `10.004` ≡ `10`;
- * `'+10.00'` ≡ `10` and `'.5'` ≡ `0.50` (the one wire rule accepts them); `'160.0000'` ≡ `160`.
+ * `'+10.00'` ≡ `10` and `'.5'` ≡ `0.50` (the one wire rule accepts them); `'160.0000'` ≡ `160`, and
+ * `'259.9000'` ≡ `259.9` (the price resource's text against the detail's number).
  * DISTINCT: one centavo apart — `'10.01'` ≠ `10`, `'49.99'` ≠ `50`, and `49.991` ≠ `50`, which a
  * `< 0.01` tolerance would equate; the truncation `'22'` ≠ `22.83`; an unreadable value equals
  * nothing; and a `null` or 0 price equals NOTHING, not even another `null` or 0 — an empty full
@@ -398,13 +401,14 @@ export function mesmoPrecoLi(a: unknown, b: unknown): boolean {
 
 /**
  * Does a PROMOTION value say "no promotion"? `null`, absent, and any value that reads as 0
- * centavos: `0`, `'0.00'`, `'0'`, a JSON `0.004`.
+ * centavos: `0`, `'0.00'`, `'0'`, `'0.0000'` (the store's own spelling of a zero promotion, the
+ * only one its price resource uses), a JSON `0.004`.
  *
  * It looks at the promo value ALONE. A promotion EQUAL to the full price (`50.00` beside a
  * `cheio` of `50.00`) is NOT cleared: it is a stored promotion, so it differs from a clear, and a
  * target that clears the promotion sends the clear. DISTINCT, too:
- * `'0.01'` (one centavo is a price), and every unreadable value (`'-1.00'`, JSON `-1`, `'1,50'`,
- * `''`) — never "cleared", never equal.
+ * `'0.01'` and `'0.0100'` (one centavo is a price, in either spelling), and every unreadable value
+ * (`'-1.00'`, JSON `-1`, `'1,50'`, `''`) — never "cleared", never equal.
  */
 export function promocionalLimpoLi(v: unknown): boolean {
   const lido = valorPrecoLi(v);
@@ -483,7 +487,8 @@ function validarEnvioPrecoLi(alvo: EnvioPrecoLi, quem: string): void {
  * with a promotion of 70.00 and a target of 65.00 / 68.00 is `baixa` (`promocional` only),
  * although under that reading the buyer price rises. Deliberate: whether the store charges a
  * promotion that is not below its full price is not known (the owner's read-only price capture
- * counts such rows), and under either reading the literal rule lets no lowering through — the
+ * found no such row on either store, so this case meets no current row), and under either reading
+ * the literal rule lets no lowering through — the
  * cost is a raise held for an operator's "permitir baixar preços", never a lower price sent
  * unasked.
  *
@@ -533,11 +538,12 @@ export const ASSINATURA_ENVIO_PRECO_LI_REGEX = /^(?:0|[1-9]\d{0,15})(?::(?:0|[1-
  * The daily reconcile's key of ONE send it enqueued: the target and the store's value it was
  * diffed against, as exact centavos text — `<cheio>:<promo>:<cheio na loja>:<promo na loja>`,
  * with 0 for the clear and for an empty or 0 store value. Two nights with the same key for one
- * store product mean the send did not converge.
+ * store product mean the send did not converge. The store read computes it, being the only phase
+ * that holds the store row, and the candidate carries it to the queue phase.
  *
- * EQUAL: the store's promotion read as `null`, `0` or `'0.00'` gives ONE key (all "no promotion",
- * {@link promocionalLimpoLi}), as do `'10.00'` and `10`. DISTINCT: any centavo of any of the four
- * (`'10.01'` vs `10`), and a cleared promo vs a promo equal to the full price.
+ * EQUAL: the store's promotion read as `null`, `0`, `'0.00'` or `'0.0000'` gives ONE key (all "no
+ * promotion", {@link promocionalLimpoLi}), as do `'10.00'` and `10`. DISTINCT: any centavo of any
+ * of the four (`'10.01'` vs `10`), and a cleared promo vs a promo equal to the full price.
  *
  * Throws `RangeError` on a target that is not positive integer centavos, or a store value that is
  * unreadable (such a row is never a candidate).

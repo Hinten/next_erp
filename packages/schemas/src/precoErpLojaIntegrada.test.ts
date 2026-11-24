@@ -449,6 +449,8 @@ describe('valorPrecoLi (a store price value, read)', () => {
     ['274.42', 27442],
     ['259.9', 25990],
     ['160.0000', 16000],
+    ['259.9000', 25990],
+    ['0.0100', 1],
     ['+10.00', 1000],
     ['.5', 50],
     [' 10.00 ', 1000],
@@ -456,6 +458,7 @@ describe('valorPrecoLi (a store price value, read)', () => {
     [0, 0],
     ['0.00', 0],
     ['0', 0],
+    ['0.0000', 0],
     [0.004, 0],
     [-0, 0],
     ['-0.00', 0],
@@ -501,6 +504,8 @@ describe('mesmoPrecoLi (THE price equality)', () => {
     ['.5', 0.5],
     ['160.0000', 160],
     ['160.0000', '160.00'],
+    // The price resource's text against the produto detail's number for the same leaf.
+    ['259.9000', 259.9],
   ] as const)('EQUAL: %j ≡ %j', (a, b) => {
     expect(mesmoPrecoLi(a, b)).toBe(true);
     expect(mesmoPrecoLi(b, a)).toBe(true);
@@ -510,6 +515,7 @@ describe('mesmoPrecoLi (THE price equality)', () => {
     ['10.01', 10],
     ['49.99', 50],
     [49.991, 50],
+    ['259.9100', 259.9],
     ['22', 22.83],
     ['1,50', 1.5],
     ['1e3', 1000],
@@ -531,19 +537,27 @@ describe('mesmoPrecoLi (THE price equality)', () => {
 });
 
 describe('promocionalLimpoLi (a cleared promotion)', () => {
-  it.each([[null], [undefined], [0], ['0.00'], ['0'], [0.004], ['0.004']] as const)(
+  it.each([[null], [undefined], [0], ['0.00'], ['0'], ['0.0000'], [0.004], ['0.004']] as const)(
     'EQUAL: %j is cleared',
     (valor) => {
       expect(promocionalLimpoLi(valor)).toBe(true);
     },
   );
 
-  it.each([['0.01'], [0.01], [0.005], ['-1.00'], [-1], ['1,50'], [''], ['1e3'], [39.99]] as const)(
-    '⚠️ NEAR-MISS: %j is NOT cleared',
-    (valor) => {
-      expect(promocionalLimpoLi(valor)).toBe(false);
-    },
-  );
+  it.each([
+    ['0.01'],
+    ['0.0100'],
+    [0.01],
+    [0.005],
+    ['-1.00'],
+    [-1],
+    ['1,50'],
+    [''],
+    ['1e3'],
+    [39.99],
+  ] as const)('⚠️ NEAR-MISS: %j is NOT cleared', (valor) => {
+    expect(promocionalLimpoLi(valor)).toBe(false);
+  });
 
   it('⚠️ NEAR-MISS: a promo EQUAL to the full price is a stored promotion, not a clear', () => {
     const cheio = 50;
@@ -622,7 +636,8 @@ describe('decidirBaixaPrecoLi (no-lower, integer centavos)', () => {
 
   it('⚠️ DECISION: the promo leaf compares promotions even when the store’s is ABOVE its full price', () => {
     // The approved rule applied literally: whether the store charges a promotion above its full
-    // price is unmeasured, and under either reading this refusal lets no lowering through.
+    // price is unknown (the owner's read-only price capture found no such row), and under either
+    // reading this refusal lets no lowering through.
     expect(decidir(6500, { centavos: 6800 }, 60, 70)).toEqual({
       tipo: 'baixa',
       cheio: false,
@@ -635,7 +650,7 @@ describe('decidirBaixaPrecoLi (no-lower, integer centavos)', () => {
 
   it('⚠️ any lower buyer price: a NEW promo where the store shows none lowers it — refused', () => {
     // The plan's case: the store at 50.00 with no promo, the target promo 39.99.
-    for (const semPromo of [null, '0.00', 0]) {
+    for (const semPromo of [null, '0.00', '0.0000', 0]) {
       expect(decidir(5000, { centavos: 3999 }, '50.00', semPromo), String(semPromo)).toEqual({
         tipo: 'baixa',
         cheio: false,
@@ -705,7 +720,7 @@ describe('assinaturaEnvioPrecoLi (the reconcile’s non-convergence key)', () =>
 
   it('EQUAL: every spelling of the same store value gives one key', () => {
     const alvoEnvio = { cheioCentavos: 5000, promo: { centavos: 3999 } } as const;
-    const chaves = [null, 0, '0.00', '0'].map((promocional) =>
+    const chaves = [null, 0, '0.00', '0', '0.0000'].map((promocional) =>
       assinaturaEnvioPrecoLi(alvoEnvio, { cheio: '10.00', promocional }),
     );
     expect(new Set(chaves)).toEqual(new Set(['5000:3999:1000:0']));

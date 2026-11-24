@@ -50,7 +50,7 @@ export const TIPO_TAREFA_PRECO_LI = 'preco' as const;
  *  - `atualizacao`: the operator's account-wide "Atualizar preços" run.
  *
  * `evento`, `manual`, `publicacao` and `deriva` are read back after the PUT; `reconcile` and
- * `atualizacao` are BULK origins, read back by the next day's list walk.
+ * `atualizacao` are BULK origins, read back by the next night's by-id read of the store's prices.
  */
 export const origemTarefaPrecoLiSchema = z.enum([
   'evento',

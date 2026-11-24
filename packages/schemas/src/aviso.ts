@@ -1437,6 +1437,12 @@ export const TIPO_AVISO_LABELS = {
  *    order, joined by `, `; the NUMBER beside it is the full count.
  *  - All four join the expiry sweep's orphan pass: a deleted conta's rows are
  *    closed (`conta-removida`).
+ *  - **A linked child the nightly's by-id price read does not get back** (the
+ *    answer lists it as not found, or leaves it out) raises none of the four:
+ *    it is counted and logged. While the stock flow runs, the stock
+ *    reconcile's `lojaIntegradaEstoqueVinculo` (`sem-linha-na-loja`) reports
+ *    such a link, for up to {@link MAX_AMOSTRA_AVISO_ESTOQUE_LI} a conta a
+ *    night.
  *
  * **`lojaIntegradaPrecoSemErp`** — linked children of the conta that are HELD:
  *    the map that prices them has no normal-tabela price now, an entry they
@@ -2132,7 +2138,8 @@ export const MOTIVO_PRECO_RECUSADO_LI = {
  *
  *  - `divergencia-em-massa`: the safety gate — more of the conta's children
  *    would be enqueued than one night may send (more than the larger of 50
- *    and 10% of the evaluated children; refused lowerings, deferred rows and
+ *    and 10% of the evaluated children — those whose store price the night's
+ *    by-id read got back and diffed; refused lowerings, deferred rows and
  *    non-converging ones are not counted), the signature of a tabela
  *    re-point or a whole-catalogue reprice nobody pushed, so NONE of the
  *    conta's price sends of that run were enqueued. "Atualizar preços" is the

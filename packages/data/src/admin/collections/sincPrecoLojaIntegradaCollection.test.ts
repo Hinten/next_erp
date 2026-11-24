@@ -77,10 +77,10 @@ describe('the Loja Integrada price-sync handles (step 13)', () => {
     const execucaoPreco = {
       execucaoId: RUN,
       tabelas: { normal: 'tab-normal', promocional: null },
-      vistos: ['7'],
       amostras: {},
       contadores: { candidatos: 1 },
-      candidatos: [{ i: '7', p: 'f1', d: 100 }],
+      candidatos: [{ i: '7', p: 'f1', d: 100, h: '5000:0:4900:0' }],
+      mantidos: [{ i: '39', h: '5000:0:4990:0', n: 1 }],
     };
     const enviadosPreco = [{ i: '7', h: '5000:0:4900:0', n: 1 }];
     expect(sincPrecoLojaIntegradaCollection.parseMerge({ execucaoPreco, enviadosPreco })).toEqual({
@@ -106,6 +106,32 @@ describe('the Loja Integrada price-sync handles (step 13)', () => {
     expect(() =>
       reconcileEstoqueLojaIntegradaCollection.parseMerge({
         precoSolicitado: { contaId: 'conta-li-1', permitirBaixar: false },
+      }),
+    ).toThrow(ZodError);
+  });
+
+  it('⚠️ the store read’s cursor patch keeps its OWN rule: an id of another bucket is refused', () => {
+    const reconcilePreco = {
+      execucaoId: RUN,
+      balde: 3,
+      apos: '35',
+      lote: 50,
+      iniciadoEmMs: 1,
+    };
+    expect(sincPrecoLojaIntegradaCollection.parseMerge({ reconcilePreco })).toEqual({
+      reconcilePreco,
+    });
+    // NEAR-MISS: `'36'` is bucket 04, so it is no position in bucket 03 — the patch's `.partial()`
+    // is shallow, and the cursor field keeps its refinement.
+    expect(() =>
+      sincPrecoLojaIntegradaCollection.parseMerge({
+        reconcilePreco: { ...reconcilePreco, apos: '36' },
+      }),
+    ).toThrow(ZodError);
+    // NEAR-MISS: the old list cursor is no cursor.
+    expect(() =>
+      sincPrecoLojaIntegradaCollection.parseMerge({
+        reconcilePreco: { offset: 600, limite: 100, iniciadoEmMs: 1 },
       }),
     ).toThrow(ZodError);
   });

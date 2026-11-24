@@ -9,9 +9,10 @@ import { defineAdminCollection } from '../defineAdminCollection';
 
 /**
  * Admin handles of the Loja Integrada price sync (master plan step 13, PR 13-a): the per-conta
- * root `sincPrecoLojaIntegrada/{integracaoId}` (the price list's cursor, the last run, one run's
- * own state and the non-convergence memory) and its `snapshot` subcollection — the 32 buckets and
- * the parents unit's `paisErp` document. The sibling of `sincEstoqueLojaIntegradaCollection.ts`.
+ * root `sincPrecoLojaIntegrada/{integracaoId}` (the by-id store read's cursor, the last run, one
+ * run's own state and the non-convergence memory) and its `snapshot` subcollection — the 32
+ * buckets and the parents unit's `paisErp` document. The sibling of
+ * `sincEstoqueLojaIntegradaCollection.ts`.
  *
  * The price slot `reconcileEstoqueLojaIntegrada/slot-preco` has NO handle of its own: it is a
  * second document of the run document's collection, with the run document's schema, so it is
@@ -26,7 +27,7 @@ import { defineAdminCollection } from '../defineAdminCollection';
  * transaction inventory to classify. (Said WITHOUT the API's identifier on purpose: the inventory
  * guard greps every source file for it.)
  *
- * ⚠️ The maps and lists (`e`, `pais`, `vistos`, `amostras`, `candidatos`, `contadores`,
+ * ⚠️ The maps and lists (`e`, `pais`, `amostras`, `candidatos`, `mantidos`, `contadores`,
  * `enviadosPreco`) are written whole with a raw `update()` field — never through
  * `mergeIfExists`, whose patch must be flat, nor through `merge`, which would union a pruned map
  * with the stored one.

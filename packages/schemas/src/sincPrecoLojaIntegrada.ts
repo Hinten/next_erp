@@ -6,6 +6,8 @@ import {
 } from './precoErpLojaIntegrada';
 import { millisSinceEpoch } from './shared/datetime';
 import {
+  BALDES_SNAPSHOT_ESTOQUE_LI,
+  baldeSnapshotEstoqueLi,
   contadoresEstoqueLiSchema,
   idDocumentoEstoqueLiSchema,
   idExecucaoEstoqueLiSchema,
@@ -15,10 +17,10 @@ import {
 /**
  * `sincPrecoLojaIntegrada/{integracaoId}` (TOP-LEVEL) and its `snapshot` subcollection — the
  * per-conta state of the Loja Integrada price sync's daily reconcile (master plan step 13, PR
- * 13-a), the SIBLING of `sincEstoqueLojaIntegrada/{integracaoId}`: the price list's cursor and
- * last-run stats, one run's own state, the non-convergence memory, and the ERP-side snapshot the
- * reconcile diffs the store's price list against. ONE root document per conta, doc id =
- * `integracaoId`.
+ * 13-a), the SIBLING of `sincEstoqueLojaIntegrada/{integracaoId}`: the cursor of the store read BY
+ * ID and last-run stats, one run's own state, the non-convergence memory, and the ERP-side
+ * snapshot whose sendable children the reconcile asks the store for, by id, and diffs. ONE root
+ * document per conta, doc id = `integracaoId`.
  *
  * The price reconcile is FOLDED into the stock one: one schedule, one lease and run document
  * (`reconcileEstoqueLojaIntegrada/atual`, whose price phases are `fasePreco`), one ERP key walk.
@@ -34,9 +36,23 @@ import {
  * never write a wrong price. No custo is kept: the ERP custo is never sent, and the store's own is
  * no reconcile input (the owner's answer to the master plan's §7 q1).
  *
+ * ## The store is read BY ID, never through its price list
+ *
+ * The store's price list (`GET /v1/produto_preco?limit&offset`) is NOT a whole read. The owner's
+ * read-only price capture (2026-11-24, both stores) walked it to the end with every envelope check
+ * clean (the rows read equal `total_count`), yet some rows came back on two pages and as many
+ * products never came back, among them about one linked child in five on the larger store and one
+ * in seventeen on the smaller; on the larger store a middle page re-read about a minute later came
+ * back with almost every position changed. The list behaves as if ordered by a non-unique key, so a
+ * slower or repeated walk does not fix it. So the reconcile asks the store for exactly the children
+ * it may send, at most {@link MAX_IDS_SET_PRECO_LI} ids a call
+ * (`GET /v1/produto_preco/set/{id;id;…}`, no trailing slash), which the same capture found complete
+ * and exact at 10, 20, 50 and 100 ids: every id asked came back, in the order asked. Nothing here
+ * reads, or keeps a cursor into, the price list.
+ *
  * ## The documents
  *
- *  - the root: {@link sincPrecoLojaIntegradaSchema} — the cursor into the store's price list
+ *  - the root: {@link sincPrecoLojaIntegradaSchema} — the cursor of the by-id store read
  *    (`reconcilePreco`), the last finished run (`ultimoReconcilePreco`), the running run's own
  *    state with its candidates (`execucaoPreco`), and the non-convergence memory (`enviadosPreco`);
  *  - `snapshot/{'00'..'31'}`: {@link snapshotPrecoLiSchema} — one entry per store product id the
@@ -57,15 +73,27 @@ import {
  *     computes the target `a` of each valid entry the walk left without one, by replaying the
  *     readings through `precoAlvoLi` (`precosDasLeiturasLi` rebuilds a map that reads back exactly
  *     as the stored readings), never through a second copy of the rule;
- *  3. the store's list walk (`li-preco`) diffs each row against `a`;
- *  4. the queue phase (`fila-preco`) defers a row in transit (`t`), skips a non-converging one,
- *     and enqueues the rest.
+ *  3. the store read (`li-preco`) goes through the conta's buckets in order, `'00'` to `'31'`, and
+ *     inside each through its ids by numeric value, asking the store — at most
+ *     {@link MAX_IDS_SET_PRECO_LI} ids a call, one call spanning buckets — for every `v` entry
+ *     whose `a` is a target `{ c, q }`; a held entry and every other flag are never asked. Each
+ *     row of the answer is matched to an asked id by the produto it names, never by its position,
+ *     and diffed against that entry's `a`. No-lower is decided HERE, the only phase holding the
+ *     store row (a refused lowering is counted and sampled, never a candidate), and so is each
+ *     candidate's send key `h`. An asked id the answer lists as not found was not returned to this
+ *     conta: counted, nothing to diff, never a candidate. One the answer neither returns nor lists
+ *     is counted as unanswered, and is never read as "no row". The store read writes no bucket: one
+ *     still of another run here is a broken ERP phase, counted with ONE ERROR, its entries never
+ *     asked;
+ *  4. the queue phase (`fila-preco`) defers a row in transit (`t`), holds back a non-converging
+ *     one (its key `h` enqueued on each of the last two runs), enqueues the rest, and writes the
+ *     memory.
  *
- * A bucket of another run is replaced at first touch, carrying forward its `x` entries (a store row
- * no link of the conta names) as the stock snapshot does, and — for every entry that is again
- * valid — the previous target as `ap` and the previous deferral as `tp`: what makes the in-transit
- * rule ("the ERP target moved since the previous run") and its "never two nights in a row" cost
- * zero reads.
+ * A bucket of another run is replaced at first touch, so by the end of the key walk every bucket
+ * carries this run's id (as in the stock snapshot), carrying forward, for every entry that is
+ * again valid, the previous target as `ap` and the previous deferral as `tp`: what makes the
+ * in-transit rule ("the ERP target moved since the previous run") and its "never two nights in a
+ * row" cost zero reads. Nothing else carries over: every entry is one the walk wrote this run.
  *
  * ## Units
  *
@@ -103,28 +131,50 @@ export const ID_PAIS_ERP_SNAPSHOT_PRECO_LI = 'paisErp';
 /* -------------------------------------------------------------------------- */
 
 /**
- * The largest page the store's price list is asked for. PROVISIONAL: the owner's read-only price
- * capture measures the list's own bound (it asks `limit` 20, 50, 100 and 200 and reads `meta.limit`
- * back); until then this is the bound MEASURED on the produto and stock lists of the same store,
- * which honour 100 and refuse 200. ⚠️ The ONE bound: the cursor below holds its `limite` to it and
- * the wire's page reader will refuse anything above it, so a capture that shows a lower bound
- * lowers it HERE, never in a copy.
+ * The most store product ids one by-id price read names (`GET /v1/produto_preco/set/{id;…}`).
+ * MEASURED by the owner's read-only price capture (2026-11-24, both stores): sets of 10, 20, 50
+ * and 100 ids each answered every id asked, in the order asked, with no `meta`; above 100 was not
+ * asked. ⚠️ The ONE bound: the cursor's `lote` is held to it, the store read never builds a larger
+ * set, and the wire's by-id reader refuses one before any request, so a lower bound found later
+ * lowers it HERE, never in a copy. (The price list honours 100 too, and 200 answers the gateway's
+ * 400, but nothing reads that list.)
  */
-export const MAX_LIMITE_PAGINA_PRECO_LI = 100;
+export const MAX_IDS_SET_PRECO_LI = 100;
 
 /**
- * Where the reconcile stands in the store's price list for this conta: read whole, one page per
- * call, `limite` rows at a time from `offset`, the stock cursor's shape. `null` = no run is
- * reading this conta's price list.
+ * Where THIS run's store read stands for this conta (the life of an entry, 3). Every askable entry
+ * before (`balde`, `apos`) has been asked and its answer settled: the earlier buckets whole, and in
+ * bucket `balde` the ids up to `apos` by numeric value. `apos` `null` = nothing of bucket `balde`
+ * yet; `balde` {@link BALDES_SNAPSHOT_ESTOQUE_LI} = the read is done (no id belongs to that
+ * bucket, so `apos` is then `null`). It is a position in OUR snapshot, never a store offset: the
+ * snapshot is fixed once the parents unit has computed the targets, so a resumed slice asks exactly
+ * the ids the cut one had not settled. A cursor of another `execucaoId` is another run's, and the
+ * read starts over. `null` = no run is reading this conta's prices.
+ *
+ * `lote` is how many ids the NEXT call names. The same ids make the same batch every night, so one
+ * id the store cannot answer must not stop the rest of the conta every night: a call that fails
+ * for its batch halves `lote`, and the next call asks the first half of the same ids; an answered
+ * call doubles it back, up to {@link MAX_IDS_SET_PRECO_LI}; an id that still fails alone is
+ * skipped for this run (counted) and `lote` starts again at the bound. Which failures halve it is
+ * the store read's rule (master plan step 13).
  */
-export const reconcileContaPrecoLiSchema = z.object({
-  /** The next row to read, 0-based. */
-  offset: z.number().int().nonnegative(),
-  /** The page size the run started with; a run never changes it mid-list. */
-  limite: z.number().int().min(1).max(MAX_LIMITE_PAGINA_PRECO_LI),
-  /** MS. When this conta's list read began. */
-  iniciadoEmMs: millisSinceEpoch(),
-});
+export const reconcileContaPrecoLiSchema = z
+  .object({
+    /** The run reading. */
+    execucaoId: idExecucaoEstoqueLiSchema,
+    /** The bucket being read, 0-based; {@link BALDES_SNAPSHOT_ESTOQUE_LI} = done. */
+    balde: z.number().int().min(0).max(BALDES_SNAPSHOT_ESTOQUE_LI),
+    /** The last id of `balde` already asked and settled; `null` = none yet. */
+    apos: idProdutoLiTextoSchema.nullable(),
+    /** How many ids the next call names (above). */
+    lote: z.number().int().min(1).max(MAX_IDS_SET_PRECO_LI),
+    /** MS. When this conta's store read began. */
+    iniciadoEmMs: millisSinceEpoch(),
+  })
+  .refine(
+    (c) => c.apos === null || baldeSnapshotEstoqueLi(c.apos) === String(c.balde).padStart(2, '0'),
+    { path: ['apos'], message: 'apos fora do balde do cursor' },
+  );
 export type ReconcileContaPrecoLi = z.infer<typeof reconcileContaPrecoLiSchema>;
 
 /**
@@ -150,7 +200,7 @@ export const ultimoReconcilePrecoLiSchema = z.object({
   concluidoEmMs: millisSinceEpoch(),
   /** `null` for a run that priced nothing for the conta (no normal tabela). */
   tabelas: tabelasPrecoLiSchema.nullable().default(null),
-  /** Rows read, entries, candidates, holds, refusals, … — named by the run. */
+  /** Ids asked, not found, unanswered, evaluated, candidates, holds, … — named by the run. */
   contadores: contadoresEstoqueLiSchema.default({}),
 });
 export type UltimoReconcilePrecoLi = z.infer<typeof ultimoReconcilePrecoLiSchema>;
@@ -176,45 +226,20 @@ export const MOTIVO_AMOSTRA_PRECO_LI = {
 } as const satisfies Record<string, MotivoAmostraPrecoLi>;
 
 /**
- * One row to send, kept short (about 30 bytes): `i`, the store product id; `p`, the ERP produto;
+ * One row to send, kept short (one-letter keys): `i`, the store product id; `p`, the ERP produto;
  * `d`, the target's buyer price minus the store's, in centavos — positive is UNDER-priced in the
- * store, which goes first. The send run re-derives everything; `d` only orders.
+ * store, which goes first; `h`, the send's non-convergence key (`assinaturaEnvioPrecoLi` of the
+ * target and the store row it was diffed against). The store read sets `h`, being the only phase
+ * that holds the store row, so the queue phase can hold back a non-converging row and write the
+ * memory with no store value of its own. The send run re-derives everything; `d` only orders.
  */
 export const candidatoPrecoLiSchema = z.object({
   i: idProdutoLiTextoSchema,
   p: idDocumentoEstoqueLiSchema,
   d: z.number().int(),
+  h: z.string().regex(ASSINATURA_ENVIO_PRECO_LI_REGEX),
 });
 export type CandidatoPrecoLi = z.infer<typeof candidatoPrecoLiSchema>;
-
-/**
- * What ONE run keeps for this conta across its slices. Written by the lease holder only; a value
- * of another `execucaoId` is another run's and is read as none — its candidates included, so a
- * run abandoned mid-queue never hands its rows to the next one.
- *
- *  - `tabelas`: the tabelas the run fixed when it took the lease (a run never prices one conta
- *    from two tabelas; a re-point mid-run is the release's re-run);
- *  - `vistos`: the store ids the price list walk of THIS run has seen or settled;
- *  - `amostras`: per reason, the first {@link MAX_AMOSTRA_AVISO_PRECO_LI} ERP produto ids (the
- *    counts are `contadores`);
- *  - `contadores`: the conta's price counters of this run;
- *  - `candidatos`: the rows left to enqueue (the price candidates live here, never in the run
- *    document, whose byte budget is the stock's).
- */
-export const execucaoContaPrecoLiSchema = z.object({
-  execucaoId: idExecucaoEstoqueLiSchema,
-  tabelas: tabelasPrecoLiSchema,
-  vistos: z.array(idProdutoLiTextoSchema).default([]),
-  amostras: z
-    .partialRecord(
-      motivoAmostraPrecoLiSchema,
-      z.array(idDocumentoEstoqueLiSchema).max(MAX_AMOSTRA_AVISO_PRECO_LI),
-    )
-    .default({}),
-  contadores: contadoresEstoqueLiSchema.default({}),
-  candidatos: z.array(candidatoPrecoLiSchema).default([]),
-});
-export type ExecucaoContaPrecoLi = z.infer<typeof execucaoContaPrecoLiSchema>;
 
 /**
  * One row of the non-convergence memory: `i`, the store product id; `h`, the key of the send the
@@ -230,11 +255,51 @@ export const enviadoPrecoLiSchema = z.object({
 });
 export type EnviadoPrecoLi = z.infer<typeof enviadoPrecoLiSchema>;
 
+/**
+ * What ONE run keeps for this conta across its slices. Written by the lease holder only; a value
+ * of another `execucaoId` is another run's and is read as none — its candidates included, so a
+ * run abandoned mid-queue never hands its rows to the next one.
+ *
+ *  - `tabelas`: the tabelas the run fixed when it took the lease (a run never prices one conta
+ *    from two tabelas; a re-point mid-run is the release's re-run);
+ *  - `amostras`: per reason, the first {@link MAX_AMOSTRA_AVISO_PRECO_LI} ERP produto ids (the
+ *    counts are `contadores`);
+ *  - `contadores`: the conta's price counters of this run;
+ *  - `candidatos`: the rows left to enqueue (the price candidates live here, never in the run
+ *    document, whose byte budget is the stock's);
+ *  - `mantidos`: the memory rows (`enviadosPreco`) of the ids the store read asked for and could
+ *    not evaluate (not found, unanswered, unreadable, answered twice, skipped alone), copied as
+ *    they were so the queue phase keeps them unchanged: never larger than the memory, and never
+ *    an id of `candidatos`.
+ *
+ * There is no seen-set: the by-id read never repeats an asked id, names the ones it does not get
+ * back itself, and the cursor says what is done.
+ */
+export const execucaoContaPrecoLiSchema = z.object({
+  execucaoId: idExecucaoEstoqueLiSchema,
+  tabelas: tabelasPrecoLiSchema,
+  amostras: z
+    .partialRecord(
+      motivoAmostraPrecoLiSchema,
+      z.array(idDocumentoEstoqueLiSchema).max(MAX_AMOSTRA_AVISO_PRECO_LI),
+    )
+    .default({}),
+  contadores: contadoresEstoqueLiSchema.default({}),
+  candidatos: z.array(candidatoPrecoLiSchema).default([]),
+  mantidos: z.array(enviadoPrecoLiSchema).default([]),
+});
+export type ExecucaoContaPrecoLi = z.infer<typeof execucaoContaPrecoLiSchema>;
+
 export const sincPrecoLojaIntegradaSchema = z.object({
   reconcilePreco: reconcileContaPrecoLiSchema.nullable().default(null),
   ultimoReconcilePreco: ultimoReconcilePrecoLiSchema.nullable().default(null),
   execucaoPreco: execucaoContaPrecoLiSchema.nullable().default(null),
-  /** The non-convergence memory: survives runs, replaced whole by each run that reaches its queue phase. */
+  /**
+   * The non-convergence memory: survives runs, replaced whole by each run that reaches its queue
+   * phase, with the rows of the candidates it enqueued or held back as non-converging, plus
+   * `execucaoPreco.mantidos` and, when the conta's store read did not finish, every row of an id
+   * past the cursor: an id the run did not evaluate keeps its row as it was.
+   */
   enviadosPreco: z.array(enviadoPrecoLiSchema).default([]),
 });
 export type SincPrecoLojaIntegrada = z.infer<typeof sincPrecoLojaIntegradaSchema>;
@@ -245,20 +310,20 @@ export type SincPrecoLojaIntegrada = z.infer<typeof sincPrecoLojaIntegradaSchema
 
 /**
  * What the reconcile's ERP side decided about one store product id — the entry's `f` (the stock
- * snapshot's flags, minus the stock-only `r` and `par`, plus `pai`):
+ * snapshot's flags, minus the stock-only `r` and `par` and its "no link" `x`, plus `pai`):
  *
- *  - `v` (valid): a counting child link of this conta on one produto — its target is computed;
- *  - `pai`: a parent link — its price row is never sent, and it is known so the list walk never
- *    looks it up;
+ *  - `v` (valid): a counting child link of this conta on one produto — its target is computed,
+ *    and it is the only entry the store read ever asks for, and only with a target `{ c, q }`;
+ *  - `pai`: a parent link — never asked, never sent, counted;
  *  - `amb` (ambiguous): two store ids of this conta on the produto;
  *  - `dup` (duplicate): the same store id is linked from two ERP produtos; neither is sent;
- *  - `ns` (not supported): a shape the step does not send (a simple store product);
- *  - `x` (no link): a row of the store's list that no link of this conta names — cached so the
- *    lookup is not repeated every day.
+ *  - `ns` (not supported): a shape the step does not send (a simple store product).
  *
- * Only `v` is ever a send candidate, and only when its target says `enviar`.
+ * Only `v` is ever asked or a send candidate, and only when its target says `enviar`. There is no
+ * "no link" flag like the stock snapshot's `x`: the store read asks only for ids the ERP named, so
+ * no store row ever needs one.
  */
-export const flagEntradaPrecoLiSchema = z.enum(['v', 'pai', 'amb', 'dup', 'ns', 'x']);
+export const flagEntradaPrecoLiSchema = z.enum(['v', 'pai', 'amb', 'dup', 'ns']);
 export type FlagEntradaPrecoLi = z.infer<typeof flagEntradaPrecoLiSchema>;
 
 /** Named members of {@link flagEntradaPrecoLiSchema} — see `delfrance/prefer-schema-enum`. */
@@ -268,7 +333,6 @@ export const FLAG_ENTRADA_PRECO_LI = {
   ambiguo: 'amb',
   duplicado: 'dup',
   naoSuportado: 'ns',
-  semVinculo: 'x',
 } as const satisfies Record<string, FlagEntradaPrecoLi>;
 
 /**
@@ -295,7 +359,7 @@ export type AlvoSnapshotPrecoLi = z.infer<typeof alvoSnapshotPrecoLiSchema>;
 /**
  * One snapshot entry, kept short on purpose (keys of one to three letters: about 90 bytes):
  *
- *  - `p`: the ERP produto the link sits under; `null` exactly when `f` is `x`;
+ *  - `p`: the ERP produto the link sits under (always set);
  *  - `f`: {@link flagEntradaPrecoLiSchema};
  *
  * and, on a `v` entry only (absent otherwise, to keep the entry short):
@@ -314,7 +378,7 @@ export type AlvoSnapshotPrecoLi = z.infer<typeof alvoSnapshotPrecoLiSchema>;
  */
 export const entradaSnapshotPrecoLiSchema = z
   .object({
-    p: idDocumentoEstoqueLiSchema.nullable(),
+    p: idDocumentoEstoqueLiSchema,
     f: flagEntradaPrecoLiSchema,
     pai: idDocumentoEstoqueLiSchema.nullable().optional(),
     n: leituraSnapshotPrecoLiSchema.nullable().optional(),
@@ -325,9 +389,6 @@ export const entradaSnapshotPrecoLiSchema = z
     tp: z.literal(true).nullable().optional(),
   })
   .superRefine((entrada, ctx) => {
-    if ((entrada.f === FLAG_ENTRADA_PRECO_LI.semVinculo) !== (entrada.p === null)) {
-      ctx.addIssue({ code: 'custom', path: ['p'], message: 'p é nulo exatamente quando f = x' });
-    }
     if (entrada.f === FLAG_ENTRADA_PRECO_LI.valido) return;
     for (const chave of ['pai', 'n', 'pr', 'a', 'ap', 't', 'tp'] as const) {
       if (entrada[chave] != null) {

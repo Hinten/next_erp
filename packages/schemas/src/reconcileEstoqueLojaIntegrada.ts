@@ -68,7 +68,9 @@ import {
  *
  *  - `pais-preco`: the ERP parents of the price snapshot's children, read once, then every
  *    child's target;
- *  - `li-preco`: per conta, the store's price list read whole and diffed against the targets;
+ *  - `li-preco`: per conta, the store's prices of the snapshot's sendable children, read BY ID
+ *    (`GET /v1/produto_preco/set/{id;…}`, at most 100 ids a call, never the price list), and
+ *    diffed against the targets;
  *  - `fila-preco`: the price candidates enqueued on the price queue at the price slot's instants.
  *
  * They are stored in their OWN field, {@link faseReconcilePrecoLiSchema} `fasePreco`, never as
