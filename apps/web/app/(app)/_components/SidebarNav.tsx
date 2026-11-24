@@ -127,7 +127,7 @@ const NAV: NavEntry[] = [
       { href: '/relatorios/produtos', label: 'Vendas por produto' },
       { href: '/relatorios/vendas', label: 'Vendas por período' },
       { href: '/relatorios/mais-vendidos', label: 'Produtos Mais Vendidos' },
-      { href: '/relatorios/vendas-estampas', label: 'Vendas Estampas' },
+      { href: '/relatorios/vendas-estampas', label: 'Vendas por estampa' },
     ],
   },
   {
