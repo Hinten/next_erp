@@ -1,6 +1,6 @@
 /**
  * `POST /api/marketplace/mercado-livre/enviar-nfe` — manually (re)send an
- * approved NF-e's authorized `nfeProc` XML to the Mercado Livre shipment
+ * approved sale NF-e's authorized `nfeProc` XML to the Mercado Livre shipment
  * (`POST /shipments/{id}/invoice_data`) so it leaves `invoice_pending`
  * (Step 12, #739). Body: `{ pedidoId, nfeId }` — the `pedidos/{pedidoId}/nfev4/{nfeId}`
  * document. The route only re-checks eligibility and enqueues — it writes
@@ -15,8 +15,9 @@
  *
  * Responses: 404 `NFE_NAO_ENCONTRADA` (no such NF-e doc) · 409
  * `NFE_NAO_ELEGIVEL` + machine `reason` (doc-level: not approved / no XML /
- * homologação; pedido-level: pedido missing / frete owned by another
- * integradora / no marketplace integração) · 202 `{ enqueued: true }` · 503
+ * homologação / non-sale or illegible purpose; pedido-level: missing pedido /
+ * frete owned by another integradora / no marketplace integração) · 202
+ * `{ enqueued: true }` · 503
  * `ML_NFE_UPLOAD_ENQUEUE_FAILED` (tasks valve shut,
  * `MERCADO_LIVRE_TASKS_DISABLED=1`).
  *
@@ -27,15 +28,14 @@
  */
 import { NextResponse } from 'next/server';
 import { nfev4Collection } from '@delfrance/data/admin/collections';
+import { decideNfeSaleUploadDispatch, type NfeSaleUploadDispatch } from '@delfrance/schemas';
 
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
 import { getAdminFirestore } from '@/lib/firebase/admin';
 import { MlTasksDisabledError } from '@/lib/marketplace/notificacoes/mlTasks';
 import { createMlNfeUploadScheduler } from '@/lib/marketplace/nfe/mlNfeUploadTasks';
 import {
-  type NfeUploadDispatch,
   type PedidoUploadCheck,
-  decideNfeUploadDispatch,
   nfeUploadTaskSchema,
   shouldUploadForPedido,
 } from '@/lib/marketplace/nfe/nfeUpload';
@@ -43,7 +43,7 @@ import {
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-type NfeUploadSkipReason = Extract<NfeUploadDispatch, { action: 'skip' }>['reason'];
+type NfeUploadSkipReason = Extract<NfeSaleUploadDispatch, { action: 'skip' }>['reason'];
 type PedidoUploadSkipReason = Extract<PedidoUploadCheck, { action: 'skip' }>['reason'];
 
 /** User-facing PT explanation per machine skip `reason` (409 `NFE_NAO_ELEGIVEL`). */
@@ -53,6 +53,8 @@ const SKIP_MESSAGES: Record<NfeUploadSkipReason | PedidoUploadSkipReason, string
   'xml-ausente': 'A NF-e aprovada ainda não tem o XML autorizado (xml_nfe_proc) armazenado.',
   'tpamb-homologacao':
     'O XML da NF-e não é de produção (tpAmb=1 ausente ou tpAmb=2); apenas notas de produção são enviadas ao Mercado Livre.',
+  'nfe-nao-e-de-venda': 'Apenas a NF-e de venda pode ser enviada ao Mercado Livre.',
+  'xml-invalido': 'O XML da NF-e não informa corretamente o tipo e a finalidade da operação.',
   'pedido-nao-encontrado': 'O pedido da NF-e não foi encontrado.',
   'nao-mercado-livre':
     'O frete deste pedido pertence a outra integradora — nada a enviar ao Mercado Livre.',
@@ -92,11 +94,7 @@ export async function POST(req: Request): Promise<NextResponse> {
     );
   }
 
-  // `before: undefined` on purpose: no prior snapshot exists here — the route
-  // judges the doc from scratch on its intrinsic eligibility (estado / XML /
-  // tpAmb). There is no in-flight/already-sent state to consult (zero-write
-  // model) — dedup lives in the task's shipment-status gate.
-  const dispatch = decideNfeUploadDispatch(undefined, snap.data());
+  const dispatch = decideNfeSaleUploadDispatch(snap.data());
   if (dispatch.action === 'skip') {
     return NextResponse.json(
       { error: SKIP_MESSAGES[dispatch.reason], code: 'NFE_NAO_ELEGIVEL', reason: dispatch.reason },

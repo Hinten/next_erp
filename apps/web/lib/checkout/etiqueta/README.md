@@ -200,7 +200,7 @@ marketplace tipo to Melhor Envio or the generic label, and both of those refuse
 legacy `emitirEtiquetaMercadoLivre`) fetches the marketplace-generated label
 through the apps/mercado-livre proxy route (`GET …/etiqueta`, PDF or ZPL2) and
 sends it to the print agent. ML's `invoice_pending` reject auto-recovers: the
-provider (re)sends the pedido's latest **aprovada** NF-e (`enviar-nfe`, 202 =
+provider (re)sends the pedido's latest eligible production sale NF-e (`enviar-nfe`, 202 =
 enqueued), waits 15s for ML to process it, then retries the fetch exactly once.
 
 `shopee` is **implemented** — `providers/shopee.ts` (#1523, step 15; the port of

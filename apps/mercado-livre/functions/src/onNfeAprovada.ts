@@ -1,22 +1,18 @@
 import { logger } from 'firebase-functions';
 import { FUNCTIONS_REGION } from './options';
 import { onDocumentWritten } from 'firebase-functions/v2/firestore';
-import { nfeMeta } from '@delfrance/schemas';
+import { decideNfeSaleUploadDispatch, nfeMeta } from '@delfrance/schemas';
 
 import { createMlNfeUploadScheduler } from '../../lib/marketplace/nfe/mlNfeUploadTasks';
 import { MlTasksDisabledError } from '../../lib/marketplace/notificacoes/mlTasks';
-import {
-  decideNfeUploadDispatch,
-  shouldUploadForPedido,
-} from '../../lib/marketplace/nfe/nfeUpload';
+import { shouldUploadForPedido } from '../../lib/marketplace/nfe/nfeUpload';
 import { getDb } from './lib/admin';
 
 /**
  * NF-e → Mercado Livre invoice upload trigger (Step 12, #739) — this codebase's
  * FIRST Firestore trigger. Fires on every `pedidos/{pedidoId}/nfev4/{nfeId}`
- * write and delegates to the pure `decideNfeUploadDispatch` disposition: when a
- * production (`<tpAmb>1`) NF-e reaches `estado 'a'` (aprovada) with its signed
- * `xml_nfe_proc` present, ONE pedido read (`shouldUploadForPedido`) filters
+ * write and checks the current snapshot for an approved production sale NF-e.
+ * For an eligible invoice, ONE pedido read (`shouldUploadForPedido`) filters
  * non-ML pedidos, then it enqueues ONE `{ pedidoId, nfeId }` task onto the
  * `processMercadoLivreNfeUpload` queue.
  *
@@ -63,7 +59,7 @@ export const onNfeAprovada = onDocumentWritten(
     // so its type isn't inferred into `event.params` (only the trailing
     // `{nfeId}` is) — both are present at runtime.
     const { pedidoId, nfeId } = event.params as { pedidoId: string; nfeId: string };
-    const decision = decideNfeUploadDispatch(event.data?.before.data(), event.data?.after.data());
+    const decision = decideNfeSaleUploadDispatch(event.data?.after.data());
     logger.info('[mercado-livre] onNfeAprovada', { pedidoId, nfeId, decision });
     if (decision.action !== 'enqueue') return;
 

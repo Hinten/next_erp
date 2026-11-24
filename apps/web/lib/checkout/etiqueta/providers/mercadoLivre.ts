@@ -1,5 +1,5 @@
 import { type Firestore, getDocs } from 'firebase/firestore';
-import { ESTADO_NFE, INTEGRACAO_FRETE } from '@delfrance/schemas';
+import { decideNfeSaleUploadDispatch, INTEGRACAO_FRETE } from '@delfrance/schemas';
 
 import { nfeCollection } from '@/lib/data/nfeCollection';
 import {
@@ -25,7 +25,7 @@ import type {
  *
  * The one recoverable reject is ML's `invoice_pending` (the shipment hasn't
  * received the NF-e yet). Legacy self-heal, modernized: (re)send the pedido's
- * latest APROVADA NF-e via `enviar-nfe` (202 = ENQUEUED, not uploaded — the
+ * latest approved production sale NF-e via `enviar-nfe` (202 = ENQUEUED — the
  * upload runs in an async task), give ML 15s to process it, then retry the
  * fetch exactly ONCE. Never loop.
  */
@@ -36,21 +36,19 @@ const RETRY_DELAY_MS = 15_000;
 const realSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
- * The pedido's latest approved NF-e DOC id, or null. Mirrors the query shape of
- * `resolveNfeChave` (`etiquetaActions.ts`) but returns the doc ID (`enviar-nfe`
- * addresses `pedidos/{pedidoId}/nfev4/{nfeId}`) and filters `aprovada` ONLY —
- * the upload dispatch 409s (`NFE_NAO_ELEGIVEL`) on an EPEC-approved doc.
+ * The pedido's latest eligible sale NF-e document ID, or null. The same
+ * invoice checks as `enviar-nfe` run on the results of the existing query.
  */
 export async function resolveApprovedNfeId(
   db: Firestore,
   pedidoId: string,
 ): Promise<string | null> {
   const snap = await getDocs(nfeCollection.ref(db, { pedidoId }));
-  const aprovadas = snap.docs
+  const elegiveis = snap.docs
     .map((d) => ({ id: d.id, data: d.data() }))
-    .filter((n) => n.data.estado === ESTADO_NFE.aprovada)
+    .filter((n) => decideNfeSaleUploadDispatch(n.data).action === 'enqueue')
     .sort((a, b) => (b.data.ultima_modificacao ?? 0) - (a.data.ultima_modificacao ?? 0));
-  return aprovadas[0]?.id ?? null;
+  return elegiveis[0]?.id ?? null;
 }
 
 /** User-facing message for a recognized ML client error, or null → rethrow. */
@@ -85,7 +83,7 @@ async function deliver(
 
 /**
  * `invoice_pending` self-heal (legacy utils.dart:59-139): resolve the latest
- * aprovada NF-e, (re)send it to the shipment, wait, refetch once.
+ * eligible sale NF-e, (re)send it to the shipment, wait, refetch once.
  */
 async function recoverFromInvoicePending(
   input: EtiquetaProviderInput,
@@ -100,7 +98,7 @@ async function recoverFromInvoicePending(
       status: 'error',
       message:
         'Não foi possível obter a etiqueta do Mercado Livre, pois o pedido não possui ' +
-        'nota fiscal eletrônica aprovada.',
+        'NF-e de venda aprovada em produção apta para envio.',
     };
   }
 
