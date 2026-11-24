@@ -3,8 +3,9 @@
  * its input and the unit's parent are exactly what the per-SKU reader gives
  * alone, for the stock and the price flows; every document read once across
  * the SKUs; the unit read on its own only when no dono's read holds its
- * fields; and the deadline. The price masks with a `precos` entry run on the
- * emulator (`avaliacaoLoteVinculos.firestore.test.ts`).
+ * fields; and the deadline. The price masks with a `precos` entry run here on
+ * the fake db's two-segment mask, and on the emulator
+ * (`avaliacaoLoteVinculos.firestore.test.ts`).
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -583,5 +584,117 @@ describe('the deadline, and the links a caller read', () => {
     expect(db.contagem).toMatchObject({ consultas: 0, leituras: 0 });
     completa(await avaliar(['SKU-P'], FLUXO_LISTING_AMAZON.preco));
     expect(db.contagem.consultas).toBeGreaterThan(0);
+  });
+});
+
+describe('★ the price masks WITH tabelas, offline (the fake db’s two-segment mask)', () => {
+  /** The conta's two tabelas: the second id holds a dot, and must read as ONE key. */
+  const NORMAL = 'normal';
+  const PROMO = 'pro.mo';
+  const COM_TABELAS = camposDoResolverListingAmazon({
+    fluxo: FLUXO_LISTING_AMAZON.preco,
+    tabelaIds: [NORMAL, PROMO],
+  });
+  /** Three tabelas' prices, the dotted one beside its NESTED look-alike. */
+  const PRECOS = {
+    [NORMAL]: { valor: 10 },
+    [PROMO]: { valor: 8 },
+    outra: { valor: 99 },
+    pro: { mo: { valor: 1 } },
+  };
+
+  /** The emulator suite's shapes: a simple unit, two children of one parent, a wrapper, a kit, two donos. */
+  function semearPrecos(): string[] {
+    produto('S', { precos: PRECOS });
+    vinculo('S', 'l1', 'P-SIMPLES');
+    produto('PAI', { precos: PRECOS, propagatePriceToChildren: true });
+    produto('F', { precos: PRECOS, paiId: 'PAI' });
+    produto('F2', { precos: PRECOS, paiId: 'PAI' });
+    vinculo('F', 'l1', 'P-FILHO');
+    vinculo('F2', 'l1', 'P-FILHO2');
+    produto('W', {
+      precos: PRECOS,
+      paiId: null,
+      filhoUnicoId: 'M',
+      propagatePriceToChildren: false,
+    });
+    produto('M', { precos: PRECOS, paiId: 'W' });
+    vinculo('W', 'l1', 'P-WRAPPER');
+    produto('K', { precos: PRECOS, ehKit: true, paiId: null, filhoUnicoId: 'KM' });
+    produto('KM', { precos: PRECOS, paiId: 'K' });
+    vinculo('K', 'l1', 'P-KIT');
+    produto('A1', { precos: PRECOS });
+    produto('A2', { precos: PRECOS });
+    vinculo('A1', 'l1', 'P-AMBIGUO');
+    vinculo('A2', 'l1', 'P-AMBIGUO');
+    return ['P-SIMPLES', 'P-FILHO', 'P-FILHO2', 'P-WRAPPER', 'P-KIT', 'P-AMBIGUO'];
+  }
+
+  const avaliarComTabelas = (skus: readonly string[]) =>
+    avaliar(skus, FLUXO_LISTING_AMAZON.preco, { campos: COM_TABELAS });
+
+  it('★ parity: each SKU’s verdict, input and unit parent are the per-SKU reader’s own, at the masks with tabelas', async () => {
+    db.exigirMascaraEm('produtos');
+    db.exigirMascaraEm('prodAmazon');
+    const skus = semearPrecos();
+    const r = completa(await avaliarComTabelas(skus));
+    expect(r.skus.map((s) => s.sku).sort()).toEqual([...skus].sort());
+    for (const s of r.skus) {
+      const sozinho = await lerVinculoListingAmazon(asDb(db), CONTA, s.sku, COM_TABELAS);
+      expect(s.entrada, s.sku).toEqual(sozinho.entrada);
+      expect(s.paiDaUnidade, s.sku).toEqual(sozinho.paiDaUnidade);
+      expect(s.veredicto, s.sku).toEqual(
+        avaliarVinculoListingAmazon(sozinho.entrada, regra(FLUXO_LISTING_AMAZON.preco)),
+      );
+    }
+    // Anti-vacuity: the shapes reach the verdicts and the parents they name.
+    const doSku = (sku: string) => r.skus.find((s) => s.sku === sku);
+    expect(doSku('P-AMBIGUO')?.veredicto).toEqual({ apto: false, motivo: 'vinculo-ambiguo' });
+    expect(doSku('P-WRAPPER')?.veredicto).toMatchObject({ apto: true, unidadeId: 'M' });
+    expect(doSku('P-FILHO')?.paiDaUnidade).toEqual({
+      id: 'PAI',
+      raw: {
+        precos: { [NORMAL]: { valor: 10 }, [PROMO]: { valor: 8 } },
+        propagatePriceToChildren: true,
+      },
+    });
+    expect(doSku('P-WRAPPER')?.paiDaUnidade).toMatchObject({
+      id: 'W',
+      raw: { propagatePriceToChildren: false },
+    });
+    expect(doSku('P-SIMPLES')?.paiDaUnidade).toBeNull();
+    expect(doSku('P-KIT')?.paiDaUnidade).toBeNull();
+  });
+
+  it('★ the nested masks: ONLY the asked tabelas’ entries come back — a dotted tabela id is one key, never its nested look-alike', async () => {
+    const skus = semearPrecos();
+    const r = completa(await avaliarComTabelas(skus));
+    const unidade = r.skus.find((s) => s.sku === 'P-SIMPLES')?.unidade;
+    expect(unidade).toEqual({ precos: { [NORMAL]: { valor: 10 }, [PROMO]: { valor: 8 } } });
+    expect(Object.keys((unidade?.precos ?? {}) as object).sort()).toEqual([NORMAL, PROMO].sort());
+    expect(unidade).not.toHaveProperty('nome');
+    // The reads that carried an entry named it as its two segments.
+    expect(
+      db.leiturasDetalhadas.some((l) =>
+        (l.mascara ?? []).some((c) => Array.isArray(c) && c[0] === 'precos' && c[1] === PROMO),
+      ),
+    ).toBe(true);
+  });
+
+  it('★ the parent is read only for a unit with a paiId, once however many units share it; no read returns a link payload or a label', async () => {
+    const skus = semearPrecos();
+    const r = completa(await avaliarComTabelas(skus));
+    const contar = (caminho: string) =>
+      db.leiturasDetalhadas.filter((l) => l.caminho === caminho).length;
+    // PAI is two units' parent: read ONCE (it is no dono or unit here).
+    expect(contar('produtos/PAI')).toBe(1);
+    // W is a dono AND its member's parent: one dono read, one parent read.
+    expect(contar('produtos/W')).toBe(2);
+    // NEAR-MISS: the kit root and the simple produto name no parent: each read
+    // twice (as a dono, then as its own unit at the nested mask), never a third.
+    expect(contar('produtos/K')).toBe(2);
+    expect(contar('produtos/S')).toBe(2);
+    expect(r.leituras.pais).toBe(2);
+    for (const l of db.leiturasDetalhadas) expect(l.mascara, l.caminho).not.toBeNull();
   });
 });

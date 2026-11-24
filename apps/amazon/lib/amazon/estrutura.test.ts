@@ -143,8 +143,9 @@
  *    EXACTLY the modules {@link E_S_EM_ESTOQUE} lists, and no pure module
  *    imports it; `estoque/` is imported by exactly
  *    {@link IMPORTADORES_DE_ESTOQUE}; under it only the write-back (its one
- *    precondition update) and, since PR 12-e2, the tick (its lease and its
- *    final write on the sync document) make a Firestore WRITE call;
+ *    precondition update, since step 13 the shared one it binds) and, since
+ *    PR 12-e2, the tick (its lease and its final write on the sync document)
+ *    make a Firestore WRITE call;
  *    `listings/listingsAmazon.ts` is the ONE caller of the package's listings
  *    helpers (since step 13, four; every exported function of the package
  *    module, async or not, is either a listed helper or a listed pure one, so
@@ -193,13 +194,13 @@
  *    in exactly one class: PURE ({@link LISTINGS_PUROS}, held to the stock pure
  *    half's allow-list, which a pure stock module may load), I/O
  *    ({@link E_S_EM_LISTINGS}, each loading EXACTLY its listed modules as
- *    values), or the ONE listings caller; none of `listings/` makes a Firestore
- *    write ({@link ESCRITORES_EM_LISTINGS}); the App Hosting forbidden list
- *    {@link MODULOS_DE_LISTINGS_FORA_DO_APP_HOSTING} is derived from the I/O
- *    roster (the manual selection read stays reachable, and the manual push
- *    guards scan it as part of that push), and the union walk reaches none of
- *    it; and the `publicado` and `integracoesComProduto` guards of `estoque/`
- *    scan `listings/` too.
+ *    values), or the ONE listings caller; only the outcome write-back makes a
+ *    Firestore write ({@link ESCRITORES_EM_LISTINGS}); the App Hosting
+ *    forbidden list {@link MODULOS_DE_LISTINGS_FORA_DO_APP_HOSTING} is derived
+ *    from the I/O roster (the manual selection read and the producer core stay
+ *    reachable, and the manual push guards scan the read as part of that
+ *    push), and the union walk reaches none of it; and the `publicado` and
+ *    `integracoesComProduto` guards of `estoque/` scan `listings/` too.
  */
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, posix, relative, sep } from 'node:path';
@@ -1070,17 +1071,23 @@ const MODULOS_DE_ESTOQUE_FORA_DO_APP_HOSTING = [
 
 /**
  * (step 13, PR 13-b) The listings flows' shared WIRING, none of which an App
- * Hosting entry needs: the per-SKU link reader, the batched link reader and the
- * walk. A route that reaches them reads a flow's links outside its task or its
- * run. The manual selection read (`listings/selecaoManual.ts`) stays allowed: it
- * only reads, for a route that only enqueues. A test derives this list from the
- * I/O roster {@link E_S_EM_LISTINGS}, so a new I/O module of `listings/` reds
- * until it is listed here.
+ * Hosting entry needs: the per-SKU link reader, the batched link reader, the
+ * walk, the batched live read, the outcome write-back and the task rungs. A
+ * route that reaches them reads a flow's links or Amazon, or writes an outcome,
+ * outside its task or its run. Two stay allowed: the manual selection read
+ * (`listings/selecaoManual.ts`: it only reads, for a route that only enqueues)
+ * and the producer core (`listings/produtorListing.ts`: the stock producer a
+ * route enqueues through binds it). A test derives this list from the I/O
+ * roster {@link E_S_EM_LISTINGS}, so a new I/O module of `listings/` reds until
+ * it is listed here.
  */
 const MODULOS_DE_LISTINGS_FORA_DO_APP_HOSTING = [
   'lib/amazon/listings/resolverVinculo.ts',
   'lib/amazon/listings/avaliacaoLoteVinculos.ts',
   'lib/amazon/listings/varreduraVinculos.ts',
+  'lib/amazon/listings/leituraLoteListings.ts',
+  'lib/amazon/listings/envioListingFirestore.ts',
+  'lib/amazon/listings/escritaListing.ts',
 ];
 
 /** The manual stock push route (step 12, PR 12-g), relative to the APP root: a union-walk entry. */
@@ -1631,10 +1638,11 @@ const MODULO_DOS_LISTINGS_NO_PACOTE = 'packages/integrations/amazon-sp-api/src/l
  * Production files that NAME a listings operation without calling it, each with
  * why: the log and fixture redactor keys its allow-list tables by the operation
  * and its path (its closure is pinned to `zod` and `@delfrance/core/*`, so it
- * cannot reach a client); and the patch task names the PATCH's operation
- * constant ONLY to tell the PATCH's own failure (it may have landed) from an
- * LWA exchange's or the read's, on the error's `operacao` — it calls the
- * helpers through {@link CHAMADOR_DOS_LISTINGS}. Every other mention — the
+ * cannot reach a client); and the listings flows' task rungs name the PATCH's
+ * operation constant ONLY to tell the PATCH's own failure (it may have landed,
+ * or was refused) from an LWA exchange's or the read's, on the error's
+ * `operacao` — the tasks call the helpers through
+ * {@link CHAMADOR_DOS_LISTINGS}. Every other mention — the
  * valves' and the plan's docblocks, the sanitizer's method rows (a bare object
  * key, `getListingsItem: ['GET', 'PATCH']`) — is a comment or no call shape.
  * Tests are exempt by construction (the scan reads no test file): they name the
@@ -1642,7 +1650,7 @@ const MODULO_DOS_LISTINGS_NO_PACOTE = 'packages/integrations/amazon-sp-api/src/l
  */
 const NOMEIAM_LISTINGS_SEM_CHAMAR = [
   'lib/amazon/core/redacao.ts',
-  'lib/amazon/estoque/processarEstoque.ts',
+  'lib/amazon/listings/escritaListing.ts',
 ];
 
 /**
@@ -2826,6 +2834,9 @@ describe('the step-14 NF-e trigger guards (14-c, D11 by construction)', () => {
       'lib/amazon/core/idConta.ts',
       'lib/amazon/core/log.ts',
       'lib/amazon/core/redacao.ts',
+      // (step 13, PR 13-b) the avisos seam names the listings flows' closed
+      // set, a module that imports nothing.
+      'lib/amazon/listings/fluxoListing.ts',
       'lib/amazon/nfe/agendadorNfe.ts',
       'lib/amazon/nfe/avisoNfe.ts',
       'lib/amazon/nfe/gatilhoNfe.ts',
@@ -3934,15 +3945,16 @@ const TIPOS_PERMITIDOS_EM_ESTOQUE = ['../pedidos/vinculoProdutoAmazon', '../core
 /**
  * (step 13, PR 13-b) The PURE shared listings modules, which a pure module of
  * `estoque/` may also load as a value: the flows' closed set, the link verdict,
- * the listing gate and the partition helpers. Each is held to the pure half's
- * own allow-list (the 13-b listings guards), so a pure stock module stays
- * Firestore-free through them.
+ * the listing gate, the partition helpers and the outcome watermark. Each is
+ * held to the pure half's own allow-list (the 13-b listings guards), so a pure
+ * stock module stays Firestore-free through them.
  */
 const LISTINGS_PUROS = [
   '../listings/fluxoListing',
   '../listings/vinculoListing',
   '../listings/gateListing',
   '../listings/sondasVinculos',
+  '../listings/envioListing',
 ];
 
 /**
@@ -3959,17 +3971,23 @@ const LISTINGS_PUROS = [
  * - `familiaEstoqueFirestore.ts` — the family read: the estoque and produto
  *   handles, the shared quantity core's component rule (the core's own answer to
  *   "which components"), the schemas' canonical estoque id.
- * - `envioEstoqueFirestore.ts` — the outcome write-back: the link handle (its
- *   ONE precondition `update`), the gRPC class readers (a lost precondition is
- *   9/5), the schemas, and the app's logger (its one WARNING).
- * - `produtorEstoque.ts` — the stock queue's pure producer: the task-SDK helpers
- *   (`core/filaTarefas.ts` stays the ONE importer of the SDK under `lib/amazon`).
- * - `processarEstoque.ts` — the patch task: the region error class (the
- *   producer's own refusal), the lease handle (ONE masked by-id read), the gRPC
- *   class reader, the SP-API package (error classes, the dataset and operation
+ * - `envioEstoqueFirestore.ts` — the outcome write-back: since step 13 (PR
+ *   13-b) the stock binding of the shared write-back
+ *   (`listings/envioListingFirestore.ts`: the masked read, the ONE precondition
+ *   `update`, the WARNING), with the flows' closed set and field map (the stock
+ *   flow, its field) and the schemas (the stock outcome's schema).
+ * - `produtorEstoque.ts` — the stock queue's pure producer: the task-SDK
+ *   helpers (the queue path's region grammar; `core/filaTarefas.ts` stays the
+ *   ONE importer of the SDK under `lib/amazon`) and, since step 13 (PR 13-b),
+ *   the shared producer core (`listings/produtorListing.ts`: the one enqueue,
+ *   the delays, the batch).
+ * - `processarEstoque.ts` — the patch task: the lease handle (ONE masked by-id
+ *   read), the SP-API package (error classes, the dataset and operation
  *   constants, the path check), the schemas, the avisos seam, the write engine,
- *   the task-SDK helpers, the logger, the redactor's code grammar, the valves,
- *   the ONE listings caller and the shared read-failure ladder.
+ *   the logger, the redactor's code grammar, the valves, the ONE listings
+ *   caller, the shared read-failure ladder and, since step 13 (PR 13-b), the
+ *   shared task rungs (`listings/escritaListing.ts`: the budget in the
+ *   credential getter, the boundary's classifier, the 429 pause).
  * - `descobertaFirestore.ts` (PR 12-e2) — the movement window's reads: the
  *   estoque, produto and link handles (the group window query, the masked
  *   produto `getAll`, the projected partition listings) and the schemas (the
@@ -3989,13 +4007,13 @@ const LISTINGS_PUROS = [
  *   feed reference grammars); the window, the producer and the payload are
  *   its siblings'.
  * - `avaliacaoLoteEstoque.ts` (PR 12-f) — the batch evaluator shared by a
- *   reconcile page and a window batch's build: the logger and the valves (one
- *   line per search, the flow), the ONE listings caller (the search and the
- *   single read), since step 13 (PR 13-b) the shared batched link reader
- *   (`listings/avaliacaoLoteVinculos.ts`: reads 1–4) and the order import's
- *   dono-mask rule, the SP-API package (the search size and the SKU checks)
- *   and the schemas (the conta id grammar); the stock masks, the family read,
- *   the verdict and the gate are its siblings'.
+ *   reconcile page and a window batch's build: since step 13 (PR 13-b) the
+ *   shared batched link reader (`listings/avaliacaoLoteVinculos.ts`: reads
+ *   1–4), the shared batched live read (`listings/leituraLoteListings.ts`: read
+ *   6, its searches, GETs and lines) and the flows' closed set (the stock
+ *   flow), the order import's dono-mask rule and the schemas (the conta id
+ *   grammar); the stock masks, the family read, the verdict and the gate are
+ *   its siblings'.
  * - `divergenciasFirestore.ts` (PR 12-f) — the drift blocks: the drift handle
  *   (the page's overwrite and the by-id `getAll`) and the schemas (the block
  *   schema, its id, the TTL helper, the conta id grammar).
@@ -4042,24 +4060,22 @@ const E_S_EM_ESTOQUE: Readonly<Record<string, readonly string[]>> = {
     '@delfrance/schemas',
   ],
   'estoque/envioEstoqueFirestore.ts': [
-    '../core/log',
-    '@delfrance/data/admin/collections',
-    '@delfrance/data/admin/grpcErrors',
+    '../listings/envioListingFirestore',
+    '../listings/fluxoListing',
+    '../listings/vinculoListing',
     '@delfrance/schemas',
   ],
-  'estoque/produtorEstoque.ts': ['../core/filaTarefas'],
+  'estoque/produtorEstoque.ts': ['../core/filaTarefas', '../listings/produtorListing'],
   'estoque/processarEstoque.ts': [
     '../avisos/avisos',
     '../core/escrita',
-    '../core/filaTarefas',
     '../core/log',
     '../core/redacao',
     '../core/valvulas',
+    '../listings/escritaListing',
     '../listings/listingsAmazon',
     '../pedidos/falhaLeituraAmazon',
-    '@delfrance/core/region',
     '@delfrance/data/admin/collections',
-    '@delfrance/data/admin/grpcErrors',
     '@delfrance/integrations-amazon-sp-api',
     '@delfrance/schemas',
   ],
@@ -4078,12 +4094,10 @@ const E_S_EM_ESTOQUE: Readonly<Record<string, readonly string[]>> = {
   ],
   'estoque/deltaEstoque.ts': ['../core/log', '../core/valvulas', '@delfrance/schemas'],
   'estoque/avaliacaoLoteEstoque.ts': [
-    '../core/log',
-    '../core/valvulas',
     '../listings/avaliacaoLoteVinculos',
-    '../listings/listingsAmazon',
+    '../listings/fluxoListing',
+    '../listings/leituraLoteListings',
     '../pedidos/vinculoProdutoAmazon',
-    '@delfrance/integrations-amazon-sp-api',
     '@delfrance/schemas',
   ],
   'estoque/divergenciasFirestore.ts': ['@delfrance/data/admin/collections', '@delfrance/schemas'],
@@ -4136,13 +4150,15 @@ const E_S_EM_ESTOQUE: Readonly<Record<string, readonly string[]>> = {
 
 /**
  * The ONLY files under `estoque/` that write Firestore, each with its writes
- * and why: the outcome write-back's ONE `update(…, { lastUpdateTime })` on the
- * masked link-doc read it decided from (rule 7 tier 1); and (PR 12-e2) the
- * tick's THREE on its own sync document — the lease's `create`, the expired
- * lease's `update(…, { lastUpdateTime })`, and the final write's
- * `update(…, { lastUpdateTime })` on the lease's commit (rule 7 tier 1). The
- * patch task writes through the write-back and through `avisos/avisos.ts`, the
- * tick's aviso through the latter; the readers and the producer write nothing.
+ * and why: (PR 12-e2) the tick's THREE on its own sync document — the lease's
+ * `create`, the expired lease's `update(…, { lastUpdateTime })`, and the final
+ * write's `update(…, { lastUpdateTime })` on the lease's commit (rule 7 tier
+ * 1). Since step 13 (PR 13-b) the outcome write-back's ONE
+ * `update(…, { lastUpdateTime })` lives in the shared
+ * `listings/envioListingFirestore.ts` ({@link ESCRITORES_EM_LISTINGS}), which
+ * `envioEstoqueFirestore.ts` binds. The patch task writes through the
+ * write-back and through `avisos/avisos.ts`, the tick's aviso through the
+ * latter; the readers and the producer write nothing.
  * (PR 12-f) The drift blocks' ONE overwrite by their page (`set` through the drift
  * handle, by the page that holds the run), and the reconcile's TWO — its ONE
  * write helper's `create` and `update(…, { lastUpdateTime })`, through which
@@ -4151,7 +4167,6 @@ const E_S_EM_ESTOQUE: Readonly<Record<string, readonly string[]>> = {
  */
 const ESCRITORES_EM_ESTOQUE: Readonly<Record<string, number>> = {
   'estoque/divergenciasFirestore.ts': 1,
-  'estoque/envioEstoqueFirestore.ts': 1,
   'estoque/reconciliacaoEstoque.ts': 2,
   'estoque/sincronizacaoEstoque.ts': 3,
 };
@@ -4409,7 +4424,7 @@ describe('the step-12 stock core guards (12-d)', () => {
     );
   });
 
-  it('★ (5, 12-e1, 12-e2) under estoque/, ONLY the outcome write-back and the tick make a Firestore WRITE call — the write-back’s one precondition update, the tick’s lease and final write', () => {
+  it('★ (5, 12-e1, 12-e2) under estoque/, ONLY the listed modules make a Firestore WRITE call — the tick’s lease and final write; the outcome write-back’s one precondition update is the shared one it binds', () => {
     const escritas = Object.fromEntries(
       estoque
         .map((p) => [rel(p), semComentarios(readFileSync(p, 'utf8'))] as const)
@@ -4420,9 +4435,13 @@ describe('the step-12 stock core guards (12-d)', () => {
         .filter(([, n]) => n !== 0),
     );
     expect(escritas).toEqual(ESCRITORES_EM_ESTOQUE);
-    // Anti-vacuity: that one write IS the precondition update the scan counts.
+    // Anti-vacuity: the stock write-back writes through the shared one, whose
+    // one write IS the precondition update the scan counts (13-b).
+    const binding = readFileSync(join(RAIZ_LIB, 'estoque', 'envioEstoqueFirestore.ts'), 'utf8');
+    expect(importacoesDeValor(binding)).toContain('../listings/envioListingFirestore');
+    expect(semComentarios(binding)).toMatch(/\bgravarEnvioListingAmazon\(/);
     const escritor = semComentarios(
-      readFileSync(join(RAIZ_LIB, 'estoque', 'envioEstoqueFirestore.ts'), 'utf8'),
+      readFileSync(join(RAIZ_LIB, 'listings', 'envioListingFirestore.ts'), 'utf8'),
     );
     expect(escritor).toMatch(/\.update\(/);
     expect(escritor).toMatch(/lastUpdateTime/);
@@ -4476,17 +4495,21 @@ describe('the step-12 stock core guards (12-d)', () => {
 
 /**
  * (step 13, PR 13-b) The ONLY files under `listings/` that write Firestore, each
- * with its writes: none yet. The shared verdict, gate, readers, selection and
- * walk only READ; a flow's writes stay in its own modules.
+ * with its writes: the outcome write-back's ONE `update(…, { lastUpdateTime })`
+ * on the masked link-doc read it decided from (rule 7 tier 1). The shared
+ * verdict, gate, readers, selection, walk and live read only READ.
  */
-const ESCRITORES_EM_LISTINGS: Readonly<Record<string, number>> = {};
+const ESCRITORES_EM_LISTINGS: Readonly<Record<string, number>> = {
+  'listings/envioListingFirestore.ts': 1,
+};
 
 /**
- * (step 13, PR 13-b) The ONE module of `listings/` that reads Firestore and that
- * an App Hosting entry may reach: the manual selection read (read-only, for a
- * route that only enqueues).
+ * (step 13, PR 13-b) The I/O modules of `listings/` an App Hosting entry may
+ * reach: the manual selection read (read-only, for a route that only enqueues)
+ * and the producer core (it reads nothing; the stock producer the App Hosting
+ * root binds is its binding).
  */
-const LISTINGS_NO_APP_HOSTING = ['listings/selecaoManual.ts'];
+const LISTINGS_NO_APP_HOSTING = ['listings/selecaoManual.ts', 'listings/produtorListing.ts'];
 
 /**
  * (step 13, PR 13-b) The I/O half of `listings/`: each module that is neither
@@ -4513,6 +4536,17 @@ const LISTINGS_NO_APP_HOSTING = ['listings/selecaoManual.ts'];
  * - `varreduraVinculos.ts` — the walk and its page core: the link handle (the
  *   group query and the cursor's ref), the conta ref forms (the walk's two
  *   `==`) and the schemas (the index-field tuple, the cursor grammar).
+ * - `leituraLoteListings.ts` — the batched live read: the logger (one line per
+ *   search) and the SP-API package (the search size and the SKU checks); the
+ *   calls go through its sibling, the ONE listings caller.
+ * - `envioListingFirestore.ts` — the outcome write-back: the link handle (its
+ *   ONE precondition `update`), the gRPC class readers (a lost precondition is
+ *   9/5), the schemas (the document-id check) and the logger (its one WARNING).
+ * - `escritaListing.ts` — the task rungs: the gRPC class reader, the region
+ *   error class and the task-SDK helpers (the boundary's named failures), and
+ *   the SP-API package (the PATCH's own failure classes and operation name).
+ * - `produtorListing.ts` — the producer core: the task-SDK helpers (the
+ *   transient naming, the held-name answer).
  */
 const E_S_EM_LISTINGS: Readonly<Record<string, readonly string[]>> = {
   'listings/avaliacaoLoteVinculos.ts': [
@@ -4532,6 +4566,20 @@ const E_S_EM_LISTINGS: Readonly<Record<string, readonly string[]>> = {
     '@delfrance/data/admin/produtos',
     '@delfrance/schemas',
   ],
+  'listings/leituraLoteListings.ts': ['../core/log', '@delfrance/integrations-amazon-sp-api'],
+  'listings/envioListingFirestore.ts': [
+    '../core/log',
+    '@delfrance/data/admin/collections',
+    '@delfrance/data/admin/grpcErrors',
+    '@delfrance/schemas',
+  ],
+  'listings/escritaListing.ts': [
+    '../core/filaTarefas',
+    '@delfrance/core/region',
+    '@delfrance/data/admin/grpcErrors',
+    '@delfrance/integrations-amazon-sp-api',
+  ],
+  'listings/produtorListing.ts': ['../core/filaTarefas'],
 };
 
 /** The PURE shared listings modules, as files under `lib/amazon` (from {@link LISTINGS_PUROS}). */
@@ -4573,9 +4621,14 @@ describe('the step-12 patch path guards (12-e1)', () => {
   it('★ listings/ is Next-free, reads no process environment, never imports the @/ alias, and reaches nothing of estoque/', () => {
     expect(listings.map(rel).sort()).toEqual([
       'listings/avaliacaoLoteVinculos.ts',
+      'listings/envioListing.ts',
+      'listings/envioListingFirestore.ts',
+      'listings/escritaListing.ts',
       'listings/fluxoListing.ts',
       'listings/gateListing.ts',
+      'listings/leituraLoteListings.ts',
       'listings/listingsAmazon.ts',
+      'listings/produtorListing.ts',
       'listings/resolverVinculo.ts',
       'listings/selecaoManual.ts',
       'listings/sondasVinculos.ts',
@@ -4684,7 +4737,7 @@ describe('the step-12 patch path guards (12-e1)', () => {
     expect(Object.keys(E_S_EM_LISTINGS)).toContain('listings/resolverVinculo.ts');
   });
 
-  it('★ (13-b) under listings/, ONLY the listed modules make a Firestore WRITE call — none yet: the shared modules only read', () => {
+  it('★ (13-b) under listings/, ONLY the listed modules make a Firestore WRITE call — the outcome write-back’s one precondition update', () => {
     const escritas = Object.fromEntries(
       listings
         .map((p) => [rel(p), semComentarios(readFileSync(p, 'utf8'))] as const)
@@ -4695,6 +4748,11 @@ describe('the step-12 patch path guards (12-e1)', () => {
         .filter(([, n]) => n !== 0),
     );
     expect(escritas).toEqual(ESCRITORES_EM_LISTINGS);
+    // Anti-vacuity: that one write IS a precondition update of the flow's field.
+    const escritor = semComentarios(
+      readFileSync(join(RAIZ_LIB, 'listings', 'envioListingFirestore.ts'), 'utf8'),
+    );
+    expect(escritor).toMatch(/\.update\(patch, \{ lastUpdateTime: snap\.updateTime \}\)/);
     // NEAR-MISS: the scan does see a write in this folder's own handle shape.
     expect(
       'await produtoAmazonLinkCollection.docRef(db, { produtoId }, id).update(p);'.match(
@@ -4703,25 +4761,34 @@ describe('the step-12 patch path guards (12-e1)', () => {
     ).not.toBeNull();
   });
 
-  it('★ (13-b) the App Hosting list holds EVERY I/O module of listings/ but the manual selection read — derived from E_S_EM_LISTINGS, never from itself', () => {
+  it('★ (13-b) the App Hosting list holds EVERY I/O module of listings/ but the manual selection read and the producer core — derived from E_S_EM_LISTINGS, never from itself', () => {
     // E_S_EM_LISTINGS is held to the folder by the partition pin above (a module
     // missing from it must pass the PURE allow-list, which no I/O module does),
     // so an entry dropped from the App Hosting list reds HERE, even while no
-    // route reaches it yet. One stays reachable on purpose: the manual
-    // selection read, which only READS, for a route that only enqueues.
+    // route reaches it yet. Two stay reachable on purpose: the manual
+    // selection read, which only READS, for a route that only enqueues; and
+    // the producer core, which the stock producer a route enqueues through
+    // binds.
     expect(Object.keys(E_S_EM_LISTINGS)).toEqual(expect.arrayContaining(LISTINGS_NO_APP_HOSTING));
     const esperado = Object.keys(E_S_EM_LISTINGS)
       .filter((arquivo) => !LISTINGS_NO_APP_HOSTING.includes(arquivo))
       .map((arquivo) => `lib/amazon/${arquivo}`)
       .sort();
     expect(esperado).toContain('lib/amazon/listings/resolverVinculo.ts');
+    expect(esperado).toEqual(
+      expect.arrayContaining([
+        'lib/amazon/listings/leituraLoteListings.ts',
+        'lib/amazon/listings/envioListingFirestore.ts',
+        'lib/amazon/listings/escritaListing.ts',
+      ]),
+    );
     expect([...MODULOS_DE_LISTINGS_FORA_DO_APP_HOSTING].sort()).toEqual(esperado);
     for (const modulo of MODULOS_DE_LISTINGS_FORA_DO_APP_HOSTING) {
       expect(PROIBIDOS_NO_APP_HOSTING, modulo).toContain(modulo);
     }
   });
 
-  it('★ (13-b) the App Hosting union walk reaches NOTHING of the shared listings wiring, and the manual selection read; the stock functions roots DO reach every one of that wiring', () => {
+  it('★ (13-b) the App Hosting union walk reaches NOTHING of the shared listings wiring, and the manual selection read and the producer core; the stock functions roots DO reach every one of that wiring', () => {
     const fecho = fechoDeImportacoes(
       entradasDaUniaoDoAppHosting(),
       lerDoApp,
@@ -4741,7 +4808,7 @@ describe('the step-12 patch path guards (12-e1)', () => {
     expect(fila.arquivos).toEqual(expect.arrayContaining(MODULOS_DE_LISTINGS_FORA_DO_APP_HOSTING));
   });
 
-  it('★ (13-b) a route importing any shared listings wiring is refused by the walk; NEAR-MISS: one importing the manual selection read passes', () => {
+  it('★ (13-b) a route importing any shared listings wiring is refused by the walk; NEAR-MISS: one importing the manual selection read, the producer core or the pure watermark passes', () => {
     const ROTA = 'app/api/marketplace/amazon/teste-listings/route.ts';
     const comRota =
       (alvo: string): LeitorDeFonte =>
@@ -4757,7 +4824,13 @@ describe('the step-12 patch path guards (12-e1)', () => {
       const alvo = modulo.slice('lib/amazon/listings/'.length, -'.ts'.length);
       expect(caminhar(alvo), alvo).toContain(`reaches ${modulo}`);
     }
+    // Anti-vacuity: the loop walked the new wiring too.
+    expect(MODULOS_DE_LISTINGS_FORA_DO_APP_HOSTING).toEqual(
+      expect.arrayContaining(['lib/amazon/listings/escritaListing.ts']),
+    );
     expect(caminhar('selecaoManual')).toEqual([]);
+    expect(caminhar('produtorListing')).toEqual([]);
+    expect(caminhar('envioListing')).toEqual([]);
   });
 
   // An app-wide parse: CI headroom, not a budget.
@@ -4774,16 +4847,16 @@ describe('the step-12 patch path guards (12-e1)', () => {
         CHAMADOR_DOS_LISTINGS,
       ]);
       // Anti-vacuity: the scan sees every exempt mention, by name; the one caller
-      // really calls every helper, and the exempt task calls none of them.
+      // really calls every helper, and the exempt task rungs call none of them.
       expect(nomeiam).toEqual(expect.arrayContaining(NOMEIAM_LISTINGS_SEM_CHAMAR));
       const chamador = semComentarios(lerDoApp(CHAMADOR_DOS_LISTINGS) ?? '');
       expect(AJUDANTES_DOS_LISTINGS).toHaveLength(4);
       for (const ajudante of AJUDANTES_DOS_LISTINGS) {
         expect(chamador, ajudante).toMatch(new RegExp(`\\b${ajudante}\\s*\\(`));
       }
-      const tarefa = semComentarios(lerDoApp('lib/amazon/estoque/processarEstoque.ts') ?? '');
-      expect(tarefa).not.toMatch(new RegExp(`\\b(?:${AJUDANTES_DOS_LISTINGS.join('|')})\\b`));
-      expect(tarefa).toMatch(/\bOPERACAO_ENVIAR_LISTING\b/);
+      const degraus = semComentarios(lerDoApp('lib/amazon/listings/escritaListing.ts') ?? '');
+      expect(degraus).not.toMatch(new RegExp(`\\b(?:${AJUDANTES_DOS_LISTINGS.join('|')})\\b`));
+      expect(degraus).toMatch(/\bOPERACAO_ENVIAR_LISTING\b/);
       expect(fontes.map(relApp)).toEqual(
         expect.arrayContaining(['functions/src/index.ts', 'scripts/sanitizar.ts']),
       );
