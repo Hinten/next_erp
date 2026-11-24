@@ -152,11 +152,7 @@ export function normalizeTopProductsFilters(filters: TopProductsFilters): TopPro
   };
 }
 
-/**
- * Filter orders before expanding their items. Each report aggregates the
- * resulting item rows on the server before executing the pipeline.
- */
-export function buildSalesItemsPipeline(db: Firestore, input: TopProductsFilters) {
+export function buildSalesOrdersPipeline(db: Firestore, input: TopProductsFilters) {
   const filters = normalizeTopProductsFilters(input);
   const predicates = [
     equal(field('ehSaida'), filters.ehSaida),
@@ -190,7 +186,17 @@ export function buildSalesItemsPipeline(db: Firestore, input: TopProductsFilters
   // A malformed legacy bucket is represented by one invalid line, so it is
   // visible in diagnostics instead of disappearing behind unnest/sum semantics.
   const items = field('itens').ifAbsent({}).ifNull(false);
-  const groups = mapEntries(conditional(isType(items, 'map'), items, map({ NONE: [{}] })));
+  return {
+    pipeline: db
+      .pipeline()
+      .collection('pedidos')
+      .where(and(predicates[0]!, predicates[1]!, ...predicates.slice(2))),
+    groups: mapEntries(conditional(isType(items, 'map'), items, map({ NONE: [{}] }))),
+  };
+}
+
+function buildSalesItemsPipeline(db: Firestore, input: TopProductsFilters) {
+  const { pipeline: orders, groups } = buildSalesOrdersPipeline(db, input);
   // isType on absent/null values can itself be absent/error. Give it a
   // defined, non-null operand, then compare only the numeric projection.
   const rawQuantity = field('item.quantidade').ifAbsent(false).ifNull(false);
@@ -200,10 +206,7 @@ export function buildSalesItemsPipeline(db: Firestore, input: TopProductsFilters
     greaterThanOrEqual(quantity, 0),
     lessThanOrEqual(quantity, Number.MAX_VALUE),
   );
-  const pipeline = db
-    .pipeline()
-    .collection('pedidos')
-    .where(and(predicates[0]!, predicates[1]!, ...predicates.slice(2)))
+  const pipeline = orders
     .select(groups.as('itemGroups'))
     .unnest(field('itemGroups'))
     .unnest(conditional(isType(groupItems, 'array'), groupItems, array([{}])).as('item'));

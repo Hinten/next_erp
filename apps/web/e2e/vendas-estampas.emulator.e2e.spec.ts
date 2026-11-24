@@ -46,6 +46,7 @@ test.describe('Sales by print', () => {
       write('pedidos/' + prefix + '-current', {
         ...order,
         timestamp: range.endExclusiveUs - 1,
+        descontoTotal: 13,
         itens: {
           [kit]: [
             { ...item, quantidade: 2 },
@@ -58,6 +59,7 @@ test.describe('Sales by print', () => {
         ...order,
         estado: ESTADO_PEDIDO.finalizado,
         timestamp: range.startUs / 1000,
+        descontoTotal: 4,
         itens: { [child]: [item] },
       }),
       write('pedidos/' + prefix + '-cancelled', {
@@ -107,14 +109,18 @@ test.describe('Sales by print', () => {
       /Unidades vendidas\s*3\s*1/,
     );
     await expect(comparison.getByRole('row', { name: /^Receita líquida/ })).toHaveText(
-      /R\$\s*60,00\s*R\$\s*25,00/,
+      /R\$\s*48,00\s*R\$\s*20,00/,
     );
     await expect(comparison.getByRole('row', { name: /^Lucro/ })).toHaveText(
-      /R\$\s*39,00\s*R\$\s*25,00/,
+      /R\$\s*27,00\s*R\$\s*20,00/,
     );
     const products = page.getByRole('table', { name: 'Produtos vendidos com estampa' });
-    await expect(products.getByRole('link', { name: 'Kit ' + prefix })).toBeVisible();
-    await expect(products.getByRole('link', { name: 'Estampa P ' + prefix })).toBeVisible();
+    await expect(products.getByRole('row', { name: new RegExp('^Kit ' + prefix) })).toContainText(
+      /R\$\s*32,00/,
+    );
+    await expect(
+      products.getByRole('row', { name: new RegExp('^Estampa P ' + prefix) }),
+    ).toContainText(/R\$\s*16,00/);
     await expect(products.getByRole('link', { name: 'Lisa ' + prefix })).toHaveCount(0);
 
     await page.getByRole('combobox', { name: 'Estados do pedido', exact: true }).click();

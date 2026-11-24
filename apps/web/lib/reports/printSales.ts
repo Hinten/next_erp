@@ -1,22 +1,31 @@
 import { getDocs, limit, orderBy, query, where, type Firestore } from 'firebase/firestore';
 import {
+  add,
   and,
+  array,
+  arraySum,
+  arrayTransform,
   conditional,
   constant,
-  equal,
+  divide,
   execute,
   field,
+  greaterThan,
   greaterThanOrEqual,
   isType,
   lessThanOrEqual,
+  map,
+  mapGet,
   multiply,
+  subtract,
   sum,
+  variable,
 } from 'firebase/firestore/pipelines';
 import { dataCivilNoFuso, microsDeDataHoraNoFuso, somarDiasCivis } from '@delfrance/core/datetime';
 import { naoDocId, type EstadoPedido } from '@delfrance/schemas';
 import { produtoCollection } from '@/lib/data/produtoCollection';
 import {
-  buildSalesItemsPipeline,
+  buildSalesOrdersPipeline,
   readProjectedDocuments,
   topProductsGroupFromResult,
 } from './topProducts';
@@ -113,26 +122,31 @@ export async function searchPrintOptions(db: Firestore, term: string): Promise<P
 }
 
 export function buildPrintSalesPipeline(db: Firestore, filters: PrintSalesFilters) {
-  const { pipeline, quantity, validQuantity } = buildSalesItemsPipeline(db, {
+  const { pipeline, groups } = buildSalesOrdersPipeline(db, {
     ...filters,
     accountIds: [],
     ehSaida: true,
   });
+  const bucket = variable('bucket');
+  const items = mapGet(bucket, 'v').ifAbsent(false).ifNull(false);
+  const rows = conditional(isType(items, 'array'), items, array([{}]));
+  const item = variable('sale');
   const readAmount = (name: string, fallback: number | boolean) => {
-    const raw = field('item.' + name)
-      .ifAbsent(fallback)
-      .ifNull(fallback);
+    const raw = mapGet(item, name).ifAbsent(fallback).ifNull(fallback);
     const valid = isType(raw, 'number');
     return { value: conditional(valid, raw, constant(0)), valid };
   };
   const price = readAmount('precoDeVenda', false);
   const discount = readAmount('descontoUnitario', 0);
   const cost = readAmount('custo', 0);
+  const { value: quantity, valid: isNumber } = readAmount('quantidade', false);
   const gross = multiply(price.value, quantity);
   const discounts = multiply(discount.value, quantity);
   const costs = multiply(cost.value, quantity);
   const validLine = and(
-    validQuantity,
+    isNumber,
+    greaterThanOrEqual(quantity, 0),
+    lessThanOrEqual(quantity, Number.MAX_VALUE),
     price.valid,
     discount.valid,
     cost.valid,
@@ -147,26 +161,88 @@ export function buildPrintSalesPipeline(db: Firestore, filters: PrintSalesFilter
     greaterThanOrEqual(costs, -Number.MAX_VALUE),
     lessThanOrEqual(costs, Number.MAX_VALUE),
   );
-  const isValidLine = equal(field('linhaValida'), true);
-  const sumValid = (name: string) =>
-    sum(conditional(isValidLine, field(name), constant(0))).as(name);
+  const subtotal = subtract(gross, discounts);
+  const itemGroups = arrayTransform(
+    groups,
+    'bucket',
+    map({
+      produtoId: mapGet(bucket, 'k'),
+      linhas: arrayTransform(
+        rows,
+        'sale',
+        map({
+          quantidade: conditional(validLine, quantity, constant(0)),
+          receitaBruta: conditional(validLine, gross, constant(0)),
+          desconto: conditional(validLine, discounts, constant(0)),
+          custo: conditional(validLine, costs, constant(0)),
+          baseDesconto: conditional(
+            and(validLine, greaterThan(subtotal, 0)),
+            subtotal,
+            constant(0),
+          ),
+          invalidLines: conditional(validLine, constant(0), constant(1)),
+        }),
+      ),
+    }),
+  );
+  const orderSum = (name: string) =>
+    arraySum(
+      arrayTransform(
+        field('grupos'),
+        'group',
+        arraySum(
+          arrayTransform(
+            mapGet(variable('group'), 'linhas'),
+            'line',
+            mapGet(variable('line'), name),
+          ),
+        ).ifNull(0),
+      ),
+    ).ifNull(0);
+  const rawOrderDiscount = field('descontoTotal').ifAbsent(0).ifNull(0);
+  const orderDiscount = conditional(
+    isType(rawOrderDiscount, 'number'),
+    rawOrderDiscount,
+    constant(0),
+  );
+  const orderBase = field('basePedido');
+  const hasSubtotal = greaterThan(orderBase, 0);
+  const weight = conditional(hasSubtotal, field('linha.baseDesconto'), field('linha.quantidade'));
+  const totalWeight = conditional(hasSubtotal, orderBase, field('quantidadePedido'));
+  // Allocate on the order before grouping by product. The discount follows
+  // positive subtotals after item discounts, or quantity for zero-value orders.
+  // Use doubles for the ratio even when every stored amount is an integer.
+  const allocatedDiscount = conditional(
+    greaterThan(totalWeight, 0),
+    multiply(field('descontoPedido'), divide(multiply(weight, 0.5), multiply(totalWeight, 0.5))),
+    constant(0),
+  );
   return pipeline
     .select(
-      field('itemGroups.k').as('produtoId'),
-      quantity.as('quantidade'),
-      gross.as('receitaBruta'),
-      discounts.as('desconto'),
-      costs.as('custo'),
-      validLine.as('linhaValida'),
+      itemGroups.as('grupos'),
+      conditional(
+        and(
+          greaterThanOrEqual(orderDiscount, -Number.MAX_VALUE),
+          lessThanOrEqual(orderDiscount, Number.MAX_VALUE),
+        ),
+        orderDiscount,
+        constant(0),
+      ).as('descontoPedido'),
     )
+    .addFields(
+      orderSum('baseDesconto').as('basePedido'),
+      orderSum('quantidade').as('quantidadePedido'),
+    )
+    .unnest(field('grupos'))
+    .unnest(field('grupos.linhas').as('linha'))
     .aggregate({
-      groups: [field('produtoId').as('produtoId')],
+      groups: [field('grupos.produtoId').as('produtoId')],
       accumulators: [
-        sumValid('quantidade'),
-        sumValid('receitaBruta'),
-        sumValid('desconto'),
-        sumValid('custo'),
-        sum(conditional(isValidLine, constant(0), constant(1))).as('invalidLines'),
+        sum('linha.quantidade').as('quantidade'),
+        sum('linha.receitaBruta').as('receitaBruta'),
+        sum(add(field('linha.desconto'), allocatedDiscount)).as('desconto'),
+        sum('linha.custo').as('custo'),
+        sum('linha.invalidLines').as('invalidLines'),
       ],
     });
 }
