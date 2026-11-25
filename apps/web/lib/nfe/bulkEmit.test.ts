@@ -9,6 +9,7 @@ import { renderHook } from '@testing-library/react';
 
 import {
   NFeRejectedError,
+  createNFeHttpClient,
   type NFeEmitResult,
   type NFeHttpClient,
 } from '@delfrance/integrations-nfe/http-provider';
@@ -31,6 +32,7 @@ vi.mock('./contextoRejeicao', () => ({
 import { dispatchEmitirNFe, NFeLoteNotImplementedError, useEmitirNFeAction } from './bulkEmit';
 import { ID_DEST, IND_IE_DEST } from './destinatarioNFe';
 import type { CarregarContextoRejeicao, ContextoRejeicaoNFe } from './errors';
+import { withNFeRetry } from './withNFeRetry';
 
 // Mock the @mantine/notifications side-effect surface. The dispatcher
 // uses it for the success path; the error path goes through
@@ -120,6 +122,18 @@ function emitResult(over: Partial<NFeEmitResult> = {}): NFeEmitResult {
   };
 }
 
+function httpClientWith(response: Response) {
+  const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response);
+  const client = withNFeRetry(
+    createNFeHttpClient({
+      baseUrl: 'http://nfe.test',
+      getAuthToken: () => Promise.resolve('token'),
+      fetch,
+    }),
+  );
+  return { client, fetch };
+}
+
 beforeEach(() => {
   showSpy.mockClear();
   showErrorSpy.mockClear();
@@ -131,6 +145,65 @@ afterEach(() => {
 });
 
 describe('dispatchEmitirNFe', () => {
+  it('shows SEFAZ downtime for a single-row 422 with cStat 108', async () => {
+    const carregar = loaderMock();
+    const { client } = httpClientWith(
+      Response.json(
+        { cStat: '108', xMotivo: 'Serviço Paralisado Momentaneamente' },
+        { status: 422 },
+      ),
+    );
+    await dispatchEmitirNFe(client, [fakeRow('PED-001')], carregar);
+    expect(showErrorSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: 'SEFAZ indisponível',
+        color: 'yellow',
+        message: expect.stringContaining('cStat=108: Serviço Paralisado Momentaneamente'),
+      }),
+    );
+    expect(carregar).not.toHaveBeenCalled();
+  });
+
+  it('reports an unknown outcome for a single-row unmarked 503 and sends one POST', async () => {
+    const carregar = loaderMock();
+    const { client, fetch } = httpClientWith(new Response(null, { status: 503 }));
+    await dispatchEmitirNFe(client, [fakeRow('PED-001')], carregar);
+    expect(showErrorSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: 'Resultado da emissão desconhecido',
+        color: 'yellow',
+        message: expect.stringContaining('Confira a coluna NF'),
+      }),
+    );
+    expect(fetch).toHaveBeenCalledExactlyOnceWith(
+      'http://nfe.test/api/nfe/emitir',
+      expect.objectContaining({ method: 'POST' }),
+    );
+    expect(carregar).not.toHaveBeenCalled();
+  });
+
+  it('shows the copyable processing toast for a reused receipt from single-row dispatch', async () => {
+    const { client } = httpClientWith(
+      Response.json(
+        emitResult({
+          estado: ESTADO_NFE.aguardandoResposta,
+          reused: true,
+          cStat: '103',
+          xMotivo: 'Lote recebido com sucesso',
+        }),
+      ),
+    );
+    await dispatchEmitirNFe(client, [fakeRow('PED-001')], loaderMock());
+    expect(showCopyableSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: 'NF-e em processamento',
+        color: 'blue',
+        message: expect.stringContaining('cStat=103: Lote recebido com sucesso'),
+      }),
+    );
+    expect(showErrorSpy).not.toHaveBeenCalled();
+  });
+
   it('no-ops on empty rows (defensive — action is gated by requiresSelection)', async () => {
     const emitir = vi.fn();
     const carregar = loaderMock();

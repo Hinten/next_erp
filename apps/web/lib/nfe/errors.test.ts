@@ -14,6 +14,7 @@ import {
   NFePedidoNotFoundError,
   NFeRejectedError,
   NFeRuntimeNotReadyError,
+  NFeSchemaError,
   NFeServerError,
   NFeTimeoutError,
   NFeXsdValidationFailedError,
@@ -143,57 +144,46 @@ describe('notificationForNFeResult', () => {
     },
   );
 
-  it('reused=true on an aprovada doc → yellow "já emitida" toast (dedup skip), overrides the estado branch', () => {
+  it('describes the recorded authorization on a reused result', () => {
     const n = notificationForNFeResult(emitResult({ reused: true }));
     expect(n.color).toBe('yellow');
-    expect(n.title).toBe('NFe já emitida');
-    expect(n.message).toContain('pulada');
-    expect(n.message).toContain('100');
+    expect(n.title).toBe('NF-e já autorizada');
+    expect(n.message).toContain('cStat=100: Autorizado o uso da NF-e');
+    expect(n.message).not.toMatch(/pulada|nenhum novo envio/i);
   });
 
-  // #1675 — `reused` now also means "a send is in progress on this doc", so the
-  // estado decides the copy: "já emitida" would tell the operator a NF-e exists
-  // when the first send has not even answered.
-  it.each([ESTADO_NFE.enviando, ESTADO_NFE.aguardandoResposta])(
-    'reused=true on an in-flight doc (%s) → blue "em processamento", NOT "já emitida" (#1675)',
-    (estado) => {
-      const n = notificationForNFeResult(
-        emitResult({ reused: true, estado, cStat: '', xMotivo: '', nRec: null }),
-      );
-      expect(n.color).toBe('blue');
-      expect(n.title).toBe('NF-e em processamento');
-      expect(n.message).toContain('nenhum novo envio foi feito');
+  it.each([
+    { estado: ESTADO_NFE.enviando, cStat: '', xMotivo: '', nRec: null },
+    {
+      estado: ESTADO_NFE.aguardandoResposta,
+      cStat: '103',
+      xMotivo: 'Lote recebido com sucesso',
+      nRec: '12345',
     },
-  );
-
-  it('estado=error from THIS run (a fresh EPEC 573 to conciliate, a 656) → red with its cStat, never the gray fallback (#1675)', () => {
-    const n = notificationForNFeResult(
-      emitResult({
-        estado: ESTADO_NFE.error,
-        cStat: '573',
-        xMotivo: 'Rejeicao: Duplicidade de Evento | EPEC já registrado…',
-        nRec: null,
-      }),
-    );
-    expect(n.color).toBe('red');
-    expect(n.title).toBe('NF-e com erro');
-    expect(n.message).toContain('cStat=573');
-    expect(n.message).not.toContain('nenhum novo envio');
+  ])('reports processing when a reused result has estado $estado', (inFlight) => {
+    const n = notificationForNFeResult(emitResult({ ...inFlight, reused: true }));
+    expect(n.color).toBe('blue');
+    expect(n.title).toBe('NF-e em processamento');
+    expect(n.message).toContain('coluna NF');
+    expect(n.message).not.toMatch(/nenhum novo envio|outro envio|cStat=:/i);
+    if (inFlight.cStat) expect(n.message).toContain(`cStat=${inFlight.cStat}: ${inFlight.xMotivo}`);
   });
 
-  it('reused=true on an error doc another run wrote → red with its cStat, NOT "já emitida" (#1675)', () => {
-    const n = notificationForNFeResult(
-      emitResult({
-        reused: true,
-        estado: ESTADO_NFE.error,
-        cStat: '656',
-        xMotivo: 'Rejeicao: Consumo Indevido',
-        nRec: null,
-      }),
-    );
-    expect(n.color).toBe('red');
-    expect(n.message).toContain('cStat=656');
-    expect(n.message).toContain('nenhum novo envio foi feito');
+  it.each([
+    { reused: false, cStat: '656', xMotivo: 'Rejeição: Consumo Indevido' },
+    { reused: true, cStat: '656', xMotivo: 'Rejeição: Consumo Indevido' },
+    { reused: false, cStat: '573', xMotivo: 'Duplicidade de Evento | EPEC já registrado' },
+    { reused: true, cStat: '103', xMotivo: 'Lote recebido — verificar manualmente' },
+    { reused: false, cStat: '104', xMotivo: 'Lote processado — verificar manualmente' },
+    { reused: true, cStat: '104', xMotivo: 'Lote processado — verificar manualmente' },
+  ])('keeps the error diagnostic for cStat $cStat and reused=$reused', (error) => {
+    expect(
+      notificationForNFeResult(emitResult({ ...error, estado: ESTADO_NFE.error, nRec: null })),
+    ).toStrictEqual({
+      title: 'NF-e com erro',
+      message: `cStat=${error.cStat}: ${error.xMotivo}`,
+      color: 'red',
+    });
   });
 
   it('reused=true on an EPEC-approved doc → the EPEC arms (its transmission is still pending), NOT "já emitida" (#1675)', () => {
@@ -208,13 +198,56 @@ describe('notificationForNFeResult', () => {
     );
     expect(n.color).toBe('teal');
     expect(n.title).toBe('EPEC registrado');
-    // …and never the arms that tell the operator to emit again.
-    expect(n.message).toContain('nenhum novo envio foi feito');
-    expect(n.message).not.toContain('emita novamente');
+    expect(n.message).toContain('transmissão da NF-e completa');
+    expect(n.message).toContain('coluna NF');
+    expect(n.message).not.toMatch(/nenhum novo envio|emita novamente/i);
+  });
+
+  it('uses the recorded estado label for other reused results', () => {
+    const n = notificationForNFeResult(
+      emitResult({
+        estado: ESTADO_NFE.cancelada,
+        reused: true,
+        cStat: '101',
+        xMotivo: 'Cancelamento homologado',
+      }),
+    );
+    expect(n.title).toBe('Situação da NF-e');
+    expect(n.message).toContain('Cancelada');
+    expect(n.message).toContain('cStat=101: Cancelamento homologado');
+    expect(n.message).not.toMatch(/já emitida|pulada/i);
   });
 });
 
 describe('notificationForNFeError', () => {
+  it.each([
+    ['108', 'Serviço Paralisado Momentaneamente'],
+    ['109', 'Serviço Paralisado sem Previsão'],
+  ])('reports SEFAZ downtime for cStat %s', (cStat, xMotivo) => {
+    const n = notificationForNFeError(new NFeRejectedError(cStat, xMotivo, null));
+    expect(n).toMatchObject({ title: 'SEFAZ indisponível', color: 'yellow' });
+    expect(n.message.startsWith(`cStat=${cStat}: ${xMotivo} — `)).toBe(true);
+    expect(n.message).toMatch(/aguarde.*mesmo modo de emissão.*mesmo número/i);
+  });
+
+  it.each([
+    ['113', 'SVC em processo de desativação'],
+    ['114', 'SVC desabilitada pela SEFAZ de origem'],
+  ])('directs the operator to the contingency settings for cStat %s', (cStat, xMotivo) => {
+    const n = notificationForNFeError(new NFeRejectedError(cStat, xMotivo, null));
+    expect(n).toMatchObject({ title: 'Contingência SVC indisponível', color: 'yellow' });
+    expect(n.message.startsWith(`cStat=${cStat}: ${xMotivo} — `)).toBe(true);
+    expect(n.message).toContain('Configurações → Filiais');
+  });
+
+  it.each(['1080', ' 108', '10', '226'])('keeps the generic rejection for cStat "%s"', (cStat) => {
+    const err = new NFeRejectedError(cStat, 'Rejeição', null);
+    expect(notificationForNFeError(err)).toStrictEqual({
+      title: 'SEFAZ rejeitou a NF-e',
+      message: `cStat=${cStat}: Rejeição`,
+      color: 'red',
+    });
+  });
   it('NFeRejectedError → red with cStat + xMotivo', () => {
     const err = new NFeRejectedError('226', 'UF inválida', { foo: 'bar' });
     const n = notificationForNFeError(err);
@@ -316,6 +349,7 @@ describe('notificationForNFeError', () => {
     const n = notificationForNFeError(err);
     expect(n.color).toBe('red');
     expect(n.title).toBe('Erro de rede');
+    expect(n.message).toContain('Verifique a conexão e tente novamente.');
   });
 
   it('NFeServerError → red with the underlying message', () => {
@@ -324,6 +358,15 @@ describe('notificationForNFeError', () => {
     expect(n.color).toBe('red');
     expect(n.title).toBe('Erro no servidor de NF-e');
     expect(n.message).toBe('transport failed');
+  });
+
+  it('keeps the direct schema error mapping used outside single emission', () => {
+    const err = new NFeSchemaError('Campos inválidos: estado.', 200, ['estado']);
+    expect(notificationForNFeError(err)).toStrictEqual({
+      title: 'Erro inesperado',
+      message: 'Campos inválidos: estado.',
+      color: 'red',
+    });
   });
 
   it('NFeXsdValidationFailedError → schema toast, not the generic server error (#1602)', () => {
@@ -625,12 +668,63 @@ describe('notificationForNFeErrorComContexto', () => {
     expect(carregar).not.toHaveBeenCalled();
   });
 
-  it('NFeNetworkError → the sync mapping, loader NOT called', async () => {
+  it.each([
+    ['503 with an empty object', new NFeRuntimeNotReadyError('HTTP 503', {}), 'HTTP 503'],
+    [
+      '503 with HTML',
+      new NFeRuntimeNotReadyError('<html>Unavailable</html>', {
+        error: '<html>Unavailable</html>',
+      }),
+      'HTTP 503',
+    ],
+    ['503 with no body', new NFeRuntimeNotReadyError('HTTP 503', null), 'HTTP 503'],
+    ['network failure', new NFeNetworkError('Failed to fetch'), 'Falha de comunicação'],
+    ['server error', new NFeServerError('Erro interno. Tente novamente.', 500, {}), 'HTTP 500'],
+    ['empty 2xx', new NFeSchemaError('O pedido não chegou à rota esperada.', 200, []), 'HTTP 200'],
+    [
+      'invalid 2xx',
+      new NFeSchemaError('Invalid fields', 200, ['estado', 'chave']),
+      'estado, chave',
+    ],
+  ])('reports an unknown emission outcome after %s', async (_case, err, detail) => {
     const carregar = loader();
-    const err = new NFeNetworkError('Failed to fetch');
-    await expect(notificationForNFeErrorComContexto(err, carregar)).resolves.toStrictEqual(
-      notificationForNFeError(err),
+    const n = await notificationForNFeErrorComContexto(err, carregar);
+    expect(n).toMatchObject({ title: 'Resultado da emissão desconhecido', color: 'yellow' });
+    expect(n.message).toContain(
+      'A NF-e pode ter sido enviada à SEFAZ. Confira a coluna NF do pedido antes de emitir novamente.',
     );
+    expect(n.message).toContain(detail);
+    expect(n.message).not.toMatch(/tente novamente|<html>|não chegou à rota/i);
+    expect(carregar).not.toHaveBeenCalled();
+  });
+
+  it('keeps the runtime diagnostic when the 503 carries the pre-send marker', async () => {
+    const carregar = loader();
+    const err = new NFeRuntimeNotReadyError('NF-e runtime not ready', {
+      error: 'NF-e runtime not ready',
+      code: 'Cadeia TLS da SEFAZ indisponível',
+    });
+    await expect(notificationForNFeErrorComContexto(err, carregar)).resolves.toStrictEqual({
+      title: 'Servidor NF-e indisponível',
+      message: 'Cadeia TLS da SEFAZ indisponível',
+      color: 'red',
+    });
+    expect(carregar).not.toHaveBeenCalled();
+  });
+
+  it('keeps the dedicated timeout copy for single emission', async () => {
+    const carregar = loader();
+    const message = 'Aguarde e confira o estado da NF-e antes de repetir.';
+    const err = new NFeTimeoutError(message, {
+      origem: 'gateway',
+      timeoutMs: null,
+      operacao: 'emitir',
+    });
+    await expect(notificationForNFeErrorComContexto(err, carregar)).resolves.toStrictEqual({
+      title: 'Tempo esgotado',
+      message,
+      color: 'yellow',
+    });
     expect(carregar).not.toHaveBeenCalled();
   });
 
