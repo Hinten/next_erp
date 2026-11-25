@@ -104,7 +104,7 @@ function mapear(
 ) {
   return mapearPagamentosShopee({
     escrow: null,
-    valorCobrado: 31.99,
+    valorDoComprador: 31.99,
     watermarkUs: WATERMARK_US,
     nowUs: AGORA_US,
     contaId: CONTA,
@@ -209,9 +209,9 @@ describe('mapearPagamentosShopee — o pedido de sandbox SG', () => {
     expect(docs[0]!.dados.aVista).toBe(true);
   });
 
-  it('4. `valor` é o valorCobrado do PEDIDO (31,99) — nunca o escrow_amount (30,70)', () => {
+  it('4. `valor` é a perna do comprador do modelo de dinheiro (31,99) — nunca o escrow_amount (30,70)', () => {
     const escrow = escrowSG();
-    const { docs } = mapear({ linha: linhaSG(), escrow, valorCobrado: 31.99 });
+    const { docs } = mapear({ linha: linhaSG(), escrow, valorDoComprador: 31.99 });
     expect(docs[0]!.dados.valor).toBe(31.99);
     // ⛔ MUTANTE 3: ler `escrow_amount` daria 30,70 — 1,29 a MENOS que a nota,
     // e num marketplace isso é cStat 865 e nenhuma emissão.
@@ -232,9 +232,10 @@ describe('mapearPagamentosShopee — o pedido de sandbox SG', () => {
       expect(diagnosticos.composicaoTarifas).toBe(composicao);
       expect(docs[0]!.sempre.marketplace!.tarifasBrutas).toBe(1.29);
     }
-    // …e é exatamente por isso que o corpo SG NÃO decide a pergunta: as duas
-    // composições respondem o mesmo número. A resposta vem de um pedido BR real.
-    expect(COMPOSICAO_TARIFAS_SHOPEE).toBe(COMPOSICAO_TARIFAS.taxasNomeadas);
+    // …e é exatamente por isso que o corpo SG NÃO decidia a pergunta: as duas
+    // composições respondem o mesmo número. Os quatro pedidos BR reais de
+    // 2026-11-24 decidiram — o spread, a regra do legado sem o `abs()`.
+    expect(COMPOSICAO_TARIFAS_SHOPEE).toBe(COMPOSICAO_TARIFAS.spreadEscrow);
   });
 
   it('6. o diário `marketplace` usa o relógio da ORDEM (watermark), nunca o nowUs', () => {
@@ -368,6 +369,9 @@ describe('mapearPagamentosShopee — pagamento combinado BR', () => {
   it('15. o parcelamento vai só para o leg de CRÉDITO; tarifas só para o PRIMÁRIO', () => {
     const escrow = escrowSintetico({
       instalment_plan: '3',
+      // The spread: 31,99 paid − 30,24 released = 1,75.
+      buyer_total_amount: 31.99,
+      escrow_amount_after_adjustment: 30.24,
       commission_fee: 1,
       service_fee: 0.5,
       seller_transaction_fee: 0.25,
@@ -438,7 +442,7 @@ describe('mapearPagamentosShopee — pagamento combinado BR', () => {
       motivo: MOTIVO_COLAPSO_SHOPEE.somaDivergente,
       entradas: 2,
       soma: 31.98,
-      valorCobrado: 31.99,
+      valorDoComprador: 31.99,
       delta: -0.01,
     });
   });
@@ -457,7 +461,7 @@ describe('mapearPagamentosShopee — pagamento combinado BR', () => {
       payment_method: 'Combined Payment',
       payment_info: legs,
     });
-    const { docs, diagnosticos } = mapear({ linha, valorCobrado: 9 });
+    const { docs, diagnosticos } = mapear({ linha, valorDoComprador: 9 });
     expect(docs).toHaveLength(1);
     expect(diagnosticos.motivoColapso).toBe(MOTIVO_COLAPSO_SHOPEE.excedeMaximo);
     expect(diagnosticos.entradasPaymentInfo).toBe(MAX_PAGAMENTOS_COMBINADOS_SHOPEE + 1);

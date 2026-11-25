@@ -579,7 +579,8 @@ apps/loja-integrada/lib/lojaIntegrada/testing/especificacaoFolhas.json` (no pair
   with a `.git` entry in it or above it, and refuses to run without the owner's local
   `nomes-proibidos.txt` (store names; never in the repo, never printed).
 - **Catalogue ids are keyed pseudonyms** (`sanitizacao/pseudonimo.ts`): on a `catalogo`
-  2xx pair the sanitizer maps every kept `id` and `*_id`, every id segment of a kept
+  2xx pair the sanitizer maps every kept `id` and `*_id`, the ids a price `set/` answer
+  lists in `not_found` (kept at that answer's root only), every id segment of a kept
   resource URI, of the request path and of `meta.next`/`previous`, and the `produto=`
   query value to `1e11 + HMAC-SHA256(key, "li-fixture-id:" + id)[0..6] mod 9e11`, one
   namespace for every resource, so the relations between rows survive. Twelve digits:
@@ -598,7 +599,8 @@ apps/loja-integrada/lib/lojaIntegrada/testing/especificacaoFolhas.json` (no pair
   catalogue resource on a path `ehCatalogo` does not admit. Meta counts, other query
   values (`limit`, `offset`) and the configuration/estrutural classes are untouched. The
   dry run's leaf table shows mapped leaves as `pseudonimizado`; `wireCorpus.test.ts` pins
-  their relations, distinctness and range.
+  their relations, distinctness and range (an id inside a URI held in a list — `variacoes`,
+  `filhos`, `grades`, `categorias` — and a kept `not_found` element included).
 - **Catalogue SKUs are keyed pseudonyms too** (same key, same module): a storefront prints
   a product's SKU on its public page, so a real one is a web search away from the store's
   name. Every kept `sku` on a `catalogo` pair, and every `sku=` value of its request and
@@ -629,6 +631,11 @@ apps/loja-integrada/lib/lojaIntegrada/testing/especificacaoFolhas.json` (no pair
   does one added without moving it. The product captures are replayed through the import's
   own reads by `importacao/capturasProdutos.test.ts`, and the stock captures through the
   package's stock reads and the stock plan's decisions by `estoque/capturasEstoque.test.ts`.
+  The owner's read-only price captures are NOT committed (the owner's decision, step 13):
+  `preco/respostasPreco.test.ts` replays INVENTED answers in their shape (`testing/precoLi.ts`:
+  invented ids and prices, no real store data) through the package's by-id price read, the
+  write client's deciding read and the shared price fold, and `wireCorpus.test.ts` fails on
+  any committed `produto_preco` capture.
 - ⚠️ The owner's raw `pedido-enviado` pair duplicates `pedido-boleto` (the same order,
   identical sanitized bytes) and is EXCLUDED from the corpus. It stays in `~/li-capturas`
   until he deletes it, so a sanitizer run without `--so` writes it back: delete that raw

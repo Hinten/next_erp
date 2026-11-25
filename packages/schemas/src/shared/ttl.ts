@@ -206,4 +206,10 @@ export const TTL_POLICIES: readonly TtlPolicy[] = [
       'apps/amazon stock reconcile: each drift block, 7 days after the page that wrote it. ' +
       'The run document (reconciliacaoEstoqueAmazon) and its request are never stamped.',
   },
+  {
+    collectionGroup: 'divergenciasPrecoAmazon',
+    motivo:
+      'apps/amazon price run: each part, 7 days after the page that wrote it (past the 48-hour ' +
+      'wait of its feed batches). The run document (precosAmazon) is never stamped.',
+  },
 ];

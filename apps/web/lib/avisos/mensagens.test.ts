@@ -1783,8 +1783,8 @@ describe('MENSAGENS_POR_TIPO.amazonContaPrecisaAtencao', () => {
     );
   });
 
-  it('★ is TOTAL over the seven motivo codes: every one has its own phrase, never the fallback', () => {
-    expect(motivoContaAmazonSchema.options).toHaveLength(7);
+  it('★ is TOTAL over the eleven motivo codes: every one has its own phrase, never the fallback', () => {
+    expect(motivoContaAmazonSchema.options).toHaveLength(11);
     const frases = new Set<string>();
     for (const motivo of motivoContaAmazonSchema.options) {
       const corpo = mensagem.corpo({ motivo });

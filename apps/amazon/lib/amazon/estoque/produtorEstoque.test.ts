@@ -447,28 +447,55 @@ describe('criarProdutorEstoqueAmazon — the batch', () => {
     let ativas = 0;
     let terminadas = 0;
     const iniciadas: string[] = [];
+    // Each enqueue answers only when the test says so, so the order in time is the test's,
+    // never a timer's: timers raced under a loaded runner and let payloads start late.
+    const respostas = new Map<string, (falha: Error | null) => void>();
     const fila: FilaEstoqueAmazon = {
-      enqueue: async (payload) => {
+      enqueue: (payload) => {
         iniciadas.push(payload.sku);
         ativas += 1;
-        // The tenth payload fails FIRST in time; the fourth fails later.
-        await new Promise((r) => setTimeout(r, payload.sku === lote[9]?.sku ? 0 : 5));
-        ativas -= 1;
-        terminadas += 1;
-        if (payload.sku === lote[3]?.sku) throw doTerceiro;
-        if (payload.sku === lote[9]?.sku) throw doDecimo;
+        return new Promise<void>((resolve, reject) => {
+          respostas.set(payload.sku, (falha) => {
+            ativas -= 1;
+            terminadas += 1;
+            if (falha === null) resolve();
+            else reject(falha);
+          });
+        });
       },
     };
-    const erro = await rejeicaoDe(
+    // A macrotask: every continuation the last answer queued has run.
+    const drenar = () => new Promise((r) => setTimeout(r, 0));
+    const primeiros16 = lote.slice(0, 16).map((t) => t.sku);
+    const quarto = lote[3]?.sku ?? '';
+    const decimo = lote[9]?.sku ?? '';
+    let desfecho: unknown = 'pendente';
+    const resposta = rejeicaoDe(
       criarProdutorEstoqueAmazon({ fila: () => fila, desligado: false }).enfileirarLote(lote),
-    );
+    ).then((e) => {
+      desfecho = e;
+    });
+    await drenar();
+    expect(iniciadas).toEqual(primeiros16);
+    // The tenth payload fails FIRST in time; then every other one in flight answers, which
+    // frees its slot; the fourth fails LAST.
+    respostas.get(decimo)?.(doDecimo);
+    await drenar();
+    for (const sku of primeiros16) if (sku !== quarto && sku !== decimo) respostas.get(sku)?.(null);
+    await drenar();
+    // Nothing started after the failure, and the answer still waits for the fourth.
+    expect(iniciadas).toEqual(primeiros16);
+    expect(ativas).toBe(1);
+    expect(desfecho).toBe('pendente');
+    respostas.get(quarto)?.(doTerceiro);
+    await resposta;
     // The earliest in LIST order, never the first in time.
-    expect(erro).toBe(doTerceiro);
-    expect(erro).toBeInstanceOf(FirebaseFunctionsError);
+    expect(desfecho).toBe(doTerceiro);
+    expect(desfecho).toBeInstanceOf(FirebaseFunctionsError);
     // Nothing still running behind the answer, and nothing started after the failure.
     expect(ativas).toBe(0);
     expect(terminadas).toBe(iniciadas.length);
-    expect(iniciadas).toEqual(lote.slice(0, 16).map((t) => t.sku));
+    expect(iniciadas).toEqual(primeiros16);
   });
 
   it('a transient in a batch is the shared class', async () => {

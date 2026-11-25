@@ -1158,8 +1158,10 @@ export const detalhesErroShopeeSchema = z.object({
   motivo: z.string().nullable().catch(null),
   /** 422 `SHOPEE_PRECO_CONTA_RECUSADA` — the shop's region, when it was read. */
   regiao: z.string().nullable().catch(null),
-  /** 422 `SHOPEE_PUBLISH_REJECTED` — what exists on Shopee NOW. */
+  /** 422 `SHOPEE_PUBLISH_REJECTED` — the step where publishing stopped. */
   etapa: z.string().nullable().catch(null),
+  /** Whether Shopee refused the call. Older or unreadable responses yield `null`. */
+  recusadaPelaShopee: z.boolean().nullable().catch(null),
   /**
    * The link the refusal is about: 409 `SHOPEE_ANUNCIO_NAO_PUBLICADO` (the link
    * that has no listing yet), every refusal of the draft routes and the publish
@@ -1214,6 +1216,7 @@ export const DETALHES_ERRO_SHOPEE_VAZIOS: DetalhesErroShopee = Object.freeze({
   motivo: null,
   regiao: null,
   etapa: null,
+  recusadaPelaShopee: null,
   linkDocId: null,
   jobId: null,
   problemas: null,

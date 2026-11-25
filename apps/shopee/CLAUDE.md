@@ -123,10 +123,11 @@ a page of the 3-day queue irreversibly.
 - `lib/shopee/pedidos/` — the step-5 order import: `importarPedido.ts` (the
   orchestrator), `orderIds.ts` (the deterministic pedido and item ids),
   `orderMapping.ts` + `orderFreteMapping.ts` + `orderStatusMaps.ts` (the pure
-  mappers, the estado ladder and the freight seed), `itens.ts` (prices and
-  quantities), `produtoResolve.ts` (the link → SKU cascade), `comprador.ts` (the
-  buyer-capture adapter), `incidentesProduto.ts` (one incidente per unbound
-  line) and `orderPedidoTx.ts` (the import's ONE transaction — step 6 adds two
+  mappers, the estado ladder and the freight seed), `itens.ts` (the lines),
+  `dinheiroShopee.ts` (the money), `produtoResolve.ts` (the link → SKU
+  cascade), `comprador.ts` (the buyer-capture adapter), `incidentesProduto.ts`
+  (the import's incidentes) and
+  `orderPedidoTx.ts` (the import's ONE transaction — step 6 adds two
   more under this same folder, see the two bullets below). See **Order import**
   below. ⚠️ `importarPedido.ts` is split in two on purpose:
   `prepararImportacaoPedidoShopee` is the READ-ONLY half (the two Shopee calls,
@@ -965,15 +966,14 @@ the escrow's OWN `quantity_purchased` and does not divide the detail's — the t
 committed bodies (`__wire__/get_escrow_detail.qty2-sg.json` and
 `__wire__/get_order_detail.qty2-sg.json`) are what pins the pair.
 
-⚠️ **Shopee has no ORDER-level discount, so the pedido's `descontoTotal` is
-always `0`.** The five escrow discounts are ITEM-level and each rides its line's
-`descontoUnitario`, which `itemSubtotal` already nets out of `precoDeVenda`.
-`derivePedidoFreteTotals` subtracts `descontoTotal` a SECOND time, after the item
-sum, so copying `conferencia.descontoDasLinhas` into it short-changed
-`valorCobrado` by Σ discounts on the operator's first save — the value stored at
-import was right and the recomputed one was not. `pedidos/totais.test.ts` crosses
-the two modules and pins it; the conferência field is named `descontoDasLinhas`
-so the two can never be confused again.
+⚠️ **The money is ONE pure module, `pedidos/dinheiroShopee.ts`** (legacy
+parity — Lucas's decision of 2026-11-24): a line at its `discounted_price`, the
+buyer-side offsets as its `descontoUnitario`; `descontoTotal` only for an
+un-itemized residual, never `descontoDasLinhas` (`itemSubtotal` already nets
+it; `totais.test.ts`); a floor whose excess becomes a "Cupom de desconto
+Shopee" pagamento; the conta's `modalidadeFreteImportacao ?? FOB` seeded once;
+Σ vPag = vNF once the escrow answers (else an update keeps the stored money);
+`tarifas` = the spread. Depth: `pedidos/README.md`.
 
 ⚠️ **A wrong transport guess surfaces as `error_param`, never as `error_sign`.**
 The shop base string is `partner_id + path + timestamp + access_token + shop_id`
@@ -1024,10 +1024,9 @@ already released. The importer moves NO stock — `onPedidoEstoqueSync` reacts t
 
 **Zero-fill is Shopee's house style, so `??` on a numeric wire field is a bug.**
 The SG sandbox order carried `actual_shipping_fee: 0` while the buyer had paid
-1.99, plus `edt_to: 0`, `pickup_done_time: 0` and a zero chargeable weight. ONE
-reader — `positivoOuNull` — guards every one of those fields; the legacy's
-`actual ?? estimated` is exactly how a `valorCobrado: 0` reaches every unshipped
-order.
+1.99. Detail numerics go through `positivoOuNull`; the ONE exception is the
+escrow's `buyer_paid_shipping_fee`, verbatim once the escrow answers (a
+free-shipping `0` is real).
 
 **`prazoDespacho`: Shopee's own deadline first, the 14:00 rule as a FALLBACK.**
 `ship_by_date` wins whenever it clears the 2020-01-01 floor (a `0` is the

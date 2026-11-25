@@ -1056,14 +1056,12 @@ describe('as recusas da Shopee — 404/409/502 com a NOSSA frase e o código ver
     expect(res.status).toBe(status);
     expect(res.body['code']).toBe(code);
     expect(enfileirados).toEqual([]);
-    // R3-2: the package wrote Shopee's sentence into the error's `message`; the
-    // mapper logs and returns `message` — so the route hands it the twin.
     expect(JSON.stringify(res.body)).not.toContain(FRASE_DA_SHOPEE);
     expect(logs()).not.toContain(FRASE_DA_SHOPEE);
     expect(logs()).toContain('[shopee/api]');
   });
 
-  it('R3-2: o corpo do mapeador diz SÓ o caminho, o código e o HTTP — o gêmeo, nunca a frase', async () => {
+  it('R3-2: o corpo do mapeador usa o caminho, o código e o HTTP', async () => {
     contexto({ escrita: recusa('shop_access_expired') });
     const reauth = await responder(CONFIRMAR);
     expect(reauth.status).toBe(409);

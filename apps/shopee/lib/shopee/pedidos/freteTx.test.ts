@@ -533,7 +533,6 @@ describe('salvarFreteShopee — a corrida com a transação do PEDIDO', () => {
     const detalhe = { ...detalheSG(), ...over } as ShopeeOrderDetailRow;
     return mapearPedidoShopee({
       detalhe,
-      escrow: null,
       itens: [
         {
           produtoUid: null,
@@ -553,20 +552,13 @@ describe('salvarFreteShopee — a corrida com a transação do PEDIDO', () => {
           ajusteRtc: null,
         },
       ],
-      conferencia: {
-        orderSn: ORDER_SN,
-        somaDosItens: 30,
-        descontoDasLinhas: 0,
-        freteCobrado: 1.99,
-        totalConferido: 31.99,
-        totalDoPedido: 31.99,
-        diferenca: 0,
-      },
+      descontoTotal: 0,
       frete: mapearFreteInicialShopee({ detalhe, escrow: null, watermarkUs: WATERMARK_US }).frete,
       conta: {
         integracaoPedidoOuterRef: `documents/integracao/${CONTA}`,
         listaDePrecosOuterRef: null,
         operacaoPedidoOuterRef: null,
+        modalidadeFreteImportacao: null,
       },
       captura: { estado: CAPTURA_COMPRADOR_ESTADO.expirado, camposRecusados: ['regiao:nao-br'] },
       clientePedidoOuterRef: null,

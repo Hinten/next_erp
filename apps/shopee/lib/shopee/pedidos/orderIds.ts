@@ -82,14 +82,41 @@ export function makePedidoIdShopee(contaId: string, orderSn: string): string {
  * for character and asserts the three near-miss spellings UNEQUAL.
  *
  * ⚠️ The legacy also wrote a `-desconto` SIBLING at
- * `sha256("integracao/<contaId>-<order_sn>-desconto")` (the extreme-coupon
- * workaround). Step 6 NEVER writes it, NEVER reads it and NEVER deletes it —
- * it is not one of ours. A NUMERIC suffix from {@link sufixoPagamentoShopee}
- * can never collide with it: the two id spaces are disjoint by construction,
- * because `-desconto` is not `-<n>` for any `n`.
+ * `sha256("integracao/<contaId>-<order_sn>-desconto")` — its coupon leg when
+ * the NF-e floor bound. Since 2026-11-24 the port writes the SAME document
+ * (`SUFIXO_CUPOM_SHOPEE`, legacy parity — Lucas's decision), so a migrated one
+ * is updated, never duplicated. A NUMERIC suffix from
+ * {@link sufixoPagamentoShopee} can never collide with it: the two id spaces
+ * are disjoint by construction, because `-desconto` is not `-<n>` for any `n`.
  */
 export function makePagamentoIdShopee(contaId: string, orderSn: string, sufixo?: string): string {
   return sha256Hex(`integracao/${contaId}-${orderSn}${sufixo ?? ''}`);
+}
+
+/**
+ * The cupom leg's suffix — the LEGACY spelling, byte for byte
+ * (`tasks.dart:664`: `id: '$order_sn-desconto'`). It is both the doc-id
+ * preimage's tail and the `id` field's.
+ */
+export const SUFIXO_CUPOM_SHOPEE = '-desconto';
+
+/**
+ * Every pagamento doc id this importer OWNS for one order: the numeric legs
+ * `[0, maximoDeLegs)` plus the cupom leg. ONE producer, read by the pagamento
+ * transaction to decide which stored documents are ours — never the `id`
+ * field, which rides the operator's form.
+ */
+export function idsDePagamentoDaOrdemShopee(
+  contaId: string,
+  orderSn: string,
+  maximoDeLegs: number,
+): ReadonlySet<string> {
+  const ids = new Set<string>();
+  for (let i = 0; i < maximoDeLegs; i += 1) {
+    ids.add(makePagamentoIdShopee(contaId, orderSn, sufixoPagamentoShopee(i)));
+  }
+  ids.add(makePagamentoIdShopee(contaId, orderSn, SUFIXO_CUPOM_SHOPEE));
+  return ids;
 }
 
 /**

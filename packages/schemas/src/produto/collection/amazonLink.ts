@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { FEED_ID_REGISTRO_AMAZON_REGEX } from '../../feedAmazon';
+import { faixaPrecoAmazonSchema } from '../../precoAmazon';
 import { outerRefSchema } from '../../shared/outerRef';
 import { millisSinceEpoch } from '../../shared/datetime';
 
@@ -103,64 +104,132 @@ function inteiroSeguro() {
 }
 
 /**
- * The last stock outcome of ONE link doc (Amazon step 12) — a field of its own,
- * apart from the legacy `issues`, so the stock and price flows and their three
- * sources (the patch answer, a feed report, the read-back) never overwrite each
- * other.
+ * The value field of one flow's stored outcome: its name, its schema (never
+ * nullable: the factory adds the `null` a feed stores) and the two pt-BR
+ * coherence messages, so each flow's refusals name its own field.
+ */
+export interface ValorDoEnvioGuardadoListingAmazon<C extends string, V extends z.ZodType> {
+  /** The field's name: what a patch sent (`quantidade`, `oferta`). */
+  readonly campo: C;
+  /** What a patch sent, as stored. */
+  readonly schema: V;
+  /** The refusal of a feed outcome that carries the value. */
+  readonly mensagemNoFeed: string;
+  /** The refusal of a patch outcome without it. */
+  readonly mensagemSemValorNoPatch: string;
+}
+
+/** The fields every flow's stored outcome shares, as its coherence check reads them. */
+interface CamposComunsEnvioGuardadoListingAmazon {
+  readonly via: ViaEnvioEstoqueAmazon;
+  readonly resultado: ResultadoEnvioEstoqueAmazon;
+  readonly submissionId: string | null;
+  readonly feedId: string | null;
+  readonly problemas: readonly unknown[];
+}
+
+/**
+ * THE ONE factory of a listings flow's last outcome on a link doc (Amazon steps
+ * 12 and 13) — a field of its own per flow, apart from the legacy `issues`, so
+ * the stock and price flows and their sources (the patch answer, a feed report,
+ * the read-back) never overwrite each other. Every flow's outcome is:
  *
+ *  - `via` — one `patchListingsItem`, or one `JSON_LISTINGS_FEED`;
  *  - `emMs` — OUR submission instant, in ms (a patch: right before the PATCH; a
  *    feed: right before `createFeed`). It is the field's watermark: a writer
  *    replaces a stored outcome only with a STRICTLY newer `emMs` (equal keeps
  *    the stored), so a feed report arriving hours later never overwrites a
- *    later patch's outcome.
- *  - `quantidade` — the quantity a PATCH carried; `null` for a feed, whose
- *    quantities live only inside its never-stored document.
+ *    later patch's outcome;
+ *  - the flow's VALUE field (`valor.campo`) — what a PATCH carried; `null` for a
+ *    feed, whose values live only inside its never-stored document;
+ *  - `resultado` — what Amazon answered;
  *  - `submissionId` — Amazon's id of a patch submission (null when its answer
  *    carried none, and always for `incerto`); `feedId` — the feed's (a feed
- *    only).
+ *    only);
  *  - `problemas` — Amazon's issues for this SKU, at most
  *    {@link MAX_PROBLEMAS_ENVIO_ESTOQUE_AMAZON}.
  *
- * The coherence between `via`, `resultado` and the ids is checked here, on the
- * nested object, so the link schema itself carries no top-level refinement.
+ * The coherence between `via`, the value, `resultado` and the ids is checked
+ * here, on the nested object, so the link schema itself carries no top-level
+ * refinement. The `via`/`resultado` vocabularies are the stock flow's, shared
+ * by every flow under their first names.
  */
-export const envioEstoqueAmazonSchema = z
-  .object({
-    via: viaEnvioEstoqueAmazonSchema,
-    /** ms — our submission instant: the watermark (above). */
-    emMs: inteiroSeguro(),
-    /** The quantity a patch sent; null for a feed. */
-    quantidade: inteiroSeguro().nullable(),
-    resultado: resultadoEnvioEstoqueAmazonSchema,
-    submissionId: z.string().min(1).nullable().default(null),
-    /** The feed record's own grammar: a feed outcome names a feed the record can name. */
-    feedId: z.string().regex(FEED_ID_REGISTRO_AMAZON_REGEX).nullable().default(null),
-    problemas: z
-      .array(amazonIssueWireSchema)
-      .max(MAX_PROBLEMAS_ENVIO_ESTOQUE_AMAZON)
-      .default(() => []),
-  })
-  .superRefine((envio, ctx) => {
-    const recusar = (path: string, message: string) => {
-      ctx.addIssue({ code: 'custom', path: [path], message });
-    };
-    if (envio.via === VIA_ENVIO_ESTOQUE_AMAZON.feed) {
-      if (envio.quantidade !== null) recusar('quantidade', 'um feed não guarda quantidade');
-      if (envio.feedId === null) recusar('feedId', 'um resultado de feed precisa do feedId');
-      if (envio.submissionId !== null) recusar('submissionId', 'um feed não tem submissionId');
-      if (envio.resultado === RESULTADO_ENVIO_ESTOQUE_AMAZON.incerto) {
-        recusar('resultado', 'só um patch pode ficar incerto');
+export function envioGuardadoListingAmazonSchema<C extends string, V extends z.ZodType>(
+  valor: ValorDoEnvioGuardadoListingAmazon<C, V>,
+) {
+  const campoDoValor = { [valor.campo]: valor.schema.nullable() } as {
+    [K in C]: z.ZodNullable<V>;
+  };
+  return z
+    .object({
+      via: viaEnvioEstoqueAmazonSchema,
+      /** ms — our submission instant: the watermark (above). */
+      emMs: inteiroSeguro(),
+      ...campoDoValor,
+      resultado: resultadoEnvioEstoqueAmazonSchema,
+      submissionId: z.string().min(1).nullable().default(null),
+      /** The feed record's own grammar: a feed outcome names a feed the record can name. */
+      feedId: z.string().regex(FEED_ID_REGISTRO_AMAZON_REGEX).nullable().default(null),
+      problemas: z
+        .array(amazonIssueWireSchema)
+        .max(MAX_PROBLEMAS_ENVIO_ESTOQUE_AMAZON)
+        .default(() => []),
+    })
+    .superRefine((saida, ctx) => {
+      // The output's type is generic in the value field's name, which the
+      // compiler cannot index: the coherence reads the shared fields by name.
+      const envio = saida as unknown as CamposComunsEnvioGuardadoListingAmazon;
+      const recusar = (path: string, message: string) => {
+        ctx.addIssue({ code: 'custom', path: [path], message });
+      };
+      const valorEnviado: unknown = Reflect.get(envio, valor.campo);
+      if (envio.via === VIA_ENVIO_ESTOQUE_AMAZON.feed) {
+        if (valorEnviado !== null) recusar(valor.campo, valor.mensagemNoFeed);
+        if (envio.feedId === null) recusar('feedId', 'um resultado de feed precisa do feedId');
+        if (envio.submissionId !== null) recusar('submissionId', 'um feed não tem submissionId');
+        if (envio.resultado === RESULTADO_ENVIO_ESTOQUE_AMAZON.incerto) {
+          recusar('resultado', 'só um patch pode ficar incerto');
+        }
+        return;
       }
-      return;
-    }
-    if (envio.quantidade === null) recusar('quantidade', 'um patch guarda a quantidade enviada');
-    if (envio.feedId !== null) recusar('feedId', 'um patch não tem feedId');
-    if (envio.resultado === RESULTADO_ENVIO_ESTOQUE_AMAZON.incerto) {
-      if (envio.submissionId !== null) recusar('submissionId', 'um patch incerto não tem resposta');
-      if (envio.problemas.length > 0) recusar('problemas', 'um patch incerto não tem resposta');
-    }
-  });
+      if (valorEnviado === null) recusar(valor.campo, valor.mensagemSemValorNoPatch);
+      if (envio.feedId !== null) recusar('feedId', 'um patch não tem feedId');
+      if (envio.resultado === RESULTADO_ENVIO_ESTOQUE_AMAZON.incerto) {
+        if (envio.submissionId !== null) {
+          recusar('submissionId', 'um patch incerto não tem resposta');
+        }
+        if (envio.problemas.length > 0) recusar('problemas', 'um patch incerto não tem resposta');
+      }
+    });
+}
+
+/**
+ * The last stock outcome of ONE link doc (Amazon step 12), built by
+ * {@link envioGuardadoListingAmazonSchema}: its value is `quantidade`, the
+ * quantity a PATCH carried.
+ */
+export const envioEstoqueAmazonSchema = envioGuardadoListingAmazonSchema({
+  campo: 'quantidade',
+  schema: inteiroSeguro(),
+  mensagemNoFeed: 'um feed não guarda quantidade',
+  mensagemSemValorNoPatch: 'um patch guarda a quantidade enviada',
+});
 export type EnvioEstoqueAmazon = z.infer<typeof envioEstoqueAmazonSchema>;
+
+/**
+ * The last price outcome of ONE link doc (Amazon step 13), built by
+ * {@link envioGuardadoListingAmazonSchema}: its value is `oferta`, the faixa a
+ * PATCH sent (`{ base, minimo, maximo }`, `../../precoAmazon.ts`). An
+ * `incerto` patch is the record a price task writes BEFORE its PATCH, so a
+ * PATCH whose answer is lost still reads as a recent send.
+ */
+export const envioPrecoAmazonSchema = envioGuardadoListingAmazonSchema({
+  campo: 'oferta',
+  schema: faixaPrecoAmazonSchema,
+  mensagemNoFeed: 'um feed não guarda oferta',
+  mensagemSemValorNoPatch: 'um patch guarda a oferta enviada',
+});
+export type EnvioPrecoAmazon = z.infer<typeof envioPrecoAmazonSchema>;
 
 /** `produtos/{id}/prodAmazon/{docId}` — the Amazon listing link doc. */
 export const produtoAmazonLinkSchema = z
@@ -183,6 +252,8 @@ export const produtoAmazonLinkSchema = z
     retrySubmitDate: millisSinceEpoch().nullable().default(null),
     // The last stock outcome (Amazon step 12); null on every link it never reached.
     envioEstoqueAmazon: envioEstoqueAmazonSchema.nullable().default(null),
+    // The last price outcome (Amazon step 13); null on every link it never reached.
+    envioPrecoAmazon: envioPrecoAmazonSchema.nullable().default(null),
   })
   .passthrough();
 export type ProdutoAmazonLink = z.infer<typeof produtoAmazonLinkSchema>;

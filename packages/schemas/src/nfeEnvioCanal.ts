@@ -3,17 +3,15 @@
  * DECISION behind every marketplace's NF-e upload trigger.
  *
  * Pure and total: no clock, no network, no Firestore. It reads two fields of a
- * raw snapshot (`estado`, `xml_nfe_proc`) and the first `<tpAmb>` of the proc
+ * raw snapshot (`estado`, `xml_nfe_proc`) and the fiscal fields of the proc
  * XML, so both SDK worlds and every channel app can share it.
  *
  * Two readers, two semantics:
  *
- *  - **Mercado Livre — LEVEL.** `decideNfeUploadDispatch` answers "is `after`
- *    ready?" and ignores `before`. `apps/mercado-livre` drives it from
- *    `onNfeAprovada` and from its `enviar-nfe` re-drive route, and re-exports
- *    it from `lib/marketplace/nfe/nfeUpload.ts` under the same names, so its
- *    callers and tests never moved. Its dedup is the live shipment-status gate
- *    inside the task.
+ *  - **Mercado Livre — LEVEL.** `decideNfeSaleUploadDispatch` checks the current
+ *    document for an approved production sale. The trigger, manual resend and
+ *    checkout recovery share that decision. Dedup is the live shipment-status
+ *    gate inside the task.
  *  - **Shopee — TRANSITION.** `decideNfeUploadTransition` enqueues only on the
  *    EDGE: `after` ready while `before` was not. A level trigger re-fires on
  *    every later write to an already-approved document, and those writes are
@@ -85,6 +83,13 @@ export function decideNfeUploadDispatch(
   before: Record<string, unknown> | undefined,
   after: Record<string, unknown> | undefined,
 ): NfeUploadDispatch {
+  const dispatch = nfeProntaParaEnvio(after);
+  return dispatch.action === 'skip' ? dispatch : { action: 'enqueue' };
+}
+
+function nfeProntaParaEnvio(
+  after: Record<string, unknown> | undefined,
+): Extract<NfeUploadDispatch, { action: 'skip' }> | { action: 'enqueue'; xml: string } {
   // (1) Deleted doc — nothing to upload.
   if (after == null) return { action: 'skip', reason: 'apagada' };
 
@@ -99,7 +104,7 @@ export function decideNfeUploadDispatch(
   // dispatch; the task re-checks and distinguishes '2' from unparseable.
   if (extractTpAmb(xml) !== '1') return { action: 'skip', reason: 'tpamb-homologacao' };
 
-  return { action: 'enqueue' };
+  return { action: 'enqueue', xml };
 }
 
 /* --------------------------- transition dispatch ---------------------------- */
@@ -178,4 +183,21 @@ export function finalidadeDaNfeProc(xml: string): FinalidadeDaNfeProc {
   if (tpNF === null || finNFe === null) return 'ilegivel';
   if (!CODIGO_DE_UM_DIGITO.test(tpNF) || !CODIGO_DE_UM_DIGITO.test(finNFe)) return 'ilegivel';
   return tpNF === SAIDA && finNFe === FINALIDADE_NORMAL ? 'venda' : 'outra';
+}
+
+export type NfeSaleUploadDispatch =
+  | NfeUploadDispatch
+  | { action: 'skip'; reason: 'nfe-nao-e-de-venda' | 'xml-invalido' };
+
+/** Eligibility for uploads that accept only an approved production sale NF-e. */
+export function decideNfeSaleUploadDispatch(
+  after: Record<string, unknown> | undefined,
+): NfeSaleUploadDispatch {
+  const dispatch = nfeProntaParaEnvio(after);
+  if (dispatch.action === 'skip') return dispatch;
+
+  const finalidade = finalidadeDaNfeProc(dispatch.xml);
+  if (finalidade === 'ilegivel') return { action: 'skip', reason: 'xml-invalido' };
+  if (finalidade === 'outra') return { action: 'skip', reason: 'nfe-nao-e-de-venda' };
+  return { action: 'enqueue' };
 }

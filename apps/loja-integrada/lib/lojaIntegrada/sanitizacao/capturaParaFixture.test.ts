@@ -739,6 +739,39 @@ describe('capturaParaFixture — catalogue ids outside the body rows', () => {
     );
   });
 
+  it("EQUAL: a price set/ answer's not_found holds the pseudonyms of exactly the path ids no row names (step 13)", () => {
+    const corpo = {
+      objects: [
+        {
+          id: 9001,
+          produto: '/api/v1/produto/5101',
+          resource_uri: '/api/v1/produto_preco/5101',
+          cheio: '10.0000',
+          promocional: '0.0000',
+          custo: '5.0000',
+          sob_consulta: false,
+        },
+      ],
+      not_found: ['5102', '9003'],
+    };
+    const r = captura('GET /v1/produto_preco/set/5101;5102;9003 200', corpo);
+    const env = envelope(r);
+    const [a, b2, c] = [f(5101), f(5102), f(9003)].map(String);
+    expect(env.requisicao.caminho).toBe(`/v1/produto_preco/set/${a};${b2};${c}`);
+    expect(em(env.resposta.corpo, 'not_found')).toEqual([b2, c]);
+    expect(em(env.resposta.corpo, 'objects.0.produto')).toBe(`/api/v1/produto/${a}`);
+    // Prices are kept, the cost is faked.
+    expect(em(env.resposta.corpo, 'objects.0.cheio')).toBe('10.0000');
+    expect(em(env.resposta.corpo, 'objects.0.promocional')).toBe('0.0000');
+    expect(em(env.resposta.corpo, 'objects.0.custo')).toBe(FALSO_LI.texto);
+    expect(JSON.stringify(env)).not.toMatch(/\b(?:5101|5102|9003)\b/);
+    expect(r.resumo?.folhas).toEqual(
+      expect.arrayContaining([
+        { caminho: 'not_found.*', tipo: 'string', tratamento: 'pseudonimizado', contagem: 2 },
+      ]),
+    );
+  });
+
   it('no key: the refused pair prints its request line with every id position blanked', () => {
     for (const [linha, esperada] of [
       ['GET /v1/grades/7777/ 200', 'GET /v1/grades/<id>/'],

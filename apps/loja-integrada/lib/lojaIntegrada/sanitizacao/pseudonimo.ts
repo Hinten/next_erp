@@ -45,7 +45,11 @@
  * `fixture` profile; the logger never sees this module):
  *
  * 1. a number (or a digit-only string) under a key named `id` or ending in `_id`
- *    (`imagem_id`) that the profile KEPT (a leaf it faked stays its fake);
+ *    (`imagem_id`), or under a key that holds a LIST of ids
+ *    ({@link CHAVES_DE_LISTA_DE_IDS_LI}: a price `set/` answer's `not_found`, the
+ *    ids it did not return), that the profile KEPT (a leaf it faked stays its
+ *    fake). Each keeps its JSON type: a number becomes the pseudonym, a digit
+ *    string its text (`'0042'` and `42` are one id);
  * 2. every digit-only segment of a string the profile kept under a leaf whose
  *    predicate is `uriRecurso` and that passes it — the id positions of
  *    `/v1/categoria/7`, `/api/v1/grades/6062`, `/api/v1/grade/6062/variacao/31`;
@@ -421,9 +425,23 @@ function pseudonimizarUrl(texto: string, troca: TrocaDeIdsLi): string {
   return `${trocarSegmentos(texto.slice(0, interrogacao), troca)}?${query}`;
 }
 
-/** A key whose kept number is an LI id: `id`, or a name ending in `_id` (`imagem_id`). */
+/**
+ * The keys whose value is a LIST of catalogue ids, each element mapped like an
+ * `id` (item 1 of the module comment; an array element inherits its key). Only
+ * `not_found`: a price `set/` answer's ids it did not return, as id strings
+ * (the owner's read-only price capture). The profile keeps it at the
+ * root of a price answer only (`core/redacao.ts`), so anywhere else it was
+ * faked and stays the fake. Exact names: `not_found_x` or `found` is not one.
+ */
+export const CHAVES_DE_LISTA_DE_IDS_LI: ReadonlySet<string> = new Set(['not_found']);
+
+/**
+ * A key whose kept number is an LI id: `id`, a name ending in `_id`
+ * (`imagem_id`), or a key that lists ids ({@link CHAVES_DE_LISTA_DE_IDS_LI}).
+ */
 const ehChaveDeId = (chave: string | null) =>
-  chave !== null && (chave === 'id' || chave.endsWith('_id'));
+  chave !== null &&
+  (chave === 'id' || chave.endsWith('_id') || CHAVES_DE_LISTA_DE_IDS_LI.has(chave));
 
 const ehObjeto = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v);

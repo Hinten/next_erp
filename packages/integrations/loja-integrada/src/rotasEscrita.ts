@@ -15,20 +15,26 @@
  *    goes out as a JSON number, unquoted, exactly as the schema produced it.
  *
  * So what the status write-back may never send — a codigo outside the three
- * write-back situações, a cleared or blank tracking code — and what the stock
+ * write-back situações, a cleared or blank tracking code — what the stock
  * sync may never send — an unmanaged product, a negative or fractional
- * quantity, a quoted number, a situação other than the two fixed ones — is
- * refused for EVERY `PUT` this package can make, not only for the operations in
- * `pedidosEscrita.ts` and `estoqueEscrita.ts`, which build their calls from
- * these same definitions. Steps 11 and 13 add their own rows here.
+ * quantity, a quoted number, a situação other than the two fixed ones — and
+ * what the price sync may never send — a full price of 0, a third decimal
+ * place, a quoted price, a `null` custo, a missing `sob_consulta`, a stray key
+ * — is refused for EVERY `PUT` this package can make, not only for the
+ * operations in `pedidosEscrita.ts`, `estoqueEscrita.ts` and `precoEscrita.ts`,
+ * which build their calls from these same definitions. Step 11 adds its own
+ * rows here.
  *
- * ⚠️ The stock body holds the package's one REQUEST number
- * ({@link quantidadeDeEstoqueValidaLi}), strict on purpose: tolerance is the
- * wrong direction outbound, since accepting `'3'` would mean forwarding it.
- * `integration-response-numbers-tolerant.test.js` carves out that exact line;
- * keep it on its own short line, so Prettier never wraps it out of the guard's
- * line-based scan.
+ * ⚠️ The stock and price bodies hold the package's REQUEST numbers — the stock
+ * quantity ({@link quantidadeDeEstoqueValidaLi}), the price
+ * ({@link precoDeEscritaValidoLi}) and the echoed custo
+ * ({@link custoEcoavelLi}) — strict on purpose: tolerance is the wrong
+ * direction outbound, since accepting `'3'` would mean forwarding it.
+ * `integration-response-numbers-tolerant.test.js` carves out each exact line
+ * that spells a Zod number; keep each on its own short line, so Prettier never
+ * wraps it out of the guard's line-based scan.
  */
+import { centavosDeReais, roundReais } from '@delfrance/core/money';
 import { z } from 'zod';
 
 /**
@@ -95,6 +101,61 @@ export function quantidadeDeEstoqueValidaLi(valor: unknown): valor is number {
   return QUANTIDADE_ESTOQUE_ESCRITA.safeParse(valor).success;
 }
 
+/** A price we send, in reais: above 0 (the line the guard carves out; refined below). */
+const REAIS_PRECO_ESCRITA = z.number().positive();
+
+/**
+ * A price this package SENDS (`cheio`, and a positive `promocional`): a JSON
+ * number above 0 with at most two decimal places, judged as the money module
+ * judges them (`roundReais(v) === v`, so `274.425` and `0.1 + 0.2` are
+ * refused, never rounded here), whose centavos are a safe integer: so it
+ * serialises with at most two decimals, and no larger amount than the price
+ * fold reads can be sent. The body builder makes it as `centavos / 100` and
+ * checks the exact round trip itself (`precoEscrita.ts`).
+ */
+const PRECO_ESCRITA = REAIS_PRECO_ESCRITA.refine(
+  (v) => roundReais(v) === v && Number.isSafeInteger(centavosDeReais(v)),
+  'no máximo 2 casas decimais',
+);
+
+/**
+ * The store's OWN custo, echoed back on a price write (never the ERP's): a
+ * JSON number, not negative. The two-decimal rule does NOT bind it: it is the
+ * store's value, sent back as the store's produto detail carries it.
+ */
+const CUSTO_ECO_ESCRITA = z.number().min(0);
+
+/**
+ * A price write's `promocional`: a positive price ({@link PRECO_ESCRITA}), or
+ * one of the clear's spellings, `0` and `null`. (The third spelling, the full
+ * price itself, is a positive price.) Which clear is SENT is the body
+ * builder's call, from the configured shape, and the price operation takes the
+ * builder's inputs, never a body (`precoEscrita.ts`): the request core looks a
+ * route up by its path alone, so the route accepts the union.
+ */
+const PROMOCIONAL_ESCRITA = z.union([PRECO_ESCRITA, z.literal(0), z.null()]);
+
+/**
+ * Whether `valor` is a price this package sends: a JSON number above 0 with at
+ * most two decimal places and safe-integer centavos. `0`, a negative, a third
+ * decimal place, `NaN`, an infinity and every string (`'274.42'` included) are
+ * refused. Read through the price route's own schema.
+ */
+export function precoDeEscritaValidoLi(valor: unknown): valor is number {
+  return PRECO_ESCRITA.safeParse(valor).success;
+}
+
+/**
+ * Whether `valor` is a custo a price write can echo: a JSON number, not
+ * negative (`0` included, any number of decimals). `null`, a string
+ * (`'10.50'`, `'0.0000'`), a negative and `NaN` are refused: such a custo is
+ * OMITTED from the body, never sent (`precoEscrita.ts`). Read through the price
+ * route's own schema.
+ */
+export function custoEcoavelLi(valor: unknown): valor is number {
+  return CUSTO_ECO_ESCRITA.safeParse(valor).success;
+}
+
 /**
  * One value of a write body: a JSON scalar. Which scalars a route accepts is
  * its schema's decision; nothing is coerced on the way out, because the core
@@ -144,11 +205,67 @@ const ROTA_ESTOQUE_PRODUTO: RotaEscritaLi = {
     .strict(),
 };
 
+/**
+ * A price write that echoes the store's custo: exactly the four leaves, in the
+ * order the public document's example writes them (the order sent).
+ */
+const CORPO_PRECO_COM_CUSTO = z
+  .object({
+    cheio: PRECO_ESCRITA,
+    custo: CUSTO_ECO_ESCRITA,
+    promocional: PROMOCIONAL_ESCRITA,
+    sob_consulta: z.boolean(),
+  })
+  .strict();
+
+/** A price write whose custo the store holds as `null` (or unreadable): the key is OMITTED. */
+const CORPO_PRECO_SEM_CUSTO = z
+  .object({
+    cheio: PRECO_ESCRITA,
+    promocional: PROMOCIONAL_ESCRITA,
+    sob_consulta: z.boolean(),
+  })
+  .strict();
+
+/**
+ * Two strict objects, never one with an optional `custo`: the key is either a
+ * sendable number or absent, never `null`, and `sob_consulta` is always there
+ * (every price write is a FULL one).
+ */
+const CORPO_PRECO_PRODUTO = z.union([CORPO_PRECO_COM_CUSTO, CORPO_PRECO_SEM_CUSTO]);
+
+/** A price write's body, as the price route accepts and serialises it. */
+export type CorpoPrecoProdutoLi = z.infer<typeof CORPO_PRECO_PRODUTO>;
+
+/**
+ * Whether `valor` is a body the price route sends: one of the two strict shapes
+ * above. Read through the route's own schema, so a caller's diff and the route
+ * never disagree.
+ */
+export function corpoPrecoProdutoValidoLi(valor: unknown): valor is CorpoPrecoProdutoLi {
+  return CORPO_PRECO_PRODUTO.safeParse(valor).success;
+}
+
+/**
+ * `PUT /v1/produto_preco/{produto id}`: a FULL price body (`cheio`,
+ * `promocional`, `sob_consulta`, and `custo` when the store holds one), each
+ * leaf strict. The path id is the PRODUTO's id, the public document's path key;
+ * no trailing slash. Unproven until the first canary write: the path form,
+ * whether the store reads the body as full or partial, whether it keeps cents
+ * on `promocional` (the document types that leaf as an integer), and which
+ * clear it accepts (`precoEscrita.ts`).
+ */
+const ROTA_PRECO_PRODUTO: RotaEscritaLi = {
+  caminho: /^\/v1\/produto_preco\/[1-9][0-9]*$/,
+  corpo: CORPO_PRECO_PRODUTO,
+};
+
 /** Every route a `PUT` of this package can reach. */
 const ROTAS_ESCRITA_LI: readonly RotaEscritaLi[] = [
   ROTA_OBJETO_ENVIO,
   ROTA_SITUACAO_PEDIDO,
   ROTA_ESTOQUE_PRODUTO,
+  ROTA_PRECO_PRODUTO,
 ];
 
 /** The route `caminho` names, or `null` when it names none. */

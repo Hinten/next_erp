@@ -349,12 +349,17 @@ function idsDaUrl(texto: string): number[] {
   return [...segmentosDeId(caminho), ...valores].map(Number);
 }
 
+/** An element of an id list: a safe number, or a digit run read as one; anything else `NaN`. */
+const idDaLista = (v: ValorJsonLi): number =>
+  typeof v === 'number' ? v : typeof v === 'string' && /^\d+$/.test(v) ? Number(v) : Number.NaN;
+
 /**
  * Every catalogue id — a number under a key named `id` or ending in `_id`, an id
- * segment of a kept resource URI, an id segment of the request path, a `produto`
- * query value, and the path ids and `produto=` values of `meta.next` and
- * `meta.previous` — outside the pseudonym range
- * `[PSEUDONIMO_MINIMO_LI, PSEUDONIMO_MAXIMO_LI]`, counted per file.
+ * segment of a kept resource URI (a lone one, or each element of a list of them),
+ * every element of a `not_found` list (an element that is no digit run counts as
+ * outside), an id segment of the request path, a `produto` query value, and the
+ * path ids and `produto=` values of `meta.next` and `meta.previous` — outside the
+ * pseudonym range `[PSEUDONIMO_MINIMO_LI, PSEUDONIMO_MAXIMO_LI]`, counted per file.
  */
 function idsForaDaFaixa(fixtures: FixturesLi): { foraDaFaixa: string[]; ids: number } {
   const naFaixa = (n: number) => n >= PSEUDONIMO_MINIMO_LI && n <= PSEUDONIMO_MAXIMO_LI;
@@ -378,6 +383,14 @@ function idsForaDaFaixa(fixtures: FixturesLi): { foraDaFaixa: string[]; ids: num
           valores.push(v);
         }
         if (ehUriDeRecurso(v)) valores.push(...segmentosDeId(v).map(Number));
+        // A LIST of resource URIs (a produto detail's `variacoes`, `filhos`, `grades`,
+        // `categorias`): every element's id segments, as a lone URI's.
+        if (Array.isArray(v)) {
+          for (const x of v) if (ehUriDeRecurso(x)) valores.push(...segmentosDeId(x).map(Number));
+        }
+        // A kept `not_found` (a price `set/` answer's ids it did not return, which the sanitizer
+        // pseudonymizes): every element is an id; one that is no digit run counts as outside.
+        if (k === 'not_found' && Array.isArray(v)) valores.push(...v.map(idDaLista));
         if (onde === 'meta' && (k === 'next' || k === 'previous') && typeof v === 'string') {
           valores.push(...idsDaUrl(v));
         }
@@ -446,6 +459,12 @@ function skusForaDoPai(fixtures: FixturesLi): { divergencias: string[]; pares: n
   return { divergencias, pares };
 }
 
+/** A price resource's request path: the owner's price captures are never committed. */
+const CAMINHO_DE_PRECO = /^\/v1\/produto_preco(?:\/|$)/;
+/** The fixtures whose request path is a price resource's, by file name (never a value). */
+const capturasDePreco = (fixtures: FixturesLi) =>
+  fixtures.filter(([, e]) => CAMINHO_DE_PRECO.test(e.requisicao.caminho)).map(([a]) => a);
+
 describe('__wire__ corpus', () => {
   const arquivos = listarArquivosDoCorpusLi();
 
@@ -500,6 +519,22 @@ describe('__wire__ corpus', () => {
     expect(comparados).toEqual(['catalogo (raiz)', 'catalogo objects.*', 'configuracao objects.*']);
   });
 
+  // The owner's decision, made mechanical: every price test reads INVENTED answers in the
+  // captures' shape (`preco/respostasPreco.test.ts`), and a sanitizer run without `--so`
+  // would write the owner's local price pairs here. Only file names are printed.
+  it('no fixture is a price capture: the owner’s read-only price captures are not committed', () => {
+    const fixtures: (readonly [string, EnvelopeFixtureLi])[] = [];
+    for (const arquivo of arquivos) {
+      const leitura = lerFixtureLi(readFileSync(join(DIRETORIO_WIRE_LI, arquivo), 'utf8'));
+      if (leitura.ok) fixtures.push([arquivo, leitura.data]); // else reported above
+    }
+    expect(capturasDePreco(fixtures)).toEqual([]);
+    // Non-vacuous: the check reads the request paths of the catalogue's sibling resource.
+    expect(fixtures.some(([, e]) => e.requisicao.caminho.startsWith('/v1/produto_estoque'))).toBe(
+      true,
+    );
+  });
+
   it('the README is there and states the provenance', () => {
     const leiame = readFileSync(join(DIRETORIO_WIRE_LI, LEIAME_WIRE_LI), 'utf8');
     for (const trecho of [
@@ -509,6 +544,7 @@ describe('__wire__ corpus', () => {
       'Order SKUs, order numeros, dates, quantities and prices are real',
       'Catalogue SKUs are not',
       'MINIMO_DE_FIXTURES',
+      "they are not committed, by the owner's decision",
     ]) {
       expect(leiame, trecho).toContain(trecho);
     }
@@ -738,8 +774,10 @@ describe('__wire__ corpus — catalogue ids keep their function without a real i
     // Non-vacuous: every id of the catalogue fixtures (bodies, URIs, request paths): 577 in
     // the step-10 and step-3 ones, 848 in the product captures, and 3331 in the stock
     // captures (each of the 1097 list rows' `id`, `produto` and `resource_uri`: 3291; each of
-    // the nine details' three and its request path: 36; the four 404s' request paths: 4).
-    expect(ids).toBe(4756);
+    // the nine details' three and its request path: 36; the four 404s' request paths: 4), and
+    // 2052 held by LISTS of resource URIs (`variacoes`, `filhos`, `grades` and `categorias`,
+    // all in the product captures).
+    expect(ids).toBe(6808);
   });
 
   it("every variation a product row names, held by the same store, starts with its parent's SKU", () => {
@@ -935,6 +973,92 @@ describe('catalogue id relations: what the corpus checks compare', () => {
       'f.json :: 1 id(s) outside the pseudonym range',
       'g.json :: 1 id(s) outside the pseudonym range',
     ]);
+  });
+
+  it('the range covers a LIST of resource URIs too (variacoes, filhos, grades, categorias), each element’s ids', () => {
+    const p = PSEUDONIMO_MINIMO_LI + 24_680;
+    const s = String(p);
+    const detalhe = (listas: Readonly<Record<string, ValorJsonLi>>) =>
+      envelope(`/v1/produto/${s}/`, { id: p, ...listas });
+    // EQUAL: the path, the id, a variation URI's two ids and a child URI's one.
+    expect(
+      idsForaDaFaixa([
+        [
+          'p.json',
+          detalhe({
+            variacoes: [`/api/v1/grade/${s}/variacao/${s}`],
+            filhos: [`/api/v1/produto/${s}`],
+          }),
+        ],
+      ]),
+    ).toEqual({ foraDaFaixa: [], ids: 5 });
+    // NEAR-MISS: a real-sized id inside any of the four lists is outside the range.
+    expect(
+      idsForaDaFaixa([
+        ['a.json', detalhe({ variacoes: ['/api/v1/grade/7/variacao/8'] })],
+        ['b.json', detalhe({ filhos: ['/api/v1/produto/987654321'] })],
+        ['c.json', detalhe({ grades: [`/api/v1/grades/${s}`, '/api/v1/grade/12'] })],
+        ['d.json', detalhe({ categorias: ['/api/v1/categoria/4101'] })],
+      ]).foraDaFaixa,
+    ).toEqual([
+      'a.json :: 2 id(s) outside the pseudonym range',
+      'b.json :: 1 id(s) outside the pseudonym range',
+      'c.json :: 1 id(s) outside the pseudonym range',
+      'd.json :: 1 id(s) outside the pseudonym range',
+    ]);
+    // NEAR-MISS: a list of strings that are no resource URI holds no id.
+    expect(idsForaDaFaixa([['t.json', detalhe({ tags: ['123', 'REDACTED'] })]])).toEqual({
+      foraDaFaixa: [],
+      ids: 2,
+    });
+  });
+
+  it('the range: a not_found element is an id — a pseudonym (string or number) passes; a real-sized one, or a faked one, does not', () => {
+    const p = (n: number) => String(PSEUDONIMO_MINIMO_LI + n);
+    const set = (notFound: ValorJsonLi[]) =>
+      envelope(`/v1/produto_preco/set/${p(1)};${p(2)};${p(3)}`, {
+        objects: [],
+        not_found: notFound,
+      });
+    // EQUAL: the path's three ids and the two listed.
+    expect(idsForaDaFaixa([['a.json', set([p(2), p(3)])]])).toEqual({ foraDaFaixa: [], ids: 5 });
+    // NEAR-MISS: a real-sized id, and an element the profile faked, are each outside.
+    expect(
+      idsForaDaFaixa([
+        ['a.json', set(['42'])],
+        ['b.json', set(['REDACTED', p(2)])],
+      ]),
+    ).toEqual({
+      foraDaFaixa: [
+        'a.json :: 1 id(s) outside the pseudonym range',
+        'b.json :: 1 id(s) outside the pseudonym range',
+      ],
+      ids: 9,
+    });
+    // NEAR-MISS: a JSON NUMBER element is an id too (the sanitizer keeps a number a number):
+    // a pseudonym number passes, a real-sized one does not.
+    expect(idsForaDaFaixa([['n.json', set([Number(p(2)), p(3)])]])).toEqual({
+      foraDaFaixa: [],
+      ids: 5,
+    });
+    expect(idsForaDaFaixa([['c.json', set([42])]]).foraDaFaixa).toEqual([
+      'c.json :: 1 id(s) outside the pseudonym range',
+    ]);
+  });
+
+  it('NEAR-MISS: the price-capture check flags every produto_preco path, and no other resource', () => {
+    const corpo = { objects: [] };
+    const caminhos = [
+      '/v1/produto_preco',
+      '/v1/produto_preco/set/1;2',
+      '/v1/produto_preco/7/',
+      '/v1/produto_estoque/7',
+      '/v1/produto/7/',
+      '/v1/produto_precos/7',
+    ];
+    expect(
+      capturasDePreco(caminhos.map((c, i) => [`${String(i)}.json`, envelope(c, corpo)])),
+    ).toEqual(['0.json', '1.json', '2.json']);
   });
 
   it('the range ignores what is not an id: meta numbers, meta.next and a configuracao id', () => {

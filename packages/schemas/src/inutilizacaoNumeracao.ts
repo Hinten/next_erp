@@ -64,6 +64,7 @@ export type InutNumeracao = z.infer<typeof inutNumeracaoSchema>;
 
 export const inutNumeracaoMeta: CollectionMetadata = {
   collectionPath: 'filiais/{filialId}/inutilizacao',
+  serverOwned: true,
   permissions: {
     read: PERM_FISCAL_READ,
     write: PERM_FISCAL_WRITE,

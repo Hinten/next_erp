@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PERM } from '@delfrance/auth';
 import { READ_CACHE_DISABLED_ENV, __resetAllReadCaches } from '@delfrance/data/admin/cache';
-import { SHOPEE_ERROR_KIND, ShopeeApiError } from '@delfrance/integrations-shopee';
 import {
   atributoDtoSchema as atributoCompartilhado,
   respostaAtributosShopeeSchema,
@@ -10,6 +9,7 @@ import {
 import { ShopeeContaNotConfiguredError } from '@/lib/shopee/core/shopee';
 import { __setShopeeTaxonomiaClockForTests } from '@/lib/shopee/taxonomia/cache';
 import { atributoDtoSchema } from '@/lib/shopee/taxonomia/dto';
+import { falhaDeEnvelope, verificarEnvelopeRedigido } from '@/lib/shopee/testing/falhaDeEnvelope';
 
 const h = vi.hoisted(() => ({
   verifyIdToken: vi.fn(),
@@ -233,21 +233,21 @@ describe('o aviso por categoria', () => {
 });
 
 describe('os erros', () => {
-  it('error_param vira 502 e deixa a linha CRUA no log', async () => {
-    h.getAttributeTree.mockRejectedValue(
-      new ShopeeApiError('Shopee respondeu product.error_param', {
-        code: 'product.error_param',
-        kind: SHOPEE_ERROR_KIND.other,
-        httpStatus: 200,
-        path: '/api/v2/product/get_attribute_tree',
-      }),
-    );
+  it('error_param vira 502 com o código prefixado e sem a frase da Shopee', async () => {
+    const falha = falhaDeEnvelope('/api/v2/product/get_attribute_tree', 'product.error_param');
+    h.getAttributeTree.mockRejectedValue(falha);
     const res = await GET(req({ integracaoId: 'int-1', categoryId: '100182' }, AUTORIZADO));
 
-    expect(res.status).toBe(502);
-    await expect(res.json()).resolves.toMatchObject({ shopeeCode: 'product.error_param' });
-    const linhas = spyWarn.mock.calls.map((c: unknown[]) => c[0]);
-    expect(linhas).toContain('[shopee/taxonomia] get_attribute_tree recusou o parâmetro enviado');
+    await verificarEnvelopeRedigido(res, falha, 502);
+    expect(spyWarn.mock.calls).toContainEqual([
+      '[shopee/taxonomia] get_attribute_tree recusou o parâmetro enviado',
+      {
+        integracaoId: 'int-1',
+        categoryId: 100182,
+        parametro: 'category_id_list',
+        codigo: falha.code,
+      },
+    ]);
   });
 
   it('deixa um erro alheio subir (regra 6)', async () => {

@@ -7,6 +7,9 @@ import {
   INTEGRACAO_FRETE,
   INTEGRACAO_TIPO,
   pagamentoSchema,
+  MODALIDADE_FRETE,
+  STATUS_PAGAMENTO,
+  sumPagamentosPagos,
 } from '@delfrance/schemas';
 import type { ZodError } from 'zod';
 import {
@@ -29,12 +32,19 @@ import {
   executarAcoesDeAvisoDoDespacho,
   type EncerramentoDespachoShopee,
 } from '../avisos/despachoAutomatico';
-import { FIXTURE_ORDER_DETAIL_QTY2_SG, lerPedidoDetalhe } from '../fixtures/wireCorpus';
+import {
+  FIXTURE_ESCROW_DETAIL_QTY2_SG,
+  FIXTURE_ORDER_DETAIL_QTY2_SG,
+  lerEscrowDetalhe,
+  lerPedidoDetalhe,
+} from '../fixtures/wireCorpus';
 import { FakeDb, asDb, type DocData } from '../testing/fakeDb';
+import { totalDaNotaDoPedidoArmazenado } from './dinheiroShopee';
 import { observadoDoPacoteDetalhe, type PacoteObservadoShopee } from './fretePushShopee';
 import { salvarFreteShopee } from './freteTx';
+import { SUBTIPO_PAGAMENTO_DIVERGENTE } from './incidentesProduto';
 import { mapearItensShopee } from './itens';
-import { makePagamentoIdShopee, makePedidoIdShopee } from './orderIds';
+import { SUFIXO_CUPOM_SHOPEE, makePagamentoIdShopee, makePedidoIdShopee } from './orderIds';
 import { microsDeSegundosShopee } from './orderMapping';
 
 /**
@@ -324,7 +334,7 @@ describe('importarPedidoShopee — o caminho feliz sobre a fixture SG', () => {
         detalhe,
         escrow: null,
         resolucoes: new Map(),
-        freteCobrado: null,
+        modalidade: MODALIDADE_FRETE.fob,
         nowUs: NOW_US,
       });
       expect(mapeado.itens[0]!.sku).toBe(esperado);
@@ -794,7 +804,7 @@ describe('importarPedidoShopee — os pagamentos', () => {
   });
 
   it('a linha de log do import carrega os números do pagamento e NENHUM dado sensível', async () => {
-    const c = cenario({ detalhe: detalheBR() });
+    const c = cenario({ detalhe: detalheBR(), escrow: escrowSGCom() });
     await importar(c);
 
     const linhaDoImport = infos.find((args) => String(args[0]).includes('pedido importado'));
@@ -803,8 +813,12 @@ describe('importarPedidoShopee — os pagamentos', () => {
     expect(campos.acaoPagamentos).toBe('criado');
     expect(campos.pagamentos).toBe(1);
     expect(campos.gruposPagamento).toEqual(expect.arrayContaining(['dados']));
-    expect(campos.somaPagante).toBe(31.99);
+    // FOB (the conta has no modalidade): the NF-e and the pagamento exclude the
+    // 1,99 of freight the buyer paid; the pedido keeps it.
+    expect(campos.somaPagante).toBe(30);
     expect(campos.divergenciaDeSoma).toBe(0);
+    expect(campos.totalDaNota).toBe(30);
+    expect(campos.valorCobrado).toBe(31.99);
     expect(campos).toHaveProperty('tarifas');
     expect(campos).toHaveProperty('tarifasBrutas');
     // BR ⇒ a contagem de `payment_info` viaja (item 22 do registro settle-live).
@@ -838,12 +852,594 @@ describe('importarPedidoShopee — os pagamentos', () => {
     expect(tudo).not.toContain('buyer_');
   });
 
-  it('Σ pagante do resultado bate com o `valorCobrado` que o pedido guardou', async () => {
+  it('Σ pagante do resultado bate com o vNF do pedido GRAVADO — o frete fora sob FOB', async () => {
+    const c = cenario({ escrow: escrowSGCom() });
+    await importar(c);
+    const pedido = c.db.store[PEDIDO_PATH]!.data;
+    const pagamento = c.db.store[`${PAGAMENTOS_PATH}/${PAGAMENTO_ID}`]!.data;
+    expect(pagamento.valor).toBe(totalDaNotaDoPedidoArmazenado(pedido).totalDaNota);
+    // ⚠️ NEAR-MISS: the pedido's valorCobrado carries the freight under every
+    // modalidade, so it is NOT what the pagamento sums to under FOB.
+    expect(pagamento.valor).not.toBe(pedido.valorCobrado);
+  });
+
+  it('⚠️ pago e SEM escrow: o pagamento ancora no total_amount e a NF-e recusa (865/866) em vez de emitir', async () => {
+    // The default escrow body carries no `order_income`: nothing says what the
+    // buyer paid toward the lines, so the pagamento states the order's
+    // total_amount (31,99, freight included) against a vNF of 30 under FOB.
     const c = cenario();
     await importar(c);
     const pedido = c.db.store[PEDIDO_PATH]!.data;
     const pagamento = c.db.store[`${PAGAMENTOS_PATH}/${PAGAMENTO_ID}`]!.data;
-    expect(pagamento.valor).toBe(pedido.valorCobrado);
+    expect(pagamento.valor).toBe(31.99);
+    expect(totalDaNotaDoPedidoArmazenado(pedido).totalDaNota).toBe(30);
+    const campos = linhaDoImport(0);
+    expect(campos.dinheiroProvisorio).toBe(true);
+    expect(campos.divergenciaDeSoma).toBe(1.99);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*     the order's money end to end — legacy parity, Lucas's decision of      */
+/*     2026-11-24: lines at what the buyer paid, offsets as discount, a floor  */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The SG escrow body with its money patched — the committed fixture's ids, so
+ * the escrow row still pairs with the detail line. Amounts only.
+ */
+function escrowSGCom(
+  over: { renda?: Record<string, unknown>; linha?: Record<string, unknown> } = {},
+): ShopeeEscrowDetail {
+  const base = lerEscrowDetalhe(FIXTURE_ESCROW_DETAIL_QTY2_SG).response;
+  const renda = base.order_income!;
+  return {
+    ...base,
+    order_income: {
+      ...renda,
+      ...over.renda,
+      items: (renda.items ?? []).map((i) => ({ ...i, ...over.linha })),
+    },
+  } as ShopeeEscrowDetail;
+}
+
+const INCIDENTE_DIVERGENTE_PATH = `${PEDIDO_PATH}/incidentes/${SUBTIPO_PAGAMENTO_DIVERGENTE}`;
+
+describe('importarPedidoShopee — o dinheiro da ordem (paridade com o legado)', () => {
+  it('a modalidade da CONTA semeia o bloco no CREATE; CIF põe o frete na nota e no pagamento', async () => {
+    const c = cenario({ escrow: escrowSGCom() });
+    c.db.seed(`${INTEGRACAO_PATH}/${INT}`, {
+      ...c.db.store[`${INTEGRACAO_PATH}/${INT}`]!.data,
+      modalidadeFreteImportacao: MODALIDADE_FRETE.cif,
+    });
+    __resetAllReadCaches();
+
+    await importar(c);
+
+    const pedido = c.db.store[PEDIDO_PATH]!.data;
+    expect((pedido.freteInicial as Record<string, unknown>).modalidade).toBe(MODALIDADE_FRETE.cif);
+    const pagamento = c.db.store[`${PAGAMENTOS_PATH}/${PAGAMENTO_ID}`]!.data;
+    expect(pagamento.valor).toBe(31.99);
+    expect(totalDaNotaDoPedidoArmazenado(pedido).totalDaNota).toBe(31.99);
+  });
+
+  it('⚠️ NEAR-MISS: a conta mudada para FOB depois NÃO reescreve o bloco gravado — o dinheiro segue o CIF', async () => {
+    const c = cenario({ escrow: escrowSGCom() });
+    const conta = c.db.store[`${INTEGRACAO_PATH}/${INT}`]!.data;
+    c.db.seed(`${INTEGRACAO_PATH}/${INT}`, {
+      ...conta,
+      modalidadeFreteImportacao: MODALIDADE_FRETE.cif,
+    });
+    __resetAllReadCaches();
+    await importar(c);
+
+    c.db.seed(`${INTEGRACAO_PATH}/${INT}`, {
+      ...conta,
+      modalidadeFreteImportacao: MODALIDADE_FRETE.fob,
+    });
+    __resetAllReadCaches();
+    const r = await importar(c);
+
+    expect(r.acao).toBe('ignorado-sem-mudanca');
+    const pedido = c.db.store[PEDIDO_PATH]!.data;
+    expect((pedido.freteInicial as Record<string, unknown>).modalidade).toBe(MODALIDADE_FRETE.cif);
+    expect(c.db.store[`${PAGAMENTOS_PATH}/${PAGAMENTO_ID}`]!.data.valor).toBe(31.99);
+  });
+
+  it('o piso: o desconto é reduzido até a nota chegar a 50 % do original, e o resto vira o pagamento-cupom', async () => {
+    // Line total 30 at quantity 2, a Shopee voucher of 28 ⇒ the buyer paid
+    // 2 + 1,99 of freight = 3,99. Floor = max(5, 50 % × 30, 1,99) = 15.
+    const c = cenario({
+      escrow: escrowSGCom({
+        renda: { buyer_total_amount: 3.99 },
+        linha: { discount_from_voucher_shopee: 28 },
+      }),
+    });
+
+    await importar(c);
+
+    const pedido = c.db.store[PEDIDO_PATH]!.data;
+    const linhaGravada = (pedido.itens as Record<string, Record<string, unknown>[]>).NONE![0]!;
+    expect(linhaGravada.precoDeVenda).toBe(15);
+    expect(linhaGravada.descontoUnitario).toBe(7.5);
+    expect(totalDaNotaDoPedidoArmazenado(pedido).totalDaNota).toBe(15);
+    // ⚠️ The STORED pedido total is the derive over those lines + the freight
+    // (what an operator save recomputes) — never `buyer_total_amount` (3,99).
+    expect(pedido.valorCobrado).toBe(16.99);
+
+    const cupomId = makePagamentoIdShopee(INT, ORDER_SN, SUFIXO_CUPOM_SHOPEE);
+    expect(c.db.idsEm(PAGAMENTOS_PATH).sort()).toEqual([PAGAMENTO_ID, cupomId].sort());
+    const comprador = c.db.store[`${PAGAMENTOS_PATH}/${PAGAMENTO_ID}`]!.data;
+    const cupom = c.db.store[`${PAGAMENTOS_PATH}/${cupomId}`]!.data;
+    // FOB: the buyer leg is what the buyer paid minus the freight.
+    expect(comprador.valor).toBe(2);
+    expect(cupom).toMatchObject({
+      valor: 13,
+      forma_de_pagamento: 99,
+      descricaoPagamento: 'Cupom de desconto Shopee',
+      id: `${ORDER_SN}-desconto`,
+    });
+    const campos = linhaDoImport(0);
+    expect(campos.pisoAplicado).toBe(true);
+    expect(campos.divergenciaDeSoma).toBe(0);
+  });
+
+  it('⚠️ NEAR-MISS: um voucher que deixa a nota no piso ou acima não toca o desconto e não cria cupom', async () => {
+    // A voucher of 15 over the line total of 30 ⇒ the goods total is 15, the
+    // floor exactly; the buyer paid 15 + 1,99.
+    const c = cenario({
+      escrow: escrowSGCom({
+        renda: { buyer_total_amount: 16.99 },
+        linha: { discount_from_voucher_shopee: 15 },
+      }),
+    });
+
+    await importar(c);
+
+    const pedido = c.db.store[PEDIDO_PATH]!.data;
+    const linhaGravada = (pedido.itens as Record<string, Record<string, unknown>[]>).NONE![0]!;
+    expect(linhaGravada.descontoUnitario).toBe(7.5);
+    expect(c.db.idsEm(PAGAMENTOS_PATH)).toEqual([PAGAMENTO_ID]);
+    expect(c.db.store[`${PAGAMENTOS_PATH}/${PAGAMENTO_ID}`]!.data.valor).toBe(15);
+    expect(linhaDoImport(0).pisoAplicado).toBe(false);
+  });
+
+  it('o comprador pagou ACIMA das linhas: pagamento = total da nota e UM incidente, idempotente', async () => {
+    const c = cenario({ escrow: escrowSGCom({ renda: { buyer_total_amount: 35 } }) });
+
+    await importar(c);
+
+    expect(c.db.store[`${PAGAMENTOS_PATH}/${PAGAMENTO_ID}`]!.data.valor).toBe(30);
+    // The stored pedido total is the lines + freight (31,99), never the 35 paid.
+    expect(c.db.store[PEDIDO_PATH]!.data.valorCobrado).toBe(31.99);
+    const incidente = c.db.store[INCIDENTE_DIVERGENTE_PATH]!.data;
+    expect(incidente.subtipo).toBe(SUBTIPO_PAGAMENTO_DIVERGENTE);
+    expect(linhaDoImport(0).pagamentoDivergente).toBe(true);
+
+    // The redelivery keeps the first row — a deterministic id, `create` swallowed.
+    infos.length = 0;
+    await importar(c);
+    expect(
+      c.db.idsEm(`${PEDIDO_PATH}/incidentes`).filter((id) => id === SUBTIPO_PAGAMENTO_DIVERGENTE),
+    ).toHaveLength(1);
+    expect(linhaDoImport(0).pagamentoDivergente).toBe(false);
+  });
+
+  it('⚠️ NEAR-MISS: o pedido que FECHA não abre o incidente', async () => {
+    const c = cenario({ escrow: escrowSGCom() });
+    await importar(c);
+    expect(c.db.store[INCIDENTE_DIVERGENTE_PATH]).toBeUndefined();
+    expect(linhaDoImport(0).pagamentoDivergente).toBe(false);
+  });
+
+  /** The stored pedido's line, its total, its freight, and the primary pagamento. */
+  function dinheiroGravado(c: Cenario) {
+    const pedido = c.db.store[PEDIDO_PATH]!.data;
+    const linhaGravada = (pedido.itens as Record<string, Record<string, unknown>[]>).NONE![0]!;
+    return {
+      precoDeVenda: linhaGravada.precoDeVenda,
+      descontoUnitario: linhaGravada.descontoUnitario,
+      valorCobrado: pedido.valorCobrado,
+      descontoTotal: pedido.descontoTotal,
+      frete: (pedido.freteInicial as Record<string, unknown>).valorCobrado,
+      vNF: totalDaNotaDoPedidoArmazenado(pedido).totalDaNota,
+      pagamento: c.db.store[`${PAGAMENTOS_PATH}/${PAGAMENTO_ID}`]!.data.valor,
+    };
+  }
+
+  it('⚠️ uma entrega PAGA com o escrow em falha (contida) NÃO reescreve o dinheiro que o escrow fechou', async () => {
+    // Delivery 1: line total 30 at quantity 2, a Shopee voucher of 6 and an
+    // un-itemized offset of 1, free shipping ⇒ the buyer paid 23.
+    const c = cenario({
+      escrow: escrowSGCom({
+        renda: { buyer_total_amount: 23, buyer_paid_shipping_fee: 0 },
+        linha: { discount_from_voucher_shopee: 6 },
+      }),
+    });
+    await importar(c);
+    const fechado = {
+      precoDeVenda: 15,
+      descontoUnitario: 3,
+      valorCobrado: 23,
+      descontoTotal: 1,
+      frete: 0,
+      vNF: 23,
+      pagamento: 23,
+    };
+    expect(dinheiroGravado(c)).toEqual(fechado);
+
+    // Delivery 2: a NEWER order clock, and `get_escrow_detail` fails in transit.
+    c.getOrderDetail.mockResolvedValue({
+      order_list: [linha({ order_status: 'SHIPPED', update_time: UPDATE_TIME_S + 60 })],
+    });
+    c.getEscrowDetail.mockRejectedValueOnce(new ShopeeNetworkError('sem resposta'));
+    infos.length = 0;
+    const r = await importar(c);
+
+    expect(r.acao).toBe('atualizado');
+    // The detail would have said 15 / 0, no `descontoTotal`, 31,99, freight 1,99
+    // (the estimate) and a pagamento of 31,99 — none of it lands.
+    expect(dinheiroGravado(c)).toEqual(fechado);
+    expect(linhaDoImport(0).dinheiroProvisorio).toBe(true);
+    expect(linhaDoImport(0).divergenciaDeSoma).toBe(0);
+
+    // ⚠️ NEAR-MISS — delivery 3: the escrow answers again, with a DIFFERENT
+    // voucher, and the money is re-taken: the freeze is for provisional money
+    // only, never a latch.
+    c.getOrderDetail.mockResolvedValue({
+      order_list: [linha({ order_status: 'SHIPPED', update_time: UPDATE_TIME_S + 120 })],
+    });
+    c.getEscrowDetail.mockResolvedValue(
+      escrowSGCom({
+        renda: { buyer_total_amount: 22, buyer_paid_shipping_fee: 0 },
+        linha: { discount_from_voucher_shopee: 8 },
+      }),
+    );
+    await importar(c);
+    expect(dinheiroGravado(c)).toEqual({
+      ...fechado,
+      descontoUnitario: 4,
+      descontoTotal: 0,
+      valorCobrado: 22,
+      vNF: 22,
+      pagamento: 22,
+    });
+  });
+
+  /**
+   * The Codex review vector on PR #2224, on the SG fixture's line (30 at
+   * quantity 2, Σ original 30): a voucher of 12 and free shipping, so the buyer
+   * paid 18. The floor is `max(5, 15, the shipping cost)`, so the SHIPPING COST
+   * decides whether it binds — and that figure moves between deliveries.
+   */
+  function escrowComCusto(custoDoFrete: number): ShopeeEscrowDetail {
+    return escrowSGCom({
+      renda: {
+        buyer_total_amount: 18,
+        buyer_paid_shipping_fee: 0,
+        actual_shipping_fee: custoDoFrete,
+      },
+      linha: { discount_from_voucher_shopee: 12 },
+    });
+  }
+
+  const CUPOM_ID = makePagamentoIdShopee(INT, ORDER_SN, SUFIXO_CUPOM_SHOPEE);
+
+  /** A newer delivery of the same order with the given shipping cost. */
+  async function entregaComCusto(c: Cenario, segundos: number, custoDoFrete: number) {
+    c.getOrderDetail.mockResolvedValue({
+      order_list: [linha({ order_status: 'SHIPPED', update_time: UPDATE_TIME_S + segundos })],
+    });
+    c.getEscrowDetail.mockResolvedValue(escrowComCusto(custoDoFrete));
+    infos.length = 0;
+    return importar(c);
+  }
+
+  /** What the NF-e would sum (its own predicate), read back from the stored subcollection. */
+  function somaPaganteGravada(c: Cenario): number {
+    return sumPagamentosPagos(
+      c.db.idsEm(PAGAMENTOS_PATH).map((id) => {
+        const p = c.db.store[`${PAGAMENTOS_PATH}/${id}`]!.data;
+        return { valor: p.valor as number, status_pagamento: p.status_pagamento as number | null };
+      }),
+    );
+  }
+
+  it('⚠️ o piso deixa de valer numa entrega COM escrow: o cupom é estornado (valor mantido) e Σ pagante = vNF', async () => {
+    // Delivery 1: a shipping cost of 20 sets the floor at 20, above the 18 paid
+    // ⇒ the discount is reduced to 5 per unit, vNF 20, cupom 2.
+    const c = cenario({ escrow: escrowComCusto(20) });
+    await importar(c);
+    expect(dinheiroGravado(c)).toMatchObject({ descontoUnitario: 5, vNF: 20, pagamento: 18 });
+    expect(c.db.store[`${PAGAMENTOS_PATH}/${CUPOM_ID}`]!.data).toMatchObject({
+      valor: 2,
+      status_pagamento: STATUS_PAGAMENTO.aprovado,
+    });
+    expect(linhaDoImport(0).divergenciaDeSoma).toBe(0);
+
+    // Delivery 2: the actual shipping cost is 8 ⇒ floor 15, NOT binding. The
+    // pedido re-takes its lines (vNF 18); the cupom is RETIRED, never deleted.
+    const r2 = await entregaComCusto(c, 60, 8);
+    expect(r2.acao).toBe('atualizado');
+    expect(dinheiroGravado(c)).toMatchObject({ descontoUnitario: 6, vNF: 18, pagamento: 18 });
+    const cupom = c.db.store[`${PAGAMENTOS_PATH}/${CUPOM_ID}`]!.data;
+    expect(cupom.status_pagamento).toBe(STATUS_PAGAMENTO.estornado);
+    expect(cupom.valor).toBe(2);
+    expect(c.db.idsEm(PAGAMENTOS_PATH).sort()).toEqual([PAGAMENTO_ID, CUPOM_ID].sort());
+    // ⚠️ The pair that matters, read back from what is STORED.
+    expect(somaPaganteGravada(c)).toBe(18);
+    expect(linhaDoImport(0).somaPagante).toBe(18);
+    expect(linhaDoImport(0).divergenciaDeSoma).toBe(0);
+    expect(linhaDoImport(0).movimentoCupom).toBe('retirado');
+
+    // A byte-identical replay of the retired state writes nothing.
+    const replay = await entregaComCusto(c, 60, 8);
+    expect(replay.acao).toBe('ignorado-sem-mudanca');
+    expect(replay.acaoPagamentos).toBe('ignorado-sem-mudanca');
+    expect(replay.pagamentosGravados).toBe(0);
+    expect(linhaDoImport(0).movimentoCupom).toBeNull();
+
+    // Delivery 3: the shipping cost is 22 ⇒ the floor binds AGAIN (vNF 22) and
+    // the cupom is re-activated at its new value.
+    await entregaComCusto(c, 120, 22);
+    expect(dinheiroGravado(c)).toMatchObject({ descontoUnitario: 4, vNF: 22, pagamento: 18 });
+    expect(c.db.store[`${PAGAMENTOS_PATH}/${CUPOM_ID}`]!.data).toMatchObject({
+      valor: 4,
+      status_pagamento: STATUS_PAGAMENTO.aprovado,
+    });
+    expect(somaPaganteGravada(c)).toBe(22);
+    expect(linhaDoImport(0).divergenciaDeSoma).toBe(0);
+    expect(linhaDoImport(0).movimentoCupom).toBe('reativado');
+    // ⚠️ An expected path: not the loud warn meant for a reversed order coming back.
+    expect(avisos.filter((a) => String(a[0]).includes('ressuscitado'))).toEqual([]);
+  });
+
+  it('⚠️ NEAR-MISS: a entrega seguinte com o escrow em FALHA não retira o cupom — o dinheiro é provisório', async () => {
+    const c = cenario({ escrow: escrowComCusto(20) });
+    await importar(c);
+
+    c.getOrderDetail.mockResolvedValue({
+      order_list: [linha({ order_status: 'SHIPPED', update_time: UPDATE_TIME_S + 60 })],
+    });
+    c.getEscrowDetail.mockRejectedValueOnce(new ShopeeNetworkError('sem resposta'));
+    infos.length = 0;
+    await importar(c);
+
+    expect(linhaDoImport(0).dinheiroProvisorio).toBe(true);
+    expect(c.db.store[`${PAGAMENTOS_PATH}/${CUPOM_ID}`]!.data).toMatchObject({
+      valor: 2,
+      status_pagamento: STATUS_PAGAMENTO.aprovado,
+    });
+    expect(dinheiroGravado(c)).toMatchObject({ vNF: 20, pagamento: 18 });
+    expect(somaPaganteGravada(c)).toBe(20);
+    expect(linhaDoImport(0).divergenciaDeSoma).toBe(0);
+    expect(linhaDoImport(0).movimentoCupom).toBeNull();
+  });
+
+  it('⚠️ PENDING com escrow → READY_TO_SHIP com o escrow em FALHA → o latch → o piso ainda valendo: Σ pagante = vNF a cada passo', async () => {
+    // Delivery 1: a PAID `PENDING` (usable pay_time) whose escrow answered with
+    // a shipping cost of 20 — the floor binds, and BOTH the buyer leg and the
+    // cupom are born at `em_processo_aprovacao`, outside Σ until the order is
+    // approved.
+    const c = cenario({
+      detalhe: linha({ order_status: 'PENDING' }),
+      escrow: escrowComCusto(20),
+    });
+    await importar(c);
+    expect(dinheiroGravado(c)).toMatchObject({ vNF: 20, pagamento: 18 });
+    expect(c.db.store[`${PAGAMENTOS_PATH}/${CUPOM_ID}`]!.data).toMatchObject({
+      valor: 2,
+      status_pagamento: STATUS_PAGAMENTO.em_processo_aprovacao,
+    });
+
+    // Delivery 2: READY_TO_SHIP, the escrow call fails (contained) — the money
+    // is provisional, the pedido keeps vNF 20 and nothing maps the cupom. It
+    // moves into Σ WITH the buyer leg.
+    c.getOrderDetail.mockResolvedValue({
+      order_list: [linha({ order_status: 'READY_TO_SHIP', update_time: UPDATE_TIME_S + 60 })],
+    });
+    c.getEscrowDetail.mockRejectedValueOnce(new ShopeeNetworkError('sem resposta'));
+    infos.length = 0;
+    await importar(c);
+    expect(linhaDoImport(0).dinheiroProvisorio).toBe(true);
+    expect(c.db.store[`${PAGAMENTOS_PATH}/${CUPOM_ID}`]!.data.status_pagamento).toBe(
+      STATUS_PAGAMENTO.aprovado,
+    );
+    expect(dinheiroGravado(c)).toMatchObject({ vNF: 20, pagamento: 18 });
+    expect(somaPaganteGravada(c)).toBe(20);
+    expect(linhaDoImport(0).divergenciaDeSoma).toBe(0);
+
+    // An operator edits the header: the latch. Delivery 3 is escrow-backed and
+    // the floor still binds — nothing may leave Σ short of the latched vNF.
+    c.db.store[PEDIDO_PATH]!.data.hasUserInteraction = true;
+    await entregaComCusto(c, 120, 20);
+    expect(dinheiroGravado(c)).toMatchObject({ vNF: 20, pagamento: 18 });
+    expect(c.db.store[`${PAGAMENTOS_PATH}/${CUPOM_ID}`]!.data).toMatchObject({
+      valor: 2,
+      status_pagamento: STATUS_PAGAMENTO.aprovado,
+    });
+    expect(somaPaganteGravada(c)).toBe(20);
+    expect(linhaDoImport(0).divergenciaDeSoma).toBe(0);
+  });
+
+  /**
+   * The Codex vector on PR #2224, inline amounts only: a BR order under FOB
+   * (the conta has no modalidade), goods 50 (2 × 25), freight 10 the buyer
+   * paid, and a combined payment of two entries that sum to the
+   * freight-INCLUSIVE 60.
+   */
+  function detalheCombinado(patch: Record<string, unknown> = {}): ShopeeOrderDetailRow {
+    const item = (detalheSG().item_list ?? [])[0]!;
+    return detalheBR({
+      total_amount: 60,
+      estimated_shipping_fee: 10,
+      payment_method: 'Combined Payment',
+      payment_info: [
+        { payment_method: 'pix', payment_amount: 30, card_brand: '', transaction_id: 'AUT-PIX' },
+        {
+          payment_method: 'credit_card',
+          payment_amount: 30,
+          card_brand: 'visa',
+          transaction_id: 'AUT-CC',
+        },
+      ],
+      item_list: [{ ...item, model_discounted_price: 25, model_original_price: 25 }],
+      ...patch,
+    });
+  }
+
+  function escrowCombinado(): ShopeeEscrowDetail {
+    return escrowSGCom({
+      renda: { buyer_total_amount: 60, buyer_paid_shipping_fee: 10, estimated_shipping_fee: 10 },
+      linha: { discounted_price: 50, original_price: 50, selling_price: 50 },
+    });
+  }
+
+  it('⚠️ o vetor do Codex (PR #2224): combinado criado no dinheiro PROVISÓRIO, o escrow responde ⇒ o irmão é retirado e Σ pagante = vNF; o replay não grava; a provisória seguinte não ressuscita', async () => {
+    const IRMAO_ID = makePagamentoIdShopee(INT, ORDER_SN, '-1');
+    const pagamento = (c: Cenario, id: string) => c.db.store[`${PAGAMENTOS_PATH}/${id}`]!.data;
+    const c = cenario({ detalhe: detalheCombinado(), escrow: escrowCombinado() });
+
+    // Delivery 1 — the FIRST import, `get_escrow_detail` fails (contained): the
+    // buyer leg is the detail's freight-inclusive 60, the entries fit it, and
+    // two legs are created. Provisional money does not close (the NF-e
+    // refuses rather than emits).
+    c.getEscrowDetail.mockRejectedValueOnce(new ShopeeNetworkError('sem resposta'));
+    await importar(c);
+    expect(linhaDoImport(0).dinheiroProvisorio).toBe(true);
+    expect(c.db.idsEm(PAGAMENTOS_PATH).sort()).toEqual([PAGAMENTO_ID, IRMAO_ID].sort());
+    expect(pagamento(c, PAGAMENTO_ID).valor).toBe(30);
+    expect(pagamento(c, IRMAO_ID).valor).toBe(30);
+    expect(dinheiroGravado(c).vNF).toBe(50);
+    expect(linhaDoImport(0).divergenciaDeSoma).toBe(10);
+
+    // Delivery 2 — a newer order clock and the escrow answers: buyer leg
+    // 60 − 10 = 50, and the SAME entries collapse. The primary re-takes 50 and
+    // the sibling is RETIRED, its 30 kept.
+    c.getOrderDetail.mockResolvedValue({
+      order_list: [detalheCombinado({ update_time: UPDATE_TIME_S + 60 })],
+    });
+    infos.length = 0;
+    const r2 = await importar(c);
+    expect(r2.acaoPagamentos).toBe('atualizado');
+    expect(dinheiroGravado(c)).toMatchObject({ vNF: 50, pagamento: 50 });
+    expect(pagamento(c, IRMAO_ID)).toMatchObject({
+      valor: 30,
+      status_pagamento: STATUS_PAGAMENTO.estornado,
+    });
+    // ⚠️ The pair that matters, read back from what is STORED.
+    expect(somaPaganteGravada(c)).toBe(50);
+    expect(linhaDoImport(0).somaPagante).toBe(50);
+    expect(linhaDoImport(0).divergenciaDeSoma).toBe(0);
+    expect(linhaDoImport(0).pernasRetiradas).toBe(1);
+    expect(linhaDoImport(0).pernasReativadas).toBe(0);
+
+    // Delivery 3 — the byte-identical replay writes nothing.
+    infos.length = 0;
+    const replay = await importar(c);
+    expect(replay.acao).toBe('ignorado-sem-mudanca');
+    expect(replay.acaoPagamentos).toBe('ignorado-sem-mudanca');
+    expect(replay.pagamentosGravados).toBe(0);
+    expect(linhaDoImport(0).pernasRetiradas).toBe(0);
+
+    // Delivery 4 — newer, `READY_TO_SHIP`, the escrow fails again: provisional
+    // money maps the sibling again (the entries fit 60), and `aprovado` would
+    // resurrect it — Σ 80 against 50, for ever.
+    c.getOrderDetail.mockResolvedValue({
+      order_list: [detalheCombinado({ update_time: UPDATE_TIME_S + 120 })],
+    });
+    c.getEscrowDetail.mockRejectedValueOnce(new ShopeeNetworkError('sem resposta'));
+    infos.length = 0;
+    avisos.length = 0;
+    await importar(c);
+    expect(linhaDoImport(0).dinheiroProvisorio).toBe(true);
+    expect(pagamento(c, IRMAO_ID).status_pagamento).toBe(STATUS_PAGAMENTO.estornado);
+    expect(dinheiroGravado(c)).toMatchObject({ vNF: 50, pagamento: 50 });
+    expect(somaPaganteGravada(c)).toBe(50);
+    expect(linhaDoImport(0).divergenciaDeSoma).toBe(0);
+    expect(linhaDoImport(0).pernasReativadas).toBe(0);
+    expect(avisos.filter((a) => String(a[0]).includes('ressuscitado'))).toEqual([]);
+  });
+
+  it('⚠️ depois da retirada: uma entrega SEM payment_info com a perna do comprador movida fecha Σ = vNF; o combinado que volta a fechar REATIVA o irmão (o log diz `pernasReativadas`)', async () => {
+    const IRMAO_ID = makePagamentoIdShopee(INT, ORDER_SN, '-1');
+    const pagamento = (c: Cenario, id: string) => c.db.store[`${PAGAMENTOS_PATH}/${id}`]!.data;
+    const c = cenario({ detalhe: detalheCombinado(), escrow: escrowCombinado() });
+
+    // Deliveries 1–2 of the Codex vector: two legs on provisional money, then
+    // the escrow answers and the sibling is retired (50 + 30@estornado).
+    c.getEscrowDetail.mockRejectedValueOnce(new ShopeeNetworkError('sem resposta'));
+    await importar(c);
+    c.getOrderDetail.mockResolvedValue({
+      order_list: [detalheCombinado({ update_time: UPDATE_TIME_S + 60 })],
+    });
+    infos.length = 0;
+    await importar(c);
+    expect(linhaDoImport(0).pernasRetiradas).toBe(1);
+
+    // Delivery 3 — SHIPPED, `payment_info` gone (settle-live item 22), and the
+    // escrow's buyer total moves to 58: the vNF follows it down. The retired
+    // sibling is no detail to lose, so the primary re-takes the buyer leg.
+    c.getOrderDetail.mockResolvedValue({
+      order_list: [
+        detalheCombinado({
+          order_status: 'SHIPPED',
+          update_time: UPDATE_TIME_S + 120,
+          payment_info: [],
+        }),
+      ],
+    });
+    c.getEscrowDetail.mockResolvedValue(
+      escrowSGCom({
+        renda: { buyer_total_amount: 58, buyer_paid_shipping_fee: 10, estimated_shipping_fee: 10 },
+        linha: { discounted_price: 50, original_price: 50, selling_price: 50 },
+      }),
+    );
+    infos.length = 0;
+    await importar(c);
+    expect(dinheiroGravado(c)).toMatchObject({ vNF: 48, pagamento: 48 });
+    expect(pagamento(c, IRMAO_ID).status_pagamento).toBe(STATUS_PAGAMENTO.estornado);
+    expect(somaPaganteGravada(c)).toBe(48);
+    expect(linhaDoImport(0).divergenciaDeSoma).toBe(0);
+
+    // Delivery 4 — the escrow's buyer leg is 50 again and two entries of 25
+    // FIT it: the sibling is mapped, re-takes 25 and comes back into Σ.
+    c.getOrderDetail.mockResolvedValue({
+      order_list: [
+        detalheCombinado({
+          order_status: 'SHIPPED',
+          update_time: UPDATE_TIME_S + 180,
+          payment_info: [
+            {
+              payment_method: 'pix',
+              payment_amount: 25,
+              card_brand: '',
+              transaction_id: 'AUT-PIX',
+            },
+            {
+              payment_method: 'credit_card',
+              payment_amount: 25,
+              card_brand: 'visa',
+              transaction_id: 'AUT-CC',
+            },
+          ],
+        }),
+      ],
+    });
+    c.getEscrowDetail.mockResolvedValue(escrowCombinado());
+    infos.length = 0;
+    await importar(c);
+    expect(linhaDoImport(0).pernasReativadas).toBe(1);
+    expect(linhaDoImport(0).pernasRetiradas).toBe(0);
+    expect(pagamento(c, IRMAO_ID)).toMatchObject({
+      valor: 25,
+      status_pagamento: STATUS_PAGAMENTO.aprovado,
+    });
+    expect(dinheiroGravado(c)).toMatchObject({ vNF: 50, pagamento: 25 });
+    expect(somaPaganteGravada(c)).toBe(50);
+    expect(linhaDoImport(0).divergenciaDeSoma).toBe(0);
+    // An expected path: never the loud warn meant for a reversed order.
+    expect(avisos.filter((a) => String(a[0]).includes('ressuscitado'))).toEqual([]);
   });
 });
 

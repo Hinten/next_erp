@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   SHOPEE_ERROR_KIND,
+  SHOPEE_SURFACE,
   ShopeeApiError,
   ShopeeConfigError,
   ShopeeError,
@@ -11,10 +12,12 @@ import {
   ShopeeRateLimitError,
   ShopeeReauthRequiredError,
   ShopeeSchemaError,
+  shopeeErrorFromEnvelope,
 } from '@delfrance/integrations-shopee';
 
 import {
   ETAPA_PUBLICACAO,
+  MOTIVO_PROBLEMA_PUBLICACAO,
   MOTIVO_PUBLICACAO_BLOQUEADA,
   ShopeePublishBlockedError,
   ShopeePublishRejectedError,
@@ -136,6 +139,60 @@ describe('shopeeErrorResponse — a cadeia existente', () => {
     expect(reauth).toBeInstanceOf(ShopeeApiError);
     expect(shopeeErrorResponse(reauth).status).toBe(409);
   });
+});
+
+describe('shopeeErrorResponse — erros do envelope (#1770)', () => {
+  it.each([
+    ['shop_access_expired', 'shop_access_expired', SHOPEE_ERROR_KIND.reauth, 200, 409],
+    ['error_rate_limit', 'error_rate_limit', SHOPEE_ERROR_KIND.burst, 429, 502],
+    ['error_limit', 'error_limit', SHOPEE_ERROR_KIND.daily, 200, 502],
+    ['error_server', 'error_server', SHOPEE_ERROR_KIND.transient, 503, 502],
+    [' product.error_param\t', 'product.error_param', SHOPEE_ERROR_KIND.other, 200, 502],
+    ['product.error_123456', 'product.error_123456', SHOPEE_ERROR_KIND.other, 200, 502],
+    ['product.error_1234567', '<nao-token>', SHOPEE_ERROR_KIND.other, 200, 502],
+    ['invalid code\nfrom Shopee', '<nao-token>', SHOPEE_ERROR_KIND.other, 200, 502],
+  ] as const)(
+    'publica apenas os campos seguros de %j',
+    async (rawCode, shopeeCode, kind, upstreamStatus, status) => {
+      const err = shopeeErrorFromEnvelope(
+        { error: rawCode, message: PROSA, warning: 'aviso cru', request_id: 'id cru' },
+        {
+          path: PATH,
+          httpStatus: upstreamStatus,
+          surface: SHOPEE_SURFACE.business,
+          retryAfterSeconds: 7,
+        },
+      );
+      expect(err.message).toContain(PROSA);
+      expect(err.providerMessage).toBe(PROSA);
+
+      const res = shopeeErrorResponse(err);
+      const error = `Shopee ${PATH} respondeu ${shopeeCode} (HTTP ${String(upstreamStatus)}).`;
+      const line = `[shopee/api] ${err.name} -> HTTP ${String(status)} path=${PATH} code=${shopeeCode} kind=${kind} upstream=${String(upstreamStatus)}`;
+
+      expect(res.status).toBe(status);
+      expect(res.headers.get('Retry-After')).toBeNull();
+      if (status === 409) {
+        await expect(res.json()).resolves.toEqual({
+          error,
+          code: 'SHOPEE_REAUTH_REQUIRED',
+          shopeeCode,
+        });
+        expect(vi.mocked(console.warn).mock.calls).toEqual([[line]]);
+        expect(console.error).not.toHaveBeenCalled();
+      } else {
+        await expect(res.json()).resolves.toEqual({
+          error,
+          code: 'SHOPEE_HTTP_ERROR',
+          upstreamStatus,
+          shopeeCode,
+          kind,
+        });
+        expect(vi.mocked(console.error).mock.calls).toEqual([[line]]);
+        expect(console.warn).not.toHaveBeenCalled();
+      }
+    },
+  );
 });
 
 describe('shopeeErrorResponse — ShopeeImportBlockedError (step 9)', () => {
@@ -279,7 +336,7 @@ describe('shopeeErrorResponse — as duas recusas de PUBLICAÇÃO (step 11)', ()
     ]);
   });
 
-  it('11 — um ShopeePublishRejectedError vira 422 SHOPEE_PUBLISH_REJECTED com etapa e shopeeCode', async () => {
+  it('11 — um ShopeePublishRejectedError vira 422 com etapa, código e recusa da Shopee', async () => {
     const res = shopeeErrorResponse(
       publicacaoRecusada([
         { campo: 'tier_variation', motivo: 'opcoes-demais', mensagem: 'demais' },
@@ -295,15 +352,42 @@ describe('shopeeErrorResponse — as duas recusas de PUBLICAÇÃO (step 11)', ()
       'itemId',
       'problemas',
       'produtoId',
+      'recusadaPelaShopee',
       'shopeeCode',
     ]);
     expect(corpo.code).toBe('SHOPEE_PUBLISH_REJECTED');
-    // A etapa é o extra carregado: ela diz o que EXISTE no canal agora. Uma
-    // recusa em `init_tier_variation` deixa um item UNLIST sem modelos.
+    // A etapa indica onde a publicação parou.
     expect(corpo.etapa).toBe('init_tier_variation');
+    expect(corpo.recusadaPelaShopee).toBe(true);
     // ⚠️ VERBATIM, prefixo de módulo e tudo — igual ao braço do ShopeeApiError.
     expect(corpo.shopeeCode).toBe('product.error_param');
     expect(corpo.itemId).toBe(ITEM_ID);
+  });
+
+  it('preserva recusadaPelaShopee: false na interrupção da foto da tabela de medidas', async () => {
+    const problema: ProblemaPublicacao = {
+      campo: 'size_chart_info',
+      motivo: MOTIVO_PROBLEMA_PUBLICACAO.tabelaDeMedidasFotoRecusada,
+      mensagem: 'não foi possível enviar a foto da tabela de medidas',
+    };
+    const res = shopeeErrorResponse(
+      new ShopeePublishRejectedError({
+        etapa: ETAPA_PUBLICACAO.fotos,
+        shopeeCode: '',
+        produtoId: PRODUTO_ID,
+        itemId: ITEM_ID,
+        problemas: [problema],
+        recusadaPelaShopee: false,
+      }),
+    );
+
+    expect(res.status).toBe(422);
+    await expect(res.json()).resolves.toMatchObject({
+      code: 'SHOPEE_PUBLISH_REJECTED',
+      etapa: 'fotos',
+      problemas: [problema],
+      recusadaPelaShopee: false,
+    });
   });
 
   it('12 — ⛔ NEAR-MISS: a ORDEM importa — abaixo do braço base as duas seriam 500', async () => {

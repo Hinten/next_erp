@@ -1374,9 +1374,11 @@ export {
 export {
   extractTpAmb,
   decideNfeUploadDispatch,
+  decideNfeSaleUploadDispatch,
   decideNfeUploadTransition,
   finalidadeDaNfeProc,
   type FinalidadeDaNfeProc,
+  type NfeSaleUploadDispatch,
   type NfeUploadDispatch,
   type NfeUploadTransition,
 } from './nfeEnvioCanal';
@@ -1811,6 +1813,11 @@ export {
   motivoEstoqueVinculoLiSchema,
   MOTIVO_ESTOQUE_VINCULO_LI,
   MAX_AMOSTRA_AVISO_ESTOQUE_LI,
+  motivoPrecoRecusadoLiSchema,
+  MOTIVO_PRECO_RECUSADO_LI,
+  motivoPrecoParadoLiSchema,
+  MOTIVO_PRECO_PARADO_LI,
+  MAX_AMOSTRA_AVISO_PRECO_LI,
   situacaoAnuncioForaDaSincronizacaoSchema,
   SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO,
   chaveDeAviso,
@@ -1838,6 +1845,8 @@ export {
   type MotivoRastreioDivergenteLi,
   type MotivoCategoriaSemVinculoLi,
   type MotivoEstoqueVinculoLi,
+  type MotivoPrecoRecusadoLi,
+  type MotivoPrecoParadoLi,
   type SituacaoAnuncioForaDaSincronizacao,
 } from './aviso';
 export * from './shared/inicio';
@@ -1904,6 +1913,24 @@ export * from './estoqueErpLojaIntegrada';
 // backend and `apps/web`. Not a collection, so no `registry.ts` entry; a star export for the same
 // raw-text reason as above.
 export * from './estoqueManualLojaIntegrada';
+
+// Admin-only / default-deny (NOT in ALL_DOMAINS) — the Loja Integrada price sync (master plan
+// step 13, PR 13-a): the per-conta price state and its snapshot, and the price task's ids-only
+// payload. Bare: no Meta, never a combined `{ schema, meta }`, so `registry.test.ts` sees nothing
+// to register and the rules generator emits nothing.
+export * from './sincPrecoLojaIntegrada';
+export * from './tarefaPrecoLojaIntegrada';
+
+// The Loja Integrada price sync's ONE price function (master plan step 13): the family root, a
+// tabela entry, the child's target, the store-value fold and the no-lower decision. Pure, shared
+// by the send run, the trigger, the reconcile and a `tools/migrations` audit. Not a collection, so
+// no `registry.ts` entry; a star export for the fold-inventory's raw-text reason above.
+export * from './precoErpLojaIntegrada';
+
+// The Loja Integrada price sync's two OPERATOR routes (master plan step 13): the manual push's
+// strict body and its answer, and "Atualizar preços"'s body and answer — one wire contract for the
+// backend and `apps/web`. Not a collection, so no `registry.ts` entry.
+export * from './precoManualLojaIntegrada';
 
 // The machine-readable next step of a Shopee publish refusal (step 21, #1529):
 // the refusal sites in `apps/shopee` produce it, the web's wire parses it per row
@@ -2007,3 +2034,86 @@ export {
   type UnidadeLimiteEnvioEstoqueManualAmazon,
   type VezSincronizacaoEstoqueAmazon,
 } from './estoqueAmazon';
+
+export {
+  // Admin-only / default-deny (NOT in ALL_DOMAINS) — the Amazon price push
+  // (step 13): the faixa and the conta's tabela parse, the price run
+  // `precosAmazon` with its parts `divergenciasPrecoAmazon`, the run's numbers,
+  // and the price routes' closed error codes and envelopes. Bare: no Meta,
+  // never a combined `{ schema, meta }`, so rules-gen emits nothing for any of
+  // them. The link doc's price outcome is `envioPrecoAmazonSchema`
+  // (`produto/collection/amazonLink.ts`).
+  AMOSTRA_REDUCAO_PRECO_AMAZON_REGEX,
+  CHAVE_LOTE_PRECO_AMAZON_REGEX,
+  CODIGO_ERRO_PRECO_AMAZON,
+  DECISAO_EXECUCAO_PRECO_AMAZON,
+  DESFECHO_LOTE_PRECO_AMAZON,
+  ESTADO_LOTE_RESUMO_PRECO_AMAZON,
+  FASE_EXECUCAO_PRECO_AMAZON,
+  FRACAO_REDUCAO_EM_MASSA_PRECO_AMAZON,
+  LIMIAR_FEED_PRECO_AMAZON,
+  LIMIAR_REDUCAO_EM_MASSA_PRECO_AMAZON,
+  MAX_AMOSTRA_PRECO_AMAZON,
+  MAX_ITENS_DIVERGENCIA_PRECO_AMAZON,
+  MAX_LOTES_EXECUCAO_PRECO_AMAZON,
+  MAX_PARTES_EXECUCAO_PRECO_AMAZON,
+  MAX_PRODUTOS_ENVIO_PRECO_MANUAL_AMAZON,
+  MOTIVO_FIM_EXECUCAO_PRECO_AMAZON,
+  MOTIVO_SEM_ENVIO_LOTE_PRECO_AMAZON,
+  QUEDA_MAXIMA_PRECO_AMAZON,
+  RETENCAO_DIVERGENCIA_PRECO_AMAZON_DIAS,
+  TIPO_FAIXA_PRECO_AMAZON,
+  TIPO_OFERTA_PRECO_AMAZON,
+  TIPO_PRODUTO_PRECO_AMAZON_REGEX,
+  contagensExecucaoPrecoAmazonSchema,
+  decisaoExecucaoPrecoAmazonSchema,
+  desfechoLotePrecoAmazonSchema,
+  divergenciaPrecoAmazonSchema,
+  envioPrecoManualAmazonSchema,
+  erroPrecoAmazonSchema,
+  estadoLoteResumoPrecoAmazonSchema,
+  execucaoPrecoAmazonSchema,
+  faixaDePrecoAmazon,
+  faixaPrecoAmazonSchema,
+  faseExecucaoPrecoAmazonSchema,
+  fontesPrecoDaUnidadeAmazon,
+  idDivergenciaPrecoAmazon,
+  itemDivergenciaPrecoAmazonSchema,
+  lotePrecoAmazonSchema,
+  lotesExecucaoPrecoAmazonSchema,
+  motivoFimExecucaoPrecoAmazonSchema,
+  motivoSemEnvioLotePrecoAmazonSchema,
+  ofertaPrecoAmazonSchema,
+  respostaCancelamentoExecucaoPrecoAmazonSchema,
+  respostaInicioExecucaoPrecoAmazonSchema,
+  resumoExecucaoPrecoAmazonSchema,
+  tabelasDePrecoDaContaAmazon,
+  tipoFaixaPrecoAmazonSchema,
+  tipoOfertaPrecoAmazonSchema,
+  type CodigoErroPrecoAmazon,
+  type ContagensExecucaoPrecoAmazon,
+  type DecisaoExecucaoPrecoAmazon,
+  type DesfechoLotePrecoAmazon,
+  type DivergenciaPrecoAmazon,
+  type EnvioPrecoManualAmazon,
+  type ErroPrecoAmazon,
+  type EstadoLoteResumoPrecoAmazon,
+  type ExecucaoPrecoAmazon,
+  type FaixaPrecoAmazon,
+  type FaseExecucaoPrecoAmazon,
+  type FontesPrecoAmazon,
+  type ItemDivergenciaPrecoAmazon,
+  type LotePrecoAmazon,
+  type LotesExecucaoPrecoAmazon,
+  type MotivoFimExecucaoPrecoAmazon,
+  type MotivoSemEnvioLotePrecoAmazon,
+  type OfertaPrecoAmazon,
+  type PaiPrecoAmazon,
+  type RespostaCancelamentoExecucaoPrecoAmazon,
+  type RespostaInicioExecucaoPrecoAmazon,
+  type ResultadoFaixaPrecoAmazon,
+  type ResumoExecucaoPrecoAmazon,
+  type TabelasDePrecoAmazon,
+  type TipoFaixaPrecoAmazon,
+  type TipoOfertaPrecoAmazon,
+} from './precoAmazon';

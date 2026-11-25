@@ -280,14 +280,14 @@ service cloud.firestore {
 
     match /filiais/{filialId}/enviNfe/{docId} {
       allow read: if isSuperUser() || p('d_fiscal', 1);
-      allow create, update: if isSuperUser() || p('d_fiscal', 2);
-      allow delete: if isSuperUser() || p('d_fiscal', 4);
+      // Server-owned collection — Admin SDK only, no su bypass.
+      allow create, update, delete: if false;
     }
 
     match /filiais/{filialId}/inutilizacao/{docId} {
       allow read: if isSuperUser() || p('d_fiscal', 1);
-      allow create, update: if isSuperUser() || p('d_fiscal', 2);
-      allow delete: if isSuperUser() || p('d_fiscal', 4);
+      // Server-owned collection — Admin SDK only, no su bypass.
+      allow create, update, delete: if false;
     }
 
     match /filiais/{filialId}/nfeconfig/{docId} {
@@ -434,14 +434,14 @@ service cloud.firestore {
 
     match /pedidos/{pedidoId}/nfev4/{docId} {
       allow read: if isSuperUser() || p('d_nfe', 1);
-      allow create, update: if isSuperUser() || p('d_nfe', 2);
-      allow delete: if isSuperUser() || p('d_nfe', 4);
+      // Server-owned collection — Admin SDK only, no su bypass.
+      allow create, update, delete: if false;
     }
 
     match /pedidos/{pedidoId}/nfev4/{nfeId}/cartacorrecao/{docId} {
       allow read: if isSuperUser() || p('d_fiscal', 1);
-      allow create, update: if isSuperUser() || p('d_fiscal', 2);
-      allow delete: if isSuperUser() || p('d_fiscal', 4);
+      // Server-owned collection — Admin SDK only, no su bypass.
+      allow create, update, delete: if false;
     }
 
     match /pedidos/{pedidoId}/orderML/{docId} {

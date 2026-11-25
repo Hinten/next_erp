@@ -5,6 +5,7 @@ import {
   STATUS_PAGAMENTO,
   STATUS_PAGAMENTO_LABELS,
   cpfCnpjUtilizavel,
+  MODALIDADE_FRETE,
 } from '@delfrance/schemas';
 import {
   shopeeOrderDetailRowSchema,
@@ -191,19 +192,19 @@ function mapeadoComPii(): {
     detalhe,
     escrow: null,
     resolucoes: new Map(),
-    freteCobrado: frete.valorCobrado,
+    modalidade: MODALIDADE_FRETE.fob,
     nowUs: watermarkUs,
   });
   const mapeado = mapearPedidoShopee({
     detalhe,
-    escrow: null,
     itens: mapeados.itens,
-    conferencia: mapeados.conferencia,
+    descontoTotal: mapeados.dinheiro.descontoTotal,
     frete,
     conta: {
       integracaoPedidoOuterRef: 'documents/integracao/int-1',
       listaDePrecosOuterRef: null,
       operacaoPedidoOuterRef: null,
+      modalidadeFreteImportacao: null,
     },
     captura: avaliarCapturaComprador({ detail: detalhe, statusObservado: detalhe.order_status }),
     camposRecusadosExtra: [],
@@ -286,21 +287,21 @@ describe('resumoDoPedidoMapeado — a redação', () => {
       detalhe: mascarado,
       escrow: null,
       resolucoes: new Map(),
-      freteCobrado: frete.valorCobrado,
+      modalidade: MODALIDADE_FRETE.fob,
       nowUs: watermarkUs,
     });
     const resumo = resumoDoPedidoMapeado(
       'ped-sha256',
       mapearPedidoShopee({
         detalhe: mascarado,
-        escrow: null,
         itens: mapeados.itens,
-        conferencia: mapeados.conferencia,
+        descontoTotal: mapeados.dinheiro.descontoTotal,
         frete,
         conta: {
           integracaoPedidoOuterRef: 'documents/integracao/int-1',
           listaDePrecosOuterRef: null,
           operacaoPedidoOuterRef: null,
+          modalidadeFreteImportacao: null,
         },
         captura,
         camposRecusadosExtra: ['endereco:sem-cep'],
@@ -500,7 +501,7 @@ function mapeadosBR() {
   return mapearPagamentosShopee({
     linha: linhaCombinadaBR(),
     escrow: null,
-    valorCobrado: 31.99,
+    valorDoComprador: 31.99,
     watermarkUs: 1_789_000_000_000_000,
     nowUs: 1_789_000_000_000_000,
     contaId: INT,

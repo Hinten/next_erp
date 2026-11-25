@@ -1,10 +1,11 @@
 /**
  * `get_attribute_tree` for ONE category: the row that answers the question we
- * asked, its per-category warning, and the raw log that keeps Shopee's own
+ * asked, its per-category warning, and the log that keeps Shopee's own
  * parameter-name contradiction one literal away from being settled.
  */
 import { ShopeeApiError, type ShopeeAttribute } from '@delfrance/integrations-shopee';
 
+import { codigoSeguro } from '../nfe/redacaoNfe';
 import { type ShopeeTaxonomiaCtx, lerAtributosCached } from './cache';
 
 /** What {@link lerAtributos} answers for one category. */
@@ -54,13 +55,9 @@ function ehErroDeParametro(code: string): boolean {
  * silently describes the first category. A `list` that does not contain the id
  * we asked about is "no attributes for this category", not somebody else's.
  *
- * ⚠️ `error_param` is LOGGED RAW and then RETHROWN (never swallowed — rule 6).
- * That log is the instrument for an open contradiction: the page's parameter
- * table says `category_id_list` while its own cURL sample says `category_ids`.
- * One id serialises identically under both, so this call should work either way
- * — and if it does not, the raw `code`/`message` beside the parameter name we
- * sent is what says so, and the flip is a single literal in the package's
- * `getAttributeTree`.
+ * Log the parameter name and safe code before rethrowing `error_param`. This
+ * helps diagnose the mismatch between `category_id_list` in Shopee's parameter
+ * table and `category_ids` in its cURL example.
  */
 export async function lerAtributos(
   ctx: ShopeeTaxonomiaCtx,
@@ -83,8 +80,7 @@ export async function lerAtributos(
         // The name the package actually sends — see `getAttributeTree` in
         // `packages/integrations/shopee/src/api.ts`.
         parametro: 'category_id_list',
-        codigo: err.code,
-        mensagem: err.message,
+        codigo: codigoSeguro(err.code),
       });
       throw err;
     }

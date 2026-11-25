@@ -2,7 +2,7 @@
  * Mercado Livre NF-e invoice upload (Step 12, issue #739) — port of the legacy
  * `signalEnviarNFeMercadoLivre`
  * (`.old/packages/canais_de_venda/mercado_livre/lib/src/tasks.dart:2778-2847`):
- * when a NF-e reaches `estado 'a'` (aprovada) with a produção
+ * when a sale NF-e reaches `estado 'a'` (aprovada) with a produção
  * (`<tpAmb>1</tpAmb>`) `xml_nfe_proc`, POST the raw signed nfeProc XML to
  * `POST /shipments/{shipmentId}/invoice_data?siteId=MLB` so the shipment
  * leaves `invoice_pending` and ML generates the label.
@@ -25,14 +25,10 @@
  * `ja-processado`/`ja-enviado`. Observability = Cloud Logging plus ML's own
  * `getShipmentInvoiceData`.
  *
- * Three cooperating pieces, all reachable from this module so the queue
- * function (`mlNfeUploadTasks.ts` / `functions/`) stays transport-only:
+ * Three cooperating pieces:
  *
- *  - `decideNfeUploadDispatch` — PURE dispatch for the `nfev4` Firestore
- *    trigger: the four cheap doc guards (deleted / non-aprovada / no XML /
- *    non-produção), everything else enqueues. It lives in
- *    `@delfrance/schemas` (`nfeEnvioCanal.ts`, shared with Shopee's trigger)
- *    and is re-exported below under the same name.
+ *  - `decideNfeSaleUploadDispatch` in `@delfrance/schemas` checks the NF-e
+ *    snapshot for the trigger, manual route and checkout recovery.
  *  - `shouldUploadForPedido` — the 1-read pedido-side check for a
  *    trigger/route that starts from a pedido id instead of an NF-e write.
  *  - `processNfeUploadTask` — the task handler core: FRESH reads, re-gates
@@ -55,6 +51,7 @@ import {
   INTEGRACAO_FRETE,
   decideNfeUploadDispatch,
   extractTpAmb,
+  finalidadeDaNfeProc,
   idFromRef,
   type NfeUploadDispatch,
 } from '@delfrance/schemas';
@@ -103,19 +100,6 @@ export interface MlNfeUploadScheduler {
 
 /* ---------------------------- tpAmb + dispatch ------------------------------ */
 
-/**
- * The first-`<tpAmb>` reader and the LEVEL dispatch ladder moved to
- * `@delfrance/schemas` (`nfeEnvioCanal.ts`) so Shopee's trigger shares the
- * same predicate. Re-exported rather than merely moved: `onNfeAprovada`, the
- * `enviar-nfe` route (whose test mocks THIS module path) and
- * `nfeUpload.test.ts` import them from here, and that test is byte-unedited,
- * which is what proves the move changed nothing.
- *
- * Dedup for Mercado Livre is NOT in the ladder: this module never writes the
- * NF-e doc (REV 2 zero-write model), so any doc write re-runs the cheap ladder
- * and, at worst, enqueues a redundant task that the live shipment-status gate
- * resolves (the substatus leaves `invoice_pending` once ML has the invoice).
- */
 export { extractTpAmb, decideNfeUploadDispatch, type NfeUploadDispatch };
 
 /* --------------------------- pedido-side dispatch --------------------------- */
@@ -362,6 +346,11 @@ export async function processNfeUploadTask(
     const tpAmb = extractTpAmb(xml);
     if (tpAmb === '2') return descartado('tpamb-homologacao');
     if (tpAmb == null) return { outcome: 'erro-deterministico', motivo: 'xml-invalido' };
+
+    const finalidade = finalidadeDaNfeProc(xml);
+    if (finalidade === 'outra') return descartado('nfe-nao-e-de-venda');
+    if (finalidade === 'ilegivel')
+      return { outcome: 'erro-deterministico', motivo: 'xml-invalido' };
 
     // (5) Pedido read.
     const pedidoSnap = await pedidoCollection.docRef(db, {}, pedidoId).get();

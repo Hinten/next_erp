@@ -15,8 +15,9 @@
  *     sweep's top-level field, and disjoint masks are the whole reason it is
  *     top-level rather than nested in `marketplace`;
  *  3. **a degraded delivery never re-takes the primary's `valor`.** Σ pagante has
- *     to equal the pedido's `valorCobrado` to the centavo or the NF-e refuses to
- *     emit (cStat 865/866, and `canalDevolveTroco` is false on a marketplace).
+ *     to equal what the NF-e states (`vNF`: the lines − `descontoTotal`, the
+ *     freight only under CIF) to the centavo or the NF-e refuses to emit
+ *     (cStat 865/866, and `canalDevolveTroco` is false on a marketplace).
  *
  * ⚠️ No real credential, shop or buyer datum: the SG bodies are the redacted
  * `__wire__` corpus and the BR vector is built inline through the package
@@ -61,7 +62,7 @@ const PEDIDO_PATH = `pedidos/${PEDIDO_ID}`;
 const PAGAMENTOS_PATH = `${PEDIDO_PATH}/pagamentos`;
 const PRIMARIO = makePagamentoIdShopee(CONTA, ORDER_SN);
 const SECUNDARIO = makePagamentoIdShopee(CONTA, ORDER_SN, '-1');
-/** O irmão LEGADO do piso de cupom — nunca nosso, nunca tocado. */
+/** O pagamento-cupom do piso — a identidade LEGADA `-desconto`, NOSSA desde 2026-11-24. */
 const DESCONTO = makePagamentoIdShopee(CONTA, ORDER_SN, '-desconto');
 const PAY_TIME_S = 1_788_973_353;
 const WATERMARK_US = microsDeSegundosShopee(1_788_973_354);
@@ -121,8 +122,9 @@ function linhaCombinadaBR(overrides: { paymentInfo?: unknown; orderStatus?: stri
 
 /**
  * UMA perna BR — o caso COMUM, e o que a entrega degradada NUNCA cobre:
- * `degradado` é "mapeou MENOS documentos do que os nossos", então num pedido de
- * perna única (um guardado, um mapeado) ele é sempre `false` e o grupo DADOS
+ * `degradado` é uma entrega que PERDEU detalhe (menos entradas utilizáveis do que
+ * as pernas em jogo) ou dinheiro provisório, então num pedido de perna única (um
+ * guardado, um mapeado, escrow respondido) ele é sempre `false` e o grupo DADOS
  * realmente roda.
  */
 function linhaUmaPernaBR(overrides: { paymentInfo?: unknown; orderStatus?: string } = {}) {
@@ -148,7 +150,9 @@ function mapear(
   args: {
     linha?: ShopeeOrderDetailRow;
     escrow?: ShopeeEscrowDetail | null;
-    valorCobrado?: number | null;
+    valorDoComprador?: number | null;
+    cupomShopee?: number;
+    dinheiroProvisorio?: boolean;
     watermarkUs?: number;
     nowUs?: number;
   } = {},
@@ -156,7 +160,11 @@ function mapear(
   return mapearPagamentosShopee({
     linha: args.linha ?? linhaSG(),
     escrow: args.escrow ?? null,
-    valorCobrado: args.valorCobrado === undefined ? 31.99 : args.valorCobrado,
+    valorDoComprador: args.valorDoComprador === undefined ? 31.99 : args.valorDoComprador,
+    ...(args.cupomShopee === undefined ? {} : { cupomShopee: args.cupomShopee }),
+    ...(args.dinheiroProvisorio === undefined
+      ? {}
+      : { dinheiroProvisorio: args.dinheiroProvisorio }),
     watermarkUs: args.watermarkUs ?? WATERMARK_US,
     nowUs: args.nowUs ?? AGORA_US,
     contaId: CONTA,
@@ -166,9 +174,13 @@ function mapear(
 
 /** O pedido que a transação relê — a metade do guard que mora fora daqui. */
 function semearPedido(db: FakeDb, over: Record<string, unknown> = {}): void {
+  const valor = typeof over.valorCobrado === 'number' ? over.valorCobrado : 31.99;
   db.seed(PEDIDO_PATH, {
     numero: ORDER_SN,
-    valorCobrado: 31.99,
+    valorCobrado: valor,
+    // ONE line carrying the whole value and no freight block: the stored NF-e
+    // total (`totalDaNotaDoPedidoArmazenado`) the Σ diagnostic compares against.
+    itens: { NONE: [{ precoDeVenda: valor, quantidade: 1 }] },
     lastMarketplaceUpdate: WATERMARK_US,
     ...over,
   });
@@ -944,23 +956,1461 @@ describe('salvarPagamentosShopee — combinado e entrega degradada', () => {
     expect(r.divergenciaDeSoma).toBe(0);
   });
 
-  it('19. ⚠️ o irmão LEGADO `-desconto` não é nosso: nem lido como nosso, nem escrito', async () => {
+  it('19. ⚠️ o irmão LEGADO `-desconto` é NOSSO: o cupom ATUALIZA o documento legado, nunca cria um 2º', async () => {
+    // Legacy parity (Lucas, 2026-11-24): the cupom leg keeps the legacy
+    // identity, so a migrated coupon document is the one this import writes.
     const db = new FakeDb();
-    semearPedido(db, { valorCobrado: 41.99 });
+    semearPedido(db, { valorCobrado: 43.99 });
     db.seed(`${PAGAMENTOS_PATH}/${DESCONTO}`, {
       id: `${ORDER_SN}-desconto`,
       valor: 10,
+      forma_de_pagamento: FORMA_PAGAMENTO.outros,
+      descricaoPagamento: 'cupom de desconto shopee',
       status_pagamento: STATUS_PAGAMENTO.aprovado,
     });
 
-    const r = await salvar(db, { mapeados: mapear({ escrow: escrowSG() }) });
+    const r = await salvar(db, { mapeados: mapear({ escrow: escrowSG(), cupomShopee: 12 }) });
 
-    expect(r.acao).toBe('criado');
-    expect(db.patches.map((p) => p.path)).toEqual([]);
-    expect(db.store[`${PAGAMENTOS_PATH}/${DESCONTO}`]!.data.valor).toBe(10);
-    // …mas ele CONTA na Σ, porque é exatamente o que a NF-e soma.
-    expect(r.somaPagante).toBe(41.99);
+    expect(r.criados).toBe(1);
+    expect(r.atualizados).toBe(1);
+    const docs = Object.keys(db.store).filter((k) => k.startsWith(`${PAGAMENTOS_PATH}/`));
+    expect(docs.sort()).toEqual(
+      [`${PAGAMENTOS_PATH}/${DESCONTO}`, `${PAGAMENTOS_PATH}/${PRIMARIO}`].sort(),
+    );
+    const cupom = db.store[`${PAGAMENTOS_PATH}/${DESCONTO}`]!.data;
+    expect(cupom.valor).toBe(12);
+    expect(cupom.descricaoPagamento).toBe('Cupom de desconto Shopee');
+    expect(cupom.id).toBe(`${ORDER_SN}-desconto`);
+    expect(r.somaPagante).toBe(43.99);
     expect(r.divergenciaDeSoma).toBe(0);
+  });
+
+  it('19b. ⚠️ NEAR-MISS: uma entrega SEM escrow (provisória) não re-toma nada ao lado de um cupom gravado', async () => {
+    // The stored set is primary + cupom; a PAID delivery whose escrow did not
+    // answer maps only the primary, from the detail's total, as PROVISIONAL
+    // money (`dinheiroShopee.ts`). One leg mapped, one leg stored: not a
+    // shrink — the provisional rule is what freezes the buyer leg, and the
+    // cupom is NOT retired, because a delivery with no escrow says nothing
+    // about the floor. Σ stays what the earlier, complete delivery wrote.
+    const db = new FakeDb();
+    semearPedido(db, { valorCobrado: 43.99 });
+    db.seed(`${PAGAMENTOS_PATH}/${PRIMARIO}`, {
+      id: ORDER_SN,
+      valor: 31.99,
+      status_pagamento: STATUS_PAGAMENTO.aprovado,
+    });
+    db.seed(`${PAGAMENTOS_PATH}/${DESCONTO}`, {
+      id: `${ORDER_SN}-desconto`,
+      valor: 12,
+      status_pagamento: STATUS_PAGAMENTO.aprovado,
+    });
+
+    const r = await salvar(db, {
+      mapeados: mapear({ valorDoComprador: 43.99, dinheiroProvisorio: true }),
+    });
+
+    expect(db.store[`${PAGAMENTOS_PATH}/${PRIMARIO}`]!.data.valor).toBe(31.99);
+    expect(db.store[`${PAGAMENTOS_PATH}/${DESCONTO}`]!.data.valor).toBe(12);
+    expect(db.store[`${PAGAMENTOS_PATH}/${DESCONTO}`]!.data.status_pagamento).toBe(
+      STATUS_PAGAMENTO.aprovado,
+    );
+    expect(r.movimentoCupom).toBeNull();
+    expect(r.somaPagante).toBe(43.99);
+    expect(r.divergenciaDeSoma).toBe(0);
+  });
+
+  it('19b2. ⚠️ o MESMO conjunto, entrega COM dinheiro respondido e sem cupom: a perna re-toma, o cupom é retirado', async () => {
+    // The near-miss of 19b on the other side of the money gate: the delivery is
+    // escrow-backed and says the floor no longer binds (the pedido's `vNF` is
+    // now the buyer leg alone, 43.99). One leg against one leg is not degraded,
+    // so the primary re-takes its value; the cupom leaves Σ as `estornado` and
+    // keeps its 12 — never deleted, never zeroed.
+    const db = new FakeDb();
+    semearPedido(db, { valorCobrado: 43.99 });
+    db.seed(`${PAGAMENTOS_PATH}/${PRIMARIO}`, {
+      id: ORDER_SN,
+      valor: 31.99,
+      status_pagamento: STATUS_PAGAMENTO.aprovado,
+    });
+    db.seed(`${PAGAMENTOS_PATH}/${DESCONTO}`, {
+      id: `${ORDER_SN}-desconto`,
+      valor: 12,
+      status_pagamento: STATUS_PAGAMENTO.aprovado,
+    });
+
+    const r = await salvar(db, { mapeados: mapear({ valorDoComprador: 43.99 }) });
+
+    expect(doc(db, PRIMARIO).valor).toBe(43.99);
+    expect(doc(db, DESCONTO).valor).toBe(12);
+    expect(doc(db, DESCONTO).status_pagamento).toBe(STATUS_PAGAMENTO.estornado);
+    expect(r.movimentoCupom).toBe('retirado');
+    expect(r.somaPagante).toBe(43.99);
+    expect(r.divergenciaDeSoma).toBe(0);
+  });
+
+  it('19c. ⚠️ dinheiro PROVISÓRIO (pago, escrow em falha) congela o `valor` gravado — mesmo com UM doc só', async () => {
+    // Same COUNT on both sides (one stored, one mapped), so the shrink rule
+    // alone would re-take the primary's `valor` from the detail's total.
+    const db = new FakeDb();
+    semearPedido(db, { valorCobrado: 24 });
+    db.seed(`${PAGAMENTOS_PATH}/${PRIMARIO}`, {
+      id: ORDER_SN,
+      valor: 24,
+      status_pagamento: STATUS_PAGAMENTO.aprovado,
+    });
+
+    const r = await salvar(db, {
+      mapeados: mapear({ valorDoComprador: 31.99, dinheiroProvisorio: true }),
+    });
+
+    expect(db.store[`${PAGAMENTOS_PATH}/${PRIMARIO}`]!.data.valor).toBe(24);
+    expect(r.divergenciaDeSoma).toBe(0);
+  });
+
+  it('19d. ⚠️ NEAR-MISS: o mesmo dinheiro NÃO provisório re-toma o `valor`', async () => {
+    const db = new FakeDb();
+    semearPedido(db, { valorCobrado: 24 });
+    db.seed(`${PAGAMENTOS_PATH}/${PRIMARIO}`, {
+      id: ORDER_SN,
+      valor: 24,
+      status_pagamento: STATUS_PAGAMENTO.aprovado,
+    });
+
+    await salvar(db, { mapeados: mapear({ valorDoComprador: 31.99 }) });
+
+    expect(db.store[`${PAGAMENTOS_PATH}/${PRIMARIO}`]!.data.valor).toBe(31.99);
+  });
+
+  it('19e. dinheiro provisório num pedido SEM pagamento nosso ainda CRIA o conjunto', async () => {
+    const db = new FakeDb();
+    semearPedido(db);
+
+    const r = await salvar(db, {
+      mapeados: mapear({ valorDoComprador: 31.99, dinheiroProvisorio: true }),
+    });
+
+    expect(r.criados).toBe(1);
+    expect(db.store[`${PAGAMENTOS_PATH}/${PRIMARIO}`]!.data.valor).toBe(31.99);
+  });
+});
+
+/* ========================================================================== */
+/*  shared by 25 and 26 — one delivery over the mapper's real output          */
+/* ========================================================================== */
+
+interface Entrega {
+  /** The pedido's `vNF` as `orderPedidoTx.ts` leaves it for this delivery. */
+  readonly vNF: number;
+  readonly w: number;
+  /** The buyer leg (`valorDoComprador`). */
+  readonly comprador: number;
+  /** The cupom leg; absent ⇒ the floor did not bind (nothing mapped). */
+  readonly cupom?: number;
+  readonly provisorio?: boolean;
+  readonly linha?: ShopeeOrderDetailRow;
+  readonly congelado?: boolean;
+  readonly nowUs?: number;
+}
+
+/**
+ * ONE delivery: the pedido re-seeded as the FIRST transaction would leave it
+ * (its `vNF` as a single line, the order clock, the latch), then the
+ * pagamento write over the mapper's real output.
+ */
+function entregar(db: FakeDb, e: Entrega) {
+  semearPedido(db, {
+    valorCobrado: e.vNF,
+    lastMarketplaceUpdate: e.w,
+    ...(e.congelado === true ? { hasUserInteraction: true } : {}),
+  });
+  const linha = e.linha ?? linhaSG();
+  const relogio = e.nowUs === undefined ? {} : { nowUs: e.nowUs };
+  return salvar(db, {
+    linha,
+    watermarkUs: e.w,
+    ...relogio,
+    mapeados: mapear({
+      linha,
+      valorDoComprador: e.comprador,
+      ...(e.cupom === undefined ? {} : { cupomShopee: e.cupom }),
+      ...(e.provisorio === undefined ? {} : { dinheiroProvisorio: e.provisorio }),
+      watermarkUs: e.w,
+      ...relogio,
+    }),
+  });
+}
+
+function chamadas(spy: ReturnType<typeof vi.spyOn>, trecho: string): number {
+  return spy.mock.calls.filter((c: unknown[]) => String(c[0]).includes(trecho)).length;
+}
+
+/* ========================================================================== */
+/*  25 · o ciclo de vida do cupom: contado À PARTE das pernas                 */
+/* ========================================================================== */
+
+describe('salvarPagamentosShopee — o ciclo de vida do cupom (o piso)', () => {
+  const W1 = WATERMARK_US;
+  const W2 = WATERMARK_US + 10_000_000;
+  const W3 = WATERMARK_US + 20_000_000;
+  const W4 = WATERMARK_US + 30_000_000;
+  const W5 = WATERMARK_US + 40_000_000;
+
+  /** The reviewer's opening state: the floor binds — buyer leg 55 + cupom 5 = vNF 60. */
+  async function pisoAplicado(db: FakeDb): Promise<void> {
+    const r = await entregar(db, { vNF: 60, w: W1, comprador: 55, cupom: 5 });
+    expect(r.acao).toBe('criado');
+    expect(db.idsEm(PAGAMENTOS_PATH).sort()).toEqual([PRIMARIO, DESCONTO].sort());
+    expect(r.somaPagante).toBe(60);
+    expect(r.divergenciaDeSoma).toBe(0);
+  }
+
+  function patchesDoCupom(db: FakeDb) {
+    return db.patches.filter((p) => p.path.endsWith(`/${DESCONTO}`));
+  }
+
+  /** The retired state: 25's first two deliveries. */
+  async function cupomRetirado(db: FakeDb): Promise<void> {
+    await pisoAplicado(db);
+    const r = await entregar(db, { vNF: 55, w: W2, comprador: 55 });
+    expect(r.movimentoCupom).toBe('retirado');
+  }
+
+  it('25. ⚠️ o vetor do revisor (PR #2224): o piso deixa de valer ⇒ o cupom é ESTORNADO com o valor mantido, e Σ = vNF', async () => {
+    const db = new FakeDb();
+    await pisoAplicado(db);
+    infoSpy.mockClear();
+
+    // The actual shipping cost came in lower: the floor drops to 50, under the
+    // 55 paid, so the first transaction takes vNF down to 55 and the mapper
+    // maps no cupom. Counted together, this was "1 mapped < 2 owned" — a
+    // degraded delivery that froze everything and left Σ at 60: cStat 866.
+    const r = await entregar(db, { vNF: 55, w: W2, comprador: 55 });
+
+    expect(r.acao).toBe('atualizado');
+    expect(r.movimentoCupom).toBe('retirado');
+    expect(r.statusRessuscitado).toBe(false);
+    expect(doc(db, PRIMARIO).valor).toBe(55);
+    expect(doc(db, PRIMARIO).status_pagamento).toBe(STATUS_PAGAMENTO.aprovado);
+    const cupom = doc(db, DESCONTO);
+    expect(cupom.status_pagamento).toBe(STATUS_PAGAMENTO.estornado);
+    expect(cupom.dataCancelamento).toBe(W2);
+    // Never deleted, never zeroed: the valor and the identity stay as stored.
+    expect(cupom.valor).toBe(5);
+    expect(cupom.descricaoPagamento).toBe('Cupom de desconto Shopee');
+    expect(cupom.id).toBe(`${ORDER_SN}-desconto`);
+    expect(db.idsEm(PAGAMENTOS_PATH)).toHaveLength(2);
+    // The retirement patch is the status and its date — no money field.
+    expect(patchesDoCupom(db)).toHaveLength(1);
+    expect(Object.keys(patchesDoCupom(db)[0]!.patch).sort()).toEqual([
+      'dataCancelamento',
+      'status_pagamento',
+      'ultimaModificacao',
+    ]);
+    // ⚠️ The pair that matters: the projection SEES the retirement.
+    expect(r.somaPagante).toBe(55);
+    expect(r.divergenciaDeSoma).toBe(0);
+    // Not a degraded delivery: one leg mapped, one leg stored.
+    expect(chamadas(infoSpy, 'entrega degradada')).toBe(0);
+    expect(chamadas(infoSpy, 'cupom de desconto retirado')).toBe(1);
+  });
+
+  it('25b. o piso volta a valer ⇒ o cupom é REATIVADO com o valor novo, Σ = vNF — sem o warn de ressuscitado', async () => {
+    const db = new FakeDb();
+    await cupomRetirado(db);
+    infoSpy.mockClear();
+    warnSpy.mockClear();
+
+    const r = await entregar(db, { vNF: 62, w: W3, comprador: 55, cupom: 7 });
+
+    expect(r.movimentoCupom).toBe('reativado');
+    expect(doc(db, DESCONTO).status_pagamento).toBe(STATUS_PAGAMENTO.aprovado);
+    expect(doc(db, DESCONTO).valor).toBe(7);
+    // Fill-once, exactly as on a reversed leg that comes back (16b).
+    expect(doc(db, DESCONTO).dataCancelamento).toBe(W2);
+    expect(doc(db, PRIMARIO).valor).toBe(55);
+    expect(r.somaPagante).toBe(62);
+    expect(r.divergenciaDeSoma).toBe(0);
+    // ⚠️ An EXPECTED path: its own info line, never the loud warn/flag.
+    expect(r.statusRessuscitado).toBe(false);
+    expect(chamadas(warnSpy, 'ressuscitado')).toBe(0);
+    expect(chamadas(infoSpy, 'cupom de desconto reativado')).toBe(1);
+  });
+
+  it('25c. ⚠️ replay byte-idêntico do estado RETIRADO, com OUTRO nowUs ⇒ ignorado-sem-mudanca e ZERO escritas', async () => {
+    const db = new FakeDb();
+    await cupomRetirado(db);
+    const escritasAntes = db.writes.length;
+    const cupomAntes = { ...doc(db, DESCONTO) };
+    db.opLog.length = 0;
+
+    const r = await entregar(db, { vNF: 55, w: W2, comprador: 55, nowUs: OUTRO_AGORA_US });
+
+    expect(r.acao).toBe('ignorado-sem-mudanca');
+    expect(r.movimentoCupom).toBeNull();
+    expect(db.writes).toHaveLength(escritasAntes);
+    expect(db.opLog.filter((o) => o.op !== 'get')).toEqual([]);
+    expect(doc(db, DESCONTO)).toEqual(cupomAntes);
+    expect(r.somaPagante).toBe(55);
+    expect(r.divergenciaDeSoma).toBe(0);
+  });
+
+  it('25d. NEAR-MISS (i): uma entrega PROVISÓRIA (escrow em falha) NÃO retira o cupom', async () => {
+    const db = new FakeDb();
+    await pisoAplicado(db);
+
+    // Provisional money keeps the pedido's stored money, so vNF stays 60; the
+    // buyer leg comes from the detail's total and maps NO cupom.
+    const r = await entregar(db, { vNF: 60, w: W2, comprador: 61.99, provisorio: true });
+
+    expect(r.movimentoCupom).toBeNull();
+    expect(doc(db, DESCONTO).status_pagamento).toBe(STATUS_PAGAMENTO.aprovado);
+    expect(doc(db, DESCONTO).valor).toBe(5);
+    expect(doc(db, PRIMARIO).valor).toBe(55);
+    expect(patchesDoCupom(db)).toEqual([]);
+    expect(r.somaPagante).toBe(60);
+    expect(r.divergenciaDeSoma).toBe(0);
+  });
+
+  it('25e. NEAR-MISS (ii): uma entrega sem pay_time utilizável (nenhum doc mapeado) NÃO retira o cupom', async () => {
+    const db = new FakeDb();
+    await pisoAplicado(db);
+    const semPayTime = shopeeOrderDetailRowSchema.parse({
+      order_sn: ORDER_SN,
+      order_status: SHOPEE_ORDER_STATUS.readyToShip,
+      pay_time: 0,
+    });
+
+    const r = await entregar(db, { vNF: 60, w: W2, comprador: 55, linha: semPayTime });
+
+    expect(r.acao).toBe('ignorado-sem-mudanca');
+    expect(r.movimentoCupom).toBeNull();
+    expect(doc(db, DESCONTO).status_pagamento).toBe(STATUS_PAGAMENTO.aprovado);
+    expect(doc(db, DESCONTO).valor).toBe(5);
+    expect(r.somaPagante).toBe(60);
+    expect(r.divergenciaDeSoma).toBe(0);
+  });
+
+  it('25f. NEAR-MISS (iii): com o pedido CONGELADO o cupom não é retirado e o valor dele não anda', async () => {
+    const db = new FakeDb();
+    await pisoAplicado(db);
+
+    // A human edited the header: the first transaction keeps the lines, so the
+    // latched vNF stays 60 — retiring the cupom would leave Σ short (865).
+    const semCupom = await entregar(db, { vNF: 60, w: W2, comprador: 55, congelado: true });
+    expect(semCupom.congelado).toBe(true);
+    expect(semCupom.movimentoCupom).toBeNull();
+    expect(doc(db, DESCONTO).status_pagamento).toBe(STATUS_PAGAMENTO.aprovado);
+    expect(doc(db, DESCONTO).valor).toBe(5);
+    expect(semCupom.divergenciaDeSoma).toBe(0);
+
+    // …and a delivery that maps a DIFFERENT cupom does not move its valor.
+    const outroCupom = await entregar(db, {
+      vNF: 60,
+      w: W3,
+      comprador: 55,
+      cupom: 7,
+      congelado: true,
+    });
+    expect(doc(db, DESCONTO).valor).toBe(5);
+    expect(patchesDoCupom(db)).toEqual([]);
+    expect(outroCupom.somaPagante).toBe(60);
+    expect(outroCupom.divergenciaDeSoma).toBe(0);
+  });
+
+  it('25g. NEAR-MISS (iv): um status de OPERADOR fora da escada no cupom não é mexido', async () => {
+    const db = new FakeDb();
+    await pisoAplicado(db);
+    db.store[`${PAGAMENTOS_PATH}/${DESCONTO}`]!.data.status_pagamento = STATUS_PAGAMENTO.recusado;
+
+    const r = await entregar(db, { vNF: 55, w: W2, comprador: 55 });
+
+    expect(r.movimentoCupom).toBeNull();
+    expect(doc(db, DESCONTO).status_pagamento).toBe(STATUS_PAGAMENTO.recusado);
+    expect(patchesDoCupom(db)).toEqual([]);
+    // `recusado` is outside Σ already, so the sum still closes.
+    expect(r.somaPagante).toBe(55);
+    expect(r.divergenciaDeSoma).toBe(0);
+  });
+
+  it('25h. (v) combinado 2 pernas + cupom; a entrega seguinte PERDE o payment_info mas mapeia o cupom: pernas congeladas, cupom re-tomado', async () => {
+    const db = new FakeDb();
+    const combinada = linhaCombinadaBR();
+    const r1 = await entregar(db, {
+      vNF: 36.99,
+      w: W1,
+      comprador: 31.99,
+      cupom: 5,
+      linha: combinada,
+    });
+    expect(r1.criados).toBe(3);
+    expect(r1.somaPagante).toBe(36.99);
+    infoSpy.mockClear();
+
+    const pobre = linhaCombinadaBR({ orderStatus: SHOPEE_ORDER_STATUS.shipped, paymentInfo: null });
+    const r2 = await entregar(db, { vNF: 38.99, w: W2, comprador: 31.99, cupom: 7, linha: pobre });
+
+    // The LEGS lost detail: frozen at the split the richer delivery wrote.
+    expect(chamadas(infoSpy, 'entrega degradada')).toBe(1);
+    expect(doc(db, PRIMARIO).valor).toBe(21.99);
+    expect(doc(db, SECUNDARIO).valor).toBe(10);
+    // The CUPOM tracks the floor: re-taken, even with the legs degraded.
+    expect(doc(db, DESCONTO).valor).toBe(7);
+    expect(Object.keys(patchesDoCupom(db).at(-1)!.patch).sort()).toEqual([
+      'ultimaModificacao',
+      'valor',
+    ]);
+    // Nothing double-counted: 21,99 + 10 + 7.
+    expect(r2.somaPagante).toBe(38.99);
+    expect(r2.divergenciaDeSoma).toBe(0);
+  });
+
+  it('25i. (2b) um cupom mapeado e NÃO gravado é CRIADO mesmo com as pernas degradadas', async () => {
+    const db = new FakeDb();
+    const combinada = linhaCombinadaBR();
+    await entregar(db, { vNF: 31.99, w: W1, comprador: 31.99, linha: combinada });
+    expect(db.idsEm(PAGAMENTOS_PATH)).toHaveLength(2);
+    infoSpy.mockClear();
+
+    const pobre = linhaCombinadaBR({ orderStatus: SHOPEE_ORDER_STATUS.shipped, paymentInfo: null });
+    const r = await entregar(db, { vNF: 36.99, w: W2, comprador: 31.99, cupom: 5, linha: pobre });
+
+    expect(chamadas(infoSpy, 'entrega degradada')).toBe(1);
+    expect(chamadas(infoSpy, 'conjunto congelado')).toBe(0);
+    expect(r.criados).toBe(1);
+    expect(doc(db, DESCONTO).valor).toBe(5);
+    expect(doc(db, DESCONTO).status_pagamento).toBe(STATUS_PAGAMENTO.aprovado);
+    expect(r.somaPagante).toBe(36.99);
+    expect(r.divergenciaDeSoma).toBe(0);
+  });
+
+  it('25j. as pernas degradadas E o piso deixando de valer: o cupom é retirado e Σ fecha na perna do comprador', async () => {
+    const db = new FakeDb();
+    await entregar(db, {
+      vNF: 36.99,
+      w: W1,
+      comprador: 31.99,
+      cupom: 5,
+      linha: linhaCombinadaBR(),
+    });
+
+    const pobre = linhaCombinadaBR({ orderStatus: SHOPEE_ORDER_STATUS.shipped, paymentInfo: null });
+    const r = await entregar(db, { vNF: 31.99, w: W2, comprador: 31.99, linha: pobre });
+
+    expect(r.movimentoCupom).toBe('retirado');
+    expect(doc(db, PRIMARIO).valor).toBe(21.99);
+    expect(doc(db, SECUNDARIO).valor).toBe(10);
+    expect(doc(db, DESCONTO).status_pagamento).toBe(STATUS_PAGAMENTO.estornado);
+    expect(doc(db, DESCONTO).valor).toBe(5);
+    expect(r.somaPagante).toBe(31.99);
+    expect(r.divergenciaDeSoma).toBe(0);
+  });
+
+  it('25k. ⚠️ (vi) o cupom RETIRADO não é ressuscitado por um READY_TO_SHIP que continua sem mapeá-lo', async () => {
+    const db = new FakeDb();
+    await cupomRetirado(db);
+    expect(patchesDoCupom(db)).toHaveLength(1);
+
+    // Every delivery below carries `READY_TO_SHIP` ⇒ target `aprovado`, which
+    // the ladder WOULD write over an `estornado` (`estornado → aprovado` is
+    // allowed for a leg): the refusal is the cupom rule, nothing else.
+    const provisoria = await entregar(db, { vNF: 55, w: W3, comprador: 70, provisorio: true });
+    const semPayTime = await entregar(db, {
+      vNF: 55,
+      w: W4,
+      comprador: 55,
+      linha: shopeeOrderDetailRowSchema.parse({
+        order_sn: ORDER_SN,
+        order_status: SHOPEE_ORDER_STATUS.readyToShip,
+        pay_time: 0,
+      }),
+    });
+    const congelada = await entregar(db, { vNF: 55, w: W5, comprador: 55, congelado: true });
+
+    for (const r of [provisoria, semPayTime, congelada]) {
+      expect(r.movimentoCupom).toBeNull();
+      expect(r.statusRessuscitado).toBe(false);
+      expect(r.somaPagante).toBe(55);
+      expect(r.divergenciaDeSoma).toBe(0);
+    }
+    expect(doc(db, DESCONTO).status_pagamento).toBe(STATUS_PAGAMENTO.estornado);
+    // Only the retirement ever wrote the cupom.
+    expect(patchesDoCupom(db)).toHaveLength(1);
+  });
+
+  it.each([
+    {
+      nome: 'sem pay_time (nenhum doc mapeado)',
+      congelado: false,
+      payTime: 0,
+    },
+    {
+      nome: 'pedido CONGELADO, entrega com pay_time',
+      congelado: true,
+      payTime: PAY_TIME_S,
+    },
+  ])(
+    '25l. (vii) um CANCELLED ainda tira um cupom VIVO e não mapeado da Σ — $nome',
+    async ({ congelado, payTime }) => {
+      const db = new FakeDb();
+      await pisoAplicado(db);
+      const cancelada = shopeeOrderDetailRowSchema.parse({
+        order_sn: ORDER_SN,
+        order_status: SHOPEE_ORDER_STATUS.cancelled,
+        pay_time: payTime,
+        payment_method: 'Apple Pay',
+      });
+
+      const r = await entregar(db, { vNF: 60, w: W2, comprador: 55, linha: cancelada, congelado });
+
+      expect(doc(db, DESCONTO).status_pagamento).toBe(STATUS_PAGAMENTO.estornado);
+      expect(doc(db, DESCONTO).dataCancelamento).toBe(W2);
+      expect(doc(db, PRIMARIO).status_pagamento).toBe(STATUS_PAGAMENTO.estornado);
+      // The ORDER was cancelled — not the floor ceasing to bind.
+      expect(r.movimentoCupom).toBeNull();
+      expect(r.somaPagante).toBe(0);
+    },
+  );
+
+  it('25m. ⚠️ CONGELADO: o cupom que NÓS retiramos não volta quando o piso volta a valer, se o primário não sai do estorno', async () => {
+    // Retired, then a human edits the header (the latch), then the shipping
+    // cost flips back and the floor binds again. The first transaction keeps
+    // the latched lines — vNF stays 55, written WITHOUT the cupom — so
+    // re-activating it would put Σ at 60 against 55: cStat 866, and the latch
+    // means no later delivery repairs it.
+    const db = new FakeDb();
+    await cupomRetirado(db);
+
+    const r = await entregar(db, { vNF: 55, w: W3, comprador: 55, cupom: 7, congelado: true });
+
+    expect(r.movimentoCupom).toBeNull();
+    expect(doc(db, DESCONTO).status_pagamento).toBe(STATUS_PAGAMENTO.estornado);
+    expect(doc(db, DESCONTO).valor).toBe(5);
+    expect(patchesDoCupom(db)).toHaveLength(1);
+    expect(r.somaPagante).toBe(55);
+    expect(r.divergenciaDeSoma).toBe(0);
+  });
+
+  it('25n. NEAR-MISS de 25m: CONGELADO, uma ordem cancelada que volta traz o cupom de volta JUNTO com as pernas', async () => {
+    // The cupom left Σ together with the legs (a cancellation), so the latched
+    // vNF was written WITH it: when the order comes back, it comes back too.
+    const db = new FakeDb();
+    await pisoAplicado(db);
+    const cancelada = shopeeOrderDetailRowSchema.parse({
+      order_sn: ORDER_SN,
+      order_status: SHOPEE_ORDER_STATUS.cancelled,
+      pay_time: PAY_TIME_S,
+      payment_method: 'Apple Pay',
+    });
+    await entregar(db, { vNF: 60, w: W2, comprador: 55, cupom: 5, linha: cancelada });
+    expect(doc(db, DESCONTO).status_pagamento).toBe(STATUS_PAGAMENTO.estornado);
+    expect(doc(db, PRIMARIO).status_pagamento).toBe(STATUS_PAGAMENTO.estornado);
+    warnSpy.mockClear();
+
+    const r = await entregar(db, { vNF: 60, w: W3, comprador: 55, cupom: 5, congelado: true });
+
+    expect(doc(db, PRIMARIO).status_pagamento).toBe(STATUS_PAGAMENTO.aprovado);
+    expect(doc(db, DESCONTO).status_pagamento).toBe(STATUS_PAGAMENTO.aprovado);
+    // The ORDER's resurrection is still reported loudly — by its leg — and the
+    // cupom reports NOTHING: the floor did not move, so a `reativado` token
+    // (and its "o piso voltou a valer" line) would name a cause that never was.
+    expect(r.statusRessuscitado).toBe(true);
+    expect(chamadas(warnSpy, 'ressuscitado')).toBe(1);
+    expect(r.movimentoCupom).toBeNull();
+    expect(chamadas(infoSpy, 'cupom de desconto reativado')).toBe(0);
+    expect(r.somaPagante).toBe(60);
+    expect(r.divergenciaDeSoma).toBe(0);
+  });
+
+  /** The SG single-leg order at a given status — amounts come from the mapper's inputs. */
+  function linhaNoStatus(orderStatus: string, payTime: number = PAY_TIME_S): ShopeeOrderDetailRow {
+    return shopeeOrderDetailRowSchema.parse({
+      order_sn: ORDER_SN,
+      order_status: orderStatus,
+      pay_time: payTime,
+      payment_method: 'Apple Pay',
+    });
+  }
+
+  it('25o. ⚠️ um cupom em `em_processo_aprovacao` ACOMPANHA as pernas numa entrega provisória — e o latch não o prende fora da Σ', async () => {
+    // The reviewers' vector: a PAID `PENDING` whose escrow answered creates the
+    // buyer leg AND the cupom at `em_processo_aprovacao` (outside Σ, both). The
+    // next delivery is `READY_TO_SHIP` with a failed escrow: provisional money
+    // maps no cupom, and the legs move into Σ. A cupom held at 3 by a "never
+    // INTO Σ" rule left Σ at 55 against the 60 the pedido kept (865), and once
+    // a human latched the header the next delivery that mapped it was refused
+    // too — 865 for ever. A cupom that is not `estornado` is not one we retired.
+    const db = new FakeDb();
+    await entregar(db, {
+      vNF: 60,
+      w: W1,
+      comprador: 55,
+      cupom: 5,
+      linha: linhaNoStatus(SHOPEE_ORDER_STATUS.pending),
+    });
+    expect(doc(db, PRIMARIO).status_pagamento).toBe(STATUS_PAGAMENTO.em_processo_aprovacao);
+    expect(doc(db, DESCONTO).status_pagamento).toBe(STATUS_PAGAMENTO.em_processo_aprovacao);
+
+    const provisoria = await entregar(db, { vNF: 60, w: W2, comprador: 61.99, provisorio: true });
+    expect(doc(db, PRIMARIO).status_pagamento).toBe(STATUS_PAGAMENTO.aprovado);
+    expect(doc(db, DESCONTO).status_pagamento).toBe(STATUS_PAGAMENTO.aprovado);
+    expect(doc(db, DESCONTO).valor).toBe(5);
+    expect(provisoria.movimentoCupom).toBeNull();
+    expect(provisoria.somaPagante).toBe(60);
+    expect(provisoria.divergenciaDeSoma).toBe(0);
+
+    const enviada = await entregar(db, {
+      vNF: 60,
+      w: W3,
+      comprador: 55,
+      cupom: 5,
+      congelado: true,
+      linha: linhaNoStatus(SHOPEE_ORDER_STATUS.shipped),
+    });
+    expect(enviada.congelado).toBe(true);
+    expect(doc(db, DESCONTO).status_pagamento).toBe(STATUS_PAGAMENTO.aprovado);
+    expect(enviada.somaPagante).toBe(60);
+    expect(enviada.divergenciaDeSoma).toBe(0);
+  });
+
+  it.each([{ congelado: false }, { congelado: true }])(
+    '25p. ⚠️ uma ordem cancelada que volta numa entrega PROVISÓRIA traz o cupom JUNTO com as pernas (congelado: $congelado)',
+    async ({ congelado }) => {
+      // The cancellation took the legs and the cupom out of Σ TOGETHER; the
+      // reversal arrives on a delivery whose escrow failed, so nothing maps the
+      // cupom. Kept out, Σ is 55 against the 60 the pedido kept — and under the
+      // latch every later delivery that mapped it was refused as well.
+      const db = new FakeDb();
+      await pisoAplicado(db);
+      await entregar(db, {
+        vNF: 60,
+        w: W2,
+        comprador: 55,
+        cupom: 5,
+        congelado,
+        linha: linhaNoStatus(SHOPEE_ORDER_STATUS.cancelled),
+      });
+      expect(doc(db, PRIMARIO).status_pagamento).toBe(STATUS_PAGAMENTO.estornado);
+      expect(doc(db, DESCONTO).status_pagamento).toBe(STATUS_PAGAMENTO.estornado);
+      warnSpy.mockClear();
+      infoSpy.mockClear();
+
+      const volta = await entregar(db, {
+        vNF: 60,
+        w: W3,
+        comprador: 61.99,
+        provisorio: true,
+        congelado,
+      });
+      expect(doc(db, PRIMARIO).status_pagamento).toBe(STATUS_PAGAMENTO.aprovado);
+      expect(doc(db, DESCONTO).status_pagamento).toBe(STATUS_PAGAMENTO.aprovado);
+      expect(doc(db, DESCONTO).valor).toBe(5);
+      // The ORDER came back: its leg says so, the cupom does not.
+      expect(volta.statusRessuscitado).toBe(true);
+      expect(volta.movimentoCupom).toBeNull();
+      expect(chamadas(infoSpy, 'cupom de desconto reativado')).toBe(0);
+      expect(volta.somaPagante).toBe(60);
+      expect(volta.divergenciaDeSoma).toBe(0);
+
+      const enviada = await entregar(db, {
+        vNF: 60,
+        w: W4,
+        comprador: 55,
+        cupom: 5,
+        congelado,
+        linha: linhaNoStatus(SHOPEE_ORDER_STATUS.shipped),
+      });
+      expect(doc(db, DESCONTO).status_pagamento).toBe(STATUS_PAGAMENTO.aprovado);
+      expect(enviada.somaPagante).toBe(60);
+      expect(enviada.divergenciaDeSoma).toBe(0);
+    },
+  );
+
+  it('25q. ⚠️ NEAR-MISS de 25o/25p: o cupom retirado enquanto as pernas esperavam NÃO volta quando elas ENTRAM na Σ', async () => {
+    // Only the PRIMARY leaving `estornado` (a reversed cancellation) may bring
+    // a retired cupom back. Legs moving from `em_processo_aprovacao` into Σ are
+    // the order getting PAID, which says nothing about the floor: read as
+    // "a leg enters Σ", this delivery would resurrect the cupom at 5 over a
+    // pedido whose `vNF` (kept by the provisional money) is 55 — 866.
+    const db = new FakeDb();
+    const pendente = linhaNoStatus(SHOPEE_ORDER_STATUS.pending);
+    await entregar(db, { vNF: 60, w: W1, comprador: 55, cupom: 5, linha: pendente });
+    const retirada = await entregar(db, { vNF: 55, w: W2, comprador: 55, linha: pendente });
+    expect(retirada.movimentoCupom).toBe('retirado');
+    expect(doc(db, DESCONTO).status_pagamento).toBe(STATUS_PAGAMENTO.estornado);
+    expect(doc(db, PRIMARIO).status_pagamento).toBe(STATUS_PAGAMENTO.em_processo_aprovacao);
+
+    const paga = await entregar(db, { vNF: 55, w: W3, comprador: 61.99, provisorio: true });
+
+    // The anchor: the legs really did ENTER Σ on this delivery.
+    expect(doc(db, PRIMARIO).status_pagamento).toBe(STATUS_PAGAMENTO.aprovado);
+    expect(doc(db, DESCONTO).status_pagamento).toBe(STATUS_PAGAMENTO.estornado);
+    expect(paga.movimentoCupom).toBeNull();
+    expect(paga.somaPagante).toBe(55);
+    expect(paga.divergenciaDeSoma).toBe(0);
+  });
+
+  it('25r. NEAR-MISS da regra: um cupom VIVO e não mapeado segue a ordem DENTRO da Σ (aprovado ⇄ em_disputa)', async () => {
+    // Both statuses count, so neither move is a return: the rule must not
+    // freeze a live cupom at `aprovado` while the legs open a dispute, nor at
+    // `em_disputa` once it closes.
+    const db = new FakeDb();
+    await pisoAplicado(db);
+
+    const disputa = await entregar(db, {
+      vNF: 60,
+      w: W2,
+      comprador: 61.99,
+      provisorio: true,
+      linha: linhaNoStatus(SHOPEE_ORDER_STATUS.inCancel),
+    });
+    expect(doc(db, PRIMARIO).status_pagamento).toBe(STATUS_PAGAMENTO.em_disputa);
+    expect(doc(db, DESCONTO).status_pagamento).toBe(STATUS_PAGAMENTO.em_disputa);
+    expect(disputa.movimentoCupom).toBeNull();
+    expect(disputa.somaPagante).toBe(60);
+    expect(disputa.divergenciaDeSoma).toBe(0);
+
+    const fechada = await entregar(db, {
+      vNF: 60,
+      w: W3,
+      comprador: 55,
+      linha: linhaNoStatus(SHOPEE_ORDER_STATUS.readyToShip, 0),
+    });
+    expect(doc(db, PRIMARIO).status_pagamento).toBe(STATUS_PAGAMENTO.aprovado);
+    expect(doc(db, DESCONTO).status_pagamento).toBe(STATUS_PAGAMENTO.aprovado);
+    expect(fechada.somaPagante).toBe(60);
+    expect(fechada.divergenciaDeSoma).toBe(0);
+  });
+
+  it('25s. um cupom LEGADO sem status (`null`, que já conta) é escrito pela ordem numa entrega provisória', async () => {
+    const db = new FakeDb();
+    db.seed(`${PAGAMENTOS_PATH}/${PRIMARIO}`, {
+      id: ORDER_SN,
+      valor: 55,
+      status_pagamento: STATUS_PAGAMENTO.aprovado,
+    });
+    db.seed(`${PAGAMENTOS_PATH}/${DESCONTO}`, {
+      id: `${ORDER_SN}-desconto`,
+      valor: 5,
+      status_pagamento: null,
+    });
+
+    const r = await entregar(db, { vNF: 60, w: W1, comprador: 61.99, provisorio: true });
+
+    expect(doc(db, DESCONTO).status_pagamento).toBe(STATUS_PAGAMENTO.aprovado);
+    expect(doc(db, DESCONTO).valor).toBe(5);
+    expect(r.movimentoCupom).toBeNull();
+    expect(r.somaPagante).toBe(60);
+    expect(r.divergenciaDeSoma).toBe(0);
+  });
+
+  it('25t. ⚠️ o gêmeo de 18d: num pedido CONGELADO sem pagamento nenhum, a primeira entrega cria a perna E o cupom', async () => {
+    // The cupom's creation gate is the latch AND a document of ours already
+    // stored. Withheld here, Σ would stand at 55 against the floor's 60, and
+    // the buyer leg created alongside would make every later delivery a
+    // "set that may not grow" — 865 for ever.
+    const db = new FakeDb();
+
+    const r = await entregar(db, { vNF: 60, w: W1, comprador: 55, cupom: 5, congelado: true });
+
+    expect(r.congelado).toBe(true);
+    expect(r.criados).toBe(2);
+    expect(doc(db, DESCONTO).valor).toBe(5);
+    expect(doc(db, DESCONTO).status_pagamento).toBe(STATUS_PAGAMENTO.aprovado);
+    expect(r.somaPagante).toBe(60);
+    expect(r.divergenciaDeSoma).toBe(0);
+  });
+});
+
+/* ========================================================================== */
+/*  26 · o colapso POR VALOR: as pernas superadas são RETIRADAS               */
+/* ========================================================================== */
+
+describe('salvarPagamentosShopee — o colapso por valor e as pernas superadas', () => {
+  const W1 = WATERMARK_US;
+  const W2 = WATERMARK_US + 10_000_000;
+  const W3 = WATERMARK_US + 20_000_000;
+  const W4 = WATERMARK_US + 30_000_000;
+  const W5 = WATERMARK_US + 40_000_000;
+  const W6 = WATERMARK_US + 50_000_000;
+
+  function entrada(metodo: string, valor: number, autorizacao: string) {
+    return {
+      payment_method: metodo,
+      payment_amount: valor,
+      card_brand: metodo === 'pix' ? '' : 'visa',
+      transaction_id: autorizacao,
+      payment_processor_register: CNPJ_FALSO,
+    };
+  }
+
+  /**
+   * The Codex vector (PR #2224): a FOB order, goods 50 and 10 of freight the
+   * buyer paid, a combined payment of two entries that sum to the
+   * freight-INCLUSIVE 60. The credit-card entry sorts first: it is the PRIMARY.
+   */
+  function linhaCodex(
+    over: { orderStatus?: string; payTime?: number; paymentInfo?: unknown } = {},
+  ): ShopeeOrderDetailRow {
+    return shopeeOrderDetailRowSchema.parse({
+      order_sn: ORDER_SN,
+      order_status: over.orderStatus ?? SHOPEE_ORDER_STATUS.readyToShip,
+      region: 'BR',
+      pay_time: over.payTime ?? PAY_TIME_S,
+      total_amount: 60,
+      payment_method: 'Combined Payment',
+      payment_info:
+        'paymentInfo' in over
+          ? over.paymentInfo
+          : [entrada('pix', 30, 'AUT-PIX'), entrada('credit_card', 30, 'AUT-CC')],
+    });
+  }
+
+  function patchesDe(db: FakeDb, id: string) {
+    return db.patches.filter((p) => p.path.endsWith(`/${id}`));
+  }
+
+  /**
+   * Delivery 1 of the vector: PAID, the escrow failed (contained) — the buyer
+   * leg is the detail's freight-inclusive `total_amount`, the entries fit it,
+   * and the two legs are CREATED. The pedido's `vNF` is the goods (FOB), so
+   * provisional money does not close: the NF-e refuses rather than emits.
+   */
+  async function combinadoProvisorio(db: FakeDb): Promise<void> {
+    const r = await entregar(db, {
+      vNF: 50,
+      w: W1,
+      comprador: 60,
+      provisorio: true,
+      linha: linhaCodex(),
+    });
+    expect(r.criados).toBe(2);
+    expect(doc(db, PRIMARIO).valor).toBe(30);
+    expect(doc(db, SECUNDARIO).valor).toBe(30);
+    expect(r.divergenciaDeSoma).toBe(10);
+  }
+
+  /** Delivery 2 of the vector: the escrow answers ⇒ buyer leg 50, the SAME entries collapse. */
+  async function pernaSuperada(db: FakeDb): Promise<void> {
+    await combinadoProvisorio(db);
+    const r = await entregar(db, { vNF: 50, w: W2, comprador: 50, linha: linhaCodex() });
+    expect(r.pernasRetiradas).toBe(1);
+    expect(doc(db, SECUNDARIO).status_pagamento).toBe(STATUS_PAGAMENTO.estornado);
+  }
+
+  it('26. ⚠️ o vetor do Codex (PR #2224): o escrow responde ⇒ o primário re-toma 50, o irmão é RETIRADO, Σ = vNF; o replay não grava; provisória e sem pay_time não ressuscitam', async () => {
+    const db = new FakeDb();
+    await combinadoProvisorio(db);
+    infoSpy.mockClear();
+    warnSpy.mockClear();
+
+    // Delivery 2 — the escrow answers: the buyer leg is 60 − 10 of freight = 50,
+    // and the SAME two entries (60) collapse. Read as detail loss ("1 mapped <
+    // 2 stored") this froze both legs at 30 + 30 against a vNF of 50: cStat 866
+    // on every later import, never repaired.
+    const r2 = await entregar(db, { vNF: 50, w: W2, comprador: 50, linha: linhaCodex() });
+
+    expect(r2.acao).toBe('atualizado');
+    expect(doc(db, PRIMARIO).valor).toBe(50);
+    expect(doc(db, PRIMARIO).status_pagamento).toBe(STATUS_PAGAMENTO.aprovado);
+    const irmao = doc(db, SECUNDARIO);
+    expect(irmao.status_pagamento).toBe(STATUS_PAGAMENTO.estornado);
+    expect(irmao.dataCancelamento).toBe(W2);
+    // Never deleted, never zeroed: the valor and the identity stay as stored.
+    expect(irmao.valor).toBe(30);
+    expect(irmao.id).toBe(`${ORDER_SN}-1`);
+    expect(db.idsEm(PAGAMENTOS_PATH)).toHaveLength(2);
+    // The retirement patch is the status and its date — no money field.
+    expect(patchesDe(db, SECUNDARIO)).toHaveLength(1);
+    expect(Object.keys(patchesDe(db, SECUNDARIO)[0]!.patch).sort()).toEqual([
+      'dataCancelamento',
+      'status_pagamento',
+      'ultimaModificacao',
+    ]);
+    expect(r2.pernasRetiradas).toBe(1);
+    expect(r2.pernasReativadas).toBe(0);
+    expect(r2.statusRessuscitado).toBe(false);
+    // ⚠️ The pair that matters: the projection SEES the retirement.
+    expect(r2.somaPagante).toBe(50);
+    expect(r2.divergenciaDeSoma).toBe(0);
+    expect(chamadas(infoSpy, 'entrega degradada')).toBe(0);
+    expect(chamadas(infoSpy, 'pernas superadas retiradas')).toBe(1);
+
+    // Delivery 3 — the byte-identical replay, under ANOTHER clock: nothing.
+    const escritasAntes = db.writes.length;
+    db.opLog.length = 0;
+    const r3 = await entregar(db, {
+      vNF: 50,
+      w: W2,
+      comprador: 50,
+      linha: linhaCodex(),
+      nowUs: OUTRO_AGORA_US,
+    });
+    expect(r3.acao).toBe('ignorado-sem-mudanca');
+    expect(r3.pernasRetiradas).toBe(0);
+    expect(db.writes).toHaveLength(escritasAntes);
+    expect(db.opLog.filter((o) => o.op !== 'get')).toEqual([]);
+
+    // Delivery 4 — `READY_TO_SHIP` targets `aprovado`, which the ladder WOULD
+    // write over the sibling's `estornado`. Provisional money MAPS it again
+    // (the entries fit the freight-inclusive 60), and a delivery with no usable
+    // `pay_time` maps nothing: neither may bring it back into Σ.
+    warnSpy.mockClear();
+    const provisoria = await entregar(db, {
+      vNF: 50,
+      w: W3,
+      comprador: 60,
+      provisorio: true,
+      linha: linhaCodex(),
+    });
+    const semPayTime = await entregar(db, {
+      vNF: 50,
+      w: W4,
+      comprador: 50,
+      linha: linhaCodex({ payTime: 0 }),
+    });
+    for (const r of [provisoria, semPayTime]) {
+      expect(r.statusRessuscitado).toBe(false);
+      expect(r.pernasReativadas).toBe(0);
+      expect(r.somaPagante).toBe(50);
+      expect(r.divergenciaDeSoma).toBe(0);
+    }
+    expect(doc(db, SECUNDARIO).status_pagamento).toBe(STATUS_PAGAMENTO.estornado);
+    expect(doc(db, PRIMARIO).valor).toBe(50);
+    // Only the retirement ever wrote the sibling.
+    expect(patchesDe(db, SECUNDARIO)).toHaveLength(1);
+    expect(chamadas(warnSpy, 'ressuscitado')).toBe(0);
+  });
+
+  it('26b. ⚠️ NEAR-MISS (i): PERDA DE DETALHE ainda congela — UMA entrada utilizável contra duas pernas, com o escrow respondido', async () => {
+    const db = new FakeDb();
+    await entregar(db, { vNF: 31.99, w: W1, comprador: 31.99, linha: linhaCombinadaBR() });
+    expect(db.idsEm(PAGAMENTOS_PATH)).toHaveLength(2);
+    infoSpy.mockClear();
+
+    // One usable entry is not a collapse (the mapper never fans out ONE), so
+    // the delivery LOST detail: the primary must not re-take the whole 31,99
+    // beside the sibling's 10.
+    const umaEntrada = linhaCombinadaBR({
+      orderStatus: SHOPEE_ORDER_STATUS.shipped,
+      paymentInfo: [entrada('credit_card', 21.99, 'AUT-CC')],
+    });
+    const r = await entregar(db, { vNF: 31.99, w: W2, comprador: 31.99, linha: umaEntrada });
+
+    expect(chamadas(infoSpy, 'entrega degradada')).toBe(1);
+    expect(doc(db, PRIMARIO).valor).toBe(21.99);
+    expect(doc(db, SECUNDARIO).valor).toBe(10);
+    expect(doc(db, SECUNDARIO).status_pagamento).toBe(STATUS_PAGAMENTO.aprovado);
+    expect(patchesDe(db, SECUNDARIO)).toEqual([]);
+    expect(r.pernasRetiradas).toBe(0);
+    expect(r.somaPagante).toBe(31.99);
+    expect(r.divergenciaDeSoma).toBe(0);
+  });
+
+  it.each([
+    {
+      nome: 'TRÊS pernas guardadas, DUAS entradas que não fecham ⇒ perda de detalhe: congela',
+      guardadas: [
+        entrada('pix', 10, 'AUT-PIX'),
+        entrada('credit_card', 15, 'AUT-CC'),
+        entrada('credit_card', 6.99, 'AUT-CC2'),
+      ],
+      vNFAntes: 31.99,
+      recebidas: [entrada('pix', 10, 'AUT-PIX'), entrada('credit_card', 15, 'AUT-CC')],
+      vNFDepois: 31.99,
+      retira: false,
+    },
+    {
+      nome: 'DUAS pernas guardadas, TRÊS entradas que não fecham ⇒ nada perdido: o irmão é retirado',
+      guardadas: [entrada('pix', 10, 'AUT-PIX'), entrada('credit_card', 21.99, 'AUT-CC')],
+      vNFAntes: 31.99,
+      recebidas: [
+        entrada('pix', 10, 'AUT-PIX'),
+        entrada('credit_card', 15, 'AUT-CC'),
+        entrada('credit_card', 6.99, 'AUT-CC2'),
+      ],
+      vNFDepois: 30,
+      retira: true,
+    },
+  ])(
+    '26c. a fronteira é `entradas >= pernas guardadas`, nunca "mapeou uma só" — $nome',
+    async ({ guardadas, vNFAntes, recebidas, vNFDepois, retira }) => {
+      const db = new FakeDb();
+      const r1 = await entregar(db, {
+        vNF: vNFAntes,
+        w: W1,
+        comprador: vNFAntes,
+        linha: linhaCombinadaBR({ paymentInfo: guardadas }),
+      });
+      expect(r1.criados).toBe(guardadas.length);
+      const antes = Object.fromEntries(
+        db.idsEm(PAGAMENTOS_PATH).map((id) => [id, doc(db, id).valor]),
+      );
+      infoSpy.mockClear();
+
+      // Both deliveries COLLAPSE (`soma-divergente`); only the entry count says
+      // whether anything was lost.
+      const r2 = await entregar(db, {
+        vNF: vNFDepois,
+        w: W2,
+        comprador: vNFDepois,
+        linha: linhaCombinadaBR({
+          orderStatus: SHOPEE_ORDER_STATUS.shipped,
+          paymentInfo: recebidas,
+        }),
+      });
+
+      expect(chamadas(infoSpy, 'entrega degradada')).toBe(retira ? 0 : 1);
+      expect(r2.pernasRetiradas).toBe(retira ? 1 : 0);
+      if (retira) {
+        expect(doc(db, PRIMARIO).valor).toBe(30);
+        expect(doc(db, SECUNDARIO).status_pagamento).toBe(STATUS_PAGAMENTO.estornado);
+      } else {
+        for (const [id, valor] of Object.entries(antes)) {
+          expect(doc(db, id).valor).toBe(valor);
+          expect(doc(db, id).status_pagamento).toBe(STATUS_PAGAMENTO.aprovado);
+        }
+      }
+      expect(r2.somaPagante).toBe(vNFDepois);
+      expect(r2.divergenciaDeSoma).toBe(0);
+    },
+  );
+
+  it('26d. NEAR-MISS (ii): o MESMO colapso num pedido CONGELADO não retira nada e não re-toma nada', async () => {
+    const db = new FakeDb();
+    await combinadoProvisorio(db);
+
+    const r = await entregar(db, {
+      vNF: 50,
+      w: W2,
+      comprador: 50,
+      linha: linhaCodex(),
+      congelado: true,
+    });
+
+    expect(r.congelado).toBe(true);
+    expect(r.pernasRetiradas).toBe(0);
+    expect(doc(db, PRIMARIO).valor).toBe(30);
+    expect(doc(db, SECUNDARIO).valor).toBe(30);
+    expect(doc(db, SECUNDARIO).status_pagamento).toBe(STATUS_PAGAMENTO.aprovado);
+    expect(patchesDe(db, SECUNDARIO)).toEqual([]);
+    // A human froze the pedido: what is stored stands, exactly as before.
+    expect(r.somaPagante).toBe(60);
+  });
+
+  it('26e. NEAR-MISS (iii): um colapso numa entrega PROVISÓRIA continua congelado — nada retirado', async () => {
+    // Two legs an escrow-backed delivery wrote (21,99 + 10 = vNF 31,99); then a
+    // paid delivery whose escrow failed: its buyer leg is the freight-inclusive
+    // 33,98, the same two entries (31,99) collapse — but the money is not the
+    // escrow's, so the collapse proves nothing.
+    const db = new FakeDb();
+    await entregar(db, { vNF: 31.99, w: W1, comprador: 31.99, linha: linhaCombinadaBR() });
+    infoSpy.mockClear();
+
+    const r = await entregar(db, {
+      vNF: 31.99,
+      w: W2,
+      comprador: 33.98,
+      provisorio: true,
+      linha: linhaCombinadaBR({ orderStatus: SHOPEE_ORDER_STATUS.shipped }),
+    });
+
+    expect(chamadas(infoSpy, 'entrega degradada')).toBe(1);
+    expect(r.pernasRetiradas).toBe(0);
+    expect(doc(db, PRIMARIO).valor).toBe(21.99);
+    expect(doc(db, SECUNDARIO).valor).toBe(10);
+    expect(doc(db, SECUNDARIO).status_pagamento).toBe(STATUS_PAGAMENTO.aprovado);
+    expect(r.somaPagante).toBe(31.99);
+    expect(r.divergenciaDeSoma).toBe(0);
+  });
+
+  it('26f. NEAR-MISS (iv): um status de OPERADOR fora da escada no irmão não é mexido', async () => {
+    const db = new FakeDb();
+    await combinadoProvisorio(db);
+    db.store[`${PAGAMENTOS_PATH}/${SECUNDARIO}`]!.data.status_pagamento = STATUS_PAGAMENTO.recusado;
+
+    const r = await entregar(db, { vNF: 50, w: W2, comprador: 50, linha: linhaCodex() });
+
+    expect(r.pernasRetiradas).toBe(0);
+    expect(doc(db, SECUNDARIO).status_pagamento).toBe(STATUS_PAGAMENTO.recusado);
+    expect(patchesDe(db, SECUNDARIO)).toEqual([]);
+    // The primary still re-takes the buyer leg; `recusado` is outside Σ already.
+    expect(doc(db, PRIMARIO).valor).toBe(50);
+    expect(r.somaPagante).toBe(50);
+    expect(r.divergenciaDeSoma).toBe(0);
+  });
+
+  it('26g. ⚠️ (vii) um irmão retirado nunca abona a volta de um cupom retirado, nem o cupom a do irmão', async () => {
+    const db = new FakeDb();
+    await combinadoProvisorio(db);
+    // The collapse AND the floor binding (cupom 5, vNF 55), then the floor
+    // stops binding: both the sibling and the cupom are retired.
+    await entregar(db, { vNF: 55, w: W2, comprador: 50, cupom: 5, linha: linhaCodex() });
+    const r = await entregar(db, { vNF: 50, w: W3, comprador: 50, linha: linhaCodex() });
+    expect(r.movimentoCupom).toBe('retirado');
+    expect(doc(db, SECUNDARIO).status_pagamento).toBe(STATUS_PAGAMENTO.estornado);
+    expect(doc(db, DESCONTO).status_pagamento).toBe(STATUS_PAGAMENTO.estornado);
+    const patchesAntes = db.patches.length;
+    warnSpy.mockClear();
+
+    // (a) no usable `pay_time`: `READY_TO_SHIP` targets `aprovado` for both.
+    // Under "any LEG leaving `estornado`" the sibling came back on its own and
+    // vouched for the cupom: Σ 85 against 50.
+    const semPayTime = await entregar(db, {
+      vNF: 50,
+      w: W4,
+      comprador: 50,
+      linha: linhaCodex({ payTime: 0 }),
+    });
+    // (b) the latch, the floor binding again: the mapped cupom may not come
+    // back over the latched vNF, and neither may the unmapped sibling.
+    const congelada = await entregar(db, {
+      vNF: 50,
+      w: W5,
+      comprador: 50,
+      cupom: 7,
+      congelado: true,
+      linha: linhaCodex(),
+    });
+    for (const x of [semPayTime, congelada]) {
+      expect(x.statusRessuscitado).toBe(false);
+      expect(x.movimentoCupom).toBeNull();
+      expect(x.pernasReativadas).toBe(0);
+      expect(x.somaPagante).toBe(50);
+      expect(x.divergenciaDeSoma).toBe(0);
+    }
+    expect(db.patches).toHaveLength(patchesAntes);
+
+    // (c) off the latch, the floor binds again: the cupom's OWN return is
+    // legitimate — and it does not carry the still-superseded sibling with it.
+    const piso = await entregar(db, {
+      vNF: 57,
+      w: W6,
+      comprador: 50,
+      cupom: 7,
+      linha: linhaCodex(),
+    });
+    expect(piso.movimentoCupom).toBe('reativado');
+    expect(doc(db, DESCONTO).valor).toBe(7);
+    expect(doc(db, SECUNDARIO).status_pagamento).toBe(STATUS_PAGAMENTO.estornado);
+    expect(piso.pernasReativadas).toBe(0);
+    expect(piso.somaPagante).toBe(57);
+    expect(piso.divergenciaDeSoma).toBe(0);
+    expect(chamadas(warnSpy, 'ressuscitado')).toBe(0);
+  });
+
+  it('26h. (v) o combinado volta a FECHAR ⇒ o irmão é mapeado e REATIVADO com o valor novo — linha própria, sem o warn de ressuscitado', async () => {
+    const db = new FakeDb();
+    await pernaSuperada(db);
+    infoSpy.mockClear();
+    warnSpy.mockClear();
+
+    const fecha = linhaCodex({
+      orderStatus: SHOPEE_ORDER_STATUS.shipped,
+      paymentInfo: [entrada('pix', 25, 'AUT-PIX'), entrada('credit_card', 25, 'AUT-CC')],
+    });
+    const r = await entregar(db, { vNF: 50, w: W3, comprador: 50, linha: fecha });
+
+    expect(r.pernasReativadas).toBe(1);
+    expect(r.pernasRetiradas).toBe(0);
+    expect(doc(db, PRIMARIO).valor).toBe(25);
+    expect(doc(db, SECUNDARIO).valor).toBe(25);
+    expect(doc(db, SECUNDARIO).status_pagamento).toBe(STATUS_PAGAMENTO.aprovado);
+    // Fill-once, exactly as on a reversed leg that comes back (16b).
+    expect(doc(db, SECUNDARIO).dataCancelamento).toBe(W2);
+    expect(r.somaPagante).toBe(50);
+    expect(r.divergenciaDeSoma).toBe(0);
+    // ⚠️ An EXPECTED path: its own info line, never the loud warn/flag.
+    expect(r.statusRessuscitado).toBe(false);
+    expect(chamadas(warnSpy, 'ressuscitado')).toBe(0);
+    expect(chamadas(infoSpy, 'perna de pagamento reativada')).toBe(1);
+  });
+
+  it('26i. (vi) RESIDUAL documentado: o cancelamento tira tudo; a volta traz o primário E o irmão e o cupom retirados; o colapso seguinte retira de novo', async () => {
+    const db = new FakeDb();
+    await combinadoProvisorio(db);
+    await entregar(db, { vNF: 55, w: W2, comprador: 50, cupom: 5, linha: linhaCodex() });
+    await entregar(db, { vNF: 50, w: W3, comprador: 50, linha: linhaCodex() });
+
+    const cancelada = await entregar(db, {
+      vNF: 50,
+      w: W4,
+      comprador: 50,
+      linha: linhaCodex({ orderStatus: SHOPEE_ORDER_STATUS.cancelled }),
+    });
+    expect(doc(db, PRIMARIO).status_pagamento).toBe(STATUS_PAGAMENTO.estornado);
+    expect(cancelada.somaPagante).toBe(0);
+    warnSpy.mockClear();
+
+    // `estornado` cannot say who wrote it: the PRIMARY leaving it is the order
+    // coming back, and everything we retired follows it — Σ above the nota.
+    const volta = await entregar(db, {
+      vNF: 50,
+      w: W5,
+      comprador: 50,
+      linha: linhaCodex({ payTime: 0 }),
+    });
+    expect(volta.statusRessuscitado).toBe(true);
+    expect(doc(db, SECUNDARIO).status_pagamento).toBe(STATUS_PAGAMENTO.aprovado);
+    expect(doc(db, DESCONTO).status_pagamento).toBe(STATUS_PAGAMENTO.aprovado);
+    expect(volta.somaPagante).toBe(85);
+    // The order's return is reported loudly, by its legs; the cupom says nothing.
+    expect(chamadas(warnSpy, 'ressuscitado')).toBe(2);
+    expect(volta.movimentoCupom).toBeNull();
+    expect(volta.pernasReativadas).toBe(0);
+
+    // Off the latch, the next money-answered collapse retires both again.
+    const colapso = await entregar(db, { vNF: 50, w: W6, comprador: 50, linha: linhaCodex() });
+    expect(colapso.pernasRetiradas).toBe(1);
+    expect(colapso.movimentoCupom).toBe('retirado');
+    expect(doc(db, SECUNDARIO).status_pagamento).toBe(STATUS_PAGAMENTO.estornado);
+    // The FIRST retirement's date, kept across the round trip.
+    expect(doc(db, SECUNDARIO).dataCancelamento).toBe(W2);
+    expect(colapso.somaPagante).toBe(50);
+    expect(colapso.divergenciaDeSoma).toBe(0);
+  });
+
+  it('26j. (viii) o cupom e o colapso por valor na MESMA entrega: o irmão é retirado, o cupom criado, Σ = vNF', async () => {
+    const db = new FakeDb();
+    await combinadoProvisorio(db);
+
+    const r = await entregar(db, {
+      vNF: 55,
+      w: W2,
+      comprador: 50,
+      cupom: 5,
+      linha: linhaCodex(),
+    });
+
+    expect(r.criados).toBe(1);
+    expect(r.pernasRetiradas).toBe(1);
+    expect(r.movimentoCupom).toBeNull();
+    expect(doc(db, PRIMARIO).valor).toBe(50);
+    expect(doc(db, SECUNDARIO).status_pagamento).toBe(STATUS_PAGAMENTO.estornado);
+    expect(doc(db, DESCONTO).valor).toBe(5);
+    expect(doc(db, DESCONTO).status_pagamento).toBe(STATUS_PAGAMENTO.aprovado);
+    expect(r.somaPagante).toBe(55);
+    expect(r.divergenciaDeSoma).toBe(0);
+  });
+
+  /** Three entries: credit 15 (the PRIMARY), credit 6,99 (the -1), pix 10 (the -2). */
+  const TRES_ENTRADAS = [
+    entrada('pix', 10, 'AUT-PIX'),
+    entrada('credit_card', 15, 'AUT-CC'),
+    entrada('credit_card', 6.99, 'AUT-CC2'),
+  ];
+  const TERCEIRO = makePagamentoIdShopee(CONTA, ORDER_SN, '-2');
+
+  it('26k. ⚠️ um irmão RETIRADO não é detalhe a perder: uma entrega SEM payment_info depois da retirada re-toma o primário e Σ = vNF', async () => {
+    // After the retirement (50 + 30@estornado) the shipped order stops
+    // carrying `payment_info` and the escrow's buyer leg moves to 48. Counting
+    // the retired sibling (1 mapped < 2 stored) froze the primary at 50
+    // against a vNF of 48 — 866 for as long as the detail stays absent, while
+    // a single-leg order in the same spot closes.
+    const db = new FakeDb();
+    await pernaSuperada(db);
+    infoSpy.mockClear();
+
+    const semDetalhe = linhaCodex({ orderStatus: SHOPEE_ORDER_STATUS.shipped, paymentInfo: [] });
+    const r = await entregar(db, { vNF: 48, w: W3, comprador: 48, linha: semDetalhe });
+
+    expect(chamadas(infoSpy, 'entrega degradada')).toBe(0);
+    expect(doc(db, PRIMARIO).valor).toBe(48);
+    expect(doc(db, SECUNDARIO)).toMatchObject({
+      valor: 30,
+      status_pagamento: STATUS_PAGAMENTO.estornado,
+    });
+    expect(patchesDe(db, SECUNDARIO)).toHaveLength(1);
+    expect(r.pernasRetiradas).toBe(0);
+    expect(r.pernasReativadas).toBe(0);
+    expect(r.somaPagante).toBe(48);
+    expect(r.divergenciaDeSoma).toBe(0);
+
+    // NEAR-MISS: the SAME detail-less delivery over a sibling still PAGANTE is
+    // detail loss — the primary must not re-take the whole 60 beside its 30.
+    const vivo = new FakeDb();
+    await entregar(vivo, { vNF: 60, w: W1, comprador: 60, linha: linhaCodex() });
+    infoSpy.mockClear();
+    const r2 = await entregar(vivo, { vNF: 60, w: W3, comprador: 60, linha: semDetalhe });
+    expect(chamadas(infoSpy, 'entrega degradada')).toBe(1);
+    expect(doc(vivo, PRIMARIO).valor).toBe(30);
+    expect(doc(vivo, SECUNDARIO)).toMatchObject({
+      valor: 30,
+      status_pagamento: STATUS_PAGAMENTO.aprovado,
+    });
+    expect(r2.somaPagante).toBe(60);
+    expect(r2.divergenciaDeSoma).toBe(0);
+  });
+
+  it('26l. três pernas, DUAS retiradas: duas entradas que não fecham ainda são colapso por VALOR; as duas que fecham reativam só a -1', async () => {
+    const db = new FakeDb();
+    const r1 = await entregar(db, {
+      vNF: 31.99,
+      w: W1,
+      comprador: 31.99,
+      linha: linhaCombinadaBR({ paymentInfo: TRES_ENTRADAS }),
+    });
+    expect(r1.criados).toBe(3);
+    // The buyer leg moves to 30 under the SAME three entries: both siblings go.
+    const r2 = await entregar(db, {
+      vNF: 30,
+      w: W2,
+      comprador: 30,
+      linha: linhaCombinadaBR({
+        orderStatus: SHOPEE_ORDER_STATUS.shipped,
+        paymentInfo: TRES_ENTRADAS,
+      }),
+    });
+    expect(r2.pernasRetiradas).toBe(2);
+    expect(r2.somaPagante).toBe(30);
+    infoSpy.mockClear();
+
+    // (a) TWO entries that do not fit a buyer leg moved to 28: fewer than the
+    // three STORED legs, but only the primary is in play — nothing was lost.
+    // Read as detail loss, the primary froze at 30 against a vNF of 28.
+    const r3 = await entregar(db, {
+      vNF: 28,
+      w: W3,
+      comprador: 28,
+      linha: linhaCombinadaBR({
+        orderStatus: SHOPEE_ORDER_STATUS.shipped,
+        paymentInfo: [entrada('pix', 10, 'AUT-PIX'), entrada('credit_card', 15, 'AUT-CC')],
+      }),
+    });
+    expect(chamadas(infoSpy, 'entrega degradada')).toBe(0);
+    expect(doc(db, PRIMARIO).valor).toBe(28);
+    expect(r3.pernasRetiradas).toBe(0);
+    expect(r3.somaPagante).toBe(28);
+    expect(r3.divergenciaDeSoma).toBe(0);
+
+    // (b) Two entries that FIT 28 map the primary and the -1: both re-take,
+    // the -1 comes back into Σ; the unmapped -2 stays retired.
+    const r4 = await entregar(db, {
+      vNF: 28,
+      w: W4,
+      comprador: 28,
+      linha: linhaCombinadaBR({
+        orderStatus: SHOPEE_ORDER_STATUS.shipped,
+        paymentInfo: [entrada('pix', 10, 'AUT-PIX'), entrada('credit_card', 18, 'AUT-CC')],
+      }),
+    });
+    expect(r4.pernasReativadas).toBe(1);
+    expect(doc(db, PRIMARIO).valor).toBe(18);
+    expect(doc(db, SECUNDARIO)).toMatchObject({
+      valor: 10,
+      status_pagamento: STATUS_PAGAMENTO.aprovado,
+    });
+    expect(doc(db, TERCEIRO)).toMatchObject({
+      valor: 10,
+      status_pagamento: STATUS_PAGAMENTO.estornado,
+    });
+    expect(r4.somaPagante).toBe(28);
+    expect(r4.divergenciaDeSoma).toBe(0);
+  });
+
+  it('26m. NEAR-MISS de 26k: um irmão que a ORDEM estornou junto com o primário ainda conta — o cancelamento sem detalhe não re-toma o primário, e a volta fecha', async () => {
+    const db = new FakeDb();
+    // Two legs an escrow-backed delivery wrote: 30 + 30 = vNF 60.
+    await entregar(db, { vNF: 60, w: W1, comprador: 60, linha: linhaCodex() });
+    const cancelada = linhaCodex({
+      orderStatus: SHOPEE_ORDER_STATUS.cancelled,
+      paymentInfo: [],
+    });
+    await entregar(db, { vNF: 60, w: W2, comprador: 60, linha: cancelada });
+    expect(doc(db, PRIMARIO).status_pagamento).toBe(STATUS_PAGAMENTO.estornado);
+    expect(doc(db, SECUNDARIO).status_pagamento).toBe(STATUS_PAGAMENTO.estornado);
+    infoSpy.mockClear();
+
+    // The primary is stored `estornado` too: the sibling comes back WITH it,
+    // so it is still in play and this delivery lost detail.
+    await entregar(db, { vNF: 60, w: W3, comprador: 60, linha: cancelada });
+    expect(chamadas(infoSpy, 'entrega degradada')).toBe(1);
+    expect(doc(db, PRIMARIO).valor).toBe(30);
+
+    // The un-cancel (no usable `pay_time`): the order brings both back, and Σ
+    // closes only because the primary was never re-taken to the whole 60.
+    const volta = await entregar(db, {
+      vNF: 60,
+      w: W4,
+      comprador: 60,
+      linha: linhaCodex({ payTime: 0 }),
+    });
+    expect(volta.statusRessuscitado).toBe(true);
+    expect(doc(db, SECUNDARIO).status_pagamento).toBe(STATUS_PAGAMENTO.aprovado);
+    expect(volta.somaPagante).toBe(60);
+    expect(volta.divergenciaDeSoma).toBe(0);
+  });
+
+  it('26n. ⚠️ uma perna retirada e MAPEADA não volta enquanto o grupo DADOS está congelado (perda de detalhe ao lado de um irmão vivo)', async () => {
+    const db = new FakeDb();
+    await entregar(db, {
+      vNF: 31.99,
+      w: W1,
+      comprador: 31.99,
+      linha: linhaCombinadaBR({ paymentInfo: TRES_ENTRADAS }),
+    });
+    // An operator folds the -1 (6,99) into the primary by hand — a HOLE our
+    // own retirements never leave (they retire a suffix) — with Σ still 31,99.
+    db.store[`${PAGAMENTOS_PATH}/${PRIMARIO}`]!.data.valor = 21.99;
+    db.store[`${PAGAMENTOS_PATH}/${SECUNDARIO}`]!.data.status_pagamento =
+      STATUS_PAGAMENTO.estornado;
+    infoSpy.mockClear();
+
+    // Two entries that FIT 31,99 map the primary and the -1 while the -2
+    // (pix 10) stays pagante and unmapped: detail LOST, DATA frozen. Brought
+    // back at its frozen 6,99, the -1 would put Σ at 38,98 against 31,99.
+    const r = await entregar(db, {
+      vNF: 31.99,
+      w: W2,
+      comprador: 31.99,
+      linha: linhaCombinadaBR({
+        orderStatus: SHOPEE_ORDER_STATUS.shipped,
+        paymentInfo: [entrada('pix', 10, 'AUT-PIX'), entrada('credit_card', 21.99, 'AUT-CC')],
+      }),
+    });
+
+    expect(chamadas(infoSpy, 'entrega degradada')).toBe(1);
+    expect(r.pernasReativadas).toBe(0);
+    expect(doc(db, SECUNDARIO)).toMatchObject({
+      valor: 6.99,
+      status_pagamento: STATUS_PAGAMENTO.estornado,
+    });
+    expect(doc(db, TERCEIRO).status_pagamento).toBe(STATUS_PAGAMENTO.aprovado);
+    expect(r.somaPagante).toBe(31.99);
+    expect(r.divergenciaDeSoma).toBe(0);
+  });
+
+  it('26o. RESIDUAL documentado: pernas criadas no dinheiro provisório cuja primeira entrega com escrow PERDEU o payment_info ficam acima do vNF até chegarem entradas suficientes', async () => {
+    const db = new FakeDb();
+    await combinadoProvisorio(db);
+
+    // Detail loss by the rule: fewer usable entries (none) than legs in play.
+    // Telling these legs apart from an escrow-backed set would need a stored
+    // marker no document carries — an open decision (the module header).
+    const semDetalhe = await entregar(db, {
+      vNF: 50,
+      w: W2,
+      comprador: 50,
+      linha: linhaCodex({ orderStatus: SHOPEE_ORDER_STATUS.shipped, paymentInfo: [] }),
+    });
+    expect(semDetalhe.pernasRetiradas).toBe(0);
+    expect(doc(db, PRIMARIO).valor).toBe(30);
+    expect(doc(db, SECUNDARIO)).toMatchObject({
+      valor: 30,
+      status_pagamento: STATUS_PAGAMENTO.aprovado,
+    });
+    expect(semDetalhe.somaPagante).toBe(60);
+    expect(semDetalhe.divergenciaDeSoma).toBe(10);
+
+    // It heals on the first delivery carrying at least as many entries.
+    const cura = await entregar(db, {
+      vNF: 50,
+      w: W3,
+      comprador: 50,
+      linha: linhaCodex({ orderStatus: SHOPEE_ORDER_STATUS.shipped }),
+    });
+    expect(cura.pernasRetiradas).toBe(1);
+    expect(cura.somaPagante).toBe(50);
+    expect(cura.divergenciaDeSoma).toBe(0);
   });
 });
 

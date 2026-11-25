@@ -27,21 +27,21 @@
  * sale for ever — the leak #1087 fixed on the ML side, pointed the other way.
  * The line is: the operator owns the line-up, not the sale.
  */
-import { roundReais } from '@delfrance/core/money';
 import { millisToMicros } from '@delfrance/core/datetime';
 import {
   CAPTURA_COMPRADOR_ESTADO,
   MARKETPLACE_PEDIDO_TIPO,
+  derivePedidoFreteTotals,
   valorUtilizavel,
   type CapturaCompradorEstado,
   type FreteDoPedido,
   type ItemDoPedido,
   type MarketplacePedido,
+  type ModalidadeFrete,
 } from '@delfrance/schemas';
-import type { ShopeeEscrowDetail, ShopeeOrderDetailRow } from '@delfrance/integrations-shopee';
+import type { ShopeeOrderDetailRow } from '@delfrance/integrations-shopee';
 
 import type { CapturaComprador } from './comprador';
-import type { ConferenciaDoPedido } from './itens';
 import { estadoPedidoDeOrderStatus, type AlvoEstadoShopee } from './orderStatusMaps';
 
 /* -------------------------------------------------------------------------- */
@@ -270,12 +270,19 @@ export interface GrupoDadosShopee {
   readonly itens: readonly ItemDoPedido[];
   readonly valorCobrado: number | null;
   /**
-   * The pedido's ORDER-level discount slot. Shopee fills it with `0` — see
-   * {@link mapearPedidoShopee}.
+   * The pedido's ORDER-level discount slot — the money model's un-itemized
+   * offset (`0` when the order closes). See {@link mapearPedidoShopee}.
    */
   readonly descontoTotal: number;
   readonly observacoesInternas: string | null;
   readonly freteInicial: FreteDoPedido;
+  /**
+   * NOT a field — a write rule (`dinheiroShopee.ts`'s `provisorio`): a PAID
+   * order whose escrow did not answer. A CREATE writes the money as mapped; an
+   * UPDATE keeps the stored lines' money, `valorCobrado`, `descontoTotal` and
+   * the freight figures (`orderPedidoTx.ts`).
+   */
+  readonly dinheiroProvisorio: boolean;
 }
 
 /** Written only where the stored document holds nothing. */
@@ -312,16 +319,25 @@ export interface ContaBagShopee {
   readonly integracaoPedidoOuterRef: string | null;
   readonly listaDePrecosOuterRef: string | null;
   readonly operacaoPedidoOuterRef: string | null;
+  /**
+   * The conta's `modalidadeFreteImportacao` (`null` ⇒ FOB) — what a NEW pedido's
+   * freight block is seeded with (`modalidadeDoPedidoShopee`).
+   */
+  readonly modalidadeFreteImportacao: ModalidadeFrete | null;
 }
 
 export interface MapearPedidoShopeeArgs {
   readonly detalhe: ShopeeOrderDetailRow;
-  /** `null` when the escrow call failed or the order is unpaid. */
-  readonly escrow: ShopeeEscrowDetail | null;
   /** The flat rows from `mapearItensShopee`; the grouping is the transaction's. */
   readonly itens: readonly ItemDoPedido[];
-  /** `mapearItensShopee`'s reconciliation — the item sum and the cross-check. */
-  readonly conferencia: ConferenciaDoPedido;
+  /**
+   * The ORDER-level discount the money model stated
+   * (`mapearItensShopee(...).dinheiro.descontoTotal`): `0` when the order
+   * closes, the un-itemized offset otherwise. Never `descontoDasLinhas`.
+   */
+  readonly descontoTotal: number;
+  /** `mapearItensShopee(...).dinheiro.provisorio` — see {@link GrupoDadosShopee}. Defaults to `false`. */
+  readonly dinheiroProvisorio?: boolean;
   /**
    * The already-mapped freight block (`mapearFreteInicialShopee`), carrying the
    * conta's `int_frete` ref the importer stamped on it.
@@ -378,7 +394,7 @@ export interface MapearPedidoShopeeArgs {
  * to add an asterisk would overwrite it with `null`.
  */
 export function mapearPedidoShopee(args: MapearPedidoShopeeArgs): PedidoMapeadoShopee {
-  const { detalhe, itens, conferencia, frete, conta, captura, watermarkUs } = args;
+  const { detalhe, itens, descontoTotal, frete, conta, captura, watermarkUs } = args;
 
   const alvo = estadoPedidoDeOrderStatus(detalhe.order_status);
   const criadoEm = segundosShopeeUtilizaveis(detalhe.create_time);
@@ -426,22 +442,17 @@ export function mapearPedidoShopee(args: MapearPedidoShopeeArgs): PedidoMapeadoS
     },
     dados: {
       itens,
-      valorCobrado: valorCobradoDoPedido(detalhe, args.escrow, conferencia, frete),
-      // ⚠️ ZERO, and it is not a stub. Shopee's five escrow discounts are
-      // ITEM-level: each rides its own line's `descontoUnitario`, which
-      // `itemSubtotal` already NETS out of `precoDeVenda` before summing. The
-      // pedido's `descontoTotal` is the ORDER-level slot — the footer's
-      // "Desconto", which Mercado Livre fills with `Σ coupon_amount` while
-      // writing `descontoUnitario: 0` per line — and `derivePedidoFreteTotals`
-      // subtracts it a SECOND time, after the item sum. Writing
-      // `conferencia.descontoDasLinhas` here therefore short-changed
-      // `valorCobrado` by Σ discounts on the operator's first save
-      // (`packages/data/src/pedido/usecases.ts` recomputes it), in the footer
-      // and in the print — while the value stored at IMPORT was right, because
-      // `valorCobradoDoPedido` sums NET units. Shopee carries no order-level
-      // discount field at all; `totais.test.ts` crosses the two modules and
-      // pins it.
-      descontoTotal: 0,
+      valorCobrado: valorCobradoDoPedido(itens, descontoTotal, frete),
+      // ⚠️ The money model's ORDER-level slot, never `descontoDasLinhas`. Each
+      // line's own offsets ride its `descontoUnitario`, which `itemSubtotal`
+      // already NETS out of `precoDeVenda`; `derivePedidoFreteTotals` subtracts
+      // `descontoTotal` a SECOND time, after the item sum, so copying the line
+      // discounts here would short-change `valorCobrado` by Σ discounts on the
+      // operator's first save (`packages/data/src/pedido/usecases.ts`
+      // recomputes it). What lands here is only the un-itemized offset the
+      // escrow's `buyer_total_amount` shows and no line carries
+      // (`dinheiroShopee.ts`); `totais.test.ts` crosses the modules and pins it.
+      descontoTotal,
       observacoesInternas: observacoes.length === 0 ? null : observacoes,
       // The delivery address IS the fiscal one — Mercado Livre's rule
       // (`orderImport.ts`), from the ONE argument that also fills
@@ -450,6 +461,7 @@ export function mapearPedidoShopee(args: MapearPedidoShopeeArgs): PedidoMapeadoS
       // update's merge never takes it, and `orderPedidoTx.ts` fills it only in
       // the transaction that FIRST fills the fiscal ref.
       freteInicial: { ...frete, enderecoFreteOuterReference: args.enderecoFiscalOuterRef },
+      dinheiroProvisorio: args.dinheiroProvisorio ?? false,
     },
     preencherUmaVez: {
       // `numero` is the `order_sn` VERBATIM, a string. `defaultQuery` orders by
@@ -471,19 +483,17 @@ export function mapearPedidoShopee(args: MapearPedidoShopeeArgs): PedidoMapeadoS
 }
 
 /**
- * `pedido.valorCobrado` — what the buyer was charged, freight included.
+ * `pedido.valorCobrado` — the shared `derivePedidoFreteTotals` over the mapped
+ * lines, the order-level discount and the freight block, exactly as the web
+ * recomputes it on an operator save — so that save changes nothing.
  *
- * Precedence, and each rung is a different document:
- *
- * 1. `order_income.buyer_total_amount` — the ACCOUNTING answer, authoritative
- *    once money moved;
- * 2. `total_amount` — the order's own total, present only after payment;
- * 3. Σ (unit × qty) + the freight the buyer was charged — the computed fallback,
- *    so an UNPAID order still shows a value in the `/pedidos` `vlr` column while
- *    the buyer holds the unit.
- *
- * ⚠️ Both wire rungs go through `positivoOuNull`'s rule (`0` is absence on this
- * wire), so a zero-filled `total_amount` cannot beat the computed sum.
+ * It equals `buyer_total_amount` when the order CLOSES (`|residual| ≤ 0.01`, or
+ * an un-itemized offset stated in `descontoTotal`); it exceeds it by the cupom
+ * leg when the floor binds, and falls short of it on `pago-acima` (and by the
+ * lines' per-unit rounding on a multi-unit line). An UNPAID order still shows a
+ * value in the `/pedidos` `vlr` column (the lines + the estimated freight). The
+ * freight member is there under every modalidade — the NF-e total, which keeps
+ * it only under CIF, is `dinheiroShopee.ts`'s `totalDaNotaShopee`.
  *
  * ⚠️ This is the ONE money field still persisted on a pedido (#796/#1151): it
  * backs a server-side `orderBy` + currency filter on `/pedidos` and the two
@@ -491,16 +501,11 @@ export function mapearPedidoShopee(args: MapearPedidoShopeeArgs): PedidoMapeadoS
  * second cache here.
  */
 function valorCobradoDoPedido(
-  detalhe: ShopeeOrderDetailRow,
-  escrow: ShopeeEscrowDetail | null,
-  conferencia: ConferenciaDoPedido,
+  itens: readonly ItemDoPedido[],
+  descontoTotal: number,
   frete: FreteDoPedido,
 ): number {
-  const escrowTotal = positivoOuNull(escrow?.order_income?.buyer_total_amount);
-  if (escrowTotal != null) return roundReais(escrowTotal);
-  const totalDaOrdem = positivoOuNull(detalhe.total_amount);
-  if (totalDaOrdem != null) return roundReais(totalDaOrdem);
-  return roundReais(conferencia.somaDosItens + (frete.valorCobrado ?? 0));
+  return derivePedidoFreteTotals({ itens, descontoTotal, freteInicial: frete }).valorCobrado;
 }
 
 /** Re-exported so a reader of the capture diary finds its vocabulary here too. */

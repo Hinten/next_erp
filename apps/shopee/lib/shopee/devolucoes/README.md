@@ -433,15 +433,10 @@ answered and refused, so the outcome is KNOWN; `codigoShopee` goes through
 `codigoSeguro` — trimmed, never segment-stripped, `null` when it is not a
 short token — and Shopee's sentence never reaches the body or the log).
 
-⚠️ **No Shopee sentence leaves either route.** The package builds every
-envelope error's message as `Shopee <path> respondeu <code> (HTTP n) — <the
-sentence>`, and the shared `shopeeErrorResponse` logs and returns `message`
-verbatim. So every other envelope error — re-auth, rate limit, transient —
-reaches that mapper through `semFraseDaShopee` (`respostaReclamacao.ts`, which
-both routes import): same class, kind and status, the code through
-`codigoSeguro` (else `<nao-token>`), our message only. Errors whose message is
-already ours (network, non-envelope HTTP, schema, config, the conta classes)
-go to the mapper as they are.
+Both routes pass reauthorization, rate limits and transient failures to
+`shopeeErrorResponse`. It builds its own sentence from the endpoint path,
+upstream status and the code accepted by `codigoSeguro` (otherwise
+`<nao-token>`). Logs include the class and request metadata only.
 
 `GET /api/marketplace/shopee/reclamacao/estado?integracaoId=&returnSn=`
 (`PERM.incidenteResolucao.read`, `Cache-Control: no-store`) answers the live

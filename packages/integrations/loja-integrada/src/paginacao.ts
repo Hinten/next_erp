@@ -64,8 +64,9 @@
  * ⚠️ `maxPaginas` and the `next` offset are checked with `Number.isSafeInteger`
  * and `/^\d+$/`, not with Zod: only the wire-schema files (`types.ts`,
  * `pedidoTipos.ts`) use Zod for response numbers, and only through `wireInt()` /
- * `wireNumber()`; the one other Zod number is a REQUEST leaf, the stock write's
- * quantity in `rotasEscrita.ts`, strict and carved out by its exact line
+ * `wireNumber()`; the only other Zod numbers are REQUEST leaves in
+ * `rotasEscrita.ts` — the stock write's quantity, the price write's price and
+ * its echoed custo — strict and each carved out by its exact line
  * (`integration-response-numbers-tolerant.test.js`).
  */
 import type { z } from 'zod';

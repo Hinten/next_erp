@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { itemDoPedidoSchema } from '@delfrance/schemas';
+import { itemDoPedidoSchema, MODALIDADE_FRETE } from '@delfrance/schemas';
 import {
   shopeeEscrowDetailPayloadSchema,
   shopeeEscrowItemSchema,
@@ -87,7 +87,6 @@ function mapear(args: {
   itens: ShopeeOrderItem[];
   escrow?: ShopeeEscrowDetail | null;
   resolucoes?: ReadonlyMap<string, ResolvedShopeeLineProduto>;
-  freteCobrado?: number | null;
   totalDaLinha?: boolean;
   detalheOver?: Record<string, unknown>;
 }) {
@@ -95,7 +94,7 @@ function mapear(args: {
     detalhe: detalhe(args.itens, args.detalheOver ?? {}),
     escrow: args.escrow ?? null,
     resolucoes: args.resolucoes ?? SEM_RESOLUCAO,
-    freteCobrado: args.freteCobrado ?? null,
+    modalidade: MODALIDADE_FRETE.fob,
     nowUs: AGORA_US,
     detalhePrecoEhTotalDaLinha: args.totalDaLinha,
   });
@@ -386,7 +385,9 @@ describe('o casamento das linhas do escrow', () => {
 /* -------------------------------------------------------------------------- */
 
 describe('descontoUnitario', () => {
-  it('soma os CINCO descontos e divide pela quantidade do escrow', () => {
+  it('soma as TRÊS ofertas do comprador e divide pela quantidade do escrow', () => {
+    // seller_discount / shopee_discount ficam FORA: já estão dentro do
+    // `discounted_price` (paridade com o legado — decisão de 2026-11-24).
     const d = descontoUnitario(
       escrowItem({
         quantity_purchased: 2,
@@ -397,12 +398,12 @@ describe('descontoUnitario', () => {
         discount_from_voucher_seller: 5,
       }),
     );
-    expect(d.unitario).toBe(7.5);
+    expect(d.unitario).toBe(6);
     expect(d.travado).toBe(false);
   });
 
   it('NEGATIVO é travado em 0 — o schema recusa negativo e derrubaria a importação', () => {
-    const d = descontoUnitario(escrowItem({ quantity_purchased: 1, seller_discount: -10 }));
+    const d = descontoUnitario(escrowItem({ quantity_purchased: 1, discount_from_coin: -10 }));
     expect(d).toEqual({ unitario: 0, bruto: -10, travado: true });
     // A prova de que o trava não é cosmético: sem ele a linha não é gravável.
     expect(() =>
@@ -418,7 +419,26 @@ describe('descontoUnitario', () => {
 /* -------------------------------------------------------------------------- */
 
 describe('a linha mapeada', () => {
-  it('precoDeVenda = unitário + desconto, e o subtotal reconcilia com o escrow', () => {
+  it('precoDeVenda = o discounted_price unitário; a oferta vai no desconto, nunca re-somada', () => {
+    const { itens } = mapear({
+      itens: [item({ item_id: 100, model_id: 1, model_quantity_purchased: 2 })],
+      escrow: escrow([
+        escrowItem({
+          item_id: 100,
+          model_id: 1,
+          discounted_price: 30,
+          quantity_purchased: 2,
+          discount_from_voucher_shopee: 4,
+        }),
+      ]),
+    });
+    const linha = itens[0]!;
+    expect(linha.precoDeVenda).toBe(15);
+    expect(linha.descontoUnitario).toBe(2);
+    expect((linha.precoDeVenda - linha.descontoUnitario!) * linha.quantidade).toBe(26);
+  });
+
+  it('⚠️ NEAR-MISS: um seller_discount não vira desconto da linha — o preço já é líquido dele', () => {
     const { itens } = mapear({
       itens: [item({ item_id: 100, model_id: 1, model_quantity_purchased: 2 })],
       escrow: escrow([
@@ -431,10 +451,8 @@ describe('a linha mapeada', () => {
         }),
       ]),
     });
-    const linha = itens[0]!;
-    expect(linha.precoDeVenda).toBe(17);
-    expect(linha.descontoUnitario).toBe(2);
-    expect((linha.precoDeVenda - linha.descontoUnitario!) * linha.quantidade).toBe(30);
+    expect(itens[0]!.precoDeVenda).toBe(15);
+    expect(itens[0]!.descontoUnitario).toBe(0);
   });
 
   it('nomeDeVenda não deixa espaço sobrando quando model_name é vazio', () => {
@@ -664,7 +682,7 @@ describe('a conferência e o log', () => {
       detalhe: row,
       escrow: null,
       resolucoes: SEM_RESOLUCAO,
-      freteCobrado: 1.99,
+      modalidade: MODALIDADE_FRETE.fob,
       nowUs: AGORA_US,
     });
     expect(conferencia).toMatchObject({
@@ -696,9 +714,9 @@ describe('a conferência e o log', () => {
         escrowItem({
           item_id: 100,
           model_id: 1,
-          discounted_price: 30,
+          discounted_price: 34,
           quantity_purchased: 2,
-          seller_discount: 4,
+          discount_from_voucher_shopee: 4,
         }),
       ]),
     });
@@ -750,7 +768,7 @@ describe('a conferência e o log', () => {
       detalhe: detalhe([], { item_list: null }),
       escrow: null,
       resolucoes: SEM_RESOLUCAO,
-      freteCobrado: null,
+      modalidade: MODALIDADE_FRETE.fob,
       nowUs: AGORA_US,
     });
     expect(resultado.itens).toEqual([]);

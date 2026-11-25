@@ -439,10 +439,10 @@ describe('liquidarPagamentoShopee — tarifas nunca negativas', () => {
     // o guarda, e negativo ali quer dizer "a Shopee creditou o vendedor".
     const db = new FakeDb();
     db.seed(PAGAMENTO_PATH, pagamentoDaTarefa({ tarifas: 1.29 }));
+    // The spread goes negative when Shopee releases MORE than the buyer paid.
     const escrow = escrowSintetico({
-      commission_fee: -0.5,
-      service_fee: 0,
-      seller_transaction_fee: 0,
+      escrow_amount: 32.49,
+      escrow_amount_after_adjustment: 32.49,
     });
 
     const r = await liquidar(db, { escrow });

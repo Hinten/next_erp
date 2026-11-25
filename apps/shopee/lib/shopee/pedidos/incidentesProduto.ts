@@ -38,6 +38,7 @@
  * own `estoque-drift` rows. No schema change, no ruleset regeneration.
  */
 import type { Firestore } from 'firebase-admin/firestore';
+import { formatReais } from '@delfrance/core/money';
 import {
   ORIGEM_INCIDENTE,
   TIPO_INCIDENTE,
@@ -153,6 +154,66 @@ export async function registrarLinhasSemProduto(
     });
   }
   return criados.length;
+}
+
+/** `subtipo` (and doc id) of the "buyer paid more than the lines" incidente. */
+export const SUBTIPO_PAGAMENTO_DIVERGENTE = 'shp-pagamento-divergente';
+
+export interface RegistrarPagamentoDivergenteArgs {
+  readonly pedidoId: string;
+  /** The order number, for the log line only — never part of a document. */
+  readonly orderSn: string;
+  /** `buyer_total_amount`. */
+  readonly totalDoComprador: number | null;
+  /** What the NF-e states — the pagamento's `valor`. */
+  readonly totalDaNota: number;
+  /** The importer's ONE clock read, in µs. */
+  readonly nowUs: number;
+}
+
+/**
+ * ONE incidente per pedido when the buyer paid MORE than the lines state
+ * (`dinheiroShopee.ts`'s `pago-acima`): the pagamento then states the NF-e
+ * total and nothing is invented — Amazon's `pagamento-divergente` rule.
+ *
+ * Race tier 0, like {@link registrarLinhasSemProduto}: the doc id IS the
+ * subtipo, one per pedido, `.create()` + swallow ONLY `ALREADY_EXISTS`, so a
+ * redelivery keeps the first row. Non-blocking for the same two reasons
+ * (`tipo` and `origem` `outros`). Returns whether it CREATED the row.
+ */
+export async function registrarPagamentoDivergente(
+  db: Firestore,
+  args: RegistrarPagamentoDivergenteArgs,
+): Promise<boolean> {
+  const { pedidoId, orderSn, totalDoComprador, totalDaNota, nowUs } = args;
+  try {
+    await incidenteCollection.docRef(db, { pedidoId }, SUBTIPO_PAGAMENTO_DIVERGENTE).create(
+      incidenteCollection.parse({
+        origem: ORIGEM_INCIDENTE.outros,
+        tipo: TIPO_INCIDENTE.outros,
+        subtipo: SUBTIPO_PAGAMENTO_DIVERGENTE,
+        motivoDoIncidente:
+          `[Shopee] O comprador pagou ${formatReais(totalDoComprador ?? 0)}, acima do total ` +
+          `que as linhas do pedido somam (${formatReais(totalDaNota)}). O pagamento foi ` +
+          'gravado com o total da nota. Confira as linhas, os descontos e o frete do pedido.',
+        comentarios: null,
+        timestamp: nowUs,
+        ultimaModificacao: nowUs,
+        externalId: null,
+        resolucao: null,
+      }),
+    );
+  } catch (err) {
+    if (!isAlreadyExists(err)) throw err;
+    return false;
+  }
+  console.warn('[shopee/pedidos] pagamento divergente registrado como incidente', {
+    orderSn,
+    pedidoId,
+    totalDoComprador,
+    totalDaNota,
+  });
+  return true;
 }
 
 /**
