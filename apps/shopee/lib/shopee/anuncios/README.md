@@ -1413,15 +1413,13 @@ live option was kept as a model-less orphan and a twin appended, on every
 republish. The fold runs in the pure module, not the publisher's projection,
 because `GrupoParaTier` is built by the plan, the model leg and the tests alike.
 The option duplicate check keys on the folded name, so `'Azul'` and `'Azul '` in
-one grupo refuse `combinacao-duplicada`. ⚠️ The IMPORT's grupo/variante rung 2
-still compares the stored ERP name verbatim (step 9, untouched): importing a
-listing created from a grupo `'Cor '` matches by `tipo` or creates a grupo
-`'Cor'`. The binding editor folds with the same function (#1911 P14b): a NEW
-custom option row it stores («Personalizada: «{variante}»») holds the
-variante's name through `nomeDeTierShopee`, the string this module sends, so the
-import's byte-exact `mesmaOpcao` finds that row instead of appending a twin
-(#2046). A row already stored is never re-spelled, and a STANDARD name is stored
-as Shopee's tree gives it.
+one grupo refuse `combinacao-duplicada`. The import tries exact ERP names first,
+then trims the stored names when matching grupos and variantes, including the
+variante spelling swaps (#2046). The custom option merge also tries an exact
+name first, then compares usable names after trimming both. It keeps the stored
+spelling. The binding editor uses the same function (#1911 P14b) to store a new
+custom option row («Personalizada: «{variante}»») with the name this module sends.
+A standard name is stored as Shopee's tree gives it.
 
 **The name BANDS (#1911 batch-A).** `get_item_limit`'s
 `tier_variation_name_length_limit` / `tier_variation_option_length_limit`
@@ -1762,7 +1760,7 @@ ela em Variações.», now true whenever it fires), and a standard one goes besi
 id, unrefused, as before. Beside a STANDARD row's non-zero id this sends an ERP
 string where the row held none, and Shopee's answer is unmeasured (register 318).
 After a create that sent the variante's name for a blank CUSTOM row, the next
-import appends a second row beside the blank one (the #2046 family).
+import appends a row because the blank row has no usable name to match.
 
 Why the echo: a standard option's name is Shopee's catalogue string, and Shopee's
 reaction to an ERP string beside a non-zero option id is unmeasured: it may ignore

@@ -26,7 +26,7 @@
  * storage verbatim (`' Azul '` stays so). A NEW custom row stores the variante's
  * name ends-trimmed through `nomeDeTierShopee` (#1911 P14b), the fold the
  * publisher sends a custom option with and the import reads it back with, so the
- * import's byte-exact merge finds the row instead of adding a twin. Display copy
+ * import finds the row by exact name before its trimmed fallback. Display copy
  * trims too; nothing decides on it.
  *
  * ## The one fold that decides something: a staged removal's warning
@@ -353,7 +353,7 @@ export function escolhaDaLinhaShopee(
  * The choice «Personalizada» offers a variante (#1911 P14b, P14 Q1): its name through
  * `nomeDeTierShopee` — the fold the publisher sends a custom option with and the
  * import reads it back with — so a NEW custom row stores the string Shopee will hold
- * and the import's byte-exact merge finds it (no twin). Case and inner whitespace stay
+ * and the import can match it by exact name. Case and inner whitespace stay
  * as typed. `null` when nothing is left (the item is offered disabled). A STORED row is
  * never re-spelled: {@link escolhaDaLinhaShopee} keeps its name verbatim.
  */

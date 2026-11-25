@@ -291,13 +291,11 @@ export function resolverEntradaShopeeDoGrupo(
  * to be THIS function) and by the `(2d)` pairs and near-misses of
  * `tiersPublicacao.test.ts`.
  *
- * ⚠️ Not the import's cascades: rung 2 of the import's `planejarTaxonomia`
- * compares a STORED ERP grupo/variante name verbatim against this fold's output
- * (`'Cor '` ≠ `'Cor'` is pinned there), and its option merge (`mesmaOpcao`)
- * compares two stored option names byte-exact. Those are step 9's decisions;
- * #1911 did not change them. The ONE import consumer is rung 1's custom-option
- * arm (#1911 P14a), which reads the stored id-`0` row the publisher pairs a live
- * custom option with — so it folds both sides exactly as the publisher does.
+ * The import's custom-option mapping lookup folds both sides as the publisher
+ * does (#1911 P14a). In the grupo and variante name fallbacks, `planejarTaxonomia`
+ * tries exact matches before trimming the stored name (#2046). The custom option
+ * merge also tries exact names first, then trims both names when there is a
+ * usable name to compare. These comparisons preserve the stored spelling.
  */
 export function nomeDeTierShopee(nome: string | null | undefined): string {
   return typeof nome === 'string' ? nome.trim() : '';

@@ -305,26 +305,40 @@ describe('planejarTaxonomia — a cascata de GRUPO', () => {
     expect(plano.grupos[0]?.criar).toBe(true);
   });
 
-  it('rung 2: casa por `nome` EXATO, byte a byte', () => {
-    const plano = planejarTaxonomia({
-      ...base,
-      tiers: [tier({ nome: 'Cor' })],
-      candidatos: memo([{ id: 'g-cor', raw: { nome: 'Cor' } }]),
-    });
-    expect(plano.grupos[0]?.grupoId).toBe('g-cor');
-  });
-
-  it('⛔ NEAR-MISS: `cor` minúsculo e `Cor ` com espaço NÃO casam pelo nome', () => {
+  it('rung 2: prefere o nome exato mesmo quando o grupo com espaços vem primeiro', () => {
     const plano = planejarTaxonomia({
       ...base,
       tiers: [tier({ nome: 'Cor' })],
       candidatos: memo([
-        { id: 'g-a', raw: { nome: 'cor' } },
-        { id: 'g-b', raw: { nome: 'Cor ' } },
+        { id: 'g-cor-com-espaco', raw: { nome: 'Cor ' } },
+        { id: 'g-cor', raw: { nome: 'Cor' } },
       ]),
     });
-    // Nenhum dos dois casa pelo NOME; o rung 3 (tipo) então decide, e nenhum
-    // deles declara tipo — logo, criação.
+    expect(plano.grupos[0]?.grupoId).toBe('g-cor');
+  });
+
+  it.each(['Cor ', ' Cor', '\u00a0Cor\u00a0'])('rung 2: a grafia %j casa antes do tipo', (nome) => {
+    const plano = planejarTaxonomia({
+      ...base,
+      tiers: [tier({ nome: 'Cor' })],
+      candidatos: memo([
+        { id: 'g-outra-cor', raw: { nome: 'Outra cor', tipo: TIPO_VARIACAO.cor } },
+        { id: 'g-cor', raw: { nome } },
+      ]),
+    });
+    expect(plano.grupos[0]?.grupoId).toBe('g-cor');
+    expect(plano.grupos[0]?.criar).toBe(false);
+  });
+
+  it.each([
+    ['Cor', 'cor'],
+    ['Cor da Alça', 'Cor  da Alça'],
+  ])('⛔ NEAR-MISS: %j e %j não casam pelo nome do grupo', (nomeVivo, nomeArmazenado) => {
+    const plano = planejarTaxonomia({
+      ...base,
+      tiers: [tier({ nome: nomeVivo })],
+      candidatos: memo([{ id: 'g-outro', raw: { nome: nomeArmazenado } }]),
+    });
     expect(plano.grupos[0]?.criar).toBe(true);
   });
 
@@ -462,38 +476,71 @@ describe('planejarTaxonomia — a cascata de VARIANTE', () => {
     expect(plano.grupos[0]?.varianteIds).toEqual(['n-roxo']);
   });
 
-  it('rung 2: casa por nome EXATO', () => {
+  it('rung 2: prefere o nome exato mesmo quando a variante com espaços vem primeiro', () => {
     const plano = planejarTaxonomia({
       ...base,
       tiers: [tier({ nome: 'Cor', opcoes: [{ nome: 'Azul', optionId: 0, indice: 0 }] })],
-      candidatos: grupoCom([{ id: 'v-azul', nome: 'Azul' }]),
+      candidatos: grupoCom([
+        { id: 'v-azul-com-espaco', nome: 'Azul ' },
+        { id: 'v-azul', nome: 'Azul' },
+      ]),
     });
     expect(plano.grupos[0]?.varianteIds).toEqual(['v-azul']);
   });
 
-  it('⛔ NEAR-MISS: `azul` minúsculo NÃO casa por nome', () => {
+  it.each(['Azul ', ' Azul', '\u00a0Azul\u00a0'])('rung 2: a grafia %j casa com Azul', (nome) => {
     const plano = planejarTaxonomia({
       ...base,
-      tiers: [tier({ nome: 'Cor', opcoes: [{ nome: 'Azul', optionId: 0, indice: 0 }] })],
-      candidatos: grupoCom([{ id: 'v-azul', nome: 'azul' }]),
+      tiers: [tier()],
+      candidatos: grupoCom([{ id: 'v-azul', nome }]),
     });
-    expect(plano.grupos[0]?.varianteIds).toEqual(['n-azul']);
+    expect(plano.grupos[0]?.varianteIds).toEqual(['v-azul']);
   });
 
-  it('rung 3a: a vogal de gênero casa `Vermelha` com o armazenado `Vermelho`', () => {
+  it.each([
+    ['Azul', 'azul', 'n-azul'],
+    ['Azul Claro', 'Azul  Claro', 'n-azul-claro'],
+  ])(
+    '⛔ NEAR-MISS: %j e %j não casam pelo nome da variante',
+    (nomeVivo, nomeArmazenado, idNovo) => {
+      const plano = planejarTaxonomia({
+        ...base,
+        tiers: [tier({ opcoes: [{ nome: nomeVivo, optionId: 0, indice: 0 }] })],
+        candidatos: grupoCom([{ id: 'v-azul', nome: nomeArmazenado }]),
+      });
+      expect(plano.grupos[0]?.varianteIds).toEqual([idNovo]);
+    },
+  );
+
+  it.each(['Vermelho', 'Vermelho '])('rung 3a: a vogal de gênero casa Vermelha com %j', (nome) => {
     const plano = planejarTaxonomia({
       ...base,
       tiers: [tier({ nome: 'Cor', opcoes: [{ nome: 'Vermelha', optionId: 0, indice: 0 }] })],
-      candidatos: grupoCom([{ id: 'v-vermelho', nome: 'Vermelho' }]),
+      candidatos: grupoCom([{ id: 'v-vermelho', nome }]),
     });
     expect(plano.grupos[0]?.varianteIds).toEqual(['v-vermelho']);
   });
 
-  it('rung 3b: espaço⇄hífen casa `Azul Marinho` com `Azul-Marinho`', () => {
+  it.each(['Azul-Marinho', ' Azul-Marinho'])(
+    'rung 3b: espaço⇄hífen casa Azul Marinho com %j',
+    (nome) => {
+      const plano = planejarTaxonomia({
+        ...base,
+        tiers: [tier({ nome: 'Cor', opcoes: [{ nome: 'Azul Marinho', optionId: 0, indice: 0 }] })],
+        candidatos: grupoCom([{ id: 'v-am', nome }]),
+      });
+      expect(plano.grupos[0]?.varianteIds).toEqual(['v-am']);
+    },
+  );
+
+  it('rung 3b: prefere a grafia exata produzida pela troca espaço⇄hífen', () => {
     const plano = planejarTaxonomia({
       ...base,
       tiers: [tier({ nome: 'Cor', opcoes: [{ nome: 'Azul Marinho', optionId: 0, indice: 0 }] })],
-      candidatos: grupoCom([{ id: 'v-am', nome: 'Azul-Marinho' }]),
+      candidatos: grupoCom([
+        { id: 'v-am-com-espaco', nome: ' Azul-Marinho' },
+        { id: 'v-am', nome: 'Azul-Marinho' },
+      ]),
     });
     expect(plano.grupos[0]?.varianteIds).toEqual(['v-am']);
   });
@@ -923,27 +970,69 @@ describe('fundirLinksVariacoesShopee', () => {
     expect(r.array).toHaveLength(2);
   });
 
-  it('⛔ NEAR-MISS: `Azul` e `azul` com id 0 ficam DUAS opções', () => {
-    // O nome volta para a Shopee verbatim na publicação: um fold de caixa aqui
-    // funde duas opções reais e derruba o mapeamento de uma delas.
-    const armazenado = [
-      {
-        ...entrada({
+  it.each([
+    ['Azul ', 'Azul'],
+    [' Azul', 'Azul\u00a0'],
+  ])(
+    'une as opções custom %j e %j e preserva a grafia armazenada',
+    (nomeArmazenado, nomeRecebido) => {
+      const opcao = {
+        shopee_option_id: 0,
+        shopee_option_name: nomeArmazenado,
+        arakene_variation_id: ['v1'],
+      };
+      const r = fundirLinksVariacoesShopee(
+        [entrada({ variationOptions: [opcao] })],
+        entrada({
           variationOptions: [
-            { shopee_option_id: 0, shopee_option_name: 'Azul', arakene_variation_id: ['v1'] },
+            { shopee_option_id: 0, shopee_option_name: nomeRecebido, arakene_variation_id: ['v2'] },
           ],
         }),
-      },
-    ];
+      );
+      expect(r.mudou).toBe(true);
+      expect((r.array[0] as LinkVariacoesShopee).variationOptions).toEqual([
+        { ...opcao, arakene_variation_id: ['v1', 'v2'] },
+      ]);
+    },
+  );
+
+  it('prefere a linha custom exata mesmo quando a linha com espaços vem primeiro', () => {
+    const comEspaco = {
+      shopee_option_id: 0,
+      shopee_option_name: 'Azul ',
+      arakene_variation_id: ['v1'],
+    };
+    const exata = { shopee_option_id: 0, shopee_option_name: 'Azul', arakene_variation_id: ['v2'] };
     const r = fundirLinksVariacoesShopee(
-      armazenado,
-      entrada({
-        variationOptions: [
-          { shopee_option_id: 0, shopee_option_name: 'azul', arakene_variation_id: ['v2'] },
-        ],
-      }),
+      [entrada({ variationOptions: [comEspaco, exata] })],
+      entrada({ variationOptions: [{ ...exata, arakene_variation_id: ['v3'] }] }),
     );
-    expect((r.array[0] as LinkVariacoesShopee).variationOptions).toHaveLength(2);
+    expect((r.array[0] as LinkVariacoesShopee).variationOptions).toEqual([
+      comEspaco,
+      { ...exata, arakene_variation_id: ['v2', 'v3'] },
+    ]);
+  });
+
+  it.each([
+    ['Azul', 'azul'],
+    ['Azul Claro', 'Azul  Claro'],
+    [' ', ''],
+  ])('⛔ NEAR-MISS: %j e %j com id 0 ficam duas opções', (nomeArmazenado, nomeVivo) => {
+    const armazenada = {
+      shopee_option_id: 0,
+      shopee_option_name: nomeArmazenado,
+      arakene_variation_id: ['v1'],
+    };
+    const viva = {
+      shopee_option_id: 0,
+      shopee_option_name: nomeVivo,
+      arakene_variation_id: ['v2'],
+    };
+    const r = fundirLinksVariacoesShopee(
+      [entrada({ variationOptions: [armazenada] })],
+      entrada({ variationOptions: [viva] }),
+    );
+    expect((r.array[0] as LinkVariacoesShopee).variationOptions).toEqual([armazenada, viva]);
   });
 
   it('⛔ NEAR-MISS: duas opções custom distintas nunca casam "na entrada de id 0"', () => {

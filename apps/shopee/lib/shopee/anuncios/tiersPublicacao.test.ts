@@ -13,7 +13,7 @@ import {
 } from '@delfrance/integrations-shopee';
 import { TIPO_VARIACAO, varianteFakePath, type Foto } from '@delfrance/schemas';
 
-import { planejarTaxonomia } from '../produtos/taxonomiaShopeeCore';
+import { planejarTaxonomia, tiersDoItem } from '../produtos/taxonomiaShopeeCore';
 
 import { MOTIVO_PUBLICACAO_BLOQUEADA } from './errosPublicacao';
 
@@ -4071,6 +4071,54 @@ describe('montarTiers — #1911 batch-A: os NOMES de tier e de opção passam pe
     },
   ];
   const FILHOS = [filhoDe('p-azul', 'v-azul', 'AZ'), filhoDe('p-verde', 'v-verde', 'VD')];
+
+  it('#2046: a importação do CREATE reutiliza o grupo e a combinação da variante original', () => {
+    const original = grupoCom('Cor ', [variante('v-azul', 'Azul '), variante('v-verde', 'Verde')]);
+    const criacao = montarTiers(args({ grupos: [original], filhos: FILHOS, viva: null }));
+    expect(criacao.problemas).toEqual([]);
+    expect(criacao.tiers.map((t) => t.variation_name)).toEqual(['Cor']);
+    expect(criacao.tiers[0]!.opcoes.map((o) => o.variation_option_name)).toEqual(['Azul', 'Verde']);
+
+    const arvore = viva(
+      criacao.tiers[0]!.variation_name!,
+      criacao.tiers[0]!.opcoes.map((o) => o.variation_option_name),
+      criacao.modelos.map((m, i) =>
+        modeloVivo({ model_id: MODEL_ID + i, tier_index: m.tier_index }),
+      ),
+    );
+    const importacao = planejarTaxonomia({
+      tiers: tiersDoItem({ tiers: arvore.tier_variation ?? [], padronizados: [] }),
+      modelos: arvore.model,
+      candidatos: [
+        {
+          id: original.grupoId,
+          raw: {
+            nome: original.nome,
+            variacoes: original.variacoes.map((v) => ({ id: v.varianteId, nome: v.nome })),
+          },
+        },
+      ],
+      integracaoId: INTEGRACAO,
+      categoryId: CATEGORIA,
+      nomeCategoria: 'Camisetas',
+      nowMs: 1_757_000_000_000,
+    });
+
+    expect(importacao.grupos).toHaveLength(1);
+    expect(importacao.grupos[0]).toMatchObject({
+      grupoId: 'g-cor',
+      criar: false,
+      varianteIds: ['v-azul', 'v-verde'],
+      patch: {
+        variacoes: [
+          expect.objectContaining({ id: 'v-azul', nome: 'Azul ' }),
+          expect.objectContaining({ id: 'v-verde', nome: 'Verde' }),
+        ],
+      },
+    });
+    const indiceAzul = criacao.modelos.findIndex((m) => m.produtoId === 'p-azul');
+    expect(importacao.combos[indiceAzul]?.variacoesUid).toEqual(FILHOS[0]!.variacoesUid);
+  });
 
   it("⚠️ PAR: a variante 'Azul ' (e ' Azul', e com NBSP) CASA com a opção viva 'Azul' — o índice vivo fica, nenhuma opção fantasma, e o leg é 'nenhuma'", () => {
     // P7-F1/F2/F5: before the fold, the live 'Azul' stayed a model-less orphan,
