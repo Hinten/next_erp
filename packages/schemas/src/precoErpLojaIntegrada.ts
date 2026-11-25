@@ -14,7 +14,8 @@ import { idDocumentoEstoqueLiSchema } from './sincEstoqueLojaIntegrada';
  * linked child must show in the store, how a store price value reads, whether a send would
  * lower what the buyer pays, and (PR 13-b) how a send spells the promotion's CLEAR on the wire
  * and when a store promotion reads as that clear having landed
- * ({@link formaPromoLimpaLiSchema}, {@link promocionalLimpoNaFormaLi}). The twin of
+ * ({@link formaPromoLimpaLiSchema}, {@link promocionalLimpoNaFormaLi}), and (PR 13-c) whether the
+ * store already shows a target ({@link precoRefletidoLi}). The twin of
  * `estoqueErpLojaIntegrada.ts`, and here for the same
  * reason: the send run, the trigger, the daily reconcile and a `tools/migrations` read-only audit
  * need the identical answer, and an app cannot be imported by the others. One copy of each rule
@@ -593,6 +594,60 @@ export function decidirBaixaPrecoLi(args: {
   return cheio || promocional || efetivo
     ? { tipo: 'baixa', cheio, promocional, efetivo }
     : { tipo: 'nao-baixa' };
+}
+
+/* -------------------------------------------------------------------------- */
+/*                Already reflected: does the store show a target?             */
+/* -------------------------------------------------------------------------- */
+
+/** Does `v` read ({@link valorPrecoLi}) as exactly `centavos`? */
+function mesmosCentavosLi(v: unknown, centavos: number): boolean {
+  const lido = valorPrecoLi(v);
+  return typeof lido !== 'string' && lido.centavos === centavos;
+}
+
+/**
+ * Does the store ALREADY SHOW `alvo`? The one "reflected" rule of the price sync, asked of the
+ * store's `cheio` and `promocional` as a read or a PUT echo carries them, raw: the write engine's
+ * read-back, its echo line and its dry-run `mudou` ask it today, and the send's skip and the
+ * nightly diff will ask the same — one copy of the rule (root `CLAUDE.md`, #1369).
+ *
+ *  - `cheio`: the same centavos as the target's full price ({@link valorPrecoLi});
+ *  - a POSITIVE target promotion: the same centavos;
+ *  - a target that CLEARS the promotion: {@link promocionalLimpoNaFormaLi} under the configured
+ *    `forma` — so a promotion equal to the full price is a landed clear under `igual-cheio` only.
+ *
+ * Neither the custo nor `sob_consulta` is read: the custo enters no comparison here (module
+ * header), and `sob_consulta` is a boolean the caller compares exactly.
+ *
+ * EQUAL (reflected): a full price of 1100 centavos read as `11`, `'11.00'`, `'11.0000'` or
+ * `11.0`; a promotion of 2222 read as `22.22` or `'22.2200'`; after a clear, under every forma,
+ * `null` ≡ absent ≡ `0` ≡ `'0.00'` ≡ `'0'` ≡ `'0.0000'`; under `igual-cheio` only, also a
+ * promotion that is the same positive price as the store's full price.
+ * DISTINCT (not reflected): one centavo either way on either leaf (`'11.01'`, `'10.99'`); the
+ * truncation `'22'` (or `22`) after a promotion of 22.22, and `'55'` after a full price of 55.55;
+ * a full price `null`, `0` or unreadable (`'abc'`, `'1,50'`, `-1`); a positive target promotion
+ * read as `null` or `0`; after a clear, `'0.01'` or `'0.0100'` (one centavo is a price), any
+ * positive promotion under `nulo` and `zero` — a promotion equal to the full price included —
+ * and, under `igual-cheio`, a promotion one centavo off the full price.
+ *
+ * PURE and TOTAL: a target that is not positive integer centavos is `false`, never a throw,
+ * because the write engine asks it after a write that landed, where nothing may throw.
+ */
+export function precoRefletidoLi(args: {
+  readonly alvo: EnvioPrecoLi;
+  readonly forma: FormaPromoLimpaLi;
+  readonly atual: { readonly cheio: unknown; readonly promocional: unknown };
+}): boolean {
+  const { alvo, forma, atual } = args;
+  if (!centavosValidos(alvo.cheioCentavos)) return false;
+  if (!mesmosCentavosLi(atual.cheio, alvo.cheioCentavos)) return false;
+  if (alvo.promo === 'limpar') {
+    return promocionalLimpoNaFormaLi({ forma, cheio: atual.cheio, promocional: atual.promocional });
+  }
+  return (
+    centavosValidos(alvo.promo.centavos) && mesmosCentavosLi(atual.promocional, alvo.promo.centavos)
+  );
 }
 
 /* -------------------------------------------------------------------------- */
