@@ -74,8 +74,8 @@ const ACOES: Record<AcaoCanal, DescritorAcao> = {
  * ⚠️ Exported because it is the only way to EXERCISE every arm. Through the
  * live table today `'nao'` is still unreachable for these three actions, but
  * `'sim' + !implementado` is NOT: Loja Integrada's Phase 0 survey answered all
- * three `'sim'` while its backend is unbuilt, which is exactly the day this
- * comment predicted. A branch that cannot be reached from the table is a branch
+ * three `'sim'` while the channel's row actions are still gated by
+ * `implementado`. A branch that cannot be reached from the table is a branch
  * nobody has checked, so `'nao'` stays pinned here rather than through the table.
  */
 export function motivoDaCapacidade(

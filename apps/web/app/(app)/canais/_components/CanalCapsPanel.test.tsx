@@ -6,12 +6,8 @@ import { MantineTestProvider } from '@/lib/testing/mantine';
 import { CAMPOS_CAPS, CanalCapsPanel } from './CanalCapsPanel';
 
 /**
- * The default fixture is a SURVEYED but UNBUILT channel — Loja Integrada (it was
- * Shopee until step 21, #1529, registered Shopee's push rows ahead of its flip).
- * Loja Integrada flips `implementado` at ITS step 22
- * (`.master_plans/loja-integrada/loja-integrada-marketplace-integration.md:68`);
- * whichever channel flips second re-points this example. The arm itself is pinned
- * table-free in `lib/marketplace/caps/suporteCanal.test.ts:16-25`.
+ * Loja Integrada is fully surveyed and has a named backend. Its bulk product
+ * actions stay gated by `implementado` until step 22.
  */
 function renderPanel(
   tipo: IntegracaoTipo = INTEGRACAO_TIPO.lojaIntegrada,
@@ -81,20 +77,25 @@ describe('CanalCapsPanel', () => {
     expect(screen.getAllByText('não pesquisado').length).toBeGreaterThan(0);
     expect(screen.queryByText('não')).toBeNull();
     expect(screen.queryByText('sim')).toBeNull();
+    expect(screen.getByRole('alert').textContent).toContain('Não existe backend');
     expect(screen.getByText(/não quer dizer que o canal não faz/)).toBeTruthy();
   });
 
   it('renders a SURVEYED but unbuilt channel with no yellow left, and both answers', () => {
-    // The near-miss of the test above: Loja Integrada is unbuilt (`implementado:
-    // false`, so the yellow alert still shows) yet fully surveyed, so not one
-    // capability may render as "não pesquisado" — and both a real "sim"
-    // (`publicarAnuncio`) and a real "não" (`kitVirtual`, `tabelaDeMedidas`) have
-    // to be on screen.
+    // Survey answers and implementation status are independent. Loja Integrada
+    // has a mix of "sim" and "não" answers and still shows the yellow alert.
     renderPanel();
     expect(screen.queryByText('não pesquisado')).toBeNull();
     expect(screen.getAllByText('sim').length).toBeGreaterThan(0);
     expect(screen.getAllByText('não').length).toBeGreaterThan(0);
     expect(screen.getByText(/Canal ainda não implementado/)).toBeTruthy();
+    const alerta = screen.getByRole('alert').textContent;
+    expect(alerta).toContain('O backend apps/loja-integrada está em construção');
+    expect(alerta).toContain(
+      'ações em massa de /produtos (enviar estoque, enviar preços, pausar anúncios)',
+    );
+    expect(alerta).not.toContain('Não existe backend');
+    expect(screen.getByText(/não quer dizer que o canal não faz/)).toBeTruthy();
   });
 
   it('shows a real "não" for an implemented channel that genuinely cannot', () => {

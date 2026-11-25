@@ -79,8 +79,9 @@ export interface MarketplaceCapabilities {
    * Backend segment for `/api/marketplace/<channel>/*`. Set once the channel's
    * master plan names its backend — the Loja Integrada and Amazon rows name
    * theirs while `implementado` is still false — and `null` while no plan does.
-   * ⚠️ Whether the channel is BUILT is {@link implementado}, never this field:
-   * read `channel` only behind `implementado` (as `StatusCanalBadge` does).
+   * UI copy may use this name for backends under construction. Use
+   * {@link implementado} to decide whether the ERP dispatches the channel's
+   * row actions.
    */
   readonly channel: string | null;
   /**

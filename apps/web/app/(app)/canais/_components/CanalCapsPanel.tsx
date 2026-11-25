@@ -10,6 +10,7 @@ import {
 } from '@delfrance/schemas';
 
 import { StatusCanalBadge } from './StatusCanalBadge';
+import { textoStatusCanal } from './textoStatusCanal';
 
 /**
  * What a channel we have not built yet supports, straight off its
@@ -223,6 +224,7 @@ function ValorCapBadge({ valor }: { valor: ValorCap }) {
 
 export function CanalCapsPanel({ tipo, titulo, descricao }: CanalCapsPanelProps) {
   const caps = marketplaceCapsOrNull(tipo);
+  const { alerta } = textoStatusCanal(caps);
 
   return (
     <Stack>
@@ -239,11 +241,9 @@ export function CanalCapsPanel({ tipo, titulo, descricao }: CanalCapsPanelProps)
         </Alert>
       ) : (
         <>
-          {!caps.implementado && (
+          {alerta !== null && (
             <Alert color="yellow" title="Canal ainda não implementado">
-              Não existe backend <Code mx={4}>apps/&lt;canal&gt;</Code> para este canal, então nada
-              é publicado, importado nem sincronizado por aqui. A tabela abaixo é o que se sabe
-              sobre o canal hoje.
+              {alerta} A tabela abaixo é o que se sabe sobre o canal hoje.
               <Text size="sm" mt="xs">
                 <strong>&quot;Não pesquisado&quot; não quer dizer que o canal não faz</strong> —
                 quer dizer que ninguém leu a documentação dele ainda. Fechar essas linhas é o
