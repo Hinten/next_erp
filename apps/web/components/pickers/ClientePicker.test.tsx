@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { initializeApp } from 'firebase/app';
+import { getFirestore } from 'firebase/firestore';
+import { PERM } from '@delfrance/auth';
 import { clienteSchema } from '@delfrance/schemas';
 import { MantineTestProvider } from '@/lib/testing/mantine';
 import { ClientePicker } from './ClientePicker';
@@ -11,12 +14,17 @@ const mocks = vi.hoisted(() => ({
   phoneRows: [] as Array<{ id: string; data: unknown }>,
   query: vi.fn(),
   pipeline: vi.fn(),
-  db: {},
+  clientePermissions: 0n,
 }));
-vi.mock('@/lib/firebase/client', () => ({ getFirebaseFirestore: () => mocks.db }));
-vi.mock('@/lib/auth', () => ({ usePermission: () => ({ allowed: false }) }));
+const db = getFirestore(
+  initializeApp({ projectId: 'demo-cliente-picker' }, 'cliente-picker'),
+  'default',
+);
+vi.mock('@/lib/firebase/client', () => ({ getFirebaseFirestore: () => db }));
+vi.mock('@/lib/auth', () => ({
+  usePermission: (bit: bigint) => ({ allowed: (mocks.clientePermissions & bit) === bit }),
+}));
 vi.mock('./ClienteQuickCreateModal', () => ({ ClienteQuickCreateModal: () => null }));
-vi.mock('@/lib/data/dereferenceOuterRef', () => ({ dereferenceOuterRef: () => null }));
 vi.mock('@/lib/data/clienteCollection', () => ({
   clienteCollection: { ref: () => ({ collection: 'clientes' }), resolvePath: () => 'clientes' },
 }));
@@ -56,9 +64,75 @@ beforeEach(() => {
   mocks.pipelineSupported = true;
   mocks.primaryRows = [];
   mocks.phoneRows = [];
+  mocks.clientePermissions = 0n;
   localStorage.clear();
 });
 afterEach(cleanup);
+
+describe('customer record link', () => {
+  const linkName = 'Abrir cadastro do cliente em nova aba';
+
+  it.each([
+    { disabled: false, value: 'documents/clientes/cliente-123' },
+    { disabled: true, value: 'clientes/cliente-123' },
+  ])('opens the selected customer in a new tab (disabled=$disabled)', ({ disabled, value }) => {
+    mocks.clientePermissions = PERM.cliente.read;
+    render(
+      <MantineTestProvider>
+        <ClientePicker
+          fieldName="clientePedidoOuterRef"
+          value={value}
+          onChange={vi.fn()}
+          disabled={disabled}
+          showCustomerLink
+        />
+      </MantineTestProvider>,
+    );
+
+    const link = screen.getByRole('link', { name: linkName });
+    expect(link.getAttribute('href')).toBe('/clientes/cliente-123');
+    expect(link.getAttribute('target')).toBe('_blank');
+    expect(link.getAttribute('rel')).toBe('noopener noreferrer');
+    expect(screen.queryByLabelText('Limpar') !== null).toBe(!disabled);
+  });
+
+  it.each([
+    { name: 'no selection', value: null, canRead: true, enabled: true },
+    { name: 'a malformed reference', value: 'documents/clientes', canRead: true, enabled: true },
+    {
+      name: 'a foreign reference',
+      value: 'documents/produtos/cliente-123',
+      canRead: true,
+      enabled: true,
+    },
+    {
+      name: 'no read permission',
+      value: 'documents/clientes/cliente-123',
+      canRead: false,
+      enabled: true,
+    },
+    {
+      name: 'a picker without the opt-in',
+      value: 'documents/clientes/cliente-123',
+      canRead: true,
+      enabled: false,
+    },
+  ])('hides the link with $name', ({ value, canRead, enabled }) => {
+    mocks.clientePermissions = canRead ? PERM.cliente.read : 0n;
+    render(
+      <MantineTestProvider>
+        <ClientePicker
+          fieldName="clientePedidoOuterRef"
+          value={value}
+          onChange={vi.fn()}
+          showCustomerLink={enabled}
+        />
+      </MantineTestProvider>,
+    );
+
+    expect(screen.queryByRole('link', { name: linkName })).toBeNull();
+  });
+});
 
 describe('manual cliente phone search', () => {
   it('matches full national/formatted numbers while keeping ninth-digit and international identities distinct', () => {

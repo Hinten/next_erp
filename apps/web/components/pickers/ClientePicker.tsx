@@ -1,10 +1,13 @@
 'use client';
 
 import { useState } from 'react';
-import { Anchor, Stack } from '@mantine/core';
+import { Anchor, Button, Stack } from '@mantine/core';
+import { IconExternalLink } from '@tabler/icons-react';
 import { PERM } from '@delfrance/auth';
 import { clientePhoneSearchQuery, describeClienteOption } from './clientePhoneSearch';
 import { clienteCollection } from '@/lib/data/clienteCollection';
+import { refDeClienteOuNull } from '@/lib/data/readClienteByRef';
+import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { usePermission } from '@/lib/auth';
 import { CollectionSelect } from '@/components/collection-select/CollectionSelect';
 import { ClienteQuickCreateModal } from './ClienteQuickCreateModal';
@@ -49,6 +52,7 @@ export interface ClientePickerProps {
   disabled?: boolean;
   error?: string;
   allowCreate?: boolean;
+  showCustomerLink?: boolean;
 }
 
 export function ClientePicker({
@@ -62,9 +66,13 @@ export function ClientePicker({
   disabled,
   error,
   allowCreate = true,
+  showCustomerLink = false,
 }: ClientePickerProps) {
   const { allowed: canCreateCliente } = usePermission(PERM.cliente.write);
+  const { allowed: canReadCliente } = usePermission(PERM.cliente.read);
   const [modalOpen, setModalOpen] = useState(false);
+  const clienteRef =
+    showCustomerLink && canReadCliente ? refDeClienteOuNull(getFirebaseFirestore(), value) : null;
 
   return (
     <Stack gap={2}>
@@ -87,6 +95,21 @@ export function ClientePicker({
         limit={INITIAL_LIMIT}
         orderBy={RECENCY_ORDER}
       />
+      {clienteRef && (
+        <Button
+          component="a"
+          href={`/clientes/${encodeURIComponent(clienteRef.id)}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          aria-label="Abrir cadastro do cliente em nova aba"
+          rightSection={<IconExternalLink size={14} aria-hidden />}
+          size="xs"
+          variant="light"
+          w="fit-content"
+        >
+          Abrir cadastro do cliente
+        </Button>
+      )}
       {!disabled && allowCreate && canCreateCliente && (
         <Anchor component="button" type="button" size="xs" onClick={() => setModalOpen(true)}>
           + Novo cliente
