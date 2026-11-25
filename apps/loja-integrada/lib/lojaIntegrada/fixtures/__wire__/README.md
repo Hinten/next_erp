@@ -28,7 +28,8 @@ Every other file in this folder is one fixture envelope, `<nome>.json`, written 
 - Catalogue ids are not: in a `catalogo` fixture every Loja Integrada id (a row's `id`
   or `*_id`, the ids inside `resource_uri`, `categoria_pai`, a product's `filhos` and
   `pai`, a stock row's `produto`, an option's `grade` and its
-  `/grade/<g>/variacao/<v>`, the ids of the request path and of `meta.next`/
+  `/grade/<g>/variacao/<v>`, the ids a price `set/` answer lists in `not_found`, the
+  ids of the request path and of `meta.next`/
   `meta.previous`, and a `produto=` query value) is a keyed 12-digit pseudonym
   (`scripts/README.md`, "The pseudonym key"). One real id is one pseudonym in every
   file and both stores, so the relations hold: a row's URI ends in its id (a stock
@@ -68,10 +69,12 @@ pins the catalogue ids' function without naming one (each row's URI ends in its 
 except a stock row's, which ends in the id of the produto its `produto` leaf names, never
 in its own `id` —, every `categoria_pai` names a category of its store, each grade detail is one grade
 listed by its store, a store's category, grade and brand rows and a grade's options
-carry distinct ids) and that every catalogue id is in the pseudonym range
+carry distinct ids) and that every catalogue id (one inside a URI held in a list, and a
+`not_found` element, included) is in the pseudonym range
 `[100000000000, 999999999999]`, which no real id reaches (the sanitizer refuses a pair
 holding one that does); and the catalogue SKUs' (every variation a product row names
-in `filhos`, held by the same store, starts with its parent's SKU).
+in `filhos`, held by the same store, starts with its parent's SKU); and that no fixture
+is a price capture.
 
 ## Excluded on purpose
 
@@ -88,6 +91,11 @@ in `filhos`, held by the same store, starts with its parent's SKU).
   taken beside them. They stay in the owner's capture folder, and a sanitizer run without
   `--so` writes them all back: regenerate the stock fixtures only with `--so` naming the
   committed ones.
+- The owner's read-only price captures, every one of them:
+  they are not committed, by the owner's decision, and every price test reads invented
+  answers in their shape (`preco/respostasPreco.test.ts`). They stay in the owner's
+  capture folder, and a sanitizer run without `--so` writes them here: name only
+  committed fixtures with `--so`, and never commit a `produto_preco` pair.
 
 This folder is excluded from Prettier and checked out with LF line endings
 (`.prettierignore`, `.gitattributes`), so a re-run over an unchanged capture writes
