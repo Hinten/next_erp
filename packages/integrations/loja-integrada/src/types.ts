@@ -519,9 +519,9 @@ function valorDePrecoLegivel() {
  * the row's own `id`, `resource_uri`, `sob_consulta` and `custo`. ⚠️ The
  * custo is OPAQUE on purpose: no decision reads the store's resource custo (a
  * price write echoes the PRODUTO DETAIL's, {@link liProdutoComPrecoDetalheSchema}),
- * and the sanitized capture fixtures replace every custo text with the fake
- * text `'REDACTED'`, which the price fold cannot read, so a judged custo would
- * make every such row unreadable.
+ * and a sanitizer run fakes every custo text to `'REDACTED'` (no price capture
+ * is committed), which the price fold cannot read, so a judged custo would make
+ * any such row unreadable.
  *
  * ⚠️ Deliberately unlike {@link liProdutoComPrecoDetalheSchema}, which carries
  * its price leaves RAW and unjudged: here an unreadable value is a finding the
