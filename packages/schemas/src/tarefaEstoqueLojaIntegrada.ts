@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { contaIdLiSchema } from './notificacaoLojaIntegrada';
+import { precoSolicitadoTarefaReconcileLiSchema } from './reconcileEstoqueLojaIntegrada';
 import {
   ID_EXECUCAO_ESTOQUE_LI_REGEX,
   idDocumentoEstoqueLiSchema,
@@ -164,11 +165,21 @@ export type TarefaFilaEstoqueLi = z.infer<typeof tarefaFilaEstoqueLiSchema>;
 /** The reads-queue task `tipo` of one reconcile slice (module header). */
 export const TIPO_TAREFA_RECONCILE_ESTOQUE_LI = 'estoque-reconcile' as const;
 
-/** One slice of reconcile run `execucaoId`: dispatch `seq` of its chain. */
+/**
+ * One slice of reconcile run `execucaoId`: dispatch `seq` of its chain.
+ *
+ * `precoSolicitado` (step 13, PR 13-a amendment): the operator's "Atualizar preços" request — the
+ * conta and whether its sends may lower a price, an id and a flag, never a price. Only the run's
+ * FIRST slice reads it, and stores it in the run document (`reconcileEstoqueLojaIntegrada.ts`);
+ * every later slice reads it there. Absent (or `null`) on every other task, so every payload
+ * enqueued before it still parses — and, strict like the rest, an unknown key inside it is
+ * refused.
+ */
 export const tarefaReconcileEstoqueLiSchema = z.strictObject({
   tipo: z.literal(TIPO_TAREFA_RECONCILE_ESTOQUE_LI),
   execucaoId: idExecucaoEstoqueLiSchema,
   seq: z.number().int().nonnegative(),
+  precoSolicitado: precoSolicitadoTarefaReconcileLiSchema.nullable().optional(),
 });
 export type TarefaReconcileEstoqueLi = z.infer<typeof tarefaReconcileEstoqueLiSchema>;
 

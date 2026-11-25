@@ -120,6 +120,10 @@ export const TIPO_AVISO_LABELS = {
   lojaIntegradaEstoqueSemErp: 'Produtos da Loja Integrada sem estoque no ERP',
   lojaIntegradaEstoqueRecusado: 'Estoque recusado pela Loja Integrada',
   lojaIntegradaEstoqueVinculo: 'Estoque da Loja Integrada parado por um vínculo',
+  lojaIntegradaPrecoSemErp: 'Produtos da Loja Integrada sem preço no ERP',
+  lojaIntegradaPrecoRecusado: 'Preço recusado pela Loja Integrada',
+  lojaIntegradaPrecoNaoBaixado: 'Redução de preço não enviada à Loja Integrada',
+  lojaIntegradaPrecoParado: 'Envio de preços da Loja Integrada parado',
   amazonReconexaoPendente: 'Autorização da Amazon recusada',
   amazonReautorizacaoExpirando: 'Autorização da Amazon expirando',
   amazonSegredoLwaExpirando: 'Segredo do aplicativo da Amazon expirando',
@@ -1465,6 +1469,113 @@ export const TIPO_AVISO_LABELS = {
  *  - **Machine resolvers**: the end of a later reconcile run that counts zero
  *    cases of that motivo for the conta (each run raises or resolves every
  *    motivo once); and the orphan pass once the conta is gone.
+ *
+ * ---
+ *
+ * **The four price-sync tipos** (Loja Integrada step 13 — producers: the price
+ * send run and the daily reconcile of `apps/loja-integrada`). Shared by all
+ * four, exactly as by the three stock tipos above:
+ *
+ *  - **Severity `atencao`**, canal `lojaIntegrada`, in-app only: the store
+ *    keeps selling at its own price.
+ *  - **`params.loja`** is the conta name.
+ *  - **Raised and resolved only by a run whose write decision was `on`** —
+ *    never under dry-run, outside the canary list or with the valve off.
+ *  - **`relogioEvento`** = the producing run's start, in µs: the reconcile
+ *    run's for the three reconcile tipos, the send run's dispatch for the
+ *    refusal. ⚠️ Never compare it with another tipo's.
+ *  - **`amostra`** (where present) is TEXT: up to the first
+ *    {@link MAX_AMOSTRA_AVISO_PRECO_LI} ERP produto ids of the cases, in id
+ *    order, joined by `, `; the NUMBER beside it is the full count.
+ *  - All four join the expiry sweep's orphan pass: a deleted conta's rows are
+ *    closed (`conta-removida`).
+ *  - **A linked child the nightly's by-id price read does not get back**
+ *    raises none of the four: it is counted and logged. One the answer lists
+ *    as NOT FOUND was not returned to this conta; when the store has no such
+ *    product, the stock reconcile's `lojaIntegradaEstoqueVinculo`
+ *    (`sem-linha-na-loja`) reports that link while the stock flow runs, for
+ *    up to {@link MAX_AMOSTRA_AVISO_ESTOQUE_LI} a conta a night. One the
+ *    answer leaves out, or a batch failure skipped, has no aviso of its own:
+ *    only its count and the log line (the stock reconcile reports such a
+ *    link only when the store has no such product).
+ *  - **The by-id read must have FINISHED** for the two tipos it decides
+ *    (`lojaIntegradaPrecoNaoBaixado`, and `lojaIntegradaPrecoParado` with
+ *    both motivos): they are raised or resolved only for a conta whose by-id
+ *    read reached its end. A conta whose read never started (parked before
+ *    it) or ended early (a park mid-read, a second id the store keeps
+ *    failing) leaves both untouched, as the stock reconcile leaves
+ *    `sem-linha-na-loja`: a part read would resolve a case it never looked
+ *    at, or store a count below the real one.
+ *
+ * **`lojaIntegradaPrecoSemErp`** — linked children of the conta that are HELD:
+ *    the map that prices them has no normal-tabela price now, an entry they
+ *    depend on is present but unreadable, or the parent they name is not there
+ *    (a deleted parent, or a parent id that names no document). Never pushed,
+ *    not as 0 and not as nothing, so the store keeps its own price ("sem preço
+ *    no ERP"). A child of a parent that propagates its price is priced from
+ *    the PARENT's entry, so the fix for it is the parent's price.
+ *
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId })` — one row per conta.
+ *  - **`params`**: `loja`, `produtos` (a NUMBER: every held child),
+ *    `ilegiveis` (a NUMBER: of those, the ones held over an unreadable entry),
+ *    `semPai` (a NUMBER: of those, the ones whose parent is not there) and
+ *    `amostra` (every held child alike).
+ *  - **Route**: the conta page (`ROTAS_AVISO.canalLojaIntegrada`).
+ *  - **Machine resolvers**: the end of a later reconcile run that holds none;
+ *    and the orphan pass once the conta is gone. A send run never writes it.
+ *
+ * **`lojaIntegradaPrecoRecusado`** — a child's price did not land, one row per
+ *    child, with a {@link MOTIVO_PRECO_RECUSADO_LI} CODE: Loja Integrada
+ *    refused the write with a 3xx or 4xx other than 429 on the task's LAST
+ *    attempt (`recusado`; a 401/403 is confirmed by the next deciding read
+ *    first, and a refused read parks the conta instead), or the store did not
+ *    keep what was sent, even after the one follow-up (`nao-refletido`).
+ *
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId, entidade: produtoId })`
+ *    — one row per child produto; a repeat replaces `params`.
+ *  - **`params`**: `loja`, `produto` (the ERP produto id), `idLi` (the store
+ *    product id, as text), `motivo` (the code; `motivo` the field too) and,
+ *    for `recusado`, `status` (the HTTP status, a NUMBER).
+ *  - **Route**: the produto (`ROTAS_AVISO.produto`).
+ *  - **Machine resolvers**: a later run for the same (conta, produto) under
+ *    `on` that ends written and read back, or already reflected; and the orphan
+ *    pass once the conta is gone. Residue, accepted: a produto unlinked after
+ *    the refusal is never run again, so its row stands until retention.
+ *
+ * **`lojaIntegradaPrecoNaoBaixado`** — the daily reconcile found children whose
+ *    ERP price is LOWER than the store's (a lower full price, a lower
+ *    promotion, or a new promotion), and an account-wide push never lowers a
+ *    price on its own: they were not sent. "Atualizar preços" with "permitir
+ *    baixar preços" sends them.
+ *
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId })` — one row per conta.
+ *  - **`params`**: `loja`, `produtos` (a NUMBER: the children not lowered),
+ *    `baixadosNoErp` (a NUMBER: of those, the ones whose ERP price itself went
+ *    down since the previous run — a lowering the event path should have
+ *    carried) and `amostra`.
+ *  - **Route**: the conta page (`ROTAS_AVISO.canalLojaIntegrada`).
+ *  - **Machine resolvers**: the end of a later reconcile run whose by-id read
+ *    of the conta finished and counts none (an "Atualizar preços" run that may
+ *    lower counts none); and the orphan pass once the conta is gone.
+ *
+ * **`lojaIntegradaPrecoParado`** — the daily reconcile sent NOTHING for some
+ *    children of the conta, one row per reason — a {@link MOTIVO_PRECO_PARADO_LI}
+ *    CODE: more children would be sent than the safety gate lets one night
+ *    send (`divergencia-em-massa`: none of the conta's price sends of that run
+ *    were enqueued; the count is the children that would have been), or a
+ *    child was sent on each of the last two runs and still does not show the
+ *    ERP price (`nao-converge`: it is not sent again until its ERP price or the
+ *    store's value changes).
+ *
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId, entidade: motivo })`
+ *    — one row per (conta, motivo).
+ *  - **`params`**: `loja`, `motivo` (the code; `motivo` the field too),
+ *    `produtos` (a NUMBER: the cases) and `amostra`.
+ *  - **Route**: the conta page (`ROTAS_AVISO.canalLojaIntegrada`).
+ *  - **Machine resolvers**: the end of a later reconcile run whose by-id read
+ *    of the conta finished and counts zero cases of that motivo (each such
+ *    run raises or resolves every motivo once; "Atualizar preços" passes the
+ *    gate for its conta); and the orphan pass once the conta is gone.
  */
 export const tipoAvisoSchema = z
   .enum([
@@ -1500,6 +1611,10 @@ export const tipoAvisoSchema = z
     'lojaIntegradaEstoqueSemErp',
     'lojaIntegradaEstoqueRecusado',
     'lojaIntegradaEstoqueVinculo',
+    'lojaIntegradaPrecoSemErp',
+    'lojaIntegradaPrecoRecusado',
+    'lojaIntegradaPrecoNaoBaixado',
+    'lojaIntegradaPrecoParado',
     'amazonReconexaoPendente',
     'amazonReautorizacaoExpirando',
     'amazonSegredoLwaExpirando',
@@ -1545,6 +1660,10 @@ export const TIPO_AVISO = {
   lojaIntegradaEstoqueSemErp: 'lojaIntegradaEstoqueSemErp',
   lojaIntegradaEstoqueRecusado: 'lojaIntegradaEstoqueRecusado',
   lojaIntegradaEstoqueVinculo: 'lojaIntegradaEstoqueVinculo',
+  lojaIntegradaPrecoSemErp: 'lojaIntegradaPrecoSemErp',
+  lojaIntegradaPrecoRecusado: 'lojaIntegradaPrecoRecusado',
+  lojaIntegradaPrecoNaoBaixado: 'lojaIntegradaPrecoNaoBaixado',
+  lojaIntegradaPrecoParado: 'lojaIntegradaPrecoParado',
   amazonReconexaoPendente: 'amazonReconexaoPendente',
   amazonReautorizacaoExpirando: 'amazonReautorizacaoExpirando',
   amazonSegredoLwaExpirando: 'amazonSegredoLwaExpirando',
@@ -2063,6 +2182,66 @@ export const MOTIVO_ESTOQUE_VINCULO_LI = {
  * NUMBER beside it is the full count.
  */
 export const MAX_AMOSTRA_AVISO_ESTOQUE_LI = 200;
+
+/**
+ * Why a Loja Integrada child's price did not land — the
+ * `lojaIntegradaPrecoRecusado` aviso's `params.motivo`, a CODE the wording in
+ * `apps/web/lib/avisos/mensagens.ts` renders (a wording fix is retroactive):
+ *
+ *  - `recusado`: the store refused the price write (a 3xx, or a 4xx other than
+ *    429) on the task's last attempt; `params.status` carries the HTTP status;
+ *  - `nao-refletido`: the write was accepted, but the store's price read back
+ *    differs from what was sent, and the one follow-up that re-sent it found
+ *    the same — the store does not keep that value.
+ *
+ * Stored as an aviso PARAM, with the same fallback contract as
+ * {@link MOTIVO_PEDIDO_CONTESTADO_LI}.
+ */
+export const motivoPrecoRecusadoLiSchema = z.enum(['recusado', 'nao-refletido']);
+export type MotivoPrecoRecusadoLi = z.infer<typeof motivoPrecoRecusadoLiSchema>;
+
+/** Named members of {@link motivoPrecoRecusadoLiSchema} — see `delfrance/prefer-schema-enum`. */
+export const MOTIVO_PRECO_RECUSADO_LI = {
+  recusado: 'recusado',
+  naoRefletido: 'nao-refletido',
+} as const satisfies Record<string, MotivoPrecoRecusadoLi>;
+
+/**
+ * Why the daily price reconcile sent nothing for some children of a Loja
+ * Integrada conta — the `lojaIntegradaPrecoParado` aviso's `params.motivo` AND
+ * its key's entity, a CODE the wording in `apps/web/lib/avisos/mensagens.ts`
+ * renders (a wording fix is retroactive):
+ *
+ *  - `divergencia-em-massa`: the safety gate — more of the conta's children
+ *    would be enqueued than one night may send (more than the larger of 50
+ *    and 10% of the evaluated children — those whose store price the night's
+ *    by-id read got back and diffed; refused lowerings, deferred rows and
+ *    non-converging ones are not counted), the signature of a tabela
+ *    re-point or a whole-catalogue reprice nobody pushed, so NONE of the
+ *    conta's price sends of that run were enqueued. "Atualizar preços" is the
+ *    reviewed way to send them;
+ *  - `nao-converge`: a child sent on each of the last two runs, with the same
+ *    target and the same store value both times, still does not show the ERP
+ *    price; it is not sent again until either changes.
+ *
+ * Stored as an aviso PARAM, with the same fallback contract as
+ * {@link MOTIVO_PEDIDO_CONTESTADO_LI}.
+ */
+export const motivoPrecoParadoLiSchema = z.enum(['divergencia-em-massa', 'nao-converge']);
+export type MotivoPrecoParadoLi = z.infer<typeof motivoPrecoParadoLiSchema>;
+
+/** Named members of {@link motivoPrecoParadoLiSchema} — see `delfrance/prefer-schema-enum`. */
+export const MOTIVO_PRECO_PARADO_LI = {
+  divergenciaEmMassa: 'divergencia-em-massa',
+  naoConverge: 'nao-converge',
+} as const satisfies Record<string, MotivoPrecoParadoLi>;
+
+/**
+ * The most ERP produto ids a price-sync aviso's `params.amostra` lists (the
+ * `lojaIntegradaPrecoSemErp`, `lojaIntegradaPrecoNaoBaixado` and
+ * `lojaIntegradaPrecoParado` rows); the NUMBER beside it is the full count.
+ */
+export const MAX_AMOSTRA_AVISO_PRECO_LI = 200;
 
 /**
  * Why an `anuncioForaDaSincronizacao` anúncio is out of reach — the aviso's

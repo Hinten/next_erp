@@ -5,9 +5,10 @@
  * (`pedidos/pollPedidos.ts`) — the channel's tipo list the sweep's orphan pass
  * reads (the order-import tipos of step 5 included; their producer is
  * `pedidos/avisosPedidoLi.ts`; the product import's three of step 9, whose
- * producer is `importacao/avisosImportacao.ts`; and the stock sync's three of
- * step 12, whose producers ship with its send run and reconcile), and the µs
- * boundary of this app.
+ * producer is `importacao/avisosImportacao.ts`; the stock sync's three of step
+ * 12, whose producers ship with its send run and reconcile; and the price sync's
+ * four of step 13, whose producers ship with its send run and reconcile), and
+ * the µs boundary of this app.
  *
  * ## ⚠️ The ONE module in `apps/loja-integrada` that speaks MICROSECONDS
  *
@@ -275,25 +276,43 @@ export const TIPOS_AVISO_ESTOQUE_LI: ReadonlySet<TipoAviso> = new Set<TipoAviso>
 ]);
 
 /**
+ * The price sync's tipos (step 13; producers: the price send run and the daily
+ * reconcile): two rows per conta (`lojaIntegradaPrecoSemErp`,
+ * `lojaIntegradaPrecoNaoBaixado`), one per child produto
+ * (`lojaIntegradaPrecoRecusado`, keyed by the ERP produto id) and one per motivo
+ * (`lojaIntegradaPrecoParado`, keyed by the motivo code). All four are clocked by
+ * their run's own start, which the conta enumeration's `readTime` can never be
+ * compared with — the stock sync's rule.
+ */
+export const TIPOS_AVISO_PRECO_LI: ReadonlySet<TipoAviso> = new Set<TipoAviso>([
+  TIPO_AVISO.lojaIntegradaPrecoSemErp,
+  TIPO_AVISO.lojaIntegradaPrecoRecusado,
+  TIPO_AVISO.lojaIntegradaPrecoNaoBaixado,
+  TIPO_AVISO.lojaIntegradaPrecoParado,
+]);
+
+/**
  * The tipos that hold MANY rows per conta, one per entity — the order-import ones
  * (a pedido, a shipping-method key), the product import's per-category one and
- * the stock sync's per-produto and per-motivo ones — so the orphan pass matches a
- * row to a listed conta by its key PREFIX ({@link prefixoDaContaNoAvisoLi}), never
- * by one chave per conta.
+ * the stock and price syncs' per-produto and per-motivo ones — so the orphan pass
+ * matches a row to a listed conta by its key PREFIX ({@link prefixoDaContaNoAvisoLi}),
+ * never by one chave per conta.
  */
 export const TIPOS_AVISO_POR_ENTIDADE_LI: ReadonlySet<TipoAviso> = new Set<TipoAviso>([
   ...TIPOS_AVISO_PEDIDO_LI,
   TIPO_AVISO.lojaIntegradaCategoriaSemVinculo,
   TIPO_AVISO.lojaIntegradaEstoqueRecusado,
   TIPO_AVISO.lojaIntegradaEstoqueVinculo,
+  TIPO_AVISO.lojaIntegradaPrecoRecusado,
+  TIPO_AVISO.lojaIntegradaPrecoParado,
 ]);
 
 /**
  * Every tipo of this channel — what the sweep's orphan pass filters on.
  * `lojaIntegradaImportacaoParada` (step 3) is listed beside the two step-2 tipos
  * this module raises, the order-import tipos (step 5), the product import's
- * (step 9) and the stock sync's (step 12) beside them, so a gone conta's rows of
- * every tipo are closed too.
+ * (step 9), the stock sync's (step 12) and the price sync's (step 13) beside
+ * them, so a gone conta's rows of every tipo are closed too.
  */
 export const TIPOS_AVISO_LI: ReadonlySet<string> = new Set([
   TIPO_AVISO.lojaIntegradaTokenExpirando,
@@ -302,6 +321,7 @@ export const TIPOS_AVISO_LI: ReadonlySet<string> = new Set([
   ...TIPOS_AVISO_PEDIDO_LI,
   ...TIPOS_AVISO_IMPORTACAO_PRODUTOS_LI,
   ...TIPOS_AVISO_ESTOQUE_LI,
+  ...TIPOS_AVISO_PRECO_LI,
 ]);
 
 /**
@@ -328,6 +348,23 @@ export function chaveImportacaoComPendenciasLi(integracaoId: string): string {
  */
 export function chaveEstoqueSemErpLi(integracaoId: string): string {
   return chaveDeAviso({ tipo: TIPO_AVISO.lojaIntegradaEstoqueSemErp, conta: integracaoId });
+}
+
+/**
+ * The dedup identity of the price sync's "sem preço no ERP" aviso (step 13): one
+ * row per conta. The orphan pass needs it, so a LISTED conta's open row is never
+ * mistaken for an orphan.
+ */
+export function chavePrecoSemErpLi(integracaoId: string): string {
+  return chaveDeAviso({ tipo: TIPO_AVISO.lojaIntegradaPrecoSemErp, conta: integracaoId });
+}
+
+/**
+ * The dedup identity of the price sync's "redução não enviada" aviso (step 13):
+ * one row per conta, for the orphan pass like {@link chavePrecoSemErpLi}.
+ */
+export function chavePrecoNaoBaixadoLi(integracaoId: string): string {
+  return chaveDeAviso({ tipo: TIPO_AVISO.lojaIntegradaPrecoNaoBaixado, conta: integracaoId });
 }
 
 /**
@@ -397,9 +434,9 @@ function contaDaChaveComRelogio(
  *    next sweep re-raises it if the conta turns out to exist.
  *  - A clocked-tipo id no producer here could have computed has no write to
  *    race, so it is resolved clockless too.
- *  - An order-import row (step 5), a product-import row (step 9) and a stock
- *    row (step 12) are resolved clockless: their clocks are the order's Loja
- *    Integrada stamp, a job's own stamp and a run's own start, domains
+ *  - An order-import row (step 5), a product-import row (step 9) and a stock or
+ *    price row (steps 12 and 13) are resolved clockless: their clocks are the
+ *    order's Loja Integrada stamp, a job's own stamp and a run's own start, domains
  *    `relogioListaUs` can never be compared with. The sweep
  *    therefore hands this only rows last written NO LATER than the
  *    enumeration's read: a row written after it may belong to a conta created
