@@ -337,6 +337,15 @@ describe('the path form: the no-slash request only', () => {
     expect(plataforma.semResposta()).toBe(5);
     expect([...plataforma.consumidas]).toEqual([[semBarra, 1]]);
   });
+
+  it('the scripted store: a semCorpo answer has no body and no content type (the 404 shape)', async () => {
+    const plataforma = plataformaPrecoLi({ [semBarra]: { status: 404, semCorpo: true } });
+    const res = await plataforma.fetch(`${URL_BASE_LI}${semBarra}`, { method: 'GET' });
+    expect(res.status).toBe(404);
+    expect(res.body).toBeNull();
+    expect(res.headers.get('content-type')).toBeNull();
+    expect(await res.text()).toBe('');
+  });
 });
 
 /* -------------------------------------------------------------------------- */

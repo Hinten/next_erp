@@ -775,8 +775,8 @@ describe('__wire__ corpus — catalogue ids keep their function without a real i
     // the step-10 and step-3 ones, 848 in the product captures, and 3331 in the stock
     // captures (each of the 1097 list rows' `id`, `produto` and `resource_uri`: 3291; each of
     // the nine details' three and its request path: 36; the four 404s' request paths: 4), and
-    // 2052 held by LISTS of resource URIs (`variacoes` 1068, `filhos` 603, `grades` 214,
-    // `categorias` 167, all in the product captures).
+    // 2052 held by LISTS of resource URIs (`variacoes`, `filhos`, `grades` and `categorias`,
+    // all in the product captures).
     expect(ids).toBe(6808);
   });
 
@@ -1013,7 +1013,7 @@ describe('catalogue id relations: what the corpus checks compare', () => {
     });
   });
 
-  it('the range: a not_found element is an id — pseudonym strings pass; a real-sized one, or a faked one, does not', () => {
+  it('the range: a not_found element is an id — a pseudonym (string or number) passes; a real-sized one, or a faked one, does not', () => {
     const p = (n: number) => String(PSEUDONIMO_MINIMO_LI + n);
     const set = (notFound: ValorJsonLi[]) =>
       envelope(`/v1/produto_preco/set/${p(1)};${p(2)};${p(3)}`, {
@@ -1035,6 +1035,15 @@ describe('catalogue id relations: what the corpus checks compare', () => {
       ],
       ids: 9,
     });
+    // NEAR-MISS: a JSON NUMBER element is an id too (the sanitizer keeps a number a number):
+    // a pseudonym number passes, a real-sized one does not.
+    expect(idsForaDaFaixa([['n.json', set([Number(p(2)), p(3)])]])).toEqual({
+      foraDaFaixa: [],
+      ids: 5,
+    });
+    expect(idsForaDaFaixa([['c.json', set([42])]]).foraDaFaixa).toEqual([
+      'c.json :: 1 id(s) outside the pseudonym range',
+    ]);
   });
 
   it('NEAR-MISS: the price-capture check flags every produto_preco path, and no other resource', () => {
