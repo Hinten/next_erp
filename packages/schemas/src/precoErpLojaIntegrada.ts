@@ -11,8 +11,11 @@ import { idDocumentoEstoqueLiSchema } from './sincEstoqueLojaIntegrada';
 /**
  * The ONE price function of the Loja Integrada price sync (master plan step 13, PR 13-a), shared
  * with the publish (step 11): which produto is a root, what a tabela entry says, the price a
- * linked child must show in the store, how a store price value reads, and whether a send would
- * lower what the buyer pays. The twin of `estoqueErpLojaIntegrada.ts`, and here for the same
+ * linked child must show in the store, how a store price value reads, whether a send would
+ * lower what the buyer pays, and (PR 13-b) how a send spells the promotion's CLEAR on the wire
+ * and when a store promotion reads as that clear having landed
+ * ({@link formaPromoLimpaLiSchema}, {@link promocionalLimpoNaFormaLi}). The twin of
+ * `estoqueErpLojaIntegrada.ts`, and here for the same
  * reason: the send run, the trigger, the daily reconcile and a `tools/migrations` read-only audit
  * need the identical answer, and an app cannot be imported by the others. One copy of each rule
  * (root `CLAUDE.md`, #1369).
@@ -430,6 +433,75 @@ export function efetivoPrecoLi(cheio: unknown, promocional: unknown): ValorPreco
   if (c === 'ilegivel' || p === 'ilegivel') return 'ilegivel';
   const positivos = [positivoLi(c), positivoLi(p)].filter((n): n is number => n !== null);
   return positivos.length === 0 ? 'vazio' : { centavos: Math.min(...positivos) };
+}
+
+/* -------------------------------------------------------------------------- */
+/*               The clear: its wire shape, and when it has landed             */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * How a price send CLEARS the store's promotion (no positive promotion ⇒ cleared, `precoAlvoLi`'s
+ * `'limpar'`), that is, what its `promocional` carries. A deploy-time choice: the functions entry point reads it from
+ * `LOJA_INTEGRADA_PRECO_PROMO_LIMPO` (master plan step 13), so a clear the store refuses can be
+ * retried with another shape in the window without a code change.
+ *
+ *  - `nulo` ⇒ JSON `null`, the DEFAULT ({@link FORMA_PROMO_LIMPA_PADRAO_LI}). The owner's
+ *    read-only price capture (2026-11-24, both stores) found the rows with no promotion carrying
+ *    `null` far more often than `'0.0000'`, the store's only zero spelling;
+ *  - `zero` ⇒ JSON `0`;
+ *  - `igual-cheio` ⇒ the full price itself: a window-only fallback a person chooses, tried once
+ *    if the first canary write refuses both others. Never the default.
+ *
+ * Three layers must agree on it, which is why it lives here and not in the wire package: the
+ * wire's body builder (the bytes sent), the send run's read-back and the nightly diff (what counts
+ * as a landed clear, {@link promocionalLimpoNaFormaLi}). The values are spelled like every other
+ * value here, never as a JS literal: an env value `null` or `0` reads to a person as "unset" or
+ * "false". A caller parses the env value EXACTLY (`.safeParse`: no trim, no case fold), as the
+ * valves are read.
+ */
+export const formaPromoLimpaLiSchema = z.enum(['nulo', 'zero', 'igual-cheio']);
+export type FormaPromoLimpaLi = z.infer<typeof formaPromoLimpaLiSchema>;
+
+/** Named members of {@link formaPromoLimpaLiSchema} — see `delfrance/prefer-schema-enum`. */
+export const FORMA_PROMO_LIMPA_LI = {
+  nulo: 'nulo',
+  zero: 'zero',
+  igualCheio: 'igual-cheio',
+} as const satisfies Record<string, FormaPromoLimpaLi>;
+
+/** The clear a send uses when none is configured: `null` on the wire. */
+export const FORMA_PROMO_LIMPA_PADRAO_LI = FORMA_PROMO_LIMPA_LI.nulo;
+
+/**
+ * Does the store's promotion read as CLEARED under the configured clear `forma`? The question a
+ * send's read-back, its PUT echo and the nightly diff ask after a send that cleared it:
+ *
+ *  - under every forma, {@link promocionalLimpoLi}: `null`, absent, or a value that reads as 0
+ *    centavos (`'0.0000'`, `0`, `'0.00'`, `'0'`);
+ *  - under `igual-cheio` ONLY, also a promotion that is the same positive price as `cheio`
+ *    ({@link mesmoPrecoLi}), because that forma sends the full price AS the clear.
+ *
+ * Elsewhere a promotion equal to the full price stays what {@link promocionalLimpoLi} says it is:
+ * a stored promotion, not a clear. The same capture found no promotion equal to the full price
+ * among the rows it read, so the `igual-cheio` branch is a tested rule that no row read so far
+ * meets.
+ *
+ * EQUAL (cleared) under `igual-cheio`: `('50.0000', '50.0000')`, `(50, '50.00')`, and every clear
+ * of {@link promocionalLimpoLi}. DISTINCT (not cleared): a promotion equal to the full price under
+ * `nulo` and under `zero`; under `igual-cheio`, `49.99` against `50` and `60` against `50` (one
+ * centavo below, or a promotion above the full price, is not the full price), and `'0.01'`. A
+ * `null` promotion beside a `null` full price is cleared by the clear rule, never by the equality:
+ * a `null` or 0 price equals nothing.
+ */
+export function promocionalLimpoNaFormaLi(a: {
+  readonly forma: FormaPromoLimpaLi;
+  readonly cheio: unknown;
+  readonly promocional: unknown;
+}): boolean {
+  return (
+    promocionalLimpoLi(a.promocional) ||
+    (a.forma === FORMA_PROMO_LIMPA_LI.igualCheio && mesmoPrecoLi(a.promocional, a.cheio))
+  );
 }
 
 /* -------------------------------------------------------------------------- */

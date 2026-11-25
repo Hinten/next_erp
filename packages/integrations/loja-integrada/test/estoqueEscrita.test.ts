@@ -338,7 +338,7 @@ describe('the stock route — what ANY holder of a write client can send', () =>
     ['a fractional id', '/v1/produto_estoque/1001.0'],
     ['a path that only ENDS like the route', '/v1/pedido/1/v1/produto_estoque/1001'],
     ['the produto resource', '/v1/produto/1001'],
-    ['the price resource', '/v1/produto_preco/1001'],
+    ['the price LIST', '/v1/produto_preco'],
   ])(
     '%s → LiConfigError("rota-nao-permitida"); nothing fetched, no credential read',
     async (_caso, caminho) => {
@@ -351,6 +351,18 @@ describe('the stock route — what ANY holder of a write client can send', () =>
       expect(credenciais()).toBe(0);
     },
   );
+
+  it('a stock body on the PRICE route → LiConfigError("corpo"); nothing fetched, no credential read', async () => {
+    // The price resource is a write route of its own (`precoEscrita.ts`): the
+    // stock body reaches it and is refused by THAT route's schema.
+    const f = ok();
+    const { c, credenciais } = cliente(f);
+    const err = await falha(c.enviarEscritaLi(put('/v1/produto_preco/1001', CORPO_VALIDO)));
+    expect(err).toBeInstanceOf(LiConfigError);
+    expect((err as LiConfigError).motivo).toBe('corpo');
+    expect(f).not.toHaveBeenCalled();
+    expect(credenciais()).toBe(0);
+  });
 
   it.each<[string, unknown]>([
     ['quantidade -1', { ...CORPO_VALIDO, quantidade: -1 }],

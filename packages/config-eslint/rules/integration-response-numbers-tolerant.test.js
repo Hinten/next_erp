@@ -185,19 +185,26 @@ const ALLOWED_STRICT = {
   // so there is nothing there for which strictness would be the right direction.
   // ⚠️ Step 11 kept that true: its `Shopee*Request` bodies are plain TypeScript
   // interfaces in `api.ts`, so a Zod one would need an entry here to stay strict.
-  // Loja Integrada (master-plan step 12): `rotasEscrita.ts` holds the STRICT
-  // schemas of every body its write client may SEND — the status write-back's
-  // `{objeto}` and `{codigo}` (strings only) and the stock write's
-  // `{gerenciado, quantidade, situacao_em_estoque, situacao_sem_estoque}`, whose
-  // `quantidade` is the package's one REQUEST number. Strict is the right
-  // direction there: a quoted `'3'` must be refused, never forwarded, and the
-  // request core serialises the schema's OUTPUT, so the number goes out unquoted.
-  // The two situações are `z.literal`s, so they need no entry. ⚠️ Keyed on the
-  // exact trimmed line: keep the declaration on ONE short line (a Prettier wrap
-  // would leave this entry STALE).
+  // Loja Integrada (master-plan steps 12 and 13): `rotasEscrita.ts` holds the
+  // STRICT schemas of every body its write client may SEND — the status
+  // write-back's `{objeto}` and `{codigo}` (strings only), the stock write's
+  // `{gerenciado, quantidade, situacao_em_estoque, situacao_sem_estoque}` and the
+  // price write's `{cheio, custo?, promocional, sob_consulta}`. Its REQUEST
+  // numbers are the stock `quantidade`, the price (`cheio` and a positive
+  // `promocional`, refined to at most two decimals) and the store's own custo
+  // echoed back. Strict is the right direction there: a quoted `'3'` must be
+  // refused, never forwarded, and the request core serialises the schema's
+  // OUTPUT, so each number goes out unquoted. The two situações and the clear's
+  // `0` are `z.literal`s, so they need no entry. ⚠️ Keyed on the exact trimmed
+  // line: keep each declaration on ONE short line (a Prettier wrap would leave
+  // its entry STALE).
   'packages/integrations/loja-integrada/src/rotasEscrita.ts': {
     'const QUANTIDADE_ESTOQUE_ESCRITA = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);':
       'REQUEST — the stock quantity we SEND on PUT /v1/produto_estoque/{id}',
+    'const REAIS_PRECO_ESCRITA = z.number().positive();':
+      'REQUEST — the price (cheio, a positive promocional) we SEND on PUT /v1/produto_preco/{id}',
+    'const CUSTO_ECO_ESCRITA = z.number().min(0);':
+      'REQUEST — the store’s own custo we ECHO on PUT /v1/produto_preco/{id}',
   },
   // No `amazon-sp-api` entry either. It has a GET client and ONE write client
   // (Delivery, Tokens, Easy Ship, Listings and Feeds), and no outbound body is a
@@ -274,9 +281,9 @@ const KNOWN_TOLERANT_LINES = {
     'shop_id: wireInt(),',
     'auth_time: wireInt(),',
   ],
-  // Loja Integrada. Its one `ALLOWED_STRICT` entry (the stock write's
-  // quantity, `rotasEscrita.ts`) already reports STALE if the pathspec stops
-  // reaching that file, but it says nothing about `types.ts`: these three lines
+  // Loja Integrada. Its `ALLOWED_STRICT` entries (the request numbers of
+  // `rotasEscrita.ts`) already report STALE if the pathspec stops
+  // reaching that file, but they say nothing about `types.ts`: these three lines
   // are what keep a pathspec that stopped reaching the RESPONSE schemas from
   // leaving the "no bare z.number()" assertion running over an empty set. ⚠️ The
   // pathspec reaches EVERY file under `src/`, not only `types.ts` — the package

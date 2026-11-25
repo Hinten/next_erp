@@ -176,6 +176,7 @@ export type MotivoConfigLi =
   | 'token-na-url'
   | 'maxPaginas'
   | 'limite'
+  | 'ids'
   | 'offset'
   | 'prazo'
   | 'maxBytes'
@@ -202,6 +203,10 @@ export type MotivoConfigLi =
  *   sent: Tastypie, the framework these lists page with, reads `limit=0` as
  *   "every row" (up to its own ceiling), which would turn a bounded read into
  *   one nobody sized.
+ * - `'ids'` — a by-id read (`preco.ts`, the price `set/` read) asked for no id, for more ids
+ *   than one call may name (`MAX_IDS_SET_PRECO_LI`), or for one id twice (`1001` and `'1001'`
+ *   are one id). Not `'limite'`: that one is about a list's page size, and a by-id read has no
+ *   page.
  * - `'offset'` — a one-page read's offset that is not a non-negative safe
  *   integer, or an `offset` slipped into its extra query (the page's offset is
  *   the caller's `offset` option, never a second value).
@@ -262,6 +267,8 @@ function mensagemDeConfig(motivo: MotivoConfigLi, operacao: string): string {
       return `${prefixo} maxPaginas precisa ser um inteiro positivo.`;
     case 'limite':
       return `${prefixo} o limite de linhas por página precisa ser um inteiro positivo, dentro do teto da lista, e só pode vir na opção limite. Nada foi enviado.`;
+    case 'ids':
+      return `${prefixo} a leitura por ids precisa de 1 até o teto de ids por chamada, cada id uma única vez. Nada foi enviado.`;
     case 'offset':
       return `${prefixo} o offset da página precisa ser um inteiro não negativo e só pode vir na opção offset. Nada foi enviado.`;
     case 'prazo':
