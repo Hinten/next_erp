@@ -738,64 +738,72 @@ describe('corpoPrecoProdutoLi — the body of one price write', () => {
     },
   );
 
-  it('property: 2,000 targets up to 1e15 centavos × clear or promotion × a drawn custo × every forma round-trip exactly, and are SENT', async () => {
-    const aleatorio = prng(27_442);
-    /** Log-uniform in [1, 1e15], so every magnitude is sampled. */
-    const centavos = () => Math.max(1, Math.floor(10 ** (aleatorio() * 15)));
-    /** The store's custo: none (the common case), 0, or a number with up to four decimals. */
-    const custoDaLoja = (): number | null => {
-      const r = aleatorio();
-      if (r < 1 / 3) return null;
-      if (r < 2 / 3) return 0;
-      return Math.round(aleatorio() * 1e8) / 1e4;
-    };
-    const f = semCorpo();
-    const { c } = cliente(f);
-    let enviados = 0;
-    for (let caso = 0; caso < 2000; caso++) {
-      const cheioCentavos = centavos();
-      const promo: EnvioPrecoLi['promo'] = aleatorio() < 0.5 ? 'limpar' : { centavos: centavos() };
-      const custo = custoDaLoja();
-      for (const forma of FORMAS) {
-        const { corpo, custo: doCusto } = montar({ cheioCentavos, promo }, forma, custo);
-        const rotulo = `${String(cheioCentavos)} ${JSON.stringify(promo)} ${String(custo)} ${forma}`;
-        expect(corpoPrecoProdutoValidoLi(corpo), rotulo).toBe(true);
-        expect(doCusto, rotulo).toBe(custo === null ? 'omitido-nulo' : 'enviado');
-        // The body goes out through the price route, as built.
-        await atualizarPrecoProdutoLi(c, PRODUTO, {
-          alvo: { cheioCentavos, promo },
-          formaPromoLimpa: forma,
-          custo,
-          sobConsulta: false,
-        });
-        expect(requisicao(f, enviados).init.body, rotulo).toBe(JSON.stringify(corpo));
-        enviados += 1;
-        // At most two decimal places on each PRICE sent (the custo goes back as the store holds it).
-        for (const preco of [corpo.cheio, corpo.promocional]) {
-          const n = String(preco);
-          expect(n.split('.')[1]?.length ?? 0, rotulo).toBeLessThanOrEqual(2);
-        }
-        expect(valorPrecoLi(corpo.cheio), rotulo).toEqual({ centavos: cheioCentavos });
-        // The text sent names the same centavos when the store parses it.
-        expect(valorPrecoLi(String(corpo.cheio)), rotulo).toEqual({ centavos: cheioCentavos });
-        if (promo === 'limpar') {
-          expect(
-            promocionalLimpoNaFormaLi({
-              forma,
-              cheio: corpo.cheio,
-              promocional: corpo.promocional,
-            }),
-            rotulo,
-          ).toBe(true);
-        } else {
-          expect(valorPrecoLi(corpo.promocional), rotulo).toEqual({ centavos: promo.centavos });
-          expect(valorPrecoLi(String(corpo.promocional)), rotulo).toEqual({
-            centavos: promo.centavos,
+  // 6,000 sends through the whole write client: about 2 s alone, but 10.6 s on a
+  // loaded CI runner (`CI test`, every workspace testing at once), past the 5 s
+  // default. The bound is raised instead of the sweep trimmed, so every case stays.
+  it(
+    'property: 2,000 targets up to 1e15 centavos × clear or promotion × a drawn custo × every forma round-trip exactly, and are SENT',
+    { timeout: 60_000 },
+    async () => {
+      const aleatorio = prng(27_442);
+      /** Log-uniform in [1, 1e15], so every magnitude is sampled. */
+      const centavos = () => Math.max(1, Math.floor(10 ** (aleatorio() * 15)));
+      /** The store's custo: none (the common case), 0, or a number with up to four decimals. */
+      const custoDaLoja = (): number | null => {
+        const r = aleatorio();
+        if (r < 1 / 3) return null;
+        if (r < 2 / 3) return 0;
+        return Math.round(aleatorio() * 1e8) / 1e4;
+      };
+      const f = semCorpo();
+      const { c } = cliente(f);
+      let enviados = 0;
+      for (let caso = 0; caso < 2000; caso++) {
+        const cheioCentavos = centavos();
+        const promo: EnvioPrecoLi['promo'] =
+          aleatorio() < 0.5 ? 'limpar' : { centavos: centavos() };
+        const custo = custoDaLoja();
+        for (const forma of FORMAS) {
+          const { corpo, custo: doCusto } = montar({ cheioCentavos, promo }, forma, custo);
+          const rotulo = `${String(cheioCentavos)} ${JSON.stringify(promo)} ${String(custo)} ${forma}`;
+          expect(corpoPrecoProdutoValidoLi(corpo), rotulo).toBe(true);
+          expect(doCusto, rotulo).toBe(custo === null ? 'omitido-nulo' : 'enviado');
+          // The body goes out through the price route, as built.
+          await atualizarPrecoProdutoLi(c, PRODUTO, {
+            alvo: { cheioCentavos, promo },
+            formaPromoLimpa: forma,
+            custo,
+            sobConsulta: false,
           });
+          expect(requisicao(f, enviados).init.body, rotulo).toBe(JSON.stringify(corpo));
+          enviados += 1;
+          // At most two decimal places on each PRICE sent (the custo goes back as the store holds it).
+          for (const preco of [corpo.cheio, corpo.promocional]) {
+            const n = String(preco);
+            expect(n.split('.')[1]?.length ?? 0, rotulo).toBeLessThanOrEqual(2);
+          }
+          expect(valorPrecoLi(corpo.cheio), rotulo).toEqual({ centavos: cheioCentavos });
+          // The text sent names the same centavos when the store parses it.
+          expect(valorPrecoLi(String(corpo.cheio)), rotulo).toEqual({ centavos: cheioCentavos });
+          if (promo === 'limpar') {
+            expect(
+              promocionalLimpoNaFormaLi({
+                forma,
+                cheio: corpo.cheio,
+                promocional: corpo.promocional,
+              }),
+              rotulo,
+            ).toBe(true);
+          } else {
+            expect(valorPrecoLi(corpo.promocional), rotulo).toEqual({ centavos: promo.centavos });
+            expect(valorPrecoLi(String(corpo.promocional)), rotulo).toEqual({
+              centavos: promo.centavos,
+            });
+          }
         }
       }
-    }
-  });
+    },
+  );
 
   it('⚠️ NEAR-MISS: the igual-cheio clear, read under nulo or zero, is NOT a clear', () => {
     const { corpo } = montar(LIMPAR, FORMA_PROMO_LIMPA_LI.igualCheio);
