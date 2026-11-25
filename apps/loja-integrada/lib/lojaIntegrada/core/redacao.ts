@@ -1036,7 +1036,7 @@ const TABELA_DO_CATALOGO: ReadonlyMap<string, TabelaRedacaoLi> = new Map([
 ]);
 
 /**
- * The ONE catalogue path a restore snapshot is made for (`corpoDeRestauracaoLi`):
+ * The stock catalogue path a restore snapshot is made for (`corpoDeRestauracaoLi`):
  * one product's stock detail, `/v1/produto_estoque/{produto id}`, exactly as the
  * write engine asks it — no trailing slash, a canonical id, no query, the same
  * form the stock write's route accepts. Tested on the RAW path: the slash form
@@ -1053,6 +1053,37 @@ const CAMINHO_RESTAURACAO_ESTOQUE_LI = /^\/v1\/produto_estoque\/[1-9][0-9]*$/;
  * table do not see it.
  */
 const TABELA_RESTAURACAO_ESTOQUE_LI = tabela('produto-estoque-restauracao', ESTOQUE);
+
+/**
+ * The second catalogue path a restore snapshot is made for: the produto detail a
+ * price write decides on (master plan step 13), `/v1/produto/{produto id}/`,
+ * exactly as the write engine asks it — WITH the trailing slash (the form every
+ * produto read of the package uses), a canonical id, no query. Tested on the RAW
+ * path: the no-slash form, a leading zero, `/alias`, the list, a query, the price
+ * resource and every other catalogue resource are NOT it. A local pattern, like
+ * the stock one.
+ */
+const CAMINHO_RESTAURACAO_PRODUTO_PRECO_LI = /^\/v1\/produto\/[1-9][0-9]*\/$/;
+
+/**
+ * The restore snapshot's keep-list for that path: the nine leaves a price write
+ * decides on and a rollback re-sends — the product's identity and guard (`id`,
+ * `tipo`, `ativo`, `bloqueado`, `removido`) and its four prices, the store's own
+ * custo included, at the ROOT only. Module-private and outside
+ * {@link TABELAS_LI} (whose `produto` table the profiles and the spec-coverage
+ * table read), so nothing but this snapshot sees it.
+ */
+const TABELA_RESTAURACAO_PRODUTO_PRECO_LI = tabela('produto-preco-restauracao', [
+  ['id', 'inteiro'],
+  ['tipo', 'token'],
+  ['ativo', 'booleano'],
+  ['bloqueado', 'booleano'],
+  ['removido', 'booleano'],
+  ['preco_cheio', 'decimal'],
+  ['preco_promocional', 'decimal'],
+  ['preco_custo', 'decimal'],
+  ['preco_sob_consulta', 'booleano'],
+]);
 
 /**
  * The catalogue resource names (`recursoDoCaminho`). A path naming one that
@@ -1698,17 +1729,27 @@ export interface EntradaRestauracaoLi {
  *   walk of the `log` profile, with NO 2 KB cut (the line's own size is capped
  *   by the logger). Only the table's leaves survive: `situacao.*`, `envios.*.id`
  *   and `envios.*.objeto` among them; the buyer is `<redacted>`.
- * - **`catalogo`**: ONE branch, byte-faithful or nothing — one product's stock
- *   detail, `GET /v1/produto_estoque/{produto id}`, in its exact no-slash form
- *   ({@link CAMINHO_RESTAURACAO_ESTOQUE_LI}; master plan step 12). The root must
- *   be an object holding all nine `ESTOQUE` keep-list leaves, each coming out of
- *   the walk UNCHANGED (the same primitive: the store's quantity and its
- *   reservation ride the line verbatim); a leaf missing, or one the walk would
- *   alter (a predicate refusal, an object, a masked string), is `null`. Any
- *   other key is kept with a `<redacted>` value, as on an estrutural body, so a
- *   new store field shows up in the line without being carried. Every other
- *   catalogue path stays `null` until its own write builds a branch (master
- *   plan steps 11–13), so such a write cannot run before it has one.
+ * - **`catalogo`**: TWO branches, each byte-faithful or nothing.
+ *   - One product's stock detail, `GET /v1/produto_estoque/{produto id}`, in its
+ *     exact no-slash form ({@link CAMINHO_RESTAURACAO_ESTOQUE_LI}; master plan
+ *     step 12). The root must be an object holding all nine `ESTOQUE` keep-list
+ *     leaves, each coming out of the walk UNCHANGED (the same primitive: the
+ *     store's quantity and its reservation ride the line verbatim); a leaf
+ *     missing, or one the walk would alter (a predicate refusal, an object, a
+ *     masked string), is `null`. Any other key is kept with a `<redacted>` value,
+ *     as on an estrutural body, so a new store field shows up in the line without
+ *     being carried.
+ *   - The produto detail a price write decides on, `GET /v1/produto/{produto id}/`,
+ *     in its exact slash form ({@link CAMINHO_RESTAURACAO_PRODUTO_PRECO_LI};
+ *     master plan step 13): a PROJECTION — only its nine leaves
+ *     ({@link TABELA_RESTAURACAO_PRODUTO_PRECO_LI}), in the body's own key
+ *     order, every other key dropped (a detail carries names, descriptions and
+ *     images no rollback needs) — under the same rule: all nine present, each
+ *     coming out UNCHANGED (the four prices verbatim, the store's custo
+ *     included: only the `fixture` profile fakes it), else `null`.
+ *
+ *   Every other catalogue path stays `null` until its own write builds a branch,
+ *   so such a write cannot run before it has one.
  * - **`webhook`**, **`configuracao`**: `null` — no write of either restores from here.
  * - A non-2xx answer, an empty or non-JSON body, a body over
  *   `LIMITE_ANALISE_BYTES.log` or nested deeper than `PROFUNDIDADE_MAXIMA_JSON`:
@@ -1727,9 +1768,11 @@ export function corpoDeRestauracaoLi(e: EntradaRestauracaoLi): ValorJsonLi | nul
       return percorrer2xx(analise.valor, '', null, 0, ctx);
     }
     case 'catalogo':
-      return CAMINHO_RESTAURACAO_ESTOQUE_LI.test(e.caminho)
-        ? restauracaoDoEstoqueLi(e.texto)
-        : null;
+      if (CAMINHO_RESTAURACAO_ESTOQUE_LI.test(e.caminho)) return restauracaoDoEstoqueLi(e.texto);
+      if (CAMINHO_RESTAURACAO_PRODUTO_PRECO_LI.test(e.caminho)) {
+        return restauracaoDoProdutoPrecoLi(e.texto);
+      }
+      return null;
     case 'configuracao':
     case 'webhook':
       return null;
@@ -1753,6 +1796,34 @@ function restauracaoDoEstoqueLi(texto: string): ValorJsonLi | null {
   for (const folha of TABELA_RESTAURACAO_ESTOQUE_LI.permitidas.keys()) {
     if (!Object.hasOwn(lido, folha) || saida[folha] !== lido[folha]) return null;
   }
+  return saida;
+}
+
+/**
+ * The produto detail's restore snapshot (a price write's, master plan step 13):
+ * every one of the nine leaves of {@link TABELA_RESTAURACAO_PRODUTO_PRECO_LI}
+ * present as an OWN key, else `null`; then the PROJECTION — only those nine, in
+ * the body's own key order — through the `log` walk of that table (no denied
+ * keys, no fakes), each leaf checked to come out as the SAME primitive it went
+ * in, else `null`. So a JSON number, a decimal text, `null` and `''` ride
+ * verbatim; an object, an array, `'abc'`, `'1,50'`, a non-boolean flag or a
+ * non-digit id is `null`, and then no write is made. The snapshot serialises
+ * exactly as the projection of the parsed body does.
+ */
+function restauracaoDoProdutoPrecoLi(texto: string): ValorJsonLi | null {
+  const analise = analisar(texto, bytesUtf8(texto), LIMITE_ANALISE_BYTES.log);
+  if (analise.forma !== 'json' || !ehObjeto(analise.valor)) return null;
+  const lido = analise.valor;
+  const folhas = TABELA_RESTAURACAO_PRODUTO_PRECO_LI.permitidas;
+  for (const folha of folhas.keys()) if (!Object.hasOwn(lido, folha)) return null;
+  // The nine leaves only, in the body's order: `Object.keys` of a parsed JSON
+  // object is its text's order, and none of the nine is a special key.
+  const projecao: Record<string, unknown> = {};
+  for (const chave of Object.keys(lido)) if (folhas.has(chave)) projecao[chave] = lido[chave];
+  const ctx = percurso('log', TABELA_RESTAURACAO_PRODUTO_PRECO_LI, 'catalogo', false);
+  const saida = percorrer2xx(projecao, '', null, 0, ctx);
+  if (!ehObjeto(saida)) return null;
+  for (const folha of folhas.keys()) if (saida[folha] !== lido[folha]) return null;
   return saida;
 }
 

@@ -507,7 +507,8 @@ export interface ResultadoRestauracaoLi {
  * whole line fits {@link MAX_LINHA_RESTAURACAO_BYTES}; otherwise NOTHING is
  * written and `escrita` is `false`. Measured on the exact line, through the
  * same campos the sink receives. Its `politica` is read from the path:
- * `estrutural` for the order detail, `catalogo` for the stock detail.
+ * `estrutural` for the order detail, `catalogo` for the stock detail and for
+ * the produto detail.
  */
 export function registrarRestauracaoLi(
   r: RestauracaoLi,
