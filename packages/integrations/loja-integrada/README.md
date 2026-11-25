@@ -109,8 +109,9 @@ token **raw** after `Basic ` (not base64-encoded by us).
   pinned against the owner's read-only stock captures (both path forms answer
   the same for GET; the stock PUT's path form stays unproven, like every write).
   The price wire was written against the public document and the facts the
-  owner's read-only price capture (2026-11-24, both stores) measured; its
-  sanitized pages are replayed through these reads in a later change.
+  owner's read-only price capture (2026-11-24, both stores) measured. Those
+  pages are not committed, by the owner's decision: every price answer a test
+  reads is invented, in their shape, and holds no real store data.
 - **No stock decision.** `estoque.ts` and `estoqueEscrita.ts` read, parse and
   send: which quantity is due, whether a row is already reflected, which ERP
   product a row belongs to and what a missing row means are the app's. The

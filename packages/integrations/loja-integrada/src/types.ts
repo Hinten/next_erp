@@ -40,8 +40,9 @@
  *
  * The price schemas (`produto_preco`, master-plan step 13), after the stock
  * ones, were written against the public document's examples and the facts the
- * owner's read-only price capture (2026-11-24, both stores) measured; that
- * capture's sanitized pages are replayed in a later change.
+ * owner's read-only price capture (2026-11-24, both stores) measured. That
+ * capture's pages are not committed, by the owner's decision: every price
+ * answer a test reads is invented, in their shape.
  *
  * Every other resource (imagem, envio) arrives with its first consumer,
  * written against captured responses rather than the public document's

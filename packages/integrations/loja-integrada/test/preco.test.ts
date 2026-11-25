@@ -54,8 +54,8 @@ import { json, mockFetch, requisicao, TOKEN, texto, verificarSoGet } from './_he
  * the owner's read-only price capture (2026-11-24, both stores) measured —
  * seven keys, the amounts as 4-decimal text or `null`, the row's own `id`
  * different from the produto id — with small synthetic ids (`1001`…, `9001`…)
- * that are no real store's. The capture's sanitized pages are replayed in a
- * later change; the rows here stay invented. Nothing here reaches Loja
+ * that are no real store's. The capture's pages are not committed, by the
+ * owner's decision, so every row here stays invented. Nothing here reaches Loja
  * Integrada — every client gets a stub `fetch`, the global one throws for the
  * whole file, and the `afterEach` asserts every request was a `GET` with no
  * body.
