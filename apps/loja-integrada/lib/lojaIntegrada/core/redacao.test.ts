@@ -190,38 +190,91 @@ describe('spec coverage — against the committed leaf inventory', () => {
     expect(problemas).toEqual([]);
   });
 
-  // "Has a predicate" is the compiler's half: every table row is typed
-  // `[path, NomePredicadoLi]`, and the predicate map is a total `Record` over
-  // that union. What only a test can check is that the PATH exists.
-  it('every keep-list entry resolves to a primitive leaf (schema or example)', () => {
-    const manutencao: readonly TabelaRedacaoLi[] = [
-      TABELAS_LI.situacao,
-      TABELAS_LI.envio,
-      TABELAS_LI.pagamento,
-      TABELAS_LI.produto,
-      TABELAS_LI.produtoImagem,
-      TABELAS_LI.produtoEstoque,
-      TABELAS_LI.produtoPreco,
-      TABELAS_LI.categoria,
-      TABELAS_LI.marca,
-      TABELAS_LI.grade,
-    ];
+  const MANUTENCAO: readonly TabelaRedacaoLi[] = [
+    TABELAS_LI.situacao,
+    TABELAS_LI.envio,
+    TABELAS_LI.pagamento,
+    TABELAS_LI.produto,
+    TABELAS_LI.produtoImagem,
+    TABELAS_LI.produtoEstoque,
+    TABELAS_LI.produtoPreco,
+    TABELAS_LI.categoria,
+    TABELAS_LI.marca,
+    TABELAS_LI.grade,
+  ];
+
+  /**
+   * Keep-list entries of these tables allow-listed on purpose although the public
+   * document does not show them, by `<table> <entry>`. Each needs its reason; any
+   * other entry that resolves to no leaf is stale or mistyped.
+   */
+  const FORA_DA_ESPECIFICACAO_CATALOGO: Readonly<Record<string, string>> = {
+    'produto-preco not_found.*':
+      "a set/ answer's ids it did not return: measured by the owner's read-only price " +
+      'capture, absent from the document; kept at the root only, to be pseudonymized',
+  };
+
+  /**
+   * Each table's keep-list entries that resolve to no primitive leaf of the operations
+   * it walks (found by the table's NAME, so an edited copy reads its original's), minus
+   * the named exceptions; which exceptions were used; and the tables with no leaf at all.
+   */
+  function entradasSemFolha(
+    tabelas: readonly TabelaRedacaoLi[],
+    foraDaEspecificacao: Readonly<Record<string, string>>,
+  ): { naoResolvidas: string[]; usadas: string[]; semFolhas: string[] } {
     const naoResolvidas: string[] = [];
-    for (const t of manutencao) {
+    const usadas = new Set<string>();
+    const semFolhas: string[] = [];
+    for (const t of tabelas) {
       const folhas = ops
-        .filter((o) => tabelaDoCaminho(concreto(o.caminho)) === t)
+        .filter((o) => tabelaDoCaminho(concreto(o.caminho))?.nome === t.nome)
         .flatMap((o) => o.folhas)
         .filter(([, tipos]) => tipos.some((tipo) => PRIMITIVOS.has(tipo)))
         .map(([c]) => c);
-      expect(folhas.length, t.nome).toBeGreaterThan(0);
+      if (folhas.length === 0) semFolhas.push(t.nome);
       for (const entrada of t.permitidas.keys()) {
         const relativa = entrada.startsWith('objects.*.') ? entrada.slice(10) : entrada;
-        if (!folhas.includes(relativa) && !folhas.includes(`objects.*.${relativa}`)) {
-          naoResolvidas.push(`${t.nome} ${entrada}`);
-        }
+        if (folhas.includes(relativa) || folhas.includes(`objects.*.${relativa}`)) continue;
+        const nome = `${t.nome} ${entrada}`;
+        if (Object.hasOwn(foraDaEspecificacao, nome)) usadas.add(nome);
+        else naoResolvidas.push(nome);
       }
     }
+    return { naoResolvidas, usadas: [...usadas].sort(), semFolhas };
+  }
+
+  // "Has a predicate" is the compiler's half: every table row is typed
+  // `[path, NomePredicadoLi]`, and the predicate map is a total `Record` over
+  // that union. What only a test can check is that the PATH exists.
+  it('every keep-list entry resolves to a primitive leaf (schema or example), or is named as off-spec', () => {
+    const { naoResolvidas, usadas, semFolhas } = entradasSemFolha(
+      MANUTENCAO,
+      FORA_DA_ESPECIFICACAO_CATALOGO,
+    );
+    expect(semFolhas).toEqual([]);
     expect(naoResolvidas).toEqual([]);
+    // A named exception no table uses any more is stale too.
+    expect(usadas).toEqual(Object.keys(FORA_DA_ESPECIFICACAO_CATALOGO).sort());
+  });
+
+  it('NEAR-MISS: an off-spec entry is admitted only by its exact name — not under objects.*, not another key', () => {
+    const preco = TABELAS_LI.produtoPreco;
+    const comMais = (...entradas: string[]): TabelaRedacaoLi => ({
+      ...preco,
+      permitidas: new Map([...preco.permitidas, ...entradas.map((e) => [e, 'inteiro'] as const)]),
+    });
+    expect(
+      entradasSemFolha([comMais('objects.*.not_found.*', 'nao_documentado')], {
+        ...FORA_DA_ESPECIFICACAO_CATALOGO,
+      }),
+    ).toEqual({
+      naoResolvidas: ['produto-preco objects.*.not_found.*', 'produto-preco nao_documentado'],
+      usadas: ['produto-preco not_found.*'],
+      semFolhas: [],
+    });
+    // Without its named exception, the measured entry itself is reported.
+    expect(entradasSemFolha([preco], {}).naoResolvidas).toEqual(['produto-preco not_found.*']);
   });
 
   /**
@@ -2271,6 +2324,78 @@ describe('the fixture profile', () => {
   it('every placeholder is in the exported set', () => {
     expect([...PLACEHOLDERS_FIXTURE_LI].sort()).toEqual(Object.values(FALSO_LI).sort());
     expect(PLACEHOLDERS_FIXTURE_LI.size).toBe(8);
+  });
+});
+
+/* Synthetic ids only. The pseudonym mapping that follows the profile is `pseudonimo.test.ts`'s. */
+describe("the fixture profile — a price set/ answer's not_found (step 13)", () => {
+  const SET_PRECO = '/v1/produto_preco/set/1;2;3';
+  const linha = {
+    id: 9001,
+    produto: '/api/v1/produto/1',
+    resource_uri: '/api/v1/produto_preco/1',
+    cheio: '10.0000',
+    promocional: null,
+    custo: '5.0000',
+    sob_consulta: false,
+  };
+  const naoEncontrados = (caminho: string, corpo: unknown) =>
+    em(fixtureJson(caminho, 200, corpo), 'not_found');
+
+  it('EQUAL: the price table keeps the root not_found as id strings, kept only at the root', () => {
+    expect(fixtureJson(SET_PRECO, 200, { objects: [linha], not_found: ['2', '3'] })).toEqual({
+      objects: [{ ...linha, custo: FALSO_LI.texto }],
+      not_found: ['2', '3'],
+    });
+    // Up to 12 digits, a leading zero and a JSON number kept as they are (the mapping
+    // makes them canonical); the type is never changed.
+    expect(
+      naoEncontrados(SET_PRECO, { objects: [], not_found: ['123456789012', '007', 7] }),
+    ).toEqual(['123456789012', '007', 7]);
+    expect(TABELAS_LI.produtoPreco.permitidas.get('not_found.*')).toBe('inteiro');
+  });
+
+  it('NEAR-MISS: an element that is not 1 to 12 digits is faked', () => {
+    expect(
+      naoEncontrados(SET_PRECO, {
+        objects: [],
+        not_found: ['abc', '2;3', '-2', '1234567890123', '2 ', 'x2'],
+      }),
+    ).toEqual(Array.from({ length: 6 }, () => FALSO_LI.texto));
+  });
+
+  it('NEAR-MISS: not_found under objects.*, or a subtree under the root key, is faked', () => {
+    expect(
+      em(
+        fixtureJson(SET_PRECO, 200, { objects: [{ ...linha, not_found: ['2'] }] }),
+        'objects.0.not_found',
+      ),
+    ).toEqual([FALSO_LI.texto]);
+    expect(TABELAS_LI.produtoPreco.permitidas.has('objects.*.not_found.*')).toBe(false);
+    expect(naoEncontrados(SET_PRECO, { objects: [], not_found: [{ id: '2' }] })).toEqual([
+      { id: FALSO_LI.texto },
+    ]);
+  });
+
+  it('NEAR-MISS: not_found on the stock or the category set path stays faked (another table)', () => {
+    for (const caminho of ['/v1/produto_estoque/set/1;2;3', '/v1/categoria/set/1;2;3/']) {
+      expect(naoEncontrados(caminho, { objects: [], not_found: ['2', '3'] }), caminho).toEqual([
+        FALSO_LI.texto,
+        FALSO_LI.texto,
+      ]);
+    }
+    for (const t of Object.values(TABELAS_LI)) {
+      if (t === TABELAS_LI.produtoPreco) continue;
+      expect(
+        [...t.permitidas.keys()].some((k) => k.includes('not_found')),
+        t.nome,
+      ).toBe(false);
+    }
+  });
+
+  it('the log profile is unchanged: a catalogue body is logged whole, not_found included', () => {
+    const corpo = { objects: [linha], not_found: ['2', '3'] };
+    expect(logJson(SET_PRECO, 200, corpo)).toEqual(corpo);
   });
 });
 

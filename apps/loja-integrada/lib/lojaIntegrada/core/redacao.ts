@@ -895,6 +895,21 @@ const PRECO: Entradas = [
   ['sob_consulta', 'booleano'],
 ];
 
+/**
+ * A price `set/` answer's `not_found` (`GET /v1/produto_preco/set/1;2;3`): the
+ * ids it asked for and did not return, as id STRINGS, absent when every id came
+ * back (the owner's read-only price capture). Kept at the ROOT only,
+ * never under `objects.*`, and only on the price table, because no capture shows
+ * the key anywhere else; the public document does not show it at all.
+ *
+ * Kept only to be PSEUDONYMIZED: `sanitizacao/pseudonimo.ts` maps every kept
+ * element as it maps an `id` (`CHAVES_DE_LISTA_DE_IDS_LI`), so the fixture still
+ * names exactly the request-path ids the answer did not return. ⚠️ This entry
+ * and that rule land together: kept without the mapping, a fixture would carry
+ * the stores' REAL product ids.
+ */
+const PRECO_NA_RAIZ: Entradas = [['not_found.*', 'inteiro']];
+
 const CATEGORIA: Entradas = [
   ['id', 'inteiro'],
   ['categoria_pai', 'uriRecurso'],
@@ -955,6 +970,12 @@ function manutencao(
   );
 }
 
+/** {@link manutencao}, plus leaves kept at the ROOT only (never under `objects.*`). */
+function manutencaoComRaiz(nome: string, entradas: Entradas, soNaRaiz: Entradas): TabelaRedacaoLi {
+  const base = manutencao(nome, entradas);
+  return { ...base, permitidas: new Map([...base.permitidas, ...soNaRaiz]) };
+}
+
 export const TABELAS_LI = {
   // estrutural
   pedido: tabela('pedido', PEDIDO, PEDIDO_REDIGIDAS, PEDIDO_SO_LOG),
@@ -996,7 +1017,7 @@ export const TABELAS_LI = {
   produto: manutencao('produto', PRODUTO),
   produtoImagem: manutencao('produto-imagem', IMAGEM),
   produtoEstoque: manutencao('produto-estoque', ESTOQUE),
-  produtoPreco: manutencao('produto-preco', PRECO),
+  produtoPreco: manutencaoComRaiz('produto-preco', PRECO, PRECO_NA_RAIZ),
   categoria: manutencao('categoria', CATEGORIA),
   marca: manutencao('marca', MARCA),
   grade: manutencao('grade', GRADE),

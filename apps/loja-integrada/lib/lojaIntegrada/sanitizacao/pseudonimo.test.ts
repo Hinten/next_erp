@@ -602,6 +602,93 @@ describe('pseudonimizarCorpoLi: the mapping guards its own scope', () => {
   });
 });
 
+describe("pseudonimizarCorpoLi: a set/ answer's not_found list (step 13)", () => {
+  const CAMINHO = '/v1/produto_preco/set/41;42;0043';
+  const linha = (id: number) => ({
+    id: 9001,
+    produto: `/api/v1/produto/${String(id)}`,
+    resource_uri: `/api/v1/produto_preco/${String(id)}`,
+    cheio: '10.0000',
+    promocional: null,
+    custo: null,
+    sob_consulta: false,
+  });
+  const naoEncontrados = (depois: ValorJsonLi) => (depois as { not_found?: ValorJsonLi }).not_found;
+
+  it('EQUAL: each element becomes the pseudonym of a request-path id no row names, as a string (leading zeros made canonical)', () => {
+    const { antes, depois, pseudonimos } = pseudonimizar(CAMINHO, {
+      objects: [linha(41)],
+      not_found: ['42', '0043'],
+    });
+    expect(naoEncontrados(antes)).toEqual(['42', '0043']);
+    expect(naoEncontrados(depois)).toEqual([String(f(42)), String(f(43))]);
+    // The path's own ids, mapped the same way: the list names exactly the ids no row returned.
+    const caminho = pseudonimizarCaminhoLi(CAMINHO, pseudonimos);
+    expect(caminho).toBe(
+      `/v1/produto_preco/set/${String(f(41))};${String(f(42))};${String(f(43))}`,
+    );
+    const doCaminho = caminho.split('/').at(-1)?.split(';') ?? [];
+    expect(doCaminho.filter((id) => (naoEncontrados(depois) as string[]).includes(id))).toEqual([
+      String(f(42)),
+      String(f(43)),
+    ]);
+    expect((depois as { objects: { produto: string }[] }).objects[0]?.produto).toBe(
+      `/api/v1/produto/${String(f(41))}`,
+    );
+  });
+
+  it('EQUAL: a JSON number element is mapped as a number', () => {
+    const { depois } = pseudonimizar(CAMINHO, { objects: [], not_found: [42, '43'] });
+    expect(naoEncontrados(depois)).toEqual([f(42), String(f(43))]);
+  });
+
+  it('NEAR-MISS: an element the profile faked stays the fake, and no id is recorded for it', () => {
+    const { antes, depois, pseudonimos } = pseudonimizar(CAMINHO, {
+      objects: [],
+      not_found: ['abc', '-2', '1234567890123'],
+    });
+    expect(naoEncontrados(antes)).toEqual(['REDACTED', 'REDACTED', 'REDACTED']);
+    expect(naoEncontrados(depois)).toEqual(['REDACTED', 'REDACTED', 'REDACTED']);
+    expect(pseudonimos.ids.size).toBe(0);
+  });
+
+  it('NEAR-MISS: a not_found the profile did not keep (under objects.*, or on the stock set path) stays the fake', () => {
+    const sob = pseudonimizar(CAMINHO, { objects: [{ ...linha(41), not_found: ['42'] }] });
+    expect(
+      (sob.depois as { objects: { not_found?: ValorJsonLi }[] }).objects[0]?.not_found,
+    ).toEqual(['REDACTED']);
+    const estoque = pseudonimizar('/v1/produto_estoque/set/41;42', {
+      objects: [],
+      not_found: ['42'],
+    });
+    expect(naoEncontrados(estoque.depois)).toEqual(['REDACTED']);
+    expect(estoque.pseudonimos.ids.size).toBe(0);
+  });
+
+  it('NEAR-MISS: only the exact key lists ids — not_found_x and found are not mapped', () => {
+    // Bypasses the profile on purpose: every leaf is KEPT, only the key rule decides.
+    const corpo = { not_found_x: ['42'], found: ['43'], not_found: ['44'] };
+    const p = new PseudonimosLi(CHAVE);
+    expect(
+      pseudonimizarCorpoLi(corpo, corpo, tabelaDoCaminho('/v1/produto_preco/set/44'), p),
+    ).toEqual({ not_found_x: ['42'], found: ['43'], not_found: [String(f(44))] });
+    expect([...p.ids.values()]).toEqual(['44']);
+  });
+
+  it('a 12-digit real element is counted as an id already in the pseudonym range (the pair is refused)', () => {
+    const { pseudonimos } = pseudonimizar('/v1/produto_preco/set/41', {
+      objects: [],
+      not_found: ['123456789012'],
+    });
+    expect(pseudonimos.idsReaisNaFaixa).toBe(1);
+    // NEAR-MISS: 11 digits is below the range.
+    expect(
+      pseudonimizar('/v1/produto_preco/set/41', { objects: [], not_found: ['12345678901'] })
+        .pseudonimos.idsReaisNaFaixa,
+    ).toBe(0);
+  });
+});
+
 /* -------------------------------------------------------------------------- */
 /*                                  SKUs                                      */
 /* -------------------------------------------------------------------------- */
