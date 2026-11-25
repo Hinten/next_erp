@@ -4,10 +4,11 @@
  *  - {@link corpoPrecoProdutoLi} — the body of one price write, built from a
  *    target in integer centavos (`precoAlvoLi`, `@delfrance/schemas`), the
  *    configured clear and the store's own custo and `sob_consulta` from the
- *    deciding read. Pure;
+ *    deciding read ({@link EntradaPrecoProdutoLi}). Pure;
  *  - {@link atualizarPrecoProdutoLi} — `PUT /v1/produto_preco/{produto id}`
- *    with that body. The path id is the PRODUTO's id, never a price row's own
- *    `id`. One call per product: the API has no batch.
+ *    with the body {@link corpoPrecoProdutoLi} builds from the SAME inputs:
+ *    it takes the inputs, never a body. The path id is the PRODUTO's id, never
+ *    a price row's own `id`. One call per product: the API has no batch.
  *
  * It only builds and sends: no read, no retry, no decision. Which price is
  * due, whether the store already shows it and whether a write may lower it are
@@ -49,8 +50,12 @@
  * — each `LiConfigError('corpo')`, nothing fetched; a trailing slash or a
  * non-canonical id — `LiConfigError('rota-nao-permitida')`. ⚠️ The route accepts
  * every clear spelling (`null`, `0`, a positive price), because a route is
- * looked up by its path alone; only {@link corpoPrecoProdutoLi} holds a write
- * to the CONFIGURED one.
+ * looked up by its path alone. So the configured clear is held by the
+ * operation's own signature: {@link atualizarPrecoProdutoLi} takes the target
+ * and the configured shape, never a body, and builds the body itself through
+ * {@link corpoPrecoProdutoLi}. A body built anywhere else (a rollback's
+ * included) cannot reach it, so no price write of this operation carries a
+ * clear other than the configured one.
  *
  * ## Rollback limits
  *
@@ -108,6 +113,21 @@ export type CustoNoCorpoPrecoLi = 'enviado' | 'omitido-nulo' | 'omitido-ilegivel
 export interface CorpoPrecoMontadoLi {
   readonly corpo: CorpoPrecoProdutoLi;
   readonly custo: CustoNoCorpoPrecoLi;
+}
+
+/**
+ * What ONE price write is built from: the inputs of {@link corpoPrecoProdutoLi}
+ * and of {@link atualizarPrecoProdutoLi}, never a body.
+ */
+export interface EntradaPrecoProdutoLi {
+  /** The target, in integer centavos (`precoAlvoLi`, `@delfrance/schemas`). */
+  readonly alvo: EnvioPrecoLi;
+  /** The configured clear (`FORMA_PROMO_LIMPA_LI`, `@delfrance/schemas`). */
+  readonly formaPromoLimpa: FormaPromoLimpaLi;
+  /** The deciding read's `preco_custo`, raw. */
+  readonly custo: unknown;
+  /** The deciding read's `preco_sob_consulta`, narrowed to a boolean by the caller. */
+  readonly sobConsulta: boolean;
 }
 
 /**
@@ -174,15 +194,12 @@ function promocionalLimpo(forma: FormaPromoLimpaLi, cheio: number): number | nul
  * Throws `RangeError` on a price that is not positive integer centavos, or
  * past the exact round trip ({@link reaisDoAlvoLi}): `precoAlvoLi` never builds
  * the former.
+ *
+ * Pure, so a caller that diffs this body against the deciding read, or logs
+ * what became of the custo, sees exactly the body {@link atualizarPrecoProdutoLi}
+ * sends for the same inputs.
  */
-export function corpoPrecoProdutoLi(args: {
-  readonly alvo: EnvioPrecoLi;
-  readonly formaPromoLimpa: FormaPromoLimpaLi;
-  /** The deciding read's `preco_custo`, raw. */
-  readonly custo: unknown;
-  /** The deciding read's `preco_sob_consulta`, narrowed to a boolean by the caller. */
-  readonly sobConsulta: boolean;
-}): CorpoPrecoMontadoLi {
+export function corpoPrecoProdutoLi(args: EntradaPrecoProdutoLi): CorpoPrecoMontadoLi {
   const { alvo } = args;
   const cheio = reaisDoAlvoLi(alvo.cheioCentavos, 'cheio');
   const promocional =
@@ -200,18 +217,25 @@ export function corpoPrecoProdutoLi(args: {
 }
 
 /**
- * `PUT /v1/produto_preco/{produtoId}`: write ONE product's prices as `corpo`
- * ({@link corpoPrecoProdutoLi}). `produtoId` is the PRODUTO's id; no trailing
- * slash. The route checks the body again before anything is sent.
+ * `PUT /v1/produto_preco/{produtoId}`: write ONE product's prices, as the body
+ * {@link corpoPrecoProdutoLi} builds from `entrada`. It takes the inputs, never
+ * a body, so the clear it sends is always the configured one (module header).
+ * `produtoId` is the PRODUTO's id; no trailing slash. The route checks the body
+ * again before anything is sent.
+ *
+ * Refused with nothing sent: a non-canonical id (`LiConfigError('caminho')`), a
+ * target no send may carry (the builder's `RangeError`), and whatever the route
+ * refuses (`LiConfigError('corpo')`, e.g. a `sobConsulta` that is no boolean).
  */
 export async function atualizarPrecoProdutoLi(
   cliente: LiEscritaClient,
   produtoId: number | string,
-  corpo: CorpoPrecoProdutoLi,
+  entrada: EntradaPrecoProdutoLi,
   opts: OpcoesEscritaLi = {},
 ): Promise<RespostaEscritaLi<EcoPrecoProdutoLi>> {
   const operacao = 'atualizarPrecoProduto';
   const id = idOuRecusa(produtoId, operacao);
+  const { corpo } = corpoPrecoProdutoLi(entrada);
   return cliente.enviarEscritaLi({
     operacao,
     caminho: `${CAMINHO_PRECO_LI}/${id}`,

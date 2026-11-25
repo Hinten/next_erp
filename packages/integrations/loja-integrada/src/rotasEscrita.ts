@@ -129,8 +129,9 @@ const CUSTO_ECO_ESCRITA = z.number().min(0);
  * A price write's `promocional`: a positive price ({@link PRECO_ESCRITA}), or
  * one of the clear's spellings, `0` and `null`. (The third spelling, the full
  * price itself, is a positive price.) Which clear is SENT is the body
- * builder's call, from the configured shape (`precoEscrita.ts`): the request
- * core looks a route up by its path alone, so the route accepts the union.
+ * builder's call, from the configured shape, and the price operation takes the
+ * builder's inputs, never a body (`precoEscrita.ts`): the request core looks a
+ * route up by its path alone, so the route accepts the union.
  */
 const PROMOCIONAL_ESCRITA = z.union([PRECO_ESCRITA, z.literal(0), z.null()]);
 

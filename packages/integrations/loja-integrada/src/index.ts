@@ -34,8 +34,9 @@
  *  - **No write method on the read client, and no body on any read.** Every
  *    request `criarClienteLeituraLi` makes is a `GET` by construction.
  *    `escrita.ts` is the only writer, and every `PUT` it can send is held to
- *    the write routes (`rotasEscrita.ts`): four paths, each with one strict
- *    body, so no write can carry a codigo outside the three write-back
+ *    the write routes (`rotasEscrita.ts`): four paths, each held to strict
+ *    bodies (the price route: two strict shapes, with and without `custo`),
+ *    so no write can carry a codigo outside the three write-back
  *    situações, clear a tracking code, send stock other than managed stock
  *    at a non-negative integer quantity, or send a price that is not above 0
  *    with at most two decimal places. `pedidosEscrita.ts` holds the status

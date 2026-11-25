@@ -19,6 +19,7 @@ import {
   corpoPrecoProdutoLi,
   corpoPrecoProdutoValidoLi,
   custoEcoavelLi,
+  type EntradaPrecoProdutoLi,
   precoDeEscritaValidoLi,
 } from '../src/precoEscrita';
 import * as rotas from '../src/rotasEscrita';
@@ -109,6 +110,30 @@ const SEM_CUSTO = { cheio: 10, promocional: null, sob_consulta: false } as const
 /** A body the route sends, with the store's custo echoed. */
 const COM_CUSTO = { cheio: 10, custo: 4.5, promocional: 9.99, sob_consulta: false } as const;
 
+/** The two strict shapes of the price route, which every leaf rule below runs over. */
+const FORMAS_DO_CORPO = [
+  ['without custo', SEM_CUSTO],
+  ['beside a custo', COM_CUSTO],
+] as const;
+
+/** A leaf value that means "the key is absent". */
+const AUSENTE = Symbol('ausente');
+
+/** `base` with `folhas` laid over it; a leaf set to {@link AUSENTE} drops the key. */
+function com(base: object, folhas: Readonly<Record<string, unknown>>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries({ ...base, ...folhas }).filter(([, v]) => v !== AUSENTE),
+  );
+}
+
+/** The operation's inputs for the clear under the default forma, no custo: `SEM_CUSTO` once built. */
+const ENTRADA: EntradaPrecoProdutoLi = {
+  alvo: { cheioCentavos: 1000, promo: 'limpar' },
+  formaPromoLimpa: FORMA_PROMO_LIMPA_LI.nulo,
+  custo: null,
+  sobConsulta: false,
+};
+
 const FORMAS: readonly FormaPromoLimpaLi[] = [
   FORMA_PROMO_LIMPA_LI.nulo,
   FORMA_PROMO_LIMPA_LI.zero,
@@ -132,9 +157,8 @@ describe('atualizarPrecoProdutoLi — PUT /v1/produto_preco/{produto id}', () =>
   it('sends exactly the full body to the produto path, NO trailing slash, every number unquoted', async () => {
     const f = ok();
     const r = await atualizarPrecoProdutoLi(cliente(f).c, PRODUTO, {
-      cheio: 274.42,
-      promocional: null,
-      sob_consulta: false,
+      ...ENTRADA,
+      alvo: { cheioCentavos: 27442, promo: 'limpar' },
     });
     const { url, init, headers } = requisicao(f);
     expect(init.method).toBe('PUT');
@@ -148,21 +172,51 @@ describe('atualizarPrecoProdutoLi — PUT /v1/produto_preco/{produto id}', () =>
   it('with the store’s custo: the four leaves in the document’s order, cheio, custo, promocional, sob_consulta', async () => {
     const f = ok();
     await atualizarPrecoProdutoLi(cliente(f).c, PRODUTO, {
-      cheio: 274.42,
+      ...ENTRADA,
+      alvo: { cheioCentavos: 27442, promo: { centavos: 19990 } },
       custo: 10.5,
-      promocional: 199.9,
-      sob_consulta: false,
     });
     expect(requisicao(f).init.body).toBe(
       '{"cheio":274.42,"custo":10.5,"promocional":199.9,"sob_consulta":false}',
     );
   });
 
+  it.each<[FormaPromoLimpaLi, string]>([
+    [FORMA_PROMO_LIMPA_LI.nulo, 'null'],
+    [FORMA_PROMO_LIMPA_LI.zero, '0'],
+    [FORMA_PROMO_LIMPA_LI.igualCheio, '274.42'],
+  ])('the clear SENT under %j is that forma’s, and no other’s', async (forma, promocional) => {
+    const f = semCorpo();
+    await atualizarPrecoProdutoLi(cliente(f).c, PRODUTO, {
+      ...ENTRADA,
+      alvo: { cheioCentavos: 27442, promo: 'limpar' },
+      formaPromoLimpa: forma,
+      custo: 4.5,
+    });
+    expect(requisicao(f).init.body).toBe(
+      `{"cheio":274.42,"custo":4.5,"promocional":${promocional},"sob_consulta":false}`,
+    );
+  });
+
+  it('takes the builder’s INPUTS, never a body: a hand-built body with an unconfigured clear does not compile, and is refused at run time', async () => {
+    const f = ok();
+    const { c, credenciais } = cliente(f);
+    // The default forma is `nulo`; this body clears with 0, built by hand.
+    const aMao: CorpoPrecoProdutoLi = { cheio: 10, promocional: 0, sob_consulta: false };
+    // Anti-vacuity: the route itself WOULD send it, so only the signature keeps it out.
+    expect(corpoPrecoProdutoValidoLi(aMao)).toBe(true);
+    // @ts-expect-error — a body is not the operation's inputs
+    const err = await falha(atualizarPrecoProdutoLi(c, PRODUTO, aMao));
+    expect(err).toBeInstanceOf(TypeError);
+    expect(f).not.toHaveBeenCalled();
+    expect(credenciais()).toBe(0);
+  });
+
   it('a number and its canonical decimal text name the same product', async () => {
     const f = semCorpo();
     const { c } = cliente(f);
-    await atualizarPrecoProdutoLi(c, PRODUTO, SEM_CUSTO);
-    await atualizarPrecoProdutoLi(c, '1001', SEM_CUSTO);
+    await atualizarPrecoProdutoLi(c, PRODUTO, ENTRADA);
+    await atualizarPrecoProdutoLi(c, '1001', ENTRADA);
     expect(requisicao(f, 0).url.pathname).toBe(CAMINHO);
     expect(requisicao(f, 1).url.pathname).toBe(CAMINHO);
   });
@@ -186,7 +240,7 @@ describe('atualizarPrecoProdutoLi — PUT /v1/produto_preco/{produto id}', () =>
     async (id) => {
       const f = ok();
       const { c, credenciais } = cliente(f);
-      const err = await falha(atualizarPrecoProdutoLi(c, id, SEM_CUSTO));
+      const err = await falha(atualizarPrecoProdutoLi(c, id, ENTRADA));
       expect(err).toBeInstanceOf(LiConfigError);
       expect(err).toMatchObject({ motivo: 'caminho', operacao: 'atualizarPrecoProduto' });
       expect(f).not.toHaveBeenCalled();
@@ -194,18 +248,39 @@ describe('atualizarPrecoProdutoLi — PUT /v1/produto_preco/{produto id}', () =>
     },
   );
 
-  it('a refused body names the price write as its operation', async () => {
+  it('a body the route refuses names the price write as its operation (a sob_consulta cast past the type)', async () => {
     const f = ok();
+    const { c, credenciais } = cliente(f);
+    const naoNarrado = 'false' as unknown as boolean;
     const err = await falha(
-      atualizarPrecoProdutoLi(cliente(f).c, PRODUTO, { ...SEM_CUSTO, cheio: 0 }),
+      atualizarPrecoProdutoLi(c, PRODUTO, { ...ENTRADA, sobConsulta: naoNarrado }),
     );
+    expect(err).toBeInstanceOf(LiConfigError);
     expect(err).toMatchObject({ motivo: 'corpo', operacao: 'atualizarPrecoProduto' });
     expect(f).not.toHaveBeenCalled();
+    expect(credenciais()).toBe(0);
   });
+
+  it.each([0, -1, 1.5])(
+    'a target of %j full-price centavos is the builder’s RangeError; nothing fetched, no credential read',
+    async (cheioCentavos) => {
+      const f = ok();
+      const { c, credenciais } = cliente(f);
+      const err = await falha(
+        atualizarPrecoProdutoLi(c, PRODUTO, {
+          ...ENTRADA,
+          alvo: { cheioCentavos, promo: 'limpar' },
+        }),
+      );
+      expect(err).toBeInstanceOf(RangeError);
+      expect(f).not.toHaveBeenCalled();
+      expect(credenciais()).toBe(0);
+    },
+  );
 
   it('a 3xx fails VISIBLY: a LiHttpError, never followed', async () => {
     const f = mockFetch(() => texto('', 301, { location: `${CAMINHO}/` }));
-    const err = await falha(atualizarPrecoProdutoLi(cliente(f).c, PRODUTO, SEM_CUSTO));
+    const err = await falha(atualizarPrecoProdutoLi(cliente(f).c, PRODUTO, ENTRADA));
     expect(err).toBeInstanceOf(LiHttpError);
     expect((err as LiHttpError).status).toBe(301);
     expect(f).toHaveBeenCalledTimes(1);
@@ -215,15 +290,13 @@ describe('atualizarPrecoProdutoLi — PUT /v1/produto_preco/{produto id}', () =>
     const r = await atualizarPrecoProdutoLi(
       cliente(mockFetch(() => texto('', 202))).c,
       PRODUTO,
-      SEM_CUSTO,
+      ENTRADA,
     );
     expect(r).toMatchObject({ status: 202, aplicada: 'pendente', eco: null, leituraEco: 'vazio' });
   });
 
   it('the public document’s echo reads whole, its amounts as text', async () => {
-    const r = await atualizarPrecoProdutoLi(cliente(ok()).c, 2301, {
-      ...precoPutCorpoExemplo,
-    });
+    const r = await atualizarPrecoProdutoLi(cliente(ok()).c, 2301, ENTRADA);
     expect(r).toMatchObject({ aplicada: 'sim', leituraEco: 'ok' });
     expect(r.eco).toEqual(precoEcoExemplo);
     expect(r.eco?.cheio).toBe('32.84');
@@ -233,19 +306,19 @@ describe('atualizarPrecoProdutoLi — PUT /v1/produto_preco/{produto id}', () =>
     const vazio = await atualizarPrecoProdutoLi(
       cliente(mockFetch(() => json({ id: 7201 }))).c,
       PRODUTO,
-      SEM_CUSTO,
+      ENTRADA,
     );
     expect(vazio).toMatchObject({ leituraEco: 'ok', eco: { id: 7201 } });
     const lista = await atualizarPrecoProdutoLi(
       cliente(mockFetch(() => json([1]))).c,
       PRODUTO,
-      SEM_CUSTO,
+      ENTRADA,
     );
     expect(lista).toMatchObject({ status: 200, aplicada: 'sim', eco: null, leituraEco: 'formato' });
     const html = await atualizarPrecoProdutoLi(
       cliente(mockFetch(() => texto('<html>ok</html>', 200))).c,
       PRODUTO,
-      SEM_CUSTO,
+      ENTRADA,
     );
     expect(html).toMatchObject({ aplicada: 'sim', eco: null, leituraEco: 'nao-json' });
   });
@@ -255,7 +328,7 @@ describe('atualizarPrecoProdutoLi — PUT /v1/produto_preco/{produto id}', () =>
     controller.abort(new RangeError('motivo do chamador'));
     const f = ok();
     await expect(
-      atualizarPrecoProdutoLi(cliente(f).c, PRODUTO, SEM_CUSTO, { sinal: controller.signal }),
+      atualizarPrecoProdutoLi(cliente(f).c, PRODUTO, ENTRADA, { sinal: controller.signal }),
     ).rejects.toBe(controller.signal.reason);
     expect(f).not.toHaveBeenCalled();
   });
@@ -265,7 +338,7 @@ describe('atualizarPrecoProdutoLi — PUT /v1/produto_preco/{produto id}', () =>
     // Never invoked: the point is that it does not compile.
     const naoCompila = () =>
       // @ts-expect-error — a read client cannot write
-      atualizarPrecoProdutoLi(leitura, PRODUTO, SEM_CUSTO);
+      atualizarPrecoProdutoLi(leitura, PRODUTO, ENTRADA);
     expect(typeof naoCompila).toBe('function');
   });
 });
@@ -273,20 +346,65 @@ describe('atualizarPrecoProdutoLi — PUT /v1/produto_preco/{produto id}', () =>
 /* -------------------------------------------------------------------------- */
 
 describe('the price route — what ANY holder of a write client can send', () => {
+  /** Leaf values the route SENDS, on BOTH strict shapes. */
+  const FOLHAS_ENVIADAS: readonly [string, Readonly<Record<string, unknown>>][] = [
+    ['the clear as null (the default)', { promocional: null }],
+    ['the clear as 0', { promocional: 0 }],
+    ['a positive promotion', { promocional: 9.99 }],
+    ['a promotion equal to the full price', { promocional: 10 }],
+    ['a promotion above the full price (sent literally)', { promocional: 11 }],
+    ['the smallest full price', { cheio: 0.01 }],
+    ['sob_consulta true', { sob_consulta: true }],
+  ];
+
+  /** Leaf values the route REFUSES, on BOTH strict shapes ({@link AUSENTE}: the key dropped). */
+  const FOLHAS_RECUSADAS: readonly [string, Readonly<Record<string, unknown>>][] = [
+    ['cheio 0', { cheio: 0 }],
+    ['cheio -0', { cheio: -0 }],
+    ['cheio -1', { cheio: -1 }],
+    ['cheio 274.425 (a third decimal place)', { cheio: 274.425 }],
+    ['cheio 0.1 + 0.2 (float residue)', { cheio: 0.1 + 0.2 }],
+    ['cheio quoted', { cheio: '274.42' }],
+    ['cheio NaN', { cheio: Number.NaN }],
+    ['cheio Infinity', { cheio: Number.POSITIVE_INFINITY }],
+    ['cheio null', { cheio: null }],
+    ['no cheio', { cheio: AUSENTE }],
+    ['cheio whose centavos are past a safe integer', { cheio: 1e14 }],
+    ['cheio the largest safe integer of reais', { cheio: Number.MAX_SAFE_INTEGER }],
+    ['promocional -1', { promocional: -1 }],
+    ['promocional -0.01', { promocional: -0.01 }],
+    ['promocional 0.001', { promocional: 0.001 }],
+    ['promocional 19.999', { promocional: 19.999 }],
+    ['promocional "0"', { promocional: '0' }],
+    ['promocional "0.00"', { promocional: '0.00' }],
+    ['promocional "0.0000"', { promocional: '0.0000' }],
+    ['promocional false', { promocional: false }],
+    ['promocional NaN', { promocional: Number.NaN }],
+    ['no promocional', { promocional: AUSENTE }],
+    ['no sob_consulta', { sob_consulta: AUSENTE }],
+    ['sob_consulta "false"', { sob_consulta: 'false' }],
+    ['sob_consulta 0', { sob_consulta: 0 }],
+    ['sob_consulta null', { sob_consulta: null }],
+    ['an extra preco_cheio', { preco_cheio: 10 }],
+    ['an extra id', { id: 7201 }],
+    ['an extra produto', { produto: '/api/v1/produto/1001' }],
+    ['an extra numeric key', { 1: 1 }],
+    ['an extra key', { extra: 'x' }],
+  ];
+
   it.each<[string, unknown]>([
-    ['no custo', SEM_CUSTO],
+    ...FORMAS_DO_CORPO.map(([forma, base]): [string, unknown] => [`the body ${forma}`, base]),
+    ...FORMAS_DO_CORPO.flatMap(([forma, base]) =>
+      FOLHAS_ENVIADAS.map(([caso, folhas]): [string, unknown] => [
+        `${caso}, ${forma}`,
+        com(base, folhas),
+      ]),
+    ),
     ['a custo of 0', { ...COM_CUSTO, custo: 0 }],
     [
       'a custo with four decimals (the two-decimal rule binds only the prices)',
       { ...COM_CUSTO, custo: 12.3456 },
     ],
-    ['the clear as null', { ...SEM_CUSTO, promocional: null }],
-    ['the clear as 0', { ...SEM_CUSTO, promocional: 0 }],
-    ['a positive promotion', { ...SEM_CUSTO, promocional: 9.99 }],
-    ['a promotion equal to the full price', { ...SEM_CUSTO, promocional: 10 }],
-    ['a promotion above the full price (sent literally)', { ...SEM_CUSTO, promocional: 11 }],
-    ['the smallest full price', { ...SEM_CUSTO, cheio: 0.01 }],
-    ['sob_consulta true', { ...SEM_CUSTO, sob_consulta: true }],
     ['the public document’s request example', precoPutCorpoExemplo],
   ])('EQUAL side: %s IS sent', async (_caso, corpo) => {
     const f = semCorpo();
@@ -296,42 +414,17 @@ describe('the price route — what ANY holder of a write client can send', () =>
   });
 
   it.each<[string, unknown]>([
-    ['cheio 0', { ...SEM_CUSTO, cheio: 0 }],
-    ['cheio -0', { ...SEM_CUSTO, cheio: -0 }],
-    ['cheio -1', { ...SEM_CUSTO, cheio: -1 }],
-    ['cheio 274.425 (a third decimal place)', { ...SEM_CUSTO, cheio: 274.425 }],
-    ['cheio 0.1 + 0.2 (float residue)', { ...SEM_CUSTO, cheio: 0.1 + 0.2 }],
-    ['cheio quoted', { ...SEM_CUSTO, cheio: '274.42' }],
-    ['cheio NaN', { ...SEM_CUSTO, cheio: Number.NaN }],
-    ['cheio Infinity', { ...SEM_CUSTO, cheio: Number.POSITIVE_INFINITY }],
-    ['cheio null', { ...SEM_CUSTO, cheio: null }],
-    ['no cheio', { promocional: null, sob_consulta: false }],
-    ['cheio whose centavos are past a safe integer', { ...SEM_CUSTO, cheio: 1e14 }],
-    ['cheio the largest safe integer of reais', { ...SEM_CUSTO, cheio: Number.MAX_SAFE_INTEGER }],
-    ['promocional -1', { ...SEM_CUSTO, promocional: -1 }],
-    ['promocional -0.01', { ...SEM_CUSTO, promocional: -0.01 }],
-    ['promocional 0.001', { ...SEM_CUSTO, promocional: 0.001 }],
-    ['promocional 19.999', { ...SEM_CUSTO, promocional: 19.999 }],
-    ['promocional "0"', { ...SEM_CUSTO, promocional: '0' }],
-    ['promocional "0.00"', { ...SEM_CUSTO, promocional: '0.00' }],
-    ['promocional "0.0000"', { ...SEM_CUSTO, promocional: '0.0000' }],
-    ['promocional false', { ...SEM_CUSTO, promocional: false }],
-    ['promocional NaN', { ...SEM_CUSTO, promocional: Number.NaN }],
-    ['no promocional', { cheio: 10, sob_consulta: false }],
+    ...FORMAS_DO_CORPO.flatMap(([forma, base]) =>
+      FOLHAS_RECUSADAS.map(([caso, folhas]): [string, unknown] => [
+        `${caso}, ${forma}`,
+        com(base, folhas),
+      ]),
+    ),
     ['custo null', { ...COM_CUSTO, custo: null }],
     ['custo quoted', { ...COM_CUSTO, custo: '10.50' }],
     ['custo the store’s zero text', { ...COM_CUSTO, custo: '0.0000' }],
     ['custo -0.01', { ...COM_CUSTO, custo: -0.01 }],
     ['custo NaN', { ...COM_CUSTO, custo: Number.NaN }],
-    ['no sob_consulta', { cheio: 10, promocional: null }],
-    ['sob_consulta "false"', { ...SEM_CUSTO, sob_consulta: 'false' }],
-    ['sob_consulta 0', { ...SEM_CUSTO, sob_consulta: 0 }],
-    ['sob_consulta null', { ...SEM_CUSTO, sob_consulta: null }],
-    ['an extra preco_cheio', { ...SEM_CUSTO, preco_cheio: 10 }],
-    ['an extra id', { ...SEM_CUSTO, id: 7201 }],
-    ['an extra produto', { ...SEM_CUSTO, produto: '/api/v1/produto/1001' }],
-    ['an extra numeric key', { ...SEM_CUSTO, 1: 1 }],
-    ['an extra key beside a custo', { ...COM_CUSTO, extra: 'x' }],
     ['an extra preco_custo beside a custo', { ...COM_CUSTO, preco_custo: 4.5 }],
     [
       'the document’s id_externo example (no sob_consulta: every price write is full)',
@@ -459,6 +552,7 @@ describe('the predicates read the route’s own schemas', () => {
   it('a body is valid exactly when the route would send it', () => {
     expect(corpoPrecoProdutoValidoLi(SEM_CUSTO)).toBe(true);
     expect(corpoPrecoProdutoValidoLi(COM_CUSTO)).toBe(true);
+    expect(corpoPrecoProdutoValidoLi({ ...COM_CUSTO, promocional: null })).toBe(true);
     expect(corpoPrecoProdutoValidoLi({ ...COM_CUSTO, custo: null })).toBe(false);
     expect(corpoPrecoProdutoValidoLi(precoPutCorpoSemSobConsultaExemplo)).toBe(false);
   });
@@ -475,7 +569,12 @@ describe('the token never rides a price body either', () => {
     const { c } = cliente(f, {
       obterCredencial: () => ({ token: TOKEN_DE_DIGITOS, ref: 'ref-A' }),
     });
-    const err = await falha(atualizarPrecoProdutoLi(c, PRODUTO, { ...SEM_CUSTO, cheio: 424242 }));
+    const err = await falha(
+      atualizarPrecoProdutoLi(c, PRODUTO, {
+        ...ENTRADA,
+        alvo: { cheioCentavos: 42_424_200, promo: 'limpar' },
+      }),
+    );
     expect(err).toBeInstanceOf(LiConfigError);
     expect((err as LiConfigError).motivo).toBe('token-no-corpo');
     for (const m of mensagensDaCadeia(err)) expect(m).not.toContain(TOKEN_DE_DIGITOS);
@@ -487,7 +586,10 @@ describe('the token never rides a price body either', () => {
     const { c } = cliente(f, {
       obterCredencial: () => ({ token: TOKEN_DE_DIGITOS, ref: 'ref-A' }),
     });
-    await atualizarPrecoProdutoLi(c, PRODUTO, { ...SEM_CUSTO, cheio: 4242.42 });
+    await atualizarPrecoProdutoLi(c, PRODUTO, {
+      ...ENTRADA,
+      alvo: { cheioCentavos: 424_242, promo: 'limpar' },
+    });
     expect(requisicao(f).init.body).toBe(
       '{"cheio":4242.42,"promocional":null,"sob_consulta":false}',
     );
@@ -567,12 +669,29 @@ describe('corpoPrecoProdutoLi — the body of one price write', () => {
     expect(montar(PROMO, FORMA_PROMO_LIMPA_LI.nulo, null, false).corpo.sob_consulta).toBe(false);
   });
 
-  it('the built body goes out as built', async () => {
+  it('the operation sends exactly the body the builder builds from the same inputs', async () => {
     const f = semCorpo();
-    const { corpo } = montar(LIMPAR, FORMA_PROMO_LIMPA_LI.zero, 0);
-    await atualizarPrecoProdutoLi(cliente(f).c, PRODUTO, corpo);
-    expect(requisicao(f).init.body).toBe(
-      '{"cheio":274.42,"custo":0,"promocional":0,"sob_consulta":false}',
+    const { c } = cliente(f);
+    let n = 0;
+    for (const forma of FORMAS) {
+      for (const alvo of [LIMPAR, PROMO]) {
+        for (const custo of [null, 0, 10.5, 'REDACTED']) {
+          for (const sobConsulta of [false, true]) {
+            const entrada = { alvo, formaPromoLimpa: forma, custo, sobConsulta };
+            await atualizarPrecoProdutoLi(c, PRODUTO, entrada);
+            const rotulo = JSON.stringify(entrada);
+            expect(requisicao(f, n).init.body, rotulo).toBe(
+              JSON.stringify(corpoPrecoProdutoLi(entrada).corpo),
+            );
+            n += 1;
+          }
+        }
+      }
+    }
+    expect(f).toHaveBeenCalledTimes(48);
+    // Anti-vacuity: one fixed case, spelled out.
+    expect(requisicao(f, 4).init.body).toBe(
+      '{"cheio":274.42,"custo":10.5,"promocional":null,"sob_consulta":false}',
     );
   });
 
@@ -619,19 +738,41 @@ describe('corpoPrecoProdutoLi — the body of one price write', () => {
     },
   );
 
-  it('property: 2,000 targets up to 1e15 centavos × clear or promotion × every forma round-trip exactly', () => {
+  it('property: 2,000 targets up to 1e15 centavos × clear or promotion × a drawn custo × every forma round-trip exactly, and are SENT', async () => {
     const aleatorio = prng(27_442);
     /** Log-uniform in [1, 1e15], so every magnitude is sampled. */
     const centavos = () => Math.max(1, Math.floor(10 ** (aleatorio() * 15)));
+    /** The store's custo: none (the common case), 0, or a number with up to four decimals. */
+    const custoDaLoja = (): number | null => {
+      const r = aleatorio();
+      if (r < 1 / 3) return null;
+      if (r < 2 / 3) return 0;
+      return Math.round(aleatorio() * 1e8) / 1e4;
+    };
+    const f = semCorpo();
+    const { c } = cliente(f);
+    let enviados = 0;
     for (let caso = 0; caso < 2000; caso++) {
       const cheioCentavos = centavos();
       const promo: EnvioPrecoLi['promo'] = aleatorio() < 0.5 ? 'limpar' : { centavos: centavos() };
+      const custo = custoDaLoja();
       for (const forma of FORMAS) {
-        const { corpo } = montar({ cheioCentavos, promo }, forma);
-        const rotulo = `${String(cheioCentavos)} ${JSON.stringify(promo)} ${forma}`;
+        const { corpo, custo: doCusto } = montar({ cheioCentavos, promo }, forma, custo);
+        const rotulo = `${String(cheioCentavos)} ${JSON.stringify(promo)} ${String(custo)} ${forma}`;
         expect(corpoPrecoProdutoValidoLi(corpo), rotulo).toBe(true);
-        // At most two decimal places on every number of the text sent.
-        for (const n of JSON.stringify(corpo).match(/-?\d+(?:\.\d+)?/g) ?? []) {
+        expect(doCusto, rotulo).toBe(custo === null ? 'omitido-nulo' : 'enviado');
+        // The body goes out through the price route, as built.
+        await atualizarPrecoProdutoLi(c, PRODUTO, {
+          alvo: { cheioCentavos, promo },
+          formaPromoLimpa: forma,
+          custo,
+          sobConsulta: false,
+        });
+        expect(requisicao(f, enviados).init.body, rotulo).toBe(JSON.stringify(corpo));
+        enviados += 1;
+        // At most two decimal places on each PRICE sent (the custo goes back as the store holds it).
+        for (const preco of [corpo.cheio, corpo.promocional]) {
+          const n = String(preco);
           expect(n.split('.')[1]?.length ?? 0, rotulo).toBeLessThanOrEqual(2);
         }
         expect(valorPrecoLi(corpo.cheio), rotulo).toEqual({ centavos: cheioCentavos });
@@ -690,5 +831,7 @@ describe('the barrel', () => {
     expect(rotas.rotaDeEscritaLi(`${CAMINHO}/`)).toBeNull();
     const tipado: CorpoPrecoProdutoLi = SEM_CUSTO;
     expect(corpoPrecoProdutoValidoLi(tipado)).toBe(true);
+    const entrada: barril.EntradaPrecoProdutoLi = ENTRADA;
+    expect(barril.corpoPrecoProdutoLi(entrada).corpo).toEqual(SEM_CUSTO);
   });
 });

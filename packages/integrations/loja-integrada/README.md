@@ -22,7 +22,7 @@ What ships here:
 | `estoque.ts`        | The stock sync's reads: `lerPaginaEstoqueLi` (one page of the stock list, through `lerPaginaLi`), `buscarEstoqueProdutoLi` (one product's stock, by the produto id) and `produtoIdDoEstoqueLi` (the produto a row names)                                                                                              |
 | `estoqueEscrita.ts` | The stock write, `atualizarEstoqueProdutoLi`: managed stock at a non-negative integer quantity, the two situações fixed (`ESTOQUE_FIXO_ESCRITA_LI`), every number sent unquoted                                                                                                                                       |
 | `preco.ts`          | The price sync's read: `lerPrecosPorIdLi` (one `set/` call of at most `MAX_IDS_SET_PRECO_LI` product ids), `classificarSetPrecoLi` (every asked id's result, matched by the produto a row names) and `produtoIdDoPrecoLi`                                                                                             |
-| `precoEscrita.ts`   | The price write: `corpoPrecoProdutoLi` (a full body from integer centavos and the configured clear, the store's custo echoed or omitted) and `atualizarPrecoProdutoLi`, every number sent unquoted                                                                                                                    |
+| `precoEscrita.ts`   | The price write: `corpoPrecoProdutoLi` (a full body from integer centavos and the configured clear, the store's custo echoed or omitted) and `atualizarPrecoProdutoLi`, which takes those inputs, never a body                                                                                                        |
 | `pedidoTipos.ts`    | The order detail, situação, situação-history row and produto-identity response schemas, written against captures; the two write echoes, every field optional                                                                                                                                                          |
 | `prazos.ts`         | `PRAZO_LI_MS`, the per-call deadline keyed on the operation class (`leitura`, `escrita`)                                                                                                                                                                                                                              |
 | `types.ts`          | The `{ meta, objects }` paging envelope, the pedido search row, the catalogue rows (categoria, marca, grade, a grade's options), the produto row, detail and image, the stock row, detail and write echo, and the price row, the by-id envelope, the produto detail a price write decides on and the price write echo |
@@ -52,8 +52,9 @@ token **raw** after `Basic ` (not base64-encoded by us).
   `criarClienteLeituraLi` makes is a `GET` by construction. The write client
   (`escrita.ts`) is a separate factory, with method names used nowhere else. Every
   `PUT` it can send is held to the package-internal write routes
-  (`rotasEscrita.ts`): exactly four paths, each with one strict body, refused
-  before anything is sent otherwise. So no write can carry a situação outside the
+  (`rotasEscrita.ts`): exactly four paths, each held to strict bodies (the price
+  route: two strict shapes, with and without `custo`), refused before anything
+  is sent otherwise. So no write can carry a situação outside the
   three write-back codigos, an empty or non-visible-ASCII tracking code (no write
   can clear one), stock other than managed stock at a non-negative integer
   quantity with the two fixed situações, a price that is not above 0 with at most

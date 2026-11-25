@@ -518,8 +518,9 @@ function valorDePrecoLegivel() {
  * the row's own `id`, `resource_uri`, `sob_consulta` and `custo`. ⚠️ The
  * custo is OPAQUE on purpose: no decision reads the store's resource custo (a
  * price write echoes the PRODUTO DETAIL's, {@link liProdutoComPrecoDetalheSchema}),
- * and the sanitized capture fixtures replace every custo value with a fake of
- * another type, so a typed custo would make every such row unreadable.
+ * and the sanitized capture fixtures replace every custo text with the fake
+ * text `'REDACTED'`, which the price fold cannot read, so a judged custo would
+ * make every such row unreadable.
  *
  * ⚠️ Deliberately unlike {@link liProdutoComPrecoDetalheSchema}, which carries
  * its price leaves RAW and unjudged: here an unreadable value is a finding the
@@ -576,8 +577,7 @@ export type SetPrecoLi = z.infer<typeof liSetPrecoSchema>;
  * restores from this read, so a detail without one of them cannot be restored
  * and is no base. Nothing is folded here — `''` stays `''`, `'abc'` stays
  * `'abc'` — because "a current value present but unreadable" is a DECISION
- * outcome of the send (skipped, with its restore line), never a refused read;
- * and the sanitized fixtures carry a faked `preco_custo` of another type.
+ * outcome of the send (skipped, with its restore line), never a refused read.
  * Deliberately unlike {@link liPrecoProdutoLinhaSchema} (see there).
  *
  * Minimal and independent of {@link liProdutoDetalheSchema}: an odd weight or

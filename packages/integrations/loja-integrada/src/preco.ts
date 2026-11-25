@@ -140,17 +140,16 @@ const OPERACAO_SET_PRECO = 'lerPrecosPorId';
 
 /**
  * The canonical decimal of each id, in the ORDER GIVEN (never sorted), or a
- * refusal naming `operacao`, before anything is read or sent:
+ * refusal naming the by-id read (`lerPrecosPorId`), before anything is read or
+ * sent:
  *
  *  - no id, or more than {@link MAX_IDS_SET_PRECO_LI} — `LiConfigError('ids')`;
  *  - an id that is not a positive safe integer (`'01'`, `'1.5'`, `0`, `2 ** 53`)
  *    — `LiConfigError('caminho')`, through the shared path-id reader;
  *  - one id twice, in any spelling (`1001` and `'1001'`) — `LiConfigError('ids')`.
  */
-export function idsSetPrecoLi(
-  ids: readonly (number | string)[],
-  operacao: string = OPERACAO_SET_PRECO,
-): readonly string[] {
+export function idsSetPrecoLi(ids: readonly (number | string)[]): readonly string[] {
+  const operacao = OPERACAO_SET_PRECO;
   if (ids.length < 1 || ids.length > MAX_IDS_SET_PRECO_LI) {
     throw new LiConfigError('ids', { operacao, refCredencial: null });
   }
@@ -170,11 +169,8 @@ function caminhoDosIds(canonicos: readonly string[]): string {
  * `/v1/produto_preco/set/<id;id;…>` for `ids` ({@link idsSetPrecoLi}: checked,
  * canonical, in the order given), with no trailing slash and no query.
  */
-export function caminhoSetPrecoLi(
-  ids: readonly (number | string)[],
-  operacao: string = OPERACAO_SET_PRECO,
-): string {
-  return caminhoDosIds(idsSetPrecoLi(ids, operacao));
+export function caminhoSetPrecoLi(ids: readonly (number | string)[]): string {
+  return caminhoDosIds(idsSetPrecoLi(ids));
 }
 
 /**
@@ -361,7 +357,7 @@ export async function lerPrecosPorIdLi(
   opts: OpcoesLeituraLi = {},
 ): Promise<RespostaLi<LeituraSetPrecoLi>> {
   const operacao = OPERACAO_SET_PRECO;
-  const pedidos = idsSetPrecoLi(ids, operacao);
+  const pedidos = idsSetPrecoLi(ids);
   opts.sinal?.throwIfAborted();
   const caminho = caminhoDosIds(pedidos);
   const resposta = await cliente.get({

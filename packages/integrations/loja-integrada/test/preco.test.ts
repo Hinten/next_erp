@@ -246,6 +246,19 @@ describe('the ids and the path — checked before anything is read or sent', () 
     expect(credenciais()).toBe(0);
   });
 
+  it('the exported helpers refuse as the by-id read: each refusal names `lerPrecosPorId`', () => {
+    for (const [ler, motivo] of [
+      [() => idsSetPrecoLi([]), 'ids'],
+      [() => idsSetPrecoLi([1001, '1001']), 'ids'],
+      [() => caminhoSetPrecoLi([]), 'ids'],
+      [() => caminhoSetPrecoLi([0]), 'caminho'],
+      [() => idsSetPrecoLi(['01']), 'caminho'],
+    ] as const) {
+      expect(ler).toThrow(LiConfigError);
+      expect(ler).toThrow(expect.objectContaining({ motivo, operacao: 'lerPrecosPorId' }));
+    }
+  });
+
   it('property: 500 random id lists of 1 to 100 build a path that splits back to the ids, in order', () => {
     const aleatorio = prng(13_2024);
     const forma = /^\/v1\/produto_preco\/set\/[1-9]\d*(;[1-9]\d*)*$/;
@@ -383,6 +396,16 @@ describe('the price row schema — the fold judges the two amounts, nothing else
       promocional: 'x',
       id: 1,
     });
+    // Raw on BOTH amounts, whatever the type: a JSON number stays a number, an object stays.
+    for (const valor of [32.84, null, {}, true]) {
+      expect(liEcoPrecoProdutoSchema.parse({ cheio: valor }).cheio, JSON.stringify(valor)).toBe(
+        valor,
+      );
+      expect(
+        liEcoPrecoProdutoSchema.parse({ promocional: valor }).promocional,
+        JSON.stringify(valor),
+      ).toBe(valor);
+    }
   });
 });
 
@@ -554,6 +577,13 @@ describe('classificarSetPrecoLi — every asked id gets exactly one result', () 
     },
   );
 
+  it('`naoEncontradosIlegiveis` holds the POSITIONS in `not_found`, not a count', () => {
+    const l = classificarSetPrecoLi(['1001', '9001'], corpo([linha(1001)], ['9001', {}, '01']));
+    expect(l.naoEncontradosIlegiveis).toEqual([1, 2]);
+    expect(de(l, '9001')).toEqual({ tipo: 'nao-encontrado' });
+    expect(l.contabilizados).toBe(2);
+  });
+
   it('a `not_found` that is one bare string is a malformed envelope: LiSchemaError', async () => {
     const err = await falha(ler(resposta([linha(1001)], '9001'), [1001, 9001]));
     expect(err).toBeInstanceOf(LiSchemaError);
@@ -719,6 +749,35 @@ describe('lerPrecosPorIdLi — one by-id read', () => {
     expect(de(r.dados, '1001')).toEqual({ tipo: 'repetido', linhas: 2, naoEncontrado: 0 });
   });
 
+  it('NEAR-MISS: an answer whose only row is UNREADABLE accounts for its id — no throw, `ilegivel`', async () => {
+    const { r } = await ler(resposta([linha(1001, { cheio: '1,50' })]), [1001]);
+    expect(r.dados.contabilizados).toBe(1);
+    expect(de(r.dados, '1001')).toEqual({ tipo: 'ilegivel', campos: ['cheio'] });
+  });
+
+  it('one odd row costs only itself at the READER: an unreadable row beside a readable one', async () => {
+    const { r } = await ler(resposta([linha(1001), linha(1002, { cheio: '1,50' })]), [1001, 1002]);
+    expect(de(r.dados, '1001')).toMatchObject({ tipo: 'linha' });
+    expect(de(r.dados, '1002')).toEqual({ tipo: 'ilegivel', campos: ['cheio'] });
+    expect(r.dados.contabilizados).toBe(2);
+  });
+
+  it('…rows that are no object at all, beside a readable one, are `semProduto` — the answer still reads', async () => {
+    const { r } = await ler(resposta([linha(1001), null, 'abc']), [1001]);
+    expect(de(r.dados, '1001')).toMatchObject({ tipo: 'linha' });
+    expect(r.dados.semProduto).toEqual([
+      { indice: 1, campos: ['(raiz)'] },
+      { indice: 2, campos: ['(raiz)'] },
+    ]);
+  });
+
+  it('…and a `not_found` holding a number and an object: the number is an id, the object costs only itself', async () => {
+    const { r } = await ler(resposta([linha(1001)], [9001, {}]), [1001, 9001]);
+    expect(de(r.dados, '9001')).toEqual({ tipo: 'nao-encontrado' });
+    expect(r.dados.naoEncontradosIlegiveis).toEqual([1]);
+    expect(r.dados.contabilizados).toBe(2);
+  });
+
   it.each<[string, unknown]>([
     ['`objects` absent', {}],
     ['`objects` null', { objects: null }],
@@ -865,6 +924,25 @@ describe('liProdutoComPrecoDetalheSchema — the detail a price write decides on
       const r = liProdutoComPrecoDetalheSchema.parse({ ...variacao, [folha]: valor });
       expect(r[folha as keyof typeof r], folha).toBe(valor);
     }
+  });
+
+  it.each<[string, unknown]>([
+    ['null', null],
+    ['a text', 'x'],
+    ['zero', 0],
+  ])(
+    'an odd guard leaf (%s) parses RAW too: `ativo`, `bloqueado`, `removido` are the send’s to judge',
+    (_caso, valor) => {
+      for (const folha of ['ativo', 'bloqueado', 'removido']) {
+        const r = liProdutoComPrecoDetalheSchema.parse({ ...variacao, [folha]: valor });
+        expect(r[folha as keyof typeof r], folha).toBe(valor);
+      }
+    },
+  );
+
+  it('`tipo` is a plain text, never an enum: a tipo no one knows yet still reads', () => {
+    expect(liProdutoComPrecoDetalheSchema.parse({ ...variacao, tipo: 'kit' }).tipo).toBe('kit');
+    expect(liProdutoComPrecoDetalheSchema.parse({ ...variacao, tipo: '' }).tipo).toBe('');
   });
 
   it('`tipo` must be text; a quoted `id` reads as the number', () => {
