@@ -217,11 +217,21 @@ describe('vereditoIcmsSn — precedence: CRT, csosn, slot, groups', () => {
     [CSOSN.tributadaSemCreditoComSt, 'csosn202ou203'],
     [CSOSN.isencaoFaixaReceitaBrutaComSt, 'csosn202ou203'],
     [CSOSN.icmsCobradoAnteriormente, 'csosn500'],
-    [CSOSN.outros, 'csosn900'],
   ] as const)('CSOSN %s with its slot absent or null → subConfigAusente %s', (csosn, slot) => {
     const esperado = { tipo: 'subConfigAusente', csosn, subConfig: slot };
     expect(vereditoIcmsSn(sn(csosn))).toEqual(esperado);
     expect(vereditoIcmsSn(sn(csosn, { [slot]: null }))).toEqual(esperado);
+  });
+
+  it.each([
+    ['missing', {}],
+    ['null', { csosn900: null }],
+  ] as const)('CSOSN 900 with its slot %s → ok with an empty sub-config', (_label, extra) => {
+    expect(vereditoIcmsSn(sn(CSOSN.outros, extra))).toEqual({
+      tipo: 'ok',
+      csosn: CSOSN.outros,
+      sub: {},
+    });
   });
 
   it("CSOSN 202 with csosn201 filled but its own slot null → names csosn202ou203, not 201's", () => {

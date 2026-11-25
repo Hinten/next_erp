@@ -1,7 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { render } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
+import { useState } from 'react';
 import { CRT, CSOSN, ORIGEM } from '@delfrance/schemas';
 import type { ValidationIssue } from '@delfrance/ui';
+import { ImpostoConfigEditor } from '@/components/imposto/ImpostoConfigEditor';
+import type { ImpostoConfigValue } from '@/components/imposto/types';
 import { MantineTestProvider } from '@/lib/testing/mantine';
 
 /**
@@ -65,18 +68,43 @@ describe('operacoes/novo — refuses a default tax config the NF-e engine would 
     ).toEqual([{ path: 'configuracaoICMS', message: expect.stringContaining('ICMS-ST retido') }]);
   });
 
-  it('a CSOSN chosen with its sub-config never filled → blocked, pointing at the CSOSN', () => {
-    expect(
-      h.captured?.validate?.({
+  it.each([
+    ['no field was filled', false],
+    ['a field was filled and cleared', true],
+  ])('allows saving CSOSN 900 when %s', (_label, fillAndClear) => {
+    const onChange = vi.fn<(next: ImpostoConfigValue) => void>();
+    function Editor() {
+      const [value, setValue] = useState<ImpostoConfigValue>({
         origem: ORIGEM.nacional,
-        configuracaoICMS: { crt: CRT.simplesNacional, csosn: CSOSN.outros, csosn900: null },
-      }),
-    ).toEqual([
-      {
-        path: 'configuracaoICMS',
-        message: 'CSOSN 900: os campos do CSOSN 900 não foram preenchidos.',
-      },
-    ]);
+        configuracaoICMS: { crt: CRT.simplesNacional, csosn: CSOSN.tributadaSemCredito },
+      });
+      return (
+        <ImpostoConfigEditor
+          value={value}
+          onChange={(next) => {
+            setValue(next);
+            onChange(next);
+          }}
+        />
+      );
+    }
+    render(
+      <MantineTestProvider>
+        <Editor />
+      </MantineTestProvider>,
+    );
+
+    fireEvent.click(screen.getByRole('combobox', { name: 'CSOSN' }));
+    fireEvent.click(screen.getByRole('option', { name: /^900 - Outros/ }));
+    if (fillAndClear) {
+      const base = screen.getByLabelText('vBC (R$)');
+      fireEvent.change(base, { target: { value: '100' } });
+      expect(onChange.mock.lastCall?.[0].configuracaoICMS?.csosn900).toEqual({ vBC: 100 });
+      fireEvent.change(base, { target: { value: '' } });
+    }
+    const edited = onChange.mock.lastCall?.[0];
+    expect(edited?.configuracaoICMS?.csosn900).toEqual(fillAndClear ? { vBC: null } : null);
+    expect(h.captured?.validate?.({ ...edited })).toEqual([]);
   });
 
   it('does not block a new operação with no Origem padrão (the e2e create flow)', () => {

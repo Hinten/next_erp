@@ -63,7 +63,11 @@ describe('ImpostoConfigEditor — the problems the NF-e engine would raise (#165
   it('flags the CSOSN select when the CSOSN has no sub-config', () => {
     const value: ImpostoConfigValue = {
       origem: ORIGEM.nacional,
-      configuracaoICMS: { crt: CRT.simplesNacional, csosn: CSOSN.outros, csosn900: null },
+      configuracaoICMS: {
+        crt: CRT.simplesNacional,
+        csosn: CSOSN.tributadaComCredito,
+        csosn101: null,
+      },
     };
     renderEditor(value, problemasDeEmissaoDoImposto(value));
     expect(screen.getByRole('combobox', { name: 'CSOSN' }).getAttribute('aria-invalid')).toBe(

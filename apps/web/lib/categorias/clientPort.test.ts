@@ -129,6 +129,15 @@ describe('validarImpostosDaCategoria', () => {
     ['impostos absent', undefined],
     ['only empty rows', [linha('op1'), linha('op2')]],
     ['the partial row with origem null', [linha('op2', { configuracaoICMS: parcial900 })]],
+    [
+      'an imported CSOSN 900 row with a null sub-config',
+      [
+        linha('op2', {
+          origem: ORIGEM.nacional,
+          configuracaoICMS: { crt: CRT.simplesNacional, csosn: CSOSN.outros, csosn900: null },
+        }),
+      ],
+    ],
   ])('%s → []', (_label, impostos) => {
     expect(validarImpostosDaCategoria({ impostos })).toEqual([]);
   });

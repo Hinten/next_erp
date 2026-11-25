@@ -201,6 +201,13 @@ describe('produtoPageIssues — a tax config the NF-e engine would reject (#1655
       }),
     ],
     [
+      'an imported CSOSN 900 row with a null sub-config',
+      linha({
+        origem: ORIGEM.nacional,
+        configuracaoICMS: { crt: CRT.simplesNacional, csosn: CSOSN.outros, csosn900: null },
+      }),
+    ],
+    [
       'CST 49 with pPIS 0 and vAliqProd 0.5 (0 is "not configured")',
       linha({
         origem: ORIGEM.nacional,

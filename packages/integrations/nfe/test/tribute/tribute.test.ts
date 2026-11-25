@@ -1372,7 +1372,6 @@ describe('buildImpostoXml — exact config-error messages and precedence (#1655)
     [CSOSN.tributadaSemCreditoComSt, "CSOSN '202' requires `configuracaoICMS.csosn202ou203`"],
     [CSOSN.isencaoFaixaReceitaBrutaComSt, "CSOSN '203' requires `configuracaoICMS.csosn202ou203`"],
     [CSOSN.icmsCobradoAnteriormente, "CSOSN '500' requires `configuracaoICMS.csosn500`"],
-    [CSOSN.outros, "CSOSN '900' requires `configuracaoICMS.csosn900`"],
   ] as const;
 
   it.each(SUB_CONFIG_AUSENTE)('CSOSN %s with its sub-config key absent → %s', (csosn, message) => {
@@ -2214,15 +2213,15 @@ describe('buildImpostoXml — ICMSSN500/ICMSSN900 XSD groups all-or-nothing (#50
   // the partial-group and lone-null tests below fail against it, and the
   // all-null / complete-group ones pin the emit side of the same fold.
 
-  it('CSOSN 900 with EVERY schema member null → orig + CSOSN only', async () => {
-    const sub = nullPadded<ConfSN900>(confICMSSN900Schema.shape, {});
-    // The padding covers exactly the members the fully-populated fixture sets.
-    expect(Object.keys(sub).sort()).toEqual(Object.keys(SN900_FULL).sort());
-    const xml = buildImpostoXml(imposto900(sub), item1500);
-    expect(icmsXmlOf(xml)).toBe(
-      '<ICMS><ICMSSN900><orig>0</orig><CSOSN>900</CSOSN></ICMSSN900></ICMS>',
-    );
-    await assertXsdValid(xml);
+  it.each([
+    ['missing slot', {}],
+    ['null slot', { csosn900: null }],
+    ['all-null slot', { csosn900: nullPadded<ConfSN900>(confICMSSN900Schema.shape, {}) }],
+  ] as const)('CSOSN 900 with a %s emits the same XML as an empty slot', async (_label, extra) => {
+    const imposto = impostoFor(CSOSN.outros, extra);
+    const xml = buildImpostoXml(imposto, item1500);
+    expect(xml).toBe(buildImpostoXml(imposto900({}), item1500));
+    await assertXsdValidWithRealTotals(xml, imposto);
   });
 
   it('CSOSN 500 with EVERY schema member null → orig + CSOSN only', async () => {

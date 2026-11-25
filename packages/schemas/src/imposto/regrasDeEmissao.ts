@@ -262,7 +262,9 @@ export type VereditoIcmsSn =
  * 2. no CSOSN → `semCsosn`;
  * 3. a CSOSN with no slot (102/103/300/400) → `ok` with `sub: null`, every
  *    other slot ignored;
- * 4. the CSOSN's slot is null → `subConfigAusente`;
+ * 4. a missing or null slot → `ok` with `sub: {}` for CSOSN 900, preserving
+ *    Flutter's ability to emit just orig and CSOSN. Other codes with a slot
+ *    return `subConfigAusente`;
  * 5. an incomplete XSD sub-group → `gruposIncompletos` (every group, XSD
  *    order), naming the actual CSOSN — 203, not the shared slot;
  * 6. otherwise `ok` with the typed sub-config.
@@ -275,7 +277,10 @@ export function vereditoIcmsSn(icms: ConfiguracaoICMS): VereditoIcmsSn {
   let sub: NonNullable<ConfiguracaoICMS[SubConfigIcmsSn]> | null = null;
   if (subConfig != null) {
     const slot = icms[subConfig];
-    if (slot == null) return { tipo: 'subConfigAusente', csosn, subConfig };
+    if (slot == null) {
+      if (csosn === CSOSN.outros) return { tipo: 'ok', csosn, sub: {} };
+      return { tipo: 'subConfigAusente', csosn, subConfig };
+    }
     const grupos = gruposXsdIncompletos(slot, GRUPOS_XSD_POR_SUBCONFIG[subConfig]);
     if (grupos.length > 0) return { tipo: 'gruposIncompletos', csosn, subConfig, grupos };
     sub = slot;
