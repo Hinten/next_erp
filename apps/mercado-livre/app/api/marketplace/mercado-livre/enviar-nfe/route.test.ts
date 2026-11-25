@@ -1,18 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { PERM } from '@delfrance/auth';
+import { ESTADO_NFE, INTEGRACAO_FRETE } from '@delfrance/schemas';
 
 import { MlTasksDisabledError } from '@/lib/marketplace/notificacoes/mlTasks';
 
-// verifyCaller / dispatch decision / pedido check / scheduler are mocked; the
-// route's own logic (body validation, the 404, skip→409 mapping, the always-202
-// enqueue, the disabled-valve 503) and the REAL nfev4Collection path resolution
-// (via the fake db below) run real.
+// Auth, Firestore transport and the scheduler are mocked. The handler runs
+// eligibility and pedido checks against snapshots from the fake Firestore.
 const h = vi.hoisted(() => ({
   verifyCaller: vi.fn(),
   get: vi.fn(),
   docPaths: [] as string[],
-  decide: vi.fn(),
-  shouldUpload: vi.fn(async (..._args: unknown[]) => ({ action: 'enqueue' }) as unknown),
   schedEnqueue: vi.fn(async (_payload: unknown) => {}),
 }));
 
@@ -24,8 +21,9 @@ vi.mock('@/lib/firebase/admin', () => ({
     collection: (path: string) => ({
       doc: (id: string) => ({
         get: () => {
-          h.docPaths.push(`${path}/${id}`);
-          return h.get();
+          const docPath = `${path}/${id}`;
+          h.docPaths.push(docPath);
+          return h.get(docPath);
         },
       }),
     }),
@@ -35,11 +33,6 @@ vi.mock('@/lib/firebase/admin', () => ({
 vi.mock('@/lib/auth/verifyCaller', async (importActual) => {
   const actual = await importActual<typeof import('@/lib/auth/verifyCaller')>();
   return { ...actual, verifyCaller: h.verifyCaller };
-});
-
-vi.mock('@/lib/marketplace/nfe/nfeUpload', async (importActual) => {
-  const actual = await importActual<typeof import('@/lib/marketplace/nfe/nfeUpload')>();
-  return { ...actual, decideNfeUploadDispatch: h.decide, shouldUploadForPedido: h.shouldUpload };
 });
 
 vi.mock('@/lib/marketplace/nfe/mlNfeUploadTasks', () => ({
@@ -56,17 +49,20 @@ function req(body: unknown): Request {
   });
 }
 
-// Raw doc data as the route hands it to decideNfeUploadDispatch (which is
-// mocked — the eligibility logic itself is covered in nfeUpload.test.ts).
-const DOC = { estado: 'a', xml_nfe_proc: '<nfeProc/>' };
+const NFE_PATH = 'pedidos/ped-1/nfev4/s1';
+const PEDIDO_PATH = 'pedidos/ped-1';
+const XML_VENDA = '<nfeProc><ide><tpAmb>1</tpAmb><tpNF>1</tpNF><finNFe>1</finNFe></ide></nfeProc>';
+const DOC = { estado: ESTADO_NFE.aprovada, xml_nfe_proc: XML_VENDA };
+const PEDIDO = { freteInicial: { externalOptionIntegracao: INTEGRACAO_FRETE.mercadoLivre } };
 
 beforeEach(() => {
   vi.clearAllMocks();
   h.docPaths.length = 0;
   h.verifyCaller.mockResolvedValue({ caller: { uid: 'u1', permissions: undefined } });
-  h.get.mockResolvedValue({ exists: true, data: () => DOC });
-  h.decide.mockReturnValue({ action: 'enqueue' });
-  h.shouldUpload.mockResolvedValue({ action: 'enqueue' });
+  h.get.mockReset().mockImplementation(async (path: string) => {
+    const doc = path === NFE_PATH ? DOC : path === PEDIDO_PATH ? PEDIDO : undefined;
+    return { exists: doc !== undefined, data: () => doc };
+  });
   h.schedEnqueue.mockResolvedValue(undefined);
 });
 
@@ -78,11 +74,7 @@ describe('POST /api/marketplace/mercado-livre/enviar-nfe', () => {
 
     // Pedido-write scoping (expedição staff), not the integração admin perm.
     expect(h.verifyCaller).toHaveBeenCalledWith(expect.anything(), PERM.pedido.write);
-    expect(h.docPaths).toEqual(['pedidos/ped-1/nfev4/s1']);
-    // `before: undefined` = judged from scratch on intrinsic eligibility only
-    // (zero-write model — no nowMs, no marker state to consult).
-    expect(h.decide).toHaveBeenCalledWith(undefined, DOC);
-    expect(h.shouldUpload).toHaveBeenCalledWith(expect.anything(), 'ped-1');
+    expect(h.docPaths).toEqual([NFE_PATH, PEDIDO_PATH]);
     expect(h.schedEnqueue).toHaveBeenCalledWith({ pedidoId: 'ped-1', nfeId: 's1' });
   });
 
@@ -95,6 +87,7 @@ describe('POST /api/marketplace/mercado-livre/enviar-nfe', () => {
     expect(first.status).toBe(202);
     expect(second.status).toBe(202);
     expect(await second.json()).toEqual({ enqueued: true });
+    expect(h.docPaths).toEqual([NFE_PATH, PEDIDO_PATH, NFE_PATH, PEDIDO_PATH]);
     expect(h.schedEnqueue).toHaveBeenCalledTimes(2);
   });
 
@@ -110,42 +103,46 @@ describe('POST /api/marketplace/mercado-livre/enviar-nfe', () => {
   });
 
   it('404s NFE_NAO_ENCONTRADA when the NF-e doc does not exist', async () => {
-    h.get.mockResolvedValue({ exists: false, data: () => undefined });
     const res = await POST(req({ pedidoId: 'ped-1', nfeId: 'missing' }));
     expect(res.status).toBe(404);
     expect((await res.json()).code).toBe('NFE_NAO_ENCONTRADA');
-    expect(h.decide).not.toHaveBeenCalled();
-    expect(h.shouldUpload).not.toHaveBeenCalled();
+    expect(h.docPaths).toEqual(['pedidos/ped-1/nfev4/missing']);
     expect(h.schedEnqueue).not.toHaveBeenCalled();
   });
 
-  it('409s NFE_NAO_ELEGIVEL with the doc-level machine reason passed through', async () => {
-    h.decide.mockReturnValue({ action: 'skip', reason: 'nao-aprovada' });
+  it.each([
+    ['nao-aprovada', { ...DOC, estado: ESTADO_NFE.cancelada }],
+    ['tpamb-homologacao', { ...DOC, xml_nfe_proc: XML_VENDA.replace('tpAmb>1', 'tpAmb>2') }],
+    ['nfe-nao-e-de-venda', { ...DOC, xml_nfe_proc: XML_VENDA.replace('finNFe>1', 'finNFe>4') }],
+    ['xml-invalido', { ...DOC, xml_nfe_proc: XML_VENDA.replace('<finNFe>1</finNFe>', '') }],
+  ])('returns 409 for %s after reading only the NF-e', async (reason, doc) => {
+    h.get.mockResolvedValueOnce({ exists: true, data: () => doc });
     const res = await POST(req({ pedidoId: 'ped-1', nfeId: 's1' }));
     expect(res.status).toBe(409);
     const body = await res.json();
     expect(body.code).toBe('NFE_NAO_ELEGIVEL');
-    expect(body.reason).toBe('nao-aprovada');
-    // A doc-level skip short-circuits BEFORE the pedido read.
-    expect(h.shouldUpload).not.toHaveBeenCalled();
+    expect(body.reason).toBe(reason);
+    expect(h.docPaths).toEqual([NFE_PATH]);
     expect(h.schedEnqueue).not.toHaveBeenCalled();
-
-    h.decide.mockReturnValue({ action: 'skip', reason: 'tpamb-homologacao' });
-    const res2 = await POST(req({ pedidoId: 'ped-1', nfeId: 's1' }));
-    expect(res2.status).toBe(409);
-    expect((await res2.json()).reason).toBe('tpamb-homologacao');
   });
 
-  it('409s NFE_NAO_ELEGIVEL with the pedido-level reason from shouldUploadForPedido', async () => {
-    for (const reason of ['pedido-nao-encontrado', 'nao-mercado-livre', 'sem-integracao']) {
-      h.shouldUpload.mockResolvedValue({ action: 'skip', reason });
-      const res = await POST(req({ pedidoId: 'ped-1', nfeId: 's1' }));
-      expect(res.status).toBe(409);
-      const body = await res.json();
-      expect(body.code).toBe('NFE_NAO_ELEGIVEL');
-      expect(body.reason).toBe(reason);
-      expect(typeof body.error).toBe('string');
-    }
+  it.each([
+    ['pedido-nao-encontrado', undefined],
+    [
+      'nao-mercado-livre',
+      { freteInicial: { externalOptionIntegracao: INTEGRACAO_FRETE.melhorEnvios } },
+    ],
+    ['sem-integracao', { freteInicial: null, integracaoPedidoOuterRef: null }],
+  ])('returns 409 for an ineligible pedido (%s)', async (reason, pedido) => {
+    h.get.mockResolvedValueOnce({ exists: true, data: () => DOC });
+    h.get.mockResolvedValueOnce({ exists: pedido !== undefined, data: () => pedido });
+    const res = await POST(req({ pedidoId: 'ped-1', nfeId: 's1' }));
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.code).toBe('NFE_NAO_ELEGIVEL');
+    expect(body.reason).toBe(reason);
+    expect(typeof body.error).toBe('string');
+    expect(h.docPaths).toEqual([NFE_PATH, PEDIDO_PATH]);
     expect(h.schedEnqueue).not.toHaveBeenCalled();
   });
 

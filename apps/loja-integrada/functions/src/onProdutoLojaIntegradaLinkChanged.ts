@@ -20,10 +20,18 @@ import { getDb } from './lib/admin';
  * and the race discipline are argued. This file is the thin wrapper, the shape of Shopee's
  * `onProdutoShopeeLinkChanged`.
  *
- * Why it exists: that array is the ANCHOR PRE-FILTER the stock and price sweeps open with, so its
- * accuracy IS stock and price coverage. A conta listed with no counting link costs one skipped
- * sweep row; a counting link with no conta entry is a SILENT outage — the produto is never
- * selected and nothing logs a reason.
+ * Why it exists: that array is the ANCHOR PRE-FILTER the other channels' stock and price sweeps
+ * open with and, for Loja Integrada, the manual stock push's (master plan step 12, PR 12-h,
+ * `lib/lojaIntegrada/estoque/envioManualEstoqueLi.ts`). This app's stock trigger and nightly stock
+ * reconcile read the links themselves and never read the array. A conta listed with no counting
+ * link costs one wasted read (the push still classifies the produto by its links); a counting link
+ * with no conta entry makes the manual push skip that produto silently, never with an error — a
+ * selected produto answers `sem-vinculo` when another selected produto names the conta and gets no
+ * Loja Integrada row when none does (the web picks the contas to call from the selection's arrays);
+ * a child of a selected root is never found by the root's expansion, which filters on the array
+ * too (left out, or, when no child of that root names the conta, the root itself becomes the
+ * target and is usually answered `pai`) — and hides it from any later flow that pre-filters on
+ * the array.
  *
  * ONE trigger serves parents and children: a Loja Integrada child's link sits under the ERP
  * CHILD produto in the same leaf collection (`produtolojaintegrada`) as a parent's link under the
@@ -64,9 +72,10 @@ import { getDb } from './lib/admin';
  * this channel runs no audit that drops stale entries. Only a manual fix clears it (the window's
  * anchor census looks for the opposite gap: a counting link whose conta is missing).
  * Accepted (the core's event-derived tier-0 add, as Shopee's trigger makes it): it is the
- * over-inclusive direction, one skipped sweep row per run, never the silent outage. Closing it
- * would mean routing the event's add through the core's guarded `adicionarContaSeViva` — one
- * more guarded write and survivor read per add that moves membership.
+ * over-inclusive direction — one wasted link listing in the manual push, since no sweep reads
+ * this channel's entries of the array — never the silent outage. Closing it would mean routing
+ * the event's add through the core's guarded `adicionarContaSeViva` — one more guarded write and
+ * survivor read per add that moves membership.
  *
  * No `region:` — `options.ts` sets it globally. NO `secrets:` — this trigger never calls Loja
  * Integrada (D17), and a needless binding is one more Secret Manager grant that can fail the

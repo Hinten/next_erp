@@ -26,9 +26,7 @@ export const TOKEN_SHOPEE_PARA_LOG: RegExp = /^[A-Za-z0-9_]{1,64}$/;
 
 /**
  * What replaces anything that is not a plain token — never the value itself.
- * Also what `respostaReclamacao.ts`'s `semFraseDaShopee` puts where
- * `codigoSeguro` refuses a Shopee error code: one marker for "something
- * arrived that we do not echo".
+ * The shared HTTP mapper also uses this when `codigoSeguro` rejects an error code.
  */
 export const MARCADOR_NAO_TOKEN = '<nao-token>';
 

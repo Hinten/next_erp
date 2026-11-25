@@ -1,39 +1,40 @@
 import { describe, expect, it } from 'vitest';
 import type { Firestore } from 'firebase-admin/firestore';
 
+import { OccEngine, type OccTransaction } from '../../testing/occTransaction';
 import { oauthStateIntFreteCollection, oauthStateCollection } from '../collections';
 import { createOauthStateStore } from './store';
 import { MAX_AGE_MS, OauthStateError } from './state';
 
-/**
- * In-memory Firestore stand-in. Deliberately NOT a mock of the store's own reads:
- * the behaviour under test IS the read-check-stamp sequence, so the documents
- * have to actually persist between calls for a replay to be a replay.
- */
-function makeDb(): { db: Firestore; docs: Map<string, Record<string, unknown>> } {
-  const docs = new Map<string, Record<string, unknown>>();
+type Doc = Record<string, unknown>;
+
+function makeDb() {
+  const docs = new Map<string, Doc>();
+  const occ = new OccEngine({
+    applyWrite: (kind, path, patch, precondition) => {
+      if (kind !== 'update' || precondition) {
+        throw new Error(`unsupported transactional write: ${kind} on ${path}`);
+      }
+      const current = docs.get(path);
+      if (!current) throw Object.assign(new Error(`update on missing doc ${path}`), { code: 5 });
+      docs.set(path, { ...current, ...patch });
+    },
+  });
   const refFor = (path: string) => ({
     path,
-    set: async (data: Record<string, unknown>) => {
-      docs.set(path, data);
+    get: async () => {
+      const data = docs.get(path);
+      return { exists: data !== undefined, data: () => data };
+    },
+    set: async (data: Doc, options?: { merge: boolean }) => {
+      docs.set(path, options?.merge ? { ...docs.get(path), ...data } : { ...data });
     },
   });
   const db = {
     collection: (collPath: string) => ({ doc: (id: string) => refFor(`${collPath}/${id}`) }),
-    runTransaction: async <T>(fn: (tx: unknown) => Promise<T>): Promise<T> =>
-      fn({
-        get: async (ref: { path: string }) => {
-          const data = docs.get(ref.path);
-          return { exists: data !== undefined, data: () => data };
-        },
-        update: (ref: { path: string }, patch: Record<string, unknown>) => {
-          const current = docs.get(ref.path);
-          if (!current) throw new Error(`update on missing doc ${ref.path}`);
-          docs.set(ref.path, { ...current, ...patch });
-        },
-      }),
+    runTransaction: <T>(fn: (tx: OccTransaction) => Promise<T>) => occ.runTransaction(fn),
   };
-  return { db: db as unknown as Firestore, docs };
+  return { db: db as unknown as Firestore, docs, occ };
 }
 
 const store = createOauthStateStore(oauthStateCollection, 'integracaoId');
@@ -63,17 +64,16 @@ describe('put', () => {
     expect(docs.get(PATH)).toMatchObject({ nonce: 'n3' });
   });
 
-  it('FULLY overwrites — a consumed predecessor cannot poison the new attempt', async () => {
-    // With a merge instead of a set, the previous `consumidoEm` would survive and
-    // the fresh attempt would be born already redeemed, breaking every connect
-    // rather than just the replays.
+  it('fully replaces a consumed attempt, including fields omitted by the new attempt', async () => {
     const { db, docs } = makeDb();
     await store.put(db, 'int-1', { nonce: 'n1', codeVerifier: 'v1' }, NOW);
     await store.consume(db, 'int-1', 'n1', NOW);
     expect(docs.get(PATH)).toMatchObject({ consumidoEm: NOW });
+    docs.set(PATH, { ...docs.get(PATH), legacyField: true });
 
     await store.put(db, 'int-1', { nonce: 'n2', codeVerifier: 'v2' }, NOW + 1);
     expect(docs.get(PATH)).toMatchObject({ consumidoEm: null });
+    expect(docs.get(PATH)).not.toHaveProperty('legacyField');
     await expect(store.consume(db, 'int-1', 'n2', NOW + 2)).resolves.toEqual({
       codeVerifier: 'v2',
     });
@@ -97,6 +97,35 @@ describe('consume', () => {
 
     await store.consume(db, 'int-1', 'n1', NOW + 1);
     await expect(store.consume(db, 'int-1', 'n1', NOW + 2)).rejects.toThrow(OauthStateError);
+  });
+
+  it('lets one racing callback redeem the nonce and rejects the other on retry', async () => {
+    const { db, docs, occ } = makeDb();
+    await store.put(db, 'int-1', { nonce: 'n1', codeVerifier: 'v1' }, NOW);
+    const firstStamp = NOW + 1;
+    const secondStamp = NOW + 2;
+
+    occ.beforeCommit = async ({ attempt, writes }) => {
+      if (attempt === 1 && writes.some(({ data }) => data.consumidoEm === firstStamp)) {
+        // Let the second callback commit while the first has a buffered write.
+        await expect(store.consume(db, 'int-1', 'n1', secondStamp)).resolves.toEqual({
+          codeVerifier: 'v1',
+        });
+      }
+    };
+
+    const first = store.consume(db, 'int-1', 'n1', firstStamp);
+    await expect(first).rejects.toThrow(OauthStateError);
+    await expect(first).rejects.toThrow('state já utilizado');
+
+    expect(occ.txLog).toEqual([
+      { label: 'tx1', attempt: 1, phase: 'begin' },
+      { label: 'tx2', attempt: 1, phase: 'begin' },
+      { label: 'tx2', attempt: 1, phase: 'commit' },
+      { label: 'tx1', attempt: 1, phase: 'abort', conflictPath: PATH },
+      { label: 'tx1', attempt: 2, phase: 'begin' },
+    ]);
+    expect(docs.get(PATH)).toMatchObject({ consumidoEm: secondStamp });
   });
 
   it('rejects a nonce superseded by a newer attempt', async () => {

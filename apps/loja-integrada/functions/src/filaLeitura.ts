@@ -110,9 +110,11 @@ async function despachar(
  * a job per task) and, since step 12 (PR 12-g), the daily stock reconcile
  * (`estoque-reconcile`, one time-boxed slice of the ONE chain that walks every
  * conta). The order poller enqueues onto it now, the import's job-creation
- * trigger and each import slice's named continuation too, the reconcile's
- * nightly schedule and each of its slices' named continuation, the inbound
- * webhook from step 4.
+ * trigger and each import slice's named continuation too, and the reconcile's
+ * first slices — the nightly schedule, the conta trigger's depósito-change arm,
+ * a release's depósito re-run and, from the App Hosting backend
+ * (`lib/firebase/filasLi.ts`, PR 12-h), the operator's reconcile route — and
+ * each of its slices' named continuation; the inbound webhook will from step 4.
  *
  * ⚠️ The export name IS the deployed function AND queue name, and it must equal
  * `FILA_LEITURA_LI` — the producer targets that string. `index.ts` asserts the

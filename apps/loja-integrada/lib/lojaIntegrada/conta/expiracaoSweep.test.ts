@@ -11,6 +11,8 @@ import {
   MOTIVO_CATEGORIA_SEM_VINCULO_LI,
   MOTIVO_ESTOQUE_VINCULO_LI,
   MOTIVO_IMPORTACAO_PARADA_LI,
+  MOTIVO_PRECO_PARADO_LI,
+  MOTIVO_PRECO_RECUSADO_LI,
   STATUS_IMPORTACAO_LI,
   ROTAS_AVISO,
   SEVERIDADE_AVISO,
@@ -24,6 +26,8 @@ import {
   chaveEstoqueSemErpLi,
   chaveExpiracao,
   chaveImportacaoParada,
+  chavePrecoNaoBaixadoLi,
+  chavePrecoSemErpLi,
   chaveReconexao,
   relogioDoDocumentoUs,
 } from '../avisos/avisos';
@@ -134,6 +138,82 @@ async function avisosDeEstoque(
           amostra: 'p3, p4',
         },
         motivo: MOTIVO_ESTOQUE_VINCULO_LI.duplicado,
+      },
+      opts,
+    ),
+  ];
+  return linhas.map((l) => l.chave);
+}
+
+/**
+ * The price sync's four rows of one conta (step 13), as its runs will raise them under `on`:
+ * written through the REAL `escreverAviso`, clocked by the run's start (`relogioUs`).
+ */
+async function avisosDePreco(
+  db: FakeDb,
+  integracaoId: string,
+  relogioUs: number,
+  nowMs: number,
+): Promise<string[]> {
+  const base = {
+    conta: integracaoId,
+    severidade: SEVERIDADE_AVISO.atencao,
+    canal: CANAL_AVISO.lojaIntegrada,
+    urlInterna: { rota: ROTAS_AVISO.canalLojaIntegrada.build(integracaoId), campo: null },
+    relogioEvento: relogioUs,
+  };
+  const opts = { increment, agoraUs: agoraUsDe({ nowMs }) };
+  const linhas = [
+    await escreverAviso(
+      asDb(db),
+      {
+        ...base,
+        tipo: TIPO_AVISO.lojaIntegradaPrecoSemErp,
+        params: { loja: integracaoId, produtos: 2, ilegiveis: 1, amostra: 'p1, p2' },
+      },
+      opts,
+    ),
+    await escreverAviso(
+      asDb(db),
+      {
+        ...base,
+        tipo: TIPO_AVISO.lojaIntegradaPrecoRecusado,
+        entidade: 'p1',
+        // A refusal links to the produto, not to the conta (the tipo's contract in `aviso.ts`).
+        urlInterna: { rota: ROTAS_AVISO.produto.build('p1'), campo: null },
+        params: {
+          loja: integracaoId,
+          produto: 'p1',
+          idLi: '123456789',
+          motivo: MOTIVO_PRECO_RECUSADO_LI.recusado,
+          status: 422,
+        },
+        motivo: MOTIVO_PRECO_RECUSADO_LI.recusado,
+      },
+      opts,
+    ),
+    await escreverAviso(
+      asDb(db),
+      {
+        ...base,
+        tipo: TIPO_AVISO.lojaIntegradaPrecoNaoBaixado,
+        params: { loja: integracaoId, produtos: 3, baixadosNoErp: 1, amostra: 'p5' },
+      },
+      opts,
+    ),
+    await escreverAviso(
+      asDb(db),
+      {
+        ...base,
+        tipo: TIPO_AVISO.lojaIntegradaPrecoParado,
+        entidade: MOTIVO_PRECO_PARADO_LI.naoConverge,
+        params: {
+          loja: integracaoId,
+          motivo: MOTIVO_PRECO_PARADO_LI.naoConverge,
+          produtos: 2,
+          amostra: 'p3, p4',
+        },
+        motivo: MOTIVO_PRECO_PARADO_LI.naoConverge,
       },
       opts,
     ),
@@ -584,6 +664,47 @@ describe('pass (b): open rows of contas that no longer exist', () => {
     expect(r.contas).toBe(1);
     expect(r.orfaos.resolvidos).toBe(0);
     expect(novas).toHaveLength(3);
+    for (const chave of novas) expect(aviso(db, chave)?.resolvidoEm, chave).toBeNull();
+  });
+
+  it('⚠️ the price sync’s tipos (step 13): a LISTED conta’s four rows stay open, a gone conta’s are resolved', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'viva');
+    seedCredencial(db, 'viva', { tokenExpiraEmMs: expiraEm(60) });
+    const antes = AGORA_MS - DIA_MS;
+    const vivos = await avisosDePreco(db, 'viva', agoraUsDe({ nowMs: antes }), antes);
+    // A conta id that EXTENDS the live one is another conta: its prefix differs.
+    const orfaos = [
+      ...(await avisosDePreco(db, 'apagada', agoraUsDe({ nowMs: antes }), antes)),
+      ...(await avisosDePreco(db, 'viva2', agoraUsDe({ nowMs: antes }), antes)),
+    ];
+    expect(vivos).toContain(chavePrecoSemErpLi('viva'));
+    expect(vivos).toContain(chavePrecoNaoBaixadoLi('viva'));
+    expect(new Set([...vivos, ...orfaos]).size).toBe(12);
+
+    const r = await sweep(db);
+    expect(r.orfaos.resolvidos).toBe(orfaos.length);
+    for (const chave of vivos) expect(aviso(db, chave)?.resolvidoEm, chave).toBeNull();
+    for (const chave of orfaos) {
+      expect(aviso(db, chave), chave).toMatchObject({ resolucaoMotivo: 'conta-removida' });
+    }
+  });
+
+  it('⚠️ a price row raised AFTER the list was read (a brand-new conta) stays open', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'viva');
+    seedCredencial(db, 'viva', { tokenExpiraEmMs: expiraEm(20) });
+    // Pass (a)'s raise on `viva` is the write the new conta's reconcile lands right before.
+    let novas: string[] = [];
+    db.antesDaProximaEscrita(caminhoAviso(chaveExpiracao('viva')), async () => {
+      seedConta(db, 'nova', { nome: 'Loja Nova' });
+      novas = await avisosDePreco(db, 'nova', agoraUsDe({ nowMs: AGORA_MS }), AGORA_MS);
+    });
+
+    const r = await sweep(db);
+    expect(r.contas).toBe(1);
+    expect(r.orfaos.resolvidos).toBe(0);
+    expect(novas).toHaveLength(4);
     for (const chave of novas) expect(aviso(db, chave)?.resolvidoEm, chave).toBeNull();
   });
 

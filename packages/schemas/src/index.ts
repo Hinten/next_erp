@@ -1374,9 +1374,11 @@ export {
 export {
   extractTpAmb,
   decideNfeUploadDispatch,
+  decideNfeSaleUploadDispatch,
   decideNfeUploadTransition,
   finalidadeDaNfeProc,
   type FinalidadeDaNfeProc,
+  type NfeSaleUploadDispatch,
   type NfeUploadDispatch,
   type NfeUploadTransition,
 } from './nfeEnvioCanal';
@@ -1811,6 +1813,11 @@ export {
   motivoEstoqueVinculoLiSchema,
   MOTIVO_ESTOQUE_VINCULO_LI,
   MAX_AMOSTRA_AVISO_ESTOQUE_LI,
+  motivoPrecoRecusadoLiSchema,
+  MOTIVO_PRECO_RECUSADO_LI,
+  motivoPrecoParadoLiSchema,
+  MOTIVO_PRECO_PARADO_LI,
+  MAX_AMOSTRA_AVISO_PRECO_LI,
   situacaoAnuncioForaDaSincronizacaoSchema,
   SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO,
   chaveDeAviso,
@@ -1838,6 +1845,8 @@ export {
   type MotivoRastreioDivergenteLi,
   type MotivoCategoriaSemVinculoLi,
   type MotivoEstoqueVinculoLi,
+  type MotivoPrecoRecusadoLi,
+  type MotivoPrecoParadoLi,
   type SituacaoAnuncioForaDaSincronizacao,
 } from './aviso';
 export * from './shared/inicio';
@@ -1904,6 +1913,24 @@ export * from './estoqueErpLojaIntegrada';
 // backend and `apps/web`. Not a collection, so no `registry.ts` entry; a star export for the same
 // raw-text reason as above.
 export * from './estoqueManualLojaIntegrada';
+
+// Admin-only / default-deny (NOT in ALL_DOMAINS) — the Loja Integrada price sync (master plan
+// step 13, PR 13-a): the per-conta price state and its snapshot, and the price task's ids-only
+// payload. Bare: no Meta, never a combined `{ schema, meta }`, so `registry.test.ts` sees nothing
+// to register and the rules generator emits nothing.
+export * from './sincPrecoLojaIntegrada';
+export * from './tarefaPrecoLojaIntegrada';
+
+// The Loja Integrada price sync's ONE price function (master plan step 13): the family root, a
+// tabela entry, the child's target, the store-value fold and the no-lower decision. Pure, shared
+// by the send run, the trigger, the reconcile and a `tools/migrations` audit. Not a collection, so
+// no `registry.ts` entry; a star export for the fold-inventory's raw-text reason above.
+export * from './precoErpLojaIntegrada';
+
+// The Loja Integrada price sync's two OPERATOR routes (master plan step 13): the manual push's
+// strict body and its answer, and "Atualizar preços"'s body and answer — one wire contract for the
+// backend and `apps/web`. Not a collection, so no `registry.ts` entry.
+export * from './precoManualLojaIntegrada';
 
 // The machine-readable next step of a Shopee publish refusal (step 21, #1529):
 // the refusal sites in `apps/shopee` produce it, the web's wire parses it per row

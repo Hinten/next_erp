@@ -9,6 +9,8 @@ import {
   MOTIVO_IMPORTACAO_PARADA_LI,
   MOTIVO_PEDIDO_AMAZON,
   MOTIVO_PEDIDO_CONTESTADO_LI,
+  MOTIVO_PRECO_PARADO_LI,
+  MOTIVO_PRECO_RECUSADO_LI,
   MOTIVO_REVERSAO_COM_ETIQUETA_LI,
   PENDENCIA_RECLAMACAO,
   SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO,
@@ -21,6 +23,8 @@ import {
   motivoImportacaoParadaLiSchema,
   motivoPedidoAmazonSchema,
   motivoPedidoContestadoLiSchema,
+  motivoPrecoParadoLiSchema,
+  motivoPrecoRecusadoLiSchema,
   motivoRastreioDivergenteLiSchema,
   motivoReversaoComEtiquetaLiSchema,
   estadoRastreioLiSchema,
@@ -38,6 +42,8 @@ import {
   type MotivoImportacaoParadaLi,
   type MotivoPedidoAmazon,
   type MotivoPedidoContestadoLi,
+  type MotivoPrecoParadoLi,
+  type MotivoPrecoRecusadoLi,
   type MotivoReversaoComEtiquetaLi,
   type PendenciaReclamacao,
   type SituacaoAnuncioForaDaSincronizacao,
@@ -228,6 +234,66 @@ function fraseMotivoEstoqueVinculo(valor: Aviso['params'][string] | undefined): 
 function fraseAmostra(params: Aviso['params']): string {
   const amostra = p(params, 'amostra', '');
   return amostra === '' ? '' : ` Os primeiros: ${amostra}.`;
+}
+
+/**
+ * A count param as text when it is a positive count, else `null` — so a clause built on it
+ * vanishes whole when the producer stored none, or 0.
+ */
+function contagemPositiva(params: Aviso['params'], chave: string): string | null {
+  const valor = p(params, chave, '');
+  return valor === '' || valor === '0' ? null : valor;
+}
+
+/**
+ * pt-BR of why the daily price reconcile sent nothing for some products, and what fixes it —
+ * TOTAL over the code (`params.motivo`, a {@link MOTIVO_PRECO_PARADO_LI}). The producer (the price
+ * sync's daily reconcile) stores the CODE, never the sentence.
+ */
+const FRASE_MOTIVO_PRECO_PARADO_LI: Record<MotivoPrecoParadoLi, string> = {
+  [MOTIVO_PRECO_PARADO_LI.divergenciaEmMassa]:
+    'o preço deles na Loja Integrada difere do ERP em mais produtos do que a conferência diária ' +
+    'envia numa noite por segurança, por isso ela não enviou o preço de nenhum produto desta ' +
+    'loja; confira as tabelas de preço da conta e use "Atualizar preços" na conta para enviar ' +
+    'todos de uma vez',
+  [MOTIVO_PRECO_PARADO_LI.naoConverge]:
+    'o ERP enviou o preço deles nas duas últimas conferências e a Loja Integrada continua ' +
+    'mostrando outro valor, por isso eles não são enviados de novo até o preço mudar no ERP ou ' +
+    'na loja; confira esses produtos no painel da Loja Integrada',
+};
+
+/** The motivo's sentence, or a neutral one — the {@link fraseMotivoImportacaoParada} contract. */
+function fraseMotivoPrecoParado(valor: Aviso['params'][string] | undefined): string {
+  const codigo = motivoPrecoParadoLiSchema.safeParse(valor);
+  return codigo.success
+    ? FRASE_MOTIVO_PRECO_PARADO_LI[codigo.data]
+    : 'confira os preços desses produtos no ERP e na loja';
+}
+
+/**
+ * pt-BR of what became of a refused price — TOTAL over the code (`params.motivo`, a
+ * {@link MOTIVO_PRECO_RECUSADO_LI}), with the refused status when the producer stored one.
+ */
+function fraseMotivoPrecoRecusado(params: Aviso['params']): string {
+  const produto =
+    `o preço do produto ${p(params, 'produto')} ` +
+    `(produto ${p(params, 'idLi')} na loja ${p(params, 'loja')})`;
+  const codigo = motivoPrecoRecusadoLiSchema.safeParse(params.motivo);
+  if (!codigo.success) return `A Loja Integrada não ficou com ${produto}.`;
+  const frases: Record<MotivoPrecoRecusadoLi, () => string> = {
+    [MOTIVO_PRECO_RECUSADO_LI.recusado]: () => {
+      // `p()` decide o que é "ausente" (sem a chave OU ''): sem status, a cláusula some.
+      const status = p(params, 'status', '');
+      return (
+        `A Loja Integrada recusou ${produto}${status === '' ? '' : ` com HTTP ${status}`}, e o ` +
+        'preço dele na loja não foi atualizado.'
+      );
+    },
+    [MOTIVO_PRECO_RECUSADO_LI.naoRefletido]: () =>
+      `A Loja Integrada aceitou ${produto}, mas continua mostrando outro valor, mesmo depois ` +
+      'de um segundo envio.',
+  };
+  return frases[codigo.data]();
 }
 
 /**
@@ -1183,6 +1249,61 @@ export const MENSAGENS_POR_TIPO: Record<TipoAviso, MensagemAviso> = {
       `estoque: ${fraseMotivoEstoqueVinculo(params.motivo)}. Enquanto isso a Loja Integrada ` +
       `mantém o número que já tinha.${fraseAmostra(params)} O aviso se encerra quando a ` +
       'conferência diária de estoque não encontrar mais nenhum caso.',
+  },
+  // The four avisos of the price sync (step 13), all `atencao`. Meanwhile the store keeps its
+  // own price, so each sentence says what the store shows. No `runbook`: the fixes are in the
+  // ERP (a tabela price), in the conta's "Atualizar preços" or in the store's panel.
+  [TIPO_AVISO.lojaIntegradaPrecoSemErp]: {
+    titulo: 'Produtos da Loja Integrada sem preço no ERP',
+    corpo: (params) => {
+      const ilegiveis = contagemPositiva(params, 'ilegiveis');
+      const semPai = contagemPositiva(params, 'semPai');
+      const partes = [
+        ilegiveis === null ? null : `${ilegiveis} deles com um preço que o ERP não consegue ler`,
+        semPai === null
+          ? null
+          : `${semPai} deles apontando para um produto pai que não existe no ERP`,
+      ].filter((parte): parte is string => parte !== null);
+      return (
+        `${p(params, 'produtos')} produto(s) vinculado(s) à loja ${p(params, 'loja')} não têm ` +
+        'preço na tabela de preço da conta no ERP' +
+        `${partes.length === 0 ? '' : ` (${partes.join('; ')})`}` +
+        ', por isso o ERP não envia o preço deles e a Loja Integrada mantém o preço que já ' +
+        `tinha.${fraseAmostra(params)} Cadastre o preço deles na tabela da conta (no produto ` +
+        'pai, quando ele propaga o preço às variações, pois então é o preço do pai que vale); ' +
+        'o aviso se encerra quando a conferência diária de preços não encontrar mais nenhum.'
+      );
+    },
+  },
+  [TIPO_AVISO.lojaIntegradaPrecoRecusado]: {
+    titulo: 'Preço recusado pela Loja Integrada',
+    corpo: (params) =>
+      `${fraseMotivoPrecoRecusado(params)} Confira o produto no painel da Loja Integrada; o ` +
+      'aviso se encerra quando um envio do preço desse produto der certo.',
+  },
+  [TIPO_AVISO.lojaIntegradaPrecoNaoBaixado]: {
+    titulo: 'Redução de preço não enviada à Loja Integrada',
+    corpo: (params) => {
+      const noErp = contagemPositiva(params, 'baixadosNoErp');
+      return (
+        `Na loja ${p(params, 'loja')}, ${p(params, 'produtos')} produto(s) têm no ERP um preço ` +
+        'menor que o da Loja Integrada (um preço cheio menor, uma promoção menor ou uma ' +
+        'promoção nova)' +
+        `${noErp === null ? '' : `, ${noErp} deles porque o preço baixou no ERP desde a conferência anterior`}` +
+        '. A conferência diária nunca baixa um preço sozinha, então a loja continua com o preço ' +
+        `que já tinha.${fraseAmostra(params)} Para enviar, use "Atualizar preços" na conta com ` +
+        '"permitir baixar preços", ou envie esses produtos pela tela de produtos; o aviso se ' +
+        'encerra quando a conferência diária não encontrar mais nenhum.'
+      );
+    },
+  },
+  [TIPO_AVISO.lojaIntegradaPrecoParado]: {
+    titulo: 'Envio de preços da Loja Integrada parado',
+    corpo: (params) =>
+      `Na loja ${p(params, 'loja')}, ${p(params, 'produtos')} produto(s) estão sem envio de ` +
+      `preço: ${fraseMotivoPrecoParado(params.motivo)}. Enquanto isso a Loja Integrada mantém o ` +
+      `preço que já tinha.${fraseAmostra(params)} O aviso se encerra quando a conferência diária ` +
+      'de preços não encontrar mais nenhum caso.',
   },
   // Sem `runbook` nos dois avisos por CONTA da Amazon: o conserto está no app —
   // uma nova autorização pelo painel de conexão da conta (o link do aviso).

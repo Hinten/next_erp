@@ -2,10 +2,8 @@ import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PERM } from '@delfrance/auth';
 import {
-  SHOPEE_ERROR_KIND,
   SHOPEE_PROD_API_HOST,
   SHOPEE_SHOP_STATUS,
-  ShopeeReauthRequiredError,
   resolveShopeeHosts,
   type ShopeeClient,
   type ShopeeShopInfo,
@@ -36,6 +34,7 @@ import {
 } from '@/lib/shopee/precos/errosPreco';
 import type { FamiliaDePreco, ItemDePreco } from '@/lib/shopee/precos/planoPreco';
 import { type DocData, FakeDb, asDb, grpc } from '@/lib/shopee/testing/fakeDb';
+import { falhaDeEnvelope, verificarEnvelopeRedigido } from '@/lib/shopee/testing/falhaDeEnvelope';
 
 /**
  * `POST /api/marketplace/shopee/enviar-precos` (#1521, step 13; reconcile
@@ -997,19 +996,10 @@ describe('(5) aborts e erros — R-17 a R-20', () => {
   });
 
   it('R-19 — um erro da Shopee do contexto segue `shopeeErrorResponse` (reauth ⇒ 409)', async () => {
-    h.loadCtx.mockRejectedValue(
-      new ShopeeReauthRequiredError('reconecte a conta', {
-        code: 'error_auth',
-        kind: SHOPEE_ERROR_KIND.reauth,
-        httpStatus: 200,
-        path: '/api/v2/shop/get_shop_info',
-      }),
-    );
-
+    const falha = falhaDeEnvelope('/api/v2/shop/get_shop_info', 'shop_access_expired');
+    h.loadCtx.mockRejectedValue(falha);
     const res = await POST(req(corpoValido(), AUTORIZADO));
-
-    expect(res.status).toBe(409);
-    expect(((await res.json()) as { code: string }).code).toBe('SHOPEE_REAUTH_REQUIRED');
+    await verificarEnvelopeRedigido(res, falha, 409);
   });
 
   it('R-19 — um TypeError sem relação SOBE (rule 6)', async () => {

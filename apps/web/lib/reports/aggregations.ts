@@ -35,63 +35,65 @@ export interface ProdutoSalesRow {
   pedidos: number;
 }
 
+export interface ProdutoSalesLine {
+  pedidoId: string;
+  produtoUid: string;
+  quantidade: number;
+  precoDeVenda: number;
+  descontoUnitario?: number | null;
+  nomeDeVenda?: string | null;
+  sku?: string | null;
+}
+
+export type ProdutoSalesMetric = 'quantidade' | 'pedidos' | 'receita';
+
 type Acumulador = ProdutoSalesRow & { _orderIds: Set<string>; _nivelDoRotulo: 0 | 1 | 2 };
 
 /**
- * Aggregate every ItemDoPedido across the supplied pedidos and rank by
- * total quantity sold. Items without a `produtoUid` (or with the literal
- * 'NONE' bucket) are dropped — there's no produto to report on.
+ * Accumulate order-line values and keep the best label available for each product.
+ * The product id is the order's item-map key, which may differ from the line's
+ * own produtoUid in legacy orders.
  */
-export function topProdutos(pedidos: PedidoLite[], topN = 10): ProdutoSalesRow[] {
+export function aggregateProductSales(lines: Iterable<ProdutoSalesLine>): ProdutoSalesRow[] {
   const byUid = new Map<string, Acumulador>();
-
-  for (const { id: pedidoId, data } of pedidos) {
-    for (const [groupKey, list] of Object.entries(data.itens)) {
-      const produtoUid = groupKey && groupKey !== 'NONE' ? groupKey : null;
-      if (!produtoUid) continue;
-      for (const item of list) {
-        const existing: Acumulador = byUid.get(produtoUid) ?? {
-          produtoUid,
-          // What level 0 resolves to. Seeded through the resolver rather than
-          // spelled out, so the seed cannot disagree with the chain's tail.
-          label: nomeDoItem({ produtoUid }, null),
-          quantidade: 0,
-          receita: 0,
-          pedidos: 0,
-          _orderIds: new Set<string>(),
-          _nivelDoRotulo: 0,
-        };
-        existing.quantidade += item.quantidade;
-        existing.receita += (item.precoDeVenda - (item.descontoUnitario ?? 0)) * item.quantidade;
-        // A produto repeats across pedidos and only some lines carry a
-        // `nomeDeVenda`, so the row's label is the best any of them can offer.
-        // ⚠️ The fold is MONOTONIC — strictly `>` — for two reasons: the first
-        // line of a tier wins, and a later line carrying LESS cannot walk the
-        // label back down. A latch on the name tier alone did the second: a
-        // group whose first line had a sku and whose second had neither fell
-        // from the sku to the raw id, leaving the row worse than its data.
-        // ⚠️ The uid comes from the MAP KEY, not `item.produtoUid` — the two can
-        // disagree in the legacy corpus, and the key is what this row reports on.
-        const nivel = nivelDoNomeDoItem(item);
-        if (nivel > existing._nivelDoRotulo) {
-          existing._nivelDoRotulo = nivel;
-          existing.label = nomeDoItem(
-            { produtoUid, nomeDeVenda: item.nomeDeVenda, sku: item.sku },
-            null,
-          );
-        }
-        existing._orderIds.add(pedidoId);
-        byUid.set(produtoUid, existing);
-      }
+  for (const item of lines) {
+    const { produtoUid, pedidoId } = item;
+    if (!produtoUid || produtoUid === 'NONE') continue;
+    const row: Acumulador = byUid.get(produtoUid) ?? {
+      produtoUid,
+      label: nomeDoItem({ produtoUid }, null),
+      quantidade: 0,
+      receita: 0,
+      pedidos: 0,
+      _orderIds: new Set<string>(),
+      _nivelDoRotulo: 0,
+    };
+    row.quantidade += item.quantidade;
+    row.receita += (item.precoDeVenda - (item.descontoUnitario ?? 0)) * item.quantidade;
+    // Only a higher tier replaces the label. The first line in a tier wins.
+    const nivel = nivelDoNomeDoItem(item);
+    if (nivel > row._nivelDoRotulo) {
+      row._nivelDoRotulo = nivel;
+      row.label = nomeDoItem(item, null);
     }
+    row._orderIds.add(pedidoId);
+    byUid.set(produtoUid, row);
   }
 
-  const rows = [...byUid.values()].map(({ _orderIds, _nivelDoRotulo: _n, ...row }) => ({
+  return [...byUid.values()].map(({ _orderIds, _nivelDoRotulo: _n, ...row }) => ({
     ...row,
     pedidos: _orderIds.size,
   }));
-  rows.sort((a, b) => b.quantidade - a.quantidade);
-  return rows.slice(0, topN);
+}
+
+export function rankProductSales(
+  rows: readonly ProdutoSalesRow[],
+  metric: ProdutoSalesMetric,
+  topN: number,
+): ProdutoSalesRow[] {
+  return [...rows]
+    .sort((a, b) => b[metric] - a[metric] || a.produtoUid.localeCompare(b.produtoUid))
+    .slice(0, topN);
 }
 
 /* -------------------------- Distribuição por estado ------------------------ */
@@ -104,11 +106,13 @@ export interface EstadoSliceRow {
   receita: number;
 }
 
+type PedidoEstadoRow = { data: { estado: EstadoPedido } & Parameters<typeof pedidoTotal>[0] };
+
 /**
  * Count pedidos per ESTADOS_PEDIDO and sum their totals. Output is
  * ordered by count desc; pages can re-sort as needed.
  */
-export function porEstado(pedidos: PedidoLite[]): EstadoSliceRow[] {
+export function porEstado(pedidos: readonly PedidoEstadoRow[]): EstadoSliceRow[] {
   const map = new Map<EstadoPedido, EstadoSliceRow>();
   for (const { data } of pedidos) {
     const existing =
@@ -135,7 +139,7 @@ export interface BucketSummary {
   receita: number;
 }
 
-export function porBucket(pedidos: PedidoLite[]): BucketSummary[] {
+export function porBucket(pedidos: readonly PedidoEstadoRow[]): BucketSummary[] {
   const map = new Map<EstadoBucket, BucketSummary>([
     ['aberto', { bucket: 'aberto', count: 0, receita: 0 }],
     ['processo', { bucket: 'processo', count: 0, receita: 0 }],

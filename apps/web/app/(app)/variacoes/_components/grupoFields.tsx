@@ -108,19 +108,19 @@ export function deriveVariacoesIds(values: Record<string, unknown>): { variacoes
 }
 
 /**
- * The `novo` page's `transformCopiedValues`: a copy ("copiar" on the list)
- * starts with NO Loja Integrada and NO Shopee links. A create writes every field,
- * so a copied link would be created by that save while counting as untouched (it
- * is the form's seed) and skipping every check a new link must pass; and a valid
- * one would put the same store grade or Shopee options in two grupos, which
- * publishing and importing treat as ambiguous (Loja Integrada) or settle by read
- * order, silently (Shopee). The operator links the copy. Amazon's array is left
- * to #2071.
+ * A copy starts without marketplace links. Inherited links would count as
+ * untouched form values, so creating the copy could duplicate a channel binding
+ * without validating it as a new link. Operators can link the copy explicitly.
  */
 export function copiarGrupoSemVinculos(
   origem: Readonly<Record<string, unknown>>,
 ): Record<string, unknown> {
-  return { ...origem, linksVariacoesli: null, linksVariacoesShopee: null };
+  return {
+    ...origem,
+    linksVariacoesli: null,
+    linksVariacoesShopee: null,
+    linksVariacoesAmazon: null,
+  };
 }
 
 const TIPO_OPTIONS = Object.entries(TIPO_VARIACAO_LABELS).map(([value, label]) => ({

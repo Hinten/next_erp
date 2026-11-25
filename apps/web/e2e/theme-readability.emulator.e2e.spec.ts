@@ -18,7 +18,6 @@ import { warmRoutes } from './helpers/warmup';
 import {
   cleanupThemeCheckoutFixtures,
   cleanupThemeReportFixtures,
-  expectThemeReportFixturesInRecentWindow,
   seedThemeCheckoutFixtures,
   seedThemeReportFixtures,
 } from './helpers/theme-fixtures';
@@ -252,17 +251,41 @@ test.describe('Theme readability — populated component states', () => {
         });
 
         await test.step('populated sales-report total, bucket legend and state detail', async () => {
-          // Other suites also write pedidos. Prove our eight orders remain in
-          // the real latest-500 query, then check lower bounds rather than
-          // assuming the report contains only this worker's fixture namespace.
-          await expectThemeReportFixturesInRecentWindow(reportFixtures);
           await page.goto('/relatorios/vendas');
           const heading = page.getByRole('heading', { name: 'Vendas por estado', exact: true });
+          const start = page.getByLabel('Data inicial', { exact: true });
+          const end = page.getByLabel('Data final', { exact: true });
+          const movement = page.getByLabel('Movimento', { exact: true });
+          const channels = page.getByRole('combobox', { name: 'Canais de venda', exact: true });
+          const states = page.getByRole('combobox', { name: 'Estados do pedido', exact: true });
+          const consult = page.getByRole('button', { name: 'Consultar', exact: true });
           const legend = page.getByRole('list', { name: 'Resumo por estado', exact: true });
           const table = page.getByRole('table');
           const total = page.locator('.mantine-DonutChart-label');
           const back = page.getByRole('link', { name: '← Voltar a Relatórios', exact: true });
-          const required = [heading, legend, total, back];
+          await expect(consult).toBeEnabled();
+          await expect(movement).toHaveValue('saidas');
+          await expect(table).toHaveCount(0);
+          await start.fill(reportFixtures.day);
+          await end.fill(reportFixtures.day);
+          await expect(channels).toBeEnabled();
+          await channels.click();
+          await page
+            .getByRole('option', { name: reportFixtures.accountLabel, exact: true })
+            .click();
+          await consult.click();
+          const required = [
+            heading,
+            start,
+            end,
+            movement,
+            states,
+            channels,
+            consult,
+            legend,
+            total,
+            back,
+          ];
           for (const header of ['Estado', 'Bucket', 'Pedidos', 'Receita']) {
             required.push(table.getByRole('columnheader', { name: header, exact: true }));
           }
@@ -279,21 +302,17 @@ test.describe('Theme readability — populated component states', () => {
             });
             await expect(count).toBeVisible({ timeout: 20_000 });
             await expect(detail).toBeVisible({ timeout: 20_000 });
-            expect(Number.parseInt(await count.innerText(), 10)).toBeGreaterThanOrEqual(
-              state.count,
-            );
-            expect(
-              Number(await detail.getByRole('cell').nth(2).innerText()),
-            ).toBeGreaterThanOrEqual(state.count);
+            await expect(count).toHaveText(`${state.count} pedido(s)`);
+            await expect(detail.getByRole('cell').nth(2)).toHaveText(String(state.count));
             const displayedRevenue = Number(
               (await detail.getByRole('cell').nth(3).innerText())
                 .replace(/[^\d,-]/g, '')
                 .replace(',', '.'),
             );
-            expect(displayedRevenue).toBeGreaterThanOrEqual(state.revenue);
+            expect(displayedRevenue).toBe(state.revenue);
             required.push(label, count, revenue, swatch, ...(await detail.getByRole('cell').all()));
           }
-          await expect(total).toHaveText(/^\d+ pedidos$/);
+          await expect(total).toHaveText(`${reportFixtures.total} pedidos`);
           const renderedCounts = await page.evaluate(() => {
             const central = document.querySelector('.mantine-DonutChart-label')?.textContent ?? '';
             const buckets = [
@@ -308,13 +327,25 @@ test.describe('Theme readability — populated component states', () => {
               stateTotal: states.reduce((sum, value) => sum + value, 0),
             };
           });
-          expect(renderedCounts.total).toBeGreaterThanOrEqual(reportFixtures.orderIds.length);
+          expect(renderedCounts.total).toBe(reportFixtures.total);
           expect(renderedCounts.bucketTotal).toBe(renderedCounts.total);
           expect(renderedCounts.stateTotal).toBe(renderedCounts.total);
           // Counts already live in the central total and readable HTML legend;
           // outer SVG labels would duplicate them and collide with leader lines.
           await expect(page.locator('.recharts-pie-label-text')).toHaveCount(0);
           await audit(required, [], { focus: [back] });
+          await states.click();
+          await page.getByRole('option', { name: 'Pago', exact: true }).click();
+          await expect(table).toHaveCount(0);
+          await consult.click();
+          await expect(total).toHaveText('4 pedidos');
+          await expect(table.getByRole('row')).toHaveCount(2);
+          await movement.selectOption('entradas');
+          await consult.click();
+          await expect(total).toHaveText('1 pedidos');
+          await expect(table.getByRole('cell').last()).toHaveText(
+            new RegExp(`R\\$\\s*${reportFixtures.incomingRevenue},00`),
+          );
         });
 
         await test.step('checkouts chart fits a collaborator name wider than its axis', async () => {

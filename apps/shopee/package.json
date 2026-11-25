@@ -20,6 +20,8 @@
     "enviar:nfe": "dotenv -e ../../.env.local -- tsx scripts/enviar-nfe.ts",
     "baixar:etiqueta": "dotenv -e ../../.env.local -- tsx scripts/etiqueta.ts",
     "importar:pedido": "dotenv -e ../../.env.local -- tsx scripts/importar-pedido.ts",
+    "reproduzir:pedido": "tsx scripts/reproduzir-pedido.ts",
+    "capturar:pedido": "tsx scripts/capturar-pedido.ts",
     "liquidar:pagamentos": "dotenv -e ../../.env.local -- tsx scripts/liquidar-pagamentos.ts",
     "rastrear:pedido": "dotenv -e ../../.env.local -- tsx scripts/rastrear-pedido.ts",
     "varrer:reservas": "dotenv -e ../../.env.local -- tsx scripts/varrer-reservas.ts",

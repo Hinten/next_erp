@@ -8,6 +8,11 @@ import {
 } from '@delfrance/integrations-shopee';
 
 import { ShopeeContaNotConfiguredError } from '@/lib/shopee/core/shopee';
+import {
+  FRASE_DO_ENVELOPE,
+  falhaDeEnvelope,
+  verificarEnvelopeRedigido,
+} from '@/lib/shopee/testing/falhaDeEnvelope';
 import { ShopeeCredencialInvalidaError } from '@/lib/shopee/core/credentialStore';
 import {
   ShopeeRefreshEmAndamentoError,
@@ -321,6 +326,31 @@ describe('the two clocks', () => {
 });
 
 describe('get_shop_info is a SIDE read', () => {
+  it('keeps the 200 fallback and logs only account metadata for a provider envelope', async () => {
+    const falha = falhaDeEnvelope('/api/v2/shop/get_shop_info', 'error_server');
+    h.getShopInfo.mockRejectedValue(falha);
+
+    const res = await GET(req('int-1', { authorization: 'Bearer t' }));
+    const body: unknown = await res.json();
+    expect(res.status).toBe(200);
+    expect(body).toMatchObject({ connected: true, loja: null });
+    expect(JSON.stringify(body)).not.toContain(FRASE_DO_ENVELOPE);
+    expect(spyWarn.mock.calls).toEqual([
+      [
+        '[shopee/conta] get_shop_info falhou; seguindo sem os dados da loja',
+        { integracaoId: 'int-1', shopId: 111, erro: 'ShopeeApiError' },
+      ],
+    ]);
+  });
+
+  it('uses the shared mapper for an envelope that prevents loading the account', async () => {
+    const falha = falhaDeEnvelope('/api/v2/shop/get_shop_info', 'error_server');
+    h.loadCtx.mockRejectedValue(falha);
+
+    const res = await GET(req('int-1', { authorization: 'Bearer t' }));
+    await verificarEnvelopeRedigido(res, falha, 502);
+  });
+
   it('degrades to loja:null at 200 when it fails', async () => {
     // Losing the shop name must not cost the operator the authorization expiry,
     // which is the answer they actually came for.

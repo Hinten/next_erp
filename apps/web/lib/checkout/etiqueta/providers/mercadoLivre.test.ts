@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { INTEGRACAO_FRETE } from '@delfrance/schemas';
+import { ESTADO_NFE, INTEGRACAO_FRETE } from '@delfrance/schemas';
 
 import {
   MercadoLivreClientHttpError,
@@ -8,8 +8,18 @@ import {
   type MercadoLivreEtiquetaArtifact,
 } from '@/lib/mercado-livre/client';
 
-import { createMercadoLivreProvider } from './mercadoLivre';
+import { createMercadoLivreProvider, resolveApprovedNfeId } from './mercadoLivre';
 import type { EtiquetaProviderInput } from '../types';
+
+const h = vi.hoisted(() => ({
+  getDocs: vi.fn(),
+  collectionRef: { path: 'pedidos/p1/nfev4' },
+}));
+vi.mock('firebase/firestore', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('firebase/firestore')>()),
+  getDocs: h.getDocs,
+}));
+vi.mock('@/lib/data/nfeCollection', () => ({ nfeCollection: { ref: () => h.collectionRef } }));
 
 /* -------------------------------- fixtures -------------------------------- */
 
@@ -17,9 +27,9 @@ const LEGACY_NO_SHIPMENT_MSG =
   'Não foi possível encontrar o frete no Mercado Livre deste pedido. ' +
   'Entre em contato com o suporte para que o problema possa ser verificado.';
 
-const LEGACY_NO_NFE_MSG =
+const NO_ELIGIBLE_NFE_MSG =
   'Não foi possível obter a etiqueta do Mercado Livre, pois o pedido não possui ' +
-  'nota fiscal eletrônica aprovada.';
+  'NF-e de venda aprovada em produção apta para envio.';
 
 const pendingError = () =>
   new MercadoLivreClientHttpError('etiqueta pendente de NF-e', 409, 'ML_INVOICE_PENDING');
@@ -83,6 +93,37 @@ function makeProvider(nfeId: string | null = 'nfe-7') {
 }
 
 /* --------------------------------- tests ---------------------------------- */
+
+describe('resolveApprovedNfeId', () => {
+  const doc = (id: string, mod: number, xml: string) => ({
+    id,
+    data: () => ({ estado: ESTADO_NFE.aprovada, ultima_modificacao: mod, xml_nfe_proc: xml }),
+  });
+  const sale = '<nfeProc><ide><tpAmb>1</tpAmb><tpNF>1</tpNF><finNFe>1</finNFe></ide></nfeProc>';
+  const adjustment = sale.replace('finNFe>1', 'finNFe>3');
+  const homologacao = sale.replace('tpAmb>1', 'tpAmb>2');
+
+  it('selects the newest eligible sale from one query even if another invoice is newer', async () => {
+    h.getDocs.mockClear().mockResolvedValueOnce({
+      docs: [
+        doc('old-sale', 1, sale),
+        doc('adjustment', 4, adjustment),
+        doc('sale', 2, sale),
+        doc('test-sale', 3, homologacao),
+      ],
+    });
+
+    await expect(resolveApprovedNfeId({} as never, 'p1')).resolves.toBe('sale');
+    expect(h.getDocs).toHaveBeenCalledExactlyOnceWith(h.collectionRef);
+  });
+
+  it('returns null when the query yields no eligible invoice', async () => {
+    h.getDocs.mockClear().mockResolvedValueOnce({ docs: [doc('adjustment', 1, adjustment)] });
+
+    await expect(resolveApprovedNfeId({} as never, 'p1')).resolves.toBeNull();
+    expect(h.getDocs).toHaveBeenCalledExactlyOnceWith(h.collectionRef);
+  });
+});
 
 describe('mercadoLivreProvider', () => {
   it('fetches + prints a zpl2 label (printJob args pinned)', async () => {
@@ -192,7 +233,7 @@ describe('mercadoLivreProvider', () => {
     const input = makeInput({ mercadoLivreClient: { etiqueta, enviarNfe }, sleep });
 
     const out = await provider.emitirOuImprimir(input);
-    expect(out).toEqual({ status: 'error', message: LEGACY_NO_NFE_MSG });
+    expect(out).toEqual({ status: 'error', message: NO_ELIGIBLE_NFE_MSG });
     expect(enviarNfe).not.toHaveBeenCalled();
     expect(sleep).not.toHaveBeenCalled();
     expect(etiqueta).toHaveBeenCalledTimes(1);

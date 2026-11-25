@@ -38,8 +38,9 @@ export function checkoutDateRange(
   const first = parseDay(start);
   const last = parseDay(end);
   if (!first || !last || first > last) return null;
-  last.setDate(last.getDate() + 1);
-  return { startMs: first.getTime(), endExclusiveMs: last.getTime() };
+  // Construct the next day at midnight even if a DST jump shifted `last` to 01:00.
+  const exclusiveEnd = new Date(last.getFullYear(), last.getMonth(), last.getDate() + 1);
+  return { startMs: first.getTime(), endExclusiveMs: exclusiveEnd.getTime() };
 }
 
 export function buildCheckoutReportPipeline(db: Firestore, range: CheckoutDateRange) {

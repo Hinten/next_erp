@@ -1,12 +1,14 @@
 import { roundReais } from '@delfrance/core/money';
 import type { ItemDoPedido } from '../collection/pedido';
 
+type ItemSubtotalInput = Pick<ItemDoPedido, 'precoDeVenda' | 'descontoUnitario' | 'quantidade'>;
+
 /**
  * Helper to compute the subtotal of an item using the same formula as
  * the Flutter ItemDoPedido.subtotal getter:
  * `(precoDeVenda - descontoUnitario) * quantidade`.
  */
-export function itemSubtotal(item: ItemDoPedido): number {
+export function itemSubtotal(item: ItemSubtotalInput): number {
   return (item.precoDeVenda - (item.descontoUnitario ?? 0)) * item.quantidade;
 }
 
@@ -18,7 +20,7 @@ export function itemCusto(item: ItemDoPedido): number {
   return (item.custo ?? 0) * item.quantidade;
 }
 
-export function pedidoTotal(p: { itens: Record<string, ItemDoPedido[]> }): number {
+export function pedidoTotal(p: { itens: Record<string, ItemSubtotalInput[]> }): number {
   let sum = 0;
   for (const list of Object.values(p.itens)) {
     for (const item of list) {

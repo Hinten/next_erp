@@ -4,7 +4,6 @@ import { PERM } from '@delfrance/auth';
 import {
   SHOPEE_ERROR_KIND,
   ShopeeRateLimitError,
-  ShopeeReauthRequiredError,
   type ShopeeClient,
 } from '@delfrance/integrations-shopee';
 import { ESTADO_ANUNCIO_SHOPEE } from '@delfrance/schemas';
@@ -25,6 +24,7 @@ import {
 import { CODIGO_GUARDA_ENVIO, MOTIVO_ESTOQUE_SHOPEE } from '@/lib/shopee/estoque/errosEstoque';
 import type { LinhaDeFamiliaShopee } from '@/lib/shopee/estoque/planoEstoque';
 import { type DocData, FakeDb, asDb } from '@/lib/shopee/testing/fakeDb';
+import { falhaDeEnvelope, verificarEnvelopeRedigido } from '@/lib/shopee/testing/falhaDeEnvelope';
 
 type ModuloManual = typeof import('@/lib/shopee/estoque/enviarEstoqueManual');
 
@@ -512,19 +512,10 @@ describe('(4) o envelope — R-12 a R-15', () => {
 
 describe('(5) os erros — R-16 a R-20', () => {
   it('R-16 — reauth ⇒ 409, nunca 502 (a cadeia mais-derivada-primeiro)', async () => {
-    h.loadCtx.mockRejectedValue(
-      new ShopeeReauthRequiredError('reconecte a conta', {
-        code: 'error_auth',
-        kind: SHOPEE_ERROR_KIND.reauth,
-        httpStatus: 200,
-        path: '/api/v2/product/update_stock',
-      }),
-    );
-
+    const falha = falhaDeEnvelope('/api/v2/product/update_stock', 'shop_access_expired');
+    h.loadCtx.mockRejectedValue(falha);
     const res = await POST(req(corpoValido(), AUTORIZADO));
-
-    expect(res.status).toBe(409);
-    expect(((await res.json()) as { code: string }).code).toBe('SHOPEE_REAUTH_REQUIRED');
+    await verificarEnvelopeRedigido(res, falha, 409);
   });
 
   it('R-17 — uma RAJADA que escapa do envio vira 502', async () => {

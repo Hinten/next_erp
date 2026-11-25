@@ -98,14 +98,17 @@ So a key walk needs exactly one index, and it must be declared:
 Filtering stays in code on the fetched page: the key index is the only index a
 walk needs, and no filter or composite index should be added for a one-time
 script. These key indexes are **migration-only**: once the window's walks have
-run they have no reader, and #1896 deletes them after the cutover. The permanent
-key-only indexes are not in `key-walks.json` at all: `arquivos`, `CMUN` and
-`itens`, each with a reader after the cutover (`PERMANENTES` in
-`src/keyWalks.indexes.test.ts`). ⚠️ One migration-only index must outlive the
-cutover for a while: `produtolojaintegrada (__name__ ASC)` (collection group)
-stays until the Loja Integrada anchor census's last re-run, after each conta's
-first product import
+run they have no reader, and #1896 deletes them after the cutover. The
+exceptions are the key-only indexes with a reader after the cutover, listed in
+`PERMANENTES` (`src/keyWalks.indexes.test.ts`) and never deleted. Three are not
+in `key-walks.json` at all: `arquivos`, `CMUN` and `itens`. The fourth,
+`produtolojaintegrada (__name__ ASC)` (collection group), is in it, because two
+scripts here walk it, and since #2185 it is **permanent**: the Loja Integrada
+daily stock reconcile walks every link doc by key on it every night while its
+stock valve is not `off` (`estoque/reconcile/caminhadaVinculos.ts` in
+`apps/loja-integrada`), and the anchor census's re-runs ride it too
 ([`li-integracoes-com-produto.README.md`](li-integracoes-com-produto.README.md)).
+So #1896 deletes the key indexes `key-walks.json` lists, minus `PERMANENTES`.
 
 ⚠️ **Agents never run these against production.** Staging is a rehearsal —
 dry-run counts, then a clean second pass as the idempotence check — and staging

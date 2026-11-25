@@ -43,13 +43,18 @@ interface IntFreteDocFixture {
 }
 
 /** The resolved `int_frete` document, or `null` for "resolves to nothing". */
-const mockIntFrete: { doc: IntFreteDocFixture | null } = { doc: null };
+const mockIntFrete: { doc: IntFreteDocFixture | null; loading: boolean } = {
+  doc: null,
+  loading: false,
+};
 
 const tracking = vi.hoisted(() => ({ rastrear: vi.fn() }));
 vi.mock('@/lib/mercado-livre/client', () => ({ useMercadoLivreClient: () => tracking }));
 vi.mock('@/lib/auth/usePermission', () => ({
   usePermission: () => ({ allowed: true, loading: false }),
 }));
+vi.mock('@/lib/freight/client', () => ({ useFreightClient: () => null }));
+vi.mock('./frete/EtiquetaMelhorEnvioPanel', () => ({ EtiquetaMelhorEnvioPanel: () => null }));
 
 // The three header pickers render only what the tab HANDS them — whether the
 // control is disabled and, for the integração picker, which doc it names: the
@@ -98,7 +103,7 @@ vi.mock('@delfrance/data/hooks', () => ({
       ref != null && (ref as { id: string }).id === mockIntFrete.doc?.id
         ? mockIntFrete.doc
         : undefined,
-    loading: false,
+    loading: ref != null && mockIntFrete.loading,
     error: undefined,
   }),
 }));
@@ -111,6 +116,9 @@ vi.mock('@/lib/data/intFreteCollection', () => ({
 }));
 
 const db = {} as Firestore;
+const PRAZO_LABEL = 'Data máxima para despacho';
+const PRAZO_DESPACHO_US = new Date(2026, 11, 3, 14, 25).getTime() * 1_000;
+const PRAZO_EXIBIDO = '03/12/2026 14:25';
 const REF_INT_1 = 'documents/int_frete/int-1';
 /** A conta's `int_frete` doc, as the Shopee importer stamps it on a CREATE (fixture id and nome). */
 const DOC_SHOPEE: IntFreteDocFixture = {
@@ -126,7 +134,7 @@ function freteWith(over: Partial<FreteInicialFormState>): FreteInicialFormState 
   };
 }
 
-function Host({ frete }: { frete: FreteInicialFormState }) {
+function Host({ frete, disabled }: { frete: FreteInicialFormState; disabled?: boolean }) {
   const form = useForm<PedidoFormState, unknown, Pedido>({
     defaultValues: {
       freteInicial: frete,
@@ -140,7 +148,7 @@ function Host({ frete }: { frete: FreteInicialFormState }) {
   return (
     <MantineTestProvider>
       <QueryClientProvider client={queryClient}>
-        <FreteTab form={form} db={db} pedidoId="ped-1" />
+        <FreteTab form={form} db={db} disabled={disabled} pedidoId="ped-1" />
       </QueryClientProvider>
     </MantineTestProvider>
   );
@@ -162,16 +170,19 @@ const selectModalidade = () =>
 const pickerIntegracao = () => screen.getByTestId('integracao-frete-select');
 const pickerEndereco = () => screen.getByTestId('endereco-frete-picker');
 const pickerRecebedor = () => screen.getByTestId('cliente-recebedor-picker');
-/**
- * Rendered by `GenericFreteFields` and by `RetiradaFields`, by NEITHER
- * `MarketplaceReadOnly` — the anchor that says which body is on screen.
- */
-const campoPrazoDespacho = () => screen.queryByLabelText('Data máxima para despacho');
+const campoPrazoDespacho = () => screen.getByLabelText(PRAZO_LABEL) as HTMLButtonElement;
+
+function expectPrazoBloqueado() {
+  const campo = campoPrazoDespacho();
+  expect(campo.textContent).toBe(PRAZO_EXIBIDO);
+  expect(campo.disabled).toBe(true);
+}
 
 beforeEach(() => {
   // Mantine portals into `document.body`, which RTL's cleanup does not clear.
   document.body.innerHTML = '';
   mockIntFrete.doc = null;
+  mockIntFrete.loading = false;
   tracking.rastrear.mockReset();
 });
 afterEach(() => vi.restoreAllMocks());
@@ -206,6 +217,7 @@ describe('FreteTab — marketplace ownership is read off the BLOCK too (#1515)',
         externalOptionIntegracao: INTEGRACAO_FRETE.shopee,
         integracaoFreteOuterRef: null,
         codRastreio: 'OFG242672552205937',
+        prazoDespacho: PRAZO_DESPACHO_US,
       }),
     );
 
@@ -213,8 +225,7 @@ describe('FreteTab — marketplace ownership is read off the BLOCK too (#1515)',
     expect(alertaMarketplace()?.textContent).toMatch(
       /Frete gerenciado pelo marketplace \(Shopee\)/,
     );
-    // The generic body is gone — so are its two importer-owned inputs.
-    expect(campoPrazoDespacho()).toBeNull();
+    expectPrazoBloqueado();
     expect(inputRastreio().readOnly).toBe(true);
     expect(inputRastreio().disabled).toBe(true);
     expect(inputIntegracaoOpcao().readOnly).toBe(true);
@@ -238,9 +249,7 @@ describe('FreteTab — marketplace ownership is read off the BLOCK too (#1515)',
     );
 
     expect(alertaMarketplace()).toBeNull();
-    // Anchor: the generic body really is on screen, so "editable" is an
-    // observation and not an empty render.
-    expect(campoPrazoDespacho()).not.toBeNull();
+    expect(campoPrazoDespacho().disabled).toBe(false);
     expect(inputRastreio().readOnly).toBe(false);
     expect(inputRastreio().disabled).toBe(false);
     expect(selectStatus().disabled).toBe(false);
@@ -250,7 +259,8 @@ describe('FreteTab — marketplace ownership is read off the BLOCK too (#1515)',
     renderTab(freteWith({ externalOptionIntegracao: null, integracaoFreteOuterRef: null }));
 
     expect(alertaMarketplace()).toBeNull();
-    expect(campoPrazoDespacho()).not.toBeNull();
+    expect(campoPrazoDespacho().disabled).toBe(false);
+    expect(campoPrazoDespacho().textContent).toBe('');
     expect(inputRastreio().readOnly).toBe(false);
     expect(inputRastreio().disabled).toBe(false);
     expect(selectStatus().disabled).toBe(false);
@@ -271,6 +281,7 @@ describe('FreteTab — marketplace ownership is read off the BLOCK too (#1515)',
       freteWith({
         externalOptionIntegracao: INTEGRACAO_FRETE.shopee,
         integracaoFreteOuterRef: REF_INT_1,
+        prazoDespacho: PRAZO_DESPACHO_US,
       }),
     );
 
@@ -279,8 +290,7 @@ describe('FreteTab — marketplace ownership is read off the BLOCK too (#1515)',
     expect(alertaMarketplace()?.textContent).toMatch(
       /Frete gerenciado pelo marketplace \(Shopee\)/,
     );
-    // Neither the retirada body nor the generic one reached the screen.
-    expect(campoPrazoDespacho()).toBeNull();
+    expectPrazoBloqueado();
     expect(inputRastreio().readOnly).toBe(true);
     expect(selectStatus().disabled).toBe(true);
   });
@@ -292,12 +302,18 @@ describe('FreteTab — marketplace ownership is read off the BLOCK too (#1515)',
       id: 'int-1',
       data: { tipo: INTEGRACAO_FRETE.mercadoLivre, nome: 'Mercado Livre' },
     };
-    renderTab(freteWith({ externalOptionIntegracao: null, integracaoFreteOuterRef: REF_INT_1 }));
+    renderTab(
+      freteWith({
+        externalOptionIntegracao: null,
+        integracaoFreteOuterRef: REF_INT_1,
+        prazoDespacho: PRAZO_DESPACHO_US,
+      }),
+    );
 
     expect(alertaMarketplace()?.textContent).toMatch(
       /Frete gerenciado pelo marketplace \(Mercado Livre\)/,
     );
-    expect(campoPrazoDespacho()).toBeNull();
+    expectPrazoBloqueado();
     expect(inputRastreio().readOnly).toBe(true);
     expect(selectStatus().disabled).toBe(true);
   });
@@ -343,6 +359,7 @@ describe('FreteTab — marketplace ownership is read off the BLOCK too (#1515)',
       freteWith({
         externalOptionIntegracao: INTEGRACAO_FRETE.shopee,
         integracaoFreteOuterRef: REF_DOC_SHOPEE,
+        prazoDespacho: PRAZO_DESPACHO_US,
       }),
     );
 
@@ -350,7 +367,7 @@ describe('FreteTab — marketplace ownership is read off the BLOCK too (#1515)',
     expect(alertaMarketplace()?.textContent).toMatch(
       /Frete gerenciado pelo marketplace \(Shopee\)/,
     );
-    expect(campoPrazoDespacho()).toBeNull();
+    expectPrazoBloqueado();
     expect(inputRastreio().readOnly).toBe(true);
     // Every header control is locked: modalidade, integração, endereço,
     // recebedor and status — case 3 pins each one ENABLED.
@@ -369,5 +386,64 @@ describe('FreteTab — marketplace ownership is read off the BLOCK too (#1515)',
     expect(pickerIntegracao().textContent).toBe(
       `${DOC_SHOPEE.data.nome} (${INTEGRACAO_FRETE.shopee})`,
     );
+  });
+
+  it.each([INTEGRACAO_FRETE.amazon, INTEGRACAO_FRETE.magalu])(
+    'shows the stored deadline as read-only for %s',
+    (tipo) => {
+      renderTab(freteWith({ externalOptionIntegracao: tipo, prazoDespacho: PRAZO_DESPACHO_US }));
+
+      expectPrazoBloqueado();
+    },
+  );
+
+  it('shows an editable deadline for a linked Melhor Envio configuration', () => {
+    mockIntFrete.doc = {
+      id: 'int-1',
+      data: { tipo: INTEGRACAO_FRETE.melhorEnvios, nome: 'Melhor Envio' },
+    };
+    renderTab(freteWith({ integracaoFreteOuterRef: REF_INT_1, prazoDespacho: PRAZO_DESPACHO_US }));
+
+    expect(screen.getByRole('button', { name: 'Calcular frete' })).toBeTruthy();
+    expect(campoPrazoDespacho().textContent).toBe(PRAZO_EXIBIDO);
+    expect(campoPrazoDespacho().disabled).toBe(false);
+  });
+
+  it.each([
+    { status: 'loading', loading: true },
+    { status: 'missing', loading: false },
+  ])(
+    'keeps the visible deadline locked when the linked configuration is $status',
+    ({ loading }) => {
+      mockIntFrete.loading = loading;
+      renderTab(
+        freteWith({ integracaoFreteOuterRef: REF_INT_1, prazoDespacho: PRAZO_DESPACHO_US }),
+      );
+
+      expectPrazoBloqueado();
+    },
+  );
+
+  it('shows the stored deadline as read-only on a locked manual order', () => {
+    render(<Host frete={freteWith({ prazoDespacho: PRAZO_DESPACHO_US })} disabled />);
+
+    expectPrazoBloqueado();
+  });
+
+  it('shows a stored deadline as read-only even without active freight', () => {
+    renderTab(
+      freteWith({
+        modalidade: MODALIDADE_FRETE.semTransporte,
+        prazoDespacho: PRAZO_DESPACHO_US,
+      }),
+    );
+
+    expectPrazoBloqueado();
+  });
+
+  it('omits the deadline when there is no active freight and no date', () => {
+    renderTab(freteWith({ modalidade: MODALIDADE_FRETE.semTransporte, prazoDespacho: null }));
+
+    expect(screen.queryByLabelText(PRAZO_LABEL)).toBeNull();
   });
 });

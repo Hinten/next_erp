@@ -87,12 +87,6 @@ export function RetiradaFields({
           decimalScale={0}
           disabled={disabled}
         />
-        <FreteDateTimeField
-          form={form}
-          name="prazoDespacho"
-          label="Data máxima para despacho"
-          disabled={disabled}
-        />
       </Group>
 
       <TransportadoraFields form={form} disabled={disabled} />

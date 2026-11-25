@@ -55,6 +55,7 @@ import { FASE_NFE_SHOPEE, type AgendadorNfeShopee } from '@/lib/shopee/nfe/taref
 import { makePedidoIdShopee } from '@/lib/shopee/pedidos/orderIds';
 import { MSG_BODY_INVALIDO } from '@/lib/shopee/produtos/corpoImportacao';
 import { FakeDb, asDb, type DocData } from '@/lib/shopee/testing/fakeDb';
+import { falhaDeEnvelope, verificarEnvelopeRedigido } from '@/lib/shopee/testing/falhaDeEnvelope';
 
 type ModuloAgendador = typeof import('@/lib/shopee/nfe/shopeeNfeUploadTasks');
 type ModuloReenvio = typeof import('@/lib/shopee/nfe/reenvioNfe');
@@ -979,7 +980,17 @@ describe('a NF-e — reenviada SÓ na resposta `nfe-pendente` (R-e)', () => {
 
 /* ----------------------------------- the errors --------------------------------- */
 
-describe('os erros — `shopeeErrorResponse` INALTERADO, e o resto relança', () => {
+describe('os erros do mapeador compartilhado', () => {
+  it('uma falha de envelope relançada pelo executor vira 502 com o código seguro', async () => {
+    cenario();
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const falha = falhaDeEnvelope('/api/v2/logistics/get_shipping_document_result', 'error_server');
+    h.executar.mockRejectedValue(falha);
+
+    const res = await POST(req(corpo()));
+    await verificarEnvelopeRedigido(res, falha, 502);
+  });
+
   it('um erro de Shopee que o executor relança ⇒ o mapeamento existente (409 SHOPEE_REAUTH_REQUIRED)', async () => {
     cenario();
     h.executar.mockRejectedValue(new ShopeeSemCredencialError('sem credencial'));

@@ -3,11 +3,9 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PERM } from '@delfrance/auth';
 import {
-  SHOPEE_ERROR_KIND,
   SHOPEE_ITEM_STATUS_WRITABLE,
   SHOPEE_LOGISTICS_FEE_TYPE,
   ShopeeNetworkError,
-  ShopeeRateLimitError,
   shopeeLogisticsChannelSchema,
   type ShopeeCategoria,
 } from '@delfrance/integrations-shopee';
@@ -53,6 +51,7 @@ import {
   limparTaxonomiaShopee,
 } from '@/lib/shopee/taxonomia/cache';
 import { FakeDb, asDb } from '@/lib/shopee/testing/fakeDb';
+import { falhaDeEnvelope, verificarEnvelopeRedigido } from '@/lib/shopee/testing/falhaDeEnvelope';
 
 type ModuloPublicar = typeof import('@/lib/shopee/anuncios/publicarAnuncio');
 type ModuloKit = typeof import('@/lib/shopee/kits/publicarKit');
@@ -475,21 +474,13 @@ describe('as duas recusas por produto', () => {
     expect(fonte).not.toContain('422');
   });
 
-  it('um limite de rajada da Shopee continua sendo o que o respond diz — não um 422', async () => {
+  it('uma rajada vira 502 e chega ao operador e ao log sem a frase da Shopee', async () => {
     semearProduto(db);
-    h.publicar.mockRejectedValue(
-      new ShopeeRateLimitError('rajada', {
-        code: 'error_limit',
-        kind: SHOPEE_ERROR_KIND.burst,
-        httpStatus: 429,
-        path: '/api/v2/product/add_item',
-      }),
-    );
-
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const falha = falhaDeEnvelope('/api/v2/product/add_item', 'error_rate_limit', 429);
+    h.publicar.mockRejectedValue(falha);
     const res = await POST(req(corpoValido(), AUTORIZADO));
-
-    expect(res.status).not.toBe(422);
-    expect([502, 503]).toContain(res.status);
+    await verificarEnvelopeRedigido(res, falha, 502);
   });
 });
 

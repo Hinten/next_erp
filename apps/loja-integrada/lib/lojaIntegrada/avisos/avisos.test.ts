@@ -11,6 +11,7 @@ import {
   CANAL_AVISO,
   MOTIVO_ESTOQUE_VINCULO_LI,
   MOTIVO_IMPORTACAO_PARADA_LI,
+  MOTIVO_PRECO_PARADO_LI,
   ROTAS_AVISO,
   SEVERIDADE_AVISO,
   chaveDeAviso,
@@ -26,6 +27,7 @@ import {
   TIPOS_AVISO_LI,
   TIPOS_AVISO_PEDIDO_LI,
   TIPOS_AVISO_POR_ENTIDADE_LI,
+  TIPOS_AVISO_PRECO_LI,
   agoraUsDe,
   avisarExpiracaoToken,
   avisarImportacaoParada,
@@ -34,6 +36,8 @@ import {
   chaveExpiracao,
   chaveImportacaoComPendenciasLi,
   chaveImportacaoParada,
+  chavePrecoNaoBaixadoLi,
+  chavePrecoSemErpLi,
   chaveReconexao,
   chaveRevisaoFiscalLi,
   prefixoDaContaNoAvisoLi,
@@ -354,6 +358,11 @@ describe('the import-stopped tipo (step 3) in the orphan pass', () => {
         TIPO_AVISO.lojaIntegradaEstoqueSemErp,
         TIPO_AVISO.lojaIntegradaEstoqueRecusado,
         TIPO_AVISO.lojaIntegradaEstoqueVinculo,
+        // The price sync (step 13): two per conta, per produto and per motivo (both by PREFIX).
+        TIPO_AVISO.lojaIntegradaPrecoSemErp,
+        TIPO_AVISO.lojaIntegradaPrecoRecusado,
+        TIPO_AVISO.lojaIntegradaPrecoNaoBaixado,
+        TIPO_AVISO.lojaIntegradaPrecoParado,
       ].sort(),
     );
     const { chave } = await raise(new FakeDb(), 1_000);
@@ -738,6 +747,74 @@ describe('the stock sync tipos (step 12)', () => {
     }
     expect(
       prefixoDoAvisoPorEntidadeLi(TIPO_AVISO.lojaIntegradaEstoqueSemErp, chaveEstoqueSemErpLi(ID)),
+    ).toBeNull();
+  });
+});
+
+describe('the price sync tipos (step 13)', () => {
+  const ID = 'conta-li-1';
+
+  it('the two per-conta keys, apart from every other per-conta key', () => {
+    expect(chavePrecoSemErpLi(ID)).toBe(
+      chaveDeAviso({ tipo: TIPO_AVISO.lojaIntegradaPrecoSemErp, conta: ID }),
+    );
+    expect(chavePrecoNaoBaixadoLi(ID)).toBe(
+      chaveDeAviso({ tipo: TIPO_AVISO.lojaIntegradaPrecoNaoBaixado, conta: ID }),
+    );
+    const chaves = [
+      chaveExpiracao(ID),
+      chaveReconexao(ID),
+      chaveImportacaoParada(ID),
+      chaveRevisaoFiscalLi(ID),
+      chaveImportacaoComPendenciasLi(ID),
+      chaveEstoqueSemErpLi(ID),
+      chavePrecoSemErpLi(ID),
+      chavePrecoNaoBaixadoLi(ID),
+    ];
+    expect(new Set(chaves).size).toBe(chaves.length);
+    expect(chavePrecoSemErpLi(ID)).not.toBe(chavePrecoSemErpLi('conta-li-2'));
+  });
+
+  it('the per-produto and per-motivo tipos join the per-entity set; the two per-conta ones do not', () => {
+    expect([...TIPOS_AVISO_PRECO_LI].sort()).toEqual(
+      [
+        TIPO_AVISO.lojaIntegradaPrecoSemErp,
+        TIPO_AVISO.lojaIntegradaPrecoRecusado,
+        TIPO_AVISO.lojaIntegradaPrecoNaoBaixado,
+        TIPO_AVISO.lojaIntegradaPrecoParado,
+      ].sort(),
+    );
+    expect(TIPOS_AVISO_POR_ENTIDADE_LI.has(TIPO_AVISO.lojaIntegradaPrecoRecusado)).toBe(true);
+    expect(TIPOS_AVISO_POR_ENTIDADE_LI.has(TIPO_AVISO.lojaIntegradaPrecoParado)).toBe(true);
+    expect(TIPOS_AVISO_POR_ENTIDADE_LI.has(TIPO_AVISO.lojaIntegradaPrecoSemErp)).toBe(false);
+    expect(TIPOS_AVISO_POR_ENTIDADE_LI.has(TIPO_AVISO.lojaIntegradaPrecoNaoBaixado)).toBe(false);
+    for (const tipo of TIPOS_AVISO_PRECO_LI) expect(TIPOS_AVISO_LI.has(tipo), tipo).toBe(true);
+    // NEAR-MISS: no price tipo is a stock tipo, and the reverse.
+    for (const tipo of TIPOS_AVISO_PRECO_LI)
+      expect(TIPOS_AVISO_ESTOQUE_LI.has(tipo), tipo).toBe(false);
+  });
+
+  it('a per-produto and a per-motivo row’s prefix is its conta’s; near-miss: the per-conta rows have none', () => {
+    for (const [tipo, entidade] of [
+      [TIPO_AVISO.lojaIntegradaPrecoRecusado, 'p1'],
+      [TIPO_AVISO.lojaIntegradaPrecoParado, MOTIVO_PRECO_PARADO_LI.divergenciaEmMassa],
+    ] as const) {
+      const chave = chaveDeAviso({ tipo, conta: ID, entidade });
+      expect(prefixoDoAvisoPorEntidadeLi(tipo, chave), tipo).toBe(
+        prefixoDaContaNoAvisoLi(tipo, ID),
+      );
+      expect(prefixoDoAvisoPorEntidadeLi(tipo, chave), tipo).not.toBe(
+        prefixoDaContaNoAvisoLi(tipo, 'conta-li-12'),
+      );
+    }
+    expect(
+      prefixoDoAvisoPorEntidadeLi(TIPO_AVISO.lojaIntegradaPrecoSemErp, chavePrecoSemErpLi(ID)),
+    ).toBeNull();
+    expect(
+      prefixoDoAvisoPorEntidadeLi(
+        TIPO_AVISO.lojaIntegradaPrecoNaoBaixado,
+        chavePrecoNaoBaixadoLi(ID),
+      ),
     ).toBeNull();
   });
 });

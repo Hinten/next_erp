@@ -393,27 +393,37 @@ describe('★ step 13: the ONE outcome factory — the stock outcome, rebuilt on
     [],
   );
 
-  it('the corpus is wide (anti-vacuity): it holds both accepted and refused inputs', () => {
-    expect(CORPUS.length).toBeGreaterThan(5_000);
-    const aceitos = CORPUS.filter((c) => ORACULO_ESTOQUE.safeParse(c).success).length;
-    expect(aceitos).toBeGreaterThan(50);
-    expect(CORPUS.length - aceitos).toBeGreaterThan(50);
-  });
+  // Both tests below parse the whole corpus (more than 6,700 inputs): 135–416 ms alone on a
+  // dev box, but the parity test took 5.3 s in a full-suite CI run (run 45471475279), past
+  // vitest's 5 s default. `{ timeout: 30_000 }` is CI headroom, not a budget.
+  it(
+    'the corpus is wide (anti-vacuity): it holds both accepted and refused inputs',
+    { timeout: 30_000 },
+    () => {
+      expect(CORPUS.length).toBeGreaterThan(5_000);
+      const aceitos = CORPUS.filter((c) => ORACULO_ESTOQUE.safeParse(c).success).length;
+      expect(aceitos).toBeGreaterThan(50);
+      expect(CORPUS.length - aceitos).toBeGreaterThan(50);
+    },
+  );
 
-  it('★ every input parses to the SAME data (keys in the same order) or fails with the SAME issues', () => {
-    for (const entrada of CORPUS) {
-      const novo = envioEstoqueAmazonSchema.safeParse(entrada);
-      const antigo = ORACULO_ESTOQUE.safeParse(entrada);
-      const rotulo = JSON.stringify(entrada);
-      expect(novo.success, rotulo).toBe(antigo.success);
-      if (novo.success && antigo.success) {
-        expect(novo.data, rotulo).toEqual(antigo.data);
-        expect(Object.keys(novo.data), rotulo).toEqual(Object.keys(antigo.data));
-      } else {
-        expect(novo.error?.issues, rotulo).toEqual(antigo.error?.issues);
-      }
-    }
-  });
+  it(
+    '★ every input parses to the SAME data (keys in the same order) or fails with the SAME issues',
+    { timeout: 30_000 },
+    () => {
+      // ONE assertion for the whole corpus: an `expect` per input cost more than the two
+      // parses, and a failure lists every divergent input at once. JSON keeps key order, so
+      // two equal strings are the same data with its keys in the same order.
+      const desfecho = (r: z.ZodSafeParseResult<unknown>) =>
+        JSON.stringify(r.success ? { dados: r.data } : { problemas: r.error.issues });
+      const divergentes = CORPUS.flatMap((entrada) => {
+        const novo = desfecho(envioEstoqueAmazonSchema.safeParse(entrada));
+        const antigo = desfecho(ORACULO_ESTOQUE.safeParse(entrada));
+        return novo === antigo ? [] : [{ entrada: JSON.stringify(entrada), novo, antigo }];
+      });
+      expect(divergentes).toEqual([]);
+    },
+  );
 
   it('the stock outcome keeps its shape: the same fields, in the same order, the enums unrenamed', () => {
     expect(Object.keys(envioEstoqueAmazonSchema.shape)).toEqual([

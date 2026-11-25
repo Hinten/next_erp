@@ -10,13 +10,6 @@ import { MantineTestProvider } from '@/lib/testing/mantine';
  * REAL page, the REAL `ObjectView` + `saveRecord` and the REAL Loja Integrada
  * tab and `validate`, over an OCC FakeDb (`@delfrance/data/testing`).
  *
- * A copy starts with NO Loja Integrada and NO Shopee links. A create writes every
- * field, so a copied link would be CREATED by that save — yet it would arrive as
- * the form's seed, count as untouched and skip every check a created link must
- * pass; and a valid one would put the same store grade or Shopee options in two
- * grupos, which the publish and the import treat as ambiguous (Loja Integrada) or
- * settle by read order, silently (Shopee). The operator links the new grupo instead.
- *
  * Doubled are only the I/O edges: the snapshot hook (the copy source), the
  * create's new document ref, `runTransaction`, the conta list, and the Loja
  * Integrada backend (switched off).
@@ -153,16 +146,17 @@ const LINK_SHOPEE: Doc = {
 
 const ORIGINAL: Doc = {
   nome: 'Tamanhos',
-  codigo: null,
-  ordem: 1,
+  codigo: 'TAM',
+  ordem: 4,
   tipo: 1,
-  permiteFotos: false,
+  permiteFotos: true,
   timestamp: 1_700_000_000_000,
   ultimaModificacao: 1_700_000_000_000,
   variacoesIds: ['v1', 'v2'],
   variacoes: [variante('v1', 'P'), variante('v2', 'M')],
   linksVariacoesli: [MEIA_BOCA, LINK],
   linksVariacoesShopee: [LINK_SHOPEE],
+  linksVariacoesAmazon: [{ chaveInventada: 'valor inventado', variantes: ['v1'] }],
 };
 
 async function esperar() {
@@ -199,8 +193,8 @@ async function renderPage() {
   await esperar();
 }
 
-describe('/variacoes/novo?copyFrom — a copy never carries the channels’ links', () => {
-  it('the copy is created with every other field copied, and NO Loja Integrada link', async () => {
+describe('/variacoes/novo?copyFrom', () => {
+  it('creates a group with the copied settings and variants and all marketplace links set to null', async () => {
     h.docs.set(ORIGEM, structuredClone(ORIGINAL));
     await renderPage();
 
@@ -209,49 +203,21 @@ describe('/variacoes/novo?copyFrom — a copy never carries the channels’ link
     });
     await esperar();
 
-    const criado = h.docs.get(NOVO);
-    expect(criado).toBeDefined();
-    // EQUAL: the rest of the grupo is copied.
-    expect(criado?.nome).toBe('Tamanhos');
-    expect(criado?.variacoes).toEqual(ORIGINAL.variacoes);
-    // NEAR-MISS: the links are not — neither the valid one nor the half-made one.
-    expect(criado?.linksVariacoesli).toBeNull();
-    // …and the source is untouched.
-    expect(h.docs.get(ORIGEM)?.linksVariacoesli).toEqual([MEIA_BOCA, LINK]);
-  });
-
-  it('a cópia nasce com os dados copiados e SEM vínculo da Shopee; a origem fica como estava', async () => {
-    h.docs.set(ORIGEM, structuredClone(ORIGINAL));
-    await renderPage();
-
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Criar' }));
-    });
-    await esperar();
-
-    const criado = h.docs.get(NOVO);
-    // IGUAL: nome, código e variantes vêm da origem.
-    expect(criado?.nome).toBe('Tamanhos');
-    expect(criado?.codigo).toBeNull();
-    expect(criado?.variacoes).toEqual(ORIGINAL.variacoes);
-    // QUASE-PAR: o vínculo não, nem mesmo válido; o grupo novo não amarra as mesmas opções.
-    expect(criado?.linksVariacoesShopee).toBeNull();
-    expect(h.docs.get(ORIGEM)?.linksVariacoesShopee).toEqual([LINK_SHOPEE]);
-  });
-
-  it('⚠️ QUASE-PAR: os vínculos da Amazon vêm copiados como estão — essa metade fica com o #2071', async () => {
-    const linksAmazon = [{ chaveInventada: 'valor inventado', variantes: ['v1'] }];
-    h.docs.set(ORIGEM, { ...structuredClone(ORIGINAL), linksVariacoesAmazon: linksAmazon });
-    await renderPage();
-
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Criar' }));
-    });
-    await esperar();
-
-    const criado = h.docs.get(NOVO);
-    expect(criado?.linksVariacoesShopee).toBeNull();
-    expect(criado?.linksVariacoesAmazon).toEqual(linksAmazon);
+    expect(h.docs.get(NOVO)).toEqual(
+      expect.objectContaining({
+        nome: ORIGINAL.nome,
+        codigo: ORIGINAL.codigo,
+        ordem: ORIGINAL.ordem,
+        tipo: ORIGINAL.tipo,
+        permiteFotos: ORIGINAL.permiteFotos,
+        variacoesIds: ORIGINAL.variacoesIds,
+        variacoes: ORIGINAL.variacoes,
+        linksVariacoesli: null,
+        linksVariacoesShopee: null,
+        linksVariacoesAmazon: null,
+      }),
+    );
+    expect(h.docs.get(ORIGEM)).toStrictEqual(ORIGINAL);
   });
 });
 

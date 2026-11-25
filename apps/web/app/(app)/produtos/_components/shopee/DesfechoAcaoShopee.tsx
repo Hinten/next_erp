@@ -131,10 +131,9 @@ export interface PedidoDoRascunhoShopee {
  *    republished, an `incerta` one may adopt) or its 202 (`tipo:
  *    'item-incerto'`, the ordinary listing's uncertain first create, never
  *    «falhou»);
- *  - `recusado` — the publish 422 (`SHOPEE_PUBLISH_BLOCKED`, the ERP's own
- *    refusal — usually before any Shopee write, but on an update the model
- *    leg refuses AFTER `update_item`; `SHOPEE_PUBLISH_REJECTED`, Shopee's),
- *    with its `problemas`;
+ *  - `recusado` — the publish 422 with its `problemas`. `SHOPEE_PUBLISH_BLOCKED`
+ *    is an ERP block. `SHOPEE_PUBLISH_REJECTED` covers a Shopee refusal or a
+ *    size-chart photo interruption and identifies the step where publishing stopped;
  *  - `falha` — any other failure, already worded for the operator;
  *  - `sem-resposta` — a DRAFT's «Publicar» left without an answer the tab can
  *    trust (#1911 P11, rev. 2a #15);
@@ -166,13 +165,12 @@ export type DesfechoAcaoShopee =
   | {
       readonly tipo: 'recusado';
       /**
-       * `true` for OUR 422 (`SHOPEE_PUBLISH_BLOCKED`), `false` for Shopee's
-       * (`SHOPEE_PUBLISH_REJECTED`). ⚠️ NOT "nothing was sent": the model leg
-       * of an UPDATE (a live listing's Republicar, an adopted draft) refuses
-       * after `update_item`, and the body does not say which — so the title
-       * claims neither (review R7-roundtrip#0).
+       * The 422 was `SHOPEE_PUBLISH_BLOCKED`. On an update the model leg can
+       * block after `update_item` (review R7-roundtrip#0).
        */
       readonly bloqueadaPeloErp: boolean;
+      /** Explicit `false` on a publish interruption. `null` preserves the legacy title. */
+      readonly recusadaPelaShopee: boolean | null;
       /**
        * The refused request carried `confirmarCriacaoIncerta` (a refusal
        * row's attestation exit): a row of the uncertain-create look-up then
@@ -444,7 +442,7 @@ function semTerminal(texto: string, ehRascunho = false): string {
  */
 export const TITULO_PUBLICACAO_BLOQUEADA_SHOPEE = 'Publicação bloqueada pelo ERP';
 
-/** The title of Shopee's own refusal (`SHOPEE_PUBLISH_REJECTED`). */
+/** The title of a Shopee refusal, including the legacy 422 without attribution. */
 export const TITULO_PUBLICACAO_RECUSADA_SHOPEE = 'A Shopee recusou a publicação';
 
 /** `pausadoAte` (ISO-8601) in São Paulo, or `null` when absent or unreadable. */
@@ -890,16 +888,15 @@ function DesfechoRecusado({
           skuEnviado: rascunho.skuEnviado,
           respondeAtestacao: desfecho.respondeAtestacao,
         };
+  let titulo = TITULO_PUBLICACAO_RECUSADA_SHOPEE;
+  if (desfecho.bloqueadaPeloErp) {
+    titulo = TITULO_PUBLICACAO_BLOQUEADA_SHOPEE;
+  } else if (desfecho.recusadaPelaShopee === false) {
+    titulo = 'Publicação interrompida';
+  }
+
   return (
-    <Alert
-      color="red"
-      variant="light"
-      title={
-        desfecho.bloqueadaPeloErp
-          ? TITULO_PUBLICACAO_BLOQUEADA_SHOPEE
-          : TITULO_PUBLICACAO_RECUSADA_SHOPEE
-      }
-    >
+    <Alert color="red" variant="light" title={titulo}>
       <Stack gap="xs">
         {desfecho.etapa !== null && (
           <Text size="sm">{textoDaEtapaShopee(desfecho.etapa, { ehRascunho })}</Text>
