@@ -4,12 +4,16 @@ import * as barrel from './index';
 import * as modulo from './precoErpLojaIntegrada';
 import {
   ASSINATURA_ENVIO_PRECO_LI_REGEX,
+  FORMA_PROMO_LIMPA_LI,
+  FORMA_PROMO_LIMPA_PADRAO_LI,
   MOTIVO_RETENCAO_PRECO_LI,
   type AlvoPrecoLi,
+  type FormaPromoLimpaLi,
   type LeituraTabelaPrecoLi,
   assinaturaEnvioPrecoLi,
   decidirBaixaPrecoLi,
   efetivoPrecoLi,
+  formaPromoLimpaLiSchema,
   leituraTabelaPrecoLi,
   mesmoPrecoLi,
   motivoRetencaoPrecoLiSchema,
@@ -17,6 +21,7 @@ import {
   precoAlvoLi,
   precosDasLeiturasLi,
   promocionalLimpoLi,
+  promocionalLimpoNaFormaLi,
   valorPrecoLi,
 } from './precoErpLojaIntegrada';
 import {
@@ -566,6 +571,117 @@ describe('promocionalLimpoLi (a cleared promotion)', () => {
     for (const promo of [50, '50.00', '50']) {
       expect(promocionalLimpoLi(promo), String(promo)).toBe(false);
       expect(mesmoPrecoLi(promo, cheio), String(promo)).toBe(true);
+    }
+  });
+});
+
+describe('formaPromoLimpaLiSchema (the clear’s wire shape)', () => {
+  it('has exactly the three formas, its companion constant names each one, and the default is nulo', () => {
+    expect(formaPromoLimpaLiSchema.options).toEqual(['nulo', 'zero', 'igual-cheio']);
+    expect(Object.values(FORMA_PROMO_LIMPA_LI).sort()).toEqual(
+      [...formaPromoLimpaLiSchema.options].sort(),
+    );
+    expect(FORMA_PROMO_LIMPA_PADRAO_LI).toBe(FORMA_PROMO_LIMPA_LI.nulo);
+  });
+
+  it.each(['nulo', 'zero', 'igual-cheio'])('EQUAL: the exact %j parses as itself', (valor) => {
+    expect(formaPromoLimpaLiSchema.safeParse(valor)).toEqual({ success: true, data: valor });
+  });
+
+  it.each<unknown>([
+    'NULO',
+    ' nulo',
+    'nulo ',
+    'null',
+    '0',
+    'igual_cheio',
+    'igualCheio',
+    '',
+    undefined,
+    null,
+    0,
+  ])('⚠️ NEAR-MISS: %j is refused — read exactly, never trimmed or case-folded', (valor) => {
+    expect(formaPromoLimpaLiSchema.safeParse(valor).success).toBe(false);
+  });
+});
+
+describe('promocionalLimpoNaFormaLi (has the clear landed?)', () => {
+  const FORMAS: readonly FormaPromoLimpaLi[] = [
+    FORMA_PROMO_LIMPA_LI.nulo,
+    FORMA_PROMO_LIMPA_LI.zero,
+    FORMA_PROMO_LIMPA_LI.igualCheio,
+  ];
+
+  it.each([[null], [undefined], [0], ['0.00'], ['0'], ['0.0000'], [0.004]] as const)(
+    'EQUAL: %j is cleared under every forma, whatever the full price',
+    (promocional) => {
+      for (const forma of FORMAS) {
+        for (const cheio of [50, '50.0000', null]) {
+          expect(promocionalLimpoNaFormaLi({ forma, cheio, promocional }), forma).toBe(true);
+        }
+      }
+    },
+  );
+
+  it.each([
+    ['50.0000', '50.0000'],
+    [50, '50.00'],
+    ['259.9000', 259.9],
+  ] as const)(
+    'EQUAL: under igual-cheio, promotion %j beside full price %j is cleared',
+    (promocional, cheio) => {
+      expect(
+        promocionalLimpoNaFormaLi({ forma: FORMA_PROMO_LIMPA_LI.igualCheio, cheio, promocional }),
+      ).toBe(true);
+    },
+  );
+
+  it('⚠️ NEAR-MISS: a promotion equal to the full price is NOT cleared under nulo or zero', () => {
+    for (const forma of [FORMA_PROMO_LIMPA_LI.nulo, FORMA_PROMO_LIMPA_LI.zero]) {
+      expect(promocionalLimpoNaFormaLi({ forma, cheio: 50, promocional: 50 }), forma).toBe(false);
+      expect(
+        promocionalLimpoNaFormaLi({ forma, cheio: '50.0000', promocional: '50.0000' }),
+        forma,
+      ).toBe(false);
+    }
+  });
+
+  it.each([
+    ['49.99', 50],
+    [49.99, '50.0000'],
+    [60, 50],
+    ['50.01', 50],
+    ['0.01', 50],
+    [50, null],
+    [50, 0],
+    ['-1.00', '-1.00'],
+    ['1,50', '1,50'],
+  ] as const)(
+    '⚠️ NEAR-MISS: under igual-cheio, promotion %j beside full price %j is NOT cleared',
+    (promocional, cheio) => {
+      expect(
+        promocionalLimpoNaFormaLi({ forma: FORMA_PROMO_LIMPA_LI.igualCheio, cheio, promocional }),
+      ).toBe(false);
+    },
+  );
+
+  it('a null promotion beside a null full price is cleared by the clear rule, never by the equality', () => {
+    // Anti-vacuity: the equality alone says no — a null price equals nothing.
+    expect(mesmoPrecoLi(null, null)).toBe(false);
+    for (const forma of FORMAS) {
+      expect(promocionalLimpoNaFormaLi({ forma, cheio: null, promocional: null }), forma).toBe(
+        true,
+      );
+    }
+  });
+
+  it('under nulo and zero it answers exactly what promocionalLimpoLi answers', () => {
+    for (const promocional of [null, 0, '0.0000', '0.01', 50, '50.0000', 'abc', -1]) {
+      for (const forma of [FORMA_PROMO_LIMPA_LI.nulo, FORMA_PROMO_LIMPA_LI.zero]) {
+        expect(promocionalLimpoNaFormaLi({ forma, cheio: 50, promocional })).toBe(
+          promocionalLimpoLi(promocional),
+        );
+      }
     }
   });
 });

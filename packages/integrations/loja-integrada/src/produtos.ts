@@ -56,6 +56,10 @@
  *    ({@link PRODUTO_LINHA_CAMPOS_LI}, {@link PRODUTO_DETALHE_CAMPOS_LI},
  *    {@link IMAGEM_PRODUTO_CAMPOS_LI}) instead of the parse: the product import
  *    never brings price or stock into the ERP, so neither ever reaches it.
+ *    The import's reads stay price-free. The price sync (master-plan step 13)
+ *    reads the same detail path for its own reasons, parsed by
+ *    `liProdutoComPrecoDetalheSchema` (`types.ts`) and only through the WRITE
+ *    client's deciding read, never through these functions.
  *
  * ## Ids are checked before anything is built
  *

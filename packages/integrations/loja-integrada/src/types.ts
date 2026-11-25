@@ -4,9 +4,11 @@
  * order poller, master-plan step 3), the catalogue rows the catalogue reads
  * parse (`catalogo.ts`, master-plan step 10): categoria, marca, grade, and a
  * grade's detail with its options; the produto list row, detail and image
- * the product import reads (`produtos.ts`, master-plan step 9); and the stock
+ * the product import reads (`produtos.ts`, master-plan step 9); the stock
  * row, its detail and the stock write's echo (`estoque.ts`, `estoqueEscrita.ts`,
- * master-plan step 12).
+ * master-plan step 12); and the price row of the by-id read, its envelope, the
+ * produto detail a price write decides on and the price write's echo
+ * (`preco.ts`, `precoEscrita.ts`, master-plan step 13).
  *
  * The catalogue rows were written against the leaf shapes of the owner's
  * catalogue capture C9 (every list and both kinds of grade detail answered 200
@@ -36,7 +38,12 @@
  * pinned against the owner's read-only stock captures (both stores' lists and
  * details; `apps/loja-integrada/lib/lojaIntegrada/estoque/capturasEstoque.test.ts`).
  *
- * Every other resource (preço, imagem, envio) arrives with its first consumer,
+ * The price schemas (`produto_preco`, master-plan step 13), after the stock
+ * ones, were written against the public document's examples and the facts the
+ * owner's read-only price capture (2026-11-24, both stores) measured; that
+ * capture's sanitized pages are replayed in a later change.
+ *
+ * Every other resource (imagem, envio) arrives with its first consumer,
  * written against captured responses rather than the public document's
  * examples (the pedido detail and situação are in `pedidoTipos.ts`).
  *
@@ -51,10 +58,13 @@
  * ⚠️ This file, `pedidoTipos.ts` and `vazio.ts` are the only ones under `src/`
  * that use Zod for RESPONSE numbers, and every one goes through `wireInt()` /
  * `wireNumber()` from `@delfrance/core/wire`: a serializer that quotes ONE
- * field must not cost the whole page (#1087). The one other Zod number under
- * `src/` is a REQUEST leaf, the stock write's `quantidade` (`rotasEscrita.ts`):
- * strict on purpose, because a quoted number must never be forwarded, and
- * carved out by its exact line in the guard below.
+ * field must not cost the whole page (#1087). The price leaves read here are
+ * no Zod number at all: they are carried raw and judged by the shared price
+ * fold (`valorPrecoLi`, `@delfrance/schemas`). The only other Zod numbers under
+ * `src/` are REQUEST leaves, all in `rotasEscrita.ts`: the stock write's
+ * `quantidade`, the price write's price and its echoed custo. Strict on
+ * purpose, because a quoted number must never be forwarded, and each carved
+ * out by its exact line in the guard below.
  * Enforced by
  * `packages/config-eslint/rules/integration-response-numbers-tolerant.test.js`,
  * which scans every file under `src/` and anchors on three lines of this file.
@@ -62,6 +72,7 @@
  * out of the guard's line-based scan.
  */
 import { wireInt, wireNumber } from '@delfrance/core/wire';
+import { valorPrecoLi } from '@delfrance/schemas';
 import { z } from 'zod';
 
 import { inteiroOpcional, numeroOpcional, vazioComoNulo } from './vazio';
@@ -459,3 +470,153 @@ export const liEcoEstoqueProdutoSchema = z
   .passthrough();
 
 export type EcoEstoqueProdutoLi = z.infer<typeof liEcoEstoqueProdutoSchema>;
+
+/* -------------------------------------------------------------------------- */
+/*                  The price (master-plan step 13, `preco.ts`)               */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * A price leaf a decision reads, REQUIRED and readable by the ONE price fold:
+ * present (an absent key is drift, never "no promotion") and anything
+ * `valorPrecoLi` (`@delfrance/schemas`) does not read as `ilegivel` — the
+ * store's 4-decimal text (`'160.0000'`), a JSON number (`160`), `null`. A
+ * negative, a comma decimal (`'1,50'`), an object or a boolean refuses it. The
+ * value comes out RAW, never converted (`'160.0000'` stays `'160.0000'`): the
+ * price decisions take raw values and read them through the same fold.
+ *
+ * No grammar of its own: the wire counts no decimals (a 5-decimal text is read
+ * by the fold, as the fold reads it). ⚠️ Zod 4 already refuses an ABSENT key
+ * under `z.unknown()`, but not a key present with the value `undefined`, which
+ * the fold alone reads as `vazio`: the explicit `undefined` check refuses both,
+ * whatever Zod does with an absent key.
+ */
+function valorDePrecoLegivel() {
+  return z
+    .unknown()
+    .refine((v) => v !== undefined && valorPrecoLi(v) !== 'ilegivel', 'preço ilegível');
+}
+
+/**
+ * One row of the by-id price read, `GET /v1/produto_preco/set/{id;id;…}`
+ * (`preco.ts`): one product's prices. The owner's read-only price capture
+ * (2026-11-24, both stores) found every row with exactly seven keys — `id`,
+ * `produto`, `resource_uri`, `cheio`, `promocional`, `custo` and
+ * `sob_consulta` — the three amounts as text with four decimals or `null`, and
+ * the row's own `id` different from the produto id in every row.
+ *
+ * Declared, each REQUIRED: what a price decision reads.
+ *
+ *  - `produto`: the produto's resource URI, a string, read into an id by
+ *    `produtoIdDoPrecoLi` (`preco.ts`), never here. The row is matched to the
+ *    id asked for by the produto it names, never by its own `id` or its place.
+ *  - `cheio`, `promocional`: {@link valorDePrecoLegivel}, judged at the wire by
+ *    the fold itself. A value the fold cannot read makes the row UNREADABLE:
+ *    the by-id read reports it (`ilegivel`) and never reads it as "no row", and
+ *    no decision is taken on it.
+ *
+ * Not declared, so kept by `.passthrough()` and never able to refuse a row:
+ * the row's own `id`, `resource_uri`, `sob_consulta` and `custo`. ⚠️ The
+ * custo is OPAQUE on purpose: no decision reads the store's resource custo (a
+ * price write echoes the PRODUTO DETAIL's, {@link liProdutoComPrecoDetalheSchema}),
+ * and the sanitized capture fixtures replace every custo value with a fake of
+ * another type, so a typed custo would make every such row unreadable.
+ *
+ * ⚠️ Deliberately unlike {@link liProdutoComPrecoDetalheSchema}, which carries
+ * its price leaves RAW and unjudged: here an unreadable value is a finding the
+ * read reports per id; there it is a decision outcome the send logs with a
+ * restore line. The same fold judges both; only who reports "unreadable"
+ * differs. Do not unify them.
+ */
+export const liPrecoProdutoLinhaSchema = z
+  .object({
+    produto: z.string(),
+    cheio: valorDePrecoLegivel(),
+    promocional: valorDePrecoLegivel(),
+  })
+  .passthrough();
+
+export type PrecoProdutoLinhaLi = z.infer<typeof liPrecoProdutoLinhaSchema>;
+
+/**
+ * The envelope of the by-id price read: `objects`, and the ids it could not
+ * find. Measured (the owner's read-only price capture, both stores): `objects`
+ * is the only root key, with NO `meta`; `not_found` is ABSENT when every id
+ * came back, and otherwise a list of id STRINGS naming exactly the unknown ids.
+ *
+ *  - `objects`: a list, REQUIRED. Each row is read on its own by `preco.ts`
+ *    through {@link liPrecoProdutoLinhaSchema}, so one odd row costs only
+ *    itself.
+ *  - `not_found`: absent, `null` and `''` all mean none (the package's three
+ *    spellings of "none"), read as `[]`. A value that is not a list refuses the
+ *    answer. Each element is carried raw and read by the shared positive-id
+ *    reader in `preco.ts`, so `123` ≡ `'123'` and one odd element costs only
+ *    itself.
+ *
+ * Passthrough keeps any other root key (a `meta` the store might add).
+ */
+export const liSetPrecoSchema = z
+  .object({
+    objects: z.array(z.unknown()),
+    not_found: listaOuVazia(z.unknown()),
+  })
+  .passthrough();
+
+export type SetPrecoLi = z.infer<typeof liSetPrecoSchema>;
+
+/**
+ * The produto detail `GET /v1/produto/{id}/` as a price write DECIDES on it
+ * (master-plan step 13): the guard (`tipo`, `removido`, `bloqueado`), `ativo`
+ * (kept for the restore line: an inactive child is still priced) and the four
+ * price leaves. The owner's read-only price capture found the
+ * detail's prices (JSON numbers) equal to the price resource's (text) on every
+ * leaf, custo included, in every pair it read, so this read is the merge base.
+ *
+ * Every judged leaf is carried RAW (`z.unknown()`), whatever its type, and
+ * every one is REQUIRED (a bare `z.unknown()` refuses an absent key): a write
+ * restores from this read, so a detail without one of them cannot be restored
+ * and is no base. Nothing is folded here — `''` stays `''`, `'abc'` stays
+ * `'abc'` — because "a current value present but unreadable" is a DECISION
+ * outcome of the send (skipped, with its restore line), never a refused read;
+ * and the sanitized fixtures carry a faked `preco_custo` of another type.
+ * Deliberately unlike {@link liPrecoProdutoLinhaSchema} (see there).
+ *
+ * Minimal and independent of {@link liProdutoDetalheSchema}: an odd weight or
+ * image must never block a price decision. It is read through the WRITE
+ * client's deciding read only (`lerAntesDeEscreverLi`), never by the product
+ * import, whose reads stay price-free (`produtos.ts`).
+ *
+ * `id` through `wireInt()`, so a quoted id reads as the number; `tipo` a plain
+ * string, never an enum.
+ */
+export const liProdutoComPrecoDetalheSchema = z
+  .object({
+    id: wireInt(),
+    tipo: z.string(),
+    ativo: z.unknown(),
+    bloqueado: z.unknown(),
+    removido: z.unknown(),
+    preco_cheio: z.unknown(),
+    preco_promocional: z.unknown(),
+    preco_custo: z.unknown(),
+    preco_sob_consulta: z.unknown(),
+  })
+  .passthrough();
+
+export type ProdutoComPrecoDetalheLi = z.infer<typeof liProdutoComPrecoDetalheSchema>;
+
+/**
+ * The echo of `PUT /v1/produto_preco/{produto_id}`: per the public document,
+ * the price row as stored, its amounts as TEXT (`"32.84"`). Diagnostic only, so
+ * EVERY field is optional, as on the other write echoes: whether a price write
+ * took effect is read through the price fold from a fresh read, never by
+ * comparing an echo whole, and an echo that does not parse is reported, never
+ * thrown (`escrita.ts`). `cheio` and `promocional` are carried raw.
+ */
+export const liEcoPrecoProdutoSchema = z
+  .object({
+    cheio: z.unknown().optional(),
+    promocional: z.unknown().optional(),
+  })
+  .passthrough();
+
+export type EcoPrecoProdutoLi = z.infer<typeof liEcoPrecoProdutoSchema>;

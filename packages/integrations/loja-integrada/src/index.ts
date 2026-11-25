@@ -10,10 +10,12 @@
  * of any list, one page of the produto list or its trash, and one product's
  * detail, both produto reads returning a projection without price or stock —
  * the CDN reader for product photos, which sends no credential, follows no
- * redirect, caps the bytes and reads the picture type from them, and the stock
+ * redirect, caps the bytes and reads the picture type from them, the stock
  * sync's wire: one page of the stock list, one product's stock, the produto id
- * a stock row names, and the stock write) are exported from this barrel as
- * they land.
+ * a stock row names, and the stock write, and the price sync's wire: the
+ * by-id price read with its classification, the produto id a price row names,
+ * the produto detail schema a price write decides on, the price body builder
+ * and the price write) are exported from this barrel as they land.
  * Everything stateful (the credential store, the connect route, the sweeps and
  * the write engine) is driven by the App Hosting backend `apps/loja-integrada`
  * and its functions, which hold the Firestore/Admin-SDK dependency.
@@ -32,11 +34,13 @@
  *  - **No write method on the read client, and no body on any read.** Every
  *    request `criarClienteLeituraLi` makes is a `GET` by construction.
  *    `escrita.ts` is the only writer, and every `PUT` it can send is held to
- *    the write routes (`rotasEscrita.ts`): three paths, each with one strict
+ *    the write routes (`rotasEscrita.ts`): four paths, each with one strict
  *    body, so no write can carry a codigo outside the three write-back
- *    situações, clear a tracking code, or send stock other than managed stock
- *    at a non-negative integer quantity. `pedidosEscrita.ts` holds the status
- *    write-back's two operations and `estoqueEscrita.ts` the stock write. The
+ *    situações, clear a tracking code, send stock other than managed stock
+ *    at a non-negative integer quantity, or send a price that is not above 0
+ *    with at most two decimal places. `pedidosEscrita.ts` holds the status
+ *    write-back's two operations, `estoqueEscrita.ts` the stock write and
+ *    `precoEscrita.ts` the price write. The
  *    app's write engine (master-plan step 7) is their only caller there, behind
  *    the write valves, and a name-keyed guard in the app enforces it.
  *  - **No decision about a write.** Whether one is due, safe or already
@@ -85,3 +89,5 @@ export * from './produtos';
 export * from './cdn';
 export * from './estoque';
 export * from './estoqueEscrita';
+export * from './preco';
+export * from './precoEscrita';

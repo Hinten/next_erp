@@ -74,6 +74,28 @@
  *    and in `resource_uri`) is replaced by an invented one (`6001`… and
  *    `2001`…), keeping the document's relation — the row's own `id` differs
  *    from the produto id both URIs carry.
+ *  - `precoSetExemplo` — the `GET /v1/produto_preco/set/{produto_id}` 200
+ *    example: three rows, their amounts as TEXT with two decimals or `null`,
+ *    and NO `meta`. The document's rows come from its `id_externo` variant: each
+ *    `produto` carries `?id_externo=1` and names an EXTERNAL id, while
+ *    `resource_uri` names the produto id asked for, so no row's `produto` names
+ *    a store produto this package reads.
+ *  - `precoRecursoExemplo` — the `GET /v1/produto_preco/{produto_id}` 200
+ *    example (`cheio` and `custo` `"32.83"`, `promocional` `"22.83"`).
+ *  - `precoPutCorpoExemplo` — the `PUT /v1/produto_preco/{produto_id}` request
+ *    example: `cheio` 32.84, `custo` 10.5, `promocional` 20 (an integer, as the
+ *    document types it) and `sob_consulta` false.
+ *  - `precoPutCorpoSemSobConsultaExemplo` — that operation's `id_externo`
+ *    request example, which leaves `sob_consulta` out.
+ *  - `precoEcoExemplo` — that operation's 200 example: the echo, its amounts as
+ *    TEXT (`"32.84"`, `"10.50"`, `"20.00"`).
+ *
+ *    In these five, every leaf is the document's own, verbatim, EXCEPT the ids:
+ *    each row's `id` and each id in `produto` and `resource_uri` is replaced by
+ *    an invented one (`7101`…, `8101`…, `2201`…), keeping the document's
+ *    relations — a row's own `id` differs from both URIs' ids, the set's
+ *    `produto` ids (external) differ from its `resource_uri` ids, and the echo
+ *    names the same product as the single resource.
  *
  * ⚠️ Everything under "Synthetic" is INVENTED: the document shows no 401, 403,
  * 429 or 5xx body at all. They exist to drive the classifier through the shapes
@@ -1263,6 +1285,71 @@ export const estoqueEcoExemplo = {
   resource_uri: '/api/v1/produto_estoque/2101',
   situacao_em_estoque: 5,
   situacao_sem_estoque: 15,
+} as const;
+
+export const precoSetExemplo = {
+  objects: [
+    {
+      cheio: null,
+      custo: null,
+      id: 7101,
+      produto: '/api/v1/produto/8101?id_externo=1',
+      promocional: null,
+      resource_uri: '/api/v1/produto_preco/2201',
+      sob_consulta: false,
+    },
+    {
+      cheio: '12.00',
+      custo: null,
+      id: 7102,
+      produto: '/api/v1/produto/8102?id_externo=1',
+      promocional: '11.20',
+      resource_uri: '/api/v1/produto_preco/2202',
+      sob_consulta: false,
+    },
+    {
+      cheio: '32.90',
+      custo: '11.50',
+      id: 7103,
+      produto: '/api/v1/produto/8103?id_externo=1',
+      promocional: '20.00',
+      resource_uri: '/api/v1/produto_preco/2203',
+      sob_consulta: false,
+    },
+  ],
+} as const;
+
+export const precoRecursoExemplo = {
+  cheio: '32.83',
+  custo: '32.83',
+  id: 7201,
+  produto: '/api/v1/produto/2301',
+  promocional: '22.83',
+  resource_uri: '/api/v1/produto_preco/2301',
+  sob_consulta: false,
+} as const;
+
+export const precoPutCorpoExemplo = {
+  cheio: 32.84,
+  custo: 10.5,
+  promocional: 20,
+  sob_consulta: false,
+} as const;
+
+export const precoPutCorpoSemSobConsultaExemplo = {
+  cheio: 32.9,
+  custo: 11.5,
+  promocional: 20,
+} as const;
+
+export const precoEcoExemplo = {
+  cheio: '32.84',
+  custo: '10.50',
+  id: 7201,
+  produto: '/api/v1/produto/2301',
+  promocional: '20.00',
+  resource_uri: '/api/v1/produto_preco/2301',
+  sob_consulta: false,
 } as const;
 
 /* -------------------------------------------------------------------------- */

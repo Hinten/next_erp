@@ -206,6 +206,7 @@ describe('the class hierarchy', () => {
       'token-na-url',
       'maxPaginas',
       'limite',
+      'ids',
       'offset',
       'prazo',
       'maxBytes',
