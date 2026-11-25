@@ -20,13 +20,16 @@ import {
   NFePedidoNotFoundError,
   NFeRejectedError,
   NFeRuntimeNotReadyError,
+  NFeSchemaError,
   NFeServerError,
   NFeTimeoutError,
   NFeXsdValidationFailedError,
   type NFeEmitResult,
 } from '@delfrance/integrations-nfe/http-provider';
+import { resumirCampos } from '@delfrance/core/wire';
 import {
   ESTADO_NFE,
+  ESTADO_NFE_LABELS,
   IE_SENTINELA,
   TIPO_CLIENTE,
   normalizarIe,
@@ -35,6 +38,7 @@ import {
 import { z } from 'zod';
 
 import { ID_DEST, IND_IE_DEST, type DestinatarioNFe, type IdDest } from './destinatarioNFe';
+import { isRuntimeNotReadyBeforeSend } from './withNFeRetry';
 
 /** An in-app route the notification offers under its message. */
 export interface NotificationLink {
@@ -62,6 +66,10 @@ export interface NotificationShape {
  * cliente is (the cadastro) — see `.claude/skills/nfe/references/`.
  */
 export const CSTAT_DESTINATARIO_ISENTO_RECUSADO = '805';
+
+// The server's classifyCStat (integrations/nfe/src/state) groups these as serviço paralisado.
+const CSTAT_SEFAZ_PARALISADA = new Set(['108', '109']);
+const CSTAT_SVC_INDISPONIVEL = new Set(['113', '114']);
 
 /**
  * Does this cStat's guidance need the rejected NF-e + cliente context? An
@@ -203,66 +211,53 @@ export function orientacaoRejeicaoNFe(
 }
 
 /**
- * Map a successful `emitir` result to a notification. The orchestrator
- * returns `estado='rejeitada'` with HTTP 422, which the HTTP client
- * raises as `NFeRejectedError` — so this function only sees the
- * happy-ish paths (`aprovada` / `enviando` / `aguardandoResposta`).
- * Includes a defensive default for any unexpected estado.
+ * Map a decoded `emitir` result to a notification. HTTP 200 also carries
+ * non-authorized estados, including terminal errors. A reused result reports
+ * the live doc after either pre-send dedup or a guarded write refused after
+ * sending, so its estado is the fact we can show.
  */
 export function notificationForNFeResult(result: NFeEmitResult): NotificationShape {
-  // `reused: true` means the server sent nothing for this click and reports the
-  // doc's live state: a doc in a bloqueada cStat (100/101/102/...), a send
-  // already in progress (#1675), or a reply refused because another run owns
-  // the doc. The estado says which.
-  //
-  // In flight: another emit of this NF-e is mid-SOAP, or a paced retry is
-  // pending (up to 6 min, one hour after a 656) — never "já emitida".
-  if (
-    result.reused &&
-    (result.estado === ESTADO_NFE.enviando || result.estado === ESTADO_NFE.aguardandoResposta)
-  ) {
+  const detalheSefaz = result.cStat ? `cStat=${result.cStat}: ${result.xMotivo}` : result.xMotivo;
+  const sufixoSefaz = detalheSefaz ? ` — ${detalheSefaz}` : '';
+
+  if (result.estado === ESTADO_NFE.enviando || result.estado === ESTADO_NFE.aguardandoResposta) {
     return {
       title: 'NF-e em processamento',
-      message:
-        'Outro envio desta NF-e está em andamento ou aguardando nova tentativa — nenhum novo ' +
-        'envio foi feito. Confira a coluna NF antes de emitir de novo.',
+      message: result.reused
+        ? `Acompanhe o processamento pela coluna NF do pedido.${sufixoSefaz}`
+        : `Lote enviado a SEFAZ; aguardando protocolo (cStat=${result.cStat} ${result.xMotivo}).`,
       color: 'blue',
     };
   }
-  // An error — this run's (a 656, a fresh EPEC 485/573 to conciliate, #1675)
-  // or another run's that a reused result reports: red, never "já emitida" nor
-  // the gray fallback. The route answers 422 only for `rejeitada`.
   if (result.estado === ESTADO_NFE.error) {
     return {
       title: 'NF-e com erro',
-      message:
-        `cStat=${result.cStat}: ${result.xMotivo}` +
-        (result.reused ? ' — nenhum novo envio foi feito.' : ''),
+      message: `cStat=${result.cStat}: ${result.xMotivo}`,
       color: 'red',
     };
   }
-  // An EPEC-approved doc this click did not transmit: its full NF-e is being
-  // transmitted right now by another emit or the sweep, or waits for the
-  // contingência to be switched off — never "já emitida", and never the arms
-  // below, which tell the operator to emit again.
+  // Keep a reused EPEC result on the tracking path. The fresh EPEC outcomes
+  // below carry their own guidance about when to send the full NF-e.
   if (result.reused && result.estado === ESTADO_NFE.epecAprovado) {
     return {
       title: 'EPEC registrado',
       message:
-        `cStat=${result.cStat}: ${result.xMotivo} — nenhum novo envio foi feito: a transmissão ` +
-        'da NF-e completa já está em andamento, ou é feita automaticamente quando a ' +
-        'contingência for desligada.',
+        'Acompanhe a transmissão da NF-e completa pela coluna NF do pedido. ' +
+        `A transmissão pode aguardar a desativação da contingência.${sufixoSefaz}`,
       color: 'teal',
     };
   }
-  // A bloqueada short-circuit: a distinct yellow toast so the user knows the
-  // click was a no-op rather than a fresh authorization.
   if (result.reused) {
+    if (result.estado === ESTADO_NFE.aprovada) {
+      return {
+        title: 'NF-e já autorizada',
+        message: detalheSefaz || 'A NF-e vinculada ao pedido está autorizada.',
+        color: 'yellow',
+      };
+    }
     return {
-      title: 'NFe já emitida',
-      message:
-        `Já existe uma NFe ${result.cStat ? `(cStat=${result.cStat}) ` : ''}` +
-        'para este pedido — nova emissão foi pulada.',
+      title: 'Situação da NF-e',
+      message: `Estado registrado no pedido — ${ESTADO_NFE_LABELS[result.estado]}${sufixoSefaz}`,
       color: 'yellow',
     };
   }
@@ -272,13 +267,6 @@ export function notificationForNFeResult(result: NFeEmitResult): NotificationSha
       title: 'NF-e autorizada',
       message: `Protocolo ${protocol} — cStat=${result.cStat} ${result.xMotivo}`,
       color: 'green',
-    };
-  }
-  if (result.estado === ESTADO_NFE.enviando || result.estado === ESTADO_NFE.aguardandoResposta) {
-    return {
-      title: 'NF-e em processamento',
-      message: `Lote enviado a SEFAZ; aguardando protocolo (cStat=${result.cStat} ${result.xMotivo}).`,
-      color: 'blue',
     };
   }
   if (result.estado === ESTADO_NFE.rejeitada) {
@@ -331,35 +319,52 @@ export function notificationForNFeResult(result: NFeEmitResult): NotificationSha
 }
 
 /**
- * Map a thrown error from `client.emitir(...)` to a notification.
+ * Map a thrown NF-e client error to a notification.
  * Narrows via `instanceof` on the typed error classes exported from
  * `@delfrance/integrations-nfe`. Returns a generic fallback for
  * anything that doesn't match.
  *
  * `contexto` only matters for an `NFeRejectedError` whose cStat has
- * guidance (`orientacaoRejeicaoNFe`): the verbatim `cStat=…: <xMotivo>`
- * prefix stays — SEFAZ outcomes must remain copy-pasteable — and the
- * guidance follows after ' — ', with the cadastro link. The toast stays
- * red for both variants. Without guidance the shape is exactly the
- * generic one.
+ * contextual guidance (`orientacaoRejeicaoNFe`). Outages and rejections
+ * both keep the verbatim `cStat=…: <xMotivo>` prefix for copying.
  */
 export function notificationForNFeError(
   err: unknown,
   contexto: ContextoRejeicaoNFe | null = null,
 ): NotificationShape {
   if (err instanceof NFeRejectedError) {
+    const detalheSefaz = `cStat=${err.cStat}: ${err.xMotivo}`;
+    if (CSTAT_SEFAZ_PARALISADA.has(err.cStat)) {
+      return {
+        title: 'SEFAZ indisponível',
+        message:
+          `${detalheSefaz} — Aguarde a normalização da SEFAZ antes de emitir novamente. ` +
+          'Se mantiver o mesmo modo de emissão, o mesmo número será reutilizado. ' +
+          'Se a indisponibilidade persistir, confira a contingência da filial.',
+        color: 'yellow',
+      };
+    }
+    if (CSTAT_SVC_INDISPONIVEL.has(err.cStat)) {
+      return {
+        title: 'Contingência SVC indisponível',
+        message:
+          `${detalheSefaz} — Confira o modo de contingência da filial em Configurações → Filiais ` +
+          'antes de emitir novamente.',
+        color: 'yellow',
+      };
+    }
     const orientacao = orientacaoRejeicaoNFe(err.cStat, contexto);
     if (orientacao != null) {
       return {
         title: orientacao.titulo,
-        message: `cStat=${err.cStat}: ${err.xMotivo} — ${orientacao.texto}`,
+        message: `${detalheSefaz} — ${orientacao.texto}`,
         color: 'red',
         link: orientacao.link,
       };
     }
     return {
       title: 'SEFAZ rejeitou a NF-e',
-      message: `cStat=${err.cStat}: ${err.xMotivo}`,
+      message: detalheSefaz,
       color: 'red',
     };
   }
@@ -485,11 +490,20 @@ const alvoRejeicaoSchema = z.object({
   nfeId: z.string().min(1),
 });
 
+function notificationForUnknownEmitOutcome(diagnostic: string): NotificationShape {
+  return {
+    title: 'Resultado da emissão desconhecido',
+    message:
+      'A NF-e pode ter sido enviada à SEFAZ. Confira a coluna NF do pedido antes de emitir novamente. ' +
+      diagnostic,
+    color: 'yellow',
+  };
+}
+
 /**
- * `notificationForNFeError`, plus the context lookup for the rejections that
- * need it. The loader runs ONLY for an `NFeRejectedError` whose cStat passes
- * `rejeicaoPrecisaContexto` AND whose body names both the pedido and the nfev4
- * doc — every other error resolves to the synchronous mapping without a read.
+ * Single-emission errors need check-first guidance when the server may have
+ * sent the NF-e. Other errors use the shared mapping. The context loader runs
+ * only for a rejection that needs context and names the pedido and nfev4 doc.
  * A loader rejection propagates: the Firestore-backed one already degrades a
  * `FirebaseError` to a partial context, so what reaches here is a bug.
  */
@@ -497,6 +511,22 @@ export async function notificationForNFeErrorComContexto(
   err: unknown,
   carregar: CarregarContextoRejeicao,
 ): Promise<NotificationShape> {
+  if (err instanceof NFeTimeoutError) return notificationForNFeError(err);
+  if (err instanceof NFeNetworkError) {
+    return notificationForUnknownEmitOutcome('Falha de comunicação com a integração fiscal.');
+  }
+  if (err instanceof NFeSchemaError) {
+    const campos = err.campos.length ? ` Campos inválidos: ${resumirCampos(err.campos)}.` : '';
+    return notificationForUnknownEmitOutcome(
+      `HTTP ${String(err.status)} — resposta de emissão inválida.${campos}`,
+    );
+  }
+  if (
+    err instanceof NFeServerError ||
+    (err instanceof NFeRuntimeNotReadyError && !isRuntimeNotReadyBeforeSend(err))
+  ) {
+    return notificationForUnknownEmitOutcome(`HTTP ${String(err.status)}.`);
+  }
   if (!(err instanceof NFeRejectedError) || !rejeicaoPrecisaContexto(err.cStat)) {
     return notificationForNFeError(err);
   }

@@ -4,11 +4,13 @@ import {
   NFeNetworkError,
   NFeRejectedError,
   NFeTimeoutError,
+  createNFeHttpClient,
   type NFeHttpClient,
 } from '@delfrance/integrations-nfe/http-provider';
 
 import { ID_DEST, IND_IE_DEST } from '../nfe/destinatarioNFe';
 import type { CarregarContextoRejeicao, ContextoRejeicaoNFe } from '../nfe/errors';
+import { withNFeRetry } from '../nfe/withNFeRetry';
 
 const { getDocsMock, getDocMock, loaderMock, carregadorMock } = vi.hoisted(() => {
   const loaderMock = vi.fn<CarregarContextoRejeicao>();
@@ -67,6 +69,18 @@ const emitResult = (over: Record<string, unknown>) => ({
   xMotivo: 'Autorizado o uso da NF-e',
   ...over,
 });
+
+function httpClientWith(response: Response) {
+  const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response);
+  const client = withNFeRetry(
+    createNFeHttpClient({
+      baseUrl: 'http://nfe.test',
+      getAuthToken: () => Promise.resolve('token'),
+      fetch,
+    }),
+  );
+  return { client, fetch };
+}
 
 describe('resolveAprovadaNfe', () => {
   beforeEach(() => getDocsMock.mockReset());
@@ -228,11 +242,77 @@ describe('ensureNfeAprovada', () => {
     });
   });
 
-  it('a plain network error is still a failure notification (near-miss of the timeout)', async () => {
+  it('a plain network error returns an unknown-outcome notification', async () => {
     setDocs([]);
     client.emitir.mockRejectedValue(new NFeNetworkError('Failed to fetch'));
     const r = await ensureNfeAprovada(db, asClient(client), 'p1');
-    expect(r).toMatchObject({ ok: false, pending: false });
+    expect(r).toMatchObject({
+      ok: false,
+      pending: false,
+      notification: { title: 'Resultado da emissão desconhecido', color: 'yellow' },
+    });
+  });
+
+  it('returns SEFAZ downtime for a 422 with cStat 108', async () => {
+    setDocs([]);
+    const { client } = httpClientWith(
+      Response.json(
+        { cStat: '108', xMotivo: 'Serviço Paralisado Momentaneamente' },
+        { status: 422 },
+      ),
+    );
+    await expect(ensureNfeAprovada(db, client, 'p1')).resolves.toMatchObject({
+      ok: false,
+      pending: false,
+      notification: {
+        title: 'SEFAZ indisponível',
+        color: 'yellow',
+        message: expect.stringContaining('cStat=108: Serviço Paralisado Momentaneamente'),
+      },
+    });
+    expect(loaderMock).not.toHaveBeenCalled();
+  });
+
+  it('returns check-first guidance after an unmarked 503 and sends one POST', async () => {
+    setDocs([]);
+    const { client, fetch } = httpClientWith(Response.json({}, { status: 503 }));
+    await expect(ensureNfeAprovada(db, client, 'p1')).resolves.toMatchObject({
+      ok: false,
+      pending: false,
+      notification: {
+        title: 'Resultado da emissão desconhecido',
+        color: 'yellow',
+        message: expect.stringContaining('Confira a coluna NF'),
+      },
+    });
+    expect(fetch).toHaveBeenCalledExactlyOnceWith(
+      'http://nfe.test/api/nfe/emitir',
+      expect.objectContaining({ method: 'POST' }),
+    );
+    expect(loaderMock).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])('returns the manual-verification error with reused=%s', async (reused) => {
+    setDocs([]);
+    const { client } = httpClientWith(
+      Response.json(
+        emitResult({
+          estado: ESTADO_NFE.error,
+          cStat: '104',
+          xMotivo: 'Lote processado — verificar manualmente',
+          reused,
+        }),
+      ),
+    );
+    await expect(ensureNfeAprovada(db, client, 'p1')).resolves.toStrictEqual({
+      ok: false,
+      pending: false,
+      notification: {
+        title: 'NF-e com erro',
+        message: 'cStat=104: Lote processado — verificar manualmente',
+        color: 'red',
+      },
+    });
   });
 
   it('maps a thrown NFeRejectedError to a notification', async () => {

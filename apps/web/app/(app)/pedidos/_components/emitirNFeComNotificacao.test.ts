@@ -7,6 +7,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   NFeRejectedError,
+  createNFeHttpClient,
   type NFeEmitResult,
   type NFeHttpClient,
 } from '@delfrance/integrations-nfe/http-provider';
@@ -14,6 +15,7 @@ import { ESTADO_NFE, IE_SENTINELA, TIPO_CLIENTE } from '@delfrance/schemas';
 
 import { ID_DEST, IND_IE_DEST } from '@/lib/nfe/destinatarioNFe';
 import type { CarregarContextoRejeicao, ContextoRejeicaoNFe } from '@/lib/nfe/errors';
+import { withNFeRetry } from '@/lib/nfe/withNFeRetry';
 
 const h = vi.hoisted(() => {
   const loader = vi.fn<CarregarContextoRejeicao>();
@@ -48,6 +50,18 @@ const CONTEXTO_805_INTERNA: ContextoRejeicaoNFe = {
 
 function clientWith(emitir: NFeHttpClient['emitir']): NFeHttpClient {
   return { emitir } as unknown as NFeHttpClient;
+}
+
+function httpClientWith(response: Response) {
+  const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response);
+  const client = withNFeRetry(
+    createNFeHttpClient({
+      baseUrl: 'http://nfe.test',
+      getAuthToken: () => Promise.resolve('token'),
+      fetch,
+    }),
+  );
+  return { client, fetch };
 }
 
 beforeEach(() => {
@@ -97,6 +111,68 @@ describe('emitirNFeComNotificacao', () => {
       color: 'red',
     });
     expect(h.loader).not.toHaveBeenCalled();
+  });
+
+  it('shows SEFAZ downtime for a 422 with cStat 108', async () => {
+    const { client, fetch } = httpClientWith(
+      Response.json(
+        { cStat: '108', xMotivo: 'Serviço Paralisado Momentaneamente' },
+        { status: 422 },
+      ),
+    );
+    await emitirNFeComNotificacao(client, 'ped-1');
+    expect(h.showError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: 'SEFAZ indisponível',
+        color: 'yellow',
+        message: expect.stringContaining('cStat=108: Serviço Paralisado Momentaneamente'),
+      }),
+    );
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(h.loader).not.toHaveBeenCalled();
+  });
+
+  it('advises checking the NF column after an unmarked 503 and sends one POST', async () => {
+    const { client, fetch } = httpClientWith(
+      new Response('<html>Unavailable</html>', { status: 503 }),
+    );
+    await emitirNFeComNotificacao(client, 'ped-1');
+    expect(h.showError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: 'Resultado da emissão desconhecido',
+        color: 'yellow',
+        message: expect.stringContaining('Confira a coluna NF'),
+      }),
+    );
+    expect(fetch).toHaveBeenCalledExactlyOnceWith(
+      'http://nfe.test/api/nfe/emitir',
+      expect.objectContaining({ method: 'POST' }),
+    );
+    expect(h.loader).not.toHaveBeenCalled();
+  });
+
+  it('shows the copyable processing toast for a reused receipt', async () => {
+    const { client } = httpClientWith(
+      Response.json({
+        nfeId: 'nfev4-1',
+        pedidoId: 'ped-1',
+        estado: ESTADO_NFE.aguardandoResposta,
+        chave: '35260514200166000187550010000000071000000018',
+        nRec: '12345',
+        cStat: '103',
+        xMotivo: 'Lote recebido com sucesso',
+        reused: true,
+      } satisfies NFeEmitResult),
+    );
+    await emitirNFeComNotificacao(client, 'ped-1');
+    expect(h.showCopyable).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: 'NF-e em processamento',
+        color: 'blue',
+        message: expect.stringContaining('cStat=103: Lote recebido com sucesso'),
+      }),
+    );
+    expect(h.showError).not.toHaveBeenCalled();
   });
 
   it('a thrown 805 → the loader bound to the app db runs; the toast carries the guidance + cadastro link', async () => {
