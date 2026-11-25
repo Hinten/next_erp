@@ -129,6 +129,7 @@ export type EnviNFeMsg = z.infer<typeof enviNfeMsgSchema>;
 
 export const enviNfeMsgMeta: CollectionMetadata = {
   collectionPath: 'filiais/{filialId}/enviNfe',
+  serverOwned: true,
   permissions: {
     read: PERM_FISCAL_READ,
     write: PERM_FISCAL_WRITE,

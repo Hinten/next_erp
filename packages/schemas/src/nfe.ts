@@ -350,6 +350,7 @@ export type NotaFiscalEletronica = z.infer<typeof nfeSchema>;
 
 export const nfeMeta: CollectionMetadata = {
   collectionPath: 'pedidos/{pedidoId}/nfev4',
+  serverOwned: true,
   permissions: {
     read: PERM_NFE_READ,
     write: PERM_NFE_WRITE,
