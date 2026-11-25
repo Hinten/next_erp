@@ -11,11 +11,15 @@
  * The Singapore sandbox order (`__wire__/get_order_detail.qty2-sg.json`) came
  * back with `actual_shipping_fee: 0` while the buyer had paid 1.99, plus
  * `edt_from: 0`, `edt_to: 0`, `pickup_done_time: 0` and both chargeable weights
- * at `0`. So on this wire a `0` is "absent", and a `??` — which only sees
+ * at `0`. So on the DETAIL a `0` is "absent", and a `??` — which only sees
  * `null`/`undefined` — is a BUG: the legacy importer's `actual ?? estimated`
- * wrote `valorCobrado: 0` onto every unshipped order. Every numeric read here
- * therefore goes through {@link positivoOuNull}, and a fabricated zero never
- * reaches a stored money field (#957).
+ * wrote `valorCobrado: 0` onto every unshipped order. Every detail numeric read
+ * here therefore goes through {@link positivoOuNull} (#957).
+ *
+ * ⚠️ The ONE exception is the money, and it is not read here: `valorCobrado` /
+ * `custoCalculado` come from `dinheiroShopee.ts`'s `freteDoPedidoShopee`, which
+ * takes the escrow's `buyer_paid_shipping_fee` VERBATIM, `0` included, once the
+ * escrow answers (a free-shipping order is a real zero there).
  *
  * ## ⚠️ `estado` is seeded and never read from `logistics_status`
  *
@@ -24,15 +28,17 @@
  * irreversibly. Step 7 owns that transition; step 5 seeds
  * `ESTADO_FRETE.iniciado` and reads no `logistics_status` at all.
  *
- * ## ⚠️ FOB, never CIF
+ * ## The modalidade is the conta's, seeded once
  *
  * `MODALIDADE_FRETE.cif` (`'0'`) is the only modalidade that charges the
  * freight INTO the nota (`det.prod.vFrete`, `ICMSTot.vFrete`, the `vNF` sum, the
- * single-payment `vPag` override and the `<cobr>` duplicatas all key on it).
- * Shopee contracts and charges the freight; the store does not. CIF here is
- * #1090's exact failure — ICMS paid on freight a third party charged.
+ * single-payment `vPag` override and the `<cobr>` duplicatas all key on it). The
+ * block is seeded with the conta's `modalidadeFreteImportacao`, FOB when unset —
+ * as Mercado Livre, Amazon and Loja Integrada read it — and only on CREATE: a
+ * re-import never rewrites it ({@link mesclarFreteInicialShopee}). FOB stays FOB
+ * when the buyer paid freight; the pagamento then excludes that freight
+ * (`dinheiroShopee.ts`), so Σ vPag = vNF.
  */
-import { roundReais } from '@delfrance/core/money';
 import { millisToMicros } from '@delfrance/core/datetime';
 import {
   ESTADO_FRETE,
@@ -42,10 +48,12 @@ import {
   seedFreteInicial,
   type FreteDoPedido,
   type HorarioDeCorte,
+  type ModalidadeFrete,
   type Volume,
 } from '@delfrance/schemas';
 import type { ShopeeEscrowDetail, ShopeeOrderDetailRow } from '@delfrance/integrations-shopee';
 
+import { freteDoPedidoShopee } from './dinheiroShopee';
 import { microsDeSegundosShopee, positivoOuNull, segundosShopeeUtilizaveis } from './orderMapping';
 
 /**
@@ -222,6 +230,11 @@ export interface MapearFreteShopeeArgs {
   readonly escrow: ShopeeEscrowDetail | null;
   /** The ONE order-clock watermark for this document, in µs. */
   readonly watermarkUs: number;
+  /**
+   * The modalidade the block is SEEDED with (`modalidadeDoPedidoShopee`: the
+   * conta's, else FOB). Only a CREATE writes it. Defaults to FOB.
+   */
+  readonly modalidade?: ModalidadeFrete;
 }
 
 export interface FreteMapeadoShopee {
@@ -243,7 +256,8 @@ export interface FreteMapeadoShopee {
  *
  * ⚠️ `valorCobrado` is what the BUYER was charged (the escrow names it
  * `buyer_paid_shipping_fee`), `custoCalculado` is what the shipment COSTS. They
- * are different numbers with different sources and must not be folded.
+ * are different numbers with different sources and must not be folded — both
+ * come from the money model's ONE reader, `freteDoPedidoShopee`.
  */
 export function mapearFreteInicialShopee(args: MapearFreteShopeeArgs): FreteMapeadoShopee {
   const { detalhe, escrow, watermarkUs } = args;
@@ -253,15 +267,10 @@ export function mapearFreteInicialShopee(args: MapearFreteShopeeArgs): FreteMape
 
   const { volumes, pesosObservados } = volumesDeShopee(detalhe);
 
-  const estimado = positivoOuNull(detalhe.estimated_shipping_fee);
-  const pagoPeloComprador = positivoOuNull(escrow?.order_income?.buyer_paid_shipping_fee);
-  const real = positivoOuNull(detalhe.actual_shipping_fee);
-
-  const valorCobrado = pagoPeloComprador ?? estimado;
-  const custoCalculado = real ?? estimado;
+  const { valorCobrado, custoCalculado } = freteDoPedidoShopee(detalhe, escrow);
 
   const frete: FreteDoPedido = {
-    ...seedFreteInicial(MODALIDADE_FRETE.fob, true),
+    ...seedFreteInicial(args.modalidade ?? MODALIDADE_FRETE.fob, true),
     externalOptionIntegracao: INTEGRACAO_FRETE.shopee,
     externalId: pacote?.package_number ?? null,
     externalOptionId:
@@ -270,8 +279,8 @@ export function mapearFreteInicialShopee(args: MapearFreteShopeeArgs): FreteMape
         : null,
     // ⚠️ Seeded, never derived from `logistics_status` — see the module header.
     estado: ESTADO_FRETE.iniciado,
-    valorCobrado: valorCobrado == null ? null : roundReais(valorCobrado),
-    custoCalculado: custoCalculado == null ? null : roundReais(custoCalculado),
+    valorCobrado,
+    custoCalculado,
     // Step 7 owns tracking; a code invented here would look like a shipment.
     codRastreio: null,
     prazoDespacho: prazoDespachoShopee(detalhe),
@@ -333,7 +342,9 @@ export const CAMPOS_FRETE_ATUALIZAVEIS_SHOPEE = [
  *
  * `{ ...existente }` first, then ONLY the seven fields above, each as
  * `mapeado ?? existente ?? null` — an absent figure never overwrites a stored
- * one (#957), and no key the list does not name is touched.
+ * one (#957), and no key the list does not name is touched. A mapped `0`
+ * (`buyer_paid_shipping_fee` on a free-shipping order) is a value, so it
+ * replaces a stored estimate — intended.
  *
  * ⚠️ `prazoDespacho` is NOT one of them since step 7 (#1515): a stored deadline
  * survives a re-import whose mapped value differs, because the per-package fold

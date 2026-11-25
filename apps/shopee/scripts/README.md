@@ -101,16 +101,16 @@ for `--live=false`, would have run LIVE).
 
 | line                  | what it tells you                                                                                                                          |
 | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `escrow`              | `lido` or `AUSENTE`. Absent means prices came from the detail alone — expected on an unpaid order, worth a look otherwise.                 |
+| `escrow`              | `lido` or `AUSENTE`. Absent means prices came from the detail alone — expected on an unpaid order, worth a look otherwise (§7).            |
 | `pedido já existe?`   | whether this run would be a `criado` or an update; an update also prints `int_frete armazenado` (which it keeps) and `entrega armazenada`. |
-| `conferência`         | `Σ itens + frete` against the order's own `total_amount`. A `diferença` of `0` is the healthy answer; `—` means the order is not paid yet. |
+| `conferência`         | `Σ itens − desconto + frete` vs what the buyer paid. `diferença 0` is healthy; on `piso … APLICADO` it equals the cupom; below 0 see §7.   |
 | `estado alvo`         | what the ladder wants (`pago`, `aguardandoConfirmacaoDePagamento`, …), or `(erro)` for a status this ladder does not model.                |
 | `capturaComprador`    | `capturado` / `pendente` / `expirado`, plus the refused field NAMES.                                                                       |
 | `linhas sem produto`  | how many lines bound to no produto. On staging, expect **all of them**.                                                                    |
-| `freteInicial`        | `valorCobrado` is what the buyer paid, `custoCalculado` what the shipment costs.                                                           |
+| `freteInicial`        | `valorCobrado` is what the buyer paid (`0` = free shipping), `custoCalculado` what it costs; `modalidade`: the conta's, else FOB.          |
 | `int_frete da conta`  | the conta's ACTIVE doc (`documents/int_frete/<id>`) or `nenhum ativo — o pedido fica sem ref`; only a NEW pedido stores it.                |
 | `endereço de entrega` | the delivery address — the fiscal one, so null in a dry run (the buyer is never resolved there).                                           |
-| item rows             | ids, sku, quantity, price, per-unit discount.                                                                                              |
+| item rows             | ids, sku, quantity, price (the unit `discounted_price`), per-unit discount (the buyer-side offsets: vouchers, coins).                      |
 
 A STORED summary (the `--live` read-back) prints the ref as `integracaoFreteOuterRef`
 — what the pedido holds — instead of `int_frete da conta`.
@@ -202,9 +202,25 @@ contaProdutoShopeeOuterRef)`, which is **#1532**, migration-window work. On
   null**, even for an order the live run would link — resolving a buyer means
   `findOrCreateCliente`, which is a write. The `capturaComprador` verdict is what
   answers "would it have linked".
-- **`descontoTotal` is `0`**, always. Shopee has no order-level discount; its
-  five escrow discounts are item-level and already ride each line's
-  `descontoUnitario`.
+- **`descontoTotal` is usually `0`.** The buyer-side offsets (vouchers, coins)
+  are item-level and ride each line's `descontoUnitario`; `descontoTotal` holds
+  only a residual no line carries (a PIX or payment promotion), so the NF-e
+  total equals what the buyer paid. The rule is `lib/shopee/pedidos/README.md`'s
+  money section (legacy parity — Lucas's decision of 2026-11-24).
+- **A pagamento under FOB excludes the freight the buyer paid**, because the
+  NF-e states freight only under CIF; the pedido's `valorCobrado` still carries
+  it. So on an order with paid freight `valorCobrado` ≠ Σ pagamentos under FOB,
+  and that is correct.
+- **A second pagamento "Cupom de desconto Shopee" (forma `outros`) appears only
+  when the NF-e floor bound** — the import log says `pisoAplicado: true`, and
+  the conferência's `diferença` then equals the cupom (healthy).
+- **A negative `diferença`** is the buyer paying more than the lines state
+  (`pago-acima`, ONE `shp-pagamento-divergente` incidente) — unless it is within
+  one centavo per unit, which is the lines' per-unit rounding and closes.
+- **`escrow AUSENTE` on a paid order** prices from the detail, and the pagamento
+  anchors on the order's `total_amount` — so a voucher the lines do not net makes
+  the NF-e refuse (865) instead of emitting. On an existing pedido the money is
+  provisional (`dinheiroProvisorio: true`): the stored money and pagamentos stay.
 - **`custoFinal` stays null; `codRastreio` is step 7's** — written by
   `rastrear:pedido` and by the code-4/30/47 push arm, never by the import.
   `get_order_detail` carries no tracking number at all, so a value invented here
@@ -462,7 +478,7 @@ preamble on stderr.
 | `[pendente]` / `[listagem]` | which of the live tick's two row sources produced the row — a replayed `pendentes` entry, or a `get_escrow_list` page. A parked row is invisible to the listing once the cursor passed its release time.                                     |
 | `pedidoId` / `pagamentoId`  | both are DIGESTS of `(integracaoId, order_sn)`; `AUSENTE` on either is what parks the row and sends a synthetic code 3.                                                                                                                      |
 | `payout / escrow`           | ⚠️ the open question of step 6. `payout_amount`'s unit is unresolved on Shopee's own page (the table prints a float, the sample prints an integer 100× larger), so the sweep logs the RATIO beside it: **~1 means units, ~100 means cents.** |
-| `tarifas`                   | the clamped figure `pagamento.tarifas` would take — commission + service + seller transaction, BR net variants preferred.                                                                                                                    |
+| `tarifas`                   | the clamped figure `pagamento.tarifas` would take — the spread, `buyer_total_amount − escrow_amount_after_adjustment` (the import's own rule; a negative raw clamps to 0).                                                                   |
 | `ação`                      | `liquidado`, `ignorado-sem-mudanca` (the idempotent overlap — writes nothing), `ignorado-obsoleto` (the stored release stamp is newer) or `ignorado-sem-pagamento`.                                                                          |
 | `campos que mudariam`       | the exact dotted field names a live run would write. `(nenhum)` beside `ignorado-sem-mudanca` is the healthy steady state.                                                                                                                   |
 
@@ -493,8 +509,8 @@ What a live run can change:
 
 What it can **never** change: `valor`, `forma_de_pagamento`, `status_pagamento`,
 `parcelas`, `aVista`, `cartao`, the date stamps, the pedido, the `estado` or any
-stock. So `Σ pagante valor == valorCobrado` (and therefore `Σ vPag == vNF` on the
-nota) cannot move from here.
+stock. So `Σ pagante valor == vNF` on the nota (what the import's money model
+wrote) cannot move from here.
 
 It can also enqueue **synthetic code-3 notifications** — up to 50 per run, one per
 released order whose pedido or pagamento is missing — and each of those imports a
@@ -2790,6 +2806,7 @@ first) and the warnings.
 | `Cliente`                   | linked or not, created by this run, which fields are filled — by NAME                                                                                                                 |
 | `Endereço`                  | the builder's outcome over the capture (`ok` / `sem-cep` / `uf-desconhecida`), the gates, the CEP's digit count, the stored UF (closed set), `pais`, `codigoMunicipio`, the fallbacks |
 | the pedido summary          | the same allow-listed summary `importar:pedido --live` prints — the `int_frete` ref and the delivery endereço included                                                                |
+| `NF-e`                      | `vNF (Σ itens − desconto + frete se CIF) X · Σ pagamentos Y · confere` — the NF-e Σ vPag = vNF check over the STORED documents, amounts only; `DIVERGE` is the finding                |
 | `Incidentes`                | one per line: the in-memory catálogo is empty, so every line is EXPECTED unbound                                                                                                      |
 | `ViaCEP`                    | the mode and how many CEPs the importer asked about — a count, never a CEP                                                                                                            |
 | `2ª passada`                | `ignorado-sem-mudanca`, `documentos alterados 0` and one cliente — anything else is an idempotence finding, EXCEPT the stub case below                                                |
@@ -2807,9 +2824,21 @@ to see what production stores.
 **Expected for a paid CPF order inside the window:** `capturado`, a cliente
 `criado nesta execução sim`, an endereço `ok` with UF in the closed set, the
 pedido's `freteInicial` delivery endereço equal to the fiscal one,
-`integracaoFreteOuterRef` pointing at `documents/int_frete/shopee-int-1`, and the
-second pass `ignorado-sem-mudanca` with `documentos alterados 0` (with the stub
-consulted, see the caveat above).
+`integracaoFreteOuterRef` pointing at `documents/int_frete/shopee-int-1`, the
+`NF-e` line `confere`, and the second pass `ignorado-sem-mudanca` with
+`documentos alterados 0` (with the stub consulted, see the caveat above).
+
+**Expected money (the rule is `lib/shopee/pedidos/README.md`'s money section):**
+the stderr conferência with `diferencaDeTotais 0`; a free-shipping order's
+`freteInicial.valorCobrado 0`; each line's net (price − discount) equal to what
+the buyer paid for it; under FOB the pagamento's `valor` equal to
+`buyer_total_amount` minus the freight the buyer paid, and the pedido's
+`valorCobrado` equal to `buyer_total_amount`; `tarifas` equal to
+`buyer_total_amount − escrow_amount_after_adjustment`. A second pagamento
+"Cupom de desconto Shopee" only when the import log says `pisoAplicado: true`
+(then `diferencaDeTotais` and the pedido's excess over `buyer_total_amount` both
+equal the cupom). A paid order replayed with no escrow may show
+`NF-e … DIVERGE` by design: its pagamento anchors on `total_amount` (§7).
 
 ### 19.4 `--saida`, and cleaning up
 

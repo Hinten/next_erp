@@ -48,6 +48,7 @@ import {
   ORDER_SN_REDIGIDO,
   camposOpcionaisAusentes,
   chavesDoEdt,
+  conferenciaNfeDosDocumentos,
   descreverErroReproducao,
   documentosParaSaida,
   encontrarResiduos,
@@ -56,6 +57,7 @@ import {
   exigirSaidaNova,
   hostParaRelatorio,
   hostPermitidoNaReproducao,
+  linhaConferenciaNfe,
   montarSaidaDaReproducao,
   parseArgsReproduzirPedido,
   renderReproducao,
@@ -542,6 +544,9 @@ const CHAVES_DO_RESUMO = [
   'chamadas.escrowServidas',
   'chamadas.escrowRecusadas',
   'chamadas.inesperadas',
+  'conferenciaNfe.totalDaNota',
+  'conferenciaNfe.somaPagamentos',
+  'conferenciaNfe.confere',
   'primeira.acao',
   'primeira.detail',
   'primeira.orderStatus',
@@ -1072,5 +1077,60 @@ describe('§7 as fontes', () => {
 
   it('o README traz a lista de response_optional_fields LITERAL, igual à constante', () => {
     expect(fonte('scripts/README.md')).toContain(SHOPEE_ORDER_DETAIL_OPTIONAL_FIELDS);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                 the NF-e check — Σ vPag = vNF, amounts only                 */
+/* -------------------------------------------------------------------------- */
+
+describe('a conferência da NF-e no relatório — Σ pagamentos contra o vNF dos documentos GRAVADOS', () => {
+  it('a reprodução de um pedido pago: a linha sai, com os dois valores e o veredito', async () => {
+    const r = await reproduzir();
+    const resumo = resumoDaReproducao(r, { viaCepLigado: false });
+    // ÂNCORA: a pagamento really was stored, so the check is not vacuous.
+    expect(r.leitura.pagamentos.length).toBeGreaterThan(0);
+    expect(resumo.conferenciaNfe.confere).toBe(true);
+    expect(resumo.conferenciaNfe.totalDaNota).toBe(resumo.conferenciaNfe.somaPagamentos);
+    const texto = renderReproducao(resumo).join('\n');
+    expect(texto).toContain(linhaConferenciaNfe(resumo.conferenciaNfe));
+    expect(texto).toMatch(
+      /NF-e .+ vNF \(Σ itens − desconto \+ frete se CIF\) .+ · Σ pagamentos .+ · confere/,
+    );
+  });
+
+  const linha = { precoDeVenda: 53.87, descontoUnitario: 2.64, quantidade: 1 };
+  const pedidoFob = {
+    itens: { NONE: [linha] },
+    descontoTotal: 0,
+    freteInicial: { modalidade: '1', valorCobrado: 4 },
+  };
+
+  it('DIVERGE quando Σ pagante não é o vNF — e o frete FOB fica FORA do vNF', () => {
+    const c = conferenciaNfeDosDocumentos(pedidoFob, [
+      { dados: { valor: 55.23, status_pagamento: 4 } },
+    ]);
+    expect(c).toEqual({ totalDaNota: 51.23, somaPagamentos: 55.23, confere: false });
+    expect(linhaConferenciaNfe(c)).toContain('DIVERGE');
+    const ok = conferenciaNfeDosDocumentos(pedidoFob, [
+      { dados: { valor: 51.23, status_pagamento: 4 } },
+    ]);
+    expect(ok.confere).toBe(true);
+  });
+
+  it('⚠️ NEAR-MISS: um pagamento estornado não entra na soma (a regra de isPagamentoPagante)', () => {
+    const c = conferenciaNfeDosDocumentos(pedidoFob, [
+      { dados: { valor: 51.23, status_pagamento: 4 } },
+      { dados: { valor: 51.23, status_pagamento: 8 } },
+    ]);
+    expect(c.somaPagamentos).toBe(51.23);
+    expect(c.confere).toBe(true);
+  });
+
+  it('sem pedido, ou com uma linha gravada ilegível, o veredito é — (nunca uma soma parcial)', () => {
+    expect(conferenciaNfeDosDocumentos(null, []).confere).toBeNull();
+    const ilegivel = conferenciaNfeDosDocumentos({ itens: { NONE: [{ precoDeVenda: 'x' }] } }, []);
+    expect(ilegivel.totalDaNota).toBeNull();
+    expect(linhaConferenciaNfe(ilegivel)).toContain('linha gravada ilegível');
   });
 });

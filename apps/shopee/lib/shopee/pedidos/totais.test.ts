@@ -1,25 +1,28 @@
 /**
- * The one test that crosses the two modules — `itens.ts` + `orderMapping.ts` on
- * one side, `derivePedidoFreteTotals` (`@delfrance/schemas`) on the other.
+ * The tests that cross the modules — `itens.ts` + `dinheiroShopee.ts` +
+ * `orderMapping.ts` + `pagamentoMapping.ts` on one side, the shared totals
+ * (`derivePedidoFreteTotals`, `sumPagamentosPagos`) on the other.
  *
- * ⚠️ **Neither module can see this defect alone**, which is why it shipped
- * green: `itens.test.ts` proved the per-line discount is mapped, and
- * `orderMapping.test.ts` proved the header field is written; nobody added them
- * up the way the ERP does. `derivePedidoFreteTotals` is what the operator's
- * first save (`packages/data/src/pedido/usecases.ts`), the pedido footer and the
- * print all run — so the value the importer stores and the value the ERP
- * recomputes have to be the SAME number, and a test that only asks "was the
- * discount applied?" cannot say whether it was applied TWICE.
+ * ⚠️ **No single module can see these defects**, which is why they shipped
+ * green before: a test that only asks "was the discount applied?" cannot say
+ * whether it was applied TWICE, and a test of the pagamento mapper alone cannot
+ * say whether Σ vPag still equals what the NF-e states. `derivePedidoFreteTotals`
+ * is what the operator's first save (`packages/data/src/pedido/usecases.ts`), the
+ * pedido footer and the print run, and the NF-e's `vNF` is the same derive with
+ * the freight only under CIF (`apps/nfe/.../generator-input.ts`) — so the value
+ * the importer stores, the value the ERP recomputes and the sum of the
+ * pagamentos have to agree.
  */
 import { roundReais } from '@delfrance/core/money';
 import {
+  MODALIDADE_FRETE,
   STATUS_PAGAMENTO,
   derivePedidoFreteTotals,
   isPagamentoPagante,
   sumPagamentosPagos,
+  type ModalidadeFrete,
 } from '@delfrance/schemas';
 import {
-  shopeeEscrowDetailPayloadSchema,
   shopeeOrderDetailRowSchema,
   type ShopeeEscrowDetail,
   type ShopeeOrderDetailRow,
@@ -32,6 +35,13 @@ import {
   lerEscrowDetalhe,
   lerPedidoDetalhe,
 } from '../fixtures/wireCorpus';
+import {
+  VETORES_REAIS_BR,
+  detalheDoVetor,
+  escrowDoVetor,
+  vetor,
+  type VetorDinheiroShopee,
+} from '../testing/vetoresDinheiro';
 import { CAPTURA_COMPRADOR_ESTADO } from './comprador';
 import { mapearItensShopee } from './itens';
 import { mapearFreteInicialShopee } from './orderFreteMapping';
@@ -52,173 +62,78 @@ const SEM_RESOLUCAO = new Map<string, ResolvedShopeeLineProduto>();
 beforeEach(() => {
   vi.spyOn(console, 'info').mockImplementation(() => {});
   vi.spyOn(console, 'warn').mockImplementation(() => {});
+  esquecerLogsDePagamentoShopee();
 });
 afterEach(() => {
   vi.restoreAllMocks();
 });
 
 /**
- * The whole import money path for one order, end to end: lines → freight →
- * pedido, then the ERP's own derivation over what came out.
+ * The whole import money path for one order, end to end: lines (and the money
+ * model) → freight → pedido → pagamentos, then the ERP's own derivations over
+ * what came out.
  */
-function importar(detalhe: ShopeeOrderDetailRow, escrow: ShopeeEscrowDetail | null) {
+function importar(
+  detalhe: ShopeeOrderDetailRow,
+  escrow: ShopeeEscrowDetail | null,
+  modalidade: ModalidadeFrete = MODALIDADE_FRETE.fob,
+) {
   const mapeados = mapearItensShopee({
     detalhe,
     escrow,
     resolucoes: SEM_RESOLUCAO,
-    freteCobrado: null,
+    modalidade,
     nowUs: AGORA_US,
   });
-  const { frete } = mapearFreteInicialShopee({ detalhe, escrow, watermarkUs: WATERMARK_US });
-  const pedido = mapearPedidoShopee({
+  const { frete } = mapearFreteInicialShopee({
     detalhe,
     escrow,
+    watermarkUs: WATERMARK_US,
+    modalidade,
+  });
+  const pedido = mapearPedidoShopee({
+    detalhe,
     itens: mapeados.itens,
-    conferencia: mapeados.conferencia,
+    descontoTotal: mapeados.dinheiro.descontoTotal,
+    dinheiroProvisorio: mapeados.dinheiro.provisorio,
     frete,
     conta: {
       integracaoPedidoOuterRef: 'documents/integracao/int-1',
       listaDePrecosOuterRef: null,
       operacaoPedidoOuterRef: null,
+      modalidadeFreteImportacao: null,
     },
     captura: { estado: CAPTURA_COMPRADOR_ESTADO.expirado, camposRecusados: [] },
     clientePedidoOuterRef: null,
     enderecoFiscalOuterRef: null,
     watermarkUs: WATERMARK_US,
   });
+  const pagamentos = mapearPagamentosShopee({
+    linha: detalhe,
+    escrow,
+    valorDoComprador: mapeados.dinheiro.pagamento.valorDoComprador,
+    cupomShopee: mapeados.dinheiro.pagamento.cupomShopee,
+    dinheiroProvisorio: mapeados.dinheiro.provisorio,
+    watermarkUs: WATERMARK_US,
+    nowUs: AGORA_US,
+    contaId: 'int-1',
+    orderSn: detalhe.order_sn,
+  });
   const derivado = derivePedidoFreteTotals({
     itens: [...pedido.dados.itens],
     descontoTotal: pedido.dados.descontoTotal,
     freteInicial: pedido.dados.freteInicial,
   });
-  return { mapeados, pedido, derivado };
+  // The NF-e's own vNF, computed HERE from the shared derive — independent of
+  // `totalDaNotaShopee`, so the invariant below is a cross-check, not a mirror.
+  const cif = pedido.dados.freteInicial.modalidade === MODALIDADE_FRETE.cif;
+  const vNF = derivePedidoFreteTotals({
+    itens: [...pedido.dados.itens],
+    descontoTotal: pedido.dados.descontoTotal,
+    freteInicial: cif ? pedido.dados.freteInicial : null,
+  }).valorCobrado;
+  return { mapeados, pedido, pagamentos, derivado, vNF };
 }
-
-/**
- * A DISCOUNTED vector, inline: quantity 2 at an escrow line total of 30 with a
- * `seller_discount` of 4, freight 4 ⇒ the buyer paid 34.
- *
- * ⚠️ It has to be inline: the SG sandbox order carries no discount at all, and a
- * discount of zero cannot distinguish "netted once" from "netted twice".
- */
-function vetorComDesconto(): { detalhe: ShopeeOrderDetailRow; escrow: ShopeeEscrowDetail } {
-  const detalhe = shopeeOrderDetailRowSchema.parse({
-    order_sn: ORDER_SN,
-    order_status: 'READY_TO_SHIP',
-    region: 'BR',
-    total_amount: 34,
-    estimated_shipping_fee: 4,
-    item_list: [
-      {
-        item_id: 100,
-        model_id: 1,
-        model_quantity_purchased: 2,
-        model_discounted_price: 15,
-      },
-    ],
-  });
-  const escrow = shopeeEscrowDetailPayloadSchema.parse({
-    order_sn: ORDER_SN,
-    order_income: {
-      buyer_total_amount: 34,
-      buyer_paid_shipping_fee: 4,
-      items: [
-        {
-          item_id: 100,
-          model_id: 1,
-          discounted_price: 30,
-          quantity_purchased: 2,
-          seller_discount: 4,
-        },
-      ],
-    },
-  });
-  return { detalhe, escrow };
-}
-
-describe('⚠️ o desconto da Shopee entra UMA vez — o cruzamento dos dois módulos', () => {
-  it('vetor com desconto: derivePedidoFreteTotals sobre o que o import gravou fecha em 34', () => {
-    const { detalhe, escrow } = vetorComDesconto();
-    const { mapeados, pedido, derivado } = importar(detalhe, escrow);
-
-    // A linha, primeiro — o desconto ESTÁ lá, por unidade, e é o que
-    // `itemSubtotal` desconta antes de somar.
-    const linha = pedido.dados.itens[0]!;
-    expect(linha.precoDeVenda).toBe(17);
-    expect(linha.descontoUnitario).toBe(2);
-    expect(linha.quantidade).toBe(2);
-    expect(linha.precoDeVenda - linha.descontoUnitario!).toBe(15); // unitário LÍQUIDO
-    expect(mapeados.conferencia.descontoDasLinhas).toBe(4);
-
-    // …e o slot de ORDEM fica em zero, senão o mesmo dinheiro sai duas vezes.
-    expect(pedido.dados.descontoTotal).toBe(0);
-    expect(pedido.dados.freteInicial.valorCobrado).toBe(4);
-
-    // O que o ERP recalcula = o que a Shopee diz que o comprador pagou.
-    expect(derivado.valorCobrado).toBe(34);
-    expect(derivado.valorCobrado).toBe(escrow.order_income!.buyer_total_amount);
-    expect(derivado.valorCobrado).toBe(detalhe.total_amount);
-    // …e = o que o import GRAVOU, que é a outra metade: as duas contas têm de
-    // dar o mesmo número, senão o primeiro save do operador muda o pedido.
-    expect(pedido.dados.valorCobrado).toBe(derivado.valorCobrado);
-  });
-
-  it('⚠️ MUTANTE: escrever descontoDasLinhas no descontoTotal do pedido dá 30, não 34', () => {
-    // A mutação que este arquivo existe para matar — e ela é EXATAMENTE o código
-    // que estava em produção neste PR. Nenhum teste de um módulo só a vê: a
-    // linha continua com o desconto certo e o campo do pedido continua sendo
-    // "a soma dos descontos".
-    const { detalhe, escrow } = vetorComDesconto();
-    const { mapeados, pedido } = importar(detalhe, escrow);
-
-    const mutante = derivePedidoFreteTotals({
-      itens: [...pedido.dados.itens],
-      descontoTotal: mapeados.conferencia.descontoDasLinhas, // ⛔ o defeito
-      freteInicial: pedido.dados.freteInicial,
-    });
-    expect(mutante.valorCobrado).toBe(30);
-    expect(mutante.valorCobrado).not.toBe(escrow.order_income!.buyer_total_amount);
-    expect(roundReais(34 - mutante.valorCobrado)).toBe(mapeados.conferencia.descontoDasLinhas);
-  });
-
-  it('pedido de sandbox SG (sem desconto): 15 × 2 + 1,99 = 31,99 pelos dois caminhos', () => {
-    const detalhe = lerPedidoDetalhe(FIXTURE_ORDER_DETAIL_QTY2_SG).response.order_list[0]!;
-    const { mapeados, pedido, derivado } = importar(detalhe, null);
-
-    expect(mapeados.conferencia.somaDosItens).toBe(30);
-    expect(mapeados.conferencia.descontoDasLinhas).toBe(0);
-    expect(pedido.dados.descontoTotal).toBe(0);
-    expect(pedido.dados.freteInicial.valorCobrado).toBe(1.99);
-    expect(derivado.valorCobrado).toBe(31.99);
-    expect(derivado.valorCobrado).toBe(detalhe.total_amount);
-    expect(pedido.dados.valorCobrado).toBe(derivado.valorCobrado);
-  });
-
-  it('pedido de sandbox SG com o ESCROW REAL: a primeira rampa também responde 31,99', () => {
-    // ⚠️ O mesmo pedido pelos DOIS corpos que a Shopee mandou. O escrow lê o
-    // preço como TOTAL DA LINHA (30 ÷ 2 = 15) e é a PRIMEIRA rampa de
-    // `valorCobradoDoPedido` (`buyer_total_amount`), então este caso prova que a
-    // rampa do escrow e o `total_amount` do detalhe concordam — e que trocar de
-    // rampa não muda o dinheiro gravado.
-    const detalhe = lerPedidoDetalhe(FIXTURE_ORDER_DETAIL_QTY2_SG).response.order_list[0]!;
-    const escrow = lerEscrowDetalhe(FIXTURE_ESCROW_DETAIL_QTY2_SG).response;
-    const { mapeados, pedido, derivado } = importar(detalhe, escrow);
-
-    expect(mapeados.diagnosticos[0]!.fontePreco).toBe('escrow');
-    expect(pedido.dados.itens[0]!.precoDeVenda).toBe(15);
-    expect(pedido.dados.itens[0]!.descontoUnitario).toBe(0);
-    expect(pedido.dados.descontoTotal).toBe(0);
-    expect(pedido.dados.freteInicial.valorCobrado).toBe(1.99);
-
-    expect(pedido.dados.valorCobrado).toBe(escrow.order_income!.buyer_total_amount);
-    expect(pedido.dados.valorCobrado).toBe(31.99);
-    expect(derivado.valorCobrado).toBe(31.99);
-  });
-});
-
-/* ========================================================================== */
-/*  Σ pagante == valorCobrado — a identidade fiscal (#1514, passo 6, W3)       */
-/* ========================================================================== */
 
 /** As linhas que `sumPagamentosPagos` consome, a partir dos docs mapeados. */
 function linhasDePagamento(
@@ -233,55 +148,254 @@ function linhasDePagamento(
   }));
 }
 
+/* ========================================================================== */
+/*  The discount enters ONCE                                                  */
+/* ========================================================================== */
+
 /**
- * ⚠️ **Nenhum dos dois módulos vê este defeito sozinho.** `pagamentoMapping`
- * prova que `valor` é o que o mapper decidiu; `orderMapping` prova que
- * `valorCobrado` é o que a Shopee cobrou. O que a NF-e exige é que os DOIS deem
- * o mesmo número — e num marketplace `canalDevolveTroco` é FALSE, então um
- * excesso é cStat 866 e uma falta é 865: a nota simplesmente não sai.
+ * A DISCOUNTED vector, inline: quantity 2 at an escrow line total of 30 with a
+ * Shopee voucher of 4, freight 4 ⇒ the buyer paid 30 (`30 − 4 + 4`).
  *
- * A costura em que a identidade pode legitimamente abrir é
- * `conferencia.diferenca` — se a soma dos itens + frete divergir do total que a
- * Shopee mandou, o `vNF` (Σ itens + frete − desconto) e o `valorCobrado`
- * (`buyer_total_amount`) deixam de ser o mesmo número, e é o passo 5 que já
- * registra essa diferença.
+ * ⚠️ It has to be inline: the SG sandbox order carries no discount at all, and a
+ * discount of zero cannot distinguish "netted once" from "netted twice".
  */
-describe('⚠️ Σ pagante == valorCobrado == derivePedidoFreteTotals — os dois módulos', () => {
-  beforeEach(() => {
-    esquecerLogsDePagamentoShopee();
+function vetorComDesconto(): { detalhe: ShopeeOrderDetailRow; escrow: ShopeeEscrowDetail } {
+  const v = vetor({
+    quantidade: 2,
+    original: 30,
+    discounted: 30,
+    voucherShopee: 4,
+    buyerPaidShipping: 4,
+    buyerTotal: 30,
+    estimado: 4,
+    actualDetalhe: 4,
+    actualEscrow: 4,
+  });
+  return { detalhe: detalheDoVetor(v, { order_sn: ORDER_SN }), escrow: escrowDoVetor(v) };
+}
+
+describe('⚠️ o desconto da Shopee entra UMA vez — o cruzamento dos módulos', () => {
+  it('vetor com voucher: derivePedidoFreteTotals sobre o que o import gravou fecha em 30', () => {
+    const { detalhe, escrow } = vetorComDesconto();
+    const { mapeados, pedido, derivado } = importar(detalhe, escrow);
+
+    // The line first — the price is the unit `discounted_price` and the voucher
+    // rides the line's discount, per unit, which `itemSubtotal` nets out.
+    const linha = pedido.dados.itens[0]!;
+    expect(linha.precoDeVenda).toBe(15);
+    expect(linha.descontoUnitario).toBe(2);
+    expect(linha.quantidade).toBe(2);
+    expect(mapeados.conferencia.descontoDasLinhas).toBe(4);
+
+    // …and the ORDER slot stays zero, or the same money leaves twice.
+    expect(pedido.dados.descontoTotal).toBe(0);
+    expect(pedido.dados.freteInicial.valorCobrado).toBe(4);
+
+    // What the ERP recomputes = what Shopee says the buyer paid = what was stored.
+    expect(derivado.valorCobrado).toBe(30);
+    expect(derivado.valorCobrado).toBe(escrow.order_income!.buyer_total_amount);
+    expect(pedido.dados.valorCobrado).toBe(derivado.valorCobrado);
   });
 
-  it('pedido SG com o escrow real: um pagamento, e os TRÊS caminhos dão 31,99', () => {
+  it('⚠️ MUTANTE: escrever descontoDasLinhas no descontoTotal do pedido dá 26, não 30', () => {
+    const { detalhe, escrow } = vetorComDesconto();
+    const { mapeados, pedido } = importar(detalhe, escrow);
+
+    const mutante = derivePedidoFreteTotals({
+      itens: [...pedido.dados.itens],
+      descontoTotal: mapeados.conferencia.descontoDasLinhas, // ⛔ o defeito
+      freteInicial: pedido.dados.freteInicial,
+    });
+    expect(mutante.valorCobrado).toBe(26);
+    expect(mutante.valorCobrado).not.toBe(escrow.order_income!.buyer_total_amount);
+    expect(roundReais(30 - mutante.valorCobrado)).toBe(mapeados.conferencia.descontoDasLinhas);
+  });
+
+  it('pedido de sandbox SG (sem escrow): 15 × 2 + 1,99 = 31,99 no pedido, 30 na nota (FOB)', () => {
+    const detalhe = lerPedidoDetalhe(FIXTURE_ORDER_DETAIL_QTY2_SG).response.order_list[0]!;
+    const { mapeados, pedido, derivado, vNF } = importar(detalhe, null);
+
+    expect(mapeados.conferencia.somaDosItens).toBe(30);
+    expect(mapeados.conferencia.descontoDasLinhas).toBe(0);
+    expect(pedido.dados.descontoTotal).toBe(0);
+    expect(pedido.dados.freteInicial.valorCobrado).toBe(1.99);
+    expect(derivado.valorCobrado).toBe(31.99);
+    expect(derivado.valorCobrado).toBe(detalhe.total_amount);
+    expect(pedido.dados.valorCobrado).toBe(derivado.valorCobrado);
+    expect(vNF).toBe(30);
+  });
+
+  it('pedido de sandbox SG com o ESCROW REAL: o pedido 31,99 = buyer_total_amount', () => {
+    // ⚠️ O mesmo pedido pelos DOIS corpos que a Shopee mandou. O escrow lê o
+    // preço como TOTAL DA LINHA (30 ÷ 2 = 15) e o resíduo fecha em zero.
     const detalhe = lerPedidoDetalhe(FIXTURE_ORDER_DETAIL_QTY2_SG).response.order_list[0]!;
     const escrow = lerEscrowDetalhe(FIXTURE_ESCROW_DETAIL_QTY2_SG).response;
-    const { pedido, derivado } = importar(detalhe, escrow);
+    const { mapeados, pedido, derivado } = importar(detalhe, escrow);
 
-    const { docs } = mapearPagamentosShopee({
-      linha: detalhe,
-      escrow,
-      valorCobrado: pedido.dados.valorCobrado,
-      watermarkUs: WATERMARK_US,
-      nowUs: AGORA_US,
-      contaId: 'int-1',
-      orderSn: ORDER_SN,
-    });
+    expect(mapeados.diagnosticos[0]!.fontePreco).toBe('escrow');
+    expect(pedido.dados.itens[0]!.precoDeVenda).toBe(15);
+    expect(pedido.dados.itens[0]!.descontoUnitario).toBe(0);
+    expect(pedido.dados.descontoTotal).toBe(0);
+    expect(pedido.dados.freteInicial.valorCobrado).toBe(1.99);
+    expect(mapeados.dinheiro.residual).toBe(0);
 
-    expect(docs).toHaveLength(1);
-    const soma = sumPagamentosPagos(linhasDePagamento(docs));
-    expect(soma).toBe(31.99);
-    expect(soma).toBe(pedido.dados.valorCobrado);
-    expect(soma).toBe(derivado.valorCobrado);
-    // ⛔ MUTANTE: ler `escrow_amount` (30,70) quebraria as três igualdades ao
-    // mesmo tempo — e é a única coisa que o teste de um módulo só não vê.
+    expect(pedido.dados.valorCobrado).toBe(escrow.order_income!.buyer_total_amount);
+    expect(pedido.dados.valorCobrado).toBe(31.99);
+    expect(derivado.valorCobrado).toBe(31.99);
+  });
+});
+
+/* ========================================================================== */
+/*  Σ pagante == vNF — the NF-e's own identity, over every vector             */
+/* ========================================================================== */
+
+/**
+ * Every vector the money model has an ESCROW arm for, with the modalidade it
+ * runs under. The no-escrow arm deliberately breaks the identity — its own test
+ * below says why.
+ */
+const TODOS: readonly {
+  readonly nome: string;
+  readonly v: VetorDinheiroShopee;
+  readonly modalidade: ModalidadeFrete;
+}[] = [
+  ...VETORES_REAIS_BR.map((v) => ({ nome: v.nome, v, modalidade: MODALIDADE_FRETE.fob })),
+  ...VETORES_REAIS_BR.map((v) => ({
+    nome: `${v.nome} — CIF`,
+    v,
+    modalidade: MODALIDADE_FRETE.cif,
+  })),
+  {
+    nome: 'piso: voucher 98 sobre 100',
+    v: vetor({ voucherShopee: 98, buyerTotal: 2 }),
+    modalidade: MODALIDADE_FRETE.fob,
+  },
+  {
+    nome: 'piso, CIF com frete pago',
+    v: vetor({ voucherShopee: 98, buyerPaidShipping: 3, buyerTotal: 5 }),
+    modalidade: MODALIDADE_FRETE.cif,
+  },
+  {
+    nome: 'piso, quantidade 2',
+    v: vetor({ quantidade: 2, voucherShopee: 99, buyerTotal: 1 }),
+    modalidade: MODALIDADE_FRETE.fob,
+  },
+  {
+    nome: 'pix_discount não detalhado',
+    v: vetor({ pixDiscount: 3, buyerTotal: 97 }),
+    modalidade: MODALIDADE_FRETE.fob,
+  },
+  {
+    nome: 'resíduo de 1 centavo',
+    v: vetor({ buyerTotal: 99.99 }),
+    modalidade: MODALIDADE_FRETE.fob,
+  },
+  {
+    nome: 'pago acima das linhas',
+    v: vetor({ buyerTotal: 105 }),
+    modalidade: MODALIDADE_FRETE.fob,
+  },
+  {
+    nome: 'frete pago 1,99 FOB',
+    v: vetor({ original: 30, discounted: 30, buyerPaidShipping: 1.99, buyerTotal: 31.99 }),
+    modalidade: MODALIDADE_FRETE.fob,
+  },
+  {
+    nome: 'frete pago 1,99 CIF',
+    v: vetor({ original: 30, discounted: 30, buyerPaidShipping: 1.99, buyerTotal: 31.99 }),
+    modalidade: MODALIDADE_FRETE.cif,
+  },
+  {
+    nome: 'arredondamento por unidade (qtd 5, voucher 6,33)',
+    v: vetor({ quantidade: 5, voucherShopee: 6.33, buyerTotal: 93.67 }),
+    modalidade: MODALIDADE_FRETE.fob,
+  },
+  {
+    nome: 'piso + pago acima',
+    v: vetor({ voucherShopee: 90, buyerTotal: 12 }),
+    modalidade: MODALIDADE_FRETE.fob,
+  },
+  {
+    nome: 'pago, vouchers cobrindo tudo (total 0)',
+    v: vetor({ original: 15, discounted: 15, voucherShopee: 15, buyerTotal: 0, actualEscrow: 8 }),
+    modalidade: MODALIDADE_FRETE.fob,
+  },
+];
+
+describe('⚠️ Σ pagante == Σ itemSubtotal − descontoTotal (+ frete só sob CIF) — a identidade da NF-e', () => {
+  it.each(TODOS)('$nome', ({ v, modalidade }) => {
+    const { pedido, pagamentos, derivado, vNF } = importar(
+      detalheDoVetor(v),
+      escrowDoVetor(v),
+      modalidade,
+    );
+
+    const soma = sumPagamentosPagos(linhasDePagamento(pagamentos.docs));
+    expect(soma).toBe(vNF);
+    // The operator's first save recomputes exactly what was stored.
+    expect(pedido.dados.valorCobrado).toBe(derivado.valorCobrado);
+  });
+
+  it('⚠️ SEM escrow (pago) a identidade NÃO fecha de propósito: o pagamento ancora no total_amount', () => {
+    // The lines are not net of the voucher without the escrow, so the NF-e must
+    // refuse (865) rather than state 100 for what the buyer paid 90 for.
+    const v = vetor({ voucherShopee: 10, buyerTotal: 90 });
+    const { pedido, pagamentos, derivado, vNF } = importar(detalheDoVetor(v), null);
+
+    expect(vNF).toBe(100);
+    expect(sumPagamentosPagos(linhasDePagamento(pagamentos.docs))).toBe(90);
+    expect(pagamentos.dinheiroProvisorio).toBe(true);
+    expect(pedido.dados.dinheiroProvisorio).toBe(true);
+    expect(pedido.dados.valorCobrado).toBe(derivado.valorCobrado);
+  });
+
+  it('⚠️ MUTANTE: manter o frete no pagamento FOB abre 865/866 na nota', () => {
+    const v = vetor({ original: 30, discounted: 30, buyerPaidShipping: 1.99, buyerTotal: 31.99 });
+    const { pagamentos, vNF } = importar(detalheDoVetor(v), escrowDoVetor(v));
+    const mutante = roundReais(pagamentos.docs[0]!.dados.valor + 1.99);
+    expect(vNF).toBe(30);
+    expect(mutante).not.toBe(vNF);
+  });
+
+  it('⚠️ MUTANTE: sem o cupom, o piso deixa a nota acima do que se pagou', () => {
+    const v = vetor({ voucherShopee: 98, buyerTotal: 2 });
+    const { pagamentos, vNF } = importar(detalheDoVetor(v), escrowDoVetor(v));
+    expect(pagamentos.docs).toHaveLength(2);
+    expect(pagamentos.docs[0]!.dados.valor).toBe(2);
+    expect(vNF).toBe(50);
+    expect(pagamentos.docs[0]!.dados.valor).not.toBe(vNF);
+  });
+});
+
+describe('⚠️ Σ pagante — os casos de pagamento', () => {
+  it('pedido SG com o escrow real (FOB): um pagamento de 30 = vNF, nunca o escrow_amount', () => {
+    const detalhe = lerPedidoDetalhe(FIXTURE_ORDER_DETAIL_QTY2_SG).response.order_list[0]!;
+    const escrow = lerEscrowDetalhe(FIXTURE_ESCROW_DETAIL_QTY2_SG).response;
+    const { pedido, pagamentos, vNF } = importar(detalhe, escrow);
+
+    expect(pagamentos.docs).toHaveLength(1);
+    const soma = sumPagamentosPagos(linhasDePagamento(pagamentos.docs));
+    expect(soma).toBe(30);
+    expect(soma).toBe(vNF);
+    // The pedido still carries the freight (what the web recomputes).
+    expect(pedido.dados.valorCobrado).toBe(31.99);
+    // ⛔ MUTANTE: ler `escrow_amount` (30,70) quebraria a igualdade.
     expect(soma).not.toBe(escrow.order_income!.escrow_amount);
   });
 
-  it('pagamento combinado BR: DOIS docs, e a soma continua fechando com o pedido', () => {
-    // ⚠️ Inline: o corpo SG não tem `payment_info`, e o leque de N docs é
-    // exatamente onde a identidade pode quebrar sem ninguém ver — dois
-    // documentos com valores plausíveis somando errado ainda parecem certos um
-    // a um.
-    const detalhe = shopeeOrderDetailRowSchema.parse({
+  /** A BR combined payment, inline — the SG body has no `payment_info`. */
+  /**
+   * Its escrow, order-level money only (freight paid 1,99): no escrow row pairs
+   * with the line, which keeps its detail price.
+   */
+  function escrowCombinado(): ShopeeEscrowDetail {
+    return escrowDoVetor(
+      vetor({ original: 30, discounted: 30, buyerPaidShipping: 1.99, buyerTotal: 31.99 }),
+    );
+  }
+
+  function detalheCombinado(): ShopeeOrderDetailRow {
+    return shopeeOrderDetailRowSchema.parse({
       order_sn: ORDER_SN,
       order_status: 'READY_TO_SHIP',
       region: 'BR',
@@ -314,32 +428,40 @@ describe('⚠️ Σ pagante == valorCobrado == derivePedidoFreteTotals — os do
         },
       ],
     });
-    const { pedido, derivado } = importar(detalhe, null);
+  }
 
-    const { docs, diagnosticos } = mapearPagamentosShopee({
-      linha: detalhe,
-      escrow: null,
-      valorCobrado: pedido.dados.valorCobrado,
-      watermarkUs: WATERMARK_US,
-      nowUs: AGORA_US,
-      contaId: 'int-1',
-      orderSn: ORDER_SN,
-    });
+  it('pagamento combinado BR sob CIF: DOIS docs, e a soma continua fechando com a nota', () => {
+    // ⚠️ O leque de N docs é exatamente onde a identidade pode quebrar sem
+    // ninguém ver — dois documentos com valores plausíveis somando errado ainda
+    // parecem certos um a um. Sob CIF a nota carrega o frete, e as pernas (que
+    // somam o que o comprador pagou, frete incluído) fecham com ela.
+    const { pagamentos, vNF } = importar(
+      detalheCombinado(),
+      escrowCombinado(),
+      MODALIDADE_FRETE.cif,
+    );
 
-    expect(diagnosticos.combinado).toBe(true);
-    expect(docs).toHaveLength(2);
-    expect(docs.map((d) => d.dados.valor)).toEqual([21.99, 10]);
-    const soma = sumPagamentosPagos(linhasDePagamento(docs));
+    expect(pagamentos.diagnosticos.combinado).toBe(true);
+    expect(pagamentos.docs.map((d) => d.dados.valor)).toEqual([21.99, 10]);
+    const soma = sumPagamentosPagos(linhasDePagamento(pagamentos.docs));
     expect(soma).toBe(31.99);
-    expect(soma).toBe(pedido.dados.valorCobrado);
-    expect(soma).toBe(derivado.valorCobrado);
+    expect(soma).toBe(vNF);
+  });
+
+  it('⚠️ NEAR-MISS: o mesmo combinado sob FOB COLAPSA num doc só — as pernas trazem o frete', () => {
+    // The escrow answers (freight paid 1,99), so the FOB buyer leg is 30 while
+    // the legs sum to 31,99.
+    const { pagamentos, vNF } = importar(detalheCombinado(), escrowCombinado());
+
+    expect(pagamentos.diagnosticos.combinado).toBe(false);
+    expect(pagamentos.docs).toHaveLength(1);
+    expect(sumPagamentosPagos(linhasDePagamento(pagamentos.docs))).toBe(vNF);
+    expect(vNF).toBe(30);
   });
 
   it('⚠️ quem CONTA e quem não conta: em_disputa conta, em_processo e estornado não', () => {
     // A regra é `isPagamentoPagante`, e o alvo que a escada escolhe decide se a
-    // perna entra na nota. `em_disputa` é uma RETENÇÃO, não uma reversão: o
-    // dinheiro não se moveu, e tirá-la da soma quebraria a identidade de centavo
-    // justamente nos pedidos em que um humano já está envolvido.
+    // perna entra na nota. `em_disputa` é uma RETENÇÃO, não uma reversão.
     const linhas = [{ valor: 31.99, status_pagamento: STATUS_PAGAMENTO.em_disputa }];
     expect(isPagamentoPagante(STATUS_PAGAMENTO.em_disputa)).toBe(true);
     expect(sumPagamentosPagos(linhas)).toBe(31.99);
@@ -353,8 +475,6 @@ describe('⚠️ Σ pagante == valorCobrado == derivePedidoFreteTotals — os do
       expect(sumPagamentosPagos([{ valor: 31.99, status_pagamento: status }])).toBe(0);
     }
 
-    // …e `aprovado` e `null` (o legado sem status) contam, senão o negativo
-    // acima não teria âncora nenhuma.
     expect(
       sumPagamentosPagos([{ valor: 31.99, status_pagamento: STATUS_PAGAMENTO.aprovado }]),
     ).toBe(31.99);

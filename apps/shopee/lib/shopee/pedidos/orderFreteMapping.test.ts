@@ -37,12 +37,17 @@ function linha(patch: Record<string, unknown>): ShopeeOrderDetailRow {
   return { ...base, ...patch } as ShopeeOrderDetailRow;
 }
 
-function escrowCom(frete: number | null): ShopeeEscrowDetail {
+/**
+ * An escrow that ANSWERS (a positive `buyer_total_amount`) unless `buyerTotal`
+ * is 0 — the all-zero escrow of an unpaid order, which the money model reads as
+ * no escrow at all.
+ */
+function escrowCom(frete: number | null, buyerTotal = 40): ShopeeEscrowDetail {
   return {
     order_sn: '220810QSK8S7BX',
     buyer_user_name: null,
     return_order_sn_list: null,
-    order_income: { buyer_paid_shipping_fee: frete },
+    order_income: { buyer_paid_shipping_fee: frete, buyer_total_amount: buyerTotal },
     buyer_payment_info: null,
   } as unknown as ShopeeEscrowDetail;
 }
@@ -272,17 +277,29 @@ describe('mapearFreteInicialShopee', () => {
     expect(frete.custoCalculado).toBe(1.99);
   });
 
-  it('valorCobrado é null quando nenhuma das duas fontes respondeu — nunca 0', () => {
+  it('⚠️ um 0 do escrow que RESPONDE é frete grátis de verdade — nunca o estimado', () => {
+    // `buyer_paid_shipping_fee: 0` beside a positive `buyer_total_amount` is the
+    // free-shipping order of the four real BR captures (2026-11-24).
+    const { frete } = mapearFreteInicialShopee({
+      detalhe: detalheSG(),
+      escrow: escrowCom(0),
+      watermarkUs: WATERMARK_US,
+    });
+    expect(frete.valorCobrado).toBe(0);
+    expect(frete.custoCalculado).toBe(1.99);
+  });
+
+  it('valorCobrado é null quando nenhuma fonte respondeu — o escrow todo zerado nunca grava 0', () => {
     const { frete } = mapearFreteInicialShopee({
       detalhe: linha({ estimated_shipping_fee: 0, actual_shipping_fee: 0 }),
-      escrow: escrowCom(0),
+      escrow: escrowCom(0, 0),
       watermarkUs: WATERMARK_US,
     });
     expect(frete.valorCobrado).toBeNull();
     expect(frete.custoCalculado).toBeNull();
   });
 
-  it('a modalidade semeada é FOB ("1") e NUNCA CIF ("0")', () => {
+  it('a modalidade semeada é FOB ("1") quando a conta não tem uma', () => {
     // CIF is the only modalidade that charges freight INTO the nota (#1090).
     const { frete } = mapearFreteInicialShopee({
       detalhe: detalheSG(),
@@ -291,6 +308,16 @@ describe('mapearFreteInicialShopee', () => {
     });
     expect(frete.modalidade).toBe(MODALIDADE_FRETE.fob);
     expect(frete.modalidade).not.toBe(MODALIDADE_FRETE.cif);
+  });
+
+  it('a modalidade semeada é a da CONTA quando ela tem uma (só o CREATE grava)', () => {
+    const { frete } = mapearFreteInicialShopee({
+      detalhe: detalheSG(),
+      escrow: null,
+      watermarkUs: WATERMARK_US,
+      modalidade: MODALIDADE_FRETE.cif,
+    });
+    expect(frete.modalidade).toBe(MODALIDADE_FRETE.cif);
   });
 
   it('⚠️ o estado semeado é "iniciado" — logistics_status NÃO é lido', () => {

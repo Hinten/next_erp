@@ -4,13 +4,14 @@ import {
   CAPTURA_COMPRADOR_ESTADO,
   ESTADO_PEDIDO,
   capturaCompradorEstadoSchema,
+  derivePedidoFreteTotals,
   marketplacePedidoSchema,
+  type ItemDoPedido,
 } from '@delfrance/schemas';
-import type { ShopeeEscrowDetail, ShopeeOrderDetailRow } from '@delfrance/integrations-shopee';
+import type { ShopeeOrderDetailRow } from '@delfrance/integrations-shopee';
 
 import { FIXTURE_ORDER_DETAIL_QTY2_SG, lerPedidoDetalhe } from '../fixtures/wireCorpus';
 import { CAPTURA_COMPRADOR_ESTADO as CAPTURA_DO_ADAPTADOR, REGIAO_BR } from './comprador';
-import type { ConferenciaDoPedido } from './itens';
 import { mapearFreteInicialShopee } from './orderFreteMapping';
 import {
   PISO_SEGUNDOS_SHOPEE,
@@ -35,28 +36,37 @@ function linha(patch: Record<string, unknown>): ShopeeOrderDetailRow {
   return { ...detalheSG(), ...patch } as ShopeeOrderDetailRow;
 }
 
-const CONFERENCIA: ConferenciaDoPedido = {
-  orderSn: '260910KJBHUJDM',
-  somaDosItens: 30,
-  descontoDasLinhas: 0,
-  freteCobrado: 1.99,
-  totalConferido: 31.99,
-  totalDoPedido: 31.99,
-  diferenca: 0,
+/** One line of the SG order: 15 × 2, no discount. */
+const LINHA_SG: ItemDoPedido = {
+  produtoUid: null,
+  ordem: 0,
+  ensureUniqueId: 'e-0',
+  mktplaceId: '12984093',
+  sku: null,
+  gtin: null,
+  nomeDeVenda: null,
+  precoDeVenda: 15,
+  descontoUnitario: 0,
+  quantidade: 2,
+  custo: null,
+  timestamp: null,
+  imposto: null,
+  dfeReferenciado: null,
+  ajusteRtc: null,
 };
 
 function argsBase(patch: Partial<MapearPedidoShopeeArgs> = {}): MapearPedidoShopeeArgs {
   const detalhe = patch.detalhe ?? detalheSG();
   return {
     detalhe,
-    escrow: null,
     itens: [],
-    conferencia: CONFERENCIA,
+    descontoTotal: 0,
     frete: mapearFreteInicialShopee({ detalhe, escrow: null, watermarkUs: WATERMARK_US }).frete,
     conta: {
       integracaoPedidoOuterRef: 'documents/integracao/int-1',
       listaDePrecosOuterRef: 'documents/listaDePrecos/lp-1',
       operacaoPedidoOuterRef: 'documents/operacao/op-1',
+      modalidadeFreteImportacao: null,
     },
     captura: { estado: CAPTURA_COMPRADOR_ESTADO.expirado, camposRecusados: ['regiao:nao-br'] },
     clientePedidoOuterRef: null,
@@ -329,35 +339,39 @@ describe('mapearPedidoShopee — o grupo DADOS', () => {
     expect(ambos.dados.observacoesInternas).toBe('URGENTE *frágil*');
   });
 
-  it('valorCobrado: o escrow ganha do total_amount, que ganha da soma calculada', () => {
-    const escrow = {
-      order_income: { buyer_total_amount: 40 },
-    } as unknown as ShopeeEscrowDetail;
-    expect(mapearPedidoShopee(argsBase({ escrow })).dados.valorCobrado).toBe(40);
-    expect(mapearPedidoShopee(argsBase()).dados.valorCobrado).toBe(31.99);
-    expect(
-      mapearPedidoShopee(argsBase({ detalhe: linha({ total_amount: null }) })).dados.valorCobrado,
-    ).toBe(31.99); // 30 + 1.99 estimado, arredondado
-  });
-
-  it('⚠️ NEAR-MISS: um total_amount ZERO-FILL não vence a soma calculada', () => {
-    // `total_amount` is "only returned after payment"; a zero there is absence,
-    // and storing it would show an unpaid order as worth nothing.
-    const m = mapearPedidoShopee(argsBase({ detalhe: linha({ total_amount: 0 }) }));
-    expect(m.dados.valorCobrado).toBe(31.99);
-  });
-
-  it('⚠️ descontoTotal é SEMPRE 0 — os descontos da Shopee são por LINHA e já estão nos itens', () => {
-    // O campo do pedido é o slot de ORDEM (o "Desconto" do rodapé) e
-    // `derivePedidoFreteTotals` o subtrai DEPOIS da soma dos itens, cujo
-    // `itemSubtotal` já desconta o `descontoUnitario` de cada linha. Copiar a
-    // conferência para cá subtraía o mesmo dinheiro duas vezes.
-    expect(mapearPedidoShopee(argsBase()).dados.descontoTotal).toBe(0);
-    const m = mapearPedidoShopee(
-      argsBase({ conferencia: { ...CONFERENCIA, descontoDasLinhas: 3.75 } }),
+  it('valorCobrado = derivePedidoFreteTotals sobre linhas, descontoTotal e frete — o que o save recalcula', () => {
+    // O mesmo número que o primeiro save do operador grava
+    // (`packages/data/src/pedido/usecases.ts`), então esse save não muda nada.
+    const m = mapearPedidoShopee(argsBase({ itens: [LINHA_SG] }));
+    expect(m.dados.valorCobrado).toBe(31.99); // 15 × 2 + 1,99
+    expect(m.dados.valorCobrado).toBe(
+      derivePedidoFreteTotals({
+        itens: [LINHA_SG],
+        descontoTotal: 0,
+        freteInicial: m.dados.freteInicial,
+      }).valorCobrado,
     );
-    expect(m.dados.descontoTotal).toBe(0);
-    expect(m.dados.descontoTotal).not.toBe(3.75);
+  });
+
+  it('⚠️ NEAR-MISS: o total_amount da order não entra — nem um zero-fill, nem um valor diferente', () => {
+    // `total_amount` é o total do DETALHE; o pedido é o que as linhas dizem.
+    // O modelo de dinheiro fecha o resíduo no descontoTotal quando o escrow
+    // responde, e é assim que o pedido chega ao `buyer_total_amount`.
+    for (const total_amount of [0, 99, null]) {
+      const m = mapearPedidoShopee(
+        argsBase({ itens: [LINHA_SG], detalhe: linha({ total_amount }) }),
+      );
+      expect(m.dados.valorCobrado).toBe(31.99);
+    }
+  });
+
+  it('⚠️ descontoTotal é o do MODELO de dinheiro e entra UMA vez no valorCobrado', () => {
+    // `0` quando a ordem fecha; o desconto não detalhado quando o escrow mostra
+    // um. Os descontos de LINHA já estão em cada `descontoUnitario`.
+    expect(mapearPedidoShopee(argsBase({ itens: [LINHA_SG] })).dados.descontoTotal).toBe(0);
+    const m = mapearPedidoShopee(argsBase({ itens: [LINHA_SG], descontoTotal: 3.75 }));
+    expect(m.dados.descontoTotal).toBe(3.75);
+    expect(m.dados.valorCobrado).toBe(28.24); // 30 − 3,75 + 1,99
   });
 });
 
@@ -390,6 +404,7 @@ describe('mapearPedidoShopee — PREENCHER UMA VEZ e CRIAÇÃO', () => {
           integracaoPedidoOuterRef: 'documents/integracao/int-1',
           listaDePrecosOuterRef: null,
           operacaoPedidoOuterRef: null,
+          modalidadeFreteImportacao: null,
         },
       }),
     );

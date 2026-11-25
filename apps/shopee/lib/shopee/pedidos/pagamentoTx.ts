@@ -48,12 +48,12 @@
  * `canalDevolveTroco` is FALSE, so that is a hard SEFAZ 865/866 for ever, not a
  * warning.
  *
- * Which stored documents are OURS is decided by RECOMPUTING
- * `makePagamentoIdShopee(contaId, orderSn, sufixoPagamentoShopee(i))` — never by
- * the `id` FIELD, which rides `...base` through the operator's form and is
- * therefore reachable by a hand edit. That is also what keeps the legacy
- * `<order_sn>-desconto` sibling out of this transaction entirely: it is read as
- * part of the Σ diagnostic and patched by nothing.
+ * Which stored documents are OURS is decided by RECOMPUTING the ids
+ * (`idsDePagamentoDaOrdemShopee`: every numeric leg plus the `<order_sn>-desconto`
+ * cupom leg, the legacy identity) — never by the `id` FIELD, which rides
+ * `...base` through the operator's form and is therefore reachable by a hand
+ * edit. A migrated legacy cupom document is therefore one of ours and is
+ * updated in place, never duplicated by a `create`.
  *
  * ## Nothing is ever deleted, and while DATA is frozen nothing is ADDED either
  *
@@ -118,7 +118,8 @@ import {
   type StatusPagamento,
 } from '@delfrance/schemas';
 
-import { makePagamentoIdShopee, sufixoPagamentoShopee } from './orderIds';
+import { totalDaNotaDoPedidoArmazenado } from './dinheiroShopee';
+import { idsDePagamentoDaOrdemShopee, makePagamentoIdShopee } from './orderIds';
 import { maiorUs, vazio } from './orderMapping';
 import {
   MAX_PAGAMENTOS_COMBINADOS_SHOPEE,
@@ -187,9 +188,12 @@ export interface ResultadoPagamentosShopee {
    */
   readonly somaPagante: number;
   /**
-   * `somaPagante − pedido.valorCobrado`, or `null` when the stored pedido carries
-   * no usable figure. **It must be 0**: on a marketplace `canalDevolveTroco` is
-   * false, so an excess is cStat 866 and a shortfall 865.
+   * `somaPagante − vNF`, where `vNF` is what the NF-e states for the STORED
+   * pedido (`totalDaNotaDoPedidoArmazenado`: the lines, `descontoTotal`, the
+   * freight only under CIF), or `null` when a stored line is unreadable.
+   * **It must be 0**: on a marketplace `canalDevolveTroco` is false, so an
+   * excess is cStat 866 and a shortfall 865. (It is NOT `valorCobrado`, which
+   * carries the freight under every modalidade.)
    */
   readonly divergenciaDeSoma: number | null;
 }
@@ -527,7 +531,9 @@ export async function salvarPagamentosShopee(
     }
     const pedidoRaw = (pedidoSnap.data() ?? {}) as Record<string, unknown>;
     const congelado = pedidoRaw.hasUserInteraction === true;
-    const valorCobradoPedido = numeroFinito(pedidoRaw.valorCobrado);
+    // What the NF-e will state for the pedido as it is STORED — the Σ diagnostic's
+    // reference, through the shared totals (the freight only under CIF).
+    const totalDaNotaPedido = totalDaNotaDoPedidoArmazenado(pedidoRaw).totalDaNota;
 
     // The watermark gate. `coerceToMicros` on the STORED side ONLY — the legacy
     // corpus holds ms ints and ISO strings there, and the incoming side is
@@ -554,11 +560,12 @@ export async function salvarPagamentosShopee(
 
     // Ownership by RECOMPUTED doc id. The reachable index set is exactly
     // `[0, MAX)`: a combined payment of MAX legs occupies indices 0…MAX-1, and
-    // anything above MAX collapses to the single primary.
-    const idsDeOwnership = new Set<string>();
-    for (let i = 0; i < MAX_PAGAMENTOS_COMBINADOS_SHOPEE; i += 1) {
-      idsDeOwnership.add(makePagamentoIdShopee(contaId, orderSn, sufixoPagamentoShopee(i)));
-    }
+    // anything above MAX collapses to the single primary — plus the cupom leg.
+    const idsDeOwnership = idsDePagamentoDaOrdemShopee(
+      contaId,
+      orderSn,
+      MAX_PAGAMENTOS_COMBINADOS_SHOPEE,
+    );
     const nossos = armazenados.filter((d) => idsDeOwnership.has(d.id));
 
     if (mapeados.docs.length === 0 && nossos.length === 0) {
@@ -586,7 +593,16 @@ export async function salvarPagamentosShopee(
     // nota by exactly that orphan — which stays pagante, so the NF-e sums it.
     // A delivery that maps NOTHING (the creation gate, an unusable `pay_time`)
     // is not degraded: there is no DATA group to run and nothing to freeze.
-    const degradado = mapeados.docs.length > 0 && mapeados.docs.length < nossos.length;
+    //
+    // ⚠️ PROVISIONAL money is the same defect by a third route: a paid delivery
+    // whose escrow did not answer maps the buyer leg from the detail
+    // (`dinheiroShopee.ts`), and re-taking it over documents an earlier,
+    // escrow-backed delivery wrote would move Σ pagante off the stored lines.
+    // Frozen exactly like a shrink — and only over documents of ours, so a
+    // first delivery still creates its set.
+    const degradado =
+      (mapeados.docs.length > 0 && mapeados.docs.length < nossos.length) ||
+      (mapeados.dinheiroProvisorio && nossos.length > 0);
     if (degradado) {
       // eslint-disable-next-line no-console -- counts only; the fact that a delivery lost detail is the finding
       console.info('[shopee/pagamentos] entrega degradada — grupo `dados` congelado', {
@@ -594,6 +610,7 @@ export async function salvarPagamentosShopee(
         pedidoId,
         armazenados: nossos.length,
         recebidos: mapeados.docs.length,
+        dinheiroProvisorio: mapeados.dinheiroProvisorio,
       });
     }
 
@@ -737,7 +754,7 @@ export async function salvarPagamentosShopee(
 
     const somaPagante = sumPagamentosPagos([...projecao.values()]);
     const divergenciaDeSoma =
-      valorCobradoPedido == null ? null : roundReais(somaPagante - valorCobradoPedido);
+      totalDaNotaPedido == null ? null : roundReais(somaPagante - totalDaNotaPedido);
 
     const acao: AcaoPagamentosShopee =
       atualizados > 0 ? 'atualizado' : criados > 0 ? 'criado' : 'ignorado-sem-mudanca';

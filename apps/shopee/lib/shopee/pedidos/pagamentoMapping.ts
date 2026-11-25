@@ -11,13 +11,16 @@
  *
  * ## The three money invariants this module exists to hold
  *
- *  1. **`valor` is the BUYER-facing figure and Σ pagante `valor` equals the
- *     pedido's `valorCobrado` to the centavo.** Never `escrow_amount`: on a
- *     marketplace `canalDevolveTroco` is false, so an excess is a hard SEFAZ
- *     cStat 866 and a shortfall an 865 — the NF-e simply does not emit.
+ *  1. **Σ pagante `valor` equals what the NF-e states (`vNF`) to the centavo**
+ *     once the escrow answers. The figures come from `dinheiroShopee.ts`: the
+ *     buyer leg is `buyer_total_amount` minus the freight it paid unless CIF,
+ *     plus — when the floor binds — the "Cupom de desconto Shopee" leg. Without
+ *     the escrow the buyer leg is the detail's `total_amount`, so a pre-voucher
+ *     reading makes the NF-e refuse rather than emit. Never `escrow_amount`:
+ *     on a marketplace `canalDevolveTroco` is false, so an excess is a hard
+ *     SEFAZ cStat 866 and a shortfall an 865 — the NF-e simply does not emit.
  *     `totais.test.ts` crosses this module against `sumPagamentosPagos` and
- *     against `derivePedidoFreteTotals`, because neither side can see the
- *     defect alone.
+ *     against the shared totals, because neither side can see the defect alone.
  *  2. **`tarifas` is the marketplace's cut, clamped at 0** (`pagamentoSchema`
  *     declares `.min(0)`; an unclamped negative is a `ZodError` that PARKS the
  *     code-3 delivery terminally — `disposicaoDaFalhaDeImportacao` in
@@ -69,7 +72,8 @@ import type {
   ShopeeTenureInfo,
 } from '@delfrance/integrations-shopee';
 
-import { makePagamentoIdShopee, sufixoPagamentoShopee } from './orderIds';
+import { DESCRICAO_CUPOM_SHOPEE } from './dinheiroShopee';
+import { SUFIXO_CUPOM_SHOPEE, makePagamentoIdShopee, sufixoPagamentoShopee } from './orderIds';
 import {
   REGIAO_BR_PEDIDO,
   microsDeSegundosShopee,
@@ -129,27 +133,25 @@ export const COMPOSICAO_TARIFAS = {
 } as const satisfies Record<string, ComposicaoTarifasShopee>;
 
 /**
- * The composition this channel actually charges (Lucas, 2026-09-10): Shopee's
- * own three fee COLUMNS.
+ * The composition this channel charges: the SPREAD — what the buyer paid minus
+ * what the escrow releases — the legacy importer's rule (`tasks.dart:286`)
+ * without its `abs()` (Lucas, 2026-11-24).
  *
  * ⚠️ ONE literal decides which of the two arms runs, and it survives as a NAMED
  * SEAM — the `SHOPEE_ESCROW_DETAIL_TRANSPORT` precedent. Both arms are
- * implemented and both are tested, because the question "is the marketplace's
- * cut the named fees, or the spread between what the buyer paid and what the
- * escrow releases?" is answerable from real BR data and from nothing else: the
- * SG sandbox order answers **1.29 under either**, so that body cannot tell them
- * apart and a single-arm implementation would have quietly decided it.
+ * implemented and both are tested. The SG sandbox order answers 1.29 under
+ * either; the four real BR orders of 2026-11-24 did not — the named columns
+ * missed two BR fees the escrow carries
+ * (`ads_escrow_top_up_fee_or_technical_support_fee`,
+ * `shipping_seller_protection_fee_amount`), and the spread holds them by
+ * construction (24.20 / 15.06 / 17.43 / 20.73).
  *
- * ⚠️ `tarifas` and `tarifasBrutas` are NOT the two readings — they are the
- * shipped composition's clamped and pre-clamp values, i.e. one composition
- * twice. The per-import log therefore carries a THIRD number, `tarifasSpread`
- * (this function called with {@link COMPOSICAO_TARIFAS.spreadEscrow}), and that
- * is the one the first real BR orders settle the question with. It is also
- * re-derivable per document from the stored diary
- * (`marketplace.buyerTotalAmount − marketplace.escrowAmountAfterAdjustment`
- * against `marketplace.tarifasBrutas`).
+ * ⚠️ `tarifas` and `tarifasBrutas` are the shipped composition's clamped and
+ * pre-clamp values, i.e. one composition twice; the per-import log carries the
+ * OTHER arm as `tarifasNomeadas`. The weekly settlement (`liquidarPagamento.ts`)
+ * calls the same function, so the import and the sweep move together.
  */
-export const COMPOSICAO_TARIFAS_SHOPEE: ComposicaoTarifasShopee = COMPOSICAO_TARIFAS.taxasNomeadas;
+export const COMPOSICAO_TARIFAS_SHOPEE: ComposicaoTarifasShopee = COMPOSICAO_TARIFAS.spreadEscrow;
 
 /** What {@link tarifasDeShopee} answers. */
 export interface TarifasShopee {
@@ -164,7 +166,7 @@ export interface TarifasShopee {
 /**
  * The marketplace's cut for one order, both compositions.
  *
- * **(a) `taxas-nomeadas`** (the default) — FAQ 479's three Income-Report
+ * **(a) `taxas-nomeadas`** — FAQ 479's three Income-Report
  * columns: `commission_fee + service_fee + seller_transaction_fee`, each with
  * its BR "net" variant preferred when Shopee sends one (announcement 1451).
  *
@@ -182,9 +184,10 @@ export interface TarifasShopee {
  * 0.64), which is why `pagamentoMapping.test.ts` carries a synthetic vector
  * where they differ.
  *
- * **(b) `spread-escrow`** — `buyer_total_amount − (escrow_amount_after_adjustment
- * ?? escrow_amount)`: what the buyer paid minus what Shopee releases. This is
- * the legacy importer's rule, minus its `abs()`.
+ * **(b) `spread-escrow`** (the shipped one, {@link COMPOSICAO_TARIFAS_SHOPEE}) —
+ * `buyer_total_amount − (escrow_amount_after_adjustment ?? escrow_amount)`:
+ * what the buyer paid minus what Shopee releases. This is the legacy
+ * importer's rule, minus its `abs()`.
  *
  * Both arms: `tarifas = max(0, roundReais(bruto))`. ⚠️ **The clamp is
  * mandatory**, not defensive — `pagamentoSchema.tarifas` is `.min(0)`, and
@@ -820,12 +823,23 @@ export interface MapearPagamentosShopeeArgs {
   /** `null` when the escrow call failed or the order is unpaid. */
   readonly escrow: ShopeeEscrowDetail | null;
   /**
-   * `mapeado.dados.valorCobrado` — the PEDIDO's own figure
-   * (`valorCobradoDoPedido`). ⚠️ NEVER recomputed here, and never
-   * `escrow_amount`: the two documents have to agree to the centavo or the NF-e
-   * refuses to emit.
+   * The buyer leg — `dinheiro.pagamento.valorDoComprador` (`dinheiroShopee.ts`):
+   * what the NF-e states minus the cupom leg. ⚠️ NEVER recomputed here, and
+   * never `escrow_amount`: Σ pagante has to equal `vNF` to the centavo or the
+   * NF-e refuses to emit.
    */
-  readonly valorCobrado: number | null;
+  readonly valorDoComprador: number | null;
+  /**
+   * The cupom leg — `dinheiro.pagamento.cupomShopee`. `> 0` only when the floor
+   * bound; it becomes its own document (forma `outros`, "Cupom de desconto
+   * Shopee"). Defaults to `0`.
+   */
+  readonly cupomShopee?: number;
+  /**
+   * `dinheiro.provisorio` — a PAID order whose escrow did not answer. Carried
+   * to {@link PagamentosMapeadosShopee.dinheiroProvisorio}. Defaults to `false`.
+   */
+  readonly dinheiroProvisorio?: boolean;
   /** The ORDER clock of this delivery, µs. */
   readonly watermarkUs: number;
   /** The importer's single clock read, µs. */
@@ -882,11 +896,20 @@ export interface DiagnosticoPagamentoShopee {
   readonly escrowAusente: boolean;
   readonly composicaoTarifas: ComposicaoTarifasShopee;
   readonly tarifasBrutas: number | null;
+  /** The cupom leg mapped (`0` when the floor did not bind). */
+  readonly cupomShopee: number;
 }
 
 export interface PagamentosMapeadosShopee {
   readonly docs: readonly PagamentoMapeadoShopee[];
   readonly diagnosticos: DiagnosticoPagamentoShopee;
+  /**
+   * A write rule, not a field: the money is provisional (a PAID order whose
+   * escrow did not answer), so `pagamentoTx.ts` freezes the DATA group of the
+   * documents already stored — exactly as for a degraded delivery — and only a
+   * pedido with none of ours gets them created.
+   */
+  readonly dinheiroProvisorio: boolean;
 }
 
 /**
@@ -991,16 +1014,26 @@ function cartaoDaEntrada(
  * ## The N-docs rule
  *
  * A BR combined payment (announcement 1265) fans out to one document per
- * `payment_info` leg — but ONLY when the legs add up to the pedido's own
- * `valorCobrado` to the centavo, and only up to
+ * `payment_info` leg — but ONLY when the legs add up to the buyer leg
+ * (`valorDoComprador`) to the centavo, and only up to
  * {@link MAX_PAGAMENTOS_COMBINADOS_SHOPEE}. Anything else collapses to ONE
- * primary carrying the whole `valorCobrado`, with the reason in
- * `motivoColapso` and one `console.warn`. The asymmetry is deliberate: N
- * documents whose sum is wrong is a nota that cannot be emitted, while one
- * document with the right total is merely less detailed.
+ * primary carrying the whole buyer leg, with the reason in `motivoColapso` and
+ * one `console.warn`. The asymmetry is deliberate: N documents whose sum is
+ * wrong is a nota that cannot be emitted, while one document with the right
+ * total is merely less detailed. (Under FOB with freight paid, the legs sum to
+ * `buyer_total_amount` — freight included — and therefore collapse.)
+ *
+ * ## The cupom leg
+ *
+ * When the floor bound (`cupomShopee > 0`), ONE more document: forma `outros`,
+ * `descricaoPagamento` "Cupom de desconto Shopee", the buyer legs' status
+ * target, `tarifas: 0`, at the LEGACY identity `<order_sn>-desconto`
+ * (`SUFIXO_CUPOM_SHOPEE`) — so a migrated legacy coupon document is updated,
+ * never duplicated.
  */
 export function mapearPagamentosShopee(args: MapearPagamentosShopeeArgs): PagamentosMapeadosShopee {
-  const { linha, escrow, valorCobrado, watermarkUs, nowUs, contaId, orderSn } = args;
+  const { linha, escrow, valorDoComprador, watermarkUs, nowUs, contaId, orderSn } = args;
+  const cupomShopee = roundReais(Math.max(0, args.cupomShopee ?? 0));
   const composicao = args.composicaoTarifas ?? COMPOSICAO_TARIFAS_SHOPEE;
 
   const payTimeS = segundosShopeeUtilizaveis(linha.pay_time);
@@ -1034,11 +1067,15 @@ export function mapearPagamentosShopee(args: MapearPagamentosShopeeArgs): Pagame
     composicaoTarifas: composicao,
     tarifasBrutas: fold.bruto ?? null,
     parcelasIlegivel: parcelasFold.ilegivel,
+    cupomShopee,
   } as const;
+
+  const dinheiroProvisorio = args.dinheiroProvisorio ?? false;
 
   if (payTimeS === null) {
     return {
       docs: [],
+      dinheiroProvisorio,
       diagnosticos: {
         ...diagnosticoBase,
         combinado: false,
@@ -1075,7 +1112,7 @@ export function mapearPagamentosShopee(args: MapearPagamentosShopeeArgs): Pagame
     somaPaymentInfo = roundReais(
       entradas.reduce((s, e) => s + (positivoOuNull(e.payment_amount) ?? 0), 0),
     );
-    const alvoSoma = valorCobrado == null ? null : roundReais(valorCobrado);
+    const alvoSoma = valorDoComprador == null ? null : roundReais(valorDoComprador);
     deltaDaSoma = alvoSoma == null ? null : roundReais(somaPaymentInfo - alvoSoma);
     if (entradas.length > MAX_PAGAMENTOS_COMBINADOS_SHOPEE) {
       motivoColapso = MOTIVO_COLAPSO_SHOPEE.excedeMaximo;
@@ -1090,7 +1127,7 @@ export function mapearPagamentosShopee(args: MapearPagamentosShopeeArgs): Pagame
         motivo: motivoColapso,
         entradas: entradas.length,
         soma: somaPaymentInfo,
-        valorCobrado: alvoSoma,
+        valorDoComprador: alvoSoma,
         delta: deltaDaSoma,
       });
     }
@@ -1105,7 +1142,7 @@ export function mapearPagamentosShopee(args: MapearPagamentosShopeeArgs): Pagame
         entrada,
         valor: roundReais(positivoOuNull(entrada.payment_amount) ?? 0),
       }))
-    : [{ entrada: entradas[0], valor: roundReais(valorCobrado ?? 0) }];
+    : [{ entrada: entradas[0], valor: roundReais(valorDoComprador ?? 0) }];
 
   // ⚠️ `primeiroNaoVazio`, never `??`: Shopee zero-fills an absent STRING with
   // `''` exactly as it zero-fills an absent number with `0`, so `a ?? b` never
@@ -1186,8 +1223,32 @@ export function mapearPagamentosShopee(args: MapearPagamentosShopeeArgs): Pagame
     };
   });
 
+  if (cupomShopee > 0) {
+    // ⚠️ The legacy identity, byte for byte: `<order_sn>-desconto` in the `id`
+    // field and in the doc-id preimage (`tasks.dart:664`). No `cartao` (forma 99
+    // never carries one) and no fee of its own — Shopee bills the order once,
+    // on the primary.
+    docs.push({
+      docId: makePagamentoIdShopee(contaId, orderSn, SUFIXO_CUPOM_SHOPEE),
+      indice: docs.length,
+      sufixo: SUFIXO_CUPOM_SHOPEE,
+      sempre: { alvoStatus, tarifas: 0, marketplace: undefined },
+      dados: {
+        valor: cupomShopee,
+        forma_de_pagamento: FORMA_PAGAMENTO.outros,
+        parcelas: 1,
+        aVista: true,
+        cartao: undefined,
+        descricaoPagamento: DESCRICAO_CUPOM_SHOPEE,
+      },
+      preencherUmaVez: { id: `${orderSn}${SUFIXO_CUPOM_SHOPEE}`, dataCadastro: nowUs },
+      datas: { dataAprovacao: microsDeSegundosShopee(payTimeS) },
+    });
+  }
+
   return {
     docs,
+    dinheiroProvisorio,
     diagnosticos: {
       ...diagnosticoBase,
       combinado,

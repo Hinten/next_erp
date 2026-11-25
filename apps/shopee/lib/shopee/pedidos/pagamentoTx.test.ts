@@ -15,8 +15,9 @@
  *     sweep's top-level field, and disjoint masks are the whole reason it is
  *     top-level rather than nested in `marketplace`;
  *  3. **a degraded delivery never re-takes the primary's `valor`.** Σ pagante has
- *     to equal the pedido's `valorCobrado` to the centavo or the NF-e refuses to
- *     emit (cStat 865/866, and `canalDevolveTroco` is false on a marketplace).
+ *     to equal what the NF-e states (`vNF`: the lines − `descontoTotal`, the
+ *     freight only under CIF) to the centavo or the NF-e refuses to emit
+ *     (cStat 865/866, and `canalDevolveTroco` is false on a marketplace).
  *
  * ⚠️ No real credential, shop or buyer datum: the SG bodies are the redacted
  * `__wire__` corpus and the BR vector is built inline through the package
@@ -148,7 +149,9 @@ function mapear(
   args: {
     linha?: ShopeeOrderDetailRow;
     escrow?: ShopeeEscrowDetail | null;
-    valorCobrado?: number | null;
+    valorDoComprador?: number | null;
+    cupomShopee?: number;
+    dinheiroProvisorio?: boolean;
     watermarkUs?: number;
     nowUs?: number;
   } = {},
@@ -156,7 +159,11 @@ function mapear(
   return mapearPagamentosShopee({
     linha: args.linha ?? linhaSG(),
     escrow: args.escrow ?? null,
-    valorCobrado: args.valorCobrado === undefined ? 31.99 : args.valorCobrado,
+    valorDoComprador: args.valorDoComprador === undefined ? 31.99 : args.valorDoComprador,
+    ...(args.cupomShopee === undefined ? {} : { cupomShopee: args.cupomShopee }),
+    ...(args.dinheiroProvisorio === undefined
+      ? {}
+      : { dinheiroProvisorio: args.dinheiroProvisorio }),
     watermarkUs: args.watermarkUs ?? WATERMARK_US,
     nowUs: args.nowUs ?? AGORA_US,
     contaId: CONTA,
@@ -166,9 +173,13 @@ function mapear(
 
 /** O pedido que a transação relê — a metade do guard que mora fora daqui. */
 function semearPedido(db: FakeDb, over: Record<string, unknown> = {}): void {
+  const valor = typeof over.valorCobrado === 'number' ? over.valorCobrado : 31.99;
   db.seed(PEDIDO_PATH, {
     numero: ORDER_SN,
-    valorCobrado: 31.99,
+    valorCobrado: valor,
+    // ONE line carrying the whole value and no freight block: the stored NF-e
+    // total (`totalDaNotaDoPedidoArmazenado`) the Σ diagnostic compares against.
+    itens: { NONE: [{ precoDeVenda: valor, quantidade: 1 }] },
     lastMarketplaceUpdate: WATERMARK_US,
     ...over,
   });
@@ -944,23 +955,103 @@ describe('salvarPagamentosShopee — combinado e entrega degradada', () => {
     expect(r.divergenciaDeSoma).toBe(0);
   });
 
-  it('19. ⚠️ o irmão LEGADO `-desconto` não é nosso: nem lido como nosso, nem escrito', async () => {
+  it('19. ⚠️ o irmão LEGADO `-desconto` é NOSSO: o cupom ATUALIZA o documento legado, nunca cria um 2º', async () => {
+    // Legacy parity (Lucas, 2026-11-24): the cupom leg keeps the legacy
+    // identity, so a migrated coupon document is the one this import writes.
     const db = new FakeDb();
-    semearPedido(db, { valorCobrado: 41.99 });
+    semearPedido(db, { valorCobrado: 43.99 });
     db.seed(`${PAGAMENTOS_PATH}/${DESCONTO}`, {
       id: `${ORDER_SN}-desconto`,
       valor: 10,
+      forma_de_pagamento: FORMA_PAGAMENTO.outros,
+      descricaoPagamento: 'cupom de desconto shopee',
       status_pagamento: STATUS_PAGAMENTO.aprovado,
     });
 
-    const r = await salvar(db, { mapeados: mapear({ escrow: escrowSG() }) });
+    const r = await salvar(db, { mapeados: mapear({ escrow: escrowSG(), cupomShopee: 12 }) });
 
-    expect(r.acao).toBe('criado');
-    expect(db.patches.map((p) => p.path)).toEqual([]);
-    expect(db.store[`${PAGAMENTOS_PATH}/${DESCONTO}`]!.data.valor).toBe(10);
-    // …mas ele CONTA na Σ, porque é exatamente o que a NF-e soma.
-    expect(r.somaPagante).toBe(41.99);
+    expect(r.criados).toBe(1);
+    expect(r.atualizados).toBe(1);
+    const docs = Object.keys(db.store).filter((k) => k.startsWith(`${PAGAMENTOS_PATH}/`));
+    expect(docs.sort()).toEqual(
+      [`${PAGAMENTOS_PATH}/${DESCONTO}`, `${PAGAMENTOS_PATH}/${PRIMARIO}`].sort(),
+    );
+    const cupom = db.store[`${PAGAMENTOS_PATH}/${DESCONTO}`]!.data;
+    expect(cupom.valor).toBe(12);
+    expect(cupom.descricaoPagamento).toBe('Cupom de desconto Shopee');
+    expect(cupom.id).toBe(`${ORDER_SN}-desconto`);
+    expect(r.somaPagante).toBe(43.99);
     expect(r.divergenciaDeSoma).toBe(0);
+  });
+
+  it('19b. ⚠️ NEAR-MISS: uma entrega SEM escrow não re-toma nada ao lado de um cupom gravado', async () => {
+    // The stored set is primary + cupom; a delivery that maps only the primary
+    // is DEGRADED (fewer docs than we own), so the buyer leg keeps its value and
+    // Σ stays what the earlier, complete delivery wrote.
+    const db = new FakeDb();
+    semearPedido(db, { valorCobrado: 43.99 });
+    db.seed(`${PAGAMENTOS_PATH}/${PRIMARIO}`, {
+      id: ORDER_SN,
+      valor: 31.99,
+      status_pagamento: STATUS_PAGAMENTO.aprovado,
+    });
+    db.seed(`${PAGAMENTOS_PATH}/${DESCONTO}`, {
+      id: `${ORDER_SN}-desconto`,
+      valor: 12,
+      status_pagamento: STATUS_PAGAMENTO.aprovado,
+    });
+
+    const r = await salvar(db, { mapeados: mapear({ valorDoComprador: 43.99 }) });
+
+    expect(db.store[`${PAGAMENTOS_PATH}/${PRIMARIO}`]!.data.valor).toBe(31.99);
+    expect(db.store[`${PAGAMENTOS_PATH}/${DESCONTO}`]!.data.valor).toBe(12);
+    expect(r.somaPagante).toBe(43.99);
+    expect(r.divergenciaDeSoma).toBe(0);
+  });
+
+  it('19c. ⚠️ dinheiro PROVISÓRIO (pago, escrow em falha) congela o `valor` gravado — mesmo com UM doc só', async () => {
+    // Same COUNT on both sides (one stored, one mapped), so the shrink rule
+    // alone would re-take the primary's `valor` from the detail's total.
+    const db = new FakeDb();
+    semearPedido(db, { valorCobrado: 24 });
+    db.seed(`${PAGAMENTOS_PATH}/${PRIMARIO}`, {
+      id: ORDER_SN,
+      valor: 24,
+      status_pagamento: STATUS_PAGAMENTO.aprovado,
+    });
+
+    const r = await salvar(db, {
+      mapeados: mapear({ valorDoComprador: 31.99, dinheiroProvisorio: true }),
+    });
+
+    expect(db.store[`${PAGAMENTOS_PATH}/${PRIMARIO}`]!.data.valor).toBe(24);
+    expect(r.divergenciaDeSoma).toBe(0);
+  });
+
+  it('19d. ⚠️ NEAR-MISS: o mesmo dinheiro NÃO provisório re-toma o `valor`', async () => {
+    const db = new FakeDb();
+    semearPedido(db, { valorCobrado: 24 });
+    db.seed(`${PAGAMENTOS_PATH}/${PRIMARIO}`, {
+      id: ORDER_SN,
+      valor: 24,
+      status_pagamento: STATUS_PAGAMENTO.aprovado,
+    });
+
+    await salvar(db, { mapeados: mapear({ valorDoComprador: 31.99 }) });
+
+    expect(db.store[`${PAGAMENTOS_PATH}/${PRIMARIO}`]!.data.valor).toBe(31.99);
+  });
+
+  it('19e. dinheiro provisório num pedido SEM pagamento nosso ainda CRIA o conjunto', async () => {
+    const db = new FakeDb();
+    semearPedido(db);
+
+    const r = await salvar(db, {
+      mapeados: mapear({ valorDoComprador: 31.99, dinheiroProvisorio: true }),
+    });
+
+    expect(r.criados).toBe(1);
+    expect(db.store[`${PAGAMENTOS_PATH}/${PRIMARIO}`]!.data.valor).toBe(31.99);
   });
 });
 
