@@ -100,8 +100,9 @@ Twelve digits, a length no real id has (the longest, products and images, have 9
 neither 11 nor 14, the lengths the check-digit scan reads as a CPF or a CNPJ.
 
 - **What is mapped**, on catalogue pairs only: every kept number (or digit-only
-  string) under a key named `id` or ending in `_id` (`imagem_id`), the id segments of
-  every kept resource URI (`/v1/categoria/<id>`, `/api/v1/grades/<id>`,
+  string) under a key named `id` or ending in `_id` (`imagem_id`), the ids a price
+  `set/` answer lists in `not_found` (the ids it did not return; strings stay strings),
+  the id segments of every kept resource URI (`/v1/categoria/<id>`, `/api/v1/grades/<id>`,
   `/api/v1/grade/<g>/variacao/<v>`), the id segments of the request path
   (`/v1/grades/<id>/`, `/v1/categoria/set/<id>;<id>/`), the `produto=` query value,
   and the same id positions inside `meta.next`/`meta.previous`. Never

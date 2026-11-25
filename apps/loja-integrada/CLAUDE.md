@@ -579,7 +579,8 @@ apps/loja-integrada/lib/lojaIntegrada/testing/especificacaoFolhas.json` (no pair
   with a `.git` entry in it or above it, and refuses to run without the owner's local
   `nomes-proibidos.txt` (store names; never in the repo, never printed).
 - **Catalogue ids are keyed pseudonyms** (`sanitizacao/pseudonimo.ts`): on a `catalogo`
-  2xx pair the sanitizer maps every kept `id` and `*_id`, every id segment of a kept
+  2xx pair the sanitizer maps every kept `id` and `*_id`, the ids a price `set/` answer
+  lists in `not_found` (kept at that answer's root only), every id segment of a kept
   resource URI, of the request path and of `meta.next`/`previous`, and the `produto=`
   query value to `1e11 + HMAC-SHA256(key, "li-fixture-id:" + id)[0..6] mod 9e11`, one
   namespace for every resource, so the relations between rows survive. Twelve digits:
