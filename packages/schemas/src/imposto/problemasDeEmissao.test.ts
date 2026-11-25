@@ -100,12 +100,17 @@ describe('problemasDeEmissaoDoImposto — ICMS Simples Nacional', () => {
   });
 
   it('a CSOSN whose sub-config is null → points at the CSOSN select', () => {
-    expect(problemasDeEmissaoDoImposto(nivel(icms(CSOSN.outros, { csosn900: null })))).toEqual([
+    const doc = nivel(icms(CSOSN.tributadaComCredito, { csosn101: null }));
+    expect(problemasDeEmissaoDoImposto(doc)).toEqual([
       {
         campos: ['configuracaoICMS.csosn'],
-        mensagem: 'CSOSN 900: os campos do CSOSN 900 não foram preenchidos.',
+        mensagem: 'CSOSN 101: os campos do CSOSN 101 não foram preenchidos.',
       },
     ]);
+  });
+
+  it('accepts CSOSN 900 with a null sub-config', () => {
+    expect(problemasDeEmissaoDoImposto(nivel(icms(CSOSN.outros, { csosn900: null })))).toEqual([]);
   });
 
   it('CSOSN 203 names 203, not the slot it shares with 202', () => {
