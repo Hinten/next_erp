@@ -16,8 +16,16 @@
  *  - a BUNDLE-DEAL line comes back with `model_discounted_price: 0` on the
  *    detail ("as by design bundle deal discount will not be breakdown to
  *    item/model level"), so the detail prices a whole bundle at nothing;
- *  - only the escrow carries the five DISCOUNTS, per line;
+ *  - only the escrow carries the buyer-side OFFSETS (vouchers, coins), per line;
  *  - only the escrow carries `is_kit` / `kit_items` (BR local).
+ *
+ * ## The money is `dinheiroShopee.ts`'s
+ *
+ * This module READS each line (`precoDeVenda` = the unit `discounted_price`,
+ * `descontoUnitario` = the three offsets) and hands the lines to
+ * `fecharDinheiroShopee`, which owns every order-level rule — the residual,
+ * `descontoTotal`, the floor, the freight and the NF-e total. The lines this
+ * module returns are that model's, floor included.
  *
  * ⚠️ **The escrow divisor comes from the escrow.** Nine escrow fields carry the
  * sentence "It returns the subtotal of that specific item if quantity exceeds
@@ -29,7 +37,7 @@
  * import logs both.
  */
 import { roundReais } from '@delfrance/core/money';
-import type { ItemDoPedido } from '@delfrance/schemas';
+import type { ItemDoPedido, ModalidadeFrete } from '@delfrance/schemas';
 import type {
   ShopeeEscrowDetail,
   ShopeeEscrowItem,
@@ -38,8 +46,23 @@ import type {
   ShopeeOrderItem,
 } from '@delfrance/integrations-shopee';
 
+import {
+  descontoUnitario,
+  fecharDinheiroShopee,
+  originalDaLinhaShopee,
+  type DinheiroShopee,
+  type FechamentoDinheiroShopee,
+} from './dinheiroShopee';
 import { chaveDaLinhaShopee, makeItemEnsureUniqueId, mktplaceIdDe } from './orderIds';
 import type { ResolvedShopeeLineProduto } from './produtoResolve';
+
+/**
+ * ⚠️ RE-EXPORTED, not re-declared: the per-line offsets reader is the money
+ * model's (`dinheiroShopee.ts`); this module's import path keeps answering for
+ * the callers that already read it here — one function, never a second copy.
+ */
+export { descontoUnitario };
+export type { DescontoDaLinha } from './dinheiroShopee';
 
 /**
  * Is `get_order_detail`'s `model_discounted_price` the LINE TOTAL or the UNIT
@@ -92,15 +115,6 @@ export interface LeituraDePreco {
   readonly ehBundle: boolean;
 }
 
-export interface DescontoDaLinha {
-  /** The five escrow discounts ÷ quantity, rounded and CLAMPED at 0. */
-  readonly unitario: number;
-  /** The same value before the clamp — logged when it was negative. */
-  readonly bruto: number;
-  /** True when the clamp actually absorbed a negative sum. */
-  readonly travado: boolean;
-}
-
 export interface DiagnosticoDaLinha {
   readonly ordem: number;
   readonly mktplaceId: string;
@@ -131,38 +145,44 @@ export interface DiagnosticoDaLinha {
 
 export interface ConferenciaDoPedido {
   readonly orderSn: string;
-  /** Σ `unitario × quantidade`, rounded. */
+  /** Σ `itemSubtotal` of the final lines (net of each line's discount), rounded. */
   readonly somaDosItens: number;
   /**
-   * Σ `descontoUnitario × quantidade`, rounded — a DIAGNOSTIC, and **never the
-   * pedido's `descontoTotal`**.
+   * Σ `descontoUnitario × quantidade`, rounded — a DIAGNOSTIC, ALREADY inside
+   * {@link somaDosItens} (`itemSubtotal` nets it out of `precoDeVenda`).
    *
-   * ⚠️ The renaming is the fix for a real double-count. Each line already
-   * carries its own `descontoUnitario`, and `itemSubtotal`
-   * (`packages/schemas/src/pedido/pureLogic/totals.ts`) nets it out of
-   * `precoDeVenda` before summing — so this figure is ALREADY inside
-   * `Σ itemSubtotal`. The pedido's `descontoTotal` is the ORDER-level slot (the
-   * footer's "Desconto", which Mercado Livre fills with `Σ coupon_amount` while
-   * writing `descontoUnitario: 0` per line), and
-   * `derivePedidoFreteTotals` subtracts it a SECOND time. Writing this value
-   * there made `valorCobrado` short by Σ discounts on the operator's first save.
-   * See `totais.test.ts`.
+   * ⚠️ Never copied into the pedido's `descontoTotal`: that is the ORDER-level
+   * slot `derivePedidoFreteTotals` subtracts a SECOND time, after the item sum.
+   * The pedido's `descontoTotal` is {@link descontoTotal} below — the money
+   * model's un-itemized offset — and `totais.test.ts` crosses the two.
    */
   readonly descontoDasLinhas: number;
-  /** What the caller computed for freight (W7's `valorCobrado`). */
+  /** The order-level discount the money model stated (`0` when the order closes). */
+  readonly descontoTotal: number;
+  /** The freight the buyer paid, from the money model. */
   readonly freteCobrado: number | null;
-  /** `somaDosItens + freteCobrado`, or `null` when the freight is unknown. */
+  /** The pedido's `valorCobrado`, or `null` when the freight is unknown. */
   readonly totalConferido: number | null;
-  /** The order's own `total_amount` — `null` before payment. */
+  /** `buyer_total_amount` when the escrow answers, else the order's `total_amount`. */
   readonly totalDoPedido: number | null;
   /** `totalConferido − totalDoPedido`, or `null` when either side is unknown. */
   readonly diferenca: number | null;
+  /** The money model's residual BEFORE the floor (`null` without escrow). */
+  readonly residual: number | null;
+  readonly fechamento: FechamentoDinheiroShopee;
+  /** The floor bound and the discounts were reduced. */
+  readonly pisoAplicado: boolean;
+  /** The cupom pagamento leg (`0` unless the floor bound). */
+  readonly cupomShopee: number;
 }
 
 export interface ItensMapeadosShopee {
+  /** The lines as stored — the money model's, floor included. */
   readonly itens: readonly ItemDoPedido[];
   readonly diagnosticos: readonly DiagnosticoDaLinha[];
   readonly conferencia: ConferenciaDoPedido;
+  /** The order's money (`fecharDinheiroShopee`), for the freight, pedido and pagamento mappers. */
+  readonly dinheiro: DinheiroShopee;
 }
 
 export interface MapearItensShopeeArgs {
@@ -176,15 +196,11 @@ export interface MapearItensShopeeArgs {
    */
   readonly resolucoes: ReadonlyMap<string, ResolvedShopeeLineProduto>;
   /**
-   * The freight the buyer was charged, for the cross-check log only.
-   *
-   * ⚠️ Passed in rather than read off `detalhe`: Shopee ZERO-FILLS absent
-   * numerics (`actual_shipping_fee: 0` on the SG order while the buyer paid
-   * 1.99), so the one reader that knows a `0` from an absence lives in W7's
-   * `orderFreteMapping.ts`. A second copy here would be the two-files-drifting
-   * shape the root `CLAUDE.md` names.
+   * The modalidade the money model prices with — `modalidadeDoPedidoShopee`
+   * (the stored block's, else the conta's, else FOB). It decides whether the
+   * freight is inside the NF-e total and therefore inside the pagamentos.
    */
-  readonly freteCobrado: number | null;
+  readonly modalidade: ModalidadeFrete;
   /** The importer's ONE clock read, in µs. Never a clock read here. */
   readonly nowUs: number;
   /** Test seam for {@link DETALHE_PRECO_E_TOTAL_DA_LINHA}. Defaults to it. */
@@ -211,16 +227,15 @@ export interface MapearItensShopeeArgs {
  * it was stored with. Mercado Livre's `orderPedidoTx.ts` does the same.
  */
 export function mapearItensShopee(args: MapearItensShopeeArgs): ItensMapeadosShopee {
-  const { detalhe, escrow, resolucoes, freteCobrado, nowUs } = args;
+  const { detalhe, escrow, resolucoes, nowUs } = args;
   const totalDaLinha = args.detalhePrecoEhTotalDaLinha ?? DETALHE_PRECO_E_TOTAL_DA_LINHA;
   const orderSn = detalhe.order_sn;
 
   const fila = filaDeEscrowPorPar(escrow);
-  const itens: ItemDoPedido[] = [];
+  const lidos: ItemDoPedido[] = [];
+  const originais: (number | null)[] = [];
   const diagnosticos: DiagnosticoDaLinha[] = [];
   const linhasDoLog: Record<string, unknown>[] = [];
-  let somaDosItens = 0;
-  let descontoDasLinhas = 0;
 
   const linhas = detalhe.item_list ?? [];
   for (let index = 0; index < linhas.length; index += 1) {
@@ -234,7 +249,8 @@ export function mapearItensShopee(args: MapearItensShopeeArgs): ItensMapeadosSho
     const resolvido = resolucoes.get(chaveDaLinhaShopee(linha.item_id, linha.model_id)) ?? null;
     const conferencia = conferirQuantidades(linha);
 
-    itens.push({
+    originais.push(originalDaLinhaShopee(linha.model_original_price, quantidade, linhaEscrow));
+    lidos.push({
       produtoUid: resolvido?.produtoId ?? null,
       ordem: index,
       ensureUniqueId: makeItemEnsureUniqueId(orderSn, mktplaceId, index),
@@ -249,7 +265,10 @@ export function mapearItensShopee(args: MapearItensShopeeArgs): ItensMapeadosSho
       // `model_name: ''`, and the naive form stores a trailing space that then
       // reaches the NF-e `xProd` and the picking sheet.
       nomeDeVenda: [linha.item_name, linha.model_name].filter(naoVazioPredicado).join(' ') || null,
-      precoDeVenda: roundReais(preco.unitario + desconto.unitario),
+      // The unit `discounted_price`, and the buyer-side offsets as the line's
+      // discount — never re-added into the price (legacy parity: the price at
+      // `tasks.dart:593`, the three offsets at `:598-600`).
+      precoDeVenda: preco.unitario,
       descontoUnitario: desconto.unitario,
       // ⚠️ `model_quantity_purchased` VERBATIM — never the
       // `active + cancelled + returned` sum, which is the GUARD below, not the
@@ -305,9 +324,6 @@ export function mapearItensShopee(args: MapearItensShopeeArgs): ItensMapeadosSho
       escrowAmbiguo: ambiguo,
     });
 
-    somaDosItens += preco.unitario * quantidade;
-    descontoDasLinhas += desconto.unitario * quantidade;
-
     if (conferencia.completa === false) {
       console.warn(
         '[shopee/pedidos] linha com quantidades que não fecham — importada assim mesmo',
@@ -343,13 +359,21 @@ export function mapearItensShopee(args: MapearItensShopeeArgs): ItensMapeadosSho
     }
   }
 
-  const soma = roundReais(somaDosItens);
-  const totalConferido = freteCobrado == null ? null : roundReais(soma + freteCobrado);
-  const totalDoPedido = detalhe.total_amount ?? null;
+  const dinheiro = fecharDinheiroShopee({
+    itens: lidos,
+    originais,
+    detalhe,
+    escrow,
+    modalidade: args.modalidade,
+  });
+  const freteCobrado = dinheiro.frete.valorCobrado;
+  const totalConferido = freteCobrado == null ? null : dinheiro.valorDoPedido;
+  const totalDoPedido = dinheiro.totalDoComprador ?? detalhe.total_amount ?? null;
   const conferencia: ConferenciaDoPedido = {
     orderSn,
-    somaDosItens: soma,
-    descontoDasLinhas: roundReais(descontoDasLinhas),
+    somaDosItens: dinheiro.somaDosItens,
+    descontoDasLinhas: dinheiro.descontoDasLinhas,
+    descontoTotal: dinheiro.descontoTotal,
     freteCobrado,
     totalConferido,
     totalDoPedido,
@@ -357,13 +381,41 @@ export function mapearItensShopee(args: MapearItensShopeeArgs): ItensMapeadosSho
       totalConferido == null || totalDoPedido == null
         ? null
         : roundReais(totalConferido - totalDoPedido),
+    residual: dinheiro.residual,
+    fechamento: dinheiro.fechamento,
+    pisoAplicado: dinheiro.piso?.aplicado === true,
+    cupomShopee: dinheiro.pagamento.cupomShopee,
   };
+  const itens = dinheiro.itens;
+
+  if (dinheiro.piso?.aplicado === true) {
+    // eslint-disable-next-line no-console -- one line per order whose floor bound; numbers only
+    console.info('[shopee/pedidos] piso da NF-e aplicado — parte do desconto vira cupom', {
+      orderSn,
+      piso: dinheiro.piso.valor,
+      inalcancavel: dinheiro.piso.inalcancavel,
+      totalDaNota: dinheiro.totalDaNota,
+      cupomShopee: dinheiro.pagamento.cupomShopee,
+    });
+  }
+  if (dinheiro.pagamento.divergente) {
+    console.warn(
+      '[shopee/pedidos] o comprador pagou ACIMA das linhas — pagamento = total da nota',
+      {
+        orderSn,
+        residual: dinheiro.residual,
+        totalDoComprador: dinheiro.totalDoComprador,
+        totalDaNota: dinheiro.totalDaNota,
+      },
+    );
+  }
 
   // ONE line per import — ids and numbers only, never a name, an address or a
   // document. It carries BOTH price readings per line plus the switch, so the
   // first real BR orders re-prove `DETALHE_PRECO_E_TOTAL_DA_LINHA` instead of
   // inheriting it, and the cross-check says whether the mapped money adds up to
-  // what Shopee says the buyer paid.
+  // what Shopee says the buyer paid (`buyer_total_amount` once the escrow
+  // answers) — with the residual and the floor beside it.
   // ⚠️ `info`, not `warn`: this line is expected on EVERY healthy order, and a
   // warning nobody can act on is what makes the real ones invisible.
   // eslint-disable-next-line no-console -- see the note above
@@ -372,13 +424,25 @@ export function mapearItensShopee(args: MapearItensShopeeArgs): ItensMapeadosSho
     interruptorTotalDaLinha: totalDaLinha,
     linhas: linhasDoLog,
     somaDosItens: conferencia.somaDosItens,
+    descontoTotal: conferencia.descontoTotal,
     freteCobrado: conferencia.freteCobrado,
     totalConferido: conferencia.totalConferido,
     totalDoPedido: conferencia.totalDoPedido,
     diferenca: conferencia.diferenca,
+    residual: conferencia.residual,
+    fechamento: conferencia.fechamento,
+    pisoAplicado: conferencia.pisoAplicado,
+    cupomShopee: conferencia.cupomShopee,
+    modalidade: dinheiro.modalidade,
+    totalDaNota: dinheiro.totalDaNota,
+    // Cross-checks: the order-level twin of Σ line offsets, and the offsets no
+    // line carries (what a positive residual usually is).
+    descontoDasLinhas: conferencia.descontoDasLinhas,
+    ofertasDaOrdem: dinheiro.ofertasDaOrdem,
+    descontosDePagamento: dinheiro.descontosDePagamento,
   });
 
-  return { itens, diagnosticos, conferencia };
+  return { itens, diagnosticos, conferencia, dinheiro };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -435,34 +499,6 @@ export function precoUnitario(
       ? roundReais(precoDetalhe / quantidadeDetalhe)
       : roundReais(precoDetalhe);
   return { ...base, unitario, fonte: FONTE_DE_PRECO.detalhe };
-}
-
-/**
- * The per-unit discount for one line: the FIVE escrow discounts summed and
- * divided by the escrow's own `quantity_purchased`.
- *
- * ⚠️ **The clamp at 0 is not cosmetic.** `itemDoPedidoSchema.descontoUnitario`
- * is `z.number().min(0)`, and escrow money floats are legally negative on this
- * page (its own sample sends `final_shipping_fee: -10`). A negative sum would
- * throw a `ZodError` INSIDE the pedido write, which the notification pipeline
- * reads as transient and retries until it parks — the whole order lost to one
- * sign. Clamped, with the raw sum logged by the caller.
- *
- * No escrow row ⇒ `0`. The detail carries no per-line discount at all, and the
- * legacy's "the fallback price was actually a discount amount" is the recorded
- * defect not to repeat.
- */
-export function descontoUnitario(escrow: ShopeeEscrowItem | null): DescontoDaLinha {
-  if (escrow == null) return { unitario: 0, bruto: 0, travado: false };
-  const soma =
-    (escrow.seller_discount ?? 0) +
-    (escrow.shopee_discount ?? 0) +
-    (escrow.discount_from_coin ?? 0) +
-    (escrow.discount_from_voucher_shopee ?? 0) +
-    (escrow.discount_from_voucher_seller ?? 0);
-  const quantidade = escrow.quantity_purchased ?? null;
-  const bruto = roundReais(quantidade != null && quantidade > 0 ? soma / quantidade : soma);
-  return { unitario: bruto < 0 ? 0 : bruto, bruto, travado: bruto < 0 };
 }
 
 /* -------------------------------------------------------------------------- */

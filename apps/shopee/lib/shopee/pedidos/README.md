@@ -1,12 +1,94 @@
-# lib/shopee/pedidos/ — payments, settlement and shipment tracking (steps 6 and 7)
+# lib/shopee/pedidos/ — the order's money, payments, settlement and shipment tracking (steps 5–7)
 
 Moved out of `apps/shopee/CLAUDE.md` in step 12 (#1520) to free the Codex
-instruction budget (`.codex/project-config.test.mjs`). The two sections below
-are the guide's own bytes; only this title and this paragraph are new, and
-nothing needed repairing — both `##` heading lines stayed in the guide as
-stubs, and the one internal "below" points inside its own section. ⚠️ The one
-byte-level difference: `**/CLAUDE.md` is `.prettierignore`d and this file is
-not, so Prettier aligned the settle-live table's pipes. No cell text changed.
+instruction budget (`.codex/project-config.test.mjs`). The payments and
+shipment sections were the guide's own bytes; nothing needed repairing — both
+`##` heading lines stayed in the guide as stubs, and the one internal "below"
+points inside its own section. ⚠️ The one byte-level difference:
+`**/CLAUDE.md` is `.prettierignore`d and this file is not, so Prettier aligned
+the settle-live table's pipes. The money section was added on 2026-11-24, when
+the guide kept only a pointer to it.
+
+## The order's money (`dinheiroShopee.ts`, 2026-11-24)
+
+ONE pure module — no Firestore, no wire call, no clock, the `dinheiroAmazon.ts`
+shape — closes one order's money; `itens.ts`, `orderFreteMapping.ts`,
+`orderMapping.ts`, `pagamentoMapping.ts` and the importer only consume it. The
+rule is legacy parity — Lucas's decision of 2026-11-24
+(`.old/packages/canais_de_venda/shopee/lib/src/tasks.dart:583-603`, the floor at
+`:464-511` and `:586-670`): the NF-e states what the buyer paid, buyer-side
+offsets as discount, with a floor. Shopee's guide 382 shows another formula and
+leaves the choice to the seller's fiscal team.
+
+- **The line.** `precoDeVenda = discounted_price ÷` the escrow's own
+  `quantity_purchased` (the detail fallback when no escrow row pairs);
+  `descontoUnitario = (discount_from_coin + discount_from_voucher_shopee +
+discount_from_voucher_seller) ÷ quantity`, rounded and clamped at 0.
+  `seller_discount` / `shopee_discount` are NOT added: `discounted_price` is
+  already net of them. Four real BR orders (2026-11-24) close to the centavo on
+  `buyer_total_amount = Σ discounted_price − Σ (those three offsets) +
+buyer_paid_shipping_fee`.
+- **The order level runs only when the escrow ANSWERS** (`totalDoCompradorShopee`)
+  — `order_income` with a finite `buyer_paid_shipping_fee` and a positive
+  `buyer_total_amount`, or a ZERO one on a PAID order whose lines carry money
+  (vouchers and coins covered it all — the floor's own case). So an unpaid
+  order's all-zero escrow writes no zero anywhere, and an estimate never enters
+  the residual. The freight paid is `buyer_paid_shipping_fee` VERBATIM, `0`
+  included (a free-shipping order); without the escrow it is
+  `estimated_shipping_fee`, which the paid re-import corrects unless the pedido
+  is frozen. `custoCalculado` = the escrow's `actual_shipping_fee` (> 0) ?? the
+  detail's ?? the estimate. `freteDoPedidoShopee` is the ONE reader of both.
+- **The residual** `r = Σ line nets + freight paid − buyer_total_amount`.
+  `|r| ≤ 0.01` closes; `r > 0.01` is an un-itemized offset (`pix_discount`,
+  `payment_promotion`) and becomes `descontoTotal`, which the NF-e apportions
+  over the lines; a negative `r` within one centavo PER UNIT is the lines' own
+  per-unit rounding (`toleranciaDeArredondamento`) and closes; below that it
+  invents nothing — the pagamento states the NF-e total and the import files
+  ONE `shp-pagamento-divergente` incidente (deterministic id, `create`, Amazon's
+  `pagamento-divergente` rule).
+- **The floor.** The NF-e goods total never goes below `max(R$ 5,00, 50 % × Σ
+original_price, custoCalculado)` — `PISO_NFE_MINIMO_REAIS` and
+  `FRACAO_MINIMA_DO_ORIGINAL`, the legacy values; tune them only with evidence.
+  When it binds, the line discounts are scaled down (largest remainder, to the
+  centavo), then `descontoTotal`, and the NF-e total beyond what the buyer paid
+  toward it becomes a second pagamento: forma `outros`, `descricaoPagamento`
+  "Cupom de desconto Shopee" (the NF-e's `xPag` beside tPag 99), the buyer leg's
+  status, `tarifas: 0`, at the legacy identity `<order_sn>-desconto`. That holds
+  on `pago-acima` too — the buyer leg is then what the buyer paid, so no
+  incidente. The floor never raises a line above its own `discounted_price`.
+- **The modalidade.** The freight block is seeded, on CREATE only, with the
+  conta's `modalidadeFreteImportacao ?? FOB` — as Mercado Livre, Amazon and Loja
+  Integrada read it; an existing pedido is priced with its STORED block's. FOB
+  stays FOB when the buyer paid freight.
+- **The totals.** `vNF` (`totalDaNotaShopee`) is `derivePedidoFreteTotals` over
+  the lines and `descontoTotal` with the freight member only under CIF — the
+  NF-e emits `vFrete` for that modalidade alone. The pedido's `valorCobrado` is
+  the same derive WITH the freight, as the web recomputes it, so an operator
+  save changes nothing. Once the escrow answers, the pagamentos sum to `vNF`:
+  the buyer leg is `vNF − cupom` (= `buyer_total_amount` minus the freight it
+  paid unless CIF), plus the cupom leg.
+- **Without the escrow** (no `order_income`, a contained `get_escrow_detail`
+  failure, a refused kit parse) there is no residual and no floor, and the buyer
+  leg is the detail's `total_amount` (else the pedido's own total) — the
+  pre-2026-11-24 anchor, kept so that lines not net of a voucher make the NF-e
+  refuse (cStat 865) instead of stating a pre-voucher value. On a PAID order
+  that money is PROVISIONAL (`provisorio`): a CREATE writes it, but an update of
+  an existing pedido keeps the stored lines' price and discount, `valorCobrado`,
+  `descontoTotal`, the freight figures (`orderPedidoTx.ts`) and the stored
+  pagamentos' DATA (`pagamentoTx.ts`, the degraded-delivery freeze), so a later
+  escrow failure never undoes money an earlier delivery closed.
+
+The four real orders, amounts only, are `testing/vetoresDinheiro.ts`;
+`dinheiroShopee.test.ts` pins each arm with a near-miss and `totais.test.ts`
+pins Σ pagante = `vNF` over every escrow vector through the shared pure
+functions (and that the no-escrow arm deliberately does not close).
+⚠️ The cupom leg is counted APART from the payment legs, because it follows the
+floor, which the pedido re-derives on every delivery: on a pedido no human froze,
+an escrow-backed delivery that no longer maps it RETIRES it (`estornado`,
+`valor` kept, never deleted) and one that maps it again re-activates it; under
+`hasUserInteraction` it is frozen like a leg and never retired, and a cupom we
+retired comes back only with the PRIMARY leaving `estornado` (a reversed
+cancellation) (`pagamentoTx.ts`'s header; the import log's `movimentoCupom`).
 
 ## Payments and settlement (`lib/shopee/pedidos/pagamento*.ts` + `liquida*.ts`, step 6)
 
@@ -32,44 +114,63 @@ Shopee pagamento on its first re-import. The `id` FIELD is `order_sn` on the
 primary and `<order_sn>-<n>` on a secondary, but **ownership inside the
 transaction is decided by RECOMPUTING the doc id**, never by reading that field:
 it rides `...base` through the operator's form and is therefore reachable by an
-edit. That is also what keeps the legacy `<order_sn>-desconto` sibling out of
-this transaction entirely — a numeric suffix can never collide with it, and
-step 6 never reads, writes or deletes it.
+edit. The legacy `<order_sn>-desconto` sibling is the cupom leg (above) and is
+OURS since 2026-11-24: ownership recomputes its id too
+(`idsDePagamentoDaOrdemShopee`), so a migrated one is updated in place, never
+duplicated — and a numeric suffix can never collide with it.
 
 **N documents, not one.** A BR order's `get_order_detail.payment_info[]` is a
 LIST (NT 2025.001) and a combined payment really does carry two rows — one
 `credit_card`, one `pix`, each with its own `payment_amount`. The fan-out
-happens only when `2 ≤ N ≤ 8` **and** `Σ payment_amount` equals the pedido's
-`valorCobrado` to the centavo; anything else collapses to ONE primary document
-with a named reason (`soma-divergente` / `excede-maximo`) and one `console.warn`
-carrying numbers only. Entries are ordered DETERMINISTICALLY by content (method,
+happens only when `2 ≤ N ≤ 8` **and** `Σ payment_amount` equals the buyer leg
+(`valorDoComprador`) to the centavo; anything else collapses to ONE primary
+document with a named reason (`soma-divergente` / `excede-maximo`) and one
+`console.warn` carrying numbers only. Under FOB with freight paid the legs sum
+to the freight-inclusive total, so they collapse. Entries are ordered DETERMINISTICALLY by content (method,
 authorization code, amount, joined on a NUL) so the wire order can never decide
 which document takes which id.
 
-**⚠️ Σ pagante `valor` MUST equal `valorCobrado` to the centavo.** The NF-e
-bundle sums `vPag` over `isPagamentoPagante` and throws (cStat 866 for an
-excess, 865 for a shortfall), and `<vTroco>` is not available to us —
-`canalDevolveTroco` is FALSE for every marketplace. So `valor` is the
-BUYER-facing figure (the pedido's own `valorCobrado`, from
-`buyer_total_amount` → `total_amount` → Σ items + frete), **never
-`escrow_amount`**, which moves until the order completes. A non-pagante status
-makes a payment invisible to the NF-e rather than merely unpaid.
-⚠️ A later delivery carrying FEWER entries never deletes, never neutralises and
-never re-takes the primary's `valor` — whether `payment_info` survives past
+**⚠️ Σ pagante `valor` MUST equal `vNF` to the centavo.** The NF-e bundle sums
+`vPag` over `isPagamentoPagante` and throws (cStat 866 for an excess, 865 for a
+shortfall), and `<vTroco>` is not available to us — `canalDevolveTroco` is
+FALSE for every marketplace. So `valor` comes from the money model above (the
+buyer leg, plus the cupom leg when the floor binds), **never `escrow_amount`**,
+which moves until the order completes — and it is NOT the pedido's
+`valorCobrado`, which carries the freight under every modalidade. The
+transaction's `divergenciaDeSoma` compares against the STORED pedido's `vNF`
+(`totalDaNotaDoPedidoArmazenado`). A non-pagante status makes a payment
+invisible to the NF-e rather than merely unpaid.
+⚠️ A later delivery carrying FEWER payment legs (the cupom is not one) never
+deletes, never neutralises and never re-takes the primary's `valor` — whether
+`payment_info` survives past
 `READY_TO_SHIP` is settle-live register item 22 and is **NOT yet known**, so a
 shrinking payload is read as lost detail either way — and re-taking it would
 nearly double Σ pagante against the siblings an earlier, richer delivery wrote.
 That is the "degraded delivery" freeze, and a stored document is never
 deleted — one the operator removed is recreated on the next delivery, because
-the money really did move.
+the money really did move. A delivery whose money is PROVISIONAL (a paid order
+whose escrow did not answer, `dinheiroProvisorio`) is degraded too, whatever
+its document count, as soon as one document of ours is stored.
+⚠️ **Degraded means DETAIL LOSS** — fewer usable `payment_info` entries than
+the legs still in play (a sibling we retired, beside a primary outside
+`estornado`, no longer counts). A money-answered delivery carrying at least as
+many, which the mapper COLLAPSED because the buyer leg moved (provisional
+money's freight-inclusive total giving way to the escrow's, Codex on PR #2224),
+lost nothing: off the latch, the primary re-takes the whole buyer leg and every
+superseded sibling is RETIRED like the cupom (`estornado`, `valor` kept) and
+returns only by the cupom's rule (the import log's `pernasRetiradas` /
+`pernasReativadas`). Residual: legs created on provisional money whose first
+escrow-answered delivery also lost `payment_info` stay frozen above `vNF` until
+a delivery carrying as many entries arrives.
 ⚠️ **The freeze has a second direction, and it costs the same.** While the DATA
 group is frozen — by `degradado` or by a human's `hasUserInteraction` — a
 delivery that maps MORE documents than we own does not CREATE the extra ones
 either: the stored primary is still standing at whatever a poorer earlier
-delivery gave it (often the WHOLE `valorCobrado`, because that delivery carried
+delivery gave it (often the WHOLE buyer leg, because that delivery carried
 no `payment_info` at all), so a new sibling at its own leg amount lands Σ
 pagante ABOVE the nota. `hasUserInteraction` is a LATCH, so nothing later
-repairs it. One `console.info` says the set could not grow. The gate needs at
+repairs it (the cupom leg is withheld by that latch alone, never by degraded
+legs). One `console.info` says the set could not grow. The gate needs at
 least one document of OURS already stored: a pedido a human touched before its
 first pagamento arrived still gets the whole set created, and so does one the
 operator deleted.
@@ -87,23 +188,30 @@ allowed and logged as a resurrection (the ladder is driven by a re-fetch of the
 live order); a stored value outside the governable set — an operator's
 `recusado` or `devolvido` — is never walked back.
 
-**`tarifas` is the marketplace's cut, and it is Shopee's own fee columns**:
-`commission_fee + service_fee + seller_transaction_fee` (FAQ 479's three Income
-Report columns), with the BR `net_*` variants preferred where they arrive.
+**`tarifas` is the marketplace's cut, and it is the SPREAD**:
+`buyer_total_amount − (escrow_amount_after_adjustment ?? escrow_amount)` — the
+legacy rule (`tasks.dart:286`) without its `abs()`, Lucas's decision of
+2026-11-24 (24.20 / 15.06 / 17.43 / 20.73 on the four real BR orders). The
+other arm, Shopee's named fee columns (`commission_fee + service_fee +
+seller_transaction_fee`, FAQ 479, BR `net_*` preferred), misses two BR fees the
+escrow carries (`ads_escrow_top_up_fee_or_technical_support_fee`,
+`shipping_seller_protection_fee_amount`); it stays implemented behind the named
+seam `COMPOSICAO_TARIFAS_SHOPEE` and rides the import log as `tarifasNomeadas`.
 ⚠️ `credit_card_transaction_fee` is a ROLLUP of the buyer and seller halves and
 is **never** summed with them. The value is clamped at 0 (`pagamentoSchema`
 declares `.min(0)`; an unclamped negative is a ZodError that PARKS the code-3
 delivery terminally — `disposicaoDaFalhaDeImportacao` in
 `notificacoes/notificacao.ts` — and, on the weekly sweep, is not in
 `erroContidoPorConta` at all, so it aborts the WHOLE tick rather than one
-conta — #794); the pre-clamp raw and the named fees ride the new
-`pagamento.marketplace` block, a DIARY nothing gates on. The legacy composition
-(`buyer_total_amount − escrow_amount_after_adjustment`) survives as the named
-seam `COMPOSICAO_TARIFAS_SHOPEE`. ⚠️ `tarifas` and `tarifasBrutas` are NOT the
-two readings — they are the shipped composition clamped and unclamped, i.e. one
-number twice — so the import log carries a third, `tarifasSpread`, and that is
-what the first live BR orders compare as data rather than as an argument. On N
-documents the fee rides the PRIMARY and the secondaries carry a real `0`.
+conta — #794; a negative spread means Shopee credited the seller); the
+pre-clamp raw and the named fees ride the new `pagamento.marketplace` block, a
+DIARY nothing gates on. ⚠️ `tarifas` and `tarifasBrutas` are NOT the two
+readings — they are the shipped composition clamped and unclamped, i.e. one
+number twice — so the import log carries the other arm as `tarifasNomeadas`
+(and `taxaAds`, the BR fee outside it). The weekly sweep calls the SAME
+function, so the import and the settlement move together. On N documents the
+fee rides the PRIMARY and the secondaries — the cupom leg included — carry a
+real `0`.
 
 **`cartao` is written only for formas 3/4/17 and is NEVER cleared.** It comes
 from a `payment_info` entry (`tpIntegra '2'`, the processor's CNPJ, the brand,

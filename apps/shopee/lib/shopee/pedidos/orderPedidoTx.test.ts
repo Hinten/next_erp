@@ -64,22 +64,14 @@ function mapear(patch: Partial<MapearPedidoShopeeArgs> = {}): PedidoMapeadoShope
   const watermarkUs = patch.watermarkUs ?? WATERMARK_US;
   return mapearPedidoShopee({
     detalhe,
-    escrow: null,
     itens: [itemDe(0)],
-    conferencia: {
-      orderSn: ORDER_SN,
-      somaDosItens: 30,
-      descontoDasLinhas: 0,
-      freteCobrado: 1.99,
-      totalConferido: 31.99,
-      totalDoPedido: 31.99,
-      diferenca: 0,
-    },
+    descontoTotal: 0,
     frete: mapearFreteInicialShopee({ detalhe, escrow: null, watermarkUs }).frete,
     conta: {
       integracaoPedidoOuterRef: `documents/integracao/${CONTA}`,
       listaDePrecosOuterRef: 'documents/listaDePrecos/lp-1',
       operacaoPedidoOuterRef: 'documents/operacao/op-1',
+      modalidadeFreteImportacao: null,
     },
     captura: { estado: CAPTURA_COMPRADOR_ESTADO.expirado, camposRecusados: ['regiao:nao-br'] },
     clientePedidoOuterRef: null,
@@ -497,7 +489,7 @@ describe('salvarPedidoShopee — os grupos de campos', () => {
   });
 
   it('⚠️ o DINHEIRO da linha é REFRESCADO — o escrow chega tarde e a refinação tem de pousar', async () => {
-    // The escrow is the authority for the five discounts and for a bundle line's
+    // The escrow is the authority for the buyer-side offsets and for a bundle line's
     // real money, and it is routinely absent on the FIRST delivery (an unpaid
     // order has none; a contained escrow failure and a refused kit parse look the
     // same). If the re-priced line were dropped, the pedido would keep a
@@ -914,7 +906,7 @@ describe('salvarPedidoShopee — o escopo das comparações', () => {
           detalhe: detalheSG(),
           escrow: {
             order_sn: ORDER_SN,
-            order_income: { buyer_paid_shipping_fee: 7.5 },
+            order_income: { buyer_paid_shipping_fee: 7.5, buyer_total_amount: 37.5 },
           } as never,
           watermarkUs: WATERMARK_US,
         }).frete,

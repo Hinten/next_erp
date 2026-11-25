@@ -249,6 +249,16 @@ const CAMPOS_ITEM_DA_SHOPEE = [
 ] as const satisfies ReadonlyArray<keyof ItemDoPedido>;
 
 /**
+ * {@link CAMPOS_ITEM_DA_SHOPEE} minus the line's MONEY — what a delivery with
+ * PROVISIONAL money (`dados.dinheiroProvisorio`: a paid order whose escrow did
+ * not answer) may still refresh. The quantity stays: both readings take it from
+ * the detail.
+ */
+const CAMPOS_ITEM_SEM_DINHEIRO = CAMPOS_ITEM_DA_SHOPEE.filter(
+  (c) => c !== 'precoDeVenda' && c !== 'descontoUnitario',
+);
+
+/**
  * Refresh the fields Shopee owns on a line we already stored, and report it.
  *
  * ⚠️ **The LINE SET is append-only; the MONEY on a line is not.** `ensureUniqueId`
@@ -256,20 +266,27 @@ const CAMPOS_ITEM_DA_SHOPEE = [
  * so a re-priced line collides with itself. Mercado Livre answers that by
  * dropping the second reading entirely, and its reason does not transfer: ML
  * prices a line from ONE always-present document (`order_items[].unit_price`),
- * whereas here the authority is the ESCROW — the only carrier of the five
- * discounts and of a bundle line's real money — and it is routinely absent on
- * the first delivery (an unpaid order has none; a contained escrow failure or a
- * refused kit parse produce the same). A first import therefore stores a
- * provisional detail-or-zero price, and dropping the refinement would freeze it
- * for ever WHILE the same `tx.update` refreshes `valorCobrado` from the escrow
- * — a pedido whose header and lines contradict
+ * whereas here the authority is the ESCROW — the only carrier of the buyer-side
+ * offsets (vouchers, coins) and of a bundle line's real money — and it is
+ * routinely absent on the first delivery (an unpaid order has none; a contained
+ * escrow failure or a refused kit parse produce the same). A first import
+ * therefore stores a provisional detail-or-zero price, and dropping the
+ * refinement would freeze it for ever WHILE the same `tx.update` refreshes
+ * `valorCobrado` and `descontoTotal` from the money model (`dinheiroShopee.ts`,
+ * which reads the escrow) — a pedido whose header and lines contradict
  * each other permanently, behind one `console.warn`. Since `pedidoTotal` derives
  * the sale value from the LINES, that disagreement is what the revenue report
  * and the NF-e read.
  *
+ * ⚠️ The refinement runs ONE way. A paid delivery whose escrow did not answer
+ * (`dados.dinheiroProvisorio`) re-takes {@link CAMPOS_ITEM_SEM_DINHEIRO} only:
+ * its detail-priced lines are not net of the vouchers, and re-taking them would
+ * undo money an earlier delivery had closed (the pagamentos freeze alike, in
+ * `pagamentoTx.ts`).
+ *
  * So the identity fields stay untouched — `produtoUid` (an operator's hand-made
  * binding), `ordem`, `ensureUniqueId`, `custo`, `imposto`, `timestamp` — and
- * only {@link CAMPOS_ITEM_DA_SHOPEE} is re-taken from the fresh payload. Nothing
+ * only `campos` is re-taken from the fresh payload. Nothing
  * is ever REMOVED: a partially cancelled line still keeps its row, and the
  * `console.warn` still records every refresh, which is what turns the assumption
  * into data.
@@ -284,8 +301,9 @@ function refrescarLinhaDaShopee(
   orderSn: string,
   armazenado: ItemDoPedido,
   recebido: ItemDoPedido,
+  campos: ReadonlyArray<(typeof CAMPOS_ITEM_DA_SHOPEE)[number]>,
 ): ItemDoPedido {
-  const divergentes = CAMPOS_ITEM_DA_SHOPEE.filter((c) => armazenado[c] !== recebido[c]);
+  const divergentes = campos.filter((c) => armazenado[c] !== recebido[c]);
   if (divergentes.length === 0) return armazenado;
   console.warn('[shopee/pedidos] linha já importada mudou no payload atual — campos atualizados', {
     orderSn,
@@ -557,6 +575,14 @@ export async function salvarPedidoShopee(
 
     /* -- ONLY WHILE hasUserInteraction !== true -------------------------------- */
     if (!congelado) {
+      // ⚠️ Provisional money (a PAID order whose escrow did not answer) never
+      // overwrites stored money: the lines' price and discount, `valorCobrado`,
+      // `descontoTotal` and the freight figures keep what an earlier delivery
+      // wrote, and the next delivery the escrow answers refreshes them. A line
+      // APPENDED here keeps its detail money and the header is not re-derived —
+      // no observed order grows a line after payment.
+      const provisorio = mapeado.dados.dinheiroProvisorio;
+      const camposDaLinha = provisorio ? CAMPOS_ITEM_SEM_DINHEIRO : CAMPOS_ITEM_DA_SHOPEE;
       const plano = flattenPedidoItens(itensGravados);
       const vistos = new Set(
         plano.map((i) => i.ensureUniqueId).filter((id): id is string => id != null),
@@ -574,7 +600,7 @@ export async function salvarPedidoShopee(
           // `refrescarLinhaDaShopee`.
           const armazenado = porId.get(item.ensureUniqueId);
           if (armazenado == null) continue;
-          const atualizado = refrescarLinhaDaShopee(orderSn, armazenado, item);
+          const atualizado = refrescarLinhaDaShopee(orderSn, armazenado, item, camposDaLinha);
           if (atualizado !== armazenado) {
             const posicao = merged.indexOf(armazenado);
             if (posicao >= 0) merged[posicao] = atualizado;
@@ -593,11 +619,11 @@ export async function salvarPedidoShopee(
         grupos.add('dados');
       }
 
-      if (atual.valorCobrado !== mapeado.dados.valorCobrado) {
+      if (!provisorio && atual.valorCobrado !== mapeado.dados.valorCobrado) {
         patch.valorCobrado = mapeado.dados.valorCobrado;
         grupos.add('dados');
       }
-      if (atual.descontoTotal !== mapeado.dados.descontoTotal) {
+      if (!provisorio && atual.descontoTotal !== mapeado.dados.descontoTotal) {
         patch.descontoTotal = mapeado.dados.descontoTotal;
         grupos.add('dados');
       }
@@ -605,10 +631,14 @@ export async function salvarPedidoShopee(
         patch.observacoesInternas = mapeado.dados.observacoesInternas;
         grupos.add('dados');
       }
-      const freteMesclado = mesclarFreteInicialShopee(
-        atual.freteInicial ?? null,
-        mapeado.dados.freteInicial,
-      );
+      // Provisional: the two money figures ride as ABSENT, so the merge's
+      // `mapeado ?? existente` keeps the stored ones (a block with none stored
+      // still takes the mapped one whole).
+      const freteDaEntrega =
+        provisorio && atual.freteInicial != null
+          ? { ...mapeado.dados.freteInicial, valorCobrado: null, custoCalculado: null }
+          : mapeado.dados.freteInicial;
+      const freteMesclado = mesclarFreteInicialShopee(atual.freteInicial ?? null, freteDaEntrega);
       if (!mesmoFrete(atual.freteInicial, freteMesclado)) {
         patch.freteInicial = freteMesclado;
         grupos.add('dados');

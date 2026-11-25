@@ -235,7 +235,9 @@ async function main(): Promise<void> {
     const mapeadosPag = mapearPagamentosShopee({
       linha: preparo.linha,
       escrow: preparo.escrow,
-      valorCobrado: mapeado.dados.valorCobrado,
+      valorDoComprador: preparo.mapeados.dinheiro.pagamento.valorDoComprador,
+      cupomShopee: preparo.mapeados.dinheiro.pagamento.cupomShopee,
+      dinheiroProvisorio: preparo.mapeados.dinheiro.provisorio,
       watermarkUs: preparo.watermarkUs,
       nowUs: preparo.nowUs,
       contaId: integracaoId,
@@ -428,20 +430,34 @@ function relatarInexistente(
 function logConferencia(c: {
   somaDosItens: number;
   descontoDasLinhas: number;
+  descontoTotal: number;
   freteCobrado: number | null;
   totalConferido: number | null;
   totalDoPedido: number | null;
   diferenca: number | null;
+  residual: number | null;
+  fechamento: string;
+  pisoAplicado: boolean;
+  cupomShopee: number;
 }): void {
-  log('  conferência (Σ itens + frete  vs  total_amount da order)');
-  log(`    Σ itens ............... ${c.somaDosItens}`);
+  log('  conferência (Σ itens − desconto + frete  vs  o total pago, buyer_total_amount)');
+  log(`    Σ itens ............... ${c.somaDosItens}   (líquido do desconto de cada linha)`);
   log(
     `    Σ desconto das linhas . ${c.descontoDasLinhas}   (diagnóstico — já está dentro de Σ itens)`,
   );
+  log(
+    `    descontoTotal ......... ${c.descontoTotal}   (o desconto da ordem que nenhuma linha traz)`,
+  );
   log(`    frete cobrado ......... ${c.freteCobrado ?? '—'}`);
   log(`    total conferido ....... ${c.totalConferido ?? '—'}`);
-  log(`    total da order ........ ${c.totalDoPedido ?? '—'}`);
+  log(
+    `    total da order ........ ${c.totalDoPedido ?? '—'}   (buyer_total_amount quando o escrow responde)`,
+  );
   log(`    diferença ............. ${c.diferenca ?? '— (a order ainda não foi paga)'}`);
+  log(`    resíduo / fechamento .. ${c.residual ?? '—'} / ${c.fechamento}`);
+  log(
+    `    piso da NF-e .......... ${c.pisoAplicado ? `APLICADO — cupom ${c.cupomShopee}` : 'não aplicado'}`,
+  );
 }
 
 await main().catch((err: unknown) => {

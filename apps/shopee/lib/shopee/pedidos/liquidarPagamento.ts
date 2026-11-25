@@ -55,7 +55,10 @@
  * The money itself comes from the SAME pure `tarifasDeShopee` /
  * `diarioMarketplaceDeEscrow` the import mapper uses — imported, never
  * re-derived and never re-clamped — so a sweep write and a task write racing the
- * same pagamento agree by construction instead of by a comparison.
+ * same pagamento agree by construction instead of by a comparison. That includes
+ * the composition: `COMPOSICAO_TARIFAS_SHOPEE` is the SPREAD (`buyer_total_amount
+ * − escrow_amount_after_adjustment`, legacy parity since 2026-11-24), read by
+ * both through the default argument, so the import and this sweep move together.
  *
  * ## What it never touches
  *
@@ -63,8 +66,8 @@
  * `duplicata`, `juros`, `cartao`, `cheque`, `descricaoPagamento`, `id`,
  * `metodoPagamentoOuterRef`, `nFat`, `vencimento`, `dataAprovacao`,
  * `dataCancelamento`, `dataCadastro` — and no pedido, no `estado`, no stock. So
- * `Σ pagante valor == pedido.valorCobrado` (and therefore `Σ vPag == vNF`)
- * cannot move from here. The write is `tx.update`, **never `tx.set`**: a set
+ * `Σ pagante valor == vNF` (what the import's money model wrote,
+ * `dinheiroShopee.ts`) cannot move from here. The write is `tx.update`, **never `tx.set`**: a set
  * would wipe every field in that list.
  *
  * ## Only an EXISTING pagamento

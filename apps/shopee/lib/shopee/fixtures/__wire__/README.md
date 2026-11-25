@@ -361,8 +361,9 @@ arrived, and it closed the two questions nothing else could:
 Three more facts from that body, each asserted in `wireCorpus.test.ts`:
 
 - `order_income.buyer_total_amount: 31.99` = `buyer_paid_shipping_fee: 1.99` +
-  `order_discounted_price: 30` — the first rung of `valorCobradoDoPedido`, and it
-  agrees with the detail's `total_amount`.
+  `order_discounted_price: 30` — the identity `dinheiroShopee.ts`'s residual
+  closes on (0 here, no voucher or coin on this order), and it agrees with the
+  detail's `total_amount`.
 - The escrow line on a **non-BR** order carries **no `is_kit` and no `kit_items`
   key at all** — absent, not `null`. The schema's `.nullable().default(null)` is
   what answers `null`, and `ehKitShopee` reads that as "unknown", never "not a kit".

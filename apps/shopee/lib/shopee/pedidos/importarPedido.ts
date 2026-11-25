@@ -17,10 +17,11 @@
  *  3. `get_escrow_detail`, **CONTAINED**: it refines PRICES, and losing a
  *     refinement must not lose the pedido;
  *  4. produto resolution, memoised per `(item_id, model_id)` across the order;
- *  5. the conta's active `int_frete` doc (one uncached query), the freight block
- *     stamped with its ref, then the items (the items' cross-check log needs the
- *     freight figure, and only the freight mapper knows a Shopee `0` from an
- *     absence);
+ *  5. the stored pedido and the conta (their modalidade prices the order), the
+ *     conta's active `int_frete` doc (one uncached query), the freight block
+ *     stamped with its ref, then the items — whose mapper closes the order's
+ *     money through `dinheiroShopee.ts` (lines, `descontoTotal`, the floor, the
+ *     freight, the NF-e total and the pagamento figures);
  *  6. the buyer — `findOrCreateCliente` owns its identity-index transaction,
  *     separate from the pedido transaction, so the cliente and endereço are
  *     resolved HERE and only their outer-refs ride the pedido write, as
@@ -31,7 +32,8 @@
  *     by `ignorado-sem-mudanca`: the escrow has no clock of its own, so the fees
  *     can move while the order row does not;
  *  9. the per-line incidentes, AFTER the writes, so a line the stored pedido
- *     already binds raises nothing.
+ *     already binds raises nothing — and `shp-pagamento-divergente` when the
+ *     buyer paid more than the lines state.
  *
  * ## The split: steps 1–5 + the conta read are a SEPARATE, read-only function
  *
@@ -111,8 +113,13 @@ import {
   type PortoesEnderecoShopee,
   type SimulacaoCompradorShopee,
 } from './comprador';
+import { modalidadeDoPedidoShopee } from './dinheiroShopee';
 import { falhaDeEscrowNaoContida } from './escrowNaoContido';
-import { registrarLinhasSemProduto, type LinhaSemProdutoShopee } from './incidentesProduto';
+import {
+  registrarLinhasSemProduto,
+  registrarPagamentoDivergente,
+  type LinhaSemProdutoShopee,
+} from './incidentesProduto';
 import { mapearItensShopee, type ItensMapeadosShopee } from './itens';
 import { mapearFreteInicialShopee, type PesoBrutoObservado } from './orderFreteMapping';
 import { makePedidoIdShopee } from './orderIds';
@@ -643,10 +650,25 @@ export async function prepararImportacaoPedidoShopee(
   const intFrete = await syncIntFreteShopee.buscarIntFreteDaConta(db, integracaoId, {
     apenasAtivo: true,
   });
+
+  const pedidoId = makePedidoIdShopee(integracaoId, orderSn);
+  // The cheap skip — see `resolverComprador`. The transaction re-checks.
+  const snapshot = await pedidoCollection.docRef(db, {}, pedidoId).get();
+  const armazenado = snapshot.exists ? ((snapshot.data() ?? {}) as Record<string, unknown>) : null;
+
+  const conta = await readConta(db, integracaoId);
+  // The modalidade the money is priced with: the stored block's (what the NF-e
+  // reads) on an existing pedido, else the conta's `modalidadeFreteImportacao`,
+  // else FOB — and the seed a CREATE writes. Rule 7's accepted residual: decided
+  // from the read above, outside the transaction; the block is never rewritten
+  // by an import and the Frete tab is read-only for a Shopee order.
+  const modalidade = modalidadeDoPedidoShopee(armazenado, conta?.modalidadeFreteImportacao);
+
   const { frete: freteMapeado, pesosObservados } = mapearFreteInicialShopee({
     detalhe: linha,
     escrow,
     watermarkUs,
+    modalidade,
   });
   // Stamped on the mapped block right after the mapper (whose signature stays
   // pure over the wire). Only a CREATE writes it — the whole mapped block lands
@@ -662,16 +684,9 @@ export async function prepararImportacaoPedidoShopee(
     detalhe: linha,
     escrow,
     resolucoes: resolvedor.resultados(),
-    freteCobrado: frete.valorCobrado,
+    modalidade,
     nowUs,
   });
-
-  const pedidoId = makePedidoIdShopee(integracaoId, orderSn);
-  // The cheap skip — see `resolverComprador`. The transaction re-checks.
-  const snapshot = await pedidoCollection.docRef(db, {}, pedidoId).get();
-  const armazenado = snapshot.exists ? ((snapshot.data() ?? {}) as Record<string, unknown>) : null;
-
-  const conta = await readConta(db, integracaoId);
 
   const capturaReal = avaliarCapturaComprador({
     detail: linha,
@@ -723,6 +738,7 @@ export async function prepararImportacaoPedidoShopee(
         // consequence of an unconfigured conta rather than a hidden one.
         listaDePrecosOuterRef: conta?.tabelaNormalOuterRef ?? null,
         operacaoPedidoOuterRef: conta?.operacaoOuterRef ?? null,
+        modalidadeFreteImportacao: conta?.modalidadeFreteImportacao ?? null,
       },
     },
   };
@@ -744,9 +760,9 @@ export function mapearPreparoPedidoShopee(
 ): PedidoMapeadoShopee {
   return mapearPedidoShopee({
     detalhe: preparo.linha,
-    escrow: preparo.escrow,
     itens: preparo.mapeados.itens,
-    conferencia: preparo.mapeados.conferencia,
+    descontoTotal: preparo.mapeados.dinheiro.descontoTotal,
+    dinheiroProvisorio: preparo.mapeados.dinheiro.provisorio,
     frete: preparo.frete,
     conta: preparo.conta,
     captura: preparo.captura,
@@ -838,8 +854,12 @@ export async function gravarPreparoPedidoShopee(
     mapeadosPag = mapearPagamentosShopee({
       linha,
       escrow,
-      // The PEDIDO's own figure, never recomputed and never `escrow_amount`.
-      valorCobrado: mapeado.dados.valorCobrado,
+      // The money model's figures, never recomputed and never `escrow_amount`:
+      // once the escrow answers, the buyer leg and the cupom leg sum to what
+      // the NF-e states. Provisional money freezes the stored pagamentos' DATA.
+      valorDoComprador: mapeados.dinheiro.pagamento.valorDoComprador,
+      cupomShopee: mapeados.dinheiro.pagamento.cupomShopee,
+      dinheiroProvisorio: mapeados.dinheiro.provisorio,
       watermarkUs,
       nowUs,
       contaId: integracaoId,
@@ -952,6 +972,19 @@ export async function gravarPreparoPedidoShopee(
     itensGravados: resultado.itensGravados as Pedido['itens'] | null,
     nowUs,
   });
+  // The buyer paid MORE than the lines state: the pagamento states the NF-e
+  // total and a human reconciles (Amazon's `pagamento-divergente` rule). Never
+  // on `ignorado-obsoleto` — a newer delivery's money already landed.
+  const pagamentoDivergente =
+    resultado.acao !== 'ignorado-obsoleto' && mapeados.dinheiro.pagamento.divergente
+      ? await registrarPagamentoDivergente(db, {
+          pedidoId,
+          orderSn,
+          totalDoComprador: mapeados.dinheiro.totalDoComprador,
+          totalDaNota: mapeados.dinheiro.totalDaNota,
+          nowUs,
+        })
+      : false;
 
   // ONE line per import. Ids, counts and numbers only — never a name, an
   // address, a document or a product title.
@@ -980,6 +1013,16 @@ export async function gravarPreparoPedidoShopee(
     // beside the converted kilos for the first deliveries.
     pesos: pesosObservados,
     diferencaDeTotais: mapeados.conferencia.diferenca,
+    // ── the money model (`dinheiroShopee.ts`): numbers and closed tokens only.
+    modalidade: mapeados.dinheiro.modalidade,
+    residual: mapeados.dinheiro.residual,
+    fechamento: mapeados.dinheiro.fechamento,
+    dinheiroProvisorio: mapeados.dinheiro.provisorio,
+    descontoTotal: mapeados.dinheiro.descontoTotal,
+    pisoAplicado: mapeados.dinheiro.piso?.aplicado ?? false,
+    totalDaNota: mapeados.dinheiro.totalDaNota,
+    cupomShopee: mapeados.dinheiro.pagamento.cupomShopee,
+    pagamentoDivergente,
     // ── step 6: the pagamentos. Counts, enum tokens and money only — never a
     // `payment_processor_register` (a CNPJ), never a `transaction_id` (an
     // authorization code), never a buyer field.
@@ -990,17 +1033,25 @@ export async function gravarPreparoPedidoShopee(
     // ⚠️ Must be 0: on a marketplace `canalDevolveTroco` is false, so an excess
     // is cStat 866 and a shortfall 865 — no nota at all, for ever.
     divergenciaDeSoma: pagamentos?.divergenciaDeSoma ?? null,
-    // ⚠️ THREE numbers, and only the third settles anything. `tarifas` is the
-    // clamped figure the ERP charges and `tarifasBrutas` its pre-clamp raw —
-    // both from the SHIPPED composition, so on an ordinary order they are one
-    // reading printed twice (what they do show is whether the `.min(0)` clamp
-    // fired). `tarifasSpread` is the OTHER composition's raw, the one the SG
-    // sandbox body cannot tell apart from the named fees, so the first real BR
-    // orders settle the question as DATA. One extra call to a pure function,
-    // numbers only.
+    // The cupom leg retired (the floor stopped binding) or re-activated by
+    // THIS delivery — a token, never a value (`pagamentoTx.ts`).
+    movimentoCupom: pagamentos?.movimentoCupom ?? null,
+    // Non-primary legs an amount-driven collapse superseded (retired) or a
+    // combined set that fits again brought back, on THIS delivery — counts.
+    pernasRetiradas: pagamentos?.pernasRetiradas ?? 0,
+    pernasReativadas: pagamentos?.pernasReativadas ?? 0,
+    // ⚠️ THREE numbers. `tarifas` is the clamped figure the ERP charges and
+    // `tarifasBrutas` its pre-clamp raw — both from the SHIPPED composition (the
+    // spread), so on an ordinary order they are one reading printed twice (what
+    // they do show is whether the `.min(0)` clamp fired). `tarifasNomeadas` is
+    // the OTHER arm's raw (commission + service + transaction), kept beside it
+    // so a BR fee the named columns miss stays visible as DATA. One extra call
+    // to a pure function, numbers only.
     tarifas: mapeadosPag?.docs[0]?.sempre.tarifas ?? null,
     tarifasBrutas: mapeadosPag?.diagnosticos.tarifasBrutas ?? null,
-    tarifasSpread: tarifasDeShopee(escrow, COMPOSICAO_TARIFAS.spreadEscrow).bruto ?? null,
+    tarifasNomeadas: tarifasDeShopee(escrow, COMPOSICAO_TARIFAS.taxasNomeadas).bruto ?? null,
+    // [BR] the fee outside the named columns — inside the spread.
+    taxaAds: escrow?.order_income?.ads_escrow_top_up_fee_or_technical_support_fee ?? null,
     // ⚠️ BR only, and a COUNT — settle-live register item 22 asks whether
     // `payment_info` is really provided from READY_TO_SHIP and whether it
     // survives past it. On any other region the key is absent rather than 0,

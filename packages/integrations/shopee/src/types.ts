@@ -1446,14 +1446,18 @@ export type ShopeeTenureInfo = z.infer<typeof shopeeTenureInfoSchema>;
  * `order_income` — the order-level money. `.passthrough()` still carries the
  * ~70 floats nothing reads (the SG body alone sends 88 keys).
  *
- * ⚠️ `discounted_price` AND `order_discounted_price` are both declared: the page
- * names one and the subtotal list names the other, and folding them would make
- * whichever Shopee actually sends read as `null` for ever.
+ * ⚠️ `discounted_price` AND `order_discounted_price` are both declared and never
+ * folded. The SG body sends `order_discounted_price` at this level and no
+ * `discounted_price`; the per-LINE `discounted_price` (on `items`) is what the
+ * app's money model reads.
  *
- * ⚠️ **The three FEE columns are `commission_fee`, `service_fee` and
- * `seller_transaction_fee`** — the exact three Shopee's own Income Report maps
- * (FAQ 479), and what the pagamento's `tarifas` is built from.
- * `credit_card_transaction_fee` is a ROLLUP the page defines as
+ * ⚠️ **The three named FEE columns are `commission_fee`, `service_fee` and
+ * `seller_transaction_fee`** — the three Shopee's own Income Report maps
+ * (FAQ 479). The app's `tarifas` is the SPREAD (`buyer_total_amount −
+ * escrow_amount_after_adjustment`), which also holds the BR fees outside those
+ * columns (`ads_escrow_top_up_fee_or_technical_support_fee`,
+ * `shipping_seller_protection_fee_amount`); the named columns stay declared for
+ * the diary. `credit_card_transaction_fee` is a ROLLUP the page defines as
  * `buyer_transaction_fee + seller_transaction_fee`, so summing it beside them
  * double-counts. Both are declared; neither is folded into the other.
  *
@@ -1490,6 +1494,16 @@ export const shopeeOrderIncomeSchema = z
     net_service_fee: wireNumber().nullable().default(null),
     /** ⚠️ NOT `buyer_payment_info.discount_pix`. Two spellings, two clocks, two values — never folded. */
     pix_discount: wireNumber().nullable().default(null),
+    /** An order-level payment promotion — with `pix_discount`, an offset no line carries. */
+    payment_promotion: wireNumber().nullable().default(null),
+    /** Order-level Σ of the lines' `discount_from_coin` (a cross-check, never summed beside them). */
+    coins: wireNumber().nullable().default(null),
+    /** Order-level Σ of the lines' `discount_from_voucher_shopee` (a cross-check). */
+    voucher_from_shopee: wireNumber().nullable().default(null),
+    /** Order-level Σ of the lines' `discount_from_voucher_seller` (a cross-check). */
+    voucher_from_seller: wireNumber().nullable().default(null),
+    /** [BR] A fee outside the three named columns — inside the spread `tarifas`. */
+    ads_escrow_top_up_fee_or_technical_support_fee: wireNumber().nullable().default(null),
     /** Declared for the refund step (17); step 6 records it and reads nothing from it. */
     seller_return_refund: wireNumber().nullable().default(null),
     /** Declared for the refund step (17). */

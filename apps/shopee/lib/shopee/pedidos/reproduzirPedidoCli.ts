@@ -40,11 +40,13 @@
  */
 import nodePath from 'node:path';
 import { normalizeDocumento } from '@delfrance/core/documents';
+import { centavosDeReais, formatReais } from '@delfrance/core/money';
 import {
   ENDERECO_FALLBACKS,
   MOTIVO_RECUSA,
   TIPO_DE_VALOR,
   motivoDaRecusa,
+  sumPagamentosPagos,
   toDocPathOrNull,
   ufSchema,
   valorUtilizavel,
@@ -63,6 +65,7 @@ import {
 import { ZodError } from 'zod';
 
 import { enderecoDeShopee, portoesDoEnderecoShopee } from './comprador';
+import { totalDaNotaDoPedidoArmazenado } from './dinheiroShopee';
 import {
   ArgumentoInvalidoError,
   renderResumoPedido,
@@ -562,6 +565,11 @@ export interface ResumoReproducao {
   readonly endereco: ResumoDoEndereco;
   readonly pedido: ResumoPedidoShopee | null;
   readonly pagamentos: readonly PagamentoResumoShopee[];
+  /**
+   * The NF-e's own check (Σ vPag = vNF, cStat 865/866) over the STORED
+   * documents, through the shared pure functions — AMOUNTS only.
+   */
+  readonly conferenciaNfe: ConferenciaNfeReproducao;
   readonly incidentes: number;
   readonly viaCep: { readonly modo: 'stub' | 'real'; readonly consultas: number };
   readonly segunda: ResumoDoResultado & {
@@ -570,6 +578,49 @@ export interface ResumoReproducao {
     readonly clientesDepois: string;
   };
   readonly logsGravados: number;
+}
+
+/** {@link ResumoReproducao.conferenciaNfe}. */
+export interface ConferenciaNfeReproducao {
+  /** `totalDaNotaDoPedidoArmazenado` over the stored pedido; `null` with no pedido or an unreadable line. */
+  readonly totalDaNota: number | null;
+  /** `sumPagamentosPagos` over the stored pagamentos — what the NF-e sums. */
+  readonly somaPagamentos: number;
+  /** The two equal to the centavo; `null` when {@link totalDaNota} is. */
+  readonly confere: boolean | null;
+}
+
+/**
+ * The NF-e check of the stored documents: what the NF-e would state (`vNF`: the
+ * lines − `descontoTotal`, the freight only under CIF) against Σ pagante. The
+ * SAME two shared functions the importer and the NF-e side read — never a copy.
+ */
+export function conferenciaNfeDosDocumentos(
+  pedido: Readonly<Record<string, unknown>> | null,
+  pagamentos: readonly { readonly dados: Readonly<Record<string, unknown>> }[],
+): ConferenciaNfeReproducao {
+  const totalDaNota = pedido === null ? null : totalDaNotaDoPedidoArmazenado(pedido).totalDaNota;
+  const somaPagamentos = sumPagamentosPagos(
+    pagamentos.map(({ dados }) => ({
+      valor: typeof dados.valor === 'number' && Number.isFinite(dados.valor) ? dados.valor : 0,
+      status_pagamento: typeof dados.status_pagamento === 'number' ? dados.status_pagamento : null,
+    })),
+  );
+  return {
+    totalDaNota,
+    somaPagamentos,
+    confere:
+      totalDaNota === null
+        ? null
+        : centavosDeReais(totalDaNota) === centavosDeReais(somaPagamentos),
+  };
+}
+
+/** The ONE report line of {@link conferenciaNfeDosDocumentos} — amounts and a verdict. */
+export function linhaConferenciaNfe(c: ConferenciaNfeReproducao): string {
+  const nota = c.totalDaNota === null ? '— (linha gravada ilegível)' : formatReais(c.totalDaNota);
+  const veredito = c.confere === null ? '—' : c.confere ? 'confere' : 'DIVERGE';
+  return `  NF-e .................... vNF (Σ itens − desconto + frete se CIF) ${nota} · Σ pagamentos ${formatReais(c.somaPagamentos)} · ${veredito}`;
 }
 
 /* ------------------------------ raw readers ------------------------------- */
@@ -813,6 +864,7 @@ export function resumoDaReproducao(
     pagamentos: resumoDosPagamentosArmazenados(
       r.leitura.pagamentos.map((d) => ({ id: d.id, data: d.dados })),
     ),
+    conferenciaNfe: conferenciaNfeDosDocumentos(pedido?.dados ?? null, r.leitura.pagamentos),
     incidentes: r.leitura.incidentes.length,
     viaCep: { modo: opcoes.viaCepLigado ? 'real' : 'stub', consultas: r.consultasViaCep },
     segunda: {
@@ -959,6 +1011,7 @@ export function renderReproducao(r: ResumoReproducao): string[] {
     linhas.push('## Pedido', '  (nenhum pedido gravado — ver o resultado da 1ª passada)');
   } else {
     linhas.push(...renderResumoPedido(r.pedido, r.pagamentos));
+    linhas.push('', linhaConferenciaNfe(r.conferenciaNfe));
   }
 
   linhas.push(
