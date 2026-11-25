@@ -2,8 +2,8 @@
  * INVENTED Loja Integrada PRICE answers and a scripted store, **for tests only** (the `fakeDb.ts`
  * rule: nothing outside a `*.test.ts` imports this) — master plan step 13.
  *
- * ⚠️ Every value here is invented, and no real store data is used, by the owner's decision: his
- * read-only price captures are not committed, and nothing here was copied or derived from one —
+ * ⚠️ Every value here is invented, and no real store data is used, by the owner's decision: the
+ * owner's read-only price captures are not committed, and nothing here was copied or derived from one —
  * no id, price, count, size, date or ratio. The answers keep only the SHAPE those captures showed,
  * as the wire package's own docs state it: a `set/` answer is `objects` (no `meta`), plus a root
  * `not_found` list of id STRINGS only when an asked id came back with no row; a price row has
@@ -13,7 +13,8 @@
  *
  * Ids are small and obviously synthetic: produtos from 1000 (1000 is a parent), a price row's own
  * id is its produto id + 8000 (9001 for produto 1001), and 9999 is no product. Prices are
- * repeated-digit amounts ('11.1100') no store would be mistaken for. Nothing reaches the network:
+ * repeated-digit amounts ('11.1100'), plus a sequential-digit custo ('12.3400') and a one-centavo
+ * promotion ('0.0100'), all plainly invented. Nothing reaches the network:
  * the store is a `fetch` the test hands a client.
  */
 import { URL_BASE_LI } from '@delfrance/integrations-loja-integrada';

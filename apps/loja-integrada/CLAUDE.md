@@ -631,7 +631,7 @@ apps/loja-integrada/lib/lojaIntegrada/testing/especificacaoFolhas.json` (no pair
   does one added without moving it. The product captures are replayed through the import's
   own reads by `importacao/capturasProdutos.test.ts`, and the stock captures through the
   package's stock reads and the stock plan's decisions by `estoque/capturasEstoque.test.ts`.
-  The owner's read-only price captures are NOT committed (his decision, step 13):
+  The owner's read-only price captures are NOT committed (the owner's decision, step 13):
   `preco/respostasPreco.test.ts` replays INVENTED answers in their shape (`testing/precoLi.ts`:
   invented ids and prices, no real store data) through the package's by-id price read, the
   write client's deciding read and the shared price fold, and `wireCorpus.test.ts` fails on

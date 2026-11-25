@@ -521,7 +521,7 @@ describe('__wire__ corpus', () => {
 
   // The owner's decision, made mechanical: every price test reads INVENTED answers in the
   // captures' shape (`preco/respostasPreco.test.ts`), and a sanitizer run without `--so`
-  // would write his local price pairs here. Only file names are printed.
+  // would write the owner's local price pairs here. Only file names are printed.
   it('no fixture is a price capture: the owner’s read-only price captures are not committed', () => {
     const fixtures: (readonly [string, EnvelopeFixtureLi])[] = [];
     for (const arquivo of arquivos) {
