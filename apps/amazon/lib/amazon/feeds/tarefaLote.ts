@@ -184,6 +184,22 @@ export const DESFECHO_RECUPERACAO_FEED_AMAZON = {
  */
 export const MAX_PARTES_LOTE_BLOCOS_FEED_AMAZON = 50;
 
+/**
+ * The most MESSAGES one price block batch carries (step 13, PR 13-c;
+ * provisional): a price batch packs consecutive parts while their items stay
+ * within this AND their count within {@link MAX_PARTES_LOTE_BLOCOS_FEED_AMAZON}.
+ * Derived for the worst price message, larger than the stock one (three
+ * prices, the selectors and the listing's own `productType` of 64
+ * characters): 9,000 worst-case messages and the report header build
+ * 6,236,161 bytes (66% of the package's byte cap). The tightest cap is 13,704
+ * such messages (bytes bind first), so 50 FULL parts (15,000 messages) would
+ * be refused; 9,000 also covers a dry-run document whose SKUs hold up to 400
+ * bytes once JSON-encoded. Pinned through the package's own builder by
+ * `preco/limitesLotePreco.test.ts`. It sits here, beside the block cap, so the
+ * feed core never imports the price modules.
+ */
+export const MAX_MENSAGENS_LOTE_PRECO_AMAZON = 9_000;
+
 /** A block batch (module header): a range of one run's stored input parts. */
 export const loteBlocosFeedAmazonSchema = z
   .object({

@@ -122,6 +122,8 @@ export { sincronizacaoEstoqueAmazonCollection } from './sincronizacaoEstoqueAmaz
 export { reconciliacaoEstoqueAmazonCollection } from './reconciliacaoEstoqueAmazonCollection';
 export { pedidoReconciliacaoEstoqueAmazonCollection } from './pedidoReconciliacaoEstoqueAmazonCollection';
 export { divergenciaEstoqueAmazonCollection } from './divergenciaEstoqueAmazonCollection';
+export { precoAmazonCollection } from './precoAmazonCollection';
+export { divergenciaPrecoAmazonCollection } from './divergenciaPrecoAmazonCollection';
 export { clienteCollection } from './clienteCollection';
 export { clienteIdentidadeCollection } from './clienteIdentidadeCollection';
 export { conversaCollection } from './conversaCollection';

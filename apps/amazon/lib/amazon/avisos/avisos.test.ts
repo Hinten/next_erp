@@ -178,7 +178,7 @@ describe('the keys', () => {
     expect([...chavesContaPrecisaAtencao(ID)].sort()).toEqual(
       motivoContaAmazonSchema.options.map((m) => chaveContaPrecisaAtencao(ID, m)).sort(),
     );
-    expect(chavesContaPrecisaAtencao(ID)).toHaveLength(7);
+    expect(chavesContaPrecisaAtencao(ID)).toHaveLength(11);
     // NEAR-MISS: another conta's keys are other documents.
     expect(chavesContaPrecisaAtencao('conta-2')).not.toContain(
       chaveContaPrecisaAtencao(ID, MOTIVO_CONTA_AMAZON.contaSemOperacao),
@@ -946,7 +946,7 @@ describe('step 12 (12-e1): the stock sync’s per-conta rows — one motivo at a
       relogio,
     });
 
-  it('the five stock motivos, and with the import’s two they are the whole enum', () => {
+  it('the five stock motivos, and with the import’s two and the price four they are the whole enum', () => {
     expect([...MOTIVOS_CONTA_ESTOQUE_AMAZON].sort()).toEqual([
       'estoque-deposito-sem-linhas',
       'estoque-recusado-pela-amazon',
@@ -959,6 +959,10 @@ describe('step 12 (12-e1): the stock sync’s per-conta rows — one motivo at a
         ...MOTIVOS_CONTA_ESTOQUE_AMAZON,
         MOTIVO_CONTA_AMAZON.contaSemOperacao,
         MOTIVO_CONTA_AMAZON.intermediadorDivergente,
+        MOTIVO_CONTA_AMAZON.precoRecusadoPelaAmazon,
+        MOTIVO_CONTA_AMAZON.feedPrecoFalhou,
+        MOTIVO_CONTA_AMAZON.precoFaixaInvertida,
+        MOTIVO_CONTA_AMAZON.precoReducaoEmMassa,
       ].sort(),
     ).toEqual([...motivoContaAmazonSchema.options].sort());
     expect(ACAO_AVISO_CONTA_ESTOQUE_AMAZON).toEqual({ levantar: 'levantar', resolver: 'resolver' });

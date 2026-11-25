@@ -5347,6 +5347,284 @@ describe('the step-12 reconcile guards (12-f)', () => {
   });
 });
 
+/* ------------------------- step 13 (PR 13-c): the price core ------------------------- */
+
+/**
+ * (step 13, PR 13-c) What a production file under `preco/` may load AS A
+ * VALUE: its siblings, the schemas, the SP-API package (constants, the pure
+ * builders and the offer reader; no client), the money helpers (the centavo),
+ * `zod` (the payloads), the task names' digest, the LIGHT valve module, the
+ * jobs-queue contract (its version and the batch caps) and the PURE shared
+ * listings modules. No Firestore handle, no context, no logger, no producer
+ * and nothing of `estoque/`: every module of `preco/` is pure until a later
+ * PR wires one.
+ */
+const VALORES_PERMITIDOS_EM_PRECO = [
+  '@delfrance/schemas',
+  '@delfrance/integrations-amazon-sp-api',
+  '@delfrance/core/money',
+  'zod',
+  '@delfrance/data/admin',
+  '../core/valvulas',
+  '../feeds/tarefaLote',
+  ...LISTINGS_PUROS,
+];
+
+/** The `@delfrance/data` barrel exports Firestore readers too: only the digest may come from it. */
+const NOMES_PERMITIDOS_EM_PRECO: Readonly<Record<string, readonly string[]>> = {
+  '@delfrance/data/admin': ['sha256Hex'],
+};
+
+/**
+ * The modules a source loads by a CALL or an import-equals — `require(…)`,
+ * `import(…)` (a template or a computed argument included: `<dinamico>`),
+ * `import x = require(…)` — read off the AST. A pure module needs none, and
+ * their bindings cannot be name-checked.
+ */
+function importacoesPorChamada(texto: string): string[] {
+  const fonte = ts.createSourceFile('x.ts', texto, ts.ScriptTarget.Latest, false, ts.ScriptKind.TS);
+  const saida: string[] = [];
+  const visitar = (no: ts.Node): void => {
+    if (ts.isImportEqualsDeclaration(no) && ts.isExternalModuleReference(no.moduleReference)) {
+      const alvo = no.moduleReference.expression;
+      saida.push(ts.isStringLiteralLike(alvo) ? alvo.text : '<dinamico>');
+    } else if (
+      ts.isCallExpression(no) &&
+      (no.expression.kind === ts.SyntaxKind.ImportKeyword ||
+        (ts.isIdentifier(no.expression) && no.expression.text === 'require'))
+    ) {
+      const alvo = no.arguments[0];
+      saida.push(alvo !== undefined && ts.isStringLiteralLike(alvo) ? alvo.text : '<dinamico>');
+    }
+    ts.forEachChild(no, visitar);
+  };
+  visitar(fonte);
+  return saida;
+}
+
+/**
+ * Why `texto` cannot be a module of `preco/`: each import outside the
+ * allow-list (by type too; a value import read off the AST, so a template or
+ * computed `import(…)` and a `require` are seen, a computed one as
+ * `<dinamico>`), any import by a call (even of an allowed module), and a name
+ * of a listed barrel outside its list. Empty when it can.
+ */
+function foraDoPuroEmPreco(texto: string): string[] {
+  const fora: string[] = [];
+  for (const espec of [...importacoesDeValor(texto), ...especificadores(texto)]) {
+    if (!espec.startsWith('./') && !VALORES_PERMITIDOS_EM_PRECO.includes(espec)) fora.push(espec);
+  }
+  for (const espec of importacoesPorChamada(texto)) fora.push(`<chamada> ${espec}`);
+  for (const [espec, permitidos] of Object.entries(NOMES_PERMITIDOS_EM_PRECO)) {
+    for (const n of nomesImportadosDe(texto, espec)) {
+      if (!permitidos.includes(n)) fora.push(`${espec} { ${n} }`);
+    }
+  }
+  return [...new Set(fora)];
+}
+
+/**
+ * A raw comparison of a price field (`.base`, `.minimo`, `.maximo`, and the
+ * plan's reference price `.referencia`) in
+ * comment-free code, on either side of the operator: only `preco/planoPreco.ts`
+ * may compare prices (through the fold and the centavo). A comparison with
+ * `null` or `undefined` is a presence check, not a price comparison; `=>` is
+ * no operator.
+ */
+const COMPARACAO_DE_PRECO =
+  /\.(?:base|minimo|maximo|referencia)\b\)*\s*(?:===|!==|==(?!=)|!=(?!=)|<=|>=|<(?!=)|>(?!=))(?!\s*(?:null|undefined)\b)|(?<!\b(?:null|undefined)\s*)(?:===|!==|==(?!=)|!=(?!=)|<=|>=|[^=<>\s-]\s*<(?!=)|[^=<>\s-]\s*>(?!=))[\s(]*[A-Za-z_$][\w$.?]*\.(?:base|minimo|maximo|referencia)\b/;
+
+/**
+ * (step 13, PR 13-c) Every production file OUTSIDE `preco/` that imports it:
+ * none. The price core is declared and proved, never wired: the task, the run,
+ * the feed provider and the routes come in later PRs, each adding its row.
+ */
+const IMPORTADORES_DE_PRECO: Readonly<Record<string, readonly string[]>> = {};
+
+/** A specifier that lands under `lib/amazon/preco/`, by any relative path or the `@/` alias. */
+const IMPORTA_PRECO = /(?:^|\/)amazon\/preco\/|^\.\.?\/(?:\.\.\/)*preco\//;
+
+describe('the step-13 price core guards (13-c)', () => {
+  const preco = arquivosTs(join(RAIZ_LIB, 'preco')).filter((p) => !ehTeste(p));
+
+  it('★ preco/ is Next-free, reads no process environment, never imports the @/ alias, and reaches nothing of estoque/', () => {
+    expect(preco.map(rel).sort()).toEqual([
+      'preco/issuesPreco.ts',
+      'preco/modoPreco.ts',
+      'preco/motivosPreco.ts',
+      'preco/paginaPreco.ts',
+      'preco/planoPreco.ts',
+      'preco/tarefaPreco.ts',
+    ]);
+    for (const arquivo of preco) {
+      const texto = readFileSync(arquivo, 'utf8');
+      expect(texto, rel(arquivo)).not.toMatch(/process\s*\.\s*env/);
+      expect(/from 'next(\/[^']*)?'/.test(texto), rel(arquivo)).toBe(false);
+      const especs = especificadores(texto);
+      expect(
+        especs.filter((e) => e.startsWith('@/') || IMPORTA_ESTOQUE.test(e)),
+        rel(arquivo),
+      ).toEqual([]);
+    }
+  });
+
+  it('★ preco/ is PURE, whole: every module loads only the allow-list (by type too), names only the digest from the data barrel, and makes no Firestore write', () => {
+    for (const arquivo of preco) {
+      const texto = readFileSync(arquivo, 'utf8');
+      expect(foraDoPuroEmPreco(texto), rel(arquivo)).toEqual([]);
+      expect(semComentarios(texto).match(ESCRITA_FIRESTORE_EM_FEEDS), rel(arquivo)).toBeNull();
+    }
+    // Anti-vacuity: the scan reads real imports — the payloads' digest, the centavo.
+    const lerPreco = (a: string) => readFileSync(join(RAIZ_LIB, 'preco', a), 'utf8');
+    expect(nomesImportadosDe(lerPreco('tarefaPreco.ts'), '@delfrance/data/admin')).toEqual([
+      'sha256Hex',
+    ]);
+    expect(importacoesDeValor(lerPreco('planoPreco.ts'))).toContain('@delfrance/core/money');
+  });
+
+  it('the price scan refuses what it exists for, and nothing alike (near-misses)', () => {
+    for (const [fonte, achado] of [
+      [
+        "import { planejarEstoqueAmazon } from '../estoque/planoEstoque';",
+        '../estoque/planoEstoque',
+      ],
+      [
+        "import { precoAmazonCollection } from '@delfrance/data/admin/collections';",
+        '@delfrance/data/admin/collections',
+      ],
+      // The listings caller and an I/O listings module, even by type only.
+      [
+        "import type { LeituraListingNaAmazon } from '../listings/listingsAmazon';",
+        '../listings/listingsAmazon',
+      ],
+      [
+        "import type { LeituraSkuListingsAmazon } from '../listings/leituraLoteListings';",
+        '../listings/leituraLoteListings',
+      ],
+      ["import { registrarEventoAmazon } from '../core/log';", '../core/log'],
+      [
+        "import { lerVinculos } from '@delfrance/data/admin';",
+        '@delfrance/data/admin { lerVinculos }',
+      ],
+      // A call-form load, which the regex specifiers alone never see.
+      ["const m = require('../estoque/x');", '../estoque/x'],
+      ['const m = await import(`../estoque/x`);', '../estoque/x'],
+      ["import m = require('../core/log');", '../core/log'],
+      ['const m = await import(nome);', '<dinamico>'],
+      // …and one of an ALLOWED module: its bindings cannot be name-checked.
+      [
+        "const { lerVinculos } = await import('@delfrance/data/admin');",
+        '<chamada> @delfrance/data/admin',
+      ],
+      [
+        "const { lerVinculos } = require('@delfrance/data/admin');",
+        '<chamada> @delfrance/data/admin',
+      ],
+    ] as const) {
+      expect(foraDoPuroEmPreco(fonte), fonte).toContain(achado);
+    }
+    expect(
+      foraDoPuroEmPreco(
+        [
+          "import { sha256Hex } from '@delfrance/data/admin';",
+          "import { centavosDeReais } from '@delfrance/core/money';",
+          "import { MODO_AMAZON } from '../core/valvulas';",
+          "import { avaliarGateListingAmazon } from '../listings/gateListing';",
+          "import { planejarPrecoAmazon } from './planoPreco';",
+        ].join('\n'),
+      ),
+    ).toEqual([]);
+  });
+
+  it('★ every price comparison lives in preco/planoPreco.ts: the ONE file of the app naming the fold, the ONE of preco/ loading the money helpers, and no other module of preco/ compares a price field', () => {
+    const fold = /\bmesmoPrecoEmReais\b/;
+    expect(
+      fontesDoChamadorDeSearchOrders()
+        .filter((p) => fold.test(readFileSync(p, 'utf8')))
+        .map(relApp),
+    ).toEqual(['lib/amazon/preco/planoPreco.ts']);
+    const outros = preco.filter((p) => rel(p) !== 'preco/planoPreco.ts');
+    expect(outros).toHaveLength(5);
+    for (const arquivo of outros) {
+      const texto = readFileSync(arquivo, 'utf8');
+      expect(especificadores(texto), rel(arquivo)).not.toContain('@delfrance/core/money');
+      expect(COMPARACAO_DE_PRECO.exec(semComentarios(texto))?.[0] ?? null, rel(arquivo)).toBeNull();
+    }
+    // Anti-vacuity: the plan compares through the fold and the centavo, and
+    // the other modules do read price fields (they only never compare one).
+    const plano = semComentarios(readFileSync(join(RAIZ_LIB, 'preco', 'planoPreco.ts'), 'utf8'));
+    expect(plano).toMatch(/\bmesmoPrecoEmReais\(/);
+    expect(plano).toMatch(/\bcentavosDeReais\(/);
+    expect(semComentarios(readFileSync(join(RAIZ_LIB, 'preco', 'paginaPreco.ts'), 'utf8'))).toMatch(
+      /\.faixa\.base\b/,
+    );
+  });
+
+  it('the price-comparison scan sees a raw comparison on either side, and not a presence check, an arrow or a copy (near-misses)', () => {
+    for (const visto of [
+      'if (lida.base === faixa.base) return;',
+      'const q = faixa.base < lida.base / 2;',
+      'return x.minimo >= 10;',
+      'if (5 > oferta.maximo) {}',
+      'const q = faixa.faixa.base * 2 < (lida?.base ?? 0);',
+      'if ((a.base) > 1) {}',
+      'const d = a !== r.item.oferta.base;',
+      'const q = faixa.faixa.base * 2 < (plano.referencia ?? 0);',
+      'if (r.referencia >= r.item.faixa.base) {}',
+    ]) {
+      expect(COMPARACAO_DE_PRECO.test(visto), visto).toBe(true);
+    }
+    for (const fora of [
+      'if (r.item.oferta.base !== null) {}',
+      'if (r.referencia !== null) {}',
+      'quedaExcessivaPrecoAmazon(faixa.faixa.base, plano.referencia)',
+      'if (x.minimo === undefined) {}',
+      'const f = (r) => r.base;',
+      'const item = { base: lida.base, minimo: lida.minimo };',
+      'quedaExcessivaPrecoAmazon(faixa.faixa.base, lida?.base ?? null)',
+      'const p: Pick<X, "base"> = y;',
+    ]) {
+      expect(COMPARACAO_DE_PRECO.test(fora), fora).toBe(false);
+    }
+  });
+
+  it('★ preco/ is wired by NOTHING yet — all of lib, app, functions and scripts — and the feed core never imports it (the price message cap sits beside the block cap)', () => {
+    const fora = [
+      ...fontesDoChamadorDeSearchOrders(),
+      ...arquivosTs(join(RAIZ_APP, 'lib')).filter(
+        (p) => !ehTeste(p) && !relApp(p).startsWith('lib/amazon/'),
+      ),
+      ...(existsSync(join(RAIZ_APP, 'proxy.ts')) ? [join(RAIZ_APP, 'proxy.ts')] : []),
+    ].filter((p) => !relApp(p).startsWith('lib/amazon/preco/'));
+    const importadores = Object.fromEntries(
+      fora
+        .map((p) => {
+          const texto = readFileSync(p, 'utf8');
+          return [relApp(p), [...especificadores(texto), ...importacoesDeValor(texto)]] as const;
+        })
+        .map(
+          ([arquivo, especs]) =>
+            [arquivo, [...new Set(especs.filter((e) => IMPORTA_PRECO.test(e)))]] as const,
+        )
+        .filter(([, nomeados]) => nomeados.length > 0),
+    );
+    expect(importadores).toEqual(IMPORTADORES_DE_PRECO);
+    // Anti-vacuity: the scan read the feed core, the functions codebase and the
+    // App Hosting root outside lib/amazon; and it would see an import of preco/.
+    expect(fora.map(relApp)).toEqual(
+      expect.arrayContaining([
+        'lib/amazon/feeds/tarefaLote.ts',
+        'functions/src/index.ts',
+        'lib/firebase/filaLeitura.ts',
+        'proxy.ts',
+      ]),
+    );
+    expect(IMPORTA_PRECO.test('../preco/planoPreco')).toBe(true);
+    expect(IMPORTA_PRECO.test('@/lib/amazon/preco/tarefaPreco')).toBe(true);
+    expect(IMPORTA_PRECO.test('../precos/x')).toBe(false);
+  });
+});
+
 describe('the step-2b capture sanitizer guards', () => {
   it('the sanitizer cannot reach a network, a process, a token or Firestore', () => {
     const fontes = arquivosTs(RAIZ_LIB)

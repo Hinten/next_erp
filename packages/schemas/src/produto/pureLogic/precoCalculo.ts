@@ -341,7 +341,9 @@ export function propagaPrecoAosFilhos(valor: unknown): boolean {
 /**
  * The price of a variation CHILD in a tabela. Bound by every sender of a child
  * price — Mercado Livre's price plan and publish (`resolveMemberPrice`, for a
- * User-Products member), Shopee's publish and price sync — and by the web
+ * User-Products member), Shopee's publish and price sync, Amazon's price task
+ * and price feed (through their faixa, `faixaDePrecoAmazon` in
+ * `../../precoAmazon.ts`) — and by the web
  * pedido line's lista price (`precoDoProdutoNaLista` in
  * `apps/web/app/(app)/pedidos/_components/precoLookup.ts`), so none of those
  * can disagree about a child's price — a pedido never charges a price the

@@ -1157,9 +1157,10 @@ export const TIPO_AVISO_LABELS = {
  * ---
  *
  * **`amazonContaPrecisaAtencao`** (Amazon step 5, #1931 — producer in
- * `apps/amazon/lib/amazon/avisos/avisos.ts`, called by the order import and,
- * from step 12, by the stock sync) — an Amazon conta's own setup needs a
- * person, as seen while importing its orders or syncing its stock. One of the
+ * `apps/amazon/lib/amazon/avisos/avisos.ts`, called by the order import,
+ * from step 12 by the stock sync and from step 13 by the price push) — an
+ * Amazon conta's own setup needs a person, as seen while importing its orders,
+ * syncing its stock or pushing its prices. One of the
  * {@link MOTIVO_CONTA_AMAZON} reasons.
  *
  *  - **A tipo of its own, apart from `amazonPedidoPrecisaAtencao`**: this one IS
@@ -1175,10 +1176,11 @@ export const TIPO_AVISO_LABELS = {
  *    wording prints no value.
  *  - **`relogioEvento`** = the µs read time of the raiser's own Firestore read:
  *    for the two import motivos, the import's UNCACHED conta read; for the five
- *    stock motivos, the read each bullet below names — a server read time, the
- *    timeline the orphan pass's conta enumeration shares — never an order's
- *    clock: one row gathers observations from many orders and SKUs, whose
- *    clocks do not compare. ⚠️ Never compare it with another tipo's.
+ *    stock and the four price motivos, the read each bullet below names — a
+ *    server read time, the timeline the orphan pass's conta enumeration shares
+ *    — never an order's clock: one row gathers observations from many orders
+ *    and SKUs, whose clocks do not compare. ⚠️ Never compare it with another
+ *    tipo's.
  *  - **Route**: the conta page (`ROTAS_AVISO.canalAmazon`).
  *  - **Machine resolvers** — per motivo, clocked as above — with each motivo's
  *    severity and residue:
@@ -1250,6 +1252,56 @@ export const TIPO_AVISO_LABELS = {
  *       submission stays unconfirmed, per-SKU patches keep Amazon in sync, so a
  *       clean reconcile proves nothing about the feed path and leaves the row
  *       open until a feed ends `DONE`.
+ *     - `preco-recusado-pela-amazon` — **atencao**. Amazon refused the price of
+ *       at least one listing of the conta, which keeps its previous offer.
+ *       RAISED by the price task when Amazon's answer, or the task's own check
+ *       of that send minutes later, carries a blocking price issue (clocked by
+ *       its read of the link docs), by a price feed's result when its report
+ *       carries a blocking price issue for a listing (clocked by the last
+ *       link-doc read of its write-back), and by a COMPLETED conta price run
+ *       that counted a listing with a blocking price issue (clocked by the
+ *       run's first read). Blocking = an `ERROR` or one a person must confirm;
+ *       a price `WARNING` alone, or an answer refused for another reason,
+ *       raises nothing here. Resolver: a COMPLETED
+ *       conta price run that counted none, clocked by its first read. Residue:
+ *       a task sees one SKU, so pushing the fixed SKU again by hand never
+ *       resolves the row (only a conta run does); which SKUs were refused is on
+ *       each link doc's price outcome and in the log, never on the row; a
+ *       truncated run resolves nothing.
+ *     - `feed-preco-falhou` — **atencao**. A price feed failed or could not be
+ *       confirmed: Amazon ended it `FATAL` or `CANCELLED`, it was abandoned or
+ *       overdue, the answer to its submission was lost, Amazon refused the
+ *       submission or its document, its build ran out of time, or it waited
+ *       past its run's deadline without being sent. NEVER raised for a report's
+ *       per-SKU price issues (those are `preco-recusado-pela-amazon`). A failed
+ *       price feed is never sent again: the operator's next run sends what
+ *       still differs. RAISED by the feed's send, result, deadline and recovery
+ *       paths, each clocked by its own Firestore read, and RAISED AGAIN by a
+ *       batch of the same run that ends `DONE` while an earlier batch of that
+ *       run is recorded failed, clocked by that dispatch's read of the run.
+ *       Resolver: a price feed Amazon ends `DONE` while no other batch of its
+ *       run is recorded failed. Residue: a batch that ends before its send
+ *       could record anything (the valve, the read switch, the conta) leaves no
+ *       failure on its run, so a later clean batch resolves the row.
+ *     - `preco-faixa-invertida` — **atencao**. A listing's promotional price is
+ *       above its normal price, so its floor would exceed its selling price:
+ *       its price is not sent and it keeps its previous offer. RAISED by the
+ *       price task (clocked by its read of the unit) and by a COMPLETED conta
+ *       price run that counted one (clocked by the run's first read). Resolver:
+ *       a COMPLETED conta price run that counted none, clocked by its first
+ *       read. Residue: a task sees one SKU, so fixing the tabela and pushing
+ *       the SKU by hand never resolves the row (only a conta run does); a
+ *       truncated run resolves nothing.
+ *     - `preco-reducao-em-massa` — **atencao**. A conta price run allowed to
+ *       lower prices sent NOTHING, because it would have lowered the selling
+ *       price of a catalogue-scale share of the listings, or of one listing by
+ *       more than half (a decimal slip); its counts and a sample of the largest
+ *       decreases stay on the run, and a run whose request confirms the mass
+ *       decrease is not stopped. RAISED by the run's decision, clocked by the
+ *       run's first read. Resolver: the next conta price run that reaches its
+ *       decision without the stop, clocked the same way. Residue: nothing was
+ *       sent, so the listings keep their offers until a run sends; a truncated
+ *       run resolves nothing.
  *  - **Every motivo, once the conta is gone**: the expiry sweep's orphan pass
  *    (`conta-removida`), CLOCKED by the conta enumeration's read time, so a conta
  *    created after that read keeps its row. A DEACTIVATED conta is still listed,
@@ -1709,7 +1761,7 @@ export const MOTIVO_PEDIDO_AMAZON = {
 /**
  * Why an Amazon conta's own setup needs a person — the
  * `amazonContaPrecisaAtencao` aviso's `params.motivo` AND its key's `janela`, a
- * CODE the wording in `apps/web/lib/avisos/mensagens.ts` renders. Seven members,
+ * CODE the wording in `apps/web/lib/avisos/mensagens.ts` renders. Eleven members,
  * all **atencao**, each with its raiser, its machine resolver and its residue in
  * the tipo's docblock entry above:
  *
@@ -1723,7 +1775,12 @@ export const MOTIVO_PEDIDO_AMAZON = {
  *    have zeroed a catalogue-scale share of the listings),
  *    `estoque-vinculos-recusados` (listing links a person must fix),
  *    `estoque-recusado-pela-amazon` (Amazon rejected a listing's stock update)
- *    and `feed-estoque-falhou` (a stock feed failed or could not be confirmed).
+ *    and `feed-estoque-falhou` (a stock feed failed or could not be confirmed);
+ *  - raised by the price push (step 13), one row per conta however many SKUs
+ *    are involved: `preco-recusado-pela-amazon` (Amazon refused a listing's
+ *    price), `feed-preco-falhou` (a price feed failed or could not be
+ *    confirmed), `preco-faixa-invertida` (a promotional price above the normal
+ *    one) and `preco-reducao-em-massa` (a price run held back a mass decrease).
  *
  * Stored as an aviso PARAM, with the same fallback contract as
  * {@link MOTIVO_PEDIDO_AMAZON}.
@@ -1736,6 +1793,10 @@ export const motivoContaAmazonSchema = z.enum([
   'estoque-vinculos-recusados',
   'estoque-recusado-pela-amazon',
   'feed-estoque-falhou',
+  'preco-recusado-pela-amazon',
+  'feed-preco-falhou',
+  'preco-faixa-invertida',
+  'preco-reducao-em-massa',
 ]);
 export type MotivoContaAmazon = z.infer<typeof motivoContaAmazonSchema>;
 
@@ -1748,6 +1809,10 @@ export const MOTIVO_CONTA_AMAZON = {
   estoqueVinculosRecusados: 'estoque-vinculos-recusados',
   estoqueRecusadoPelaAmazon: 'estoque-recusado-pela-amazon',
   feedEstoqueFalhou: 'feed-estoque-falhou',
+  precoRecusadoPelaAmazon: 'preco-recusado-pela-amazon',
+  feedPrecoFalhou: 'feed-preco-falhou',
+  precoFaixaInvertida: 'preco-faixa-invertida',
+  precoReducaoEmMassa: 'preco-reducao-em-massa',
 } as const satisfies Record<string, MotivoContaAmazon>;
 
 /**

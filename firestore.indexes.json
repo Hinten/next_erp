@@ -2909,6 +2909,12 @@
       "fieldPath": "expiraEm",
       "ttl": true,
       "indexes": []
+    },
+    {
+      "collectionGroup": "divergenciasPrecoAmazon",
+      "fieldPath": "expiraEm",
+      "ttl": true,
+      "indexes": []
     }
   ]
 }

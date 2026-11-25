@@ -419,7 +419,7 @@ describe('the two Amazon tipos, per pedido and per conta (Amazon steps 5, 7 and 
     );
   });
 
-  it('★ MOTIVO_CONTA_AMAZON has exactly the seven motivos, its constant member for member', () => {
+  it('★ MOTIVO_CONTA_AMAZON has exactly the eleven motivos, its constant member for member', () => {
     expect([...motivoContaAmazonSchema.options].sort()).toEqual(
       [
         'conta-sem-operacao',
@@ -429,6 +429,10 @@ describe('the two Amazon tipos, per pedido and per conta (Amazon steps 5, 7 and 
         'estoque-vinculos-recusados',
         'estoque-recusado-pela-amazon',
         'feed-estoque-falhou',
+        'preco-recusado-pela-amazon',
+        'feed-preco-falhou',
+        'preco-faixa-invertida',
+        'preco-reducao-em-massa',
       ].sort(),
     );
     expect(Object.values(MOTIVO_CONTA_AMAZON).sort()).toEqual(
@@ -437,7 +441,7 @@ describe('the two Amazon tipos, per pedido and per conta (Amazon steps 5, 7 and 
   });
 
   it('★ step 12: the five stock motivos, each named in the companion', () => {
-    expect(motivoContaAmazonSchema.options).toHaveLength(7);
+    expect(motivoContaAmazonSchema.options).toHaveLength(11);
     expect(MOTIVO_CONTA_AMAZON.estoqueSemDeposito).toBe('estoque-sem-deposito');
     expect(MOTIVO_CONTA_AMAZON.estoqueDepositoSemLinhas).toBe('estoque-deposito-sem-linhas');
     expect(MOTIVO_CONTA_AMAZON.estoqueVinculosRecusados).toBe('estoque-vinculos-recusados');
@@ -526,6 +530,70 @@ describe('the two Amazon tipos, per pedido and per conta (Amazon steps 5, 7 and 
     // One line of prose, whatever the docblock's wrapping.
     const prosa = bullet.replace(/\s*\n\s*\*\s*/g, ' ').replace(/'/g, '’');
     expect(prosa).toContain(raiser);
+  });
+
+  it('★ step 13: the four price motivos, each named in the companion', () => {
+    expect(MOTIVO_CONTA_AMAZON.precoRecusadoPelaAmazon).toBe('preco-recusado-pela-amazon');
+    expect(MOTIVO_CONTA_AMAZON.feedPrecoFalhou).toBe('feed-preco-falhou');
+    expect(MOTIVO_CONTA_AMAZON.precoFaixaInvertida).toBe('preco-faixa-invertida');
+    expect(MOTIVO_CONTA_AMAZON.precoReducaoEmMassa).toBe('preco-reducao-em-massa');
+    // NEAR-MISSES: a per-SKU spelling, the stock twin's or a padded one is not a price motivo.
+    for (const quase of [
+      'preco-recusado',
+      'feed-preco-falhou ',
+      'faixa-invertida',
+      'reducao-em-massa',
+      'preço-faixa-invertida',
+    ]) {
+      expect(motivoContaAmazonSchema.safeParse(quase).success, quase).toBe(false);
+    }
+  });
+
+  it.each([
+    ['preco-recusado-pela-amazon'],
+    ['feed-preco-falhou'],
+    ['preco-faixa-invertida'],
+    ['preco-reducao-em-massa'],
+  ])(
+    '★ step 13: the per-conta docblock gives the price motivo `%s` its severity (atencao), a resolver and a residue',
+    (motivo) => {
+      const bullet = bulletDoMotivo(blocoDoTipo(TIPO_AVISO.amazonContaPrecisaAtencao), motivo);
+      expect(bullet).toContain('**atencao**');
+      expect(bullet).toContain('Resolver:');
+      expect(bullet).toContain('Residue:');
+    },
+  );
+
+  it.each([
+    ['preco-recusado-pela-amazon', 'RAISED by the price task'],
+    ['feed-preco-falhou', 'RAISED by the feed’s send, result, deadline and recovery paths'],
+    ['preco-faixa-invertida', 'RAISED by the price task'],
+    ['preco-reducao-em-massa', 'RAISED by the run’s decision'],
+  ])(
+    '★ step 13: the per-conta docblock names the RAISER of the price motivo `%s`',
+    (motivo, raiser) => {
+      const bullet = bulletDoMotivo(blocoDoTipo(TIPO_AVISO.amazonContaPrecisaAtencao), motivo);
+      const prosa = bullet.replace(/\s*\n\s*\*\s*/g, ' ').replace(/'/g, '’');
+      expect(prosa).toContain(raiser);
+    },
+  );
+
+  it('★ step 13: only a conta price run resolves the two whole-catalogue price motivos (a task sees one SKU)', () => {
+    const bloco = blocoDoTipo(TIPO_AVISO.amazonContaPrecisaAtencao);
+    for (const motivo of [
+      MOTIVO_CONTA_AMAZON.precoRecusadoPelaAmazon,
+      MOTIVO_CONTA_AMAZON.precoFaixaInvertida,
+    ]) {
+      const prosa = bulletDoMotivo(bloco, motivo).replace(/\s*\n\s*\*\s*/g, ' ');
+      expect(prosa, motivo).toContain('Resolver: a COMPLETED conta price run');
+      expect(prosa, motivo).toContain('only a conta run does');
+    }
+    // NEAR-MISS: the feed motivo is resolved by a feed Amazon ends DONE, not by a run.
+    const feed = bulletDoMotivo(bloco, MOTIVO_CONTA_AMAZON.feedPrecoFalhou).replace(
+      /\s*\n\s*\*\s*/g,
+      ' ',
+    );
+    expect(feed).toContain('Resolver: a price feed Amazon ends `DONE`');
   });
 
   it('each docblock entry covers its whole enum: every motivo has a bullet', () => {

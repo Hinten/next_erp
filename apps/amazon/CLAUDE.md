@@ -784,6 +784,16 @@ dialog's Amazon provider comes after step 9b). See "Stock (step 12)".
   nothing reaches `estoque/`. The fake db models a two-segment `FieldPath` mask (logged
   `[mapa, chave]`), so the `precos.<tabela>` masks run offline too.
 
+## Price (step 13)
+
+- `lib/amazon/preco/` (PR 13-c) is PURE and wired by nothing yet (`estrutura.test.ts`: its
+  allow-list, nothing of `estoque/`, no importer). `planoPreco.ts` holds EVERY price comparison
+  (the one file naming `mesmoPrecoEmReais`; no other `preco/` module compares a price field);
+  beside it the issue classifier, the `preco-sku`/`preco-pagina` payloads and names (no price
+  field), the page and Decide (the mass-decrease stop first, then the packing), the effective
+  valve (the preview flag never yields a feed) and the motivos. `MAX_MENSAGENS_LOTE_PRECO_AMAZON`
+  sits beside the block cap (`feeds/tarefaLote.ts`), derived by `preco/limitesLotePreco.test.ts`.
+
 ## Layout
 
 - `lib/amazon/` is Next-free except `core/respond.ts`, never imports the `@/`

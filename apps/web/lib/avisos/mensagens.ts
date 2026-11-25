@@ -786,6 +786,31 @@ const FRASE_MOTIVO_CONTA_AMAZON: Record<MotivoContaAmazon, string> = {
     '(feeds) da conta na Seller Central; o aviso se encerra quando a Amazon concluir um envio de ' +
     'estoque em lote, ou na conferência diária de estoque que terminar sem diferença enquanto ' +
     'os envios em lote não estiverem falhando seguidamente',
+  // Os quatro motivos do preço (passo 13). Uma linha por conta, sejam quantos
+  // forem os anúncios envolvidos: a frase não cita SKU nem preço.
+  [MOTIVO_CONTA_AMAZON.precoRecusadoPelaAmazon]:
+    'a Amazon recusou o preço de ao menos um anúncio da conta, que continua com a oferta ' +
+    'anterior. Confira os problemas do anúncio na Seller Central e o preço dele nas tabelas do ' +
+    'ERP; o aviso se encerra na próxima atualização de preços de toda a conta que não encontrar ' +
+    'nenhum anúncio com problema de preço (reenviar o preço de um anúncio só não o encerra)',
+  [MOTIVO_CONTA_AMAZON.feedPrecoFalhou]:
+    'um envio de preços em lote (feed) para a Amazon falhou ou não teve o resultado confirmado, ' +
+    'então parte dos preços pode não ter chegado à Amazon, e esse envio não é repetido sozinho. ' +
+    'Confira os envios de arquivo (feeds) da conta na Seller Central e atualize os preços da ' +
+    'conta de novo, que só envia o que ainda estiver diferente; o aviso se encerra quando a ' +
+    'Amazon concluir um envio de preços em lote sem outra falha na mesma atualização',
+  [MOTIVO_CONTA_AMAZON.precoFaixaInvertida]:
+    'há anúncios cujo preço promocional está acima do preço normal, o que deixaria o preço ' +
+    'mínimo acima do preço de venda; o preço desses anúncios não é enviado e eles continuam com ' +
+    'a oferta anterior. Corrija os preços desses produtos nas tabelas de preço do ERP; o aviso ' +
+    'se encerra na próxima atualização de preços de toda a conta que não encontrar nenhum ' +
+    'anúncio assim (reenviar o preço de um anúncio só não o encerra)',
+  [MOTIVO_CONTA_AMAZON.precoReducaoEmMassa]:
+    'uma atualização de preços da conta não enviou nada à Amazon porque baixaria o preço de ' +
+    'grande parte dos anúncios, ou o de algum anúncio para menos da metade, o que costuma ser um ' +
+    'erro de tabela ou de digitação. Confira as tabelas de preço usadas pela conta e, se a ' +
+    'redução for de propósito, atualize os preços de novo confirmando a redução em massa; o ' +
+    'aviso se encerra na próxima atualização de preços da conta que não for interrompida por isso',
 };
 
 /** A frase do motivo, ou um texto neutro — o mesmo contrato de {@link fraseMotivoImportacaoParada}. */

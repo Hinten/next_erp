@@ -241,24 +241,55 @@ describe('★ the batch', () => {
     const cedo = new TypeError('item 3');
     const iniciados: number[] = [];
     let emVoo = 0;
-    const enviar = async (t: TarefaDeTeste): Promise<ResultadoEnfileiramentoListingAmazon> => {
+    // Each enqueue answers only when the test says so, so the order in time is the test's,
+    // never a timer's: timers raced under a loaded runner and let items start late.
+    const respostas = new Map<number, { aceitar: () => void; falhar: (e: Error) => void }>();
+    const enviar = (t: TarefaDeTeste): Promise<ResultadoEnfileiramentoListingAmazon> => {
       iniciados.push(t.n);
       emVoo += 1;
-      try {
-        // Item 7 fails FIRST in time; item 3, earlier in the list, fails later.
-        await new Promise((r) => setTimeout(r, t.n === 3 ? 20 : t.n === 7 ? 1 : 5));
-        if (t.n === 7) throw tarde;
-        if (t.n === 3) throw cedo;
-        return 'enfileirada';
-      } finally {
-        emVoo -= 1;
-      }
+      return new Promise((resolve, reject) => {
+        respostas.set(t.n, {
+          aceitar: () => {
+            emVoo -= 1;
+            resolve('enfileirada');
+          },
+          falhar: (e) => {
+            emVoo -= 1;
+            reject(e);
+          },
+        });
+      });
     };
+    // A macrotask: every continuation the last answer queued has run.
+    const drenar = () => new Promise((r) => setTimeout(r, 0));
+    const primeiros16 = Array.from({ length: 16 }, (_v, i) => i);
     const itens = Array.from({ length: 40 }, (_v, i) => ({ n: i }));
-    await expect(enfileirarLoteListingAmazon(itens, enviar)).rejects.toBe(cedo);
-    // Nothing left running behind the answer, and nothing started after item 7 failed.
+    let desfecho: unknown = 'pendente';
+    const lote = enfileirarLoteListingAmazon(itens, enviar).then(
+      () => {
+        desfecho = 'resolvido';
+      },
+      (e: unknown) => {
+        desfecho = e;
+      },
+    );
+    await drenar();
+    expect(iniciados).toEqual(primeiros16);
+    // Item 7 fails FIRST in time; then every other item in flight answers, which frees its
+    // slot; item 3, earlier in the list, fails LAST.
+    respostas.get(7)?.falhar(tarde);
+    await drenar();
+    for (const n of primeiros16) if (n !== 3 && n !== 7) respostas.get(n)?.aceitar();
+    await drenar();
+    // Nothing started after item 7 failed, and the batch still waits for item 3.
+    expect(iniciados).toEqual(primeiros16);
+    expect(emVoo).toBe(1);
+    expect(desfecho).toBe('pendente');
+    respostas.get(3)?.falhar(cedo);
+    await lote;
+    expect(desfecho).toBe(cedo);
     expect(emVoo).toBe(0);
-    expect(iniciados).toEqual(Array.from({ length: 16 }, (_v, i) => i));
+    expect(iniciados).toEqual(primeiros16);
   });
 
   it('an empty batch enqueues nothing and answers zeros', async () => {
