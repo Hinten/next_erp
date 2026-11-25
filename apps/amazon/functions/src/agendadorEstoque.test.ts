@@ -48,6 +48,12 @@ const { nomeDaTarefaEstoque, tarefaEstoqueAmazonSchema } =
 const { AmazonLotesTarefasDesligadasError } = await import('../../lib/amazon/feeds/agendadorLotes');
 const { nomeConsultaFeed, tarefaLoteAmazonSchema } =
   await import('../../lib/amazon/feeds/tarefaLote');
+// (step 13, PR 13-d) The price task's producer: its own transport, the jobs queue's path.
+const { criarProdutorPrecoAmazonDoAmbiente } = await import('./agendadorEstoque');
+const { ATRASO_ESPERA_FEED_PRECO_S, ATRASO_PAUSA_PRECO_S, ATRASO_VERIFICACAO_PRECO_S } =
+  await import('../../lib/amazon/preco/produtorPreco');
+const { nomeDaTarefaPrecoAmazon, tarefaPrecoSkuAmazonSchema } =
+  await import('../../lib/amazon/preco/tarefaPreco');
 
 const CONTA = 'conta-teste';
 const FEED = '50001234567';
@@ -320,6 +326,101 @@ describe('the stock queue (step 12, PR 12-e1)', () => {
     async (valor) => {
       ambiente({ functionsRegion: 'xx-regiao1', desligado: valor });
       await criarProdutorEstoqueAmazonDoAmbiente().enfileirarPausa(PATCH);
+      expect(h.enqueue).toHaveBeenCalledOnce();
+    },
+  );
+});
+
+describe('the price task’s producer (step 13, PR 13-d)', () => {
+  /** A manual price task: identities and the consent only, never a price. */
+  const PRECO = tarefaPrecoSkuAmazonSchema.parse({
+    v: 1,
+    tipo: 'preco-sku',
+    contaId: CONTA,
+    sku: 'SKU-TESTE-1',
+    origem: 'manual',
+    referencia: 'req-teste-0001',
+    parte: null,
+    baixarPreco: false,
+    solicitadoEmMs: 1_800_000_000_000,
+    codigosAntes: [],
+  });
+
+  it('★ enqueues onto the JOBS queue, locations/<region>/functions/processAmazonListingsJob — never a queue of its own', async () => {
+    ambiente({ tasksRegion: 'xx-regiao1', functionsRegion: 'xx-regiao1' });
+
+    expect(await criarProdutorPrecoAmazonDoAmbiente().enfileirar(PRECO)).toBe('enfileirada');
+
+    expect(h.getFunctions).toHaveBeenCalledExactlyOnceWith(APP);
+    expect(h.taskQueue).toHaveBeenCalledExactlyOnceWith(
+      'locations/xx-regiao1/functions/processAmazonListingsJob',
+    );
+    // NEAR-MISS: the stock queue is the other path this root binds.
+    expect(h.taskQueue).not.toHaveBeenCalledWith(
+      expect.stringContaining('processAmazonStockPatch'),
+    );
+    expect(h.enqueue.mock.calls).toEqual([[PRECO, { id: nomeDaTarefaPrecoAmazon(PRECO) }]]);
+  });
+
+  it('the check goes NAMED after the submission, 900 s later; the wait and the pause UNNAMED, through the same root', async () => {
+    ambiente({ functionsRegion: 'xx-regiao1' });
+    const produtor = criarProdutorPrecoAmazonDoAmbiente();
+
+    await produtor.enfileirarVerificacao(PRECO, 'sub-teste-0001', ['19037']);
+    await produtor.enfileirarEspera(PRECO);
+    await produtor.enfileirarPausa(PRECO);
+
+    const [verificacao, espera, pausa] = h.enqueue.mock.calls as [
+      unknown,
+      Record<string, unknown>,
+    ][];
+    expect(verificacao?.[0]).toMatchObject({
+      origem: 'verificacao',
+      referencia: 'sub-teste-0001',
+      codigosAntes: ['19037'],
+    });
+    expect(verificacao?.[1]).toEqual({
+      id: nomeDaTarefaPrecoAmazon(
+        tarefaPrecoSkuAmazonSchema.parse(verificacao?.[0] as Record<string, unknown>),
+      ),
+      scheduleDelaySeconds: ATRASO_VERIFICACAO_PRECO_S,
+    });
+    expect(espera).toEqual([PRECO, { scheduleDelaySeconds: ATRASO_ESPERA_FEED_PRECO_S }]);
+    expect(pausa).toEqual([PRECO, { scheduleDelaySeconds: ATRASO_PAUSA_PRECO_S }]);
+    expect(new Set(h.taskQueue.mock.calls.map((c) => c[0]))).toEqual(
+      new Set(['locations/xx-regiao1/functions/processAmazonListingsJob']),
+    );
+  });
+
+  it('★ shares the jobs queue’s region: none at all REFUSES before the transport (no default)', async () => {
+    ambiente({});
+    await expect(
+      criarProdutorPrecoAmazonDoAmbiente().enfileirarPausa(PRECO),
+    ).rejects.toBeInstanceOf(MissingRegionError);
+    expect(h.taskQueue).not.toHaveBeenCalled();
+    expect(h.enqueue).not.toHaveBeenCalled();
+  });
+
+  it("★ the SAME valve: exactly '1' refuses with the JOBS queue’s class, the SDK never touched", async () => {
+    ambiente({ functionsRegion: 'xx-regiao1', desligado: '1' });
+
+    const produtor = criarProdutorPrecoAmazonDoAmbiente();
+    await expect(produtor.enfileirar(PRECO)).rejects.toBeInstanceOf(
+      AmazonLotesTarefasDesligadasError,
+    );
+    await expect(produtor.enfileirarPausa(PRECO)).rejects.toBeInstanceOf(
+      AmazonLotesTarefasDesligadasError,
+    );
+    expect(h.getFunctions).not.toHaveBeenCalled();
+    expect(h.taskQueue).not.toHaveBeenCalled();
+  });
+
+  // NEAR-MISS: the valve is opt-in at EXACTLY '1' for this producer too.
+  it.each([['1 '], ['true'], [''], [undefined]])(
+    'AMAZON_TASKS_DISABLED=%j leaves the price enqueue ON',
+    async (valor) => {
+      ambiente({ functionsRegion: 'xx-regiao1', desligado: valor });
+      await criarProdutorPrecoAmazonDoAmbiente().enfileirarPausa(PRECO);
       expect(h.enqueue).toHaveBeenCalledOnce();
     },
   );

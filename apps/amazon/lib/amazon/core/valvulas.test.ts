@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import type { AmbienteAmazon } from '../env';
+import { PRECO_SO_VALIDACAO_ENV } from '../env';
 import { loggerEspiao } from '../testing/fixtures';
 import {
   CANARIO_ENV_AMAZON,
@@ -901,6 +902,23 @@ describe('the names: one valve and one list per flow, documented where the opera
       expect(APPHOSTING.some((l) => new RegExp(`^#\\s+${nome}\\b`).test(l))).toBe(true);
     },
   );
+
+  it('★ (step 13, PR 13-d) the price preview flag sits BESIDE them: a BLANK line right after the last canary list in .env.example, a comment row in apphosting.yaml, commented in DEPLOY.md, never an env: row', () => {
+    const nome = PRECO_SO_VALIDACAO_ENV;
+    // Not a valve: `env.ts` reads it, so it is pinned here by its own name.
+    expect(NOMES).not.toContain(nome);
+    expect(nome).toMatch(/^AMAZON_[A-Z_]+$/);
+    expect(nome).not.toMatch(/(SECRET|PASSWORD|_TOKEN|PRIVATE_KEY|CERT_BASE64|ENC_KEY)$/);
+    expect(ENV_EXAMPLE.filter((l) => l.startsWith(`${nome}=`))).toEqual([`${nome}=`]);
+    expect(ENV_EXAMPLE[ENV_EXAMPLE.indexOf(`${CANARIO_ENV_AMAZON.agendamento}=`) + 1]).toBe(
+      `${nome}=`,
+    );
+    expect(APPHOSTING.some((l) => new RegExp(`^#\\s+${nome}\\b`).test(l))).toBe(true);
+    expect(APPHOSTING.some((l) => !l.trimStart().startsWith('#') && l.includes(nome))).toBe(false);
+    // The functions surface, where it is read: commented out, never live.
+    const deploy = linhasDe('../../../functions/DEPLOY.md');
+    expect(deploy.filter((l) => l.includes(`${nome}=`))).toEqual([`# ${nome}=1`]);
+  });
 
   it('apphosting.yaml declares none of them outside a comment — a baked `off` could override the console', () => {
     for (const nome of NOMES) {

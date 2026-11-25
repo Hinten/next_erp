@@ -36,6 +36,11 @@ vi.mock('./incertoFeed', () => ({ processarIncertoFeedAmazon: espioes.incerto })
 vi.mock('./recuperarFeed', () => ({ processarRecuperacaoFeedAmazon: espioes.recuperar }));
 
 const { processarLoteAmazon, RECUSA_DO_LOTE } = await import('./processarLote');
+const {
+  TIPO_TAREFA_FILA_LOTES_AMAZON,
+  tarefaFilaLotesAmazonSchema,
+  tipoTarefaFilaLotesAmazonSchema,
+} = await import('./processarLote');
 
 const CONTA = 'conta-amz-despacho';
 const FEED = '50001234567';
@@ -325,5 +330,105 @@ describe('the routing on tipo, with the provider read from the BOUND seam rows',
     const erro = new Error('do handler');
     espioes.recuperar.mockRejectedValueOnce(erro);
     await expect(m.rodar(PAYLOADS['feed-recuperar'])).rejects.toBe(erro);
+  });
+});
+
+describe('the price task on the jobs queue (step 13, PR 13-d)', () => {
+  /** A valid `preco-sku` payload: identities only. */
+  const PRECO_SKU = {
+    v: 1,
+    tipo: 'preco-sku',
+    contaId: CONTA,
+    sku: 'SKU-PRECO-DESPACHO',
+    origem: 'manual',
+    referencia: 'req-despacho-1',
+    parte: null,
+    baixarPreco: false,
+    solicitadoEmMs: AGORA_MS,
+    codigosAntes: [],
+  } as const;
+
+  /** The world above with the price task bound (or not) by the jobs root. */
+  function comPreco(vinculado: boolean) {
+    const m = mundo();
+    const tarefaPreco = vi.fn(() => Promise.resolve({ acao: 'espiado-preco' }));
+    const deps = vinculado ? { ...m.deps, tarefaPrecoSku: tarefaPreco } : m.deps;
+    return {
+      ...m,
+      tarefaPreco,
+      deps,
+      rodar: (d: unknown) => processarLoteAmazon(asDb(m.fake), d, deps),
+    };
+  }
+
+  it('★ preco-sku ⇒ the BOUND price task, with this dispatch’s db, the parsed payload and deps whole; no feed handler', async () => {
+    const m = comPreco(true);
+    const r = await m.rodar(PRECO_SKU);
+    expect(r).toEqual({ tipo: 'preco-sku', r: { acao: 'espiado-preco' } });
+    expect(m.tarefaPreco).toHaveBeenCalledTimes(1);
+    const [db, t, deps] = m.tarefaPreco.mock.calls[0] as unknown as [unknown, unknown, unknown];
+    expect(db).toBe(asDb(m.fake));
+    expect(t).toEqual(PRECO_SKU);
+    expect(deps).toBe(m.deps);
+    for (const espiao of Object.values(espioes)) expect(espiao).not.toHaveBeenCalled();
+    expect(m.log.linhas).toEqual([]);
+  });
+
+  it('★ NEAR-MISS: a dispatcher built WITHOUT the price task refuses it with ONE ERROR line (sem-processador), no throw, nothing read', async () => {
+    const m = comPreco(false);
+    const r = await m.rodar(PRECO_SKU);
+    expect(r).toEqual({ tipo: null, recusa: RECUSA_DO_LOTE.semProcessador });
+    expect(m.log.linhas).toEqual([
+      expect.objectContaining({
+        nivel: 'error',
+        meta: expect.objectContaining({ recusa: 'sem-processador', tipo: 'preco-sku', campos: '' }),
+      }),
+    ]);
+    expect(m.fake.operacoes).toBe(0);
+    expect(m.tarefaPreco).not.toHaveBeenCalled();
+  });
+
+  it('★ a price payload carrying a price (or any unknown key) ⇒ payload-invalido naming the tipo and the field, the task never called', async () => {
+    const m = comPreco(true);
+    const r = await m.rodar({ ...PRECO_SKU, preco: 99.9 });
+    expect(r).toEqual({ tipo: null, recusa: RECUSA_DO_LOTE.payloadInvalido });
+    expect(m.log.linhas.at(-1)).toMatchObject({
+      nivel: 'error',
+      meta: { recusa: 'payload-invalido', tipo: 'preco-sku' },
+    });
+    expect(JSON.stringify(m.log.linhas)).not.toContain('99.9');
+    expect(m.tarefaPreco).not.toHaveBeenCalled();
+  });
+
+  it('NEAR-MISS: an unknown tipo still ends with its ONE ERROR line (tipo-desconhecido), the price task bound or not', async () => {
+    for (const vinculado of [true, false]) {
+      const m = comPreco(vinculado);
+      const r = await m.rodar({ ...PRECO_SKU, tipo: 'preco-outro' });
+      expect(r).toEqual({ tipo: null, recusa: RECUSA_DO_LOTE.tipoDesconhecido });
+      expect(m.log.linhas).toHaveLength(1);
+      expect(m.log.linhas[0]).toMatchObject({ nivel: 'error', meta: { tipo: null } });
+      expect(m.tarefaPreco).not.toHaveBeenCalled();
+    }
+  });
+
+  it('a price task’s throw is the queue’s retry: rethrown as it came', async () => {
+    const m = comPreco(true);
+    const erro = new Error('da tarefa de preço');
+    m.tarefaPreco.mockRejectedValueOnce(erro);
+    await expect(m.rodar(PRECO_SKU)).rejects.toBe(erro);
+  });
+
+  it('the queue’s union is the feed core’s plus the price task, and the feed core’s own union is unchanged', () => {
+    expect([...tipoTarefaFilaLotesAmazonSchema.options].sort()).toEqual(
+      [...Object.values(TIPO_TAREFA_LOTE_AMAZON), 'preco-sku'].sort(),
+    );
+    expect(TIPO_TAREFA_FILA_LOTES_AMAZON.precoSku).toBe('preco-sku');
+    expect(tarefaFilaLotesAmazonSchema.parse(PRECO_SKU).tipo).toBe('preco-sku');
+    expect(tarefaLoteAmazonSchema.safeParse(PRECO_SKU).success).toBe(false);
+    for (const payload of Object.values(PAYLOADS)) {
+      expect(tarefaFilaLotesAmazonSchema.parse(payload)).toEqual(
+        tarefaLoteAmazonSchema.parse(payload),
+      );
+    }
   });
 });

@@ -13,6 +13,11 @@ import {
   criarAgendadorLotesAmazon,
 } from '../../lib/amazon/feeds/agendadorLotes';
 import type { TarefaLoteAmazon } from '../../lib/amazon/feeds/tarefaLote';
+import {
+  type ProdutorPrecoAmazon,
+  criarProdutorPrecoAmazon,
+} from '../../lib/amazon/preco/produtorPreco';
+import type { TarefaPrecoSkuAmazon } from '../../lib/amazon/preco/tarefaPreco';
 import { getAdminApp } from './lib/admin';
 
 /**
@@ -36,6 +41,12 @@ import { getAdminApp } from './lib/admin';
  *   `./filaEstoque`), the five-minute stock tick's per-SKU patch tasks (bound
  *   by `./sweepEstoque`, step 12, PR 12-e2) and the feed providers' and the
  *   reconcile's per-SKU hand-offs (the same `raiz`).
+ *
+ * Since step 13 (PR 13-d) a THIRD producer rides the jobs queue's path: the
+ * price task's (`preco-sku`: its check, its wait behind a price feed and its
+ * pause, bound by `./filaLotes`), its own because the jobs producer's typed
+ * transport carries the feed core's payloads only. Price has no queue of its
+ * own; the valve and the region below are the same ones.
  *
  * What a rejection means, the names and the delay rules are the pure modules'
  * (`lib/amazon/feeds/agendadorLotes.ts`, `lib/amazon/estoque/produtorEstoque.ts`);
@@ -106,8 +117,25 @@ export function criarProdutorEstoqueAmazonDoAmbiente(): ProdutorEstoqueAmazon {
 }
 
 /**
+ * The price task's producer (step 13, PR 13-d), from the environment: the
+ * JOBS queue's path (`caminhoDaFilaLotesAmazon`), the same valve read ONCE, the
+ * same lazily resolved region, the same admin app — the queue, the function
+ * and the grant are the jobs queue's.
+ */
+export function criarProdutorPrecoAmazonDoAmbiente(): ProdutorPrecoAmazon {
+  return criarProdutorPrecoAmazon({
+    desligado: tarefasDoEstoqueAmazonDesligadas(),
+    fila: () =>
+      filaDoAmbiente<TarefaPrecoSkuAmazon>(
+        caminhoDaFilaLotesAmazon(regiaoDasFilasDoEstoqueAmazon()),
+      ),
+  });
+}
+
+/**
  * The Admin SDK's task queue at `caminho` — the file's ONE `getFunctions(`
  * call, which both producers resolve through, per enqueue.
+ * (Since step 13, PR 13-d, the price task's producer too.)
  */
 function filaDoAmbiente<T>(caminho: string) {
   return getFunctions(getAdminApp()).taskQueue<T>(caminho);

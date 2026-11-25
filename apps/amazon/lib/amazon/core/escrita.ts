@@ -100,8 +100,8 @@
  *     comes back whole, for the caller to answer.
  *
  * Its valve is typed by the fluxos a batch can carry, not by the first entry's
- * event map: a price batch type-checks here before price has a single-target
- * writer.
+ * event map: a batch fluxo type-checks here whether or not it also has a
+ * single-target writer.
  *
  * ⚠️ D11: nothing here runs while the read switch is off — the flow builds its
  * context first (`loadAmazonContext` refuses before any read), and this engine
@@ -137,12 +137,14 @@ import {
 /**
  * The log event of each write flow's lines. A flow without a row cannot run
  * through the engine (its valve does not type-check), so every write flow has
- * an event before it has a writer.
+ * an event before it has a writer. Since step 13 (PR 13-d) price has its row:
+ * the price task's one offer patch per SKU.
  */
 export const EVENTO_DA_ESCRITA_AMAZON = {
   [FLUXO_AMAZON.nfe]: 'nfe',
   [FLUXO_AMAZON.agendamento]: 'agendamento',
   [FLUXO_AMAZON.estoque]: 'estoque',
+  [FLUXO_AMAZON.preco]: 'preco',
 } as const satisfies Partial<Record<FluxoAmazon, EventoAvulsoAmazon>>;
 
 /** The write flows the engine runs today. */

@@ -462,6 +462,7 @@ describe('executarEscritaAmazon — the scheduling flow (step 15, PR 15-b)', () 
       nfe: 'nfe',
       agendamento: 'agendamento',
       estoque: 'estoque',
+      preco: 'preco',
     });
   });
 
@@ -1019,9 +1020,12 @@ describe('executarLoteEscritaAmazon — the one submission (step 12a, PR 12-b)',
       nfe: 'nfe',
       agendamento: 'agendamento',
       estoque: 'estoque',
+      preco: 'preco',
     });
     // The batch entry's valve is typed by the batch fluxos, never by the first
     // entry's event map (which has no `preco` row).
+    // (Since step 13, PR 13-d, the first entry's map has a `preco` row too, for
+    // the price task; the batch entry's typing above is unchanged.)
     expectTypeOf<
       EntradaLoteEscritaAmazon<PlanoLoteAmazon, AbortoLoteAmazon, unknown>['valvula']
     >().toEqualTypeOf<ValvulaAmazon<FluxoComLoteAmazon>>();
@@ -1143,5 +1147,64 @@ describe('the batch entry is fluxo-neutral: a price provider drives it with no s
     ]);
     expect(linhasDeChamada(linhas).map((l) => l.fluxo)).toEqual(['preco', 'preco']);
     expect(documentosMontados).toHaveLength(1);
+  });
+});
+
+describe('the single-target entry’s price row (step 13, PR 13-d)', () => {
+  const SKU_PRECO = 'SKU-PRECO-ENGINE';
+
+  /** The price valve as one environment states it. */
+  const valvulaPreco = (modo: string, canario = '*') =>
+    lerValvula(FLUXO_AMAZON.preco, {
+      [VALVULA_ENV_AMAZON.preco]: modo,
+      [CANARIO_ENV_AMAZON.preco]: canario,
+    });
+
+  function montarPreco(modo: string, canario?: string) {
+    const { logger, linhas } = loggerEspiao();
+    const f = fetchRoteirizado(json(200, { status: 'ACCEPTED' }));
+    const ctx = contexto();
+    const escrever = vi.fn(() => Promise.resolve('escrito'));
+    const run = () =>
+      executarEscritaAmazon({
+        valvula: valvulaPreco(modo, canario),
+        contaId: CONTA,
+        alvo: SKU_PRECO,
+        contexto: ctx,
+        deps: { logger, fetch: f.fetch, agora: () => AGORA_MS },
+        registro: { fluxo: 'preco', tentativa: 0, idTarefa: 'tarefa-preco-engine' },
+        lerAtual: () => Promise.resolve('lido'),
+        planejar: () => ({ escrever: true, diff: { acao: 'enviaria', faixaBase: 10 } }),
+        escrever,
+      });
+    return { run, linhas, escrever, f };
+  }
+
+  it('★ the event row: preco ⇒ preco, beside the other three', () => {
+    expect(EVENTO_DA_ESCRITA_AMAZON[FLUXO_AMAZON.preco]).toBe('preco');
+    expect(Object.keys(EVENTO_DA_ESCRITA_AMAZON).sort()).toEqual(
+      ['agendamento', 'estoque', 'nfe', 'preco'].sort(),
+    );
+    expectTypeOf<ValvulaAmazon<'preco'>>().toMatchTypeOf<
+      Parameters<typeof executarEscritaAmazon>[0]['valvula']
+    >();
+  });
+
+  it('★ a price valve runs through the engine: dry-run ⇒ one diff line under evento preco, no write', async () => {
+    const m = montarPreco('dry-run');
+    await expect(m.run()).resolves.toMatchObject({ tipo: 'simulado', motivo: 'valvula' });
+    expect(m.escrever).not.toHaveBeenCalled();
+    expect(m.linhas).toHaveLength(1);
+    expect(m.linhas[0]?.mensagem).toBe('[amazon] preco: dry-run (valvula)');
+    expect(m.linhas[0]?.meta).toMatchObject({ evento: 'preco', fluxo: 'preco', faixaBase: 10 });
+  });
+
+  it('NEAR-MISS: on + a canary hit ⇒ the ONE write; off ⇒ nothing at all', async () => {
+    const ligado = montarPreco('on', `${CONTA}:${SKU_PRECO}`);
+    await expect(ligado.run()).resolves.toMatchObject({ tipo: 'escrito', resposta: 'escrito' });
+    expect(ligado.escrever).toHaveBeenCalledTimes(1);
+    const desligado = montarPreco('off');
+    await expect(desligado.run()).resolves.toEqual({ tipo: 'desligado' });
+    expect(desligado.linhas).toEqual([]);
   });
 });

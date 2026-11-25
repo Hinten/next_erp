@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 
 import {
   CHAVES_CONFIG_AMAZON,
+  LEITURA_PRECO_SO_VALIDACAO_AMAZON,
   MAX_SEGREDO_RELAY,
   MIN_SEGREDO_RELAY,
+  PRECO_SO_VALIDACAO_ENV,
   RELAY_PREVIOUS_SECRET_ENV,
   RELAY_SECRET_ENV,
   TASKS_REGION_ENV,
@@ -12,6 +14,7 @@ import {
   lerConfigDoReceptorAmazon,
   lerAplicacaoLwaAmazon,
   lerConfigAmazon,
+  lerPrecoSoValidacaoAmazon,
   lerSegredoExpiraEm,
   lerWebAppUrl,
   segredoRelayUtilizavel,
@@ -303,5 +306,57 @@ describe('the receiver keys (step 3)', () => {
     });
     expect(JSON.stringify(recusadas)).not.toContain(SEGREDO_RELAY);
     expect(JSON.stringify(recusadas)).not.toContain(APPLICATION_ID);
+  });
+});
+
+describe('the price preview flag (step 13, PR 13-d)', () => {
+  it('pins the name: what DEPLOY.md, apphosting.yaml and the root template spell', () => {
+    expect(PRECO_SO_VALIDACAO_ENV).toBe('AMAZON_PRECO_SO_VALIDACAO');
+  });
+
+  it('★ exactly `1` is on', () => {
+    expect(lerPrecoSoValidacaoAmazon({ AMAZON_PRECO_SO_VALIDACAO: '1' })).toEqual({
+      ligado: true,
+      leitura: LEITURA_PRECO_SO_VALIDACAO_AMAZON.ligado,
+    });
+  });
+
+  // NEAR-MISSES of `1`: a value that merely looks right is off, and says so.
+  it.each([['true'], ['0'], [' 1'], ['1 '], ['01'], ['   '], ['on'], ['TRUE']])(
+    '★ %j is off, and read `ignorado` for the caller to log — nothing trimmed or folded',
+    (valor) => {
+      expect(lerPrecoSoValidacaoAmazon({ AMAZON_PRECO_SO_VALIDACAO: valor })).toEqual({
+        ligado: false,
+        leitura: LEITURA_PRECO_SO_VALIDACAO_AMAZON.ignorado,
+      });
+    },
+  );
+
+  it('★ unset or exactly empty is off and `ausente`: nothing to log (the root template ships it blank)', () => {
+    for (const ambiente of [
+      {},
+      { AMAZON_PRECO_SO_VALIDACAO: undefined },
+      { AMAZON_PRECO_SO_VALIDACAO: '' },
+    ]) {
+      expect(lerPrecoSoValidacaoAmazon(ambiente)).toEqual({
+        ligado: false,
+        leitura: LEITURA_PRECO_SO_VALIDACAO_AMAZON.ausente,
+      });
+    }
+  });
+
+  it('reads its ONE name and no other: the valves and the read switch leave it off', () => {
+    const lidas: string[] = [];
+    const ambiente = new Proxy(
+      { ...AMBIENTE_LIGADO, AMAZON_MODO_PRECO: 'on', AMAZON_TASKS_DISABLED: '1' },
+      {
+        get(alvo, chave: string) {
+          lidas.push(chave);
+          return (alvo as Record<string, string | undefined>)[chave];
+        },
+      },
+    );
+    expect(lerPrecoSoValidacaoAmazon(ambiente).ligado).toBe(false);
+    expect(lidas).toEqual([PRECO_SO_VALIDACAO_ENV]);
   });
 });

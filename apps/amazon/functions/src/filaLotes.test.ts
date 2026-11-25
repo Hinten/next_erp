@@ -45,6 +45,8 @@ const {
 } = await import('./filaLotes');
 const { criarAgendadorLotesAmazonDoAmbiente, criarProdutorEstoqueAmazonDoAmbiente } =
   await import('./agendadorEstoque');
+// (step 13, PR 13-d) The price task, bound onto this same queue.
+const { TAREFA_PRECO_SKU_AMAZON } = await import('./filaLotes');
 
 afterAll(() => {
   if (originalTasksInvokerSa === undefined) delete process.env.TASKS_INVOKER_SA;
@@ -375,4 +377,153 @@ describe('processAmazonListingsJob — the body', () => {
     ).rejects.toMatchObject({ code: 14 });
     expect(linhas().filter((l) => l.fase === 'resultado')).toEqual([]);
   });
+});
+
+describe('processAmazonListingsJob — the price task (step 13, PR 13-d)', () => {
+  const SKU = 'SKU-FILA-PRECO-1';
+
+  /** A manual price task: identities and the consent only, never a price. */
+  const tarefaPreco = (over: Record<string, unknown> = {}) => ({
+    v: 1,
+    tipo: 'preco-sku',
+    contaId: CONTA,
+    sku: SKU,
+    origem: 'manual',
+    referencia: 'req-fila-preco-1',
+    parte: null,
+    baixarPreco: false,
+    solicitadoEmMs: AGORA_MS,
+    codigosAntes: [],
+    ...over,
+  });
+
+  it('★ the dispatch’s deps bind the price task; the seam’s price row stays empty (no price feed yet)', () => {
+    const deps = depsDosLotesAmazon({ tentativa: 0, idTarefa: null });
+    expect(deps.tarefaPrecoSku).toBe(TAREFA_PRECO_SKU_AMAZON);
+    expect(deps.provedores.preco).toBeNull();
+  });
+
+  it('★ a price task dispatched with the price valve unset runs the price task: the valve line, then ONE price line, ZERO Firestore operations', async () => {
+    vi.stubEnv('AMAZON_MODO_PRECO', undefined);
+    await rodar({ data: tarefaPreco(), retryCount: 2, id: 'tarefa-preco-1' });
+    expect(linhas().map((l) => l.evento)).toEqual(['valvula', 'preco']);
+    expect(linhas().at(-1)).toMatchObject({
+      evento: 'preco',
+      acao: 'encerrado',
+      motivo: 'desligado',
+      sku: SKU,
+      fila: 'processAmazonListingsJob',
+      previa: false,
+      tentativa: 2,
+      idTarefa: 'tarefa-preco-1',
+    });
+    expect(fake.operacoes).toBe(0);
+  });
+
+  it('NEAR-MISS: a price payload carrying a price is refused whole by the queue’s union — ONE ERROR line, nothing read', async () => {
+    await rodar({ data: tarefaPreco({ preco: 10 }), id: 'tarefa-preco-2' });
+    expect(linhas()).toEqual([
+      expect.objectContaining({
+        evento: 'feed',
+        severity: 'ERROR',
+        recusa: 'payload-invalido',
+        tipo: 'preco-sku',
+      }),
+    ]);
+    expect(fake.operacoes).toBe(0);
+  });
+
+  it('★ the flag exactly `1` reaches the task from the dispatch’s OWN environment: the line says `previa`', async () => {
+    vi.stubEnv('AMAZON_MODO_PRECO', 'on');
+    vi.stubEnv('AMAZON_CANARIO_PRECO', `${CONTA}:${SKU}`);
+    vi.stubEnv('AMAZON_PRECO_SO_VALIDACAO', '1');
+    await rodar({ data: tarefaPreco(), id: 'tarefa-preco-3' });
+    // The read switch is off in this process: the task stops at its context,
+    // after ONE masked read of the price lease (nothing sent).
+    expect(linhas().map((l) => l.evento)).toEqual(['valvula', 'chamada-bloqueada', 'preco']);
+    expect(linhas().at(-1)).toMatchObject({ previa: true, veredito: null });
+    expect(linhas().filter((l) => l.etapa === 'previa')).toEqual([]);
+    expect(fake.leituras).toEqual([`feedsAmazonEmCurso/preco-${CONTA}`]);
+  });
+
+  it.each([['true'], ['0'], [' 1'], ['   ']])(
+    '★ NEAR-MISS: the flag %j is OFF — the line says no preview — and ONE WARNING names the flag, never its value',
+    async (valor) => {
+      vi.stubEnv('AMAZON_MODO_PRECO', 'on');
+      vi.stubEnv('AMAZON_CANARIO_PRECO', `${CONTA}:${SKU}`);
+      vi.stubEnv('AMAZON_PRECO_SO_VALIDACAO', valor);
+      await rodar({ data: tarefaPreco(), id: 'tarefa-preco-4' });
+      const aviso = linhas().filter((l) => l.etapa === 'previa');
+      expect(aviso).toEqual([
+        expect.objectContaining({
+          evento: 'preco',
+          severity: 'WARNING',
+          leitura: 'ignorado',
+          previa: false,
+          idTarefa: 'tarefa-preco-4',
+        }),
+      ]);
+      expect(String(aviso[0]?.message)).toContain('AMAZON_PRECO_SO_VALIDACAO');
+      expect(linhas().at(-1)).toMatchObject({ evento: 'preco', previa: false });
+    },
+  );
+
+  it('NEAR-MISS: the flag unset or exactly empty writes NO such line', async () => {
+    for (const valor of [undefined, '']) {
+      vi.stubEnv('AMAZON_MODO_PRECO', undefined);
+      vi.stubEnv('AMAZON_PRECO_SO_VALIDACAO', valor);
+      await rodar({ data: tarefaPreco(), id: 'tarefa-preco-5' });
+    }
+    expect(linhas().filter((l) => l.etapa === 'previa')).toEqual([]);
+    expect(linhas().filter((l) => l.evento === 'preco')).toHaveLength(2);
+  });
+
+  // Re-importing the root after `vi.resetModules()` loads the whole feed core again: CI headroom.
+  it(
+    '★ the bound task gets the dispatch’s deps, the context loader, the price producer from the stock root (a thunk) and the flag read per dispatch',
+    { timeout: 30_000 },
+    async () => {
+      vi.resetModules();
+      const espiao = vi.fn((_t: unknown, _deps: unknown) => Promise.resolve({ acao: 'espiado' }));
+      vi.doMock('../../lib/amazon/preco/processarPreco', async (importOriginal) => ({
+        ...(await importOriginal<typeof import('../../lib/amazon/preco/processarPreco')>()),
+        processarPrecoSkuAmazon: espiao,
+      }));
+      try {
+        const fila = await import('./filaLotes');
+        const raiz = await import('./agendadorEstoque');
+        const contexto = await import('../../lib/amazon/core/contexto');
+        const base = fila.depsDosLotesAmazon({ tentativa: 1, idTarefa: 't-preco' });
+        const t = tarefaPreco() as unknown as Parameters<typeof fila.TAREFA_PRECO_SKU_AMAZON>[1];
+        for (const [valor, esperado] of [
+          ['1', true],
+          [undefined, false],
+          ['true', false],
+        ] as const) {
+          vi.stubEnv('AMAZON_PRECO_SO_VALIDACAO', valor);
+          expect(await fila.TAREFA_PRECO_SKU_AMAZON(asDb(fake), t, base)).toEqual({
+            acao: 'espiado',
+          });
+          const [tarefa, deps] = espiao.mock.calls.at(-1) as [unknown, Record<string, unknown>];
+          expect(tarefa).toBe(t);
+          expect(deps).toMatchObject({
+            db: asDb(fake),
+            ambiente: process.env,
+            agora: base.agora,
+            logger: base.logger,
+            increment: base.increment,
+            registro: base.registro,
+            fetch: base.fetch,
+            soValidacao: esperado,
+          });
+          expect(deps.carregarContexto).toBe(contexto.loadAmazonContext);
+          expect(deps.produtor).toBe(raiz.criarProdutorPrecoAmazonDoAmbiente);
+        }
+        expect(espiao).toHaveBeenCalledTimes(3);
+      } finally {
+        vi.doUnmock('../../lib/amazon/preco/processarPreco');
+        vi.resetModules();
+      }
+    },
+  );
 });

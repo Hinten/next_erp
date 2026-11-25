@@ -911,7 +911,8 @@ export function sincronizarAvisosDaContaAmazon(
 
 /**
  * The five `amazonContaPrecisaAtencao` motivos the stock sync (step 12) owns:
- * every member but the order import's two.
+ * neither of the order import's two, nor any of the price flow's
+ * ({@link MOTIVOS_CONTA_PRECO_AMAZON}).
  */
 export const MOTIVOS_CONTA_ESTOQUE_AMAZON = [
   MOTIVO_CONTA_AMAZON.estoqueSemDeposito,
@@ -923,16 +924,31 @@ export const MOTIVOS_CONTA_ESTOQUE_AMAZON = [
 export type MotivoContaEstoqueAmazon = (typeof MOTIVOS_CONTA_ESTOQUE_AMAZON)[number];
 
 /**
+ * The four `amazonContaPrecisaAtencao` motivos the price push (step 13) owns
+ * (since PR 13-d): Amazon refused a listing's price, a price feed failed, a
+ * promotional price above the normal one, and a price run that held back a
+ * mass decrease. The price task raises two of them (a refused price, an
+ * inverted faixa); the price run and the price feed raise the rest.
+ */
+export const MOTIVOS_CONTA_PRECO_AMAZON = [
+  MOTIVO_CONTA_AMAZON.precoRecusadoPelaAmazon,
+  MOTIVO_CONTA_AMAZON.feedPrecoFalhou,
+  MOTIVO_CONTA_AMAZON.precoFaixaInvertida,
+  MOTIVO_CONTA_AMAZON.precoReducaoEmMassa,
+] as const satisfies readonly MotivoContaAmazon[];
+export type MotivoContaPrecoAmazon = (typeof MOTIVOS_CONTA_PRECO_AMAZON)[number];
+
+/**
  * The `amazonContaPrecisaAtencao` motivos each listings flow owns (step 13, PR
  * 13-b): ONE closed set per flow, so a flow's raiser never writes another
- * flow's row, nor the order import's. Stock owns its five; price owns none yet.
+ * flow's row, nor the order import's. Stock owns its five, price its four.
  */
 export const MOTIVOS_CONTA_LISTINGS_AMAZON = {
   [FLUXO_LISTING_AMAZON.estoque]: MOTIVOS_CONTA_ESTOQUE_AMAZON,
-  [FLUXO_LISTING_AMAZON.preco]: [],
+  [FLUXO_LISTING_AMAZON.preco]: MOTIVOS_CONTA_PRECO_AMAZON,
 } as const satisfies Record<FluxoListingAmazon, readonly MotivoContaAmazon[]>;
 
-/** The motivos flow `F` owns ({@link MOTIVOS_CONTA_LISTINGS_AMAZON}): `never` while it owns none. */
+/** The motivos flow `F` owns ({@link MOTIVOS_CONTA_LISTINGS_AMAZON}). */
 export type MotivoContaListingsAmazon<F extends FluxoListingAmazon> =
   (typeof MOTIVOS_CONTA_LISTINGS_AMAZON)[F][number];
 
