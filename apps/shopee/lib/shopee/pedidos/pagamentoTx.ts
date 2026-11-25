@@ -62,14 +62,66 @@
  * own `valor`. Deleting would be the one irreversible thing this path could do.
  *
  * ⚠️ The freeze has TWO directions and they cost the same. A delivery that maps
- * FEWER documents than we own is `degradado` and must not re-take the primary's
- * `valor`; a delivery that maps MORE of them while the DATA group is frozen must
- * not CREATE the extra ones — the stored primary is still standing at whatever a
- * poorer earlier delivery gave it (often the whole `valorCobrado`, because that
- * delivery carried no `payment_info`), so a new sibling at its own leg amount
- * lands Σ pagante ABOVE the nota. Both are the same arithmetic, and the growing
- * one is the worse of the two: `hasUserInteraction` is a LATCH, so no later
- * delivery ever repairs it.
+ * FEWER payment LEGS than we own is `degradado` and must not re-take the
+ * primary's `valor`; a delivery that maps MORE of them while the DATA group is
+ * frozen must not CREATE the extra ones — the stored primary is still standing at
+ * whatever a poorer earlier delivery gave it (often the whole `valorCobrado`,
+ * because that delivery carried no `payment_info`), so a new sibling at its own
+ * leg amount lands Σ pagante ABOVE the nota. Both are the same arithmetic, and
+ * the growing one is the worse of the two: `hasUserInteraction` is a LATCH, so
+ * no later delivery ever repairs it.
+ *
+ * ## The cupom leg: counted APART from the legs, RETIRED rather than frozen
+ *
+ * The `<order_sn>-desconto` cupom tracks the NF-e floor, which
+ * `orderPedidoTx.ts` re-derives on every delivery; the legs track what the
+ * buyer paid, which a `payment_info` loss does not move. Counting them together
+ * made a delivery on which the floor stopped binding look DEGRADED (one mapped,
+ * two owned): the legs froze, the unmapped cupom stayed pagante at its old
+ * `valor`, and the pedido's `vNF` went DOWN without it — Σ pagante above the
+ * nota, cStat 866, with no later delivery to repair it. So:
+ *
+ *  - `degradado` compares LEGS with LEGS. A cupom appearing or disappearing
+ *    never makes a delivery degraded.
+ *  - The cupom's lifecycle follows the MONEY MODEL. "The money answered" =
+ *    this delivery maps documents and they are not `dinheiroProvisorio`
+ *    (no `pay_time` maps nothing; provisional money never maps a cupom). Unless
+ *    the pedido is `congelado`: a MAPPED cupom re-takes its DATA — and is
+ *    CREATED when absent — even while the legs are degraded; a stored cupom the
+ *    money-answered delivery does NOT map is RETIRED: `estornado`,
+ *    `dataCancelamento` fill-once, `valor` and everything else left as stored.
+ *    Never deleted and never zeroed (a `vPag` of 0 is nothing to emit), and
+ *    only from a status the importer owns, so an operator's off-ladder status
+ *    stands and an already-retired one writes nothing. The date is the FIRST
+ *    retirement's, kept across a re-activation exactly as a leg keeps its
+ *    first reversal (test 16b).
+ *  - A cupom stored `estornado` never comes back on the order status ALONE,
+ *    or the next `READY_TO_SHIP` would resurrect a retired cupom and re-add
+ *    its `valor`. It comes back only together with a stored LEG that leaves
+ *    `estornado` in the same transaction (a reversed cancellation: the
+ *    cancellation took them out together), or when a delivery MAPS it again
+ *    on a pedido no human froze (the floor binds again). Every other move
+ *    follows the order like a leg's — out of Σ (a cancellation), inside it
+ *    (`aprovado ⇄ em_disputa`), and out of `em_processo_aprovacao` WITH the
+ *    legs, since a cupom that is not `estornado` is not one we retired and
+ *    the `vNF` still holds it (held back, it left Σ short: 865, and for ever
+ *    once a human latched the header).
+ *  - The floor's re-activation is an expected path: its own info line and
+ *    `movimentoCupom: 'reativado'`, never the loud `ressuscitado` meant for a
+ *    reversed order. When the ORDER comes back, its legs raise that warn and
+ *    the cupom reports nothing.
+ *  - Under `congelado` the cupom is a leg like any other — DATA frozen, no
+ *    create while a document of ours exists, never retired — and a MAPPED one
+ *    obeys the same return rule as an unmapped one: the latched `vNF` was
+ *    written without a cupom we retired.
+ *  - ⚠️ Two residuals. `estornado` cannot say WHO wrote it, so a cupom we
+ *    retired whose ORDER is then cancelled comes back when the order does;
+ *    off the latch the next money-answered delivery retires it again. And a
+ *    delivery whose escrow answers but whose `pay_time` is unusable maps
+ *    nothing here while the pedido still re-derives its money
+ *    (`dinheiroShopee.ts`'s `provisorio` needs a usable `pay_time`), so a
+ *    floor that stopped binding on it leaves the cupom pagante until the next
+ *    delivery with a usable `pay_time` retires it.
  *
  * ## Empty patch means empty write
  *
@@ -119,10 +171,16 @@ import {
 } from '@delfrance/schemas';
 
 import { totalDaNotaDoPedidoArmazenado } from './dinheiroShopee';
-import { idsDePagamentoDaOrdemShopee, makePagamentoIdShopee } from './orderIds';
+import {
+  SUFIXO_CUPOM_SHOPEE,
+  idsDePagamentoDaOrdemShopee,
+  makePagamentoIdShopee,
+} from './orderIds';
 import { maiorUs, vazio } from './orderMapping';
 import {
+  ALVO_STATUS_PAGAMENTO_SHOPEE,
   MAX_PAGAMENTOS_COMBINADOS_SHOPEE,
+  MOTIVO_STATUS_PAGAMENTO_SHOPEE,
   statusPagamentoAplicavel,
   type AlvoStatusPagamentoShopee,
   type MotivoStatusPagamentoShopee,
@@ -152,6 +210,26 @@ export type AcaoPagamentosShopee =
 /** Which of the five field groups actually reached a document. */
 export type GrupoPagamentoShopee = 'status' | 'tarifas' | 'diario' | 'dados' | 'preencher-uma-vez';
 
+/**
+ * What THIS delivery did to the cupom leg's place in Σ pagante — a log token,
+ * never a value. Both are status writes on the `<order_sn>-desconto` document.
+ */
+export type MovimentoCupomShopee =
+  /** A money-answered delivery stopped mapping it: `→ estornado`, `valor` kept. */
+  | 'retirado'
+  /**
+   * A delivery mapped it again over a stored `estornado` while no leg left
+   * `estornado`: back into Σ because the floor binds again. A reversed ORDER
+   * bringing it back with the legs is not this — the legs report that.
+   */
+  | 'reativado';
+
+/** Named members of {@link MovimentoCupomShopee}. */
+export const MOVIMENTO_CUPOM_SHOPEE = {
+  retirado: 'retirado',
+  reativado: 'reativado',
+} as const satisfies Record<string, MovimentoCupomShopee>;
+
 export interface ResultadoPagamentosShopee {
   readonly acao: AcaoPagamentosShopee;
   readonly criados: number;
@@ -167,8 +245,13 @@ export interface ResultadoPagamentosShopee {
   readonly statusEscrito: StatusPagamento | null;
   /** Why the primary's status was not written, or `null` when it was. */
   readonly motivoStatus: MotivoStatusPagamentoShopee | null;
-  /** A terminal `estornado` was left on at least one document. Logged loudly. */
+  /**
+   * A terminal `estornado` was left on at least one LEG. Logged loudly. ⚠️ The
+   * cupom's own re-activation never sets it — see {@link movimentoCupom}.
+   */
   readonly statusRessuscitado: boolean;
+  /** The cupom leg retired or re-activated by THIS write, else `null`. */
+  readonly movimentoCupom: MovimentoCupomShopee | null;
   /** The pedido's `hasUserInteraction`, re-derived inside the transaction. */
   readonly congelado: boolean;
   /**
@@ -307,6 +390,43 @@ function statusArmazenado(raw: Record<string, unknown>): StatusPagamento | null 
 }
 
 /* -------------------------------------------------------------------------- */
+/*                         the cupom leg's status rules                        */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The cupom's RETIREMENT, as a ladder target — so it goes through the SAME
+ * {@link statusPagamentoAplicavel} as every other write, and inherits its three
+ * refusals for free: an already-`estornado` cupom is `sem-mudanca` (a replay
+ * writes nothing), an operator's off-ladder status is `fora-da-escada`, and a
+ * `null` or ladder status moves.
+ */
+const ALVO_CUPOM_RETIRADO: AlvoStatusPagamentoShopee = {
+  tipo: ALVO_STATUS_PAGAMENTO_SHOPEE.status,
+  status: STATUS_PAGAMENTO.estornado,
+};
+
+/** The no-write verdict for a cupom this delivery may not bring back into Σ. */
+const CUPOM_FORA_DA_SOMA: VereditoStatusPagamentoShopee = {
+  escrever: false,
+  motivo: MOTIVO_STATUS_PAGAMENTO_SHOPEE.cupomForaDaSoma,
+};
+
+/**
+ * Does this verdict take the document OUT of `estornado`? Read off the
+ * ladder's own `ressuscitado` — and every such write lands back in Σ pagante,
+ * because `estornado → em_processo_aprovacao` is refused as `regressivo`.
+ *
+ * ⚠️ Keyed on the stored `estornado`, never on "outside Σ": a cupom at
+ * `em_processo_aprovacao` waits for the order's approval WITH the legs, and a
+ * rule that held it there while the legs moved left Σ short of a `vNF` that
+ * still holds it. Moves inside Σ (`aprovado ⇄ em_disputa`) and out of a
+ * legacy `null` are not returns either.
+ */
+function saiDoEstorno(veredito: VereditoStatusPagamentoShopee): boolean {
+  return veredito.escrever && veredito.ressuscitado;
+}
+
+/* -------------------------------------------------------------------------- */
 /*                              the field groups                               */
 /* -------------------------------------------------------------------------- */
 
@@ -366,8 +486,9 @@ interface ContextoPatch {
  * The patch for ONE stored document, built against the RAW snapshot.
  *
  * `mapeado === null` is the document of ours this delivery did NOT map — the
- * sibling a degraded delivery left behind, or every document of ours when the
- * creation gate emptied the mapped set. It still takes the ALWAYS group's
+ * sibling a degraded delivery left behind, every document of ours when the
+ * creation gate emptied the mapped set, or the cupom a money-answered delivery
+ * retires (its verdict then targets `estornado`). It still takes the ALWAYS group's
  * `status_pagamento` and the `dataCancelamento` that goes with it; it takes
  * nothing else, because `tarifas` and `marketplace` describe the ORDER and live
  * on the primary, and re-taking the DATA group from a leg this payload no longer
@@ -502,6 +623,7 @@ function resultadoSemEscrita(
     statusEscrito: null,
     motivoStatus: null,
     statusRessuscitado: false,
+    movimentoCupom: null,
     congelado: extra.congelado,
     pedidoJaExistia: extra.pedidoJaExistia,
     somaPagante: extra.somaPagante ?? 0,
@@ -577,6 +699,34 @@ export async function salvarPagamentosShopee(
       });
     }
 
+    /* ------------------- the cupom leg, counted APART ----------------------- */
+    // The legs and the cupom answer to different things (the module header):
+    // the legs to what the buyer paid, the cupom to the floor. Every count below
+    // is over LEGS; the cupom has its own rules.
+    const idCupom = makePagamentoIdShopee(contaId, orderSn, SUFIXO_CUPOM_SHOPEE);
+    const pernasNossas = nossos.filter((d) => d.id !== idCupom);
+    const pernasMapeadas = mapeados.docs.filter((m) => m.docId !== idCupom).length;
+    // "The money answered": an escrow-backed delivery. No usable `pay_time` maps
+    // NOTHING, and provisional money never maps a cupom, so neither may decide
+    // that the floor stopped binding.
+    const dinheiroRespondeu = mapeados.docs.length > 0 && !mapeados.dinheiroProvisorio;
+    // A stored LEG leaving `estornado` in THIS transaction — a reversed
+    // cancellation. Re-derived from this transaction's read and the order's
+    // target: exactly the verdict `avaliar` reaches for that leg, mapped or
+    // not. It is what lets an `estornado` cupom come back with the legs a
+    // cancellation took out together with it.
+    //
+    // ⚠️ "Leaves `estornado`", never "enters Σ": legs moving from
+    // `em_processo_aprovacao` into Σ are the order getting PAID, which says
+    // nothing about the floor, so a cupom we retired while they waited must
+    // stay out (test 25q).
+    const pernaSaiDoEstorno = pernasNossas.some((d) =>
+      saiDoEstorno(statusPagamentoAplicavel(statusArmazenado(d.raw), alvoStatus)),
+    );
+    /** The cupom leaving `estornado` while no leg does: a return the order cannot explain. */
+    const cupomVoltaSozinho = (veredito: VereditoStatusPagamentoShopee): boolean =>
+      saiDoEstorno(veredito) && !pernaSaiDoEstorno;
+
     /* -------------------------- the degraded delivery ----------------------- */
     // ⚠️ A later delivery carrying FEWER legs never deletes, never neutralises and
     // never re-takes the primary's `valor`: "one leg now" is a payload that lost
@@ -594,6 +744,13 @@ export async function salvarPagamentosShopee(
     // A delivery that maps NOTHING (the creation gate, an unusable `pay_time`)
     // is not degraded: there is no DATA group to run and nothing to freeze.
     //
+    // ⚠️ LEGS against LEGS, never documents against documents. The cupom is not
+    // a leg: a delivery on which the floor stopped binding maps one document
+    // where two are stored, and reading THAT as a shrink froze the legs and
+    // left the unmapped cupom pagante while the pedido's `vNF` went down
+    // without it — cStat 866 for ever (PR #2224). The cupom's own lifecycle is
+    // below.
+    //
     // ⚠️ PROVISIONAL money is the same defect by a third route: a paid delivery
     // whose escrow did not answer maps the buyer leg from the detail
     // (`dinheiroShopee.ts`), and re-taking it over documents an earlier,
@@ -601,15 +758,15 @@ export async function salvarPagamentosShopee(
     // Frozen exactly like a shrink — and only over documents of ours, so a
     // first delivery still creates its set.
     const degradado =
-      (mapeados.docs.length > 0 && mapeados.docs.length < nossos.length) ||
+      (pernasMapeadas > 0 && pernasMapeadas < pernasNossas.length) ||
       (mapeados.dinheiroProvisorio && nossos.length > 0);
     if (degradado) {
       // eslint-disable-next-line no-console -- counts only; the fact that a delivery lost detail is the finding
       console.info('[shopee/pagamentos] entrega degradada — grupo `dados` congelado', {
         orderSn,
         pedidoId,
-        armazenados: nossos.length,
-        recebidos: mapeados.docs.length,
+        pernasArmazenadas: pernasNossas.length,
+        pernasRecebidas: pernasMapeadas,
         dinheiroProvisorio: mapeados.dinheiroProvisorio,
       });
     }
@@ -631,10 +788,19 @@ export async function salvarPagamentosShopee(
     // arrived still gets the whole set created (Σ is established by those
     // creates, not endangered by them), and so does the operator-deleted doc of
     // test 21 — nothing of ours is left to disagree with.
+    //
+    // ⚠️ The CUPOM is gated by `congelado` alone. It tracks the floor, which
+    // `orderPedidoTx.ts` keeps re-deriving on a pedido no human froze, so a
+    // degraded LEG set is no reason to withhold it: the legs' frozen sum is the
+    // buyer leg, which a `payment_info` loss does not move, and the cupom is
+    // what the floor adds on top.
     const conjuntoCongelado = (congelado || degradado) && nossos.length > 0;
+    const cupomCongelado = congelado && nossos.length > 0;
     let naoCriados = 0;
 
     const ctx: ContextoPatch = { watermarkUs, congelado, degradado };
+    // The cupom's DATA is frozen by `congelado` only — never by the legs.
+    const ctxCupom: ContextoPatch = { watermarkUs, congelado, degradado: false };
     const porId = new Map(nossos.map((d) => [d.id, d.raw]));
     const grupos = new Set<GrupoPagamentoShopee>();
     const escritos: { docId: string; idCampo: string }[] = [];
@@ -648,8 +814,10 @@ export async function salvarPagamentosShopee(
     let statusEscrito: StatusPagamento | null = null;
     let motivoStatus: MotivoStatusPagamentoShopee | null = null;
     let statusRessuscitado = false;
+    let movimentoCupom: MovimentoCupomShopee | null = null;
     let vereditoDoPrimario: VereditoStatusPagamentoShopee | null = null;
 
+    /** A LEG's verdict: the order's target through the ladder. */
     const avaliar = (raw: Record<string, unknown> | null): VereditoStatusPagamentoShopee => {
       const veredito = statusPagamentoAplicavel(
         raw === null ? null : statusArmazenado(raw),
@@ -665,24 +833,87 @@ export async function salvarPagamentosShopee(
       return veredito;
     };
 
+    /**
+     * The MAPPED cupom's verdict: the order's target, exactly like a leg —
+     * re-activation over a stored `estornado` included, because the floor binds
+     * again — with ONE refusal: under `congelado`, a return no leg shares
+     * ({@link cupomVoltaSozinho}) is a cupom WE retired, and the latched `vNF`
+     * was written without it.
+     *
+     * ⚠️ Its re-activation is EXPECTED (the floor moves with the shipping cost),
+     * so it logs its own info line and never sets {@link statusRessuscitado}.
+     * A return the legs SHARE is the ORDER coming back: the legs raise that
+     * warn themselves, and the cupom reports nothing — the floor did not move.
+     */
+    const avaliarCupomMapeado = (
+      raw: Record<string, unknown> | null,
+    ): VereditoStatusPagamentoShopee => {
+      const veredito = statusPagamentoAplicavel(
+        raw === null ? null : statusArmazenado(raw),
+        alvoStatus,
+      );
+      if (!cupomVoltaSozinho(veredito)) return veredito;
+      if (congelado) return CUPOM_FORA_DA_SOMA;
+      movimentoCupom = MOVIMENTO_CUPOM_SHOPEE.reativado;
+      // eslint-disable-next-line no-console -- ids only; the floor binding again is the finding
+      console.info('[shopee/pagamentos] cupom de desconto reativado — o piso voltou a valer', {
+        orderSn,
+        pedidoId,
+      });
+      return veredito;
+    };
+
+    /**
+     * The verdict for a STORED cupom this delivery does NOT map.
+     *
+     * A money-answered delivery on a pedido no human froze RETIRES it — the
+     * floor no longer binds, and `orderPedidoTx.ts` has already taken `vNF` down
+     * without it. Any other delivery (no `pay_time`, provisional money,
+     * `congelado`) says nothing about the floor: the cupom takes the order's
+     * target like a leg, except a return from `estornado` no leg shares
+     * ({@link cupomVoltaSozinho}) — or the next `READY_TO_SHIP` would resurrect
+     * a retired cupom and re-add its `valor`.
+     */
+    const avaliarCupomNaoMapeado = (
+      raw: Record<string, unknown>,
+    ): VereditoStatusPagamentoShopee => {
+      const armazenado = statusArmazenado(raw);
+      if (dinheiroRespondeu && !congelado) {
+        const veredito = statusPagamentoAplicavel(armazenado, ALVO_CUPOM_RETIRADO);
+        if (veredito.escrever) {
+          movimentoCupom = MOVIMENTO_CUPOM_SHOPEE.retirado;
+          // eslint-disable-next-line no-console -- ids only; the floor ceasing to bind is the finding
+          console.info('[shopee/pagamentos] cupom de desconto retirado — o piso deixou de valer', {
+            orderSn,
+            pedidoId,
+          });
+        }
+        return veredito;
+      }
+      const veredito = statusPagamentoAplicavel(armazenado, alvoStatus);
+      return cupomVoltaSozinho(veredito) ? CUPOM_FORA_DA_SOMA : veredito;
+    };
+
     /* ------------------------- the mapped documents ------------------------- */
     for (const mapeado of mapeados.docs) {
+      const ehCupom = mapeado.docId === idCupom;
       const ref = pagamentoCollection.docRef(db, { pedidoId }, mapeado.docId);
       const raw = porId.get(mapeado.docId);
 
       // ⚠️ Skipped BEFORE `avaliar`: a document this delivery does not create has
       // no status written and must not report one (nor raise a `ressuscitado`
       // warn about a document that does not exist).
-      if (raw === undefined && conjuntoCongelado) {
+      if (raw === undefined && (ehCupom ? cupomCongelado : conjuntoCongelado)) {
         naoCriados += 1;
         continue;
       }
 
-      const veredito = avaliar(raw ?? null);
+      const veredito = ehCupom ? avaliarCupomMapeado(raw ?? null) : avaliar(raw ?? null);
       if (mapeado.indice === 0) vereditoDoPrimario = veredito;
+      const ctxDoDoc = ehCupom ? ctxCupom : ctx;
 
       if (raw === undefined) {
-        const corpo = corpoDeCriacao(mapeado, ctx, veredito);
+        const corpo = corpoDeCriacao(mapeado, ctxDoDoc, veredito);
         // `tx.create`, never `tx.set`: OCC turns a concurrent create into an
         // abort-and-retry that falls through to the update path, and if the
         // engine ever failed to detect it, `create` fails loudly instead of
@@ -698,7 +929,7 @@ export async function salvarPagamentosShopee(
         continue;
       }
 
-      const patch = construirPatch(raw, mapeado, ctx, veredito);
+      const patch = construirPatch(raw, mapeado, ctxDoDoc, veredito);
       if (Object.keys(patch).length === 0) continue;
       // Monotonic and never null: `parseMergePatch` keeps a null and would erase
       // the stamp. Appended ONLY here, so an empty patch stays empty.
@@ -726,11 +957,15 @@ export async function salvarPagamentosShopee(
       });
     }
 
-    /* ---- documents of ours this delivery did NOT map (degraded / gated) ---- */
+    /* -- documents of ours this delivery did NOT map (degraded / gated / the -- */
+    /* -- cupom whose floor stopped binding) ----------------------------------- */
+    // ⚠️ The cupom's retirement is a `tx.update` on a document THIS
+    // transaction's whole-subcollection read returned, decided from that read —
+    // nothing captured outside the callback, no second transaction.
     const mapeadosPorId = new Set(mapeados.docs.map((m) => m.docId));
     for (const { id, raw } of nossos) {
       if (mapeadosPorId.has(id)) continue;
-      const veredito = avaliar(raw);
+      const veredito = id === idCupom ? avaliarCupomNaoMapeado(raw) : avaliar(raw);
       if (vereditoDoPrimario === null && id === makePagamentoIdShopee(contaId, orderSn)) {
         vereditoDoPrimario = veredito;
       }
@@ -768,6 +1003,7 @@ export async function salvarPagamentosShopee(
       statusEscrito,
       motivoStatus,
       statusRessuscitado,
+      movimentoCupom,
       congelado,
       pedidoJaExistia: true,
       somaPagante,

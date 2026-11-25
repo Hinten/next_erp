@@ -666,7 +666,13 @@ export type MotivoStatusPagamentoShopee =
   /** Backwards on the ordered ladder (a late `PENDING` over an `aprovado`). */
   | 'regressivo'
   /** The stored status belongs to the business, not to Shopee. */
-  | 'fora-da-escada';
+  | 'fora-da-escada'
+  /**
+   * The CUPOM leg sits outside Σ pagante and this delivery may not bring it
+   * back in — decided by `pagamentoTx.ts`, never by
+   * {@link statusPagamentoAplicavel}, which knows nothing about the cupom.
+   */
+  | 'cupom-fora-da-soma';
 
 /** Named members of {@link MotivoStatusPagamentoShopee}. */
 export const MOTIVO_STATUS_PAGAMENTO_SHOPEE = {
@@ -674,6 +680,7 @@ export const MOTIVO_STATUS_PAGAMENTO_SHOPEE = {
   semMudanca: 'sem-mudanca',
   regressivo: 'regressivo',
   foraDaEscada: 'fora-da-escada',
+  cupomForaDaSoma: 'cupom-fora-da-soma',
 } as const satisfies Record<string, MotivoStatusPagamentoShopee>;
 
 export type VereditoStatusPagamentoShopee =

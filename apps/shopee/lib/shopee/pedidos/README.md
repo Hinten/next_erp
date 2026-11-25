@@ -82,9 +82,13 @@ The four real orders, amounts only, are `testing/vetoresDinheiro.ts`;
 `dinheiroShopee.test.ts` pins each arm with a near-miss and `totais.test.ts`
 pins Σ pagante = `vNF` over every escrow vector through the shared pure
 functions (and that the no-escrow arm deliberately does not close).
-⚠️ A stored cupom leg whose floor no longer binds on a later, poorer delivery is
-the degraded-delivery freeze below: it keeps its `valor`, and the import log's
-`divergenciaDeSoma` is where that shows.
+⚠️ The cupom leg is counted APART from the payment legs, because it follows the
+floor, which the pedido re-derives on every delivery: on a pedido no human froze,
+an escrow-backed delivery that no longer maps it RETIRES it (`estornado`,
+`valor` kept, never deleted) and one that maps it again re-activates it; under
+`hasUserInteraction` it is frozen like a leg and never retired, and a cupom we
+retired comes back only with legs leaving `estornado` (a reversed cancellation)
+(`pagamentoTx.ts`'s header; the import log's `movimentoCupom`).
 
 ## Payments and settlement (`lib/shopee/pedidos/pagamento*.ts` + `liquida*.ts`, step 6)
 
@@ -136,8 +140,9 @@ which moves until the order completes — and it is NOT the pedido's
 transaction's `divergenciaDeSoma` compares against the STORED pedido's `vNF`
 (`totalDaNotaDoPedidoArmazenado`). A non-pagante status makes a payment
 invisible to the NF-e rather than merely unpaid.
-⚠️ A later delivery carrying FEWER entries never deletes, never neutralises and
-never re-takes the primary's `valor` — whether `payment_info` survives past
+⚠️ A later delivery carrying FEWER payment legs (the cupom is not one) never
+deletes, never neutralises and never re-takes the primary's `valor` — whether
+`payment_info` survives past
 `READY_TO_SHIP` is settle-live register item 22 and is **NOT yet known**, so a
 shrinking payload is read as lost detail either way — and re-taking it would
 nearly double Σ pagante against the siblings an earlier, richer delivery wrote.
@@ -153,7 +158,8 @@ either: the stored primary is still standing at whatever a poorer earlier
 delivery gave it (often the WHOLE buyer leg, because that delivery carried
 no `payment_info` at all), so a new sibling at its own leg amount lands Σ
 pagante ABOVE the nota. `hasUserInteraction` is a LATCH, so nothing later
-repairs it. One `console.info` says the set could not grow. The gate needs at
+repairs it (the cupom leg is withheld by that latch alone, never by degraded
+legs). One `console.info` says the set could not grow. The gate needs at
 least one document of OURS already stored: a pedido a human touched before its
 first pagamento arrived still gets the whole set created, and so does one the
 operator deleted.

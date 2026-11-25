@@ -1033,6 +1033,9 @@ export async function gravarPreparoPedidoShopee(
     // ⚠️ Must be 0: on a marketplace `canalDevolveTroco` is false, so an excess
     // is cStat 866 and a shortfall 865 — no nota at all, for ever.
     divergenciaDeSoma: pagamentos?.divergenciaDeSoma ?? null,
+    // The cupom leg retired (the floor stopped binding) or re-activated by
+    // THIS delivery — a token, never a value (`pagamentoTx.ts`).
+    movimentoCupom: pagamentos?.movimentoCupom ?? null,
     // ⚠️ THREE numbers. `tarifas` is the clamped figure the ERP charges and
     // `tarifasBrutas` its pre-clamp raw — both from the SHIPPED composition (the
     // spread), so on an ordinary order they are one reading printed twice (what
