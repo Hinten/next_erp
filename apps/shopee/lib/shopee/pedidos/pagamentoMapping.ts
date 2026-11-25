@@ -668,11 +668,12 @@ export type MotivoStatusPagamentoShopee =
   /** The stored status belongs to the business, not to Shopee. */
   | 'fora-da-escada'
   /**
-   * The CUPOM leg sits outside Σ pagante and this delivery may not bring it
-   * back in — decided by `pagamentoTx.ts`, never by
-   * {@link statusPagamentoAplicavel}, which knows nothing about the cupom.
+   * A document of the kind `pagamentoTx.ts` RETIRES (the cupom leg, or a
+   * non-primary leg an amount-driven collapse superseded) sits `estornado` and
+   * this delivery may not bring it back into Σ pagante — decided there, never
+   * by {@link statusPagamentoAplicavel}, which knows nothing about either.
    */
-  | 'cupom-fora-da-soma';
+  | 'retirado-fora-da-soma';
 
 /** Named members of {@link MotivoStatusPagamentoShopee}. */
 export const MOTIVO_STATUS_PAGAMENTO_SHOPEE = {
@@ -680,7 +681,7 @@ export const MOTIVO_STATUS_PAGAMENTO_SHOPEE = {
   semMudanca: 'sem-mudanca',
   regressivo: 'regressivo',
   foraDaEscada: 'fora-da-escada',
-  cupomForaDaSoma: 'cupom-fora-da-soma',
+  retiradoForaDaSoma: 'retirado-fora-da-soma',
 } as const satisfies Record<string, MotivoStatusPagamentoShopee>;
 
 export type VereditoStatusPagamentoShopee =
@@ -1028,7 +1029,11 @@ function cartaoDaEntrada(
  * one `console.warn`. The asymmetry is deliberate: N documents whose sum is
  * wrong is a nota that cannot be emitted, while one document with the right
  * total is merely less detailed. (Under FOB with freight paid, the legs sum to
- * `buyer_total_amount` — freight included — and therefore collapse.)
+ * `buyer_total_amount` — freight included — and therefore collapse.) A later
+ * money-answered collapse that lost no detail, on a pedido no human froze,
+ * RETIRES the superseded legs an earlier delivery stored (`pagamentoTx.ts`,
+ * «The superseded legs»), so the primary's whole buyer leg is never summed
+ * beside them.
  *
  * ## The cupom leg
  *

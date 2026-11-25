@@ -1036,6 +1036,10 @@ export async function gravarPreparoPedidoShopee(
     // The cupom leg retired (the floor stopped binding) or re-activated by
     // THIS delivery — a token, never a value (`pagamentoTx.ts`).
     movimentoCupom: pagamentos?.movimentoCupom ?? null,
+    // Non-primary legs an amount-driven collapse superseded (retired) or a
+    // combined set that fits again brought back, on THIS delivery — counts.
+    pernasRetiradas: pagamentos?.pernasRetiradas ?? 0,
+    pernasReativadas: pagamentos?.pernasReativadas ?? 0,
     // ⚠️ THREE numbers. `tarifas` is the clamped figure the ERP charges and
     // `tarifasBrutas` its pre-clamp raw — both from the SHIPPED composition (the
     // spread), so on an ordinary order they are one reading printed twice (what

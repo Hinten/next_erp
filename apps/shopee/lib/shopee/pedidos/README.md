@@ -87,8 +87,8 @@ floor, which the pedido re-derives on every delivery: on a pedido no human froze
 an escrow-backed delivery that no longer maps it RETIRES it (`estornado`,
 `valor` kept, never deleted) and one that maps it again re-activates it; under
 `hasUserInteraction` it is frozen like a leg and never retired, and a cupom we
-retired comes back only with legs leaving `estornado` (a reversed cancellation)
-(`pagamentoTx.ts`'s header; the import log's `movimentoCupom`).
+retired comes back only with the PRIMARY leaving `estornado` (a reversed
+cancellation) (`pagamentoTx.ts`'s header; the import log's `movimentoCupom`).
 
 ## Payments and settlement (`lib/shopee/pedidos/pagamento*.ts` + `liquida*.ts`, step 6)
 
@@ -151,6 +151,17 @@ deleted — one the operator removed is recreated on the next delivery, because
 the money really did move. A delivery whose money is PROVISIONAL (a paid order
 whose escrow did not answer, `dinheiroProvisorio`) is degraded too, whatever
 its document count, as soon as one document of ours is stored.
+⚠️ **Degraded means DETAIL LOSS** — fewer usable `payment_info` entries than
+the legs still in play (a sibling we retired, beside a primary outside
+`estornado`, no longer counts). A money-answered delivery carrying at least as
+many, which the mapper COLLAPSED because the buyer leg moved (provisional
+money's freight-inclusive total giving way to the escrow's, Codex on PR #2224),
+lost nothing: off the latch, the primary re-takes the whole buyer leg and every
+superseded sibling is RETIRED like the cupom (`estornado`, `valor` kept) and
+returns only by the cupom's rule (the import log's `pernasRetiradas` /
+`pernasReativadas`). Residual: legs created on provisional money whose first
+escrow-answered delivery also lost `payment_info` stay frozen above `vNF` until
+a delivery carrying as many entries arrives.
 ⚠️ **The freeze has a second direction, and it costs the same.** While the DATA
 group is frozen — by `degradado` or by a human's `hasUserInteraction` — a
 delivery that maps MORE documents than we own does not CREATE the extra ones

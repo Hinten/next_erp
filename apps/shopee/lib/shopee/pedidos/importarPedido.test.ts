@@ -1261,6 +1261,186 @@ describe('importarPedidoShopee — o dinheiro da ordem (paridade com o legado)',
     expect(somaPaganteGravada(c)).toBe(20);
     expect(linhaDoImport(0).divergenciaDeSoma).toBe(0);
   });
+
+  /**
+   * The Codex vector on PR #2224, inline amounts only: a BR order under FOB
+   * (the conta has no modalidade), goods 50 (2 × 25), freight 10 the buyer
+   * paid, and a combined payment of two entries that sum to the
+   * freight-INCLUSIVE 60.
+   */
+  function detalheCombinado(patch: Record<string, unknown> = {}): ShopeeOrderDetailRow {
+    const item = (detalheSG().item_list ?? [])[0]!;
+    return detalheBR({
+      total_amount: 60,
+      estimated_shipping_fee: 10,
+      payment_method: 'Combined Payment',
+      payment_info: [
+        { payment_method: 'pix', payment_amount: 30, card_brand: '', transaction_id: 'AUT-PIX' },
+        {
+          payment_method: 'credit_card',
+          payment_amount: 30,
+          card_brand: 'visa',
+          transaction_id: 'AUT-CC',
+        },
+      ],
+      item_list: [{ ...item, model_discounted_price: 25, model_original_price: 25 }],
+      ...patch,
+    });
+  }
+
+  function escrowCombinado(): ShopeeEscrowDetail {
+    return escrowSGCom({
+      renda: { buyer_total_amount: 60, buyer_paid_shipping_fee: 10, estimated_shipping_fee: 10 },
+      linha: { discounted_price: 50, original_price: 50, selling_price: 50 },
+    });
+  }
+
+  it('⚠️ o vetor do Codex (PR #2224): combinado criado no dinheiro PROVISÓRIO, o escrow responde ⇒ o irmão é retirado e Σ pagante = vNF; o replay não grava; a provisória seguinte não ressuscita', async () => {
+    const IRMAO_ID = makePagamentoIdShopee(INT, ORDER_SN, '-1');
+    const pagamento = (c: Cenario, id: string) => c.db.store[`${PAGAMENTOS_PATH}/${id}`]!.data;
+    const c = cenario({ detalhe: detalheCombinado(), escrow: escrowCombinado() });
+
+    // Delivery 1 — the FIRST import, `get_escrow_detail` fails (contained): the
+    // buyer leg is the detail's freight-inclusive 60, the entries fit it, and
+    // two legs are created. Provisional money does not close (the NF-e
+    // refuses rather than emits).
+    c.getEscrowDetail.mockRejectedValueOnce(new ShopeeNetworkError('sem resposta'));
+    await importar(c);
+    expect(linhaDoImport(0).dinheiroProvisorio).toBe(true);
+    expect(c.db.idsEm(PAGAMENTOS_PATH).sort()).toEqual([PAGAMENTO_ID, IRMAO_ID].sort());
+    expect(pagamento(c, PAGAMENTO_ID).valor).toBe(30);
+    expect(pagamento(c, IRMAO_ID).valor).toBe(30);
+    expect(dinheiroGravado(c).vNF).toBe(50);
+    expect(linhaDoImport(0).divergenciaDeSoma).toBe(10);
+
+    // Delivery 2 — a newer order clock and the escrow answers: buyer leg
+    // 60 − 10 = 50, and the SAME entries collapse. The primary re-takes 50 and
+    // the sibling is RETIRED, its 30 kept.
+    c.getOrderDetail.mockResolvedValue({
+      order_list: [detalheCombinado({ update_time: UPDATE_TIME_S + 60 })],
+    });
+    infos.length = 0;
+    const r2 = await importar(c);
+    expect(r2.acaoPagamentos).toBe('atualizado');
+    expect(dinheiroGravado(c)).toMatchObject({ vNF: 50, pagamento: 50 });
+    expect(pagamento(c, IRMAO_ID)).toMatchObject({
+      valor: 30,
+      status_pagamento: STATUS_PAGAMENTO.estornado,
+    });
+    // ⚠️ The pair that matters, read back from what is STORED.
+    expect(somaPaganteGravada(c)).toBe(50);
+    expect(linhaDoImport(0).somaPagante).toBe(50);
+    expect(linhaDoImport(0).divergenciaDeSoma).toBe(0);
+    expect(linhaDoImport(0).pernasRetiradas).toBe(1);
+    expect(linhaDoImport(0).pernasReativadas).toBe(0);
+
+    // Delivery 3 — the byte-identical replay writes nothing.
+    infos.length = 0;
+    const replay = await importar(c);
+    expect(replay.acao).toBe('ignorado-sem-mudanca');
+    expect(replay.acaoPagamentos).toBe('ignorado-sem-mudanca');
+    expect(replay.pagamentosGravados).toBe(0);
+    expect(linhaDoImport(0).pernasRetiradas).toBe(0);
+
+    // Delivery 4 — newer, `READY_TO_SHIP`, the escrow fails again: provisional
+    // money maps the sibling again (the entries fit 60), and `aprovado` would
+    // resurrect it — Σ 80 against 50, for ever.
+    c.getOrderDetail.mockResolvedValue({
+      order_list: [detalheCombinado({ update_time: UPDATE_TIME_S + 120 })],
+    });
+    c.getEscrowDetail.mockRejectedValueOnce(new ShopeeNetworkError('sem resposta'));
+    infos.length = 0;
+    avisos.length = 0;
+    await importar(c);
+    expect(linhaDoImport(0).dinheiroProvisorio).toBe(true);
+    expect(pagamento(c, IRMAO_ID).status_pagamento).toBe(STATUS_PAGAMENTO.estornado);
+    expect(dinheiroGravado(c)).toMatchObject({ vNF: 50, pagamento: 50 });
+    expect(somaPaganteGravada(c)).toBe(50);
+    expect(linhaDoImport(0).divergenciaDeSoma).toBe(0);
+    expect(linhaDoImport(0).pernasReativadas).toBe(0);
+    expect(avisos.filter((a) => String(a[0]).includes('ressuscitado'))).toEqual([]);
+  });
+
+  it('⚠️ depois da retirada: uma entrega SEM payment_info com a perna do comprador movida fecha Σ = vNF; o combinado que volta a fechar REATIVA o irmão (o log diz `pernasReativadas`)', async () => {
+    const IRMAO_ID = makePagamentoIdShopee(INT, ORDER_SN, '-1');
+    const pagamento = (c: Cenario, id: string) => c.db.store[`${PAGAMENTOS_PATH}/${id}`]!.data;
+    const c = cenario({ detalhe: detalheCombinado(), escrow: escrowCombinado() });
+
+    // Deliveries 1–2 of the Codex vector: two legs on provisional money, then
+    // the escrow answers and the sibling is retired (50 + 30@estornado).
+    c.getEscrowDetail.mockRejectedValueOnce(new ShopeeNetworkError('sem resposta'));
+    await importar(c);
+    c.getOrderDetail.mockResolvedValue({
+      order_list: [detalheCombinado({ update_time: UPDATE_TIME_S + 60 })],
+    });
+    infos.length = 0;
+    await importar(c);
+    expect(linhaDoImport(0).pernasRetiradas).toBe(1);
+
+    // Delivery 3 — SHIPPED, `payment_info` gone (settle-live item 22), and the
+    // escrow's buyer total moves to 58: the vNF follows it down. The retired
+    // sibling is no detail to lose, so the primary re-takes the buyer leg.
+    c.getOrderDetail.mockResolvedValue({
+      order_list: [
+        detalheCombinado({
+          order_status: 'SHIPPED',
+          update_time: UPDATE_TIME_S + 120,
+          payment_info: [],
+        }),
+      ],
+    });
+    c.getEscrowDetail.mockResolvedValue(
+      escrowSGCom({
+        renda: { buyer_total_amount: 58, buyer_paid_shipping_fee: 10, estimated_shipping_fee: 10 },
+        linha: { discounted_price: 50, original_price: 50, selling_price: 50 },
+      }),
+    );
+    infos.length = 0;
+    await importar(c);
+    expect(dinheiroGravado(c)).toMatchObject({ vNF: 48, pagamento: 48 });
+    expect(pagamento(c, IRMAO_ID).status_pagamento).toBe(STATUS_PAGAMENTO.estornado);
+    expect(somaPaganteGravada(c)).toBe(48);
+    expect(linhaDoImport(0).divergenciaDeSoma).toBe(0);
+
+    // Delivery 4 — the escrow's buyer leg is 50 again and two entries of 25
+    // FIT it: the sibling is mapped, re-takes 25 and comes back into Σ.
+    c.getOrderDetail.mockResolvedValue({
+      order_list: [
+        detalheCombinado({
+          order_status: 'SHIPPED',
+          update_time: UPDATE_TIME_S + 180,
+          payment_info: [
+            {
+              payment_method: 'pix',
+              payment_amount: 25,
+              card_brand: '',
+              transaction_id: 'AUT-PIX',
+            },
+            {
+              payment_method: 'credit_card',
+              payment_amount: 25,
+              card_brand: 'visa',
+              transaction_id: 'AUT-CC',
+            },
+          ],
+        }),
+      ],
+    });
+    c.getEscrowDetail.mockResolvedValue(escrowCombinado());
+    infos.length = 0;
+    await importar(c);
+    expect(linhaDoImport(0).pernasReativadas).toBe(1);
+    expect(linhaDoImport(0).pernasRetiradas).toBe(0);
+    expect(pagamento(c, IRMAO_ID)).toMatchObject({
+      valor: 25,
+      status_pagamento: STATUS_PAGAMENTO.aprovado,
+    });
+    expect(dinheiroGravado(c)).toMatchObject({ vNF: 50, pagamento: 25 });
+    expect(somaPaganteGravada(c)).toBe(50);
+    expect(linhaDoImport(0).divergenciaDeSoma).toBe(0);
+    // An expected path: never the loud warn meant for a reversed order.
+    expect(avisos.filter((a) => String(a[0]).includes('ressuscitado'))).toEqual([]);
+  });
 });
 
 /* -------------------------------------------------------------------------- */
