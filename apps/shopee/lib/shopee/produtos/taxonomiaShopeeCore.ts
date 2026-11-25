@@ -309,25 +309,38 @@ function unirVariantes(
 }
 
 /**
- * The option identity, for the merge.
+ * Find the existing option row to merge into.
  *
  * Equal: the same NON-ZERO `shopee_option_id`, whatever the names say — the
  * operator bound that id deliberately and the publisher reads it back.
- * Equal: both ids `0` and byte-identical names.
+ * For two id-`0` rows, prefer an exact name, then compare usable names with
+ * only their ends trimmed. The chosen row keeps its stored spelling.
  * ⛔ Distinct: both ids `0` with names `'Azul'` and `'azul'` — TWO options, not
  * one. The publisher sends the name back with its case intact (only the ends
  * trimmed, {@link nomeDeTierShopee}), so a case fold here would merge two real
  * options into one and silently drop the other's mapping.
  * ⛔ Distinct: two different custom options never both match "the id-0 entry".
  */
-function mesmaOpcao(a: LinkVariacaoOpcaoShopee, b: LinkVariacaoOpcaoShopee): boolean {
-  if (a.shopee_option_id !== 0 && b.shopee_option_id !== 0) {
-    return a.shopee_option_id === b.shopee_option_id;
+function encontrarOpcaoParaFundir(
+  opcoes: readonly LinkVariacaoOpcaoShopee[],
+  nossa: LinkVariacaoOpcaoShopee,
+): LinkVariacaoOpcaoShopee | undefined {
+  if (nossa.shopee_option_id !== 0) {
+    return opcoes.find((o) => o.shopee_option_id === nossa.shopee_option_id);
   }
-  if (a.shopee_option_id === 0 && b.shopee_option_id === 0) {
-    return a.shopee_option_name === b.shopee_option_name;
+
+  const exata = opcoes.find(
+    (o) => o.shopee_option_id === 0 && o.shopee_option_name === nossa.shopee_option_name,
+  );
+  if (exata !== undefined) return exata;
+
+  const nome = nomeDeTierShopee(nossa.shopee_option_name);
+  if (nome.length > 0) {
+    return opcoes.find(
+      (o) => o.shopee_option_id === 0 && nomeDeTierShopee(o.shopee_option_name) === nome,
+    );
   }
-  return false;
+  return undefined;
 }
 
 /**
@@ -360,7 +373,7 @@ function mesmaOpcao(a: LinkVariacaoOpcaoShopee, b: LinkVariacaoOpcaoShopee): boo
  *    label, and the key already fixes the category.
  *  - `variationOptions`: merged only into an entry of the SAME variation — a
  *    stored `0` (filled with ours above) or ours. There a match by
- *    {@link mesmaOpcao} unions `arakene_variation_id` and fill-blanks the name,
+ *    {@link encontrarOpcaoParaFundir} unions `arakene_variation_id` and fill-blanks the name,
  *    and a new option is appended. Beside ANOTHER stored variation the rows are
  *    left byte-identical — the stored array itself, never re-serialised: a
  *    standard tier's ids belong to its own variation and a custom tier's (or a
@@ -433,7 +446,7 @@ export function fundirLinksVariacoesShopee(
     if (mesmaVariacao) {
       const opcoes: LinkVariacaoOpcaoShopee[] = atual.variationOptions.map((o) => ({ ...o }));
       for (const nossaOpcao of nosso.variationOptions) {
-        const existente = opcoes.find((o) => mesmaOpcao(o, nossaOpcao));
+        const existente = encontrarOpcaoParaFundir(opcoes, nossaOpcao);
         if (existente === undefined) {
           opcoes.push({ ...nossaOpcao });
           mudouEsta = true;
@@ -513,6 +526,17 @@ function lerVariante(elemento: unknown): VarianteLida | null {
   if (o === null) return null;
   const id = texto(o.id);
   return id.length > 0 ? { id, nome: texto(o.nome) } : null;
+}
+
+/** An exact stored name wins even when a padded candidate comes first. */
+function encontrarPorNome<T extends { readonly nome: string }>(
+  candidatos: readonly T[],
+  nome: string,
+): T | undefined {
+  return (
+    candidatos.find((c) => c.nome === nome) ??
+    candidatos.find((c) => nomeDeTierShopee(c.nome) === nome)
+  );
 }
 
 /**
@@ -680,8 +704,8 @@ export interface ArgsPlanejarTaxonomia {
  *  1. the document id `shopee-<variation_id>` (non-zero ids only), **or** a grupo
  *     whose `linksVariacoesShopee` already names this integração with the same
  *     non-zero `variation_id`;
- *  2. exact `nome` — BYTE equality, no trim, no case fold (`'Cor'` ≠ `'cor'`,
- *     `'Cor'` ≠ `'Cor '`);
+ *  2. exact `nome`, then the stored name with its ends trimmed. Case and
+ *     inner whitespace distinguish names;
  *  3. any grupo whose `tipo` equals {@link tipoDeVariacaoShopee}, when that is
  *     non-zero — so a grupo named `'Cores'` matches a tier named `'Color'`,
  *     while a tier named `'Corte'` folds to `outros` and rung 3 never runs;
@@ -696,9 +720,9 @@ export interface ArgsPlanejarTaxonomia {
  *     `linhaDaOpcaoNaEntrada`) ⇒ `arakene_variation_id[0]` (the FIRST, matching
  *     the legacy export's own `.first`) — accepted only if that variante still
  *     exists, else the option falls through to rung 2;
- *  2. exact `nome`;
+ *  2. exact `nome`, then the stored name with its ends trimmed;
  *  3. the two single-class literal swaps, gender vowel then space⇄hyphen,
- *     **never combined**;
+ *     **never combined**. Each tries the exact stored name before trimming it;
  *  4. create, at `shopee-<option_id>` (non-zero) or `n-<slug(nome)>`.
  *
  * ⚠️ The two swaps are tried SEPARATELY and never composed. Combining them would
@@ -732,7 +756,7 @@ export function planejarTaxonomia(args: ArgsPlanejarTaxonomia): PlanoDeTaxonomia
     const casado =
       (idPorVariacao !== null ? disponiveis.find((g) => g.id === idPorVariacao) : undefined) ??
       disponiveis.find((g) => linkDoGrupoCasa(g, integracaoId, tier.variationId)) ??
-      (tier.nome.length > 0 ? disponiveis.find((g) => g.nome === tier.nome) : undefined) ??
+      (tier.nome.length > 0 ? encontrarPorNome(disponiveis, tier.nome) : undefined) ??
       (tipo !== TIPO_VARIACAO.outros ? disponiveis.find((g) => g.tipo === tipo) : undefined) ??
       null;
 
@@ -761,18 +785,18 @@ export function planejarTaxonomia(args: ArgsPlanejarTaxonomia): PlanoDeTaxonomia
         const primeiro = linha?.arakene_variation_id[0];
         alvo = primeiro !== undefined ? (lidas.find((v) => v.id === primeiro) ?? null) : null;
       }
-      // Rung 2 — exact name.
+      // Rung 2 — exact name first, then trim the stored name.
       if (alvo === null && opcao.nome.length > 0) {
-        alvo = lidas.find((v) => v.nome === opcao.nome) ?? null;
+        alvo = encontrarPorNome(lidas, opcao.nome) ?? null;
       }
       // Rung 3a — trailing gender vowel. Rung 3b — space ⇄ hyphen. NEVER both.
       if (alvo === null && opcao.nome.length > 0) {
         const genero = trocarVogalDeGenero(opcao.nome);
-        if (genero !== null) alvo = lidas.find((v) => v.nome === genero) ?? null;
+        if (genero !== null) alvo = encontrarPorNome(lidas, genero) ?? null;
       }
       if (alvo === null && opcao.nome.length > 0) {
         const hifen = trocarEspacoHifen(opcao.nome);
-        if (hifen !== opcao.nome) alvo = lidas.find((v) => v.nome === hifen) ?? null;
+        if (hifen !== opcao.nome) alvo = encontrarPorNome(lidas, hifen) ?? null;
       }
 
       if (alvo === null) {
