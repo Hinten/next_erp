@@ -523,6 +523,8 @@ describe('requirement 2 — one pre-write read per write kind, in a table keyed 
       'estoque-produto',
       'estoque-produto-lote',
       'objeto-envio',
+      'preco-produto',
+      'preco-produto-lote',
       'situacao-pedido',
     ]);
     for (const tipo of TIPOS_DO_PEDIDO) {
@@ -551,6 +553,8 @@ describe('requirement 2 — one pre-write read per write kind, in a table keyed 
       'situacao-pedido': 'codigo',
       'estoque-produto': 'estoque',
       'estoque-produto-lote': 'estoque',
+      'preco-produto': 'preco',
+      'preco-produto-lote': 'preco',
     });
     // A kind without a row does not compile.
     // @ts-expect-error — `catalogo` is not a write kind yet
@@ -806,6 +810,7 @@ describe('requirement 5 — dry-run diffs, a separate read-back with its deriva,
       objeto: 'valor',
       codigo: 'valor',
       estoque: 'valor',
+      preco: 'valor',
     });
   });
 

@@ -1,15 +1,17 @@
 /**
  * The Loja Integrada WRITE ENGINE (master plan step 7, PR 7-b): the ONE module
  * of this app that sends a write. Every write flow (the status write-back
- * first, the stock writes of step 12, the catalogue and price writes later)
- * goes through it, and `estrutura.test.ts` refuses a package write operation
- * or a write-client method named anywhere else.
+ * first, the stock writes of step 12, the price writes of step 13, the
+ * catalogue writes later) goes through it, and `estrutura.test.ts` refuses a
+ * package write operation or a write-client method named anywhere else.
  *
  * It decides NOTHING about a flow's data — whether a write is due, safe or
  * already reflected is the flow's (`lib/lojaIntegrada/rastreio/`, PR 7-d, for
  * the status write-back; the stock flow's from PR 12-e on: which quantity, and
- * whether the row read names the product asked for). It owns HOW a write is
- * made, and the ten write-engine requirements of PLAN step 7:
+ * whether the row read names the product asked for; the price flow's from PR
+ * 13-d on: which target, and whether the detail read is a product it may
+ * price). It owns HOW a write is made, and the ten write-engine requirements of
+ * PLAN step 7:
  *
  *  1. **The valve first.** {@link iniciarEscritaLi} reads the valve
  *     (`lerValvula`) as its first statement and writes the run-start line as its
@@ -23,10 +25,13 @@
  *     exhaustive `switch` (a new reader does not compile until it is handled).
  *     A deciding read records its reader, and a write refuses a base its kind's
  *     row does not name: a stock write never decides on an order, an order
- *     write never on a stock row. Two readers serve the four kinds: both order
- *     kinds share one `GET /v1/pedido/{numero}/`, both stock kinds one
+ *     write never on a stock row, a price write on neither, and neither on a
+ *     price base. Three readers serve the six kinds: both order kinds share one
+ *     `GET /v1/pedido/{numero}/`, both stock kinds one
  *     `GET /v1/produto_estoque/{produto id}` (no slash, keyed by the PRODUCT id,
- *     never the stock row's own id). A kind belongs to ONE flow
+ *     never the stock row's own id), both price kinds one
+ *     `GET /v1/produto/{produto id}/` (the produto detail, slash form: the merge
+ *     base and the guard of a price write). A kind belongs to ONE flow
  *     ({@link FLUXO_DO_TIPO_ESCRITA_LI}): only a run under that flow's valve may
  *     send it, or even diff it. A target the read cannot find is never written
  *     (`ausente`).
@@ -40,8 +45,10 @@
  *     ({@link lerBaseLi}): the read's token-scrubbed text through
  *     `corpoDeRestauracaoLi`, as ONE INFO line capped at 200 KB on the exact line.
  *     No line (too big, too deep, not JSON, a catalogue path other than the
- *     stock detail, a stock detail whose nine leaves would not come out
- *     verbatim) ⇒ that write is not made (`sem-restauracao`). A deciding read
+ *     stock detail and the produto detail, a detail whose nine leaves would not
+ *     come out verbatim — the produto detail's line is a projection of its nine,
+ *     its four prices and the store's custo verbatim) ⇒ that write is not made
+ *     (`sem-restauracao`). A deciding read
  *     decides at most ONE write attempt, and a read-back is never a deciding
  *     read (another type), so after a refused write the next one needs a fresh
  *     read and its own line.
@@ -49,13 +56,19 @@
  *     valve or the canary keeps from writing logs one `diff` line per field
  *     ({@link POLITICA_CAMPO_ESCRITA_LI}); a write that landed is read back by
  *     its own call ({@link lerDeVoltaLi}, two pacer intervals later) and
- *     compared with {@link conferirEscritaLi} (`deepEqual`, the shared leaf); a
+ *     compared with {@link conferirEscritaLi} (requirement 8's comparator); a
  *     difference is one WARNING `deriva` line. The stock kinds' one field
  *     (`estoque`) is the whole four-leaf body, so a store that keeps an
  *     unmanaged product or another situação after the write shows as a diff
- *     and as a deriva, not only a different quantity.
+ *     and as a deriva, not only a different quantity. The price kinds' one field
+ *     (`preco`) is the whole price write too, carried as the package's builder
+ *     inputs — never a body — and its body built from them once, before the
+ *     target decision; its diff's `mudou`, its read-back and its PUT echo (ONE
+ *     `eco` line after the write, zero calls) go through the price predicate.
  *  6. **Nothing after a landed write may throw** — any 2xx resolves (the
- *     package), the logging is total (`log.ts`), and **no write follows one that
+ *     package), the logging is total (`log.ts`), a price write's `eco` line
+ *     reads its echo as `unknown`, by own keys, through a total predicate and
+ *     the body already built, and **no write follows one that
  *     landed OR MAY HAVE LANDED in the same run** ({@link escreverLi} refuses it
  *     as a `TypeError`). A write closes the run the moment it is sent — before
  *     its first `await`, so two writes started together send one — and only a
@@ -96,7 +109,11 @@
  *     The history read follows only an ORDER write, and a confirming read runs
  *     only in a run of the order flow: both read an order, never a product.
  *  8. **The comparator** is `deepEqual`, the dependency-free leaf
- *     (`core/igualdadeJsonLi.ts`).
+ *     (`core/igualdadeJsonLi.ts`), for every kind but the two price kinds. Those
+ *     compare through the shared `precoRefletidoLi` (`@delfrance/schemas`: the
+ *     full price and a positive promotion in integer centavos, a clear under the
+ *     configured forma) plus `sob_consulta` exactly — and never the custo, the
+ *     store's own value echoed back, which no re-send could correct.
  *  9. **The chokepoint** is `estrutura.test.ts`'s.
  *  10. **Bulk mode.** A list PAGE as a base is NOT built here: it has no
  *      consumer yet. The seam is requirement 2's table, which names the reader
@@ -106,6 +123,9 @@
  *      the engine makes NO read-back call for it (one asked for is a
  *      `TypeError` before any wait) — the stock list's next walk is its
  *      read-back. Its deciding read is still the product's own detail.
+ *      `preco-produto-lote` is the second: the price sync's next nightly by-id
+ *      read is its read-back, and its PUT echo's `eco` line the only same-run
+ *      evidence.
  *
  * ## The pacer and the task deadline
  *
@@ -133,11 +153,14 @@
  */
 import {
   CAMINHO_ESTOQUE_LI,
+  CAMINHO_PRODUTOS_LI,
   type CodigoSituacaoEscritaLi,
   ESTOQUE_FIXO_ESCRITA_LI,
   type EcoEstoqueProdutoLi,
   type EcoPedidoEnvioLi,
+  type EcoPrecoProdutoLi,
   type EcoSituacaoPedidoLi,
+  type EntradaPrecoProdutoLi,
   type EstoqueProdutoDetalheLi,
   LiAuthError,
   LiConfigError,
@@ -149,16 +172,21 @@ import {
   LiThrottleError,
   LiTimeoutError,
   type PedidoLi,
+  type ProdutoComPrecoDetalheLi,
   type RespostaEscritaLi,
   type RespostaLeituraEscritaLi,
   type SituacaoHistoricoLinhaLi,
   alterarSituacaoPedidoLi,
   atualizarEstoqueProdutoLi,
   atualizarObjetoEnvioLi,
+  atualizarPrecoProdutoLi,
+  corpoPrecoProdutoLi,
   liEstoqueProdutoDetalheSchema,
   liPedidoSchema,
+  liProdutoComPrecoDetalheSchema,
   listarHistoricoSituacaoLi,
 } from '@delfrance/integrations-loja-integrada';
+import { precoRefletidoLi } from '@delfrance/schemas';
 
 import type { ContextoEscritaLojaIntegrada } from './contextoEscrita';
 import {
@@ -171,8 +199,10 @@ import { deepEqual } from './igualdadeJsonLi';
 import {
   type OpcoesRegistroLi,
   type PoliticaCampoLi,
+  type ResultadoEcoLi,
   registrarDerivaLi,
   registrarDiffLi,
+  registrarEcoLi,
   registrarEscritaLi,
   registrarRestauracaoLi,
 } from './log';
@@ -208,34 +238,50 @@ export type TipoEscritaPedidoLi = 'objeto-envio' | 'situacao-pedido';
 export type TipoEscritaEstoqueLi = 'estoque-produto' | 'estoque-produto-lote';
 
 /**
+ * The price kinds (step 13): ONE product's prices, `PUT /v1/produto_preco/{produto id}`.
+ * `preco-produto` is a single product's write from an event-like origin (an
+ * event, a manual send, a publish, a deriva), read back by its own call;
+ * `preco-produto-lote` is the same write sent by a bulk origin (the nightly,
+ * "Atualizar preços"), whose read-back is the price sync's next nightly by-id
+ * read (requirement 10).
+ */
+export type TipoEscritaPrecoLi = 'preco-produto' | 'preco-produto-lote';
+
+/**
  * The engine's write kinds (one per PLAN §4.26 row). Distinct from any task
  * payload's own `tipo`: this is what is WRITTEN, not what asked for it.
  */
-export type TipoEscritaLi = TipoEscritaPedidoLi | TipoEscritaEstoqueLi;
+export type TipoEscritaLi = TipoEscritaPedidoLi | TipoEscritaEstoqueLi | TipoEscritaPrecoLi;
 
 /**
  * The field each kind writes. `estoque` is the WHOLE four-leaf stock body
- * ({@link CorpoEstoqueEscritaLi}), never the quantity alone.
+ * ({@link CorpoEstoqueEscritaLi}), never the quantity alone; `preco` is the
+ * WHOLE price write, carried as the package's builder inputs
+ * (`EntradaPrecoProdutoLi`), never a body.
  */
-export type CampoEscritaLi = 'objeto' | 'codigo' | 'estoque';
+export type CampoEscritaLi = 'objeto' | 'codigo' | 'estoque' | 'preco';
 
 export const CAMPO_DO_TIPO_ESCRITA_LI = {
   'objeto-envio': 'objeto',
   'situacao-pedido': 'codigo',
   'estoque-produto': 'estoque',
   'estoque-produto-lote': 'estoque',
+  'preco-produto': 'preco',
+  'preco-produto-lote': 'preco',
 } as const satisfies Record<TipoEscritaLi, CampoEscritaLi>;
 
 /**
  * The flow each kind belongs to (requirement 2): a kind is sent, or diffed, only
  * by a run opened under THAT flow's valve and canary — the stock kinds never
- * under the status write-back's, and the reverse.
+ * under the status write-back's or the price sync's, and so on for each pair.
  */
 export const FLUXO_DO_TIPO_ESCRITA_LI = {
   'objeto-envio': FLUXO_LI.rastreio,
   'situacao-pedido': FLUXO_LI.rastreio,
   'estoque-produto': FLUXO_LI.estoque,
   'estoque-produto-lote': FLUXO_LI.estoque,
+  'preco-produto': FLUXO_LI.preco,
+  'preco-produto-lote': FLUXO_LI.preco,
 } as const satisfies Record<TipoEscritaLi, FluxoLi>;
 
 /**
@@ -251,10 +297,12 @@ export type CorpoEstoqueEscritaLi = typeof ESTOQUE_FIXO_ESCRITA_LI & {
 /**
  * The pre-write readers (requirement 2): `pedido`, the order detail,
  * `GET /v1/pedido/{numero}/`; `produto-estoque`, one product's stock detail,
- * `GET /v1/produto_estoque/{produto id}`. A later kind's reader (a list page)
- * joins this union, and {@link lerBaseLi} does not compile until it handles it.
+ * `GET /v1/produto_estoque/{produto id}`; `produto-detalhe`, the produto detail
+ * a price write decides on, `GET /v1/produto/{produto id}/` (slash form). A later
+ * kind's reader (a list page) joins this union, and {@link lerBaseLi} does not
+ * compile until it handles it.
  */
-export type LeitorPrevioLi = 'pedido' | 'produto-estoque';
+export type LeitorPrevioLi = 'pedido' | 'produto-estoque' | 'produto-detalhe';
 
 /** Requirement 2's row: how one kind is read before a write, and read back after it. */
 export interface LeituraPreviaLi {
@@ -262,7 +310,9 @@ export interface LeituraPreviaLi {
   readonly leitura: LeitorPrevioLi;
   /**
    * The read-back strategy: `recurso`, the same resource read again by its own
-   * call; `lista`, NO call — the list's next walk reads it back (requirement 10).
+   * call; `lista`, NO call — the bulk flow's next pass reads it back
+   * (requirement 10): the stock list's next walk, the price sync's next nightly
+   * by-id read.
    */
   readonly leituraDeVolta: 'recurso' | 'lista';
   /** No write of this kind without its read. */
@@ -297,6 +347,18 @@ export const LEITURA_PREVIA_LI = {
     obrigatoria: true,
     ausente: 'dry-run',
   },
+  'preco-produto': {
+    leitura: 'produto-detalhe',
+    leituraDeVolta: 'recurso',
+    obrigatoria: true,
+    ausente: 'dry-run',
+  },
+  'preco-produto-lote': {
+    leitura: 'produto-detalhe',
+    leituraDeVolta: 'lista',
+    obrigatoria: true,
+    ausente: 'dry-run',
+  },
 } as const satisfies Record<TipoEscritaLi, LeituraPreviaLi>;
 
 /** The kinds a {@link lerDeVoltaLi} call exists for: those whose row reads the resource again. */
@@ -308,13 +370,16 @@ export type TipoComLeituraDeVoltaLi = {
 
 /**
  * Requirement 5: how each written field may appear on a line. Every field logs
- * its value (a tracking code, a situação codigo, a stock body: none is a
- * secret); a credential a later step writes would be `so-mudou`.
+ * its value (a tracking code, a situação codigo, a stock body, a price body:
+ * none is a secret, and the store's custo already rides the price restore line
+ * by the owner's acceptance); a credential a later step writes would be
+ * `so-mudou`.
  */
 export const POLITICA_CAMPO_ESCRITA_LI = {
   objeto: 'valor',
   codigo: 'valor',
   estoque: 'valor',
+  preco: 'valor',
 } as const satisfies Record<CampoEscritaLi, PoliticaCampoLi>;
 
 /** The task deadline: no write starts later than this after the task's dispatch began, in ms. */
@@ -455,8 +520,9 @@ async function esperarIntervalos(e: EstadoMotorLi, n: number): Promise<void> {
 
 /**
  * The target's key as a path segment, after the conta check (a programming
- * error otherwise): the order `numero`, or the PRODUCT id of a stock target —
- * never a stock row's own `id`, which the store answers 404 for.
+ * error otherwise): the order `numero`, or the PRODUCT id of a stock or price
+ * target — never a stock row's or a price row's own `id`, which the store
+ * answers 404 for.
  */
 function idDoAlvo(e: EstadoMotorLi, alvo: AlvoLi): string {
   if (alvo.contaId !== e.integracaoId) {
@@ -479,6 +545,15 @@ function caminhoDoEstoque(produtoId: string): string {
   return `${CAMINHO_ESTOQUE_LI}/${produtoId}`;
 }
 
+/**
+ * The produto detail, in its slash form — the `produto-detalhe` reader's path,
+ * the one every produto read of the package uses (the price write's own route
+ * is the price resource, `PUT /v1/produto_preco/{produto id}`).
+ */
+function caminhoDoProdutoDetalhe(produtoId: string): string {
+  return `${CAMINHO_PRODUTOS_LI}${produtoId}/`;
+}
+
 /** The path a pre-write reader reads (requirement 2's table); an unknown reader is a programming error. */
 function caminhoDoLeitorPrevio(leitura: LeitorPrevioLi, id: string): string {
   switch (leitura) {
@@ -486,6 +561,8 @@ function caminhoDoLeitorPrevio(leitura: LeitorPrevioLi, id: string): string {
       return caminhoDoPedido(id);
     case 'produto-estoque':
       return caminhoDoEstoque(id);
+    case 'produto-detalhe':
+      return caminhoDoProdutoDetalhe(id);
   }
   const desconhecido: never = leitura;
   throw new TypeError(`escrita: leitura prévia desconhecida (${String(desconhecido)})`);
@@ -567,19 +644,26 @@ type LeituraDoRecursoLi =
   | {
       readonly leitura: 'produto-estoque';
       readonly resposta: RespostaLeituraEscritaLi<EstoqueProdutoDetalheLi>;
+    }
+  | {
+      readonly leitura: 'produto-detalhe';
+      readonly resposta: RespostaLeituraEscritaLi<ProdutoComPrecoDetalheLi>;
     };
 
 /** The call names of each reader: as the deciding read, and as the read-back. */
 const OPERACOES_DO_LEITOR_LI = {
   pedido: { decisoria: 'lerPedidoParaEscrita', deVolta: 'lerPedidoDeVolta' },
   'produto-estoque': { decisoria: 'lerEstoqueParaEscrita', deVolta: 'lerEstoqueDeVolta' },
+  'produto-detalhe': { decisoria: 'lerProdutoParaEscrita', deVolta: 'lerProdutoDeVolta' },
 } as const satisfies Record<LeitorPrevioLi, { decisoria: string; deVolta: string }>;
 
 /**
  * `GET caminho` through the write client (its credential is the run's pin),
- * parsed by the reader's own package schema: the order, or one product's stock
- * detail (`liEstoqueProdutoDetalheSchema`, so a detail without a leaf the write
- * decides on refuses the read). Every failure propagates.
+ * parsed by the reader's own package schema: the order, one product's stock
+ * detail (`liEstoqueProdutoDetalheSchema`), or the produto detail a price write
+ * decides on (`liProdutoComPrecoDetalheSchema`: its nine leaves required and
+ * carried raw) — so a detail without a leaf the write decides on refuses the
+ * read. Every failure propagates.
  */
 async function lerRecursoLi(
   e: EstadoMotorLi,
@@ -605,6 +689,15 @@ async function lerRecursoLi(
           operacao,
           caminho,
           schema: liEstoqueProdutoDetalheSchema,
+        }),
+      };
+    case 'produto-detalhe':
+      return {
+        leitura,
+        resposta: await e.contexto.escrita.lerAntesDeEscreverLi({
+          operacao,
+          caminho,
+          schema: liProdutoComPrecoDetalheSchema,
         }),
       };
   }
@@ -648,8 +741,21 @@ export interface BaseLidaEstoqueLi extends BaseLidaComumLi {
   readonly produtoEstoque: EstoqueProdutoDetalheLi;
 }
 
+/**
+ * A deciding read that found the produto detail a price write decides on. ⚠️
+ * Nothing in it is checked here: whether the detail names the product asked for
+ * (`id`), is a variation (`tipo`), is removed or blocked, and whether its prices
+ * are readable are the flow's to judge, as the stock row's `produto` is.
+ */
+export interface BaseLidaPrecoLi extends BaseLidaComumLi {
+  /** The reader that read it: a write decides only on its own kind's reader (requirement 2). */
+  readonly leitura: 'produto-detalhe';
+  /** The detail as the package parsed it (`liProdutoComPrecoDetalheSchema`: nine leaves, raw). */
+  readonly produtoDetalhe: ProdutoComPrecoDetalheLi;
+}
+
 /** A deciding read that found its target, discriminated by the reader that read it. */
-export type BaseLidaLi = BaseLidaPedidoLi | BaseLidaEstoqueLi;
+export type BaseLidaLi = BaseLidaPedidoLi | BaseLidaEstoqueLi | BaseLidaPrecoLi;
 
 /** A deciding read that found nothing (a 404): never written. */
 export interface BaseAusenteLi {
@@ -663,6 +769,8 @@ export type BaseEscritaLi = BaseLidaLi | BaseAusenteLi;
 export type BaseEscritaPedidoLi = BaseLidaPedidoLi | BaseAusenteLi;
 /** The stock reader's deciding read. */
 export type BaseEscritaEstoqueLi = BaseLidaEstoqueLi | BaseAusenteLi;
+/** The produto-detail reader's deciding read (the price kinds). */
+export type BaseEscritaPrecoLi = BaseLidaPrecoLi | BaseAusenteLi;
 
 /** The bases this module read; each decides at most ONE write attempt. */
 const basesLidas = new WeakMap<BaseLidaLi, { readonly motor: MotorEscritaLi; gasta: boolean }>();
@@ -690,6 +798,16 @@ function baseDaLeitura(alvo: AlvoLi, lido: LeituraDoRecursoLi, restauracao: bool
         refCredencial: lido.resposta.refCredencial,
         restauracao,
       };
+    case 'produto-detalhe':
+      return {
+        kind: 'lida',
+        alvo,
+        leitura: lido.leitura,
+        produtoDetalhe: lido.resposta.dados,
+        status: lido.resposta.status,
+        refCredencial: lido.resposta.refCredencial,
+        restauracao,
+      };
   }
   const desconhecida: never = lido;
   throw new TypeError(`escrita: leitura desconhecida (${String(desconhecida)})`);
@@ -698,17 +816,20 @@ function baseDaLeitura(alvo: AlvoLi, lido: LeituraDoRecursoLi, restauracao: bool
 /**
  * Requirements 2 and 4: the read a write is decided on, by the reader its
  * kind's row names (`leitura`: `pedido` for both order kinds, `produto-estoque`
- * for both stock kinds) — two pacer intervals, then `GET /v1/pedido/{numero}/`
- * or `GET /v1/produto_estoque/{produto id}` through the write client (pinning
- * its credential), then the restore line. Every write needs one of its own: the
+ * for both stock kinds, `produto-detalhe` for both price kinds) — two pacer
+ * intervals, then `GET /v1/pedido/{numero}/`, `GET /v1/produto_estoque/{produto id}`
+ * or `GET /v1/produto/{produto id}/` through the write client (pinning its
+ * credential), then the restore line. Every write needs one of its own: the
  * SECOND guard after a refused write is another call to this, with its own
  * line (and it doubles as the confirming read of a refused write's
  * credential). A read-back is never a base. Reading is not tied to a flow; the
  * write is ({@link escreverLi}).
  *
  * A 404 is `ausente` — for a stock target, a product with no stock row and a
- * stock row's own id alike; every other failure propagates, for the flow to
- * classify.
+ * stock row's own id alike; for a price target, a product the store does not
+ * have. Every other failure propagates, for the flow to classify (a produto
+ * detail missing one of its nine leaves is the package's `LiSchemaError`, never
+ * `ausente`).
  */
 export function lerBaseLi(
   motor: MotorEscritaLi,
@@ -720,6 +841,11 @@ export function lerBaseLi(
   alvo: AlvoLi,
   leitura: 'produto-estoque',
 ): Promise<BaseEscritaEstoqueLi>;
+export function lerBaseLi(
+  motor: MotorEscritaLi,
+  alvo: AlvoLi,
+  leitura: 'produto-detalhe',
+): Promise<BaseEscritaPrecoLi>;
 export function lerBaseLi(
   motor: MotorEscritaLi,
   alvo: AlvoLi,
@@ -761,22 +887,34 @@ export async function lerBaseLi(
 
 /**
  * Where a write goes. The objeto's envio id must be one of the deciding read's
- * envios; a stock target's `recurso` is the PRODUCT id.
+ * envios; a stock or price target's `recurso` is the PRODUCT id.
  */
 export type DestinoEscritaLi =
   | { readonly tipo: 'situacao-pedido'; readonly alvo: AlvoLi }
   | { readonly tipo: 'objeto-envio'; readonly alvo: AlvoLi; readonly envioId: number }
   | { readonly tipo: 'estoque-produto'; readonly alvo: AlvoLi }
-  | { readonly tipo: 'estoque-produto-lote'; readonly alvo: AlvoLi };
+  | { readonly tipo: 'estoque-produto-lote'; readonly alvo: AlvoLi }
+  | { readonly tipo: 'preco-produto'; readonly alvo: AlvoLi }
+  | { readonly tipo: 'preco-produto-lote'; readonly alvo: AlvoLi };
 
-/** What a write sets. The field must be its kind's ({@link CAMPO_DO_TIPO_ESCRITA_LI}). */
+/**
+ * What a write sets. The field must be its kind's ({@link CAMPO_DO_TIPO_ESCRITA_LI}).
+ * A price write carries the package's BUILDER INPUTS (`EntradaPrecoProdutoLi`:
+ * the target in integer centavos, the configured clear, and the deciding read's
+ * own custo and `sob_consulta`), never a body: the body is built from them.
+ */
 export type PayloadEscritaLi =
   | { readonly campo: 'codigo'; readonly valor: CodigoSituacaoEscritaLi }
   | { readonly campo: 'objeto'; readonly valor: string }
-  | { readonly campo: 'estoque'; readonly valor: CorpoEstoqueEscritaLi };
+  | { readonly campo: 'estoque'; readonly valor: CorpoEstoqueEscritaLi }
+  | { readonly campo: 'preco'; readonly valor: EntradaPrecoProdutoLi };
 
 /** The echo a write's answer carries, by kind. */
-export type EcoEscritaLi = EcoPedidoEnvioLi | EcoSituacaoPedidoLi | EcoEstoqueProdutoLi;
+export type EcoEscritaLi =
+  | EcoPedidoEnvioLi
+  | EcoSituacaoPedidoLi
+  | EcoEstoqueProdutoLi
+  | EcoPrecoProdutoLi;
 
 /**
  * What one write call did. Only `enviado` carries a write — a run that may not
@@ -796,7 +934,8 @@ export type ResultadoEscritaLi =
 /** What a field's current value is read from: a deciding read, or a verified read-back. */
 type LeituraDoAlvoLi =
   | { readonly leitura: 'pedido'; readonly pedido: PedidoLi }
-  | { readonly leitura: 'produto-estoque'; readonly produtoEstoque: EstoqueProdutoDetalheLi };
+  | { readonly leitura: 'produto-estoque'; readonly produtoEstoque: EstoqueProdutoDetalheLi }
+  | { readonly leitura: 'produto-detalhe'; readonly produtoDetalhe: ProdutoComPrecoDetalheLi };
 
 /** The order a read holds — a `TypeError` when it read a stock row (narrowing, never a cast). */
 function pedidoDa(fonte: LeituraDoAlvoLi): PedidoLi {
@@ -814,11 +953,21 @@ function estoqueDa(fonte: LeituraDoAlvoLi): EstoqueProdutoDetalheLi {
   return fonte.produtoEstoque;
 }
 
+/** The produto detail a read holds — a `TypeError` for any other read (narrowing, never a cast). */
+function produtoDetalheDa(fonte: LeituraDoAlvoLi): ProdutoComPrecoDetalheLi {
+  if (fonte.leitura !== 'produto-detalhe') {
+    throw new TypeError('escrita: a leitura não é a do produto que este tipo de escrita lê');
+  }
+  return fonte.produtoDetalhe;
+}
+
 /**
  * A read's current value of the kind's field (`undefined` when absent). For a
  * stock kind, the four leaves a stock write SETS, as the package parsed the row
  * (`wireInt` reads a quoted `'5'` as `5`): never the store's reservation or its
- * available quantity, which no write sets.
+ * available quantity, which no write sets. For a price kind, the detail's four
+ * price leaves RAW, under the price body's key names (`cheio`, `promocional`,
+ * `custo`, `sob_consulta`), so a diff or a deriva line reads beside the body.
  */
 function valorAtual(destino: DestinoEscritaLi, fonte: LeituraDoAlvoLi): unknown {
   switch (destino.tipo) {
@@ -836,9 +985,136 @@ function valorAtual(destino: DestinoEscritaLi, fonte: LeituraDoAlvoLi): unknown 
         situacao_sem_estoque: linha.situacao_sem_estoque,
       };
     }
+    case 'preco-produto':
+    case 'preco-produto-lote': {
+      const d = produtoDetalheDa(fonte);
+      return {
+        cheio: d.preco_cheio,
+        promocional: d.preco_promocional,
+        custo: d.preco_custo,
+        sob_consulta: d.preco_sob_consulta,
+      };
+    }
   }
   const desconhecido: never = destino;
   throw new TypeError(`escrita: tipo de escrita desconhecido (${String(desconhecido)})`);
+}
+
+/**
+ * What a write writes, as its lines show it: the payload's value — for a price
+ * write, the BODY the package builds from its inputs (`corpoPrecoProdutoLi`,
+ * pure, so the bytes the write sends). A price target no send may carry is the
+ * builder's `RangeError`: {@link escreverLi} calls this before deciding anything.
+ */
+function valorEscrito(payload: PayloadEscritaLi): unknown {
+  return payload.campo === 'preco' ? corpoPrecoProdutoLi(payload.valor).corpo : payload.valor;
+}
+
+/**
+ * Requirements 5 and 8: does a read already hold what `payload` writes? The
+ * order and stock kinds compare with `deepEqual`, verbatim (`valorAtual` against
+ * the payload's value: key order folded, nothing else). The price kinds compare
+ * through the shared price predicate (`precoRefletidoLi`, `@delfrance/schemas`:
+ * the full price and a positive promotion in integer centavos, a clear under the
+ * configured forma) plus `sob_consulta` EXACTLY — and never the custo, the
+ * store's own value echoed back, whose difference no re-send could fix. A read
+ * of another reader than the kind's is a `TypeError`.
+ */
+function mesmoValorLi(
+  destino: DestinoEscritaLi,
+  payload: PayloadEscritaLi,
+  fonte: LeituraDoAlvoLi,
+): boolean {
+  switch (destino.tipo) {
+    case 'objeto-envio':
+    case 'situacao-pedido':
+    case 'estoque-produto':
+    case 'estoque-produto-lote':
+      return deepEqual(valorAtual(destino, fonte), payload.valor);
+    case 'preco-produto':
+    case 'preco-produto-lote': {
+      if (payload.campo !== 'preco') {
+        throw new TypeError('escrita: o campo não é o do tipo de escrita');
+      }
+      const d = produtoDetalheDa(fonte);
+      const v = payload.valor;
+      return (
+        precoRefletidoLi({
+          alvo: v.alvo,
+          forma: v.formaPromoLimpa,
+          atual: { cheio: d.preco_cheio, promocional: d.preco_promocional },
+        }) && d.preco_sob_consulta === v.sobConsulta
+      );
+    }
+  }
+  const desconhecido: never = destino;
+  throw new TypeError(`escrita: tipo de escrita desconhecido (${String(desconhecido)})`);
+}
+
+/** The price-body leaves an `eco` line may carry, as the echo answers them. */
+const FOLHAS_DO_ECO_PRECO_LI = ['cheio', 'promocional', 'custo', 'sob_consulta'] as const;
+
+/** A JSON object (not `null`, not an array): an echo read by key. */
+function ehRegistroLi(v: unknown): v is Readonly<Record<string, unknown>> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+/**
+ * The ONE `eco` line after a landed price write (requirement 5): the PUT's 200
+ * echo through the same rule as the read-back, at ZERO calls. `sem-eco` when
+ * there is nothing to judge — the echo did not read (`leituraEco` not `ok`: a
+ * 202 with no body, an empty, cut or non-JSON 200, a JSON array), or lacks its
+ * own `cheio` or `promocional` — never a `deriva`. `igual` when
+ * `precoRefletidoLi` finds the target in it and its `sob_consulta`, when it has
+ * one, is the one sent; `deriva` otherwise. It never changes the write's result
+ * and triggers nothing; for a lote it is the only same-run evidence. Total
+ * (requirement 6): the echo is read as `unknown`, by own keys, through a total
+ * predicate and the total logger, and the body is the one already built.
+ */
+function registrarEcoDoPrecoLi(
+  e: EstadoMotorLi,
+  destino: DestinoEscritaLi,
+  entrada: EntradaPrecoProdutoLi,
+  escrito: unknown,
+  resposta: RespostaEscritaLi<EcoEscritaLi>,
+): void {
+  const eco: unknown = resposta.eco;
+  const lido: Record<string, unknown> = {};
+  if (ehRegistroLi(eco)) {
+    for (const folha of FOLHAS_DO_ECO_PRECO_LI) {
+      if (Object.hasOwn(eco, folha)) lido[folha] = eco[folha];
+    }
+  }
+  let resultado: ResultadoEcoLi;
+  if (
+    resposta.leituraEco !== 'ok' ||
+    !Object.hasOwn(lido, 'cheio') ||
+    !Object.hasOwn(lido, 'promocional')
+  ) {
+    resultado = 'sem-eco';
+  } else {
+    const refletido = precoRefletidoLi({
+      alvo: entrada.alvo,
+      forma: entrada.formaPromoLimpa,
+      atual: { cheio: lido.cheio, promocional: lido.promocional },
+    });
+    const sobConsulta =
+      !Object.hasOwn(lido, 'sob_consulta') || lido.sob_consulta === entrada.sobConsulta;
+    resultado = refletido && sobConsulta ? 'igual' : 'deriva';
+  }
+  registrarEcoLi(
+    {
+      recurso: destino.alvo.recurso,
+      tipo: destino.tipo,
+      campo: 'preco',
+      politica: POLITICA_CAMPO_ESCRITA_LI.preco,
+      resultado,
+      leituraEco: resposta.leituraEco,
+      escrito,
+      lido,
+    },
+    e.registro,
+  );
 }
 
 /**
@@ -853,6 +1129,26 @@ function corpoDeEstoqueConforme(corpo: CorpoEstoqueEscritaLi): boolean {
     Object.entries(corpo).filter(([chave]) => chave !== 'quantidade'),
   );
   return Object.hasOwn(corpo, 'quantidade') && deepEqual(fixos, ESTOQUE_FIXO_ESCRITA_LI);
+}
+
+/**
+ * Whether a price write's echoed leaves are THIS deciding read's own: its
+ * `sobConsulta` a boolean equal to the detail's `preco_sob_consulta`, and its
+ * custo the detail's `preco_custo` itself (`Object.is`: no fold — `0` is not
+ * `null`, `11.11` is not `12.34`). A price write never SETS either; it repeats
+ * what the store holds, so an input from anywhere else is a programming error.
+ */
+function ecoaALeituraDecisoria(
+  entrada: EntradaPrecoProdutoLi,
+  detalhe: ProdutoComPrecoDetalheLi,
+): boolean {
+  // The detail's leaf is raw (`unknown`): a boolean there, equal to the input,
+  // makes the input that same boolean.
+  return (
+    typeof detalhe.preco_sob_consulta === 'boolean' &&
+    entrada.sobConsulta === detalhe.preco_sob_consulta &&
+    Object.is(entrada.custo, detalhe.preco_custo)
+  );
 }
 
 /** The ONE place a package write operation is called: the kind's operation, its target's path id. */
@@ -880,6 +1176,14 @@ function enviar(
         return atualizarEstoqueProdutoLi(e.contexto.escrita, id, payload.valor.quantidade);
       }
       break;
+    case 'preco-produto':
+    case 'preco-produto-lote':
+      // The package builds the body from the same inputs `escreverLi` already
+      // built it from (pure): the same bytes, and never a body of ours.
+      if (payload.campo === 'preco') {
+        return atualizarPrecoProdutoLi(e.contexto.escrita, id, payload.valor);
+      }
+      break;
   }
   // `escreverLi` refused the mismatch before deciding anything.
   throw new TypeError('escrita: o campo não é o do tipo de escrita');
@@ -896,9 +1200,15 @@ function enviar(
  *     diff, so a dry-run refuses it too;
  *  3. a target of another conta, a base of another target, another motor or
  *     another reader than the kind's row names (an order base for a stock
- *     write, a stock base for an order write), a field of another kind, an
- *     envio id the deciding read does not list, a stock body other than the
- *     package's four leaves (requirements 2 and 3);
+ *     write, a stock base for an order write, either for a price write, a
+ *     price base for either), a field of another kind, an envio id the deciding
+ *     read does not list, a stock body other than the package's four leaves, a
+ *     price write whose custo or `sob_consulta` is not THIS deciding read's own
+ *     (requirements 2 and 3);
+ *  3b. a price write's body is then built ONCE from its inputs
+ *     (`corpoPrecoProdutoLi`): a target no send may carry is the builder's
+ *     `RangeError` HERE — nothing sent, no diff line, the run still open and the
+ *     base unspent;
  *  4. the target decision (`decidirAlvo`): not `on` ⇒ one `diff` line,
  *     `nao-enviado`;
  *  5. `on`: no restore line ⇒ `sem-restauracao`; a base that already decided a
@@ -907,10 +1217,11 @@ function enviar(
  *     run is closed BEFORE the write is sent, and the deadline is armed again
  *     for the write client's credential re-read.
  *
- * A 2xx resolves `enviado` (one `escrita` line). Every other outcome is the
- * package's error (or the deadline's), rethrown as-is, for the flow to
- * classify — after which the next write needs a fresh deciding read, and is
- * possible at all only when the failure proved nothing landed.
+ * A 2xx resolves `enviado` (one `escrita` line, and for a price write ONE `eco`
+ * line after it, at zero calls). Every other outcome is the package's error (or
+ * the deadline's), rethrown as-is, for the flow to classify — after which the
+ * next write needs a fresh deciding read, and is possible at all only when the
+ * failure proved nothing landed.
  */
 export async function escreverLi(
   motor: MotorEscritaLi,
@@ -954,6 +1265,14 @@ export async function escreverLi(
       'escrita: o corpo de estoque não é o do pacote (quantidade e os três campos fixos)',
     );
   }
+  if (payload.campo === 'preco' && !ecoaALeituraDecisoria(payload.valor, produtoDetalheDa(base))) {
+    throw new TypeError(
+      'escrita: o custo e o sob_consulta do preço não são os da leitura decisória do alvo',
+    );
+  }
+  // The value the lines show — for a price write, its body, built ONCE here, so
+  // a target no send may carry throws before anything is decided or sent.
+  const escrito = valorEscrito(payload);
 
   const decisao = decidirAlvo(e.valvula, destino.alvo);
   if (decisao.modo === MODO_LI.off) {
@@ -961,16 +1280,15 @@ export async function escreverLi(
   }
   if (decisao.modo === MODO_LI.dryRun) {
     const politica = POLITICA_CAMPO_ESCRITA_LI[payload.campo];
-    const antes = valorAtual(destino, base);
     registrarDiffLi(
       {
         recurso: destino.alvo.recurso,
         tipo: destino.tipo,
         campo: payload.campo,
         politica,
-        antes,
-        depois: payload.valor,
-        mudou: !deepEqual(antes, payload.valor),
+        antes: valorAtual(destino, base),
+        depois: escrito,
+        mudou: !mesmoValorLi(destino, payload, base),
         motivo: decisao.motivo,
       },
       e.registro,
@@ -1021,6 +1339,8 @@ export async function escreverLi(
     },
     e.registro,
   );
+  if (payload.campo === 'preco')
+    registrarEcoDoPrecoLi(e, destino, payload.valor, escrito, resposta);
   return { kind: 'enviado', resposta };
 }
 
@@ -1102,8 +1422,21 @@ export type LeituraDeVoltaEstoqueLi =
     }
   | ({ readonly verificado: false } & FalhaContidaLi);
 
+/** A read-back of `preco-produto`: the produto detail as read, or a contained failure. */
+export type LeituraDeVoltaPrecoLi =
+  | {
+      readonly verificado: true;
+      readonly leitura: 'produto-detalhe';
+      readonly produtoDetalhe: ProdutoComPrecoDetalheLi;
+      readonly status: number;
+    }
+  | ({ readonly verificado: false } & FalhaContidaLi);
+
 /** A read-back, discriminated (when verified) by the reader that read it. */
-export type LeituraDeVoltaLi = LeituraDeVoltaPedidoLi | LeituraDeVoltaEstoqueLi;
+export type LeituraDeVoltaLi =
+  | LeituraDeVoltaPedidoLi
+  | LeituraDeVoltaEstoqueLi
+  | LeituraDeVoltaPrecoLi;
 
 /** A verified read-back, in the arm of the reader that read it. */
 function leituraDeVoltaVerificada(lido: LeituraDoRecursoLi): LeituraDeVoltaLi {
@@ -1122,6 +1455,13 @@ function leituraDeVoltaVerificada(lido: LeituraDoRecursoLi): LeituraDeVoltaLi {
         produtoEstoque: lido.resposta.dados,
         status: lido.resposta.status,
       };
+    case 'produto-detalhe':
+      return {
+        verificado: true,
+        leitura: lido.leitura,
+        produtoDetalhe: lido.resposta.dados,
+        status: lido.resposta.status,
+      };
   }
   const desconhecida: never = lido;
   throw new TypeError(`escrita: leitura desconhecida (${String(desconhecida)})`);
@@ -1130,13 +1470,14 @@ function leituraDeVoltaVerificada(lido: LeituraDoRecursoLi): LeituraDeVoltaLi {
 /**
  * Requirement 5's read-back, a SEPARATE call (requirement 10's seam): two
  * pacer intervals after a write that landed, then the kind's read-back
- * strategy ({@link LEITURA_PREVIA_LI}) — the order detail, or the product's
- * stock detail, again, with the run's pinned credential. Only of the write that
- * landed: its target and its kind, or a `TypeError` with nothing sent. A kind
- * whose strategy is `lista` (`estoque-produto-lote`) has no read-back call: its
- * type does not compile here, and asking anyway is a `TypeError` before any
- * wait. Contained per requirement 7. Its result never decides a write in this
- * run: no write follows a landed one, and it is not a base.
+ * strategy ({@link LEITURA_PREVIA_LI}) — the order detail, the product's stock
+ * detail or the produto detail, again, with the run's pinned credential. Only of
+ * the write that landed: its target and its kind, or a `TypeError` with nothing
+ * sent. A kind whose strategy is `lista` (`estoque-produto-lote`,
+ * `preco-produto-lote`) has no read-back call: its type does not compile here,
+ * and asking anyway is a `TypeError` before any wait. Contained per
+ * requirement 7. Its result never decides a write in this run: no write follows
+ * a landed one, and it is not a base.
  */
 export function lerDeVoltaLi(
   motor: MotorEscritaLi,
@@ -1148,6 +1489,11 @@ export function lerDeVoltaLi(
   alvo: AlvoLi,
   tipo: 'estoque-produto',
 ): Promise<LeituraDeVoltaEstoqueLi>;
+export function lerDeVoltaLi(
+  motor: MotorEscritaLi,
+  alvo: AlvoLi,
+  tipo: 'preco-produto',
+): Promise<LeituraDeVoltaPrecoLi>;
 export function lerDeVoltaLi(
   motor: MotorEscritaLi,
   alvo: AlvoLi,
@@ -1179,12 +1525,17 @@ export async function lerDeVoltaLi(
 }
 
 /**
- * Requirement 5: whether the read-back holds what was written — `deepEqual`,
- * no fold (case, spacing, a number and its string, `null` and absent all
- * differ; for a stock kind, the four leaves written, in any key order, as the
- * package parsed them — a quoted integer already read as its number). A
- * difference is one WARNING `deriva` line; what it MEANS (an aviso, a re-check)
- * is the flow's. A read-back of another reader than the kind's is a `TypeError`.
+ * Requirement 5: whether the read-back holds what was written. For the order
+ * and stock kinds `deepEqual`, no fold (case, spacing, a number and its string,
+ * `null` and absent all differ; for a stock kind, the four leaves written, in
+ * any key order, as the package parsed them — a quoted integer already read as
+ * its number). For the price kinds the shared price predicate plus
+ * `sob_consulta` exactly, never the custo ({@link mesmoValorLi}): the full price
+ * and a positive promotion in integer centavos (`'11.0000'` is `11`; `'22'` is
+ * not 22.22), a clear under the configured forma (`null` ≡ `0` ≡ `'0.00'`). A
+ * difference is one WARNING `deriva` line — for a price kind, the built body
+ * against the four leaves read; what it MEANS (an aviso, a follow-up) is the
+ * flow's. A read-back of another reader than the kind's is a `TypeError`.
  */
 export function conferirEscritaLi(
   motor: MotorEscritaLi,
@@ -1193,16 +1544,15 @@ export function conferirEscritaLi(
   leitura: LeituraDeVoltaLi & { readonly verificado: true },
 ): 'igual' | 'deriva' {
   const e = estadoDe(motor);
-  const lido = valorAtual(destino, leitura);
-  if (deepEqual(lido, payload.valor)) return 'igual';
+  if (mesmoValorLi(destino, payload, leitura)) return 'igual';
   registrarDerivaLi(
     {
       recurso: destino.alvo.recurso,
       tipo: destino.tipo,
       campo: payload.campo,
       politica: POLITICA_CAMPO_ESCRITA_LI[payload.campo],
-      escrito: payload.valor,
-      lido,
+      escrito: valorEscrito(payload),
+      lido: valorAtual(destino, leitura),
     },
     e.registro,
   );
@@ -1224,8 +1574,8 @@ export type HistoricoParaConferenciaLi =
  * ({@link MAX_PAGINAS_HISTORICO_CONFERENCIA_LI}): more is `LiPaginacaoError`.
  * Contained per requirement 7: the write landed and stays done. The rows come
  * back as received; ordering and judging them is the flow's. Only after an
- * ORDER write: after a stock write the target is a product, whose id names no
- * order — a `TypeError`, nothing sent.
+ * ORDER write: after a stock or price write the target is a product, whose id
+ * names no order — a `TypeError`, nothing sent.
  */
 export async function lerHistoricoSituacaoParaConferenciaLi(
   motor: MotorEscritaLi,
@@ -1258,9 +1608,9 @@ export async function lerHistoricoSituacaoParaConferenciaLi(
  * refused tracking-code write, the confirming read is the next deciding read
  * instead ({@link lerBaseLi}). Before any deciding read there is no pinned
  * credential to confirm: a `TypeError`, nothing sent. Only in a run of the
- * order flow: a stock run's target is a product, and its confirming read is the
- * next deciding read, as after a refused tracking code — a `TypeError`, nothing
- * sent.
+ * order flow: a stock or price run's target is a product, and its confirming
+ * read is the next deciding read, as after a refused tracking code — a
+ * `TypeError`, nothing sent.
  */
 export async function confirmarCredencialLi(motor: MotorEscritaLi, alvo: AlvoLi): Promise<void> {
   const e = estadoDe(motor);
