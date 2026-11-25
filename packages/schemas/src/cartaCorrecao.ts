@@ -74,6 +74,7 @@ export type CartaCorrecao = z.infer<typeof cartaCorrecaoSchema>;
 
 export const cartaCorrecaoMeta: CollectionMetadata = {
   collectionPath: 'pedidos/{pedidoId}/nfev4/{nfeId}/cartacorrecao',
+  serverOwned: true,
   permissions: {
     read: PERM_FISCAL_READ,
     write: PERM_FISCAL_WRITE,
