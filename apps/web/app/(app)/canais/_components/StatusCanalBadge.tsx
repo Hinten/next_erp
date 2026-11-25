@@ -3,8 +3,10 @@
 import { Badge, Tooltip } from '@mantine/core';
 import type { MarketplaceCapabilities } from '@delfrance/schemas';
 
+import { textoStatusCanal } from './textoStatusCanal';
+
 /**
- * Whether this repo has a backend for a channel, as a badge.
+ * Marketplace implementation status, as defined by `implementado`.
  *
  * ⚠️ This used to read `pluginIdForTipo(tipo)` and show
  * `@delfrance/integrations-shopee` for a channel whose package was a 44-line
@@ -17,9 +19,10 @@ import type { MarketplaceCapabilities } from '@delfrance/schemas';
  * and read correct while disagreeing — the #1369 trap, verbatim.
  */
 export function StatusCanalBadge({ caps }: { caps: MarketplaceCapabilities | null }) {
+  const { dica } = textoStatusCanal(caps);
   if (caps === null) {
     return (
-      <Tooltip label="Não é um canal de marketplace (balcão, WhatsApp)">
+      <Tooltip label={dica}>
         <Badge variant="light" color="gray" size="xs">
           não-marketplace
         </Badge>
@@ -28,7 +31,7 @@ export function StatusCanalBadge({ caps }: { caps: MarketplaceCapabilities | nul
   }
   if (!caps.implementado) {
     return (
-      <Tooltip label="Nenhum backend implementado para este canal ainda">
+      <Tooltip label={dica}>
         <Badge variant="light" color="gray" size="xs">
           não implementado
         </Badge>
@@ -36,7 +39,7 @@ export function StatusCanalBadge({ caps }: { caps: MarketplaceCapabilities | nul
     );
   }
   return (
-    <Tooltip label={`Backend: apps/${caps.channel ?? '—'}`}>
+    <Tooltip label={dica}>
       <Badge variant="light" color="blue" size="xs">
         {caps.channel}
       </Badge>
