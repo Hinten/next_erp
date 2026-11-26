@@ -3,11 +3,13 @@ import { logger } from 'firebase-functions/v2';
 
 import type { DepsKitsEstoqueLi } from '../../lib/lojaIntegrada/estoque/processarKitsEstoque';
 import type { DepsEstoqueLi } from '../../lib/lojaIntegrada/estoque/processarEstoque';
+import type { DepsPrecoLi } from '../../lib/lojaIntegrada/preco/processarPreco';
 import type {
   DepsEscritaLi,
   RegistroEscritaLi,
 } from '../../lib/lojaIntegrada/rastreio/processarRastreio';
 import { criarAgendadorEstoqueLiDoAmbiente } from './agendadorEstoque';
+import { criarAgendadorPrecoLiDoAmbiente } from './agendadorPreco';
 
 /**
  * The dependencies of one WRITE run — a `rastreio` dispatch of the writes queue,
@@ -93,4 +95,28 @@ export function depsDeKitsEstoqueLi(
 ): DepsKitsEstoqueLi {
   const { ambiente, agoraMs, tentativa, agendador } = depsDeEstoqueLi(registro, inicioDaTarefaMs);
   return { ambiente, agoraMs, tentativa, agendador, logger };
+}
+
+/**
+ * The dependencies of one PRICE send run — a dispatch of the price queue (master plan step 13,
+ * PR 13-d) — bound HERE, beside the writes and stock queues', by spreading {@link depsDeEscritaLi}:
+ * the three queues can then never disagree about the environment, the clock, the pacer's sleep or
+ * the write deadline. The price valve, its canary list, the read switch and the clear's forma
+ * (`LOJA_INTEGRADA_PRECO_PROMO_LIMPO`) all ride the same LIVE `ambiente`, read by the run itself.
+ *
+ * - `tentativa`: the Cloud Tasks attempt, 0-based — only the queue's LAST one concludes a refused
+ *   write (`recusado` and its aviso); every earlier one rethrows so the retry re-derives.
+ * - `agendador`: the PRICE queue's producer (never the stock one), for the run's one `deriva`
+ *   follow-up, built from the environment per dispatch (the sweep-only valve read once, the queue
+ *   resolved per enqueue).
+ */
+export function depsDePrecoLi(
+  registro: { readonly tentativa: number; readonly idTarefa: string | null },
+  inicioDaTarefaMs: number,
+): DepsPrecoLi {
+  return {
+    ...depsDeEscritaLi(registro, inicioDaTarefaMs),
+    tentativa: registro.tentativa,
+    agendador: criarAgendadorPrecoLiDoAmbiente(),
+  };
 }

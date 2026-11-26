@@ -58,10 +58,10 @@
  *    PR 12-h) only enqueue: walked with the stock trigger's rules — the App Hosting producer root
  *    `lib/firebase/filasLi.ts` WALKED, not a leaf — plus a ban on every credential module and
  *    `core/contas.ts`, so they read no credential either;
- *  - the app's `getFunctions(` callers are exactly its four composition roots, and each binds only
+ *  - the app's `getFunctions(` callers are exactly its five composition roots, and each binds only
  *    its own queues: the App Hosting root the stock and reads queues, never the writes queue (the
  *    one codebase-wide `TASKS_INVOKER_SA` list grants it enqueue there too, so this pin is what
- *    keeps it off);
+ *    keeps it off), and the price root (step 13) the price queue alone;
  *  - the write chokepoint (the write engine's requirement 9, step 7), matched by FULL path in
  *    non-test source: only `core/contextoEscrita.ts` builds a write client; only
  *    `core/escrita.ts` names a package write operation or a write-client method; the write
@@ -1416,7 +1416,7 @@ describe('lib/lojaIntegrada layout', () => {
   });
 
   it(
-    'the app’s getFunctions( callers are exactly its FOUR composition roots, and each binds only its own queues — the App Hosting root the stock and reads queues, never the writes queue',
+    'the app’s getFunctions( callers are exactly its FIVE composition roots, and each binds only its own queues — the App Hosting root the stock and reads queues, never the writes queue',
     { timeout: 30_000 },
     () => {
       const chamaGetFunctions = (texto: string) =>
@@ -1428,6 +1428,7 @@ describe('lib/lojaIntegrada layout', () => {
           'functions/src/agendador.ts',
           'functions/src/agendadorEscrita.ts',
           'functions/src/agendadorEstoque.ts',
+          'functions/src/agendadorPreco.ts',
           RAIZ_DO_APP_HOSTING,
         ].sort(),
       );
@@ -1454,6 +1455,7 @@ describe('lib/lojaIntegrada layout', () => {
           'lib/lojaIntegrada/notificacoes/agendador.ts',
           'FILA_LEITURA_LI',
         ),
+        FILA_PRECO_LI: valorDaFila('lib/lojaIntegrada/preco/agendadorPreco.ts', 'FILA_PRECO_LI'),
       };
       const filasDe = (codigo: string): string[] =>
         [
@@ -1473,6 +1475,7 @@ describe('lib/lojaIntegrada layout', () => {
         'functions/src/agendador.ts': ['FILA_LEITURA_LI'],
         'functions/src/agendadorEscrita.ts': ['FILA_ESCRITA_LI'],
         'functions/src/agendadorEstoque.ts': ['FILA_ESTOQUE_LI'],
+        'functions/src/agendadorPreco.ts': ['FILA_PRECO_LI'],
         [RAIZ_DO_APP_HOSTING]: ['FILA_ESTOQUE_LI', 'FILA_LEITURA_LI'],
       });
       // ⚠️ The App Hosting SA holds enqueue rights on the WRITES queue anyway (`TASKS_INVOKER_SA`
