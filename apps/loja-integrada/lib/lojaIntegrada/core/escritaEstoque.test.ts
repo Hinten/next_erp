@@ -195,6 +195,8 @@ describe('the stock kinds in the engine’s tables', () => {
       'estoque-produto',
       'estoque-produto-lote',
       'objeto-envio',
+      'preco-produto',
+      'preco-produto-lote',
       'situacao-pedido',
     ]);
     expect(LEITURA_PREVIA_LI['estoque-produto']).toEqual({
@@ -214,17 +216,22 @@ describe('the stock kinds in the engine’s tables', () => {
       'situacao-pedido': 'codigo',
       'estoque-produto': 'estoque',
       'estoque-produto-lote': 'estoque',
+      'preco-produto': 'preco',
+      'preco-produto-lote': 'preco',
     });
     expect(POLITICA_CAMPO_ESCRITA_LI).toEqual({
       objeto: 'valor',
       codigo: 'valor',
       estoque: 'valor',
+      preco: 'valor',
     });
     expect(FLUXO_DO_TIPO_ESCRITA_LI).toEqual({
       'objeto-envio': FLUXO_LI.rastreio,
       'situacao-pedido': FLUXO_LI.rastreio,
       'estoque-produto': FLUXO_LI.estoque,
       'estoque-produto-lote': FLUXO_LI.estoque,
+      'preco-produto': FLUXO_LI.preco,
+      'preco-produto-lote': FLUXO_LI.preco,
     });
     // A kind without a row does not compile, and neither does a reader no row names.
     // @ts-expect-error — `catalogo` is not a write kind

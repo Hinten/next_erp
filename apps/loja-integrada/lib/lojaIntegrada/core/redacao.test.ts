@@ -3126,3 +3126,192 @@ describe('corpoDeRestauracaoLi — the stock detail (step 12): byte-faithful, or
     expect(restaurar([DETALHE])).toBeNull();
   });
 });
+
+describe('corpoDeRestauracaoLi — the produto detail (step 13): a byte-faithful projection of nine leaves, or null', () => {
+  // Invented values only (`testing/precoLi.ts`'s ranges): no real store data.
+  const CAMINHO_PRODUTO = '/v1/produto/1103/';
+  /** The nine leaves, in a body order that is NOT the table's, interleaved with extras. */
+  const DETALHE = {
+    sku: 'SKU-INVENTADO-1103',
+    preco_custo: 12.34,
+    pai: '/api/v1/produto/1000',
+    id: 1103,
+    imagens: [{ id: 5, caminho: 'inventada.jpg', principal: true }],
+    tipo: 'atributo_opcao',
+    ativo: true,
+    resource_uri: '/api/v1/produto/1103',
+    bloqueado: false,
+    removido: false,
+    preco_sob_consulta: false,
+    preco_cheio: 55.55,
+    nome: 'Produto Inventado',
+    preco_promocional: 22.22,
+  };
+  /** What the snapshot must be: the nine, in the body's order, every value verbatim. */
+  const PROJECAO = {
+    preco_custo: 12.34,
+    id: 1103,
+    tipo: 'atributo_opcao',
+    ativo: true,
+    bloqueado: false,
+    removido: false,
+    preco_sob_consulta: false,
+    preco_cheio: 55.55,
+    preco_promocional: 22.22,
+  };
+  const NOVE = [
+    'id',
+    'tipo',
+    'ativo',
+    'bloqueado',
+    'removido',
+    'preco_cheio',
+    'preco_promocional',
+    'preco_custo',
+    'preco_sob_consulta',
+  ] as const;
+  const restaurar = (corpo: unknown, caminho = CAMINHO_PRODUTO, status = 200) =>
+    corpoDeRestauracaoLi({ caminho, status, texto: JSON.stringify(corpo) });
+  const folha = (corpo: unknown, chave: string) =>
+    (corpo as Record<string, unknown> | null)?.[chave];
+
+  it('EQUAL pair: exactly the nine leaves come back, in the body’s order, byte for byte — every extra key dropped', () => {
+    const corpo = restaurar(DETALHE);
+    expect(JSON.stringify(corpo)).toBe(JSON.stringify(PROJECAO));
+    expect(Object.keys(corpo as object)).toEqual(Object.keys(PROJECAO));
+    // The store's own custo rides the line verbatim under the log profile.
+    expect(folha(corpo, 'preco_custo')).toBe(12.34);
+    for (const extra of ['sku', 'pai', 'imagens', 'resource_uri', 'nome']) {
+      expect(Object.hasOwn(corpo as object, extra), extra).toBe(false);
+    }
+    expect(JSON.stringify(corpo)).not.toContain('Inventad');
+    expect(JSON.stringify(corpo)).not.toContain(REDIGIDO);
+  });
+
+  it.each([
+    ['a null custo', { preco_custo: null }],
+    ['a zero promotion', { preco_promocional: 0 }],
+    ['a null promotion', { preco_promocional: null }],
+    ['a four-decimal custo', { preco_custo: 12.3456 }],
+    ['a full price as text', { preco_cheio: '11.00' }],
+    ['a four-decimal text promotion', { preco_promocional: '22.2200' }],
+    ['the id as text', { id: '1103' }],
+    ['a removed, blocked, inactive product', { removido: true, bloqueado: true, ativo: false }],
+    ['another tipo', { tipo: 'normal' }],
+    ['a price shown on request', { preco_sob_consulta: true }],
+  ])('EQUAL pair: %s rides verbatim', (_c, over) => {
+    const corpo = restaurar({ ...DETALHE, ...over });
+    expect(corpo).not.toBeNull();
+    for (const [chave, valor] of Object.entries(over)) expect(folha(corpo, chave)).toBe(valor);
+    expect(JSON.stringify(corpo)).toBe(JSON.stringify({ ...PROJECAO, ...over }));
+  });
+
+  it('EQUAL pair: whitespace in the text is not part of a value — the parsed body’s projection', () => {
+    const texto = JSON.stringify(DETALHE, null, 2);
+    expect(
+      JSON.stringify(corpoDeRestauracaoLi({ caminho: CAMINHO_PRODUTO, status: 200, texto })),
+    ).toBe(JSON.stringify(PROJECAO));
+  });
+
+  it.each(NOVE)(
+    '⚠️ NEAR-MISS: the leaf `%s` MISSING ⇒ null, never a partial snapshot',
+    (ausente) => {
+      const corpo: Record<string, unknown> = { ...DETALHE };
+      delete corpo[ausente];
+      expect(restaurar(corpo)).toBeNull();
+    },
+  );
+
+  it.each([
+    ['a full price as an object', { preco_cheio: {} }],
+    ['a full price as an array', { preco_cheio: [1] }],
+    ['a full price as a word', { preco_cheio: 'abc' }],
+    ['a full price with a comma', { preco_cheio: '1,50' }],
+    ['a custo as an object', { preco_custo: { valor: 12.34 } }],
+    ['`preco_sob_consulta` as text', { preco_sob_consulta: 'false' }],
+    ['`ativo` as a number', { ativo: 0 }],
+    ['`ativo` as text', { ativo: 'true' }],
+    ['`removido` as text', { removido: 'false' }],
+    ['an id with a letter', { id: '1103x' }],
+    ['a fractional id', { id: 1103.5 }],
+    ['a tipo with a space', { tipo: 'atributo opcao' }],
+  ])('⚠️ NEAR-MISS: a leaf the walk would ALTER — %s ⇒ null', (_c, over) => {
+    expect(restaurar({ ...DETALHE, ...over })).toBeNull();
+  });
+
+  it.each([
+    ['the no-slash form', '/v1/produto/1103'],
+    ['a leading zero', '/v1/produto/01103/'],
+    ['the alias sub-resource', '/v1/produto/1103/alias'],
+    ['the produto LIST', '/v1/produto/'],
+    ['a query', '/v1/produto/1103/?x=1'],
+    ['the price resource', '/v1/produto_preco/1103'],
+    ['a price `set/`', '/v1/produto_preco/set/1103'],
+    ['the stock detail', '/v1/produto_estoque/1103'],
+  ])('⚠️ NEAR-MISS: %s (`%s`) with a valid produto detail ⇒ null', (_c, caminho) => {
+    expect(restaurar(DETALHE, caminho)).toBeNull();
+  });
+
+  it('⚠️ NEAR-MISS: a stock row on the produto path, and a produto detail on the stock path ⇒ null', () => {
+    const linhaEstoque = {
+      gerenciado: true,
+      id: 91103,
+      produto: '/api/v1/produto/1103',
+      quantidade: 3,
+      quantidade_disponivel: 1,
+      quantidade_reservada: 2,
+      resource_uri: '/api/v1/produto_estoque/1103',
+      situacao_em_estoque: 0,
+      situacao_sem_estoque: -1,
+    };
+    expect(restaurar(linhaEstoque, CAMINHO_PRODUTO)).toBeNull();
+    expect(restaurar(DETALHE, '/v1/produto_estoque/1103')).toBeNull();
+    // Anti-vacuity: each body on its own path is a snapshot.
+    expect(restaurar(linhaEstoque, '/v1/produto_estoque/1103')).not.toBeNull();
+    expect(restaurar(DETALHE, CAMINHO_PRODUTO)).not.toBeNull();
+  });
+
+  it.each([404, 401, 500, 302])('⚠️ NEAR-MISS: a %s on the produto path ⇒ null', (status) => {
+    expect(restaurar(DETALHE, CAMINHO_PRODUTO, status)).toBeNull();
+  });
+
+  it('⚠️ NEAR-MISS: a root that is not an object, or a LIST page on the produto path ⇒ null', () => {
+    for (const texto of ['[]', 'null', '1', '"x"', 'true', '', '<html>x</html>']) {
+      expect(
+        corpoDeRestauracaoLi({ caminho: CAMINHO_PRODUTO, status: 200, texto }),
+        texto,
+      ).toBeNull();
+    }
+    const pagina = {
+      meta: { limit: 20, offset: 0, next: null, previous: null, total_count: 1 },
+      objects: [DETALHE],
+    };
+    expect(restaurar(pagina)).toBeNull();
+    expect(restaurar([DETALHE])).toBeNull();
+  });
+
+  it('the profile pair: the fixture profile FAKES the custo; the log excerpt and the restore line keep it', () => {
+    const texto = JSON.stringify(DETALHE);
+    const fixture = redigirCorpo(
+      { caminho: CAMINHO_PRODUTO, status: 200, corpo: texto },
+      'fixture',
+    );
+    if (!fixture.ok) throw new TypeError(`fixture recusada: ${fixture.motivo}`);
+    expect(fixture.politica).toBe('catalogo');
+    // FAKED, not dropped and not redacted: a number of the same type, the fixture fake's 0.
+    expect(folha(fixture.corpo, 'preco_custo')).toBe(0);
+    expect(CHAVES_FALSAS_CATALOGO_LI.has('preco_custo')).toBe(true);
+    const log = redigirCorpo({ caminho: CAMINHO_PRODUTO, status: 200, corpo: texto }, 'log');
+    expect(log.politica).toBe('catalogo');
+    expect(folha(JSON.parse(String(log.trecho)), 'preco_custo')).toBe(12.34);
+    expect(folha(restaurar(DETALHE), 'preco_custo')).toBe(12.34);
+  });
+
+  it('is total: odd JSON never throws', () => {
+    for (const texto of ['null', '"x"', '[]', '{}', '1', 'true', `"${'x'.repeat(10_000)}"`]) {
+      expect(() =>
+        corpoDeRestauracaoLi({ caminho: CAMINHO_PRODUTO, status: 200, texto }),
+      ).not.toThrow();
+    }
+  });
+});

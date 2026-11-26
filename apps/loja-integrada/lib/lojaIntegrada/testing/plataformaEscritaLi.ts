@@ -3,7 +3,8 @@
  * `fakeDb.ts` rule: nothing outside a `*.test.ts` imports this) — shared by the
  * status write-back's run suite (`rastreio/processarRastreio.test.ts`), its
  * pipeline's (`rastreio/notificacaoEscrita.test.ts`) and the write engine's
- * stock suite (`core/escritaEstoque.test.ts`).
+ * stock suite (`core/escritaEstoque.test.ts`) and its price suite
+ * (`core/escritaPreco.test.ts`).
  *
  * One order, its situação history and the two order write routes:
  *
@@ -39,6 +40,23 @@
  * Only the no-slash form is modelled, though the store answers the slash GET
  * identically: the engine never asks it, so a path regression answers 500 here.
  *
+ * And the store's produto details (`produtos`, none unless given), keyed by
+ * their `id`, as a price write decides on them (master plan step 13; invented
+ * values only, `testing/precoLi.ts`):
+ *
+ *  - `GET /v1/produto/{produto id}/` — the SLASH form only, the one the engine
+ *    asks; the no-slash form answers 500 — answers the detail; an unknown id
+ *    answers 404 with an empty body;
+ *  - `PUT /v1/produto_preco/{produto id}` — the NO-slash form only — answers 404
+ *    with an empty body for an unknown id; otherwise it stores the body
+ *    (`gravacaoPreco`, default {@link gravarPrecoPadraoLi}) and answers its echo
+ *    (`ecoPreco`, default {@link ecoPrecoPadraoLi}: the price row, its amounts as
+ *    TEXT). Both are scriptable, so a test can model a store that coerces what
+ *    it stores (a promotion truncated to whole reais) or answers another echo.
+ *    That an omitted custo keeps the stored one is this fake's ASSUMPTION,
+ *    unproven until the first canary write; no engine outcome depends on it, as
+ *    the engine never compares the custo.
+ *
  * Every request is recorded, and so is every pacer wait, on ONE timeline; the raw
  * text of every PUT body too (`textosDosPuts`), so a test can pin unquoted numbers.
  * A one-shot override queue (`fila`) answers the next request it claims. Nothing
@@ -47,6 +65,7 @@
  */
 import type { DocData, FakeDb } from './fakeDb';
 import { carimboLi, pedidoLiBruto, ID_ENVIO_LI, ID_PRODUTO_LI, NUMERO_LI } from './pedidosLi';
+import { idDaLinhaDePrecoLi, uriLinhaPrecoLi, uriProdutoPrecoLi } from './precoLi';
 
 export interface RequisicaoLi {
   readonly metodo: string;
@@ -126,6 +145,51 @@ function produtoDaLinha(linha: DocData): number | null {
 
 const ESTOQUE_DETALHE = /^\/v1\/produto_estoque\/([1-9][0-9]*)$/;
 
+const PRODUTO_DETALHE = /^\/v1\/produto\/([1-9][0-9]*)\/$/;
+const PRECO_PRODUTO = /^\/v1\/produto_preco\/([1-9][0-9]*)$/;
+
+/** One produto detail, in the slash form the engine's price reader asks. */
+export function caminhoProdutoDetalheLi(produtoId: number): string {
+  return `/v1/produto/${String(produtoId)}/`;
+}
+
+/** One product's price write path, in the no-slash form the package's route accepts. */
+export function caminhoPrecoProdutoLi(produtoId: number): string {
+  return `/v1/produto_preco/${String(produtoId)}`;
+}
+
+/**
+ * The default store of a price PUT: `cheio`, `promocional` and `sob_consulta`
+ * from the body; `preco_custo` only when the body carries `custo` (an omitted
+ * custo keeps the stored one — this fake's assumption, see the header).
+ */
+export function gravarPrecoPadraoLi(corpo: DocData, detalhe: DocData): void {
+  detalhe.preco_cheio = corpo.cheio;
+  detalhe.preco_promocional = corpo.promocional;
+  detalhe.preco_sob_consulta = corpo.sob_consulta;
+  if (Object.hasOwn(corpo, 'custo')) detalhe.preco_custo = corpo.custo;
+}
+
+/** A stored amount as the price row's text: a JSON number as `String` prints it, anything else as is. */
+const comoTexto = (v: unknown): unknown => (typeof v === 'number' ? String(v) : v);
+
+/**
+ * The default echo of a price PUT: the price row as stored, its amounts as TEXT
+ * (the public document's shape), its own `id` never the produto's.
+ */
+export function ecoPrecoPadraoLi(detalhe: DocData): Response {
+  const id = Number(detalhe.id);
+  return respostaJson(200, {
+    cheio: comoTexto(detalhe.preco_cheio),
+    custo: comoTexto(detalhe.preco_custo),
+    id: idDaLinhaDePrecoLi(id),
+    produto: uriProdutoPrecoLi(id),
+    promocional: comoTexto(detalhe.preco_promocional),
+    resource_uri: uriLinhaPrecoLi(id),
+    sob_consulta: detalhe.preco_sob_consulta,
+  });
+}
+
 /** The stock list (no slash), as the reconcile's walk asks it. */
 export const CAMINHO_LISTA_ESTOQUE_LI = '/v1/produto_estoque';
 
@@ -143,6 +207,12 @@ export interface OpcoesPlataformaEscritaLi {
   readonly moverAoEscreverObjeto?: boolean;
   /** The store's stock rows at start ({@link linhaEstoqueLi}), keyed by the product their `produto` names. */
   readonly estoque?: readonly DocData[];
+  /** The store's produto details at start (`detalhePrecoLi`, `testing/precoLi.ts`), keyed by their `id`. */
+  readonly produtos?: readonly DocData[];
+  /** How a price PUT is stored on the detail (default {@link gravarPrecoPadraoLi}). */
+  readonly gravacaoPreco?: (corpo: DocData, detalhe: DocData) => void;
+  /** What a price PUT answers, after it is stored (default {@link ecoPrecoPadraoLi}). */
+  readonly ecoPreco?: (detalhe: DocData) => Response;
 }
 
 export function criarPlataformaEscritaLi(o: OpcoesPlataformaEscritaLi = {}) {
@@ -155,11 +225,22 @@ export function criarPlataformaEscritaLi(o: OpcoesPlataformaEscritaLi = {}) {
     if (produtoId === null) throw new TypeError('plataforma: linha de estoque sem produto');
     estoque.set(produtoId, structuredClone(linha));
   }
+  const produtos = new Map<number, DocData>();
+  for (const detalhe of o.produtos ?? []) {
+    const id = detalhe.id;
+    if (typeof id !== 'number' || !Number.isSafeInteger(id)) {
+      throw new TypeError('plataforma: detalhe de produto sem id');
+    }
+    produtos.set(id, structuredClone(detalhe));
+  }
+  const gravacaoPreco = o.gravacaoPreco ?? gravarPrecoPadraoLi;
+  const ecoPreco = o.ecoPreco ?? ecoPrecoPadraoLi;
   const estado: {
     pedido: DocData;
     historico: DocData[];
     estoque: Map<number, DocData>;
     lista: DocData[];
+    produtos: Map<number, DocData>;
   } = {
     pedido,
     historico: [
@@ -173,6 +254,7 @@ export function criarPlataformaEscritaLi(o: OpcoesPlataformaEscritaLi = {}) {
     ],
     estoque,
     lista: [...estoque.values()],
+    produtos,
   };
   let proximaLinha = 2;
   const requisicoes: RequisicaoLi[] = [];
@@ -267,6 +349,20 @@ export function criarPlataformaEscritaLi(o: OpcoesPlataformaEscritaLi = {}) {
         recalcularDisponivel(linha);
       }
       return respostaJson(200, linha);
+    }
+    const produtoDetalhe = PRODUTO_DETALHE.exec(r.caminho);
+    if (produtoDetalhe !== null && r.metodo === 'GET') {
+      const detalhe = estado.produtos.get(Number(produtoDetalhe[1]));
+      // The store's 404 for an unknown product: an empty body.
+      if (detalhe === undefined) return respostaJson(404, undefined);
+      return respostaJson(200, detalhe);
+    }
+    const precoProduto = PRECO_PRODUTO.exec(r.caminho);
+    if (precoProduto !== null && r.metodo === 'PUT') {
+      const detalhe = estado.produtos.get(Number(precoProduto[1]));
+      if (detalhe === undefined) return respostaJson(404, undefined);
+      gravacaoPreco(r.corpo as DocData, detalhe);
+      return ecoPreco(detalhe);
     }
     return respostaJson(500, { erro: 'rota nao roteirizada' });
   }

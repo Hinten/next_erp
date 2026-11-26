@@ -8,6 +8,7 @@ import {
   FORMA_PROMO_LIMPA_PADRAO_LI,
   MOTIVO_RETENCAO_PRECO_LI,
   type AlvoPrecoLi,
+  type EnvioPrecoLi,
   type FormaPromoLimpaLi,
   type LeituraTabelaPrecoLi,
   assinaturaEnvioPrecoLi,
@@ -19,6 +20,7 @@ import {
   motivoRetencaoPrecoLiSchema,
   paiDoProdutoErp,
   precoAlvoLi,
+  precoRefletidoLi,
   precosDasLeiturasLi,
   promocionalLimpoLi,
   promocionalLimpoNaFormaLi,
@@ -684,6 +686,156 @@ describe('promocionalLimpoNaFormaLi (has the clear landed?)', () => {
       }
     }
   });
+});
+
+describe('precoRefletidoLi (does the store already show the target?)', () => {
+  const FORMAS: readonly FormaPromoLimpaLi[] = [
+    FORMA_PROMO_LIMPA_LI.nulo,
+    FORMA_PROMO_LIMPA_LI.zero,
+    FORMA_PROMO_LIMPA_LI.igualCheio,
+  ];
+  const LIMPAR: EnvioPrecoLi = { cheioCentavos: 1100, promo: 'limpar' };
+  const COM_PROMO: EnvioPrecoLi = { cheioCentavos: 5555, promo: { centavos: 2222 } };
+  const refletido = (
+    alvo: EnvioPrecoLi,
+    cheio: unknown,
+    promocional: unknown,
+    forma: FormaPromoLimpaLi = FORMA_PROMO_LIMPA_LI.nulo,
+  ) => precoRefletidoLi({ alvo, forma, atual: { cheio, promocional } });
+
+  it.each([[11], ['11.00'], ['11.0000'], [11.0], ['11']] as const)(
+    'EQUAL: a full price of 1100 centavos read as %j is reflected, under every forma',
+    (cheio) => {
+      for (const forma of FORMAS) expect(refletido(LIMPAR, cheio, null, forma), forma).toBe(true);
+    },
+  );
+
+  it.each([[22.22], ['22.2200'], ['22.22']] as const)(
+    'EQUAL: a promotion of 2222 centavos read as %j is reflected, under every forma',
+    (promocional) => {
+      for (const forma of FORMAS) {
+        expect(refletido(COM_PROMO, 55.55, promocional, forma), forma).toBe(true);
+        expect(refletido(COM_PROMO, '55.5500', promocional, forma), forma).toBe(true);
+      }
+    },
+  );
+
+  it.each([[null], [undefined], [0], ['0.00'], ['0'], ['0.0000']] as const)(
+    'EQUAL: after a clear, a promotion read as %j is reflected under every forma',
+    (promocional) => {
+      for (const forma of FORMAS) {
+        expect(refletido(LIMPAR, '11.0000', promocional, forma), forma).toBe(true);
+      }
+    },
+  );
+
+  it('EQUAL: under igual-cheio, a promotion equal to the full price is a landed clear', () => {
+    const igual = FORMA_PROMO_LIMPA_LI.igualCheio;
+    expect(refletido(LIMPAR, 11, 11, igual)).toBe(true);
+    expect(refletido(LIMPAR, '11.0000', '11.0000', igual)).toBe(true);
+    expect(refletido(LIMPAR, 11, '11.00', igual)).toBe(true);
+  });
+
+  it.each([
+    ['one centavo above', '11.01'],
+    ['one centavo below', '10.99'],
+    ['one centavo above, as a number', 11.01],
+    ['one centavo below, as a number', 10.99],
+    ['null', null],
+    ['zero', 0],
+    ['unreadable text', 'abc'],
+    ['a comma decimal', '1,50'],
+    ['a negative', -1],
+    ['an empty text', ''],
+    ['an object', {}],
+  ] as const)(
+    '⚠️ NEAR-MISS: a full price read as %s (%j) after 1100 centavos is NOT reflected',
+    (_c, cheio) => {
+      for (const forma of FORMAS) expect(refletido(LIMPAR, cheio, null, forma), forma).toBe(false);
+    },
+  );
+
+  it('⚠️ NEAR-MISS: the truncation `55` after a full price of 55.55 is NOT reflected', () => {
+    for (const forma of FORMAS) {
+      expect(refletido(COM_PROMO, '55', 22.22, forma), forma).toBe(false);
+      expect(refletido(COM_PROMO, 55, 22.22, forma), forma).toBe(false);
+    }
+  });
+
+  it.each([
+    ['the truncation `"22"`', '22'],
+    ['the truncation `22`', 22],
+    ['one centavo below', '22.21'],
+    ['one centavo above', '22.23'],
+    ['null', null],
+    ['zero', 0],
+    ['the zero text', '0.0000'],
+    ['unreadable text', 'abc'],
+  ] as const)(
+    '⚠️ NEAR-MISS: a promotion read as %s (%j) after 2222 centavos is NOT reflected',
+    (_c, promocional) => {
+      for (const forma of FORMAS) {
+        expect(refletido(COM_PROMO, 55.55, promocional, forma), forma).toBe(false);
+      }
+    },
+  );
+
+  it.each([['0.01'], ['0.0100'], [0.01]] as const)(
+    '⚠️ NEAR-MISS: after a clear, a promotion of one centavo (%j) is NOT reflected under any forma',
+    (promocional) => {
+      for (const forma of FORMAS) {
+        expect(refletido(LIMPAR, 11, promocional, forma), forma).toBe(false);
+      }
+    },
+  );
+
+  it('⚠️ NEAR-MISS: after a clear, a promotion equal to the full price is NOT reflected under nulo or zero', () => {
+    for (const forma of [FORMA_PROMO_LIMPA_LI.nulo, FORMA_PROMO_LIMPA_LI.zero]) {
+      expect(refletido(LIMPAR, 11, 11, forma), forma).toBe(false);
+      expect(refletido(LIMPAR, '11.0000', '11.0000', forma), forma).toBe(false);
+    }
+  });
+
+  it('⚠️ NEAR-MISS: after a clear, any other positive promotion is NOT reflected, under every forma', () => {
+    for (const forma of FORMAS) {
+      expect(refletido(LIMPAR, 11, 5, forma), forma).toBe(false);
+      expect(refletido(LIMPAR, 11, '10.99', forma), forma).toBe(false);
+      expect(refletido(LIMPAR, 11, '11.01', forma), forma).toBe(false);
+    }
+  });
+
+  it('⚠️ NEAR-MISS: a cleared promotion never makes up for a full price that differs', () => {
+    for (const forma of FORMAS) {
+      expect(refletido(LIMPAR, '11.01', null, forma), forma).toBe(false);
+      expect(refletido(LIMPAR, null, null, forma), forma).toBe(false);
+    }
+    // Anti-vacuity: the clear itself is what the second check reads.
+    expect(
+      promocionalLimpoNaFormaLi({
+        forma: FORMA_PROMO_LIMPA_LI.nulo,
+        cheio: null,
+        promocional: null,
+      }),
+    ).toBe(true);
+  });
+
+  it.each([
+    ['a zero full price', { cheioCentavos: 0, promo: 'limpar' }, 0, null],
+    ['a negative full price', { cheioCentavos: -1100, promo: 'limpar' }, -11, null],
+    ['a fractional full price', { cheioCentavos: 1100.5, promo: 'limpar' }, 11.005, null],
+    ['a NaN full price', { cheioCentavos: Number.NaN, promo: 'limpar' }, Number.NaN, null],
+    ['a zero promotion', { cheioCentavos: 1100, promo: { centavos: 0 } }, 11, 0],
+    ['a negative promotion', { cheioCentavos: 1100, promo: { centavos: -5 } }, 11, -0.05],
+    ['a fractional promotion', { cheioCentavos: 1100, promo: { centavos: 2.5 } }, 11, 0.025],
+  ] as const)(
+    'a target that is not positive integer centavos (%s) is NOT reflected — never a throw',
+    (_c, alvo, cheio, promocional) => {
+      for (const forma of FORMAS) {
+        expect(() => refletido(alvo, cheio, promocional, forma)).not.toThrow();
+        expect(refletido(alvo, cheio, promocional, forma), forma).toBe(false);
+      }
+    },
+  );
 });
 
 describe('efetivoPrecoLi (what the buyer pays)', () => {

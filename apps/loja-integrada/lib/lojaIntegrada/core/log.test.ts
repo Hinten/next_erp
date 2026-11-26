@@ -8,12 +8,14 @@ import {
   MAX_LINHA_RESTAURACAO_BYTES,
   MAX_TRECHO_CORPO_BYTES,
   SEVERIDADE_DA_ESCRITA_LI,
+  SEVERIDADE_DO_ECO_LI,
   criarObservadorLi,
   escritorPadrao,
   linhaDaChamada,
   linhaSerializadaLi,
   registrarDerivaLi,
   registrarDiffLi,
+  registrarEcoLi,
   registrarEscritaLi,
   registrarEventoLi,
   registrarRestauracaoLi,
@@ -855,5 +857,115 @@ describe('the observer never throws on a WRITE (PUT) event', () => {
       expect(gravador.linhas).toHaveLength(1);
       expect(gravador.linhas[0]?.campos).toMatchObject({ metodo: 'PUT', caminho });
     }
+  });
+});
+
+describe('registrarEcoLi — a price write’s PUT echo, judged (step 13)', () => {
+  it('each verdict has its severity: WARNING for a deriva only — no echo is never a warning', () => {
+    expect(SEVERIDADE_DO_ECO_LI).toEqual({ igual: 'INFO', deriva: 'WARNING', 'sem-eco': 'INFO' });
+  });
+
+  it('an eco line: the envelope, the ids, the verdict, how the echo read, the body sent and the echo’s leaves', () => {
+    const gravador = gravadorDeLog();
+    registrarEcoLi(
+      {
+        recurso: 1103,
+        tipo: 'preco-produto',
+        campo: 'preco',
+        politica: 'valor',
+        resultado: 'deriva',
+        leituraEco: 'ok',
+        escrito: { cheio: 33, promocional: 22.22, sob_consulta: false },
+        lido: { cheio: '33.00', promocional: '22' },
+      },
+      { ...REGISTRO, fluxo: 'preco', escrever: gravador.escrever },
+    );
+    expect(gravador.linhas).toEqual([
+      {
+        severidade: 'WARNING',
+        mensagem: '[loja-integrada] eco',
+        campos: {
+          evento: 'eco',
+          conta: 'conta-li-1',
+          fluxo: 'preco',
+          tentativa: 2,
+          idTarefa: 't-7',
+          idNotificacao: null,
+          recurso: 1103,
+          tipo: 'preco-produto',
+          campo: 'preco',
+          politica: 'valor',
+          resultado: 'deriva',
+          leituraEco: 'ok',
+          escrito: '{"cheio":33,"promocional":22.22,"sob_consulta":false}',
+          lido: '{"cheio":"33.00","promocional":"22"}',
+        },
+      },
+    ]);
+  });
+
+  it.each([
+    ['igual', 'INFO'],
+    ['sem-eco', 'INFO'],
+    ['deriva', 'WARNING'],
+  ] as const)('`%s` is written at %s', (resultado, severidade) => {
+    const gravador = gravadorDeLog();
+    registrarEcoLi(
+      {
+        recurso: 1103,
+        tipo: 'preco-produto-lote',
+        campo: 'preco',
+        politica: 'valor',
+        resultado,
+        leituraEco: resultado === 'sem-eco' ? 'vazio' : 'ok',
+        escrito: { cheio: 33 },
+        lido: {},
+      },
+      { ...REGISTRO, escrever: gravador.escrever },
+    );
+    expect(gravador.linhas).toHaveLength(1);
+    expect(gravador.linhas[0]?.severidade).toBe(severidade);
+    expect(gravador.linhas[0]?.campos.resultado).toBe(resultado);
+  });
+
+  it('`so-mudou`: no value on the line', () => {
+    const gravador = gravadorDeLog();
+    registrarEcoLi(
+      {
+        recurso: 1103,
+        tipo: 'teste',
+        campo: 'token',
+        politica: 'so-mudou',
+        resultado: 'deriva',
+        leituraEco: 'ok',
+        escrito: 'SEGREDO-A',
+        lido: 'SEGREDO-B',
+      },
+      { ...REGISTRO, escrever: gravador.escrever },
+    );
+    expect(JSON.stringify(gravador.linhas)).not.toContain('SEGREDO');
+    expect(gravador.linhas[0]?.campos).toMatchObject({ escrito: null, lido: null });
+  });
+
+  it('is total: an echo leaf that JSON cannot carry becomes a marker, never a throw', () => {
+    const gravador = gravadorDeLog();
+    const ciclo: Record<string, unknown> = {};
+    ciclo.eu = ciclo;
+    expect(() =>
+      registrarEcoLi(
+        {
+          recurso: 1103,
+          tipo: 'preco-produto',
+          campo: 'preco',
+          politica: 'valor',
+          resultado: 'deriva',
+          leituraEco: 'ok',
+          escrito: { cheio: 33 },
+          lido: { cheio: 1n, promocional: ciclo },
+        },
+        { ...REGISTRO, escrever: gravador.escrever },
+      ),
+    ).not.toThrow();
+    expect(gravador.linhas).toHaveLength(1);
   });
 });

@@ -111,10 +111,12 @@ export type OpcoesRegistroLi = Omit<OpcoesObservadorLi, 'conta'> & {
  * (`pedidos/pollPedidos.ts`), and the write engine's own lines (`core/escrita.ts`,
  * master-plan step 7): the restore snapshot before a write, a field a run that
  * may not write would have written, a write's outcome, a read-back that differs
- * from what was written, the situação-history check after a write, and an event
- * a write run found outdated. A later write step adds a kind here only when no
- * existing one says it — an outcome is a `resultado` of `escrita`, never a new
- * event.
+ * from what was written, a price write's PUT echo judged against what was
+ * written (step 13, at zero calls), the situação-history check after a write,
+ * and an event a write run found outdated. A later write step adds a kind here
+ * only when no existing one says it — an outcome is a `resultado` of `escrita`,
+ * never a new event; the echo is no outcome of the write (it never changes it)
+ * and no read-back (it is no read), so it is its own kind.
  */
 export type EventoLi =
   | 'chamada'
@@ -125,6 +127,7 @@ export type EventoLi =
   | 'diff'
   | 'escrita'
   | 'deriva'
+  | 'eco'
   | 'conferencia-historico'
   | 'superado';
 
@@ -507,7 +510,8 @@ export interface ResultadoRestauracaoLi {
  * whole line fits {@link MAX_LINHA_RESTAURACAO_BYTES}; otherwise NOTHING is
  * written and `escrita` is `false`. Measured on the exact line, through the
  * same campos the sink receives. Its `politica` is read from the path:
- * `estrutural` for the order detail, `catalogo` for the stock detail.
+ * `estrutural` for the order detail, `catalogo` for the stock detail and for
+ * the produto detail.
  */
 export function registrarRestauracaoLi(
   r: RestauracaoLi,
@@ -657,6 +661,58 @@ export function registrarDerivaLi(d: DerivaLi, o: OpcoesRegistroLi): void {
     'deriva',
     'WARNING',
     { recurso: d.recurso, tipo: d.tipo, campo: d.campo, politica: d.politica, escrito, lido },
+    o,
+  );
+}
+
+/**
+ * What a price write's PUT echo said (`evento: 'eco'`, `core/escrita.ts`): it
+ * shows what was written (`igual`), something else (`deriva`), or there is
+ * nothing to judge (`sem-eco`: no body, a body that did not read, or one without
+ * its `cheio` or `promocional`) — never a `deriva` for want of an echo.
+ */
+export type ResultadoEcoLi = 'igual' | 'deriva' | 'sem-eco';
+
+export const SEVERIDADE_DO_ECO_LI = {
+  igual: 'INFO',
+  deriva: 'WARNING',
+  'sem-eco': 'INFO',
+} as const satisfies Record<ResultadoEcoLi, SeveridadeLi>;
+
+/** One `eco` line: the write's ids, the verdict, how the echo read, the body sent and the echo's leaves. */
+export interface EcoLogLi {
+  readonly recurso: number;
+  readonly tipo: string;
+  readonly campo: string;
+  readonly politica: PoliticaCampoLi;
+  readonly resultado: ResultadoEcoLi;
+  /** How the echo read (`ok`, `vazio`, `nao-json`, `formato`, `falhou`). */
+  readonly leituraEco: string;
+  /** The body the write sent. */
+  readonly escrito: unknown;
+  /** The echo's own price leaves, verbatim: only those it carries. */
+  readonly lido: unknown;
+}
+
+/**
+ * One `eco` line after a landed price write: INFO, or WARNING for a `deriva`.
+ * It reports and decides nothing. A `so-mudou` field logs no value.
+ */
+export function registrarEcoLi(c: EcoLogLi, o: OpcoesRegistroLi): void {
+  const [escrito, lido] = valoresDoCampo(c.politica, c.escrito, c.lido);
+  registrarEventoLi(
+    'eco',
+    SEVERIDADE_DO_ECO_LI[c.resultado],
+    {
+      recurso: c.recurso,
+      tipo: c.tipo,
+      campo: c.campo,
+      politica: c.politica,
+      resultado: c.resultado,
+      leituraEco: c.leituraEco,
+      escrito,
+      lido,
+    },
     o,
   );
 }
