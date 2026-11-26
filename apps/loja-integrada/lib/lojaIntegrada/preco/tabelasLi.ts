@@ -60,9 +60,9 @@ function idDaTabelaLi(ref: unknown): string | null {
 /**
  * The conta's tabelas (module header, "Both stored forms of a ref").
  *
- * Equal (⇒ `'T1'`): `'documents/listaDePrecos/T1'` ≡ `'listaDePrecos/T1'`. Distinct (⇒ `null`):
- * `'documents/outra/T1'`, `'documents/listaDePrecos/T1/sub/x'`, `''`, a number,
- * `'documents/listaDePrecos/__x__'`, and a key the conta only inherits.
+ * Equal (⇒ `'tab-n'`): `'documents/listaDePrecos/tab-n'` ≡ `'listaDePrecos/tab-n'`. Distinct
+ * (⇒ `null`): `'documents/outra/tab-n'`, `'documents/listaDePrecos/tab-n/sub/x'`, `''`, a
+ * number, `'documents/listaDePrecos/__x__'`, and a key the conta only inherits.
  */
 export function tabelasDaContaLi(conta: {
   readonly tabelaNormalOuterRef?: unknown;
