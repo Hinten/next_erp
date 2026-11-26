@@ -88,12 +88,14 @@ neither lane. At `dry-run` or `on` every write run still stops at its write
 context while the read switch is unset — before any Loja Integrada client
 exists — so nothing is ever written to Loja Integrada before the window.
 
-⚠️ **The price queue (master-plan step 13) stops at the price valve.**
-`filaPrecoLojaIntegrada` has no producer yet but its own `deriva` follow-up, so
-nothing enqueues onto it. With `LOJA_INTEGRADA_MODO_PRECO` unset every task
-returns `desligado` before any read; at `dry-run` or `on` each send run stops at
-its write context while the read switch is unset, before any Loja Integrada
-client exists.
+⚠️ **The price trigger and queue (master-plan step 13) stop at the price
+valve.** `onPrecoLojaIntegrada` makes no Loja Integrada call and writes nothing.
+With `LOJA_INTEGRADA_MODO_PRECO` unset every produto write returns before any
+read; at `dry-run` or `on` the trigger enqueues send tasks onto
+`filaPrecoLojaIntegrada`, and each send run then stops at its write context while
+the read switch is unset, before any Loja Integrada client exists. A Firestore
+import fires no trigger: the migrated prices reach a store only through a send
+run, and the trigger covers the ERP price edits after the switch-over.
 
 ## Prerequisites
 
@@ -112,10 +114,11 @@ client exists.
   `onProdutoLojaIntegradaLinkChanged` (master-plan step 9) on
   `produtos/{produtoId}/produtolojaintegrada/{linkId}`,
   `onImportacaoLojaIntegradaCriada` (master-plan step 9) on
-  `importacoesLojaIntegrada/{jobId}` and `onEstoqueLojaIntegrada` (master-plan
-  step 12) on `produtos/{produtoId}/estoques/{estoqueId}`, all five in the
-  NAMED `default` database — never the `(default)` sentinel, which deploys fine
-  and never fires. `build.mjs` inlines
+  `importacoesLojaIntegrada/{jobId}`, `onEstoqueLojaIntegrada` (master-plan
+  step 12) on `produtos/{produtoId}/estoques/{estoqueId}` and
+  `onPrecoLojaIntegrada` (master-plan step 13) on `produtos/{produtoId}`, all
+  six in the NAMED `default` database — never the `(default)` sentinel, which
+  deploys fine and never fires. `build.mjs` inlines
   `FIREBASE_DATABASE_ID` (unset or blank → `default`) and the preflight prints
   the value it baked; leave it unset in the BUILD environment (the deploy shell
   and the repo-root `.env.functions`), or set it to exactly `default`. The
@@ -155,11 +158,12 @@ client exists.
   child of a selected root is never found by the root's expansion, which
   filters on the array too (it is left out, or, when no child of that root
   names the conta, the root itself becomes the target and is usually answered
-  `pai`). The stock trigger and the nightly stock reconcile read the links
-  themselves and still send it. The trigger needs
-  no index of its own: its survivor read takes the produto's whole
-  `produtolojaintegrada` subcollection, a handful of documents, and filters in
-  code.
+  `pai`). The PRICE trigger (master-plan step 13) pre-filters on the array too:
+  it skips that produto's price events silently. The stock trigger and the
+  nightly stock reconcile read the links themselves and still send it. The
+  anchor trigger needs no index of its own: its survivor read takes the
+  produto's whole `produtolojaintegrada` subcollection, a handful of documents,
+  and filters in code.
 - **`apps/web` deployed before the read switch is set** (master plan §5 item 1;
   §5 item 5 rolls it out after this codebase). The order import owns six aviso
   tipos (`lojaIntegradaSituacaoDesconhecida`, `lojaIntegradaPedidoContestado`,
@@ -274,10 +278,11 @@ are local builds; neither deploys anything.
 | `varrerEscritasLojaIntegrada`         | `onSchedule('15,45 * * * *')`                   | Master-plan step 7 — the writes queue's backstop timer. It only enqueues ONE `varredura` task per tick onto `filaEscritaLojaIntegrada`, named after the tick's schedule time; the sweep runs inside the queue, never here, so a retry can never race a fresh write. It does not read the write valve (the task does). Tasks disabled or a transient failure ⇒ one WARNING and the next tick tries again. `America/Sao_Paulo`, `timeoutSeconds 60`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `reconciliarEstoqueLojaIntegrada`     | `onSchedule('23 4 * * *')`, `America/Sao_Paulo` | Master-plan step 12 (PR 12-g) — the NIGHTLY start of the daily stock reconcile. It reads NO Firestore document and calls no Loja Integrada endpoint: with `LOJA_INTEGRADA_MODO_ESTOQUE` `off` (unset) it does nothing; otherwise — whatever the read switch says: the run's ERP side rebuilds the kits map, its store phase stops at the switch — it enqueues ONE named task, the run's first slice (`estoque-reconcile-<AAAAMMDD of the schedule time in São Paulo>`, seq 0), onto `filaLeituraLojaIntegrada`. `timeoutSeconds 60`, `retryCount 3` (a transient enqueue failure is rethrown; the retry carries the same schedule time, so the same name). The minute 23 is one no other schedule of this codebase fires at (`src/index.test.ts`). **No `secrets:`.**                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | `filaEstoqueLojaIntegrada`            | `onTaskDispatched` (Cloud Tasks queue)          | Master-plan step 12 (PR 12-e) — the STOCK queue: one send run of one child produto of one conta per task (`lib/lojaIntegrada/estoque/processarEstoque.ts`), a queue of its own so the status write-back never waits behind a stock pass. The payload is ids only (parsed strict; the quantity is derived when the task runs). `estoque` runs one send run; `estoque-kits` (PR 12-f) runs one component's kit fan-out (`processarKitsEstoque.ts`): one send per kit it holds at 0, paced on the global slot `reconcileEstoqueLojaIntegrada/atual.proximoSlotMs`, its only write; any other `tipo` is dropped. Options IDENTICAL to `filaEscritaLojaIntegrada`'s (`src/index.test.ts` pins the equality): one dispatch at a time, **`concurrency: 1` and `maxInstances: 1`**, 3 attempts with a FLAT 300 s backoff, `timeoutSeconds 300` (the worst run is 68 s). **No `secrets:`.** No failure store and **no Firestore write on success**; the only aviso it raises is `lojaIntegradaEstoqueRecusado` (a write refused on the last attempt). Producers (functions runtime SA): the stock trigger, the fan-out, the `deriva` follow-up, and the daily reconcile's queue phase (PR 12-g); (App Hosting runtime SA) the manual push `POST …/enviar-estoque` (PR 12-h). The whole stock sync is `lib/lojaIntegrada/estoque/README.md`. No Loja Integrada call until the window: the stock valve is unset (zero reads), then the read switch.                                                                                                         |
-| `filaPrecoLojaIntegrada`              | `onTaskDispatched` (Cloud Tasks queue)          | Master-plan step 13 (PR 13-d) — the PRICE queue: one send run of one linked produto of one conta per task (`lib/lojaIntegrada/preco/processarPreco.ts`), a queue of its own so a whole-catalogue reprice never holds the status write-back or a stock send behind it. The payload is ids only (parsed strict; the price is derived when the task runs, from the ERP and a fresh deciding read of the store). `preco` runs one send run — at most ONE `PUT /v1/produto_preco/{id}`, an event-origin one read back by its own GET (a drift ⇒ ONE `deriva` follow-up, generation 1, never another), a bulk-origin one with no read-back call; any other `tipo` is dropped. Options IDENTICAL to `filaEstoqueLojaIntegrada`'s (`src/index.test.ts` pins the equality): one dispatch at a time, **`concurrency: 1` and `maxInstances: 1`**, 3 attempts with a FLAT 300 s backoff, `timeoutSeconds 300` (the worst run is 68 s). **No `secrets:`.** No failure store and **no Firestore write on success**; the only aviso it raises is `lojaIntegradaPrecoRecusado` (a write refused on the last attempt, or a follow-up that still read a drift). Producers today (functions runtime SA): only the `deriva` follow-up; the price trigger, the nightly read and the operator's routes come in later PRs of step 13. The send run is `lib/lojaIntegrada/preco/README.md`. No Loja Integrada call until the window: the price valve is unset (zero reads), then the read switch.                                                                        |
+| `filaPrecoLojaIntegrada`              | `onTaskDispatched` (Cloud Tasks queue)          | Master-plan step 13 (PR 13-d) — the PRICE queue: one send run of one linked produto of one conta per task (`lib/lojaIntegrada/preco/processarPreco.ts`), a queue of its own so a whole-catalogue reprice never holds the status write-back or a stock send behind it. The payload is ids only (parsed strict; the price is derived when the task runs, from the ERP and a fresh deciding read of the store). `preco` runs one send run — at most ONE `PUT /v1/produto_preco/{id}`, an event-origin one read back by its own GET (a drift ⇒ ONE `deriva` follow-up, generation 1, never another), a bulk-origin one with no read-back call; any other `tipo` is dropped. Options IDENTICAL to `filaEstoqueLojaIntegrada`'s (`src/index.test.ts` pins the equality): one dispatch at a time, **`concurrency: 1` and `maxInstances: 1`**, 3 attempts with a FLAT 300 s backoff, `timeoutSeconds 300` (the worst run is 68 s). **No `secrets:`.** No failure store and **no Firestore write on success**; the only aviso it raises is `lojaIntegradaPrecoRecusado` (a write refused on the last attempt, or a follow-up that still read a drift). Producers today (functions runtime SA): the price trigger `onPrecoLojaIntegrada` (PR 13-e) and the `deriva` follow-up; the nightly read and the operator's routes come in later PRs of step 13. The send run is `lib/lojaIntegrada/preco/README.md`. No Loja Integrada call until the window: the price valve is unset (zero reads), then the read switch.                                         |
 | `onIntegracaoLojaIntegradaChanged`    | `onDocumentWritten` (Firestore)                 | Master-plan step 20 — the codebase's FIRST Firestore trigger, on `integracao/{integracaoId}`. Keeps each Loja Integrada conta's `int_frete` doc (tipo `lojaIntegrada`) in step with the conta through the shared core `@delfrance/data/admin/frete`: adopt the migrated doc by `contaLojaIntegradaEnviosOuterRef`, else create `lojaIntegrada-<integracaoId>`; patch only the mirrored fields that moved (`nome`, `ativo`, the filial, `dataCadastro`), never `mapa` or `horarioDeCorte`; deactivate, never delete, once the conta is gone or no longer Loja Integrada. State-driven: the core re-reads the conta itself, so a replayed or out-of-order delivery cannot roll anything back. EVERY channel's conta write reaches it, and it returns with ZERO reads unless the conta is, or was, Loja Integrada and the write moved a mirrored field (or the tipo, or created or deleted the conta). Logs the conta id and the action with field names, never a value. `database` **`default`**, `retry: true`, **no secrets**, no `invoker` (Eventarc invokes it), no Loja Integrada call. No per-function `region:`. Since master-plan step 12 (PR 12-g) a SECOND arm: a Loja Integrada conta re-pointed at ANOTHER depósito (an update; folded, so one depósito in its two spellings is no change; never on a create, never when the depósito is removed) enqueues ONE named first slice of a full stock reconcile on `filaLeituraLojaIntegrada` (`estoque-reconcile-deposito-<µs of the write>`), zero reads, with the stock valve not `off`. |
 | `onProdutoLojaIntegradaLinkChanged`   | `onDocumentWritten` (Firestore)                 | Master-plan step 9 — the `integracoesComProduto` anchor, on `produtos/{produtoId}/produtolojaintegrada/{linkId}` (a parent's link under the ERP root and a child's under the ERP child alike). Keeps each produto's `integracoesComProduto` — the pre-filter the other channels' sweeps and this app's manual stock push open with (the stock trigger and the nightly stock reconcile read the links themselves) — in step with its Loja Integrada links, through the shared core `@delfrance/data/admin/produtos`: a link COUNTS when its `id` names a store product and it is not in the trash (hidden and blocked links count); a counting link created or pulled back out of the trash adds its conta (`arrayUnion`, tier 0), and a link that stops counting or is deleted makes the core re-read the produto's whole link subcollection inside its guarded write and remove the conta only when no counting link of it survives (tier 1). The decision is taken from the event payload before any read, so an edit that moves no membership (a name, the mirror fields, a publication code) costs ZERO reads. Logs the produto, the link doc and the conta ids with the write's outcome, never a value. `database` **`default`**, `retry: true`, **no secrets**, no `invoker` (Eventarc invokes it; it enqueues nothing), no index of its own, no Loja Integrada call. No per-function `region:`.                                                                                                                                           |
 | `onEstoqueLojaIntegrada`              | `onDocumentWritten` (Firestore)                 | Master-plan step 12 (PR 12-f) — the stock TRIGGER, on `produtos/{produtoId}/estoques/{estoqueId}`: EVERY ERP stock write of every depósito and channel. Gates in order: the payload alone (no available quantity moved — a `localizacao` edit, a stamp-only update, the paid → shipped pair ⇒ ZERO reads, no line), the stock valve (`off` ⇒ zero reads), the cached map of the contas' depósitos (one `integracao` query per 15 min per instance), then the produto's own links and the kits header per concerned conta. It enqueues onto `filaEstoqueLojaIntegrada` one send per linked child, one per kit the eager filter flags (at most `LOJA_INTEGRADA_ESTOQUE_KITS_IMEDIATO_MAX` kits per component), or ONE `estoque-kits` fan-out when a component with more kits can have sent one to 0; the clock read after every read, `task-already-exists` is success, a transient failure is rethrown, tasks disabled ⇒ one WARNING. It **writes nothing**. `database` **`default`**, `retry: true`, **no secrets**, no `invoker`, no Loja Integrada call. No per-function `region:`.                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `onPrecoLojaIntegrada`                | `onDocumentWritten` (Firestore)                 | Master-plan step 13 (PR 13-e) — the price TRIGGER, on `produtos/{produtoId}`: EVERY ERP produto write of every channel (the path `apps/functions`' produto trigger and Mercado Livre's category trigger listen on, in other codebases). Gates in order: the payload alone (no tabela entry, propagation flag or parent moved — an anchor write, a new counting link, the custo, the name, float residue ⇒ ZERO reads, no line), the price valve (`off` ⇒ zero reads), the payload's anchor (`integracoesComProduto`, zero reads), the cached map of the ACTIVE contas that name a normal tabela (one `integracao` query per 15 min per instance), then at most ONE masked parent read for a child or ONE family query per concerned conta for a root (`produtos (paiId, integracoesComProduto, __name__)`, `limit 51`). It enqueues onto `filaPrecoLojaIntegrada` one `evento` send per (conta, linked produto) whose price can have moved — none for the ERP's propagation echo under an anchored propagating parent; `baixar` false only for a parent move; the clock read after every read, `task-already-exists` is success, a transient failure is rethrown, tasks disabled ⇒ one WARNING, a 51st child ⇒ one WARNING `familia-excede-limite`. It **writes nothing**. `database` **`default`**, `retry: true`, **no secrets**, no `invoker`, no Loja Integrada call. No per-function `region:` and no `maxInstances` (the codebase's 10).                                                                                                   |
 | `onImportacaoLojaIntegradaCriada`     | `onDocumentCreated` (Firestore)                 | Master-plan step 9 — the product import's first producer, on `importacoesLojaIntegrada/{jobId}`. For a job document CREATED `pendente` (the import's start route creates it) it enqueues ONE task named `li-importacao-<jobId>-0` onto `filaLeituraLojaIntegrada` (`task-already-exists` is success); a document created in any other status returns with ZERO reads and no line. Tasks disabled ⇒ the job is stamped `falhou/tarefas-desligadas` (never left `pendente` with nothing queued); a transient Cloud Tasks failure is rethrown for the retry. `database` **`default`**, `retry: true`, **no secrets**, no Loja Integrada call.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 
 ⚠️ **The export name IS the queue name.** Firebase binds one function per queue
@@ -373,6 +378,19 @@ reconcile. The trigger NEEDS `integracao (tipo ASC, nome ASC)` and the fan-out
 `estoques (depositoOuterRef ASC, ultimaModificacao ASC)` READY (both already
 declared in `firestore.indexes.json`): on Enterprise a missing index full-scans
 and bills the scan.
+
+⚠️ **The price trigger shares its path, and sees every produto write.**
+`onPrecoLojaIntegrada` listens on `produtos/{produtoId}`, where `apps/functions`'
+produto trigger (the `storage` codebase) and Mercado Livre's category trigger
+also listen; all three are independent. Every ERP produto write of every channel
+costs one invocation here, and a write that moves no tabela entry, propagation
+flag or parent, or any write with the valve off, returns with ZERO reads; one
+whose anchor names no ACTIVE Loja Integrada conta with a normal tabela costs only
+the cached conta map (one query per 15 minutes per instance), so a conta created,
+re-pointed to another tabela or reactivated is seen within that time. The trigger
+NEEDS `integracao (tipo ASC, nome ASC)` and `produtos (paiId ASC,
+integracoesComProduto ASC, __name__ ASC)` READY (both already declared). The
+whole trigger is `lib/lojaIntegrada/preco/README.md`, "The trigger".
 
 ⚠️ **The global stagger slot paces every bulk stock send.**
 `reconcileEstoqueLojaIntegrada/atual.proximoSlotMs` spaces the kit fan-out's
@@ -614,7 +632,8 @@ the wipe. Create `apps/loja-integrada/functions/.env.deploy` (gitignored):
 # conta trigger's depósito arm log one WARNING, a reconcile slice's hand-off
 # releases the run's lease with one WARNING, and its queue phase drops its
 # candidates with one WARNING. The next event or night re-covers.
-# It closes the PRICE producer too (step 13): a price send run's drift
+# It closes the PRICE producers too (step 13): the price trigger logs one
+# WARNING and skips the event's remaining enqueues, a price send run's drift
 # follow-up is one WARNING (its write stands), and the next event re-covers.
 # LOJA_INTEGRADA_TASKS_DISABLED=1
 
@@ -665,9 +684,12 @@ the wipe. Create `apps/loja-integrada/functions/.env.deploy` (gitignored):
 # LOJA_INTEGRADA_CANARIO_PRECO in the price queue's send run (the App Hosting
 # backend has no reader of either yet): `off` (or unset) makes every price run
 # return before any read; `dry-run` makes it read, plan and log one diff line
-# with nothing sent (no aviso, no park); `on` sends only to a target the canary
-# list admits. Nothing enqueues a price task yet but the run's own follow-up. The
-# whole price send run is `lib/lojaIntegrada/preco/README.md`.
+# with nothing sent (no price aviso; a 401 or 403 on its deciding read still
+# parks the conta, with its reconexão aviso, once the read switch is on); `on`
+# sends only to a target the canary list admits. Since PR 13-e the price trigger
+# reads LOJA_INTEGRADA_MODO_PRECO too, and enqueues at `dry-run` and `on` alike
+# (`off` or unset: every produto write returns before any read). The whole price
+# sync is `lib/lojaIntegrada/preco/README.md`.
 # The anúncio and webhook-registration pairs have no reader yet.
 # ⚠️ STAGING HAZARD. Loja Integrada has no sandbox and the origin is fixed, so a
 # conta holding a token — real or invented — makes our code read LIVE (the
@@ -677,11 +699,17 @@ the wipe. Create `apps/loja-integrada/functions/.env.deploy` (gitignored):
 # locally, before the window (D17), and these lines stay commented out. Set them
 # ALIKE here and in the App Hosting console where that backend reads one (since
 # PR 12-h: LOJA_INTEGRADA_MODO_ESTOQUE; the rest, LOJA_INTEGRADA_CANARIO_ESTOQUE
-# included, are applied here only), and only in the window — with ONE exception
-# before it: LOJA_INTEGRADA_MODO_ESTOQUE=dry-run, alike on both surfaces, is the
-# daily reconcile's staging measurement path (above). With the read switch off
-# and no token saved it calls nothing and writes nothing to a store; `on`, any
-# canary entry and the read switch stay window decisions.
+# included, are applied here only), and only in the window — with TWO
+# exceptions before it: LOJA_INTEGRADA_MODO_ESTOQUE=dry-run, alike on both
+# surfaces (the daily reconcile's staging measurement path, above), and
+# LOJA_INTEGRADA_MODO_PRECO=dry-run, functions only (the App Hosting backend
+# reads no price variable yet): the price trigger's staging measurement path,
+# set first in `.env.deploy.<staging-project-id>` only, and — the recommended
+# default, for the owner to confirm (the alternative: unset until the valve's
+# ramp in the window) — carried by the deploy that opens operations, so the
+# first-deploy check below sees one real price edit enqueue. With the read switch
+# off and no token saved neither calls anything nor writes to a store; `on`, any
+# canary entry, the clear forma and the read switch stay window decisions.
 # LOJA_INTEGRADA_MODO_ESTOQUE=
 # LOJA_INTEGRADA_MODO_PRECO=
 # LOJA_INTEGRADA_MODO_ANUNCIO=
@@ -813,11 +841,12 @@ with the queue `filaEstoqueLojaIntegrada` and grant 3 with the service
 already in place for the functions runtime SA.
 
 **The price queue (master-plan step 13) needs the same three, for its own
-queue.** `filaPrecoLojaIntegrada` is enqueued today only by the price send run's
-own `deriva` follow-up, running as the functions runtime SA; the price trigger
-and the nightly reconcile's price queue phase (later PRs of step 13) will enqueue
-as that SA too — "Atualizar preços" included, which only starts one full
-reconcile run whose queue phase enqueues the sends —, and the operator's manual
+queue.** `filaPrecoLojaIntegrada` is enqueued today by the price trigger
+`onPrecoLojaIntegrada` (PR 13-e) and by the price send run's own `deriva`
+follow-up, both running as the functions runtime SA; the nightly reconcile's
+price queue phase (a later PR of step 13) will enqueue as that SA too —
+"Atualizar preços" included, which only starts one full reconcile run whose
+queue phase enqueues the sends —, and the operator's manual
 price push as the App Hosting runtime SA. Run grant 1 with the
 queue `filaPrecoLojaIntegrada` and grant 3 with the service
 `filaprecolojaintegrada` (or let `TASKS_INVOKER_SA` apply them); grant 2 is
@@ -1073,9 +1102,9 @@ silent case is what this variable exists for.
 
 Verify it took, with nobody having run gcloud:
 `gcloud run services get-iam-policy filaleituralojaintegrada --region=<region>`,
-and the same for the services `filaescritalojaintegrada` and
-`filaestoquelojaintegrada` (Cloud Run service names are the LOWERCASED function
-names; see the case note above).
+and the same for the services `filaescritalojaintegrada`,
+`filaestoquelojaintegrada` and `filaprecolojaintegrada` (Cloud Run service names
+are the LOWERCASED function names; see the case note above).
 
 ### ⚠️ firebase-tools 15.28.2: the first deploy of a NEW queue crashes on the enqueuer binding
 
@@ -1335,6 +1364,28 @@ of this section passes.
     component, or a depósito two contas share), whose send run goes no further
     than the read switch while it is off. The whole stock sync is
     `lib/lojaIntegrada/estoque/README.md`.
+
+11. **The price trigger (master-plan step 13, PR 13-e).** The console lists
+    `onPrecoLojaIntegrada` as a Firestore trigger on database `default`, and
+    the Eventarc trigger carries that filter:
+
+    ```bash
+    gcloud eventarc triggers list --project <project-id>
+    # expect a trigger for onprecolojaintegrada,
+    # event type google.cloud.firestore.document.v1.written,
+    # filtered to database 'default' + the produtos/* document path
+    ```
+
+    It is this codebase's sixth Firestore trigger: confirm that the Eventarc and
+    Firestore service-agent grants serving the other five serve it too. A
+    trigger bound to `(default)` deploys fine and never fires, and then no ERP
+    price edit reaches the price queue. With the price valve at `dry-run` (the
+    recommended default for this deploy, the owner to confirm; "Runtime env"),
+    watch the next real price edit of a linked child (never hand-edit a real
+    price): it enqueues one `preco` task on `filaPrecoLojaIntegrada`, whose
+    dispatch line `[loja-integrada] tarefa da fila de preço` shows the run
+    stopping at the read switch (`chamadas-desligadas`) while it is off. The
+    whole price sync is `lib/lojaIntegrada/preco/README.md`.
 
 ## The status write-back in the window (master-plan step 7)
 

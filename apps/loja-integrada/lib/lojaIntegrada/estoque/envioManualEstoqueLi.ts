@@ -128,7 +128,8 @@ export const CAMPOS_PRODUTO_ENVIO_MANUAL_LI = [
 /**
  * The COLLECTION index the expansion rides, in order — `produtos (paiId, integracoesComProduto,
  * __name__)`: an equality on the first, `array-contains` on the second. The SAME constant the
- * `.where()` calls are built from.
+ * `.where()` calls are built from — here and in the price trigger's family query
+ * (`preco/gatilhoPreco.ts`, step 13), which rides the same index.
  */
 export const CAMPOS_INDICE_FILHOS_ENVIO_MANUAL_LI = ['paiId', 'integracoesComProduto'] as const;
 

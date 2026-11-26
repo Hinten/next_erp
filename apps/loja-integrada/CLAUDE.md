@@ -22,18 +22,21 @@ Master plan: `.master_plans/loja-integrada/loja-integrada-marketplace-integratio
   step 13's (PR 13-c) the two price kinds and the produto detail's.
 - Step 13 (the price sync, in stacked PRs). PR 13-d: the price SEND RUN
   (`lib/lojaIntegrada/preco/`) and its queue `filaPrecoLojaIntegrada` in the functions codebase,
-  with the producer root its one `deriva` follow-up enqueues through. No producer beyond that
-  follow-up yet: the trigger, the nightly read and the operator's routes come in later PRs of
-  step 13 ("Price sync" below).
+  with the producer root its one `deriva` follow-up enqueues through. PR 13-e: the price
+  TRIGGER `functions/src/onPrecoLojaIntegrada.ts` on every ERP produto write, the queue's first
+  producer (its work `preco/gatilhoPreco.ts`, `relevanciaPrecoLi.ts`, `mapaTabelasLi.ts`). The
+  nightly read, the tabela re-point arm and the operator's routes come in later PRs of step 13
+  ("Price sync" below).
 - Step 10 (the catalogue reads): four `GET`s in the conta route family (below), the core
   `lib/lojaIntegrada/catalogo/catalogo.ts` and its caches `catalogo/cache.ts`. The web's
   variation linker reads the grades; categories and brands wait for step 11's product tab.
 - Step 9 (the product import, in stacked PRs). PR 9-v, the anchor: the Firestore trigger
   `functions/src/onProdutoLojaIntegradaLinkChanged.ts` on
   `produtos/{produtoId}/produtolojaintegrada/{linkId}` keeps `produtos.integracoesComProduto`
-  (the other channels' sweeps' pre-filter, and this app's manual stock push's; the stock trigger
-  and the reconcile read the links themselves) in step with the link docs, through the app's ONE
-  binding of the shared core, `lib/lojaIntegrada/produtos/integracoesComProdutoLi.ts`: the conta
+  (the other channels' sweeps' pre-filter, this app's manual stock push's and, since step 13, its
+  price trigger's; the stock trigger and the reconcile read the links themselves) in step with
+  the link docs, through the app's ONE binding of the shared core,
+  `lib/lojaIntegrada/produtos/integracoesComProdutoLi.ts`: the conta
   from `contaLojaIntegrada` (`contaDoLinkLi`: `contaIdFromRef`, both stored forms), the counts
   predicate `vinculoLiConta` (a store product id, not in the trash; hidden and blocked links
   count), and as the survivor reader an UNFILTERED read of the produto's own links (no index; the
@@ -950,11 +953,11 @@ Read it before touching stock code. What must never break:
 
 ## Price sync (step 13)
 
-What exists today — the send run and its queue (PR 13-d) — its costs, failures, env, the
-emulator lane and the deploy items are `lib/lojaIntegrada/preco/README.md`. Read it before
-touching price code. The price function, the fold and the aviso tipos are `@delfrance/schemas`'
-(PR 13-a); the wire and the builder the package's (PR 13-b); the two write kinds the engine's
-(PR 13-c). What must never break:
+What exists today — the send run and its queue (PR 13-d), and the price TRIGGER, the queue's
+first producer (PR 13-e) — with their costs, failures, env, the emulator lane and the deploy items
+is `lib/lojaIntegrada/preco/README.md`. Read it before touching price code. The price function,
+the fold and the aviso tipos are `@delfrance/schemas`' (PR 13-a); the wire and the builder the
+package's (PR 13-b); the two write kinds the engine's (PR 13-c). What must never break:
 
 - ⚠️ **Ids only.** A `preco` task is a strict ids-only payload
   (`packages/schemas/src/tarefaPrecoLojaIntegrada.ts`): a price in it is refused, and the target
@@ -988,6 +991,33 @@ touching price code. The price function, the fold and the aviso tipos are `@delf
 - ⚠️ **The lane runs the price valve at `dry-run`, never `on`**, and names no price canary
   (`vitest.tasks.setup.ts` refuses both; `testing/guardaDaLaneDeTarefas.test.ts` reads the job
   env itself).
+- ⚠️ **The trigger's relevance and valve read nothing** (`preco/relevanciaPrecoLi.ts`, then
+  `LOJA_INTEGRADA_MODO_PRECO`): only the produto's own `precos`, `propagatePriceToChildren` and
+  `paiId` from the payload, each tabela key through the shared fold, so float residue and a key
+  that names no tabela stop at zero reads. The custo and a new counting link are deliberately NOT
+  signals (the ERP custo is never sent; an "only link" import must not become an unreviewed mass
+  price change). It fires on EVERY ERP produto write, writes NOTHING, calls no store, and never
+  reads the produto itself, the canary or the read switch.
+- ⚠️ **The conta map** (`preco/mapaTabelasLi.ts`, cached 15 min per instance, an empty map too):
+  ACTIVE contas that name a normal tabela, intersected with the produto's anchor
+  (`integracoesComProduto`, before ∪ after, exact). A conta with no normal tabela is inert.
+- ⚠️ **A child costs at most ONE masked parent read; a root ONE family query per concerned
+  conta** (`paiId ==` and `array-contains` the conta, projected, `limit 51`, built from the
+  manual stock push's index constant on the declared `produtos (paiId, integracoesComProduto,
+  __name__)`; no new index). The echo rule: a child's price move under a parent that propagates
+  AND whose anchor names the conta enqueues NOTHING (the parent's own event owns the family).
+  `baixar` is true only for an ERP price decision (a concerned tabela, or the flag), false for a
+  parent move, which wins in a write that moves both. The clock is read inside each enqueue,
+  after every read.
+- ⚠️ **The anchor is load-bearing for price.** A counting link whose conta is missing from
+  `integracoesComProduto` makes the trigger skip that produto's price events silently: the
+  window's anchor census is the gate before `on`.
+- ⚠️ **The no-call roster** (`estrutura.test.ts`): the trigger's closure (the price producer's
+  root a leaf) reaches no context loader, park, pacer, write engine or send run — the price send
+  run banned on top — names no client and calls no `fetch`.
+- ⚠️ **`LOJA_INTEGRADA_MODO_PRECO=dry-run`, functions only, is the one value allowed before the
+  window** — the recommended default, for the owner to confirm: the staging measurement path, and
+  carried by the deploy that opens operations (`preco/README.md`, "Environment and valves").
 
 ## Notification pipeline (step 3)
 
@@ -1243,14 +1273,26 @@ firebase.loja-integrada.tasks.json --only firestore,functions,tasks` (ports 8085
   `dry-run` price valve lets that dispatched follow-up run its ERP reads and stop at its write
   context, writing nothing. It seeds its conta by a create, its own produtos and links (the
   anchor rules above) and no stock record.
+- Since step 13 (PR 13-e) the PRICE trigger fires on EVERY suite's `produtos/*` writes (the
+  anchor's own array writes included). Its relevance gate stops a create, a delete and an update
+  that moves no price field at zero reads; past it, at the lane's `dry-run`, it may enqueue send
+  runs (which write nothing), and only for a produto whose anchor names an ACTIVE conta with a
+  NORMAL tabela. So a suite that writes produtos seeds them by a CREATE and never updates
+  `precos`, `propagatePriceToChildren` or `paiId` on a produto anchored to a conta with a normal
+  tabela; only the two price suites seed such a conta, under ids no other suite uses
+  (`vitest.tasks.config.ts`). The trigger's own suite, `preco/gatilhoPreco.tasks.test.ts`, drives
+  its work IN PROCESS (the map's cache reset per case, each event's before and after handed in):
+  the real conta-map query, the masked parent read, the family query and the enqueues through the
+  real price producer root.
 - The lane cannot prove: Cloud Scheduler firing (`onSchedule` is ignored),
   `scheduleDelaySeconds` and `scheduleTime` (firebase-tools#8254), index declarations, rules,
   that the emulator honours `maxConcurrentDispatches` or the instance limits, named-task dedup
   (the emulator accepts a named enqueue; a duplicate's answer is not asserted), Eventarc
   ordering or redelivery, the stock and price queues' dispatch of a SEND run (above; the
   fan-out's dispatch is observed), the deployed stock trigger end to end or its gate order and costs (pinned offline,
-  `gatilhoEstoque.test.ts`), or a trigger's `database` binding (pinned offline in
-  `functions/src/index.test.ts`).
+  `gatilhoEstoque.test.ts`), the deployed price trigger end to end or its gate order and costs
+  (pinned offline, `gatilhoPreco.test.ts` and `functions/src/onPrecoLojaIntegrada.test.ts`), or a
+  trigger's `database` binding (pinned offline in `functions/src/index.test.ts`).
 
 ## Config
 
