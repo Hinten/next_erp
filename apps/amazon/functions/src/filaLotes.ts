@@ -81,16 +81,19 @@ export function ambienteDoProcessoAmazon(): AmbienteAmazon {
 
 /**
  * What a provider factory of the seam receives (`RaizLoteAmazon`): the stock
- * root's TWO producers, as thunks — the jobs queue's (a recovery's
- * `feed-enviar`, a reconcile hand-off) and the stock queue's (one patch task
- * per SKU handed to the per-SKU path); neither is built here, a provider
- * builds one only when it enqueues — plus the real sleep of a build's pacing,
- * the aviso counter, a fresh run id for a reconcile a provider requests, and
- * the environment (a thunk too) a provider's recovery reads the valve from.
+ * root's producers, as thunks — the jobs queue's (a recovery's `feed-enviar`,
+ * a reconcile hand-off), the stock queue's (one patch task per SKU handed to
+ * the per-SKU path) and, since step 13 (PR 13-f), the price task's onto the
+ * jobs queue's path (a price batch's canary members, one `preco-sku` task
+ * each); none is built here, a provider builds one only when it enqueues —
+ * plus the real sleep of a build's pacing, the aviso counter, a fresh run id
+ * for a reconcile a provider requests, and the environment (a thunk too) a
+ * provider's recovery reads the valve from.
  */
 export const RAIZ_DOS_LOTES_AMAZON: RaizLoteAmazon = {
   agendadorLotes: criarAgendadorLotesAmazonDoAmbiente,
   produtorEstoque: criarProdutorEstoqueAmazonDoAmbiente,
+  produtorPreco: criarProdutorPrecoAmazonDoAmbiente,
   esperar: esperarMs,
   increment: incrementoAmazon,
   gerarExecucaoId: novoExecucaoIdAmazon,
@@ -101,7 +104,7 @@ export const RAIZ_DOS_LOTES_AMAZON: RaizLoteAmazon = {
  * The seam table BOUND, ONCE per process (`lib/amazon/feeds/destinosLote.ts`):
  * each non-null factory called exactly once with {@link RAIZ_DOS_LOTES_AMAZON},
  * at module load, and every dispatch reads these same rows. The stock row is
- * filled (PR 12-f); the price row stays `null` until step 13.
+ * filled since PR 12-f, the price row since step 13 (PR 13-f).
  */
 export const PROVEDORES_DOS_LOTES_AMAZON: ProvedoresLoteAmazon = vincularDestinosLoteAmazon(
   RAIZ_DOS_LOTES_AMAZON,
@@ -156,9 +159,10 @@ export const TAREFA_PRECO_SKU_AMAZON: ProcessadorTarefaPrecoSkuAmazon = (db, tar
  * A price run's page (step 13, PR 13-e), BOUND: ONE `preco-pagina` dispatch of
  * THIS queue, the dispatch's own deps handed through, plus what only the page
  * needs — the context loader, the page producer and the price task's producer
- * from the stock root (THUNKS, onto this queue's own path), the preview flag
- * read from the dispatch's own environment (the price task's one reader), and
- * a real sleep for the live read's pacing. No new queue, root or grant.
+ * from the stock root (THUNKS, onto this queue's own path), (PR 13-f) the
+ * dispatch's own jobs producer for the block batches Decide names, the preview
+ * flag read from the dispatch's own environment (the price task's one reader),
+ * and a real sleep for the live read's pacing. No new queue, root or grant.
  */
 export const PAGINA_PRECO_AMAZON: ProcessadorPaginaPrecoAmazon = (db, tarefa, deps) =>
   paginaPrecoAmazon(db, tarefa, {
@@ -172,6 +176,7 @@ export const PAGINA_PRECO_AMAZON: ProcessadorPaginaPrecoAmazon = (db, tarefa, de
     carregarContexto: loadAmazonContext,
     produtorPaginas: criarProdutorExecucaoPrecoAmazonDoAmbiente,
     produtorPreco: criarProdutorPrecoAmazonDoAmbiente,
+    agendadorLotes: deps.agendador,
     soValidacao: soValidacaoDoDespachoPrecoAmazon(deps.ambiente, deps.logger, deps.registro),
     esperar: esperarMs,
   });
@@ -189,7 +194,7 @@ export const PAGINA_PRECO_AMAZON: ProcessadorPaginaPrecoAmazon = (db, tarefa, de
  *   when one is due.
  * - `provedores`: the seam's rows, BOUND once per process
  *   ({@link PROVEDORES_DOS_LOTES_AMAZON}): the stock row since PR 12-f, the
- *   price row empty until step 13.
+ *   price row since step 13 (PR 13-f).
  * - `fetch`: the global one, read at CALL time, handed to the context, the
  *   write client and both document transfers alike (the package never defaults
  *   it).
@@ -228,12 +233,14 @@ export function depsDosLotesAmazon(registro: RegistroLoteAmazon): DepsProcessarL
  * `lib/amazon/feeds/processarLote.ts`, which dispatches on the payload's
  * `tipo`. Its producers: the handlers' own enqueues (through `./agendadorEstoque`,
  * the functions runtime SA), the seam's providers (through the same root: the
- * stock row since PR 12-f) and the push receiver's `FEED_PROCESSING_FINISHED`
- * wake-up (through `lib/firebase/filaLeitura.ts`, the App Hosting runtime SA).
+ * stock row since PR 12-f, the price row since step 13, PR 13-f) and the push
+ * receiver's `FEED_PROCESSING_FINISHED` wake-up (through
+ * `lib/firebase/filaLeitura.ts`, the App Hosting runtime SA).
  * Since step 13 (PR 13-d) it also carries the PRICE task (`preco-sku`, one
  * SKU's offer, {@link TAREFA_PRECO_SKU_AMAZON}), whose own check, wait and
- * pause come back through the stock root, and (PR 13-e) a price run's pages
- * (`preco-pagina`, {@link PAGINA_PRECO_AMAZON}): price has no queue of its own.
+ * pause come back through the stock root, (PR 13-e) a price run's pages
+ * (`preco-pagina`, {@link PAGINA_PRECO_AMAZON}) and (PR 13-f) the price
+ * feed's batches: price has no queue of its own.
  *
  * ⚠️ The export name IS the deployed function AND queue name, and it must equal
  * `FILA_LOTES_AMAZON` — the producers target that string. `index.ts` asserts
@@ -271,8 +278,9 @@ export function depsDosLotesAmazon(registro: RegistroLoteAmazon): DepsProcessarL
  *
  * D11: nothing calls Amazon before the window — the context loader refuses
  * unless `AMAZON_CHAMADAS` is exactly `on`, a submission also needs the fluxo's
- * valve `on` and the canary list exactly `*`; the stock provider reaches Amazon
- * only through that same context.
+ * valve `on` and the canary list exactly `*` (for price, the preview flag
+ * unset too: the price provider's effective valve reads `on` + `*` under it as
+ * `dry-run`); the providers reach Amazon only through that same context.
  */
 // ⚠️ No type argument on the call: `tasks-invoker-inventory.test.js` discovers
 // task functions by the call text, and the untyped call keeps `req.data` at

@@ -45,7 +45,9 @@
  *   download (`./feedsAmazon`), `reduzirRelatorioFeed(relatorio)` — attribution
  *   by the issue's own `sku`, exactly as written — then the provider's
  *   `gravarResultado` (at most `MAX_SKUS_COM_PROBLEMA_GRAVADOS` SKUs; whether a
- *   SKU is linked is the provider's), then the record's counts (tier 1, status
+ *   SKU is linked is the provider's; a provider declaring `issueDeItemRelevante`
+ *   also gets the report items' own issues it keeps, bounded alike, as
+ *   `issuesDosItens`), then the record's counts (tier 1, status
  *   still `processando`). No `resultFeedDocumentId` ⇒ `resultado: null`,
  *   WARNING, no `getFeedDocument`. A transient download failure is rethrown; a
  *   deterministic one is a WARNING, `resultado: null`, and the tail. A record
@@ -286,6 +288,12 @@ export interface ResultadoConsultaFeedAmazon {
   readonly semSkuAvisos: number | null;
   /** The report's issue codes, joined (short tokens only, `./relatorioFeed`). */
   readonly codigos: string | null;
+  /**
+   * SKUs whose report items carried an issue the provider's predicate kept;
+   * `null` for a provider that declares none (step 13, PR 13-f), and then the
+   * line leaves the key out.
+   */
+  readonly skusComIssueDeItem: number | null;
   /** The seam row is empty: the write-back (or the aviso) skipped. */
   readonly semProvedor: boolean;
   /** The tail's recovery enqueue. */
@@ -517,6 +525,8 @@ export function registrarDespachoResultadoFeedAmazon(
     semSkuErros: r.semSkuErros,
     semSkuAvisos: r.semSkuAvisos,
     codigos: r.codigos,
+    // Only for a provider declaring the item predicate: a stock line keeps its keys.
+    ...(r.skusComIssueDeItem === null ? {} : { skusComIssueDeItem: r.skusComIssueDeItem }),
     semProvedor: r.semProvedor,
     recuperacao: r.recuperacao,
     pendenteDobrado: r.pendenteDobrado,
@@ -564,6 +574,7 @@ const VAZIO = {
   semSkuErros: null,
   semSkuAvisos: null,
   codigos: null,
+  skusComIssueDeItem: null,
   semProvedor: false,
   recuperacao: null,
   pendenteDobrado: null,
@@ -993,12 +1004,20 @@ async function comRelatorio(
   }
 
   // Attribution by the issue's own `sku`, exactly as written (`./relatorioFeed`):
-  // the handler holds no list of the SKUs the feed sent.
-  const reducao = reduzirRelatorioFeed(relatorio);
+  // the handler holds no list of the SKUs the feed sent. The report items' own
+  // issues are kept only for a provider that asks for them.
+  const provedor = e.provedor;
+  const relevante =
+    provedor?.issueDeItemRelevante === undefined
+      ? undefined
+      : (issue: unknown) => provedor.issueDeItemRelevante?.(issue) === true;
+  const reducao = reduzirRelatorioFeed(relatorio, relevante);
   const { problemas, omitidos } = skusParaGravar(reducao.porSku);
-  if (e.provedor !== null) {
-    await e.provedor.gravarResultado(contextoDoLote(e, contexto), {
+  const itens = relevante === undefined ? null : skusParaGravar(reducao.issuesDosItens);
+  if (provedor !== null) {
+    await provedor.gravarResultado(contextoDoLote(e, contexto), {
       problemas,
+      ...(itens === null ? {} : { issuesDosItens: itens.problemas }),
       emMs: registro.antesDoEnvioMs,
       feedId: registro.feedId,
       relogio: clock.relogio,
@@ -1027,6 +1046,7 @@ async function comRelatorio(
     semSkuErros: reducao.semSku.erros,
     semSkuAvisos: reducao.semSku.avisos,
     codigos: reducao.codigos.length === 0 ? null : reducao.codigos.join(','),
+    skusComIssueDeItem: itens === null ? null : reducao.issuesDosItens.size,
     semProvedor: e.provedor === null,
   });
 }

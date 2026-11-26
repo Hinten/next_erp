@@ -19,15 +19,16 @@
  * reads no environment and touches no SDK.
  *
  * Stock fills `estoque` since step 12, PR 12-f (`criarProvedorLoteEstoqueAmazon`,
- * `estoque/provedorLoteEstoque.ts`); price (step 13) fills `preco`, `null`
- * until then. With a `null` row the handlers do nothing a provider would have
+ * `estoque/provedorLoteEstoque.ts`); price fills `preco` since step 13, PR
+ * 13-f (`criarProvedorLotePrecoAmazon`, `preco/provedorLotePreco.ts`). With a
+ * `null` row (a test's table) the handlers do nothing a provider would have
  * done: a send ends `sem-provedor` before the lease is read (it takes and
  * releases nothing), a result still advances its record and logs that the
  * write-back was skipped, a recovery logs and ends.
  *
  * ⚠️ This table is the ONLY binding between the feed core and a fluxo: no
  * other module of `feeds/` imports a fluxo's own module (this one names the
- * stock provider's factory, and the stock producer's TYPE for
+ * two providers' factories, and the stock and price producers' TYPES for
  * {@link RaizLoteAmazon}), and the jobs root is the only reader of this one.
  * Tests that need a provider hand a fake one to the handler directly, or a
  * fake table to {@link vincularDestinosLoteAmazon}; they never edit this table.
@@ -36,6 +37,8 @@ import { FLUXO_AMAZON, type FluxoComLoteAmazon } from '../core/valvulas';
 import type { AmbienteAmazon } from '../env';
 import type { ProdutorEstoqueAmazon } from '../estoque/produtorEstoque';
 import { criarProvedorLoteEstoqueAmazon } from '../estoque/provedorLoteEstoque';
+import type { ProdutorPrecoAmazon } from '../preco/produtorPreco';
+import { criarProvedorLotePrecoAmazon } from '../preco/provedorLotePreco';
 import type { AgendadorLotesAmazon } from './agendadorLotes';
 import type { ProvedorLoteAmazon } from './provedorLote';
 
@@ -49,6 +52,15 @@ export interface RaizLoteAmazon {
   readonly agendadorLotes: () => AgendadorLotesAmazon;
   /** The stock queue's producer (one patch task per SKU handed to the per-SKU path). */
   readonly produtorEstoque: () => ProdutorEstoqueAmazon;
+  /**
+   * The price task's producer, onto the jobs queue's path (step 13, PR 13-f):
+   * the price provider hands a batch's canary members to `preco-sku` tasks
+   * through it, because the jobs producer's typed transport carries the feed
+   * core's payloads only. Optional, so a root built for the stock flow alone
+   * still binds the whole table; the price provider refuses a hand-off when it
+   * is missing, never the binding.
+   */
+  readonly produtorPreco?: () => ProdutorPrecoAmazon;
   /** A sleep of `ms` milliseconds: the pacing between two Amazon reads of a build. */
   readonly esperar: (ms: number) => Promise<void>;
   /** `(by) => FieldValue.increment(by)`: the aviso counter. */
@@ -87,7 +99,7 @@ export type ProvedoresLoteAmazon = {
 /** The seam (module header). */
 export const DESTINO_LOTE_AMAZON: DestinoLoteAmazon = {
   estoque: criarProvedorLoteEstoqueAmazon,
-  preco: null,
+  preco: criarProvedorLotePrecoAmazon,
 };
 
 /**

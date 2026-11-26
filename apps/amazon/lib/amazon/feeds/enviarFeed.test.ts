@@ -51,6 +51,7 @@ import { type FilaLotesAmazon, criarAgendadorLotesAmazon } from './agendadorLote
 import {
   ACAO_ENVIO_FEED,
   type DepsEnviarFeedAmazon,
+  ESPERA_APOS_LIMITE_FEED_S_POR_FLUXO,
   ORCAMENTO_MONTAGEM_LOTE_MS,
   type ResultadoEnvioFeedAmazon,
   enviarFeedAmazon,
@@ -61,6 +62,8 @@ import {
   ESPERA_LOTE_EM_VEZ_S,
   ESPERA_MAXIMA_ATRAS_DE_FEED_MS,
   ESPERA_SONDA_DISJUNTOR_MS,
+  FIM_SEM_ENVIO_LOTE,
+  type FimSemEnvioLote,
   MOTIVO_ABORTO_LOTE,
   type ProvedorLoteAmazon,
 } from './provedorLote';
@@ -1997,5 +2000,503 @@ describe('★ the provider’s context carries the send dispatch’s E4 lease re
     for (const { vez: noContexto } of c.espiao.vezNosContextos) {
       expect(noContexto).toEqual(holder);
     }
+  });
+});
+
+/* ---------------------- step 13 (PR 13-f): the OPTIONAL provider members ---------------------- */
+
+/** What a recording `aoFimSemEnvio` saw: the end, and the lease and aviso as they stood then. */
+interface FimVisto {
+  readonly fim: FimSemEnvioLote;
+  readonly execucaoId: string;
+  readonly estadoDaVez: unknown;
+  readonly aviso: unknown;
+}
+
+/** The scenario's provider with the optional members `extras` declares. */
+function comMembros(
+  c: Cenario,
+  extras: Partial<ProvedorLoteAmazon<'estoque' | 'preco', unknown>>,
+): void {
+  if (c.provedor === null) throw new Error('teste: cenário sem provedor');
+  c.provedor = { ...c.provedor, ...extras };
+}
+
+/** A recording `aoFimSemEnvio` (on the scenario's lease path). */
+function gravarFins(c: Cenario, caminho = VEZ): FimVisto[] {
+  const fins: FimVisto[] = [];
+  comMembros(c, {
+    aoFimSemEnvio: (_ctx, entrada, fim) => {
+      fins.push({
+        fim,
+        execucaoId: entrada.execucaoId,
+        estadoDaVez: c.fake.ler(caminho)?.estado,
+        aviso: c.fake.ler(AVISO)?.resolvidoEm,
+      });
+      return Promise.resolve();
+    },
+  });
+  return fins;
+}
+
+/** A parsed JSON value that is an object (the uploaded document's shape), narrowed. */
+function ehObjetoJson(valor: unknown): valor is Record<string, unknown> {
+  return typeof valor === 'object' && valor !== null && !Array.isArray(valor);
+}
+
+/** The scenario's send with a `fetch` that also keeps every uploaded document. */
+async function rodarGuardandoDocumentos(
+  c: Cenario,
+  t: TarefaEnviarFeedAmazon,
+): Promise<{ readonly r: ResultadoEnvioFeedAmazon; readonly docs: Record<string, unknown>[] }> {
+  const docs: Record<string, unknown>[] = [];
+  const deps = c.deps();
+  const r = await enviarFeedAmazon(asDb(c.fake), t, {
+    ...deps,
+    fetch: (input, init) => {
+      if ((init?.method ?? 'GET') === 'PUT') {
+        const documento: unknown = JSON.parse(new TextDecoder().decode(init?.body as Uint8Array));
+        if (!ehObjetoJson(documento)) throw new Error('teste: o documento enviado não é um objeto');
+        docs.push(documento);
+      }
+      return deps.fetch(input, init);
+    },
+  });
+  return { r, docs };
+}
+
+/** A price block batch of this scenario's conta. */
+const blocosPreco = (esperaAteMs = AGORA_MS + 48 * HORA, execucaoId = EXEC) =>
+  enviar({
+    execucaoId,
+    fluxo: FLUXO_FEED_AMAZON.preco,
+    origem: 'execucao',
+    lote: { tipo: 'blocos', execucaoIdRun: 'run-teste', parteInicial: 0, partes: 1, esperaAteMs },
+  });
+
+describe('(13-f) aoFimSemEnvio: every end after the context that submits nothing tells the provider ONCE, after the release and the aviso', () => {
+  it.each<[string, (c: Cenario) => TarefaEnviarFeedAmazon, FimSemEnvioLote, boolean]>([
+    [
+      'a dry-run',
+      (c) => {
+        c.ambiente[VALVULA_ENV_AMAZON.estoque] = 'dry-run';
+        return janelaDoTick();
+      },
+      FIM_SEM_ENVIO_LOTE.simulado,
+      false,
+    ],
+    ['an empty build', () => janelaDoTick(), FIM_SEM_ENVIO_LOTE.semEscrita, false],
+    [
+      'the canary list',
+      (c) => {
+        c.ambiente[CANARIO_ENV_AMAZON.estoque] = `${CONTA}:${SKUS[0] ?? ''}`;
+        return janelaDoTick();
+      },
+      FIM_SEM_ENVIO_LOTE.soPatches,
+      false,
+    ],
+    [
+      'a definitive 4xx',
+      (c) => {
+        c.rotas.feed = [
+          { status: 400, corpo: { errors: [{ code: 'InvalidInput', message: 'x' }] } },
+        ];
+        return janelaDoTick();
+      },
+      FIM_SEM_ENVIO_LOTE.recusaDefinitiva,
+      true,
+    ],
+  ])('%s ⇒ %s', async (_caso, preparar, fim, comAviso) => {
+    const c = cenario({ convergido: fim === FIM_SEM_ENVIO_LOTE.semEscrita });
+    const fins = gravarFins(c);
+    const t = preparar(c);
+    const r = await c.rodar(t);
+    expect(r).toMatchObject({
+      acao: ACAO_ENVIO_FEED.liberado,
+      fimSemEnvio: fim,
+      ledgerFalhou: false,
+    });
+    expect(fins).toEqual([
+      {
+        fim,
+        execucaoId: EXEC,
+        estadoDaVez: 'livre',
+        aviso: comAviso ? null : undefined,
+      },
+    ]);
+    expect(c.log.linhas.at(-1)?.meta).toMatchObject({ fase: 'envio', fimSemEnvio: fim });
+  });
+
+  it('★ an abort (the provider’s, or the budget’s snapshot-lento) and a deterministic document failure ⇒ abortado / documento-falhou, told AFTER the release and the aviso', async () => {
+    const abortado = cenario({
+      montarAbortado: {
+        abortado: MOTIVO_ABORTO_LOTE.snapshotLento,
+        aviso: MOTIVO_CONTA_AMAZON.contaSemOperacao,
+      },
+    });
+    const finsAbortado = gravarFins(abortado);
+    expect(await abortado.rodar(janelaDoTick())).toMatchObject({ motivo: 'snapshot-lento' });
+    expect(finsAbortado).toEqual([
+      expect.objectContaining({ fim: 'abortado', estadoDaVez: 'livre', aviso: null }),
+    ]);
+
+    const lento = cenario({ duracaoMembrosMs: ORCAMENTO_MONTAGEM_LOTE_MS + 1 });
+    const finsLento = gravarFins(lento);
+    expect(await lento.rodar(blocos())).toMatchObject({ motivo: 'snapshot-lento' });
+    expect(finsLento.map((f) => f.fim)).toEqual(['abortado']);
+
+    const documento = cenario({ semPatches: true });
+    const finsDocumento = gravarFins(documento);
+    expect(await documento.rodar(janelaDoTick())).toMatchObject({ motivo: 'documento-falhou' });
+    expect(finsDocumento).toEqual([
+      expect.objectContaining({ fim: 'documento-falhou', estadoDaVez: 'livre', aviso: null }),
+    ]);
+    expect(documentos(documento) + criarFeeds(documento)).toBe(0);
+  });
+
+  it('★ a window batch handed to patches behind a slow holder ⇒ repassado; its re-derivation refusing ⇒ repasse-abortado; a block batch past its wait ⇒ lote-expirado', async () => {
+    const repassado = cenario();
+    semear(repassado, enviadoDe(31 * MIN));
+    const finsRepassado = gravarFins(repassado);
+    expect((await repassado.rodar(janelaDoTick())).acao).toBe(ACAO_ENVIO_FEED.repassado);
+    expect(finsRepassado.map((f) => f.fim)).toEqual(['repassado']);
+
+    const abortado = cenario({
+      membrosAbortado: { abortado: MOTIVO_ABORTO_LOTE.depositoMudou, aviso: null },
+    });
+    semear(abortado, enviadoDe(31 * MIN));
+    const finsAbortado = gravarFins(abortado);
+    expect((await abortado.rodar(janelaDoTick())).acao).toBe(ACAO_ENVIO_FEED.repasseAbortado);
+    expect(finsAbortado.map((f) => f.fim)).toEqual(['repasse-abortado']);
+
+    const expirado = cenario();
+    semear(expirado, enviadoDe(MIN));
+    const finsExpirado = gravarFins(expirado);
+    expect(await expirado.rodar(blocos(AGORA_MS))).toMatchObject({
+      acao: ACAO_ENVIO_FEED.loteExpirado,
+      fimSemEnvio: 'lote-expirado',
+    });
+    expect(finsExpirado).toEqual([expect.objectContaining({ fim: 'lote-expirado' })]);
+    // NEAR-MISS: the same block batch BEFORE its wait ends waits, and tells nothing.
+    const aguardando = cenario();
+    semear(aguardando, enviadoDe(MIN));
+    const finsAguardando = gravarFins(aguardando);
+    expect((await aguardando.rodar(blocos(AGORA_MS + 1_000))).acao).toBe(
+      ACAO_ENVIO_FEED.aguardando,
+    );
+    expect(finsAguardando).toEqual([]);
+  });
+
+  it('★ NEAR-MISS: a submission, a 429, an uncertain answer, a recorded start, and every end BEFORE the context tell nothing', async () => {
+    const casos: [string, (c: Cenario) => TarefaEnviarFeedAmazon][] = [
+      ['enviado', () => janelaDoTick()],
+      [
+        'limitado',
+        (c) => {
+          c.rotas.feed = [
+            { status: 429, corpo: { errors: [{ code: 'QuotaExceeded', message: 'x' }] } },
+          ];
+          return janelaDoTick();
+        },
+      ],
+      [
+        'incerto',
+        (c) => {
+          c.rotas.feed = [{ rede: true }];
+          return janelaDoTick();
+        },
+      ],
+      [
+        'pendente-registrado',
+        (c) => {
+          semear(c, enviadoDe(MIN));
+          return janelaDoTick();
+        },
+      ],
+      [
+        'valvula-desligada',
+        (c) => {
+          c.ambiente[VALVULA_ENV_AMAZON.estoque] = undefined;
+          return janelaDoTick();
+        },
+      ],
+      [
+        'contexto-recusado',
+        (c) => {
+          c.ambiente.AMAZON_CHAMADAS = undefined;
+          return janelaDoTick();
+        },
+      ],
+    ];
+    for (const [acao, preparar] of casos) {
+      const c = cenario();
+      const fins = gravarFins(c);
+      const r = await c.rodar(preparar(c));
+      expect(r.acao, acao).toBe(acao);
+      expect(r.fimSemEnvio, acao).toBeNull();
+      expect(fins, acao).toEqual([]);
+    }
+  });
+
+  it('★ the hook’s write failing TRANSIENTLY ⇒ ledgerFalhou, WARNING, NOT rethrown: ONE createFeed (NEAR-MISS: any other failure is rethrown)', async () => {
+    const c = cenario();
+    c.rotas.feed = [{ status: 400, corpo: { errors: [{ code: 'InvalidInput', message: 'x' }] } }];
+    comMembros(c, { aoFimSemEnvio: () => Promise.reject(grpc(14, 'indisponível')) });
+    const r = await c.rodar(janelaDoTick());
+    expect(r).toMatchObject({
+      motivo: 'recusa-definitiva',
+      fimSemEnvio: 'recusa-definitiva',
+      ledgerFalhou: true,
+    });
+    expect(criarFeeds(c)).toBe(1);
+    expect(c.log.linhas.at(-1)).toMatchObject({ nivel: 'warn' });
+    expect(c.log.linhas.at(-1)?.meta).toMatchObject({ ledgerFalhou: true });
+
+    const d = cenario({ convergido: true });
+    comMembros(d, { aoFimSemEnvio: () => Promise.reject(new TypeError('teste: um defeito')) });
+    await expect(d.rodar(janelaDoTick())).rejects.toThrow(TypeError);
+  });
+
+  it('★ ledgerFalhou ALONE makes the dispatch line a WARNING: an INFO end (sem-escrita) whose hook failed transiently (NEAR-MISS: the same end with the hook landing stays INFO)', async () => {
+    const c = cenario({ convergido: true });
+    comMembros(c, { aoFimSemEnvio: () => Promise.reject(grpc(4, 'prazo')) });
+    expect(await c.rodar(janelaDoTick())).toMatchObject({
+      motivo: 'sem-escrita',
+      ledgerFalhou: true,
+    });
+    expect(c.log.linhas.at(-1)).toMatchObject({ nivel: 'warn' });
+    expect(c.log.linhas.at(-1)?.meta).toMatchObject({ fase: 'envio', ledgerFalhou: true });
+
+    const n = cenario({ convergido: true });
+    gravarFins(n);
+    expect(await n.rodar(janelaDoTick())).toMatchObject({
+      motivo: 'sem-escrita',
+      fimSemEnvio: 'sem-escrita',
+      ledgerFalhou: false,
+    });
+    expect(n.log.linhas.at(-1)).toMatchObject({ nivel: 'info' });
+  });
+
+  it('★ a turned-away end is told AFTER the holder’s own actions: the adoption rung is already on the queue when the provider hears repassado or lote-expirado', async () => {
+    for (const [t, fim] of [
+      [janelaDoTick(), FIM_SEM_ENVIO_LOTE.repassado],
+      [blocos(AGORA_MS), FIM_SEM_ENVIO_LOTE.loteExpirado],
+    ] as const) {
+      const c = cenario();
+      semear(c, enviadoDe(VALIDADE_VEZ_ENVIADO_MS));
+      const vistos: { readonly fim: FimSemEnvioLote; readonly adocoes: number }[] = [];
+      comMembros(c, {
+        aoFimSemEnvio: (_ctx, _entrada, f) => {
+          vistos.push({ fim: f, adocoes: doTipo(c, 'feed-resultado').length });
+          return Promise.resolve();
+        },
+      });
+      expect(await c.rodar(t), fim).toMatchObject({ adocao: true, fimSemEnvio: fim });
+      expect(vistos, fim).toEqual([{ fim, adocoes: 1 }]);
+    }
+  });
+
+  it('a provider declaring no hook (the stock shape) ends exactly as before: fimSemEnvio null', async () => {
+    const c = cenario({ convergido: true });
+    expect(await c.rodar(janelaDoTick())).toMatchObject({
+      motivo: 'sem-escrita',
+      fimSemEnvio: null,
+      ledgerFalhou: false,
+    });
+  });
+});
+
+describe('(13-f) valvulaEfetiva: the provider’s valve is what E1 logs, checks and hands the engine', () => {
+  it('★ a provider mapping on + * to dry-run ⇒ simulado, ZERO createFeedDocument/createFeed; the valve line logs the EFFECTIVE mode, the dispatch line the raw one (NEAR-MISS: the same provider without the member submits)', async () => {
+    const c = cenario({ fluxo: 'preco' });
+    comMembros(c, { valvulaEfetiva: (v) => ({ ...v, modo: 'dry-run' }) });
+    const r = await c.rodar(blocosPreco());
+    expect(r).toMatchObject({
+      acao: ACAO_ENVIO_FEED.liberado,
+      motivo: 'simulado',
+      modoLido: 'on',
+    });
+    expect(documentos(c) + criarFeeds(c)).toBe(0);
+    const valvula = c.log.linhas.find((l) => l.meta?.evento === 'valvula');
+    expect(valvula?.meta).toMatchObject({ modo: 'dry-run', fluxo: 'preco' });
+    expect(c.log.linhas.at(-1)?.meta).toMatchObject({ fase: 'envio', modoLido: 'on' });
+    expect(lease(c, VEZ_PRECO)).toMatchObject({ estado: 'livre' });
+
+    const n = cenario({ fluxo: 'preco' });
+    expect(await n.rodar(blocosPreco())).toMatchObject({
+      acao: ACAO_ENVIO_FEED.enviado,
+      modoLido: null,
+    });
+  });
+
+  it('★ the OFF check reads the effective valve: a provider mapping on to off ⇒ valvula-desligada with ZERO Firestore operations', async () => {
+    const c = cenario({ fluxo: 'preco' });
+    comMembros(c, { valvulaEfetiva: (v) => ({ ...v, modo: 'off' }) });
+    const r = await c.rodar(blocosPreco());
+    expect(r).toMatchObject({ acao: ACAO_ENVIO_FEED.valvulaDesligada, modoLido: 'on' });
+    expect(c.fake.operacoes).toBe(0);
+  });
+
+  it('the member receives the RAW valve, the dispatch’s environment, logger and envelope; an equal answer leaves no modoLido', async () => {
+    const c = cenario({ fluxo: 'preco' });
+    const vistos: unknown[] = [];
+    comMembros(c, {
+      valvulaEfetiva: (v, entrada) => {
+        vistos.push({
+          modo: v.modo,
+          fluxo: v.fluxo,
+          ambiente: entrada.ambiente,
+          envelope: entrada.envelope,
+        });
+        return v;
+      },
+    });
+    expect((await c.rodar(blocosPreco())).modoLido).toBeNull();
+    expect(vistos).toEqual([
+      {
+        modo: 'on',
+        fluxo: 'preco',
+        ambiente: c.ambiente,
+        envelope: { conta: CONTA, tentativa: 0, idTarefa: 'tarefa-feed-teste-1' },
+      },
+    ]);
+  });
+
+  it('★ a null seam row keeps the RAW valve and still ends sem-provedor', async () => {
+    const c = cenario({ fluxo: 'preco' });
+    c.provedor = null;
+    const r = await c.rodar(blocosPreco());
+    expect(r).toMatchObject({ acao: ACAO_ENVIO_FEED.semProvedor, modoLido: null });
+    expect(c.log.linhas.find((l) => l.meta?.evento === 'valvula')?.meta).toMatchObject({
+      modo: 'on',
+    });
+  });
+
+  it('a member answering ANOTHER fluxo’s valve is refused (TypeError)', async () => {
+    const c = cenario({ fluxo: 'preco' });
+    comMembros(c, { valvulaEfetiva: (v) => ({ ...v, fluxo: 'estoque' }) });
+    await expect(c.rodar(blocosPreco())).rejects.toThrow(TypeError);
+  });
+
+  it('★ a provider bound to ANOTHER fluxo is never asked for the valve: the raw valve is logged, then the provider mismatch refuses the dispatch as before', async () => {
+    const c = cenario();
+    const pedidos: unknown[] = [];
+    comMembros(c, {
+      fluxo: 'preco',
+      valvulaEfetiva: (v) => {
+        pedidos.push(v.fluxo);
+        return { ...v, modo: 'dry-run' };
+      },
+    });
+    await expect(c.rodar(janelaDoTick())).rejects.toThrow(/fluxos diferentes/);
+    expect(pedidos).toEqual([]);
+    expect(c.log.linhas.find((l) => l.meta?.evento === 'valvula')?.meta).toMatchObject({
+      fluxo: 'estoque',
+      modo: 'on',
+    });
+  });
+});
+
+describe('(13-f) relatorio: the document’s header asks the report for each item’s datasets, only for a provider that declares it', () => {
+  it('★ a provider declaring relatorio ⇒ header.report { includedData: [issues], apiVersion } (NEAR-MISS: the stock-shaped provider’s header has NO report)', async () => {
+    const c = cenario({ fluxo: 'preco' });
+    comMembros(c, { relatorio: { incluir: ['issues'] } });
+    const { r, docs } = await rodarGuardandoDocumentos(c, blocosPreco());
+    expect(r.acao).toBe(ACAO_ENVIO_FEED.enviado);
+    expect(docs[0]?.header).toEqual({
+      sellerId: SPID_A,
+      version: '2.0',
+      issueLocale: 'pt_BR',
+      report: { includedData: ['issues'], apiVersion: '2021-08-01' },
+    });
+
+    const s = cenario();
+    const semRelatorio = await rodarGuardandoDocumentos(s, janelaDoTick());
+    expect(semRelatorio.r.acao).toBe(ACAO_ENVIO_FEED.enviado);
+    expect(Object.keys(semRelatorio.docs[0]?.header as object)).not.toContain('report');
+  });
+});
+
+describe('(13-f) the per-fluxo floor and limit wait', () => {
+  it('★ the floor: a PRICE take 200 s after the last price submission waits the remaining 100 s; at 300 s it takes (NEAR-MISS: a STOCK take 200 s after its own takes)', async () => {
+    const preco = cenario({ fluxo: 'preco' });
+    semear(
+      preco,
+      vez({ estado: ESTADO_VEZ_FEED_AMAZON.livre, ultimoEnvioMs: AGORA_MS - 200_000 }),
+      VEZ_PRECO,
+    );
+    expect(await preco.rodar(blocosPreco())).toMatchObject({
+      acao: ACAO_ENVIO_FEED.aguardando,
+      tomada: 'aguardar-espaco',
+      atrasoS: 100,
+    });
+    expect(doTipo(preco, 'feed-enviar')).toEqual([
+      expect.objectContaining({ nome: null, atrasoS: 100 }),
+    ]);
+
+    const precoTarde = cenario({ fluxo: 'preco' });
+    semear(
+      precoTarde,
+      vez({ estado: ESTADO_VEZ_FEED_AMAZON.livre, ultimoEnvioMs: AGORA_MS - 300_000 }),
+      VEZ_PRECO,
+    );
+    expect((await precoTarde.rodar(blocosPreco())).acao).toBe(ACAO_ENVIO_FEED.enviado);
+
+    const estoque = cenario();
+    semear(
+      estoque,
+      vez({ estado: ESTADO_VEZ_FEED_AMAZON.livre, ultimoEnvioMs: AGORA_MS - 200_000 }),
+    );
+    expect((await estoque.rodar(blocos())).acao).toBe(ACAO_ENVIO_FEED.enviado);
+  });
+
+  it('★ the limit wait: a PRICE createFeed 429 re-enqueues after 300 s (NEAR-MISS: a STOCK one after 120 s)', async () => {
+    const quota = { status: 429, corpo: { errors: [{ code: 'QuotaExceeded', message: 'x' }] } };
+    const preco = cenario({ fluxo: 'preco' });
+    preco.rotas.feed = [quota];
+    expect(await preco.rodar(blocosPreco())).toMatchObject({
+      acao: ACAO_ENVIO_FEED.limitado,
+      atrasoS: 300,
+    });
+    expect(doTipo(preco, 'feed-enviar')).toEqual([
+      expect.objectContaining({ nome: null, atrasoS: 300 }),
+    ]);
+    const estoque = cenario();
+    estoque.rotas.feed = [quota];
+    expect(await estoque.rodar(blocos())).toMatchObject({ atrasoS: 120 });
+    expect(ESPERA_APOS_LIMITE_FEED_S_POR_FLUXO).toEqual({ estoque: 120, preco: 300 });
+  });
+});
+
+describe('(13-f) the dispatch line of a provider with no optional member keeps its keys', () => {
+  const CHAVES_OPCIONAIS = ['modoLido', 'fimSemEnvio', 'ledgerFalhou'] as const;
+  const linhaDoEnvio = (c: Cenario) =>
+    c.log.linhas.filter((l) => l.meta?.fase === 'envio').at(-1)?.meta ?? {};
+
+  it('★ the stock-shaped provider’s send line, submitted or not, carries none of the three keys (NEAR-MISS: a provider whose hook ran, or whose valve differs, carries them)', async () => {
+    for (const [caso, preparar] of [
+      ['enviado', () => undefined],
+      ['simulado', (c: Cenario) => void (c.ambiente[VALVULA_ENV_AMAZON.estoque] = 'dry-run')],
+    ] as const) {
+      const c = cenario();
+      preparar(c);
+      await c.rodar(janelaDoTick());
+      const linha = linhaDoEnvio(c);
+      expect(Object.keys(linha).length, caso).toBeGreaterThan(0);
+      for (const chave of CHAVES_OPCIONAIS)
+        expect(linha, `${caso}: ${chave}`).not.toHaveProperty(chave);
+    }
+
+    const comHook = cenario();
+    comHook.ambiente[VALVULA_ENV_AMAZON.estoque] = 'dry-run';
+    gravarFins(comHook);
+    await comHook.rodar(janelaDoTick());
+    expect(linhaDoEnvio(comHook)).toMatchObject({ fimSemEnvio: 'simulado', ledgerFalhou: false });
+    expect(linhaDoEnvio(comHook)).not.toHaveProperty('modoLido');
+
+    const comValvula = cenario({ fluxo: 'preco' });
+    comMembros(comValvula, { valvulaEfetiva: (v) => ({ ...v, modo: 'dry-run' }) });
+    await comValvula.rodar(blocosPreco());
+    expect(linhaDoEnvio(comValvula)).toMatchObject({ modoLido: 'on' });
   });
 });

@@ -251,3 +251,130 @@ describe('skusParaGravar', () => {
     expect(skusParaGravar(new Map()).problemas.size).toBe(0);
   });
 });
+
+/* ---------------------- step 13 (PR 13-f): the report items' own issues ---------------------- */
+
+function relatorioComItens(
+  issues: readonly Record<string, unknown>[],
+  items: readonly Record<string, unknown>[],
+): RelatorioProcessamentoListings {
+  return lerRelatorioProcessamentoListings(
+    JSON.stringify({
+      header: { sellerId: 'AXXXXXXXXXXXXX', version: '2.0', feedId: '3485934' },
+      issues,
+      items,
+      summary: RESUMO,
+    }),
+  );
+}
+
+/** A predicate that keeps issues whose code is in `codigos`. */
+const comCodigo =
+  (...codigos: string[]) =>
+  (issue: unknown) =>
+    typeof issue === 'object' &&
+    issue !== null &&
+    codigos.includes(String((issue as { code?: unknown }).code));
+
+describe('(13-f) the report items’ own issues (issuesDosItens)', () => {
+  it('★ the predicate keeps what it selects, grouped by the item’s own SKU, categories KEPT, ERROR first', () => {
+    const r = reduzirRelatorioFeed(
+      relatorioComItens(
+        [],
+        [
+          {
+            sku: 'SKU-A',
+            issues: [
+              { code: '100708', severity: AVISO, message: 'aviso', categories: ['INVALID_PRICE'] },
+              {
+                code: '19037',
+                severity: ERRO,
+                message: 'abaixo',
+                attributeNames: ['purchasable_offer'],
+                categories: ['INVALID_PRICE'],
+              },
+              { code: '90220', severity: ERRO, message: 'nome', attributeNames: ['item_name'] },
+            ],
+          },
+        ],
+      ),
+      comCodigo('19037', '100708'),
+    );
+    expect([...r.issuesDosItens.keys()]).toEqual(['SKU-A']);
+    expect(r.issuesDosItens.get('SKU-A')).toEqual([
+      {
+        code: '19037',
+        message: 'abaixo',
+        severity: ERRO,
+        attributeNames: ['purchasable_offer'],
+        categories: ['INVALID_PRICE'],
+      },
+      {
+        code: '100708',
+        message: 'aviso',
+        severity: AVISO,
+        attributeNames: null,
+        categories: ['INVALID_PRICE'],
+      },
+    ]);
+    // The items' codes never reach the dispatch line's report codes.
+    expect(r.codigos).toEqual([]);
+  });
+
+  it('★ NEAR-MISS: with NO predicate (the stock path) the map is empty, and so is it for a report without items', () => {
+    const itens = [{ sku: 'SKU-A', issues: [{ code: '19037', severity: ERRO, message: 'x' }] }];
+    expect(reduzirRelatorioFeed(relatorioComItens([], itens)).issuesDosItens.size).toBe(0);
+    expect(reduzirRelatorioFeed(relatorio([]), comCodigo('19037')).issuesDosItens.size).toBe(0);
+    // …while the report's own issues are reduced exactly as before, predicate or not.
+    const proprias = [{ sku: 'SKU-A', code: '90220', severity: ERRO, message: 'x' }];
+    expect(reduzirRelatorioFeed(relatorioComItens(proprias, itens)).porSku).toEqual(
+      reduzirRelatorioFeed(relatorioComItens(proprias, itens), comCodigo('19037')).porSku,
+    );
+  });
+
+  it('an item with no SKU, an empty one, or no issue kept adds nothing; the SKU is kept EXACTLY as written', () => {
+    const r = reduzirRelatorioFeed(
+      relatorioComItens(
+        [],
+        [
+          { issues: [{ code: '19037', severity: ERRO, message: 'x' }] },
+          { sku: '', issues: [{ code: '19037', severity: ERRO, message: 'x' }] },
+          { sku: 'SKU-B', issues: [{ code: '90220', severity: ERRO, message: 'x' }] },
+          { sku: ' sku-c ', issues: [{ code: '19037', severity: ERRO, message: 'x' }] },
+          { sku: 'SKU-D' },
+        ],
+      ),
+      comCodigo('19037'),
+    );
+    expect([...r.issuesDosItens.keys()]).toEqual([' sku-c ']);
+  });
+
+  it('bounded alike: at most 10 per SKU, and skusParaGravar keeps at most 200 SKUs of them', () => {
+    const muitas = Array.from({ length: 12 }, (_v, i) => ({
+      code: '19037',
+      severity: i === 11 ? ERRO : AVISO,
+      message: `m${String(i)}`,
+    }));
+    const r = reduzirRelatorioFeed(
+      relatorioComItens(
+        [],
+        [
+          { sku: 'SKU-A', issues: muitas },
+          ...Array.from({ length: MAX_SKUS_COM_PROBLEMA_GRAVADOS + 5 }, (_v, i) => ({
+            sku: `SKU-${String(i).padStart(3, '0')}`,
+            issues: [{ code: '19037', severity: AVISO, message: 'x' }],
+          })),
+        ],
+      ),
+      comCodigo('19037'),
+    );
+    const daA = r.issuesDosItens.get('SKU-A') ?? [];
+    expect(daA).toHaveLength(MAX_PROBLEMAS_POR_SKU);
+    expect(daA[0]?.message).toBe('m11');
+    const { problemas, omitidos } = skusParaGravar(r.issuesDosItens);
+    expect(problemas.size).toBe(MAX_SKUS_COM_PROBLEMA_GRAVADOS);
+    expect(omitidos).toBe(6);
+    // The SKU with an ERROR is kept first.
+    expect([...problemas.keys()][0]).toBe('SKU-A');
+  });
+});

@@ -11,7 +11,11 @@
  * ## The ladder
  *
  * - **E1** — the fluxo's valve, read ONCE and logged, before any read; `off`
- *   ends the run with ZERO Firestore operations.
+ *   ends the run with ZERO Firestore operations. A provider declaring
+ *   `valvulaEfetiva` (`./provedorLote`) maps the raw valve FIRST: the valve
+ *   line, the `off` check and the batch engine all take the effective one, and
+ *   the dispatch line names the raw mode (`modoLido`) when the two differ. A
+ *   `null` seam row keeps the raw valve.
  * - **E2** — the provider; a `null` seam row ends the run (`sem-provedor`),
  *   having taken nothing.
  * - **E3** — the context (the read switch FIRST): a switch, conta or credential
@@ -30,14 +34,15 @@
  *     provider enqueues its patches, ZERO lease writes — except a start a
  *     crashed holder left behind, handed to its NAMED `vez` recovery FIRST and
  *     then cleared); the same payload re-enqueued UNNAMED (a block or
- *     recovery-born batch waiting, the 120-s submission floor); or expired.
+ *     recovery-born batch waiting, the fluxo's submission floor); or expired.
  *     Then, behind an expired `enviado` (`adotar-resultado`), the adoption rung
  *     is enqueued; behind an uncertain lease at or past its 12 h
  *     (`incerta-recuperar`), the holder's uncertain path runs here
  *     (`./incertoFeed`), folding any recorded start into its recovery.
  * - **E5** — `membros`, then the batch entry with `montar` bound as the engine
  *   expects (a refusal passes through; zero messages ⇒ an EMPTY plan, never a
- *   document; otherwise the package's document). `membros` and `montar` share
+ *   document; otherwise the package's document, whose header asks for a
+ *   `report` exactly when the provider declares `relatorio`). `membros` and `montar` share
  *   ONE build budget, {@link ORCAMENTO_MONTAGEM_LOTE_MS} from E5's start: the
  *   provider checks it before each read batch, and this handler checks it again
  *   after each answer, so a build past it is `snapshot-lento` — nothing posted.
@@ -68,7 +73,8 @@
  *     `enviando` only by THIS attempt's stamp); transient ⇒ rethrown for the
  *     queue's retry, deterministic ⇒ WARNING + the fluxo's aviso;
  *   - `createFeed` 429 ⇒ not processed: back to `montando`, released, the
- *     payload re-enqueued UNNAMED after 120 s, no attempt spent;
+ *     payload re-enqueued UNNAMED after the fluxo's floor
+ *     ({@link ESPERA_APOS_LIMITE_FEED_S_POR_FLUXO}), no attempt spent;
  *   - a non-auth 4xx, or a 401/403 after the refresh ⇒ definitive: released,
  *     the fluxo's aviso, no retry;
  *   - after a release that LANDED (a definitive refusal, a deterministic
@@ -81,6 +87,17 @@
  *     run reads `incerta-aguardar` and window batches go per SKU instead of
  *     waiting 12 h), any recorded start handed to its `vez` recovery first, and
  *     the fluxo's aviso raised NOW.
+ *   - every end after E3 that submitted nothing (`FIM_SEM_ENVIO_LOTE`,
+ *     `./provedorLote`: the dry-run, an empty build, the canary hand-off, a
+ *     window hand-off or its refused re-derivation, an abort, a deterministic
+ *     document failure, a definitive refusal, a block batch past its wait) then
+ *     calls the provider's `aoFimSemEnvio` once, AFTER the release and the
+ *     aviso; a transient failure of its write is contained (`ledgerFalhou`,
+ *     logged), never rethrown, as the aviso's is. The engine's own `desligado`
+ *     cannot follow E1 (an effective `off` already ended the run there), and
+ *     calls nothing. The dispatch line carries `modoLido`, `fimSemEnvio` and
+ *     `ledgerFalhou` only when they hold something, so a provider declaring
+ *     none of the optional members writes the line it always did.
  *
  * Every send-side aviso is clocked by E4's lease read `readTime`. Every lease
  * write consuming a recorded start enqueues that start's NAMED `vez` recovery
@@ -146,6 +163,7 @@ import {
 import {
   type FluxoComLoteAmazon,
   MODO_AMAZON,
+  type ModoAmazon,
   type ValvulaAmazon,
   lerValvula,
   registrarValvulaAmazon,
@@ -172,7 +190,8 @@ import {
 import {
   type AbortoLoteAmazon,
   type ContextoLoteAmazon,
-  ESPACO_MINIMO_ENTRE_FEEDS_MS,
+  FIM_SEM_ENVIO_LOTE,
+  type FimSemEnvioLote,
   MOTIVO_ABORTO_LOTE,
   type MotivoAbortoLote,
   ORCAMENTO_MONTAGEM_LOTE_MS,
@@ -191,6 +210,7 @@ import {
 } from './tarefaLote';
 import {
   DESTINO_DO_LOTE,
+  ESPACO_MINIMO_ENTRE_FEEDS_MS_POR_FLUXO,
   LIBERACAO_VEZ_FEED,
   type LiberacaoVezFeed,
   type MotivoRecusaDaVez,
@@ -222,8 +242,14 @@ import {
  */
 export { ORCAMENTO_MONTAGEM_LOTE_MS };
 
-/** The delay of a 429's re-enqueue, in whole seconds: the submission floor. */
-export const ESPERA_APOS_LIMITE_FEED_S = ESPACO_MINIMO_ENTRE_FEEDS_MS / 1000;
+/**
+ * The delay of a `createFeed` 429's re-enqueue, in whole seconds, per batch
+ * fluxo: that fluxo's submission floor (stock 120 s, price 300 s).
+ */
+export const ESPERA_APOS_LIMITE_FEED_S_POR_FLUXO = {
+  estoque: ESPACO_MINIMO_ENTRE_FEEDS_MS_POR_FLUXO.estoque / 1000,
+  preco: ESPACO_MINIMO_ENTRE_FEEDS_MS_POR_FLUXO.preco / 1000,
+} as const satisfies Readonly<Record<FluxoFeedAmazon, number>>;
 
 /* ----------------------------------- contract ---------------------------------- */
 
@@ -314,6 +340,15 @@ export interface ResultadoEnvioFeedAmazon {
   readonly aviso: MotivoContaAmazon | null;
   /** An aviso due after a LANDED release whose write failed transiently: contained. */
   readonly avisoFalhou: boolean;
+  /**
+   * The valve's mode as READ, when the provider's effective valve (the one the
+   * run acted on and the valve line logged) differs from it; `null` otherwise.
+   */
+  readonly modoLido: ModoAmazon | null;
+  /** The end the provider's `aoFimSemEnvio` was told of; `null` when it was not called. */
+  readonly fimSemEnvio: FimSemEnvioLote | null;
+  /** That hook's write failed transiently: contained, never rethrown. */
+  readonly ledgerFalhou: boolean;
 }
 
 /* ------------------------------------ the line ---------------------------------- */
@@ -332,6 +367,7 @@ export function severidadeDoEnvioFeedAmazon(r: ResultadoEnvioFeedAmazon): Severi
   if (r.acao === ACAO_ENVIO_FEED.incerto || r.acao === ACAO_ENVIO_FEED.contextoRecusado) {
     return 'WARNING';
   }
+  if (r.ledgerFalhou) return 'WARNING';
   if (r.acao === ACAO_ENVIO_FEED.liberado && r.motivo !== null) {
     return LIBERACOES_EM_WARNING.has(r.motivo) ? 'WARNING' : 'INFO';
   }
@@ -382,6 +418,9 @@ export function registrarDespachoEnvioFeedAmazon(
     registro: r.registro,
     aviso: r.aviso,
     avisoFalhou: r.avisoFalhou,
+    // Only what a provider's optional members produced: a stock line keeps its keys.
+    ...(r.modoLido === null ? {} : { modoLido: r.modoLido }),
+    ...(r.fimSemEnvio === null ? {} : { fimSemEnvio: r.fimSemEnvio, ledgerFalhou: r.ledgerFalhou }),
     ...(r.caminhoIncerto === null ? {} : camposDoCaminhoIncerto(r.caminhoIncerto)),
   };
   registrarEventoAmazon(
@@ -485,6 +524,9 @@ const VAZIO = {
   caminhoIncerto: null,
   aviso: null,
   avisoFalhou: false,
+  modoLido: null,
+  fimSemEnvio: null,
+  ledgerFalhou: false,
 } as const;
 
 function resultado(
@@ -693,6 +735,28 @@ async function avisarAposLiberar(
   }
 }
 
+/**
+ * The provider's `aoFimSemEnvio`, ONCE, for an end after the context that
+ * submitted nothing (module header, E6), AFTER the release and the aviso. A
+ * transient failure of its write is contained (`ledgerFalhou`): the queue's
+ * retry would take the lease again and repeat a batch that already ended.
+ * Anything else is rethrown. A provider that declares no hook is told nothing.
+ */
+async function fimSemEnvio(
+  e: Execucao,
+  lida: LeituraVezFeed,
+  fim: FimSemEnvioLote,
+): Promise<Pick<ResultadoEnvioFeedAmazon, 'fimSemEnvio' | 'ledgerFalhou'>> {
+  if (e.provedor.aoFimSemEnvio === undefined) return { fimSemEnvio: null, ledgerFalhou: false };
+  try {
+    await e.provedor.aoFimSemEnvio(contextoDoLote(e, lida), e.t, fim);
+    return { fimSemEnvio: fim, ledgerFalhou: false };
+  } catch (err) {
+    if (!isTransientGrpcError(err)) throw err;
+    return { fimSemEnvio: fim, ledgerFalhou: true };
+  }
+}
+
 /** The members, deduplicated in their order (the batch entry counts each once). */
 function semRepetir(skus: readonly string[]): readonly string[] {
   return [...new Set(skus)];
@@ -723,18 +787,56 @@ export async function enviarFeedAmazon(
   return r;
 }
 
+/**
+ * E1's valve (module header): the raw one, or the provider's effective one
+ * when its provider (of THIS fluxo) declares `valvulaEfetiva`.
+ */
+function valvulaDoEnvio(
+  t: TarefaEnviarFeedAmazon,
+  deps: DepsEnviarFeedAmazon,
+  lida: ValvulaAmazon<FluxoComLoteAmazon>,
+): ValvulaAmazon<FluxoComLoteAmazon> {
+  const provedor = deps.provedor;
+  if (provedor?.valvulaEfetiva === undefined || provedor.fluxo !== t.fluxo) return lida;
+  const efetiva = provedor.valvulaEfetiva(lida, {
+    ambiente: deps.ambiente,
+    logger: deps.logger,
+    envelope: {
+      conta: t.contaId,
+      tentativa: deps.registro.tentativa,
+      idTarefa: deps.registro.idTarefa,
+    },
+  });
+  if (efetiva.fluxo !== lida.fluxo) {
+    throw new TypeError('enviarFeed.ts: a válvula efetiva nomeia outro fluxo');
+  }
+  return efetiva;
+}
+
 async function executarEnvio(
   db: Firestore,
   t: TarefaEnviarFeedAmazon,
   deps: DepsEnviarFeedAmazon,
 ): Promise<ResultadoEnvioFeedAmazon> {
-  // ---- E1: the valve, read ONCE, logged — before any read. ----
-  const valvula = lerValvula(t.fluxo, deps.ambiente);
+  // ---- E1: the valve, read ONCE, made effective, logged — before any read. ----
+  const lida = lerValvula(t.fluxo, deps.ambiente);
+  const valvula = valvulaDoEnvio(t, deps, lida);
+  const modoLido = valvula.modo === lida.modo ? null : lida.modo;
   registrarValvulaAmazon(deps.logger, valvula, {
     conta: t.contaId,
     tentativa: deps.registro.tentativa,
     idTarefa: deps.registro.idTarefa,
   });
+  const r = await depoisDaValvula(db, t, deps, valvula);
+  return modoLido === null ? r : { ...r, modoLido };
+}
+
+async function depoisDaValvula(
+  db: Firestore,
+  t: TarefaEnviarFeedAmazon,
+  deps: DepsEnviarFeedAmazon,
+  valvula: ValvulaAmazon<FluxoComLoteAmazon>,
+): Promise<ResultadoEnvioFeedAmazon> {
   if (valvula.modo === MODO_AMAZON.off) return resultado(t, ACAO_ENVIO_FEED.valvulaDesligada);
 
   // ---- E2: the provider. ----
@@ -903,8 +1005,21 @@ async function loteRecusado(
   }
   const rota = await rotaDoLoteRecusado(e, tomada, destino, lida);
   const extra = await acoesAtrasDoDono(e, tomada, lida);
-  return { ...rota, ...extra };
+  // A hand-off, its refused re-derivation and an expiry END the batch: told last.
+  const fim = FIM_DA_ROTA.get(rota.acao);
+  const ledger = fim === undefined ? {} : await fimSemEnvio(e, lida, fim);
+  return { ...rota, ...extra, ...ledger };
 }
+
+/** The routes of a turned-away batch that end it, and the end each one is. */
+const FIM_DA_ROTA: ReadonlyMap<AcaoEnvioFeedAmazon, FimSemEnvioLote> = new Map<
+  AcaoEnvioFeedAmazon,
+  FimSemEnvioLote
+>([
+  [ACAO_ENVIO_FEED.repassado, FIM_SEM_ENVIO_LOTE.repassado],
+  [ACAO_ENVIO_FEED.repasseAbortado, FIM_SEM_ENVIO_LOTE.repasseAbortado],
+  [ACAO_ENVIO_FEED.loteExpirado, FIM_SEM_ENVIO_LOTE.loteExpirado],
+]);
 
 async function rotaDoLoteRecusado(
   e: Execucao,
@@ -1015,9 +1130,12 @@ async function montarPlano(
   if (montagem.mensagens.length === 0) {
     return { bytes: new Uint8Array(0), mensagens: 0, diff: montagem.diff, snapshotEmMs };
   }
+  // The report's per-item datasets only for a provider that asks for them.
+  const relatorio = e.provedor.relatorio;
   const documento = montarDocumentoListingsFeed({
     sellerId: ctx.sellerId,
     mensagens: montagem.mensagens,
+    ...(relatorio === undefined ? {} : { relatorio }),
   });
   return {
     bytes: documento.bytes,
@@ -1144,7 +1262,14 @@ async function abortado(
     aborto.aviso === null
       ? { aviso: null, avisoFalhou: false }
       : await avisarAposLiberar(e, aborto.aviso, lida.readTime, liberada);
-  return resultado(e.t, ACAO_ENVIO_FEED.liberado, { ...base, motivo, ...aviso, ...liberada });
+  const ledger = await fimSemEnvio(e, lida, FIM_SEM_ENVIO_LOTE.abortado);
+  return resultado(e.t, ACAO_ENVIO_FEED.liberado, {
+    ...base,
+    motivo,
+    ...aviso,
+    ...liberada,
+    ...ledger,
+  });
 }
 
 /**
@@ -1198,9 +1323,14 @@ async function desfechoDoLote(
     }
     case 'simulado':
     case 'sem-escrita': {
-      const liberacao =
-        r.tipo === 'simulado' ? LIBERACAO_VEZ_FEED.simulado : LIBERACAO_VEZ_FEED.semEscrita;
+      const simulado = r.tipo === 'simulado';
+      const liberacao = simulado ? LIBERACAO_VEZ_FEED.simulado : LIBERACAO_VEZ_FEED.semEscrita;
       const liberada = await liberar(e, liberacao);
+      const ledger = await fimSemEnvio(
+        e,
+        lida,
+        simulado ? FIM_SEM_ENVIO_LOTE.simulado : FIM_SEM_ENVIO_LOTE.semEscrita,
+      );
       return resultado(e.t, ACAO_ENVIO_FEED.liberado, {
         ...base,
         ...contagem,
@@ -1208,17 +1338,20 @@ async function desfechoDoLote(
         mensagens: r.plano.mensagens,
         bytes: r.plano.bytes.byteLength,
         ...liberada,
+        ...ledger,
       });
     }
     case 'so-patches': {
       const { tarefas } = await e.provedor.repassarParaPatches(ctx, e.t, r.membros, dados);
       const liberada = await liberar(e, LIBERACAO_VEZ_FEED.soPatches);
+      const ledger = await fimSemEnvio(e, lida, FIM_SEM_ENVIO_LOTE.soPatches);
       return resultado(e.t, ACAO_ENVIO_FEED.liberado, {
         ...base,
         ...contagem,
         motivo: LIBERACAO_VEZ_FEED.soPatches,
         tarefas,
         ...liberada,
+        ...ledger,
       });
     }
     case 'escrito':
@@ -1343,11 +1476,13 @@ async function documentoFalhou(
 ): Promise<ResultadoEnvioFeedAmazon> {
   const liberada = await liberar(e, LIBERACAO_VEZ_FEED.documentoFalhou, estado.antesDoEnvioMs);
   const aviso = await avisarAposLiberar(e, e.provedor.motivoFalha, lida.readTime, liberada);
+  const ledger = await fimSemEnvio(e, lida, FIM_SEM_ENVIO_LOTE.documentoFalhou);
   return resultado(e.t, ACAO_ENVIO_FEED.liberado, {
     ...base,
     motivo: LIBERACAO_VEZ_FEED.documentoFalhou,
     ...aviso,
     ...liberada,
+    ...ledger,
   });
 }
 
@@ -1368,11 +1503,12 @@ async function falhaDoCriarFeed(
       voltou.tipo === 'escrito'
         ? await liberar(e, LIBERACAO_VEZ_FEED.limitado)
         : { recusa: voltou.motivo, vezPara: null };
-    await reenfileirar(e, ESPERA_APOS_LIMITE_FEED_S);
+    const atrasoS = ESPERA_APOS_LIMITE_FEED_S_POR_FLUXO[e.t.fluxo];
+    await reenfileirar(e, atrasoS);
     return resultado(e.t, ACAO_ENVIO_FEED.limitado, {
       ...base,
       motivo: LIBERACAO_VEZ_FEED.limitado,
-      atrasoS: ESPERA_APOS_LIMITE_FEED_S,
+      atrasoS,
       ...liberada,
     });
   }
@@ -1395,11 +1531,13 @@ async function recusaDefinitiva(
 ): Promise<ResultadoEnvioFeedAmazon> {
   const liberada = await liberar(e, LIBERACAO_VEZ_FEED.recusaDefinitiva);
   const aviso = await avisarAposLiberar(e, e.provedor.motivoFalha, lida.readTime, liberada);
+  const ledger = await fimSemEnvio(e, lida, FIM_SEM_ENVIO_LOTE.recusaDefinitiva);
   return resultado(e.t, ACAO_ENVIO_FEED.liberado, {
     ...base,
     motivo: LIBERACAO_VEZ_FEED.recusaDefinitiva,
     ...aviso,
     ...liberada,
+    ...ledger,
   });
 }
 

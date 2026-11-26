@@ -100,8 +100,9 @@ stay UNSET until W8. See "Easy Ship scheduling (step 15)" below.
 PR 12-c). `processAmazonListingsJob` sends a feed, polls its result, waits out a
 lost `createFeed` answer and runs the recoveries. Since step 12 (PR 12-f) its
 provider seam (`lib/amazon/feeds/destinosLote.ts`) holds the STOCK provider
-(`lib/amazon/estoque/provedorLoteEstoque.ts`); the price row stays `null` until
-step 13, so a price send ends `sem-provedor`. Any send ends at its fluxo's write
+(`lib/amazon/estoque/provedorLoteEstoque.ts`), and since step 13 (PR 13-f) the
+PRICE provider (`lib/amazon/preco/provedorLotePreco.ts`: the block batches a
+price run names). Any send ends at its fluxo's write
 valve first (`valvula-desligada` while the valve is unset), before any Firestore
 read. Every submission
 needs the read switch, the fluxo's write valve exactly `on` AND its canary list
@@ -120,8 +121,11 @@ producer (`src/agendadorEstoque.ts`) enqueues onto `processAmazonListingsJob`'s
 path. It reads the price valve `AMAZON_MODO_PRECO` FIRST (`off` ⇒ ZERO
 Firestore reads); a PATCH also needs the read switch and a hit of
 `AMAZON_CANARIO_PRECO`, and the preview flag below makes it a validation only.
-Until something enqueues one (the price routes come later), the handler holds
-the binding and nothing runs.
+Since PR 13-e it also walks a price run's pages (`preco-pagina`), and since PR
+13-f the run's decision step names the run's block batches (`feed-enviar`, fluxo
+`preco`), sent like a stock feed and also behind the preview flag below. Until
+something enqueues one (the price routes come later), the handler holds the
+binding and nothing runs.
 
 ⚠️ **The stock queue has its own switch too** (master-plan step 12, PR 12-e1).
 `processAmazonStockPatch` sends ONE `patchListingsItem` of a SKU's available
@@ -385,6 +389,14 @@ are local builds; neither deploys anything.
   (`gcloud scheduler jobs run <the job of reconcileAmazonStock> --location=<region>`): there is
   no force-all feed; a run already live just keeps going. Needs the `prodAmazon` walk index and
   the drift TTL above. Enqueues as the functions runtime SA, through `src/agendadorEstoque.ts`.
+  Since step 13 (PR 13-f) the same job then runs the DAILY PRICE step
+  (`lib/amazon/preco/backstopPreco.ts`) whatever the stock step's outcome (the first failure
+  rethrown after both): per active conta, the price feed's daily backstop — adoption only,
+  never a price run's re-kick and never a send. Its own gates, the read switch and then
+  `AMAZON_MODO_PRECO` (`off` while unset), are SILENT: zero reads and no line. Else one conta
+  query and, per active conta, at most one lease read, one record read (and create) and one
+  adoption rung, and ONE line per conta; then one summary line. When both steps fail, the
+  stock failure is rethrown and the price one leaves ONE ERROR line (its class only).
 - **`onIntegracaoAmazonChanged`** — `onDocumentWritten` (Firestore) on
   `integracao/{integracaoId}`, master-plan step 20: the codebase's FIRST Firestore trigger,
   and the FOURTH on that path (Mercado Livre, Shopee, Loja Integrada; plus `apps/functions`'
@@ -755,7 +767,10 @@ below stays COMMENTED OUT until the window:**
 # `<contaId>:<sku>`; a feed still needs the list exactly `*`. Since step 13 the
 # price pair is ALSO read by `processAmazonListingsJob`'s price task
 # (`preco-sku`) on every dispatch, FIRST (`off` reads nothing else), its canary
-# keyed `<contaId>:<sku>`. The stock VALVE
+# keyed `<contaId>:<sku>`; since PR 13-f the price VALVE `AMAZON_MODO_PRECO` also
+# gates the daily price step of `reconcileAmazonStock` before any read (`off`
+# reads nothing and logs nothing; `dry-run` or `on` adopts a stuck price feed),
+# and the preview flag below reaches a price feed's own send. The stock VALVE
 # also gates the five-minute stock tick `sweepAmazonStock` (PR 12-e2), the
 # daily reconcile `reconcileAmazonStock` and each stock feed recovery (PR 12-f),
 # before any read: `off` (and so unset or unrecognised) reads nothing; `dry-run`
@@ -782,8 +797,9 @@ below stays COMMENTED OUT until the window:**
 # (ERROR `validacao-com-todos`: a feed has no preview), so set it ONLY with a
 # canary LIST, never with `*`. Anything else is off — the PATCH is then REAL —
 # and a set value other than `1` (`true`, `0`, spaces) writes one WARNING per
-# price task: check the dispatch line's `previa`. Set only in the migration
-# window, and REMOVED (a redeploy) once the preview is read.
+# price task, page and batch dispatch: check a task's or page's dispatch line
+# `previa` (a batch's WARNING is its own `feed-valvula` line). Set only in the
+# migration window, and REMOVED (a redeploy) once the preview is read.
 # AMAZON_PRECO_SO_VALIDACAO=1
 ```
 

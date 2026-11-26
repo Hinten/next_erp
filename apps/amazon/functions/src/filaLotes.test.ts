@@ -7,6 +7,7 @@ import { __setRelogioDoCacheParaTestes } from '../../lib/amazon/core/contaCache'
 import { criarProvedorLoteEstoqueAmazon } from '../../lib/amazon/estoque/provedorLoteEstoque';
 import { DESTINO_LOTE_AMAZON } from '../../lib/amazon/feeds/destinosLote';
 import type { ProvedorLoteAmazon } from '../../lib/amazon/feeds/provedorLote';
+import { criarProvedorLotePrecoAmazon } from '../../lib/amazon/preco/provedorLotePreco';
 import { FakeDb, asDb } from '../../lib/amazon/testing/fakeDb';
 import { AGORA_MS, espiarStdout } from '../../lib/amazon/testing/fixtures';
 
@@ -49,6 +50,8 @@ const { criarAgendadorLotesAmazonDoAmbiente, criarProdutorEstoqueAmazonDoAmbient
 const { TAREFA_PRECO_SKU_AMAZON } = await import('./filaLotes');
 // (step 13, PR 13-e) A price run's page, bound onto this same queue.
 const { PAGINA_PRECO_AMAZON } = await import('./filaLotes');
+// (step 13, PR 13-f) The price producer the seam's root binds for a price batch's hand-off.
+const { criarProdutorPrecoAmazonDoAmbiente } = await import('./agendadorEstoque');
 
 afterAll(() => {
   if (originalTasksInvokerSa === undefined) delete process.env.TASKS_INVOKER_SA;
@@ -113,6 +116,7 @@ describe('processAmazonListingsJob — the body', () => {
     expect(RAIZ_DOS_LOTES_AMAZON).toEqual({
       agendadorLotes: criarAgendadorLotesAmazonDoAmbiente,
       produtorEstoque: criarProdutorEstoqueAmazonDoAmbiente,
+      produtorPreco: criarProdutorPrecoAmazonDoAmbiente,
       esperar: esperarMs,
       increment: incrementoAmazon,
       gerarExecucaoId: novoExecucaoIdAmazon,
@@ -211,13 +215,13 @@ describe('processAmazonListingsJob — the body', () => {
     }
   });
 
-  it('(12-f) the stock row is BOUND to the stock provider; the price row is still null', () => {
+  it('(12-f) the stock row is BOUND to the stock provider; (13-f) the price row to the price provider', () => {
     expect(DESTINO_LOTE_AMAZON.estoque).toBe(criarProvedorLoteEstoqueAmazon);
-    expect(DESTINO_LOTE_AMAZON.preco).toBeNull();
+    expect(DESTINO_LOTE_AMAZON.preco).toBe(criarProvedorLotePrecoAmazon);
     const deps = depsDosLotesAmazon({ tentativa: 0, idTarefa: null });
     expect(deps.provedores.estoque?.fluxo).toBe('estoque');
     expect(deps.provedores.estoque?.motivoFalha).toBe(MOTIVO_CONTA_AMAZON.feedEstoqueFalhou);
-    expect(deps.provedores.preco).toBeNull();
+    expect(deps.provedores.preco?.motivoFalha).toBe(MOTIVO_CONTA_AMAZON.feedPrecoFalhou);
   });
 
   // Re-importing the root after `vi.resetModules()` loads the whole feed core again: CI headroom.
@@ -247,6 +251,7 @@ describe('processAmazonListingsJob — the body', () => {
         expect(fabrica.mock.calls[0]?.[0]).toEqual({
           agendadorLotes: raiz.criarAgendadorLotesAmazonDoAmbiente,
           produtorEstoque: raiz.criarProdutorEstoqueAmazonDoAmbiente,
+          produtorPreco: raiz.criarProdutorPrecoAmazonDoAmbiente,
           esperar: fila.esperarMs,
           increment: fila.incrementoAmazon,
           gerarExecucaoId: fila.novoExecucaoIdAmazon,
@@ -308,7 +313,7 @@ describe('processAmazonListingsJob — the body', () => {
     ]);
   });
 
-  it('a send under the EMPTY price row ⇒ sem-provedor: the valve line, then ONE send line, the lease never read', async () => {
+  it('(13-f) a PRICE send reaches the bound price provider only past the context: the switch off ⇒ contexto-recusado, ZERO Firestore operations', async () => {
     vi.stubEnv('AMAZON_MODO_PRECO', 'on');
     await rodar({
       data: {
@@ -327,8 +332,12 @@ describe('processAmazonListingsJob — the body', () => {
         },
       },
     });
-    expect(linhas().map((l) => l.evento)).toEqual(['valvula', 'preco']);
-    expect(linhas().at(-1)).toMatchObject({ fase: 'envio', acao: 'sem-provedor' });
+    expect(linhas().map((l) => l.evento)).toEqual(['valvula', 'chamada-bloqueada', 'preco']);
+    expect(linhas().at(-1)).toMatchObject({
+      fase: 'envio',
+      acao: 'contexto-recusado',
+      motivo: 'chamadas-desligadas',
+    });
     expect(fake.operacoes).toBe(0);
   });
 
@@ -399,10 +408,10 @@ describe('processAmazonListingsJob — the price task (step 13, PR 13-d)', () =>
     ...over,
   });
 
-  it('★ the dispatch’s deps bind the price task; the seam’s price row stays empty (no price feed yet)', () => {
+  it('★ the dispatch’s deps bind the price task; (13-f) the seam’s price row holds the price provider', () => {
     const deps = depsDosLotesAmazon({ tentativa: 0, idTarefa: null });
     expect(deps.tarefaPrecoSku).toBe(TAREFA_PRECO_SKU_AMAZON);
-    expect(deps.provedores.preco).toBeNull();
+    expect(deps.provedores.preco?.fluxo).toBe('preco');
   });
 
   it('★ a price task dispatched with the price valve unset runs the price task: the valve line, then ONE price line, ZERO Firestore operations', async () => {
@@ -638,6 +647,9 @@ describe('processAmazonListingsJob — a price run’s page (step 13, PR 13-e)',
           expect(deps.carregarContexto).toBe(contexto.loadAmazonContext);
           expect(deps.produtorPaginas).toBe(raiz.criarProdutorExecucaoPrecoAmazonDoAmbiente);
           expect(deps.produtorPreco).toBe(raiz.criarProdutorPrecoAmazonDoAmbiente);
+          // (13-f) Decide's block batches: the dispatch's OWN jobs producer, a thunk.
+          expect(deps.agendadorLotes).toBe(base.agendador);
+          expect(deps.agendadorLotes).toBe(raiz.criarAgendadorLotesAmazonDoAmbiente);
         }
         expect(espiao).toHaveBeenCalledTimes(2);
       } finally {

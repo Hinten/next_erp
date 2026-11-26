@@ -427,7 +427,7 @@ export function entrarNaVezFeed(
   const alvo: AlvoVezFeed = { fluxo: tarefa.fluxo, contaId: tarefa.contaId };
   return comPrecondicao<EntradaNaVezFeed>(db, alvo, (lida) => {
     const agoraMs = opcoes.agora();
-    const tomada = decidirTomadaDaVez(lida.vez, agoraMs, tarefa.execucaoId);
+    const tomada = decidirTomadaDaVez(lida.vez, agoraMs, tarefa.execucaoId, tarefa.fluxo);
     if (ehTomadaPropria(tomada))
       return { tipo: 'parar', resultado: { tipo: 'propria', tomada, lida } };
     const destino = destinoDoLoteRecusado(tomada, tarefa.lote, disjuntorDaVez(lida.vez), agoraMs);

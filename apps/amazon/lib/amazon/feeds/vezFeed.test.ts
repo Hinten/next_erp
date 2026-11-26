@@ -7,6 +7,7 @@
 import {
   ESTADO_VEZ_FEED_AMAZON,
   type EstadoVezFeedAmazon,
+  FLUXO_FEED_AMAZON,
   TIPO_LOTE_FEED_AMAZON,
   type VezFeedAmazon,
   vezFeedAmazonSchema,
@@ -35,6 +36,7 @@ import {
   type DestinoDoLoteFeed,
   type DisjuntorFeed,
   type DonoDaVezFeed,
+  ESPACO_MINIMO_ENTRE_FEEDS_MS_POR_FLUXO,
   ESTADO_DO_DISJUNTOR,
   LIBERACAO_VEZ_FEED,
   type LiberacaoVezFeed,
@@ -1833,5 +1835,70 @@ describe('★ the submission floor, end to end', () => {
       motivo: RECUSA_DA_VEZ.outraRota,
     });
     expect(tomarVez(atual, t0 + 120 * SEG, proxima).tipo).toBe('atualizar');
+  });
+});
+
+describe('(13-f) ★ the per-fluxo submission floor', () => {
+  it('the table: stock keeps the base 120 s, price 300 s', () => {
+    expect(ESPACO_MINIMO_ENTRE_FEEDS_MS_POR_FLUXO).toEqual({
+      estoque: ESPACO_MINIMO_ENTRE_FEEDS_MS,
+      preco: 300 * SEG,
+    });
+    expect(ESPACO_MINIMO_ENTRE_FEEDS_MS_POR_FLUXO.estoque).toBe(120 * SEG);
+  });
+
+  it('a PRICE take 299 s after ultimoEnvioMs ⇒ aguardar-espaco 1 s; at 300 s ⇒ tomar (NEAR-MISS: a STOCK take at 120 s takes)', () => {
+    const aos = (s: number) => vezEm(E.livre, { ultimoEnvioMs: AGORA - s * SEG });
+    expect(decidirTomadaDaVez(aos(299), AGORA, EU, FLUXO_FEED_AMAZON.preco)).toEqual({
+      tipo: T.aguardarEspaco,
+      restanteS: 1,
+    });
+    expect(decidirTomadaDaVez(aos(300), AGORA, EU, FLUXO_FEED_AMAZON.preco)).toEqual({
+      tipo: T.tomar,
+    });
+    expect(decidirTomadaDaVez(aos(120), AGORA, EU, FLUXO_FEED_AMAZON.estoque)).toEqual({
+      tipo: T.tomar,
+    });
+    expect(decidirTomadaDaVez(aos(119), AGORA, EU, FLUXO_FEED_AMAZON.estoque)).toEqual({
+      tipo: T.aguardarEspaco,
+      restanteS: 1,
+    });
+    // A caller naming no fluxo gets the base floor.
+    expect(decidirTomadaDaVez(aos(120), AGORA, EU)).toEqual({ tipo: T.tomar });
+  });
+
+  it('the price remainder is capped at the PRICE floor (a stamp ahead of the clock never asks for longer)', () => {
+    const adiante = vezEm(E.livre, { ultimoEnvioMs: AGORA + 10 * MIN });
+    expect(decidirTomadaDaVez(adiante, AGORA, EU, FLUXO_FEED_AMAZON.preco)).toEqual({
+      tipo: T.aguardarEspaco,
+      restanteS: 300,
+    });
+    expect(decidirTomadaDaVez(adiante, AGORA, EU, FLUXO_FEED_AMAZON.estoque)).toEqual({
+      tipo: T.aguardarEspaco,
+      restanteS: 120,
+    });
+  });
+
+  it('an expired montando of another run is taken under the batch fluxo’s floor too', () => {
+    const vencida = vezEm(E.montando, {
+      execucaoId: OUTRO,
+      ateMs: AGORA - SEG,
+      ultimoEnvioMs: AGORA - 200 * SEG,
+    });
+    expect(decidirTomadaDaVez(vencida, AGORA, EU, FLUXO_FEED_AMAZON.preco)).toEqual({
+      tipo: T.aguardarEspaco,
+      restanteS: 100,
+    });
+    expect(decidirTomadaDaVez(vencida, AGORA, EU, FLUXO_FEED_AMAZON.estoque)).toEqual({
+      tipo: T.tomar,
+    });
+  });
+
+  it('★ the builders read the TASK’s fluxo: a price batch’s take inside its floor is refused, a stock one’s is written', () => {
+    const livre = vezEm(E.livre, { ultimoEnvioMs: AGORA - 200 * SEG });
+    const preco: TarefaEnviarFeedAmazon = { ...tarefa(BLOCOS), fluxo: FLUXO_FEED_AMAZON.preco };
+    expect(tomarVez(livre, AGORA, preco)).toMatchObject({ tipo: 'recusado' });
+    expect(tomarVez(livre, AGORA, tarefa(BLOCOS))).toMatchObject({ tipo: 'atualizar' });
+    expect(tomarVez(livre, AGORA + 100 * SEG, preco)).toMatchObject({ tipo: 'atualizar' });
   });
 });

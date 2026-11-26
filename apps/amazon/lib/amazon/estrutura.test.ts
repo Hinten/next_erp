@@ -220,6 +220,13 @@
  *    the one listings caller; and a run's page (`execucaoPreco.ts`) is wiring
  *    the jobs root binds, off the App Hosting walk, writing through the run's
  *    one write and the parts writer only.
+ *  - (step 13, PR 13-f) the price feed provider (`provedorLotePreco.ts`, the
+ *    seam's price row) and the daily price step (`backstopPreco.ts`, which the
+ *    daily root imports) join the I/O roster and the App Hosting forbidden
+ *    list; neither makes a Firestore write call of its own nor names a handle
+ *    but for by-id reads. The provider writes only through the run's one write
+ *    (its ledger), the shared write-back and the price aviso raiser; the daily
+ *    step imports no sibling of `preco/` at all (it never reads a run).
  */
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, posix, relative, sep } from 'node:path';
@@ -1123,6 +1130,10 @@ const MODULOS_DE_PRECO_FORA_DO_APP_HOSTING = [
   'lib/amazon/preco/divergenciasPrecoFirestore.ts',
   // (PR 13-e) A run's page and its decision step: the walk, the live read, Decide.
   'lib/amazon/preco/execucaoPreco.ts',
+  // (PR 13-f) The price feed provider: a batch's build, its write-back and the run's ledger.
+  'lib/amazon/preco/provedorLotePreco.ts',
+  // (PR 13-f) The daily price step: the conta query and the price feed's adoption.
+  'lib/amazon/preco/backstopPreco.ts',
 ];
 
 /** The manual stock push route (step 12, PR 12-g), relative to the APP root: a union-walk entry. */
@@ -5479,8 +5490,10 @@ const COMPARACAO_DE_PRECO =
  * the jobs queue, and nothing else: the dispatcher parses the payload contract
  * (the queue's whole union), the jobs root binds the task, and the stock root
  * binds the producer onto the jobs queue's path. PR 13-e adds the run's page
- * to the jobs root and the page producer to the stock root. The feed provider
- * and the routes come in later PRs, each adding its row.
+ * to the jobs root and the page producer to the stock root. PR 13-f fills the
+ * seam's price row (the provider's factory, the price producer's type for the
+ * root) and binds the daily price step into the daily root. The routes come in
+ * a later PR, adding its row.
  */
 const IMPORTADORES_DE_PRECO: Readonly<Record<string, readonly string[]>> = {
   'functions/src/agendadorEstoque.ts': [
@@ -5492,6 +5505,8 @@ const IMPORTADORES_DE_PRECO: Readonly<Record<string, readonly string[]>> = {
     '../../lib/amazon/preco/execucaoPreco',
     '../../lib/amazon/preco/processarPreco',
   ],
+  'functions/src/reconciliacaoEstoque.ts': ['../../lib/amazon/preco/backstopPreco'],
+  'lib/amazon/feeds/destinosLote.ts': ['../preco/produtorPreco', '../preco/provedorLotePreco'],
   'lib/amazon/feeds/processarLote.ts': ['../preco/tarefaPreco'],
 };
 
@@ -5538,8 +5553,28 @@ const PRECO_PUROS = [
  *   aviso raiser, the logger, the valves, the payload version, the shared
  *   listings wiring (the walk, the link reader, the live read, the one listings
  *   caller's datasets, the masks, the flow names) and the read-failure ladder.
+ * - (PR 13-f) `provedorLotePreco.ts` — the price feed provider: the conta,
+ *   link-doc and feed-record handles (masked by-id reads), the conta's ref
+ *   forms, the schemas (the faixa, the tabela parse, the outcome, the ledger's
+ *   vocabulary), the SP-API package (the offer merge, the report's dataset),
+ *   the aviso raiser, the logger, the valves, the preview flag's reader, the
+ *   feed core's seam constants, its report bound and its payload version, and
+ *   the shared listings wiring (the link and unit readers, the write-back, the
+ *   masks, the flow names).
+ * - (PR 13-f) `backstopPreco.ts` — the daily price step: the conta query, the
+ *   logger, the valves, the jobs producer's classes, the feed backstop and the
+ *   lease's parse class, and the shared boundary's classifier.
  */
 const E_S_EM_PRECO: Readonly<Record<string, readonly string[]>> = {
+  'preco/backstopPreco.ts': [
+    '../core/contas',
+    '../core/log',
+    '../core/valvulas',
+    '../feeds/agendadorLotes',
+    '../feeds/resultadoFeed',
+    '../feeds/vezFeedFirestore',
+    '../listings/escritaListing',
+  ],
   'preco/divergenciasPrecoFirestore.ts': [
     '@delfrance/data/admin/collections',
     '@delfrance/schemas',
@@ -5599,6 +5634,25 @@ const E_S_EM_PRECO: Readonly<Record<string, readonly string[]>> = {
     '@delfrance/schemas',
   ],
   'preco/produtorPreco.ts': ['../feeds/agendadorLotes', '../listings/produtorListing'],
+  'preco/provedorLotePreco.ts': [
+    '../avisos/avisos',
+    '../core/log',
+    '../core/valvulas',
+    '../env',
+    '../feeds/provedorLote',
+    '../feeds/relatorioFeed',
+    '../feeds/tarefaLote',
+    '../listings/avaliacaoLoteVinculos',
+    '../listings/envioListing',
+    '../listings/envioListingFirestore',
+    '../listings/fluxoListing',
+    '../listings/resolverVinculo',
+    '../listings/vinculoListing',
+    '@delfrance/data/admin/collections',
+    '@delfrance/data/admin/produtos',
+    '@delfrance/integrations-amazon-sp-api',
+    '@delfrance/schemas',
+  ],
 };
 
 /**
@@ -5660,6 +5714,7 @@ describe('the step-13 price core guards (13-c)', () => {
 
   it('★ preco/ is Next-free, reads no process environment, never imports the @/ alias, and reaches nothing of estoque/', () => {
     expect(preco.map(rel).sort()).toEqual([
+      'preco/backstopPreco.ts',
       'preco/divergenciasPrecoFirestore.ts',
       'preco/execucaoPreco.ts',
       'preco/execucaoPrecoFirestore.ts',
@@ -5671,6 +5726,7 @@ describe('the step-13 price core guards (13-c)', () => {
       'preco/planoPreco.ts',
       'preco/processarPreco.ts',
       'preco/produtorPreco.ts',
+      'preco/provedorLotePreco.ts',
       'preco/tarefaPreco.ts',
     ]);
     for (const arquivo of preco) {
@@ -5764,7 +5820,7 @@ describe('the step-13 price core guards (13-c)', () => {
         .map(relApp),
     ).toEqual(['lib/amazon/preco/planoPreco.ts']);
     const outros = preco.filter((p) => rel(p) !== 'preco/planoPreco.ts');
-    expect(outros).toHaveLength(11);
+    expect(outros).toHaveLength(13);
     for (const arquivo of outros) {
       const texto = readFileSync(arquivo, 'utf8');
       expect(especificadores(texto), rel(arquivo)).not.toContain('@delfrance/core/money');
@@ -5843,10 +5899,14 @@ describe('the step-13 price core guards (13-c)', () => {
     expect(IMPORTA_PRECO.test('@/lib/amazon/preco/tarefaPreco')).toBe(true);
     expect(IMPORTA_PRECO.test('../../lib/amazon/preco/processarPreco')).toBe(true);
     expect(IMPORTA_PRECO.test('../precos/x')).toBe(false);
-    // (13-d) The feed core still never imports it: only the dispatcher, for the payload.
+    // (13-d) The feed core still never imports it: only the dispatcher, for the payload,
+    // and (13-f) the seam table, for the price row.
     expect(
       Object.keys(importadores).filter(
-        (a) => a.startsWith('lib/amazon/feeds/') && a !== 'lib/amazon/feeds/processarLote.ts',
+        (a) =>
+          a.startsWith('lib/amazon/feeds/') &&
+          a !== 'lib/amazon/feeds/processarLote.ts' &&
+          a !== 'lib/amazon/feeds/destinosLote.ts',
       ),
     ).toEqual([]);
   });
@@ -5886,12 +5946,14 @@ describe('the step-13 price core guards (13-c)', () => {
     }
     // Anti-vacuity: the I/O names are the two modules, and the scan sees both forms.
     expect([...nomesES].sort()).toEqual([
+      './backstopPreco',
       './divergenciasPrecoFirestore',
       './execucaoPreco',
       './execucaoPrecoFirestore',
       './inicioExecucaoPreco',
       './processarPreco',
       './produtorPreco',
+      './provedorLotePreco',
     ]);
     expect(paraES("import { x } from './processarPreco';\n")).toEqual(['./processarPreco']);
     expect(paraES("import type { P } from './produtorPreco';\n")).toEqual(['./produtorPreco']);
@@ -5966,7 +6028,10 @@ describe('the step-13 price core guards (13-c)', () => {
     for (const modulo of MODULOS_DE_PRECO_FORA_DO_APP_HOSTING) {
       expect(fecho.arquivos, modulo).not.toContain(modulo);
     }
-    const fila = fechoDeImportacoes(['functions/src/filaLotes.ts'], lerDoApp);
+    const fila = fechoDeImportacoes(
+      ['functions/src/filaLotes.ts', 'functions/src/reconciliacaoEstoque.ts'],
+      lerDoApp,
+    );
     expect(fila.arquivos).toEqual(expect.arrayContaining(MODULOS_DE_PRECO_FORA_DO_APP_HOSTING));
     expect(fila.arquivos).toEqual(
       expect.arrayContaining(PRECO_NO_APP_HOSTING.map((a) => `lib/amazon/${a}`)),
@@ -6085,10 +6150,12 @@ describe('the step-13 price core guards (13-c)', () => {
   it('★ (13-e) every non-writer I/O module of preco/ names each collection handle it imports ONLY to build a by-id ref it reads: the page the conta’s, the claim the price lease’s', () => {
     const naoEscritores = Object.keys(E_S_EM_PRECO).filter((a) => !(a in ESCRITORES_EM_PRECO));
     expect([...naoEscritores].sort()).toEqual([
+      'preco/backstopPreco.ts',
       'preco/execucaoPreco.ts',
       'preco/inicioExecucaoPreco.ts',
       'preco/processarPreco.ts',
       'preco/produtorPreco.ts',
+      'preco/provedorLotePreco.ts',
     ]);
     const handles: Record<string, string[]> = {};
     for (const arquivo of naoEscritores) {
@@ -6105,6 +6172,11 @@ describe('the step-13 price core guards (13-c)', () => {
       'preco/execucaoPreco.ts': ['integracaoCollection'],
       'preco/inicioExecucaoPreco.ts': ['vezFeedAmazonCollection'],
       'preco/processarPreco.ts': [...HANDLES_LIDOS_EM_PRECO].sort(),
+      'preco/provedorLotePreco.ts': [
+        'feedAmazonCollection',
+        'integracaoCollection',
+        'produtoAmazonLinkCollection',
+      ],
     });
     // NEAR-MISS: the page naming the run or the parts handle at all would show
     // here (its run writes go through the run's one write, its part through the
@@ -6128,16 +6200,51 @@ describe('the step-13 price core guards (13-c)', () => {
     expect(codigo).toMatch(/\bsincronizarAvisoContaListingsAmazon\(/);
     expect(codigo).not.toMatch(outroEscritorDeAviso);
     expect(codigo.match(ESCRITA_FIRESTORE_EM_FEEDS)).toBeNull();
-    // It enqueues through the two price producers only: never the feed core's
-    // jobs producer, never the stock queue's.
+    // It enqueues through the two price producers and, for a `lotes` plan's
+    // block batches (PR 13-f), the dispatch's own jobs producer reached ONLY
+    // through its `agendadorLotes` dep (bound in `functions/src/filaLotes.ts`,
+    // pinned there by its test); never through a dep named `agendador`, never
+    // the stock queue's producer.
     expect(codigo).not.toMatch(/\b(?:agendador|produtorEstoque)\b/);
     expect(codigo).toMatch(/\bprodutorPaginas\(\)\.enfileirarPagina\(/);
     expect(codigo).toMatch(/\bprodutorPreco\(\)\.enfileirarLote\(/);
+    expect(codigo).toMatch(/\bagendadorLotes\(\)/);
     // NEAR-MISS: a direct write or a second aviso writer is seen.
     expect(
       'await ref.update(x, { lastUpdateTime });'.match(ESCRITA_FIRESTORE_EM_FEEDS),
     ).not.toBeNull();
     expect('await escreverAviso(db, plano, deps);').toMatch(outroEscritorDeAviso);
+  });
+
+  it('★ (13-f) the price feed provider writes ONLY through the run’s one write (its ledger), the shared write-back and the price aviso raiser — never the parts writer, a write call of its own or an aviso writer of its own', () => {
+    const codigo = semComentarios(lerDoApp('lib/amazon/preco/provedorLotePreco.ts') ?? '');
+    const proibido =
+      /\b(?:escreverAviso|resolverAviso|sincronizarAvisoContaEstoqueAmazon|gravarParteDivergenciaPrecoAmazon)\b/;
+    expect(codigo).toMatch(/\bescreverExecucaoPrecoAmazon\(/);
+    expect(codigo).toMatch(/\bgravarEnvioListingAmazon\(/);
+    expect(codigo).toMatch(/\bsincronizarAvisoContaListingsAmazon\(/);
+    expect(codigo).not.toMatch(proibido);
+    expect(codigo.match(ESCRITA_FIRESTORE_EM_FEEDS)).toBeNull();
+    // NEAR-MISS: the parts writer and a second aviso writer are seen.
+    expect('await gravarParteDivergenciaPrecoAmazon(db, parte);').toMatch(proibido);
+    expect('await resolverAviso(db, chave, motivo, deps);').toMatch(proibido);
+  });
+
+  it('★ (13-f) the daily price step imports NO sibling of preco/ — by value or by type — so it can never read the run a re-kick needs (NEAR-MISS: a type import of the run module is seen)', () => {
+    const doPasso = (texto: string) =>
+      [...new Set([...importacoesDeValor(texto), ...especificadores(texto)])].filter((e) =>
+        e.startsWith('./'),
+      );
+    const passo = lerDoApp('lib/amazon/preco/backstopPreco.ts') ?? '';
+    expect(doPasso(passo)).toEqual([]);
+    // Anti-vacuity: the step does import, from outside preco/.
+    expect(importacoesDeValor(passo).length).toBeGreaterThan(0);
+    expect(doPasso("import type { L } from './execucaoPrecoFirestore';\n")).toEqual([
+      './execucaoPrecoFirestore',
+    ]);
+    expect(doPasso("import { lerExecucaoPrecoAmazon } from './execucaoPrecoFirestore';\n")).toEqual(
+      ['./execucaoPrecoFirestore'],
+    );
   });
 });
 

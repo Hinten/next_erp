@@ -106,9 +106,14 @@
  *
  * ## The submission floor
  *
- * A take less than {@link ESPACO_MINIMO_ENTRE_FEEDS_MS} after `ultimoEnvioMs`
- * answers `aguardar-espaco` with the remainder in WHOLE seconds, rounded UP.
- * Only a take: a run resuming its own lease, and every release, ignore it.
+ * A take less than the batch fluxo's floor
+ * ({@link ESPACO_MINIMO_ENTRE_FEEDS_MS_POR_FLUXO}: stock 120 s, price 300 s)
+ * after `ultimoEnvioMs` answers `aguardar-espaco` with the remainder in WHOLE
+ * seconds, rounded UP. Only a take: a run resuming its own lease, and every
+ * release, ignore it. The two fluxos' leases are separate documents, and
+ * `JSON_LISTINGS_FEED`'s limit is the account's: the price floor keeps price
+ * to one submission in any 300-s window, so with stock's (at most three in
+ * one) the account stays within five.
  *
  * ## The transitions
  *
@@ -149,6 +154,7 @@ import {
   ESTADO_VEZ_FEED_AMAZON,
   type EstadoVezFeedAmazon,
   FEED_ID_REGISTRO_AMAZON_REGEX,
+  type FluxoFeedAmazon,
   ID_LOTE_FEED_AMAZON_REGEX,
   type JanelaFeedAmazon,
   TIPO_LOTE_FEED_AMAZON,
@@ -175,6 +181,15 @@ export const VALIDADE_VEZ_MS = 600_000;
 
 /** An `enviado` lease expires this long after `antesDoEnvioMs` (49 h). */
 export const VALIDADE_VEZ_ENVIADO_MS = 49 * HORA_MS;
+
+/**
+ * Each batch fluxo's floor between two of its submissions (module header, "The
+ * submission floor"): stock's is the core's base floor, price's 300 s.
+ */
+export const ESPACO_MINIMO_ENTRE_FEEDS_MS_POR_FLUXO = {
+  estoque: ESPACO_MINIMO_ENTRE_FEEDS_MS,
+  preco: 300_000,
+} as const satisfies Readonly<Record<FluxoFeedAmazon, number>>;
 
 /** A ms instant: a non-negative safe integer, or a `RangeError` (a programming error). */
 function exigirMs(nome: string, valor: number): number {
@@ -257,13 +272,20 @@ export function ehTomadaPropria(
   );
 }
 
-/** `tomar`, or `aguardar-espaco` when the floor since `ultimoEnvioMs` has not passed. */
-function tomarOuEsperar(ultimoEnvioMs: number | null, agoraMs: number): TomadaDaVezFeed {
-  if (ultimoEnvioMs !== null && agoraMs < ultimoEnvioMs + ESPACO_MINIMO_ENTRE_FEEDS_MS) {
-    const restanteMs = ultimoEnvioMs + ESPACO_MINIMO_ENTRE_FEEDS_MS - agoraMs;
+/**
+ * `tomar`, or `aguardar-espaco` when the floor `espacoMs` since `ultimoEnvioMs`
+ * has not passed.
+ */
+function tomarOuEsperar(
+  ultimoEnvioMs: number | null,
+  agoraMs: number,
+  espacoMs: number,
+): TomadaDaVezFeed {
+  if (ultimoEnvioMs !== null && agoraMs < ultimoEnvioMs + espacoMs) {
+    const restanteMs = ultimoEnvioMs + espacoMs - agoraMs;
     // Capped at the floor itself: a stamp from a clock ahead of ours never asks
     // for a longer wait than one floor.
-    const restanteS = Math.min(Math.ceil(restanteMs / 1000), ESPACO_MINIMO_ENTRE_FEEDS_MS / 1000);
+    const restanteS = Math.min(Math.ceil(restanteMs / 1000), espacoMs / 1000);
     return { tipo: TOMADA_DA_VEZ.aguardarEspaco, restanteS };
   }
   return { tipo: TOMADA_DA_VEZ.tomar };
@@ -271,7 +293,11 @@ function tomarOuEsperar(ultimoEnvioMs: number | null, agoraMs: number): TomadaDa
 
 /**
  * How the run `execucaoId` reading `armazenada` at `agoraMs` stands towards the
- * lease (module header). `null` is a lease with no document yet: `tomar`.
+ * lease (module header). `null` is a lease with no document yet: `tomar`. A
+ * take is held to the floor of `fluxo`, the batch's
+ * ({@link ESPACO_MINIMO_ENTRE_FEEDS_MS_POR_FLUXO}); a caller naming none (it
+ * acts the same on a free lease whether it may take now or later) gets the
+ * base floor.
  *
  * @throws {RangeError} a clock that is not a ms instant, or an `execucaoId`
  *   outside its grammar (a programming error).
@@ -280,13 +306,18 @@ export function decidirTomadaDaVez(
   armazenada: VezFeedAmazon | null,
   agoraMs: number,
   execucaoId: string,
+  fluxo?: FluxoFeedAmazon,
 ): TomadaDaVezFeed {
   exigirMs('agoraMs', agoraMs);
   exigirId(ID_LOTE_FEED_AMAZON_REGEX, 'execucaoId', execucaoId);
+  const espacoMs =
+    fluxo === undefined
+      ? ESPACO_MINIMO_ENTRE_FEEDS_MS
+      : ESPACO_MINIMO_ENTRE_FEEDS_MS_POR_FLUXO[fluxo];
   if (armazenada === null) return { tipo: TOMADA_DA_VEZ.tomar };
   const fase = faseDaVez(armazenada);
   if (fase === ESTADO_VEZ_FEED_AMAZON.livre) {
-    return tomarOuEsperar(armazenada.ultimoEnvioMs, agoraMs);
+    return tomarOuEsperar(armazenada.ultimoEnvioMs, agoraMs, espacoMs);
   }
   if (armazenada.execucaoId === execucaoId) {
     switch (fase) {
@@ -303,7 +334,7 @@ export function decidirTomadaDaVez(
   switch (fase) {
     case ESTADO_VEZ_FEED_AMAZON.montando:
       return vencida
-        ? tomarOuEsperar(armazenada.ultimoEnvioMs, agoraMs)
+        ? tomarOuEsperar(armazenada.ultimoEnvioMs, agoraMs, espacoMs)
         : { tipo: TOMADA_DA_VEZ.ocupada };
     case ESTADO_VEZ_FEED_AMAZON.enviando:
       if (!vencida) return { tipo: TOMADA_DA_VEZ.ocupada };
@@ -597,7 +628,7 @@ export function tomarVez(
   agoraMs: number,
   tarefa: TarefaEnviarFeedAmazon,
 ): { readonly tipo: 'criar'; readonly documento: VezFeedAmazon } | AtualizacaoDaVez | RecusaDaVez {
-  const tomada = decidirTomadaDaVez(armazenada, agoraMs, tarefa.execucaoId);
+  const tomada = decidirTomadaDaVez(armazenada, agoraMs, tarefa.execucaoId, tarefa.fluxo);
   if (ehTomadaPropria(tomada)) return recusa(RECUSA_DA_VEZ.outraRota);
   const destino = destinoDoLoteRecusado(tomada, tarefa.lote, disjuntorDaVez(armazenada), agoraMs);
   if (destino.tipo !== DESTINO_DO_LOTE.tomar) return recusa(RECUSA_DA_VEZ.outraRota);
@@ -646,7 +677,7 @@ export function registrarPendenteVez(
   | (AtualizacaoDaVez & { readonly pendenteDesdeMs: number })
   | { readonly tipo: 'nada'; readonly pendenteDesdeMs: number }
   | RecusaDaVez {
-  const tomada = decidirTomadaDaVez(armazenada, agoraMs, tarefa.execucaoId);
+  const tomada = decidirTomadaDaVez(armazenada, agoraMs, tarefa.execucaoId, tarefa.fluxo);
   if (armazenada === null || ehTomadaPropria(tomada)) return recusa(RECUSA_DA_VEZ.outraRota);
   const destino = destinoDoLoteRecusado(tomada, tarefa.lote, disjuntorDaVez(armazenada), agoraMs);
   const lote = tarefa.lote;
