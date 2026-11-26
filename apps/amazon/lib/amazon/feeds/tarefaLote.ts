@@ -364,7 +364,11 @@ export const tarefaPaginaReconciliacaoAmazonSchema = z
   .strict();
 export type TarefaPaginaReconciliacaoAmazon = z.infer<typeof tarefaPaginaReconciliacaoAmazonSchema>;
 
-/** Every jobs-queue payload: the feed core's four tasks and the reconcile page. */
+/**
+ * The feed core's four tasks and the reconcile page. The jobs queue's WHOLE
+ * union, the price task's payload included, is the dispatcher's
+ * (`tarefaFilaLotesAmazonSchema`, `./processarLote`).
+ */
 export const tarefaLoteAmazonSchema = z.discriminatedUnion('tipo', [
   tarefaEnviarFeedAmazonSchema,
   tarefaResultadoFeedAmazonSchema,

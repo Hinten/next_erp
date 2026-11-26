@@ -27,8 +27,10 @@ import {
   ACAO_AVISO_CONTA_LISTINGS_AMAZON,
   MOTIVOS_CONTA_ESTOQUE_AMAZON,
   MOTIVOS_CONTA_LISTINGS_AMAZON,
+  MOTIVOS_CONTA_PRECO_AMAZON,
   MOTIVO_AVISO_AMAZON,
   type MotivoContaEstoqueAmazon,
+  type MotivoContaPrecoAmazon,
   SEVERIDADE_MOTIVO_PEDIDO_AMAZON,
   TIPOS_AVISO_AMAZON,
   TIPOS_AVISO_AMAZON_POR_CONTA,
@@ -1070,8 +1072,8 @@ describe('step 12 (12-e1): the stock sync’s per-conta rows — one motivo at a
 
 describe('step 13 (13-b): the per-conta rows of each LISTINGS flow — one closed motivo set per flow', () => {
   const T1 = { seconds: 41, nanoseconds: 1_000 };
-  /** A motivo the price flow will own, not yet in the schema: what a stock raiser must refuse. */
-  const MOTIVO_DE_PRECO = 'feed-preco-falhou' as MotivoContaAmazon;
+  /** A motivo the price flow owns: what a stock raiser must refuse. */
+  const MOTIVO_DE_PRECO: MotivoContaAmazon = MOTIVO_CONTA_AMAZON.feedPrecoFalhou;
   const sincronizarFluxo = (
     alvo: FakeDb,
     fluxo: (typeof FLUXO_LISTING_AMAZON)[keyof typeof FLUXO_LISTING_AMAZON],
@@ -1087,9 +1089,9 @@ describe('step 13 (13-b): the per-conta rows of each LISTINGS flow — one close
       relogio: T1,
     });
 
-  it('the per-flow sets: stock owns its five (the very list), price owns NONE yet; the actions are the stock binding’s', () => {
+  it('the per-flow sets: stock owns its five (the very list), price its four; the actions are the stock binding’s', () => {
     expect(MOTIVOS_CONTA_LISTINGS_AMAZON.estoque).toBe(MOTIVOS_CONTA_ESTOQUE_AMAZON);
-    expect(MOTIVOS_CONTA_LISTINGS_AMAZON.preco).toEqual([]);
+    expect(MOTIVOS_CONTA_LISTINGS_AMAZON.preco).toBe(MOTIVOS_CONTA_PRECO_AMAZON);
     expect(Object.keys(MOTIVOS_CONTA_LISTINGS_AMAZON).sort()).toEqual(['estoque', 'preco']);
     expect(ACAO_AVISO_CONTA_ESTOQUE_AMAZON).toBe(ACAO_AVISO_CONTA_LISTINGS_AMAZON);
   });
@@ -1120,7 +1122,7 @@ describe('step 13 (13-b): the per-conta rows of each LISTINGS flow — one close
   );
 
   it.each(MOTIVOS_CONTA_ESTOQUE_AMAZON.map((m) => [m]))(
-    '★ fluxo: preco owns no motivo yet: a stock one (%s) throws, nothing read or written',
+    '★ fluxo: preco refuses a stock motivo (%s): it throws, nothing read or written',
     async (motivo) => {
       await expect(
         sincronizarFluxo(db, FLUXO_LISTING_AMAZON.preco, motivo, 'levantar'),
@@ -1211,12 +1213,121 @@ describe('step 13 (13-b): the per-conta rows of each LISTINGS flow — one close
       sincronizarAvisoContaListingsAmazon(asDb(db), deps(), {
         fluxo: FLUXO_LISTING_AMAZON.preco,
         integracaoId: ID,
-        // @ts-expect-error — price owns no motivo yet: a stock one does not type-check.
+        // @ts-expect-error — a stock motivo is no price one.
         motivo: MOTIVO_CONTA_AMAZON.feedEstoqueFalhou,
         acao: 'levantar',
         relogio: T1,
       });
     expect(typeof naoCompila).toBe('function');
+    expect(db.operacoes).toBe(0);
+  });
+});
+
+describe('step 13 (13-d): the price flow’s per-conta rows — its four motivos, and nothing else', () => {
+  const T1 = { seconds: 43, nanoseconds: 3_000 };
+  const T2 = { seconds: 44, nanoseconds: 4_000 };
+
+  it('★ the price set is exactly the four price motivos, disjoint from the stock five and the order import’s two', () => {
+    expect([...MOTIVOS_CONTA_PRECO_AMAZON].sort()).toEqual(
+      [
+        MOTIVO_CONTA_AMAZON.precoRecusadoPelaAmazon,
+        MOTIVO_CONTA_AMAZON.feedPrecoFalhou,
+        MOTIVO_CONTA_AMAZON.precoFaixaInvertida,
+        MOTIVO_CONTA_AMAZON.precoReducaoEmMassa,
+      ].sort(),
+    );
+    const estoque: readonly string[] = MOTIVOS_CONTA_ESTOQUE_AMAZON;
+    for (const motivo of MOTIVOS_CONTA_PRECO_AMAZON) expect(estoque).not.toContain(motivo);
+    // Every motivo of the schema belongs to exactly one set: a flow's, or the order import's.
+    const donos = [
+      ...MOTIVOS_CONTA_ESTOQUE_AMAZON,
+      ...MOTIVOS_CONTA_PRECO_AMAZON,
+      MOTIVO_CONTA_AMAZON.contaSemOperacao,
+      MOTIVO_CONTA_AMAZON.intermediadorDivergente,
+    ];
+    expect([...donos].sort()).toEqual([...motivoContaAmazonSchema.options].sort());
+  });
+
+  it.each(MOTIVOS_CONTA_PRECO_AMAZON.map((m) => [m]))(
+    '★ fluxo: preco raises %s, clocked by its raiser, then a resolve clocked later closes it',
+    async (motivo) => {
+      const levantado = await sincronizarAvisoContaListingsAmazon(asDb(db), deps(), {
+        fluxo: FLUXO_LISTING_AMAZON.preco,
+        integracaoId: ID,
+        motivo,
+        acao: ACAO_AVISO_CONTA_LISTINGS_AMAZON.levantar,
+        relogio: T1,
+      });
+      expect(levantado).toEqual({ acao: 'levantado', resultado: 'criado' });
+      const caminho = caminhoAviso(chaveContaPrecisaAtencao(ID, motivo));
+      expect(db.ler(caminho)).toMatchObject({
+        tipo: TIPO_AVISO.amazonContaPrecisaAtencao,
+        params: { motivo },
+        motivo,
+        relogioEvento: relogioDoDocumentoUs(T1),
+        resolvidoEm: null,
+      });
+      const resolvido = await sincronizarAvisoContaListingsAmazon(asDb(db), deps(), {
+        fluxo: FLUXO_LISTING_AMAZON.preco,
+        integracaoId: ID,
+        motivo,
+        acao: ACAO_AVISO_CONTA_LISTINGS_AMAZON.resolver,
+        relogio: T2,
+      });
+      expect(resolvido).toEqual({ acao: 'resolvido', fechou: true });
+      expect(db.ler(caminho)).toMatchObject({ resolvidoEm: AGORA_MS * 1000 });
+    },
+  );
+
+  it('★ NEAR-MISS: the run-time half refuses a non-price motivo under fluxo: preco (a cast caller), nothing read or written', async () => {
+    for (const motivo of [
+      MOTIVO_CONTA_AMAZON.estoqueRecusadoPelaAmazon,
+      MOTIVO_CONTA_AMAZON.contaSemOperacao,
+    ]) {
+      await expect(
+        sincronizarAvisoContaListingsAmazon(asDb(db), deps(), {
+          fluxo: FLUXO_LISTING_AMAZON.preco,
+          integracaoId: ID,
+          motivo: motivo as MotivoContaPrecoAmazon,
+          acao: ACAO_AVISO_CONTA_LISTINGS_AMAZON.levantar,
+          relogio: T1,
+        }),
+      ).rejects.toThrow(new RangeError('avisos.ts: motivo fora dos do preço'));
+    }
+    expect(db.operacoes).toBe(0);
+  });
+
+  it('the compile-time half: a price motivo type-checks under fluxo: preco, and neither under the stock binding nor as a stock motivo', () => {
+    const compila = () =>
+      sincronizarAvisoContaListingsAmazon(asDb(db), deps(), {
+        fluxo: FLUXO_LISTING_AMAZON.preco,
+        integracaoId: ID,
+        motivo: MOTIVO_CONTA_AMAZON.precoFaixaInvertida,
+        acao: 'levantar',
+        relogio: T1,
+      });
+    const naoCompilaNoEstoque = () =>
+      sincronizarAvisoContaEstoqueAmazon(asDb(db), deps(), {
+        integracaoId: ID,
+        // @ts-expect-error — the stock binding takes the stock five only.
+        motivo: MOTIVO_CONTA_AMAZON.precoFaixaInvertida,
+        acao: 'levantar',
+        relogio: T1,
+      });
+    const naoCompilaComoEstoque = () =>
+      sincronizarAvisoContaListingsAmazon(asDb(db), deps(), {
+        fluxo: FLUXO_LISTING_AMAZON.estoque,
+        integracaoId: ID,
+        // @ts-expect-error — a price motivo is no stock one.
+        motivo: MOTIVO_CONTA_AMAZON.precoRecusadoPelaAmazon,
+        acao: 'levantar',
+        relogio: T1,
+      });
+    expect([compila, naoCompilaNoEstoque, naoCompilaComoEstoque].map((f) => typeof f)).toEqual([
+      'function',
+      'function',
+      'function',
+    ]);
     expect(db.operacoes).toBe(0);
   });
 });

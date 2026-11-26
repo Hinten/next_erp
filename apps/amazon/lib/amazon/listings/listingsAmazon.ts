@@ -30,6 +30,15 @@
  * A SKU absent from a SEARCH answer is not "not listed" here (a page may be
  * truncated): the search answers what it got, and `truncada`.
  *
+ * ## The rate an answer carried
+ *
+ * {@link lerListingComTaxaNaAmazon} and {@link enviarOfertaComTaxaNaAmazon}
+ * (step 13, PR 13-d) answer what {@link lerListingNaAmazon} and
+ * {@link enviarOfertaNaAmazon} answer, plus `x-amzn-RateLimit-Limit` of the
+ * answer (`limiteTaxa`, requests per second, `null` when it carried none or
+ * when the read answered "not listed"), so a task logs the plan Amazon really
+ * applies. The two shorter forms are those, minus the rate.
+ *
  * ## Thin on purpose
  *
  * The SKU checks, the query keys, the bodies, the price range, the product type
@@ -83,6 +92,20 @@ export const NAO_LISTADO_AMAZON = 'nao-listado';
 /** What one listing read answers: the listing, or that Amazon has none. */
 export type LeituraListingNaAmazon = ListingAmazon | typeof NAO_LISTADO_AMAZON;
 
+/** One listing read, and the rate its answer carried (module header). */
+export interface LeituraComTaxaListingNaAmazon {
+  readonly leitura: LeituraListingNaAmazon;
+  /** `x-amzn-RateLimit-Limit`, requests per second; `null` when absent, or for "not listed". */
+  readonly limiteTaxa: number | null;
+}
+
+/** One offer patch's submission answer, and the rate it carried (module header). */
+export interface EnvioComTaxaListingNaAmazon {
+  readonly resposta: EnvioListingAmazon;
+  /** `x-amzn-RateLimit-Limit`, requests per second; `null` when absent. */
+  readonly limiteTaxa: number | null;
+}
+
 /** What one search answers: the listings it got, and whether the page may lack some. */
 export interface BuscaListingsNaAmazon {
   readonly itens: readonly ListingAmazon[];
@@ -114,14 +137,25 @@ export async function lerListingNaAmazon(
   contexto: ContextoDosListingsAmazon,
   entrada: EntradaLeituraListing,
 ): Promise<LeituraListingNaAmazon> {
+  return (await lerListingComTaxaNaAmazon(contexto, entrada)).leitura;
+}
+
+/**
+ * {@link lerListingNaAmazon}, plus the rate its answer carried (module header,
+ * "The rate an answer carried").
+ */
+export async function lerListingComTaxaNaAmazon(
+  contexto: ContextoDosListingsAmazon,
+  entrada: EntradaLeituraListing,
+): Promise<LeituraComTaxaListingNaAmazon> {
   try {
-    const { dados } = await executarComRenovacaoUnica(contexto, () =>
+    const { dados, limiteTaxa } = await executarComRenovacaoUnica(contexto, () =>
       lerListingAmazon(contexto.cliente, entrada),
     );
-    return dados;
+    return { leitura: dados, limiteTaxa };
   } catch (err) {
     // Rule 6: only the read's own 404 is a reading; anything else is the caller's.
-    if (ehListingAusente(err)) return NAO_LISTADO_AMAZON;
+    if (ehListingAusente(err)) return { leitura: NAO_LISTADO_AMAZON, limiteTaxa: null };
     throw err;
   }
 }
@@ -173,6 +207,17 @@ export async function enviarOfertaNaAmazon(
   escritor: SpApiEscritaClient,
   entrada: EntradaOfertaListing,
 ): Promise<EnvioListingAmazon> {
-  const { dados } = await enviarOfertaAmazon(escritor, entrada);
-  return dados;
+  return (await enviarOfertaComTaxaNaAmazon(escritor, entrada)).resposta;
+}
+
+/**
+ * {@link enviarOfertaNaAmazon}, plus the rate its answer carried (module
+ * header, "The rate an answer carried"): the price task's `escrever`.
+ */
+export async function enviarOfertaComTaxaNaAmazon(
+  escritor: SpApiEscritaClient,
+  entrada: EntradaOfertaListing,
+): Promise<EnvioComTaxaListingNaAmazon> {
+  const { dados, limiteTaxa } = await enviarOfertaAmazon(escritor, entrada);
+  return { resposta: dados, limiteTaxa };
 }

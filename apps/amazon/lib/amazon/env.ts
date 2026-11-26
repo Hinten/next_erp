@@ -68,6 +68,14 @@ export const RELAY_PREVIOUS_SECRET_ENV = 'AMAZON_RELAY_PREVIOUS_SECRET';
  */
 export const TASKS_REGION_ENV = 'AMAZON_TASKS_REGION';
 
+/**
+ * The price push's VALIDATION-PREVIEW flag (step 13, PR 13-d), read by the
+ * functions codebase only (App Hosting never sends a price): see
+ * {@link lerPrecoSoValidacaoAmazon}. A window switch, set with a canary LIST
+ * and removed once the preview is read.
+ */
+export const PRECO_SO_VALIDACAO_ENV = 'AMAZON_PRECO_SO_VALIDACAO';
+
 /** The shortest relay secret the receiver accepts (step-3 plan §3 decision 36). */
 export const MIN_SEGREDO_RELAY = 32;
 /** The longest one: a bound on the input, far above `openssl rand -hex 32`'s 64 characters. */
@@ -315,4 +323,44 @@ export function lerConfigDoReceptorAmazon(
     segredoAnterior: valor(ambiente, RELAY_PREVIOUS_SECRET_ENV),
     applicationId: presente(ambiente, APPLICATION_ID_ENV),
   };
+}
+
+/* -------------------------------------------------------------------------- */
+/*                The price preview flag (step 13, PR 13-d)                   */
+/* -------------------------------------------------------------------------- */
+
+/** How {@link PRECO_SO_VALIDACAO_ENV} read (closed). */
+export type LeituraPrecoSoValidacaoAmazon =
+  /** Exactly `1`: every price PATCH is a validation preview. */
+  | 'ligado'
+  /** Unset, or exactly `''`: off, and nothing to say. */
+  | 'ausente'
+  /** Any other value (`true`, `0`, ` 1`, spaces): off, and the caller logs it. */
+  | 'ignorado';
+
+export const LEITURA_PRECO_SO_VALIDACAO_AMAZON = {
+  ligado: 'ligado',
+  ausente: 'ausente',
+  ignorado: 'ignorado',
+} as const satisfies Record<string, LeituraPrecoSoValidacaoAmazon>;
+
+/**
+ * The preview flag, read ONCE per dispatch from `ambiente`: on for the EXACT
+ * `1` only, the queue valve's polarity (`AMAZON_TASKS_DISABLED`). Unlike this
+ * module's other reads it is NOT blank-guarded: nothing is trimmed or folded,
+ * only unset and `''` are `ausente`, and every other value is `ignorado`, which
+ * the caller logs by that token, never by the value. Off means the price
+ * PATCHes are REAL, so a value that merely looks right must never read as on
+ * without the line that says it did not.
+ */
+export function lerPrecoSoValidacaoAmazon(ambiente: AmbienteAmazon): {
+  readonly ligado: boolean;
+  readonly leitura: LeituraPrecoSoValidacaoAmazon;
+} {
+  const bruto = ambiente[PRECO_SO_VALIDACAO_ENV];
+  if (bruto === '1') return { ligado: true, leitura: LEITURA_PRECO_SO_VALIDACAO_AMAZON.ligado };
+  if (bruto === undefined || bruto === '') {
+    return { ligado: false, leitura: LEITURA_PRECO_SO_VALIDACAO_AMAZON.ausente };
+  }
+  return { ligado: false, leitura: LEITURA_PRECO_SO_VALIDACAO_AMAZON.ignorado };
 }

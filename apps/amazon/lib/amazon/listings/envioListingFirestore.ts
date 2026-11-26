@@ -21,6 +21,12 @@
  *     `updateTime`, the outcome through the link handle's partial validation,
  *     then the field's own schema. Only that field is written.
  *
+ * A binding may pass the shared decision's two price-only parameters
+ * (`envioListing.ts`: the same-send refinement and the future tolerance, the
+ * latter measured from `agoraMs`); the stock binding passes neither. A stored
+ * value the tolerance sets aside is replaced, and the call writes ONE WARNING
+ * naming how many there were (`envio-futuro-ignorado`).
+ *
  * A precondition lost (9), or the document gone since the read (5), sends that
  * document to the next attempt, which RE-READS and RE-DECIDES — never re-sends
  * the decision that lost. At most {@link MAX_TENTATIVAS_ENVIO_LISTING_AMAZON}
@@ -53,7 +59,11 @@ import { isFailedPrecondition, isNotFound } from '@delfrance/data/admin/grpcErro
 import { naoDocId } from '@delfrance/schemas';
 
 import { type LoggerAmazon, registrarEventoAmazon } from '../core/log';
-import { type EnvioComRelogioListingAmazon, decidirGravacaoEnvioListing } from './envioListing';
+import {
+  type EnvioRefinavelListingAmazon,
+  GRAVACAO_ENVIO_LISTING_AMAZON,
+  classificarGravacaoEnvioListing,
+} from './envioListing';
 import type { FluxoListingAmazon } from './fluxoListing';
 import { CAMPO_ENVIO_LISTING_AMAZON } from './vinculoListing';
 
@@ -70,8 +80,11 @@ export const ADIANTAMENTO_MAXIMO_ENVIO_LISTING_AMAZON_MS = 86_400_000;
 /** The WARNING's motivo: a document still losing its precondition after every attempt. */
 export const MOTIVO_GRAVACAO_ENVIO_LISTING_EM_CONFLITO = 'gravacao-em-conflito';
 
+/** The WARNING's motivo: a stored outcome set aside as too far in the future (module header). */
+export const MOTIVO_GRAVACAO_ENVIO_LISTING_FUTURO_IGNORADO = 'envio-futuro-ignorado';
+
 /** What the write-back reads of an outcome: its clock, and the two codes its WARNING names. */
-export interface EnvioGravavelListingAmazon extends EnvioComRelogioListingAmazon {
+export interface EnvioGravavelListingAmazon extends EnvioRefinavelListingAmazon {
   readonly via: string;
   readonly resultado: string;
 }
@@ -83,6 +96,10 @@ export interface CampoEnvioListingAmazon<E extends EnvioGravavelListingAmazon> {
   readonly schema: z.ZodType<E>;
   /** The binding's module, as its refusals name it. */
   readonly rotulo: string;
+  /** The same-send refinement (`envioListing.ts`); absent for stock. */
+  readonly refinaMesmoEnvio?: boolean;
+  /** ms — the future tolerance (`envioListing.ts`), from `agoraMs`; absent for stock. */
+  readonly futuroToleradoMs?: number;
 }
 
 /** One link doc of the SKU: the produto it sits under (from its path) and its id. */
@@ -134,6 +151,11 @@ export async function gravarEnvioListingAmazon<E extends EnvioGravavelListingAma
 ): Promise<ResultadoGravacaoEnvioListingAmazon> {
   const { envio } = entrada;
   const { fluxo, rotulo } = campoDoEnvio;
+  const parametros = {
+    refinaMesmoEnvio: campoDoEnvio.refinaMesmoEnvio,
+    futuroToleradoMs: campoDoEnvio.futuroToleradoMs,
+    agoraMs: entrada.agoraMs,
+  };
   const campo = CAMPO_ENVIO_LISTING_AMAZON[fluxo];
   if (envio.emMs - entrada.agoraMs > ADIANTAMENTO_MAXIMO_ENVIO_LISTING_AMAZON_MS) {
     throw new RangeError(`${rotulo}: emMs à frente do relógio (microssegundos no lugar de ms?)`);
@@ -156,6 +178,8 @@ export async function gravarEnvioListingAmazon<E extends EnvioGravavelListingAma
   let gravados = 0;
   let mantidos = 0;
   let ausentes = 0;
+  /** The link docs whose stored value the future tolerance set aside, each once. */
+  const futurosIgnorados = new Set<string>();
   for (
     let tentativa = 1;
     tentativa <= MAX_TENTATIVAS_ENVIO_LISTING_AMAZON && pendentes.length > 0;
@@ -176,9 +200,13 @@ export async function gravarEnvioListingAmazon<E extends EnvioGravavelListingAma
       }
       // ⚠️ Decided from THIS attempt's read, never carried over from a lost one.
       const armazenado: unknown = (snap.data() ?? {})[campo];
-      if (!decidirGravacaoEnvioListing(armazenado ?? null, envio)) {
+      const gravacao = classificarGravacaoEnvioListing(armazenado ?? null, envio, parametros);
+      if (gravacao === GRAVACAO_ENVIO_LISTING_AMAZON.manter) {
         mantidos += 1;
         continue;
+      }
+      if (gravacao === GRAVACAO_ENVIO_LISTING_AMAZON.futuroIgnorado) {
+        futurosIgnorados.add(`${link.produtoId}/${link.linkId}`);
       }
       try {
         await ref.update(patch, { lastUpdateTime: snap.updateTime });
@@ -193,6 +221,23 @@ export async function gravarEnvioListingAmazon<E extends EnvioGravavelListingAma
       }
     }
     pendentes = perdidos;
+  }
+  if (futurosIgnorados.size > 0) {
+    registrarEventoAmazon(
+      deps.logger,
+      fluxo,
+      'WARNING',
+      `[amazon] ${fluxo}: resultado guardado no futuro ignorado no vínculo`,
+      {
+        fase: 'gravacao-envio',
+        motivo: MOTIVO_GRAVACAO_ENVIO_LISTING_FUTURO_IGNORADO,
+        sku: entrada.sku,
+        via: envio.via,
+        resultado: envio.resultado,
+        vinculos: futurosIgnorados.size,
+      },
+      { conta: entrada.contaId, fluxo },
+    );
   }
   if (pendentes.length > 0) {
     registrarEventoAmazon(

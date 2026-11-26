@@ -40,7 +40,9 @@ import {
   NAO_LISTADO_AMAZON,
   buscarListingsNaAmazon,
   enviarDisponibilidadeNaAmazon,
+  enviarOfertaComTaxaNaAmazon,
   enviarOfertaNaAmazon,
+  lerListingComTaxaNaAmazon,
   lerListingNaAmazon,
 } from './listingsAmazon';
 
@@ -460,5 +462,75 @@ describe('enviarOfertaNaAmazon — the engine’s `escrever` (step 13)', () => {
     const { cliente, patch } = escritor(() => Promise.reject(recusa));
     await expect(enviarOfertaNaAmazon(cliente, entrada())).rejects.toBe(recusa);
     expect(patch).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('the rate an answer carried (step 13, PR 13-d): the price task’s two forms', () => {
+  const FAIXA = { base: 50, minimo: 45, maximo: 50 } as const;
+
+  /** A read context whose client answers `limiteTaxa`, or Amazon's 404. */
+  function contextoComTaxa(resposta: () => Promise<unknown>): ContextoDosListingsAmazon {
+    return {
+      cliente: { get: () => resposta() as never },
+      obterAcesso: () => Promise.reject(new Error('teste: nenhuma renovação')),
+    };
+  }
+
+  it('★ the GET: the listing AND x-amzn-RateLimit-Limit; NEAR-MISS: no header ⇒ null, never 0', async () => {
+    for (const [limiteTaxa, esperado] of [
+      [5, 5],
+      [null, null],
+    ] as const) {
+      const c = contextoComTaxa(() =>
+        Promise.resolve({ dados: LISTING, status: 200, requestIdAmazon: null, limiteTaxa }),
+      );
+      const r = await lerListingComTaxaNaAmazon(c, {
+        sellerId: SPID_A,
+        sku: SKU,
+        incluir: INCLUIR,
+      });
+      expect(r).toMatchObject({ leitura: { sku: SKU }, limiteTaxa: esperado });
+    }
+  });
+
+  it('★ the GET’s own 404 ⇒ "nao-listado" and no rate; the shorter form answers the listing alone', async () => {
+    const { contexto: c } = await contexto({ status: 404, corpo: erro('NOT_FOUND') });
+    await expect(
+      lerListingComTaxaNaAmazon(c, { sellerId: SPID_A, sku: SKU, incluir: INCLUIR }),
+    ).resolves.toEqual({ leitura: NAO_LISTADO_AMAZON, limiteTaxa: null });
+    const lido = contextoComTaxa(() =>
+      Promise.resolve({ dados: LISTING, status: 200, requestIdAmazon: null, limiteTaxa: 5 }),
+    );
+    await expect(
+      lerListingNaAmazon(lido, { sellerId: SPID_A, sku: SKU, incluir: INCLUIR }),
+    ).resolves.toMatchObject({ sku: SKU });
+  });
+
+  it('★ the PATCH: Amazon’s answer AND its rate, ONE PATCH; NEAR-MISS: no header ⇒ null', async () => {
+    for (const [limiteTaxa, esperado] of [
+      [2, 2],
+      [undefined, null],
+    ] as const) {
+      const patch = vi.fn(() =>
+        Promise.resolve({
+          status: 200,
+          dados: { sku: SKU, status: 'ACCEPTED', submissionId: 'sub-taxa', issues: [] },
+          correlationId: 'c',
+          limiteTaxa: limiteTaxa ?? null,
+        }),
+      );
+      const cliente = { patch } as unknown as SpApiEscritaClient;
+      const r = await enviarOfertaComTaxaNaAmazon(cliente, {
+        sellerId: SPID_A,
+        sku: SKU,
+        faixa: FAIXA,
+        tipoProduto: 'PRODUCT',
+      });
+      expect(r).toEqual({
+        resposta: { sku: SKU, status: 'ACCEPTED', submissionId: 'sub-taxa', issues: [] },
+        limiteTaxa: esperado,
+      });
+      expect(patch).toHaveBeenCalledTimes(1);
+    }
   });
 });

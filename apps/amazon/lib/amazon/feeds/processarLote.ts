@@ -1,8 +1,8 @@
 /**
  * The jobs queue's DISPATCHER (step 12a, PR 12-c): the body of
  * `processAmazonListingsJob` (`functions/src/filaLotes.ts`). ONE queue carries
- * the feed core's four tasks and the stock reconcile's page, told apart by
- * `tipo`:
+ * the feed core's four tasks, the stock reconcile's page and the price task,
+ * told apart by `tipo`:
  *
  *  - `feed-enviar` → `./enviarFeed` (build and submit one feed);
  *  - `feed-resultado` → `./resultadoFeed` (a poll rung, a wake-up, an adoption);
@@ -11,11 +11,19 @@
  *  - `reconciliacao` (step 12, PR 12-f) → the BOUND page handler
  *    (`deps.paginaReconciliacao`): the jobs root binds the stock reconcile's
  *    page, so this module imports no fluxo's own module (the seam table stays
- *    the only binding between the feed core and a fluxo).
+ *    the only binding between the feed core and a fluxo);
+ *  - `preco-sku` (step 13, PR 13-d) → the BOUND price task
+ *    (`deps.tarefaPrecoSku`), bound by the jobs root the same way. A
+ *    dispatcher built WITHOUT it refuses a price task with ONE ERROR line
+ *    (`sem-processador`) and no throw, nothing read: the same deploy would
+ *    refuse the same task on every retry.
  *
- * **P0** — the payload goes through the strict union `tarefaLoteAmazonSchema`
- * (`./tarefaLote`): an unknown `tipo`, or a known one whose fields fail their
- * grammar, is ONE ERROR line and NO throw — the same bytes would fail the same
+ * **P0** — the payload goes through the queue's whole strict union,
+ * {@link tarefaFilaLotesAmazonSchema}: the feed core's tasks and the reconcile
+ * page (`./tarefaLote`) plus the price task (`preco/tarefaPreco.ts`, a pure
+ * contract), joined HERE because the price payload takes the queue's version
+ * from `./tarefaLote`, which therefore cannot import it back without a cycle.
+ * An unknown `tipo`, or a known one whose fields fail their grammar, is ONE ERROR line and NO throw — the same bytes would fail the same
  * way on every retry, and the line names the `tipo` (when it is one it knows)
  * and the top-level FIELDS Zod blamed, never a value.
  *
@@ -32,6 +40,7 @@
  * A throw is each handler's, for the queue's retry, already sanitized.
  */
 import type { Firestore } from 'firebase-admin/firestore';
+import { z } from 'zod';
 
 import { type LoggerAmazon, registrarEventoAmazon } from '../core/log';
 import type { FluxoComLoteAmazon } from '../core/valvulas';
@@ -49,13 +58,33 @@ import {
   processarRecuperacaoFeedAmazon,
 } from './recuperarFeed';
 import { type ResultadoConsultaFeedAmazon, processarResultadoFeedAmazon } from './resultadoFeed';
+import { TIPO_TAREFA_PRECO_AMAZON, tarefaPrecoSkuAmazonSchema } from '../preco/tarefaPreco';
 import {
   TIPO_TAREFA_LOTE_AMAZON,
   type TarefaPaginaReconciliacaoAmazon,
-  type TipoTarefaLoteAmazon,
   tarefaLoteAmazonSchema,
   tipoTarefaLoteAmazonSchema,
 } from './tarefaLote';
+
+/** Every tipo the jobs queue carries (module header, P0): the feed core's, the reconcile page, the price task. */
+export const tipoTarefaFilaLotesAmazonSchema = z.enum([
+  ...tipoTarefaLoteAmazonSchema.options,
+  TIPO_TAREFA_PRECO_AMAZON.sku,
+]);
+export type TipoTarefaFilaLotesAmazon = z.infer<typeof tipoTarefaFilaLotesAmazonSchema>;
+
+/** Named members of {@link tipoTarefaFilaLotesAmazonSchema} — see `delfrance/prefer-schema-enum`. */
+export const TIPO_TAREFA_FILA_LOTES_AMAZON = {
+  ...TIPO_TAREFA_LOTE_AMAZON,
+  precoSku: TIPO_TAREFA_PRECO_AMAZON.sku,
+} as const satisfies Record<string, TipoTarefaFilaLotesAmazon>;
+
+/** Every payload the jobs queue carries (module header, P0). */
+export const tarefaFilaLotesAmazonSchema = z.discriminatedUnion('tipo', [
+  ...tarefaLoteAmazonSchema.options,
+  tarefaPrecoSkuAmazonSchema,
+]);
+export type TarefaFilaLotesAmazon = z.infer<typeof tarefaFilaLotesAmazonSchema>;
 
 /** What the bound reconcile page answers: its closed outcome, which its own line names. */
 export interface ResultadoPaginaReconciliacaoLoteAmazon {
@@ -71,6 +100,27 @@ export type ProcessadorPaginaReconciliacaoAmazon = (
   tarefa: TarefaPaginaReconciliacaoAmazon,
   deps: DepsProcessarLoteAmazon,
 ) => Promise<ResultadoPaginaReconciliacaoLoteAmazon>;
+
+/** What the bound price task answers: its closed outcome, which its own line names. */
+export interface ResultadoTarefaPrecoSkuLoteAmazon {
+  readonly acao: string;
+}
+
+/** The price task's payload, as the queue's union parsed it. */
+export type TarefaPrecoSkuLoteAmazon = Extract<
+  TarefaFilaLotesAmazon,
+  { readonly tipo: typeof TIPO_TAREFA_FILA_LOTES_AMAZON.precoSku }
+>;
+
+/**
+ * The price task, as the jobs root BINDS it: this dispatch's deps are handed
+ * through, and the root adds what only the task needs.
+ */
+export type ProcessadorTarefaPrecoSkuAmazon = (
+  db: Firestore,
+  tarefa: TarefaPrecoSkuLoteAmazon,
+  deps: DepsProcessarLoteAmazon,
+) => Promise<ResultadoTarefaPrecoSkuLoteAmazon>;
 
 /** Everything one jobs-queue dispatch needs — bound by the jobs root, doubles in the tests. */
 export interface DepsProcessarLoteAmazon {
@@ -91,6 +141,8 @@ export interface DepsProcessarLoteAmazon {
   readonly gerarCorrelationId?: () => string;
   /** The stock reconcile's page, bound by the jobs root (module header). */
   readonly paginaReconciliacao: ProcessadorPaginaReconciliacaoAmazon;
+  /** The price task, bound by the jobs root; absent ⇒ `sem-processador` (module header). */
+  readonly tarefaPrecoSku?: ProcessadorTarefaPrecoSkuAmazon;
 }
 
 /** P0's refusals (closed). */
@@ -99,6 +151,8 @@ export const RECUSA_DO_LOTE = {
   tipoDesconhecido: 'tipo-desconhecido',
   /** A known `tipo` whose fields fail their grammar. */
   payloadInvalido: 'payload-invalido',
+  /** A valid price task, and no price task bound (module header). */
+  semProcessador: 'sem-processador',
 } as const;
 export type RecusaDoLoteAmazon = (typeof RECUSA_DO_LOTE)[keyof typeof RECUSA_DO_LOTE];
 
@@ -121,13 +175,35 @@ export type DespachoLoteAmazon =
   | {
       readonly tipo: typeof TIPO_TAREFA_LOTE_AMAZON.reconciliacao;
       readonly r: ResultadoPaginaReconciliacaoLoteAmazon;
+    }
+  | {
+      readonly tipo: typeof TIPO_TAREFA_FILA_LOTES_AMAZON.precoSku;
+      readonly r: ResultadoTarefaPrecoSkuLoteAmazon;
     };
 
 /** The `tipo` a refused payload claims, when it is one this queue knows. */
-function tipoDeclarado(dados: unknown): TipoTarefaLoteAmazon | null {
+function tipoDeclarado(dados: unknown): TipoTarefaFilaLotesAmazon | null {
   const tipo = (dados as { readonly tipo?: unknown } | null)?.tipo;
-  const lido = tipoTarefaLoteAmazonSchema.safeParse(tipo);
+  const lido = tipoTarefaFilaLotesAmazonSchema.safeParse(tipo);
   return lido.success ? lido.data : null;
+}
+
+/** P0's ONE ERROR line (module header): the `tipo` and the FIELDS, never a value. */
+function registrarRecusa(
+  deps: DepsProcessarLoteAmazon,
+  recusa: RecusaDoLoteAmazon,
+  tipo: TipoTarefaFilaLotesAmazon | null,
+  campos: readonly string[],
+): { readonly tipo: null; readonly recusa: RecusaDoLoteAmazon } {
+  registrarEventoAmazon(
+    deps.logger,
+    'feed',
+    'ERROR',
+    `[amazon] fila de lotes: payload recusado (${recusa})`,
+    { fase: 'despacho', recusa, tipo, campos: campos.join(',') },
+    { tentativa: deps.registro.tentativa, idTarefa: deps.registro.idTarefa },
+  );
+  return { tipo: null, recusa };
 }
 
 /**
@@ -140,20 +216,12 @@ export async function processarLoteAmazon(
   deps: DepsProcessarLoteAmazon,
 ): Promise<DespachoLoteAmazon> {
   // ---- P0: the payload. ----
-  const lido = tarefaLoteAmazonSchema.safeParse(dados);
+  const lido = tarefaFilaLotesAmazonSchema.safeParse(dados);
   if (!lido.success) {
     const tipo = tipoDeclarado(dados);
     const recusa = tipo === null ? RECUSA_DO_LOTE.tipoDesconhecido : RECUSA_DO_LOTE.payloadInvalido;
     const campos = [...new Set(lido.error.issues.map((i) => String(i.path[0] ?? '(raiz)')))].sort();
-    registrarEventoAmazon(
-      deps.logger,
-      'feed',
-      'ERROR',
-      `[amazon] fila de lotes: payload recusado (${recusa})`,
-      { fase: 'despacho', recusa, tipo, campos: campos.join(',') },
-      { tentativa: deps.registro.tentativa, idTarefa: deps.registro.idTarefa },
-    );
-    return { tipo: null, recusa };
+    return registrarRecusa(deps, recusa, tipo, campos);
   }
 
   const t = lido.data;
@@ -194,5 +262,12 @@ export async function processarLoteAmazon(
       };
     case TIPO_TAREFA_LOTE_AMAZON.reconciliacao:
       return { tipo: t.tipo, r: await deps.paginaReconciliacao(db, t, deps) };
+    case TIPO_TAREFA_FILA_LOTES_AMAZON.precoSku: {
+      const tarefaPreco = deps.tarefaPrecoSku;
+      if (tarefaPreco === undefined) {
+        return registrarRecusa(deps, RECUSA_DO_LOTE.semProcessador, t.tipo, []);
+      }
+      return { tipo: t.tipo, r: await tarefaPreco(db, t, deps) };
+    }
   }
 }

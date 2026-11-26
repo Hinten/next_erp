@@ -164,6 +164,10 @@ runConfig:
 #   AMAZON_CANARIO_PRECO         The price canary list. Same form as stock.
 #   AMAZON_CANARIO_NFE           The NF-e canary list: `<contaId>:<orderId>` entries.
 #   AMAZON_CANARIO_AGENDAMENTO   The scheduling canary list. Same form as the NF-e.
+#   AMAZON_PRECO_SO_VALIDACAO    NOT read by this backend: the price task's
+#                                validation-preview flag (step 13) is FUNCTIONS
+#                                ONLY (`functions/DEPLOY.md`). Listed so nobody
+#                                sets it here expecting an effect.
 #
 # The Secret Manager values are NOT committed anywhere: the root secrets
 # template lists their names blank, and the rollout that creates the backend

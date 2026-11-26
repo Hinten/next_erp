@@ -34,6 +34,7 @@ import {
   type LinkDoEnvioListingAmazon,
   MAX_TENTATIVAS_ENVIO_LISTING_AMAZON,
   MOTIVO_GRAVACAO_ENVIO_LISTING_EM_CONFLITO,
+  MOTIVO_GRAVACAO_ENVIO_LISTING_FUTURO_IGNORADO,
   gravarEnvioListingAmazon,
 } from './envioListingFirestore';
 import { FLUXO_LISTING_AMAZON } from './fluxoListing';
@@ -352,5 +353,85 @@ describe('the stock binding binds the shared constants', () => {
     // The stock module's window bound and this guard are one 24-hour figure.
     expect(ADIANTAMENTO_MAXIMO_ENVIO_LISTING_AMAZON_MS).toBe(ADIANTAMENTO_MAXIMO_MS);
     expect(CAMPO_ENVIO_ESTOQUE_AMAZON).toBe(CAMPO_ENVIO_LISTING_AMAZON.estoque);
+  });
+});
+
+describe('★ the two price parameters through the loop (step 13, PR 13-d)', () => {
+  const MINUTO = 60_000;
+  /** The test price binding with the two parameters on. */
+  const PRECO_COM_PARAMETROS: CampoEnvioListingAmazon<EnvioDeTeste> = {
+    ...PRECO,
+    refinaMesmoEnvio: true,
+    futuroToleradoMs: 5 * MINUTO,
+  };
+  const gravarComParametros = (envio: EnvioDeTeste, links = [L1]) =>
+    gravarEnvioListingAmazon(
+      asDb(db),
+      PRECO_COM_PARAMETROS,
+      { contaId: CONTA, sku: SKU, links, envio, agoraMs: AGORA },
+      { logger: espiao.logger },
+    );
+
+  it('★ a stored outcome 10 min in the future is overwritten, with ONE warning naming how many; NEAR-MISS: 4 min ahead is kept, no warning', async () => {
+    vinculo(L1, teste(AGORA + 10 * MINUTO, 3));
+    vinculo(L2, teste(AGORA + 10 * MINUTO, 3));
+    const r = await gravarComParametros(teste(AGORA, 7), [L1, L2]);
+    expect(r).toMatchObject({ gravados: 2, mantidos: 0 });
+    expect(espiao.linhas).toHaveLength(1);
+    expect(espiao.linhas[0]).toMatchObject({
+      nivel: 'warn',
+      meta: {
+        evento: 'preco',
+        fase: 'gravacao-envio',
+        motivo: MOTIVO_GRAVACAO_ENVIO_LISTING_FUTURO_IGNORADO,
+        sku: SKU,
+        vinculos: 2,
+      },
+    });
+
+    espiao = loggerEspiao();
+    db = new FakeDb();
+    db.exigirMascaraEm('prodAmazon');
+    vinculo(L1, teste(AGORA + 4 * MINUTO, 3));
+    const perto = await gravarComParametros(teste(AGORA, 7));
+    expect(perto).toMatchObject({ gravados: 0, mantidos: 1 });
+    expect(espiao.linhas).toEqual([]);
+  });
+
+  it('★ the same send is refined in place (its own emMs and submissionId); NEAR-MISS: without the parameter it is kept', async () => {
+    const guardado = teste(AGORA, 7);
+    const refino: EnvioDeTeste = {
+      ...guardado,
+      resultado: RESULTADO_ENVIO_ESTOQUE_AMAZON.recusado,
+    };
+    vinculo(L1, guardado);
+    expect((await gravarPreco(refino)).gravados).toBe(0);
+    expect(db.ler(caminho(L1))?.envioPrecoAmazon).toEqual(guardado);
+    expect((await gravarComParametros(refino)).gravados).toBe(1);
+    expect(db.ler(caminho(L1))?.envioPrecoAmazon).toEqual(refino);
+    expect(espiao.linhas).toEqual([]);
+  });
+
+  it('★ NEAR-MISS: the stock binding (no parameter) keeps a stock outcome 10 min in the future — stock unchanged', async () => {
+    const futuro = envioDoPatch(
+      { status: 'ACCEPTED', submissionId: 'sub-f' },
+      AGORA + 10 * MINUTO,
+      4,
+    );
+    db.seed(caminho(L1), { sku: SKU, envioEstoqueAmazon: futuro });
+    const r = await gravarEnvioEstoqueAmazon(
+      asDb(db),
+      {
+        contaId: CONTA,
+        sku: SKU,
+        links: [L1],
+        envio: envioDoPatch({ status: 'ACCEPTED', submissionId: 'sub-n' }, AGORA, 9),
+        agoraMs: AGORA,
+      },
+      { logger: espiao.logger },
+    );
+    expect(r).toMatchObject({ gravados: 0, mantidos: 1 });
+    expect(db.ler(caminho(L1))?.envioEstoqueAmazon).toEqual(futuro);
+    expect(espiao.linhas).toEqual([]);
   });
 });

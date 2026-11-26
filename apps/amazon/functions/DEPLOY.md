@@ -113,6 +113,16 @@ same stock root. Its one other producer is the App Hosting push receiver: a
 `FEED_PROCESSING_FINISHED` of THIS application's own `JSON_LISTINGS_FEED` becomes
 ONE named wake-up of the result handler (below).
 
+⚠️ **Price tasks ride this same handler** (master-plan step 13, PR 13-d): a
+`preco-sku` task sends ONE SKU's offer (`lib/amazon/preco/processarPreco.ts`),
+computed when it runs. No new function, no new queue and no new grant: its own
+producer (`src/agendadorEstoque.ts`) enqueues onto `processAmazonListingsJob`'s
+path. It reads the price valve `AMAZON_MODO_PRECO` FIRST (`off` ⇒ ZERO
+Firestore reads); a PATCH also needs the read switch and a hit of
+`AMAZON_CANARIO_PRECO`, and the preview flag below makes it a validation only.
+Until something enqueues one (the price routes come later), the handler holds
+the binding and nothing runs.
+
 ⚠️ **The stock queue has its own switch too** (master-plan step 12, PR 12-e1).
 `processAmazonStockPatch` sends ONE `patchListingsItem` of a SKU's available
 quantity, computed when the task runs and compared with Amazon's live listing
@@ -452,7 +462,11 @@ maxDispatchesPerSecond: 1 }` — concurrency 1 orders this queue's avisos and
   the uncertain wait, the recoveries, a turned-away batch's wait) and by the App
   Hosting push receiver's `FEED_PROCESSING_FINISHED` wake-up (the App Hosting
   runtime SA). Writes `feedsAmazon` (the record) and `feedsAmazonEmCurso` (the
-  lease), both Admin-only, plus avisos through the shared seam.
+  lease), both Admin-only, plus avisos through the shared seam. Since step 13
+  (PR 13-d) it also dispatches `preco-sku`, the price task (P0–P11: the price
+  valve first, ONE live read, at most ONE offer PATCH after a write-ahead
+  `incerto` record, the outcome `envioPrecoAmazon` on the link docs, ONE check
+  900 s later), whose own enqueues come back through `src/agendadorEstoque.ts`.
 - **`processAmazonStockPatch`** — `onTaskDispatched` (Cloud Tasks queue),
   master-plan step 12 (PR 12-e1): ONE SKU of one conta per task, identities
   only (`lib/amazon/estoque/processarEstoque.ts`, P0–P10): the stock valve read
@@ -738,7 +752,10 @@ below stays COMMENTED OUT until the window:**
 # daily reconcile and the stock feed's recoveries enqueue the stock ones. Since
 # step 12 the stock pair is ALSO read by `processAmazonStockPatch` on every
 # dispatch, FIRST (the valve line; `off` reads nothing else), its canary keyed
-# `<contaId>:<sku>`; a feed still needs the list exactly `*`. The stock VALVE
+# `<contaId>:<sku>`; a feed still needs the list exactly `*`. Since step 13 the
+# price pair is ALSO read by `processAmazonListingsJob`'s price task
+# (`preco-sku`) on every dispatch, FIRST (`off` reads nothing else), its canary
+# keyed `<contaId>:<sku>`. The stock VALVE
 # also gates the five-minute stock tick `sweepAmazonStock` (PR 12-e2), the
 # daily reconcile `reconcileAmazonStock` and each stock feed recovery (PR 12-f),
 # before any read: `off` (and so unset or unrecognised) reads nothing; `dry-run`
@@ -758,6 +775,16 @@ below stays COMMENTED OUT until the window:**
 # AMAZON_CANARIO_PRECO=
 # AMAZON_CANARIO_NFE=
 # AMAZON_CANARIO_AGENDAMENTO=
+# The price task's VALIDATION-PREVIEW flag (step 13; FUNCTIONS ONLY: App Hosting
+# never reads it). Exactly `1` turns every price PATCH into a
+# `VALIDATION_PREVIEW`: Amazon validates it and persists nothing, and the task
+# writes no outcome and enqueues no check. With `on` + `*` it reads `dry-run`
+# (ERROR `validacao-com-todos`: a feed has no preview), so set it ONLY with a
+# canary LIST, never with `*`. Anything else is off — the PATCH is then REAL —
+# and a set value other than `1` (`true`, `0`, spaces) writes one WARNING per
+# price task: check the dispatch line's `previa`. Set only in the migration
+# window, and REMOVED (a redeploy) once the preview is read.
+# AMAZON_PRECO_SO_VALIDACAO=1
 ```
 
 ⚠️ The scheduled functions are deployed either way — a variable only decides

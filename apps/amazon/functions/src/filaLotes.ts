@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { FieldValue } from 'firebase-admin/firestore';
 import { onTaskDispatched } from 'firebase-functions/v2/tasks';
 
+import { loadAmazonContext } from '../../lib/amazon/core/contexto';
 import { LOGGER_STDOUT_AMAZON } from '../../lib/amazon/core/log';
 import { type AmbienteAmazon, LWA_CLIENT_SECRET_ENV } from '../../lib/amazon/env';
 import { processarPaginaReconciliacaoEstoqueAmazon } from '../../lib/amazon/estoque/reconciliacaoEstoque';
@@ -16,12 +17,18 @@ import type { RegistroLoteAmazon } from '../../lib/amazon/feeds/incertoFeed';
 import {
   type DepsProcessarLoteAmazon,
   type ProcessadorPaginaReconciliacaoAmazon,
+  type ProcessadorTarefaPrecoSkuAmazon,
   processarLoteAmazon,
 } from '../../lib/amazon/feeds/processarLote';
 import { sanitizarFalhaDaTarefaAmazon } from '../../lib/amazon/notificacoes/notificacao';
 import {
+  processarPrecoSkuAmazon,
+  soValidacaoDoDespachoPrecoAmazon,
+} from '../../lib/amazon/preco/processarPreco';
+import {
   criarAgendadorLotesAmazonDoAmbiente,
   criarProdutorEstoqueAmazonDoAmbiente,
+  criarProdutorPrecoAmazonDoAmbiente,
 } from './agendadorEstoque';
 import { getDb } from './lib/admin';
 import { tasksInvokerOptions } from './tasksInvoker';
@@ -119,6 +126,30 @@ export const PAGINA_RECONCILIACAO_AMAZON: ProcessadorPaginaReconciliacaoAmazon =
   });
 
 /**
+ * The price task (step 13, PR 13-d), BOUND: ONE `preco-sku` dispatch of THIS
+ * queue, the dispatch's own deps handed through, plus what only the task
+ * needs — the context loader, the price producer from the stock root (a
+ * THUNK, onto this queue's own path: a task that enqueues nothing builds
+ * none) and the preview flag, read from the dispatch's own environment
+ * (`soValidacaoDoDespachoPrecoAmazon`: exactly `1`, else off with a WARNING
+ * when set). Price rides this function: no new queue, root or grant.
+ */
+export const TAREFA_PRECO_SKU_AMAZON: ProcessadorTarefaPrecoSkuAmazon = (db, tarefa, deps) =>
+  processarPrecoSkuAmazon(tarefa, {
+    db,
+    ambiente: deps.ambiente,
+    agora: deps.agora,
+    logger: deps.logger,
+    increment: deps.increment,
+    carregarContexto: loadAmazonContext,
+    produtor: criarProdutorPrecoAmazonDoAmbiente,
+    soValidacao: soValidacaoDoDespachoPrecoAmazon(deps.ambiente, deps.logger, deps.registro),
+    registro: deps.registro,
+    fetch: deps.fetch,
+    gerarCorrelationId: deps.gerarCorrelationId,
+  });
+
+/**
  * The dependencies of ONE jobs-queue dispatch, bound to the runtime — the one
  * place this codebase binds them:
  *
@@ -140,6 +171,8 @@ export const PAGINA_RECONCILIACAO_AMAZON: ProcessadorPaginaReconciliacaoAmazon =
  *   `console.*`.
  * - `paginaReconciliacao`: the stock reconcile's page, BOUND
  *   ({@link PAGINA_RECONCILIACAO_AMAZON}).
+ * - `tarefaPrecoSku` (step 13, PR 13-d): the price task, BOUND
+ *   ({@link TAREFA_PRECO_SKU_AMAZON}).
  */
 export function depsDosLotesAmazon(registro: RegistroLoteAmazon): DepsProcessarLoteAmazon {
   return {
@@ -152,6 +185,7 @@ export function depsDosLotesAmazon(registro: RegistroLoteAmazon): DepsProcessarL
     registro,
     fetch: (input, init) => globalThis.fetch(input, init),
     paginaReconciliacao: PAGINA_RECONCILIACAO_AMAZON,
+    tarefaPrecoSku: TAREFA_PRECO_SKU_AMAZON,
   };
 }
 
@@ -166,6 +200,9 @@ export function depsDosLotesAmazon(registro: RegistroLoteAmazon): DepsProcessarL
  * the functions runtime SA), the seam's providers (through the same root: the
  * stock row since PR 12-f) and the push receiver's `FEED_PROCESSING_FINISHED`
  * wake-up (through `lib/firebase/filaLeitura.ts`, the App Hosting runtime SA).
+ * Since step 13 (PR 13-d) it also carries the PRICE task (`preco-sku`, one
+ * SKU's offer, {@link TAREFA_PRECO_SKU_AMAZON}), whose own check, wait and
+ * pause come back through the stock root: price has no queue of its own.
  *
  * ⚠️ The export name IS the deployed function AND queue name, and it must equal
  * `FILA_LOTES_AMAZON` — the producers target that string. `index.ts` asserts

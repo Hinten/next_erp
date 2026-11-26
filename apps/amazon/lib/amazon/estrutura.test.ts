@@ -201,6 +201,16 @@
  *    reachable, and the manual push guards scan the read as part of that
  *    push), and the union walk reaches none of it; and the `publicado` and
  *    `integracoesComProduto` guards of `estoque/` scan `listings/` too.
+ *  - (step 13, PRs 13-c, 13-d) `preco/` reaches nothing of `estoque/`, and every
+ *    production module of it is PURE ({@link PRECO_PUROS}, held to its own
+ *    allow-list) or I/O ({@link E_S_EM_PRECO}, each loading EXACTLY its listed
+ *    modules as values) — exactly one; no module of it makes a Firestore write
+ *    call (the task writes through the shared write-back and the aviso
+ *    raiser); every price comparison lives in `preco/planoPreco.ts`; it is
+ *    imported by exactly {@link IMPORTADORES_DE_PRECO}; the write engine's
+ *    single-target entry gains the price task as its fourth caller; and the App
+ *    Hosting forbidden list {@link MODULOS_DE_PRECO_FORA_DO_APP_HOSTING} is
+ *    derived from the I/O roster (the producer stays reachable).
  */
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, posix, relative, sep } from 'node:path';
@@ -1090,6 +1100,15 @@ const MODULOS_DE_LISTINGS_FORA_DO_APP_HOSTING = [
   'lib/amazon/listings/escritaListing.ts',
 ];
 
+/**
+ * (step 13, PR 13-d) The price flow's WIRING, none of which an App Hosting
+ * entry needs: the price task (its reads, the write engine, the write-back).
+ * The producer (`preco/produtorPreco.ts`) stays allowed: a route enqueues
+ * through it. A test derives this list from the I/O roster {@link E_S_EM_PRECO},
+ * so a new I/O module of `preco/` reds until it is listed here.
+ */
+const MODULOS_DE_PRECO_FORA_DO_APP_HOSTING = ['lib/amazon/preco/processarPreco.ts'];
+
 /** The manual stock push route (step 12, PR 12-g), relative to the APP root: a union-walk entry. */
 const ROTA_ENVIO_MANUAL_ESTOQUE = 'app/api/marketplace/amazon/enviar-estoque/route.ts';
 
@@ -1148,7 +1167,8 @@ const MOTOR_DE_ESCRITA = 'lib/amazon/core/escrita.ts';
  * stock flow's wiring ({@link MODULOS_DE_ESTOQUE_FORA_DO_APP_HOSTING}), which
  * since the tick (PR 12-e2) holds the tick, its window reads and the recovery
  * delta too; and since step 13 (PR 13-b) the shared listings wiring
- * ({@link MODULOS_DE_LISTINGS_FORA_DO_APP_HOSTING}).
+ * ({@link MODULOS_DE_LISTINGS_FORA_DO_APP_HOSTING}), and (PR 13-d) the price
+ * wiring ({@link MODULOS_DE_PRECO_FORA_DO_APP_HOSTING}).
  */
 const PROIBIDOS_NO_APP_HOSTING = [
   SEAM_DO_IMPORTADOR,
@@ -1161,6 +1181,7 @@ const PROIBIDOS_NO_APP_HOSTING = [
   ...MODULOS_DE_FEED_FORA_DO_APP_HOSTING,
   ...MODULOS_DE_ESTOQUE_FORA_DO_APP_HOSTING,
   ...MODULOS_DE_LISTINGS_FORA_DO_APP_HOSTING,
+  ...MODULOS_DE_PRECO_FORA_DO_APP_HOSTING,
 ];
 
 /**
@@ -1430,12 +1451,13 @@ const ORDER_IDS_DA_NFE = 'lib/amazon/pedidos/orderIds.ts';
 /**
  * The ONLY production callers of the write engine: one per write flow (step-15
  * plan §3 decision 13) — the scheduling run, the stock patch task (step 12, PR
- * 12-e1) and the NF-e task.
+ * 12-e1), the NF-e task and the price task (step 13, PR 13-d).
  */
 const CHAMADORES_DO_MOTOR_DE_ESCRITA = [
   'lib/amazon/agendamento/executarAgendamento.ts',
   'lib/amazon/estoque/processarEstoque.ts',
   'lib/amazon/nfe/processarNfe.ts',
+  'lib/amazon/preco/processarPreco.ts',
 ];
 
 /**
@@ -1450,7 +1472,7 @@ const chamaOMotorDeEscrita = (texto: string) =>
 
 /**
  * The production files that may NAME the write engine at all: its own module
- * (the declaration) and its three callers. The NAME scan fails closed where the
+ * (the declaration) and its four callers. The NAME scan fails closed where the
  * call scan cannot: an aliased import (`executarEscritaAmazon as motor`), a
  * bound reference or a re-export runs the engine under another name, and only
  * the name gives it away.
@@ -3127,7 +3149,7 @@ describe('the step-15 Easy Ship scheduling guards (15-b)', () => {
 
   // An app-wide parse: CI headroom, not a budget.
   it(
-    `★ (2) the write engine is CALLED by exactly three production files, one per write flow, and NAMED by no other: ${CHAMADORES_DO_MOTOR_DE_ESCRITA.join(', ')}`,
+    `★ (2) the write engine is CALLED by exactly four production files, one per write flow, and NAMED by no other: ${CHAMADORES_DO_MOTOR_DE_ESCRITA.join(', ')}`,
     { timeout: 30_000 },
     () => {
       const fontes = fontesDoChamadorDeSearchOrders();
@@ -3663,6 +3685,7 @@ describe('the step-12a feed core guards (12-b, 12-c)', () => {
         'lib/amazon/agendamento/executarAgendamento.ts',
         'lib/amazon/estoque/processarEstoque.ts',
         'lib/amazon/nfe/processarNfe.ts',
+        'lib/amazon/preco/processarPreco.ts',
       ]);
       // Anti-vacuity: the engine declares the entry and does not call it; the
       // scan read the functions codebase and the scripts.
@@ -5350,14 +5373,14 @@ describe('the step-12 reconcile guards (12-f)', () => {
 /* ------------------------- step 13 (PR 13-c): the price core ------------------------- */
 
 /**
- * (step 13, PR 13-c) What a production file under `preco/` may load AS A
- * VALUE: its siblings, the schemas, the SP-API package (constants, the pure
- * builders and the offer reader; no client), the money helpers (the centavo),
- * `zod` (the payloads), the task names' digest, the LIGHT valve module, the
- * jobs-queue contract (its version and the batch caps) and the PURE shared
- * listings modules. No Firestore handle, no context, no logger, no producer
- * and nothing of `estoque/`: every module of `preco/` is pure until a later
- * PR wires one.
+ * (step 13, PR 13-c) What a PURE production file under `preco/`
+ * ({@link PRECO_PUROS}) may load AS A VALUE: its siblings, the schemas, the
+ * SP-API package (constants, the pure builders and the offer reader; no
+ * client), the money helpers (the centavo), `zod` (the payloads), the task
+ * names' digest, the LIGHT valve module, the jobs-queue contract (its version
+ * and the batch caps) and the PURE shared listings modules. No Firestore
+ * handle, no context, no logger, no producer and nothing of `estoque/`. Since
+ * PR 13-d the task and its producer are the I/O half ({@link E_S_EM_PRECO}).
  */
 const VALORES_PERMITIDOS_EM_PRECO = [
   '@delfrance/schemas',
@@ -5435,11 +5458,109 @@ const COMPARACAO_DE_PRECO =
   /\.(?:base|minimo|maximo|referencia)\b\)*\s*(?:===|!==|==(?!=)|!=(?!=)|<=|>=|<(?!=)|>(?!=))(?!\s*(?:null|undefined)\b)|(?<!\b(?:null|undefined)\s*)(?:===|!==|==(?!=)|!=(?!=)|<=|>=|[^=<>\s-]\s*<(?!=)|[^=<>\s-]\s*>(?!=))[\s(]*[A-Za-z_$][\w$.?]*\.(?:base|minimo|maximo|referencia)\b/;
 
 /**
- * (step 13, PR 13-c) Every production file OUTSIDE `preco/` that imports it:
- * none. The price core is declared and proved, never wired: the task, the run,
- * the feed provider and the routes come in later PRs, each adding its row.
+ * (step 13, PR 13-c; PR 13-d) Every production file OUTSIDE `preco/` that
+ * imports it, with what. PR 13-c had none; PR 13-d wires the price task onto
+ * the jobs queue, and nothing else: the dispatcher parses the payload contract
+ * (the queue's whole union), the jobs root binds the task, and the stock root
+ * binds the producer onto the jobs queue's path. The run, the feed provider
+ * and the routes come in later PRs, each adding its row.
  */
-const IMPORTADORES_DE_PRECO: Readonly<Record<string, readonly string[]>> = {};
+const IMPORTADORES_DE_PRECO: Readonly<Record<string, readonly string[]>> = {
+  'functions/src/agendadorEstoque.ts': [
+    '../../lib/amazon/preco/produtorPreco',
+    '../../lib/amazon/preco/tarefaPreco',
+  ],
+  'functions/src/filaLotes.ts': ['../../lib/amazon/preco/processarPreco'],
+  'lib/amazon/feeds/processarLote.ts': ['../preco/tarefaPreco'],
+};
+
+/** (step 13, PR 13-c) The PURE modules of `preco/`, held to {@link VALORES_PERMITIDOS_EM_PRECO}. */
+const PRECO_PUROS = [
+  'preco/issuesPreco.ts',
+  'preco/modoPreco.ts',
+  'preco/motivosPreco.ts',
+  'preco/paginaPreco.ts',
+  'preco/planoPreco.ts',
+  'preco/tarefaPreco.ts',
+];
+
+/**
+ * (step 13, PR 13-d) The I/O half of `preco/`: each module that is not one of
+ * {@link PRECO_PUROS}, with EXACTLY the non-sibling modules it loads AS A
+ * VALUE, and why. Every production file of `preco/` is in exactly one of the
+ * two, so a new module is either held to the pure allow-list or listed here;
+ * and every module listed here is on the App Hosting forbidden list
+ * ({@link MODULOS_DE_PRECO_FORA_DO_APP_HOSTING}, derived from this roster)
+ * unless {@link PRECO_NO_APP_HOSTING} names it.
+ *
+ * - `processarPreco.ts` — the price task: the run, part, lease and conta
+ *   handles (masked by-id reads), the schemas (the faixa, the tabela parse,
+ *   the outcome), the SP-API package (the offer reader, the error classes),
+ *   the aviso raiser, the write engine, the logger, the redactor's code
+ *   grammar, the valves, the preview flag's reader, the jobs producer's
+ *   classes, the lease classifier, the shared listings wiring (the resolver,
+ *   the verdict, the gate, the watermark's reading, the write-back, the task
+ *   rungs, the one listings caller) and the read-failure ladder.
+ * - `produtorPreco.ts` — the producer: the jobs queue's valve class and delay
+ *   cap, and the shared producer core.
+ */
+const E_S_EM_PRECO: Readonly<Record<string, readonly string[]>> = {
+  'preco/processarPreco.ts': [
+    '../avisos/avisos',
+    '../core/escrita',
+    '../core/log',
+    '../core/redacao',
+    '../core/valvulas',
+    '../env',
+    '../feeds/agendadorLotes',
+    '../feeds/vezFeed',
+    '../listings/envioListing',
+    '../listings/envioListingFirestore',
+    '../listings/escritaListing',
+    '../listings/fluxoListing',
+    '../listings/gateListing',
+    '../listings/listingsAmazon',
+    '../listings/resolverVinculo',
+    '../listings/vinculoListing',
+    '../pedidos/falhaLeituraAmazon',
+    '@delfrance/data/admin/collections',
+    '@delfrance/integrations-amazon-sp-api',
+    '@delfrance/schemas',
+  ],
+  'preco/produtorPreco.ts': ['../feeds/agendadorLotes', '../listings/produtorListing'],
+};
+
+/**
+ * (step 13, PR 13-d) The I/O modules of `preco/` an App Hosting entry may
+ * reach: the producer (it reads nothing; a route enqueues price tasks through
+ * it).
+ */
+const PRECO_NO_APP_HOSTING = ['preco/produtorPreco.ts'];
+
+/**
+ * (step 13, PR 13-d) The Firestore collection handles the price task names,
+ * each to build a by-id ref it only READS (a masked `getAll`): its writes go
+ * through the shared write-back and the aviso raiser alone.
+ */
+const HANDLES_LIDOS_EM_PRECO = [
+  'divergenciaPrecoAmazonCollection',
+  'integracaoCollection',
+  'precoAmazonCollection',
+  'vezFeedAmazonCollection',
+];
+
+/**
+ * Each use of a handle that is not `<handle>.docRef(`, in comment-free code:
+ * the import declarations are taken out first, so a handle passed as an
+ * argument, spread, or named in an object literal is a use like any other.
+ */
+function usosDeHandleForaDeRef(codigo: string, handle: string): string[] {
+  const semImportacoes = codigo.replace(/^\s*import\b[^;]*?\bfrom\s*(['"])[^'"]*\1\s*;/gm, '');
+  const usos = [
+    ...semImportacoes.matchAll(new RegExp(`\\b${handle}\\b(?!\\s*\\.\\s*docRef\\s*\\()`, 'g')),
+  ];
+  return usos.map((m) => `${handle}@${String(m.index)}`);
+}
 
 /** A specifier that lands under `lib/amazon/preco/`, by any relative path or the `@/` alias. */
 const IMPORTA_PRECO = /(?:^|\/)amazon\/preco\/|^\.\.?\/(?:\.\.\/)*preco\//;
@@ -5454,6 +5575,8 @@ describe('the step-13 price core guards (13-c)', () => {
       'preco/motivosPreco.ts',
       'preco/paginaPreco.ts',
       'preco/planoPreco.ts',
+      'preco/processarPreco.ts',
+      'preco/produtorPreco.ts',
       'preco/tarefaPreco.ts',
     ]);
     for (const arquivo of preco) {
@@ -5468,10 +5591,12 @@ describe('the step-13 price core guards (13-c)', () => {
     }
   });
 
-  it('★ preco/ is PURE, whole: every module loads only the allow-list (by type too), names only the digest from the data barrel, and makes no Firestore write', () => {
+  it('★ preco/’s PURE half loads only the allow-list (by type too) and names only the digest from the data barrel; NO module of preco/ makes a Firestore write call', () => {
     for (const arquivo of preco) {
       const texto = readFileSync(arquivo, 'utf8');
-      expect(foraDoPuroEmPreco(texto), rel(arquivo)).toEqual([]);
+      if (PRECO_PUROS.includes(rel(arquivo))) {
+        expect(foraDoPuroEmPreco(texto), rel(arquivo)).toEqual([]);
+      }
       expect(semComentarios(texto).match(ESCRITA_FIRESTORE_EM_FEEDS), rel(arquivo)).toBeNull();
     }
     // Anti-vacuity: the scan reads real imports — the payloads' digest, the centavo.
@@ -5544,7 +5669,7 @@ describe('the step-13 price core guards (13-c)', () => {
         .map(relApp),
     ).toEqual(['lib/amazon/preco/planoPreco.ts']);
     const outros = preco.filter((p) => rel(p) !== 'preco/planoPreco.ts');
-    expect(outros).toHaveLength(5);
+    expect(outros).toHaveLength(7);
     for (const arquivo of outros) {
       const texto = readFileSync(arquivo, 'utf8');
       expect(especificadores(texto), rel(arquivo)).not.toContain('@delfrance/core/money');
@@ -5588,7 +5713,7 @@ describe('the step-13 price core guards (13-c)', () => {
     }
   });
 
-  it('★ preco/ is wired by NOTHING yet — all of lib, app, functions and scripts — and the feed core never imports it (the price message cap sits beside the block cap)', () => {
+  it('★ preco/ is imported by exactly IMPORTADORES_DE_PRECO — the dispatcher (the payload), the jobs root (the task), the stock root (the producer) — across all of lib, app, functions and scripts (the price message cap sits beside the block cap)', () => {
     const fora = [
       ...fontesDoChamadorDeSearchOrders(),
       ...arquivosTs(join(RAIZ_APP, 'lib')).filter(
@@ -5621,7 +5746,146 @@ describe('the step-13 price core guards (13-c)', () => {
     );
     expect(IMPORTA_PRECO.test('../preco/planoPreco')).toBe(true);
     expect(IMPORTA_PRECO.test('@/lib/amazon/preco/tarefaPreco')).toBe(true);
+    expect(IMPORTA_PRECO.test('../../lib/amazon/preco/processarPreco')).toBe(true);
     expect(IMPORTA_PRECO.test('../precos/x')).toBe(false);
+    // (13-d) The feed core still never imports it: only the dispatcher, for the payload.
+    expect(
+      Object.keys(importadores).filter(
+        (a) => a.startsWith('lib/amazon/feeds/') && a !== 'lib/amazon/feeds/processarLote.ts',
+      ),
+    ).toEqual([]);
+  });
+
+  it('★ (13-d) preco/ is partitioned: every production module is PURE or on the I/O roster — exactly one — and each I/O module loads EXACTLY its listed modules as values', () => {
+    const arquivos = preco.map(rel);
+    const classes = arquivos
+      .map((a) => [a, [PRECO_PUROS.includes(a), a in E_S_EM_PRECO].filter(Boolean).length] as const)
+      .filter(([, n]) => n !== 1);
+    expect(classes).toEqual([]);
+    expect([...PRECO_PUROS, ...Object.keys(E_S_EM_PRECO)].sort()).toEqual([...arquivos].sort());
+    for (const arquivo of preco.filter((p) => rel(p) in E_S_EM_PRECO)) {
+      const texto = readFileSync(arquivo, 'utf8');
+      const valores = [
+        ...new Set(importacoesDeValor(texto).filter((e) => !e.startsWith('./'))),
+      ].sort();
+      expect(valores, rel(arquivo)).toEqual([...(E_S_EM_PRECO[rel(arquivo)] ?? [])].sort());
+      // NEAR-MISS: an I/O module could not pass as pure (the roster is no escape from that scan).
+      expect(foraDoPuroEmPreco(texto), rel(arquivo)).not.toEqual([]);
+    }
+    // Anti-vacuity: both classes are inhabited, and the task is I/O.
+    expect(PRECO_PUROS).toContain('preco/planoPreco.ts');
+    expect(Object.keys(E_S_EM_PRECO)).toContain('preco/processarPreco.ts');
+  });
+
+  it('★ (13-d) the PURE half of preco/ never reaches its I/O half, by value or by type: a sibling import naming an I/O module is refused', () => {
+    const nomesES = Object.keys(E_S_EM_PRECO).map((a) => `./${a.slice('preco/'.length, -3)}`);
+    const paraES = (texto: string) => [
+      ...new Set(
+        [...importacoesDeValor(texto), ...especificadores(texto)].filter((e) =>
+          nomesES.includes(e),
+        ),
+      ),
+    ];
+    for (const arquivo of preco.filter((p) => PRECO_PUROS.includes(rel(p)))) {
+      expect(paraES(readFileSync(arquivo, 'utf8')), rel(arquivo)).toEqual([]);
+    }
+    // Anti-vacuity: the I/O names are the two modules, and the scan sees both forms.
+    expect([...nomesES].sort()).toEqual(['./processarPreco', './produtorPreco']);
+    expect(paraES("import { x } from './processarPreco';\n")).toEqual(['./processarPreco']);
+    expect(paraES("import type { P } from './produtorPreco';\n")).toEqual(['./produtorPreco']);
+    // NEAR-MISS: a pure sibling stays allowed.
+    expect(paraES("import { y } from './planoPreco';\n")).toEqual([]);
+  });
+
+  it('★ (13-d) the price task writes Firestore ONLY through the shared write-back and the aviso raiser: every handle it names builds a by-id ref it READS', () => {
+    const fonte = readFileSync(join(RAIZ_LIB, 'preco', 'processarPreco.ts'), 'utf8');
+    const codigo = semComentarios(fonte);
+    expect(codigo).toMatch(/\bgravarEnvioListingAmazon\(/);
+    expect(codigo).toMatch(/\bsincronizarAvisoContaListingsAmazon\(/);
+    expect(codigo).not.toMatch(/\b(?:escreverAviso|resolverAviso)\(/);
+    // The roster IS the handles the task imports: a new one is scanned, never skipped.
+    expect([...nomesImportadosDe(fonte, '@delfrance/data/admin/collections')].sort()).toEqual(
+      [...HANDLES_LIDOS_EM_PRECO].sort(),
+    );
+    // NEAR-MISS: a handle passed on as an argument, or named in an object literal, is a use.
+    for (const uso of [
+      'escrever(precoAmazonCollection, db);',
+      'const x = { precoAmazonCollection };',
+      'f(db, precoAmazonCollection);',
+    ]) {
+      expect(usosDeHandleForaDeRef(uso, 'precoAmazonCollection'), uso).not.toEqual([]);
+    }
+    expect(
+      usosDeHandleForaDeRef(
+        "import {\n  integracaoCollection,\n  precoAmazonCollection,\n} from '@delfrance/data/admin/collections';\n",
+        'precoAmazonCollection',
+      ),
+    ).toEqual([]);
+    for (const handle of HANDLES_LIDOS_EM_PRECO) {
+      expect(codigo, handle).toMatch(new RegExp(`\\b${handle}\\.docRef\\(`));
+      expect(usosDeHandleForaDeRef(codigo, handle), handle).toEqual([]);
+    }
+    // NEAR-MISS: the scans see a write through a handle, and a handle used otherwise.
+    for (const escrita of [
+      'await divergenciaPrecoAmazonCollection.docRef(db, p, id).update(x);',
+      'await precoAmazonCollection.set(db, {}, id, x);',
+      'await ref.set(x);',
+    ]) {
+      expect(escrita.match(ESCRITA_FIRESTORE_EM_FEEDS), escrita).not.toBeNull();
+    }
+    expect(
+      usosDeHandleForaDeRef('precoAmazonCollection.set(db, {}, id, x);', 'precoAmazonCollection'),
+    ).not.toEqual([]);
+    expect(
+      usosDeHandleForaDeRef('precoAmazonCollection.docRef(db, {}, id)', 'precoAmazonCollection'),
+    ).toEqual([]);
+  });
+
+  it('★ (13-d) the App Hosting list holds EVERY I/O module of preco/ but the producer — derived from E_S_EM_PRECO, never from itself', () => {
+    expect(Object.keys(E_S_EM_PRECO)).toEqual(expect.arrayContaining(PRECO_NO_APP_HOSTING));
+    const esperado = Object.keys(E_S_EM_PRECO)
+      .filter((arquivo) => !PRECO_NO_APP_HOSTING.includes(arquivo))
+      .map((arquivo) => `lib/amazon/${arquivo}`)
+      .sort();
+    expect(esperado).toContain('lib/amazon/preco/processarPreco.ts');
+    expect([...MODULOS_DE_PRECO_FORA_DO_APP_HOSTING].sort()).toEqual(esperado);
+    for (const modulo of MODULOS_DE_PRECO_FORA_DO_APP_HOSTING) {
+      expect(PROIBIDOS_NO_APP_HOSTING, modulo).toContain(modulo);
+    }
+  });
+
+  it('★ (13-d) the App Hosting union walk reaches NOTHING of the price wiring; the jobs root DOES reach it', () => {
+    const fecho = fechoDeImportacoes(
+      entradasDaUniaoDoAppHosting(),
+      lerDoApp,
+      resolverAliasDoApp(lerDoApp),
+    );
+    expect(violacoesDoAppHosting(fecho)).toEqual([]);
+    for (const modulo of MODULOS_DE_PRECO_FORA_DO_APP_HOSTING) {
+      expect(fecho.arquivos, modulo).not.toContain(modulo);
+    }
+    const fila = fechoDeImportacoes(['functions/src/filaLotes.ts'], lerDoApp);
+    expect(fila.arquivos).toEqual(expect.arrayContaining(MODULOS_DE_PRECO_FORA_DO_APP_HOSTING));
+    expect(fila.arquivos).toEqual(
+      expect.arrayContaining(PRECO_NO_APP_HOSTING.map((a) => `lib/amazon/${a}`)),
+    );
+  });
+
+  it('★ (13-d) a route importing the price task is refused by the walk; NEAR-MISS: one importing the producer or the payload passes', () => {
+    const ROTA = 'app/api/marketplace/amazon/teste-preco/route.ts';
+    const caminhar = (alvo: string) => {
+      const ler: LeitorDeFonte = (caminho) =>
+        caminho === ROTA
+          ? `import { x } from '@/lib/amazon/preco/${alvo}';\nexport const y = x;\n`
+          : lerDoApp(caminho);
+      return violacoesDoAppHosting(fechoDeImportacoes([ROTA], ler, resolverAliasDoApp(ler)));
+    };
+    for (const modulo of MODULOS_DE_PRECO_FORA_DO_APP_HOSTING) {
+      const alvo = modulo.slice('lib/amazon/preco/'.length, -'.ts'.length);
+      expect(caminhar(alvo), alvo).toContain(`reaches ${modulo}`);
+    }
+    expect(caminhar('produtorPreco')).toEqual([]);
+    expect(caminhar('tarefaPreco')).toEqual([]);
   });
 });
 
