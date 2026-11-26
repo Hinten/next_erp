@@ -1547,6 +1547,33 @@ describe('the refusal aviso is resolved only when OPEN, under `on`, and only by 
     expect(c.db.ler(AVISO_RECUSADO)?.resolvidoEm).toBeNull();
   });
 
+  it.each<[string, OpcoesCenario]>([
+    ['under dry-run', { modo: MODO_LI.dryRun }],
+    ['outside the canary', { canario: `${CONTA}:9` }],
+    ['with no canary', { canario: null }],
+  ])(
+    '⚠️ a store ALREADY reflected %s ⇒ refletido at 6 / 2 / 1: the open aviso is neither read nor closed',
+    async (_r, o) => {
+      const c = cenario({ ...o, pai: { precos: precos(55.55), propagatePriceToChildren: true } });
+      abrirRecusa(c, (AGORA_MS - 3_600_000) * 1000);
+      expect(await c.rodar()).toEqual({ kind: 'refletido' });
+      expect(c.db.leituras).not.toContain(AVISO_RECUSADO);
+      expect(c.db.ler(AVISO_RECUSADO)?.resolvidoEm).toBeNull();
+      expect(c.custo()).toEqual(custoDe(6, 2, 1));
+    },
+  );
+
+  it('refletido under `on` pays the one pre-read: 7 / 2 / 1 (a root 6 / 2 / 1)', async () => {
+    const reflete = { pai: { precos: precos(55.55), propagatePriceToChildren: true } };
+    const filho = cenario(reflete);
+    expect(await filho.rodar()).toEqual({ kind: 'refletido' });
+    expect(filho.custo()).toEqual(custoDe(7, 2, 1));
+    __resetAllReadCaches();
+    const raiz = cenario({ produto: { precos: precos(55.55) }, pai: null });
+    expect(await raiz.rodar()).toEqual({ kind: 'refletido' });
+    expect(raiz.custo()).toEqual(custoDe(6, 2, 1));
+  });
+
   it.each<[string, OpcoesCenario, TarefaPrecoLi]>([
     ['nao-baixado', { pai: { precos: precos(55.54), propagatePriceToChildren: true } }, tarefa()],
     ['removido', { detalhe: { removido: true } }, tarefa()],
@@ -1580,6 +1607,134 @@ describe('the refusal aviso is resolved only when OPEN, under `on`, and only by 
       expect(c.db.escritas).toEqual([]);
       __resetAllReadCaches();
     }
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                  The cost table: child and root, past the context           */
+/* -------------------------------------------------------------------------- */
+
+describe('the cost of every outcome past the write context, CHILD and ROOT (a root reads no parent)', () => {
+  type Caso = [
+    string,
+    OpcoesCenario,
+    (c: Cenario) => void,
+    TarefaPrecoLi,
+    ResultadoPrecoLi | 'lanca',
+    ReturnType<typeof custoDe>,
+  ];
+  const nada = () => undefined;
+  const CASOS: Caso[] = [
+    [
+      'dry-run',
+      { modo: MODO_LI.dryRun },
+      nada,
+      tarefa(),
+      { kind: 'nao-enviado', motivo: 'valvula' },
+      custoDe(6, 2, 1),
+    ],
+    [
+      'a guard skip',
+      { detalhe: { bloqueado: true } },
+      nada,
+      tarefa(),
+      { kind: 'descartado', motivo: 'bloqueado' },
+      custoDe(6, 2, 1),
+    ],
+    [
+      'ausente',
+      { detalhe: null },
+      nada,
+      tarefa(),
+      { kind: 'descartado', motivo: 'ausente' },
+      custoDe(6, 2, 1),
+    ],
+    [
+      'nao-baixado',
+      { detalhe: { preco_cheio: 99.99 } },
+      nada,
+      tarefa(),
+      { kind: 'nao-baixado', folhas: ['cheio', 'efetivo'] },
+      custoDe(6, 2, 1),
+    ],
+    [
+      'sem-restauracao',
+      { detalhe: { preco_custo: 'abc' } },
+      nada,
+      tarefa(),
+      { kind: 'descartado', motivo: 'sem-restauracao' },
+      custoDe(6, 2, 1),
+    ],
+    [
+      'escrito/nenhum',
+      {},
+      nada,
+      tarefa(),
+      { kind: 'escrito', seguimento: 'nenhum' },
+      custoDe(7, 4, 3),
+    ],
+    [
+      'a generation-0 drift',
+      { ...SUBIDA, gravacaoPreco: truncaPromocao },
+      nada,
+      tarefa(),
+      { kind: 'escrito', seguimento: 'enfileirado' },
+      custoDe(6, 4, 3, { enfileiradas: 1 }),
+    ],
+    [
+      'a generation-1 verified drift under `on`',
+      { ...SUBIDA, gravacaoPreco: truncaPromocao },
+      nada,
+      daDeriva(),
+      { kind: 'escrito', seguimento: 'sem-seguimento' },
+      custoDe(6, 4, 3, { escritas: 1 }),
+    ],
+    ['escrito-lote', {}, nada, doLote(), { kind: 'escrito-lote' }, custoDe(7, 3, 2)],
+    [
+      'recusado on the last attempt',
+      { tentativa: TASK_MAX_ATTEMPTS - 1 },
+      (c) => c.p.fila.push(naProxima(CAMINHO_PUT, 'PUT', () => respostaJson(400, {}))),
+      tarefa(),
+      { kind: 'recusado', status: 400 },
+      custoDe(6, 3, 2, { escritas: 1 }),
+    ],
+    [
+      'a PUT that throws (429)',
+      {},
+      (c) => c.p.fila.push(naProxima(CAMINHO_PUT, 'PUT', () => respostaJson(429, {}))),
+      tarefa(),
+      'lanca',
+      custoDe(6, 3, 2),
+    ],
+    [
+      'a deciding GET that throws (503)',
+      {},
+      (c) => c.p.fila.push(naProxima(CAMINHO_DETALHE, 'GET', () => respostaJson(503, {}))),
+      tarefa(),
+      'lanca',
+      custoDe(6, 2, 1),
+    ],
+  ];
+  /** The same case for a ROOT: its own `precos` hold what the parent's held. */
+  const raiz = (o: OpcoesCenario): OpcoesCenario => {
+    const pai = o.pai === undefined ? { precos: precos(55.56) } : o.pai;
+    return { ...o, produto: { precos: pai?.precos ?? {}, custo: 99.99 }, pai: null };
+  };
+
+  it.each(CASOS)('CHILD: %s', async (_r, o, preparar, t, esperado, custo) => {
+    const c = cenario(o);
+    preparar(c);
+    if (esperado === 'lanca') await expect(c.rodar(t)).rejects.toBeInstanceOf(LiHttpError);
+    else expect(await c.rodar(t)).toEqual(esperado);
+    expect(c.custo()).toEqual(custo);
+  });
+
+  it.each(CASOS)('ROOT: %s (one ERP read less)', async (_r, o, preparar, t, esperado, custo) => {
+    const c = cenario(raiz(o));
+    preparar(c);
+    if (esperado === 'lanca') await expect(c.rodar(t)).rejects.toBeInstanceOf(LiHttpError);
+    else expect(await c.rodar(t)).toEqual(esperado);
+    expect(c.custo()).toEqual({ ...custo, erp: custo.erp - 1 });
   });
 });
 
@@ -1641,4 +1796,74 @@ describe('the worst case of one run, measured (the price queue sizes its timeout
       expect(c.decorridoMs(), rotulo).toBeLessThanOrEqual(PIOR_EXECUCAO_PRECO_LI_MS);
     }
   });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                   Property: whole runs over drawn store states              */
+/* -------------------------------------------------------------------------- */
+
+/** mulberry32: a deterministic generator in [0, 1). */
+function mulberry32(semente: number): () => number {
+  let a = semente >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+describe('PROPERTY: whole runs over drawn store states and targets', () => {
+  const escolher = <T>(r: () => number, de: readonly T[]): T =>
+    de[Math.floor(r() * de.length)] as T;
+  const PRECOS: readonly unknown[] = [null, 0, 22.22, 44.44, 55.55, '55.5500', 'abc'];
+  const CUSTOS: readonly unknown[] = [null, 0, 12.34, -1.5, '12.34', 'abc'];
+  const SORTEIOS = 300;
+
+  // CI runners are ~5× slower under load: 300 whole runs through the fake get their own budget.
+  it(
+    `${String(SORTEIOS)} seeded runs: at most one PUT, the PUT custo is the store's own or absent, a refused lowering never sends`,
+    { timeout: 120_000 },
+    async () => {
+      const r = mulberry32(13_404);
+      const vistos = new Set<string>();
+      for (let i = 0; i < SORTEIOS; i++) {
+        __resetAllReadCaches();
+        const custo = escolher(r, CUSTOS);
+        const detalhe = {
+          preco_cheio: escolher(r, PRECOS),
+          preco_promocional: escolher(r, PRECOS),
+          preco_custo: custo,
+          preco_sob_consulta: r() < 0.5,
+        };
+        const promo = r() < 0.5 ? undefined : escolher(r, [11.11, 44.44, 66.66]);
+        const pai = {
+          precos: precos(escolher(r, [22.22, 55.55, 66.66]), promo),
+          propagatePriceToChildren: true,
+        };
+        const c = cenario({ detalhe, pai, modo: escolher(r, [MODO_LI.on, MODO_LI.dryRun]) });
+        const resultado = await c.rodar(tarefa({ baixar: r() < 0.5 }));
+        const rotulo = `sorteio ${String(i)}: ${JSON.stringify({ detalhe, pai, resultado })}`;
+        vistos.add(resultado.kind);
+        expect(c.p.puts().length, rotulo).toBeLessThanOrEqual(1);
+        if (resultado.kind === 'nao-baixado') expect(c.p.puts(), rotulo).toEqual([]);
+        const [put] = c.p.puts();
+        if (put !== undefined) {
+          const corpo = put.corpo as Readonly<Record<string, unknown>>;
+          if (Object.hasOwn(corpo, 'custo'))
+            expect(Object.is(corpo.custo, custo), rotulo).toBe(true);
+          expect(corpo.sob_consulta, rotulo).toBe(detalhe.preco_sob_consulta);
+        }
+        // Anything that is no landed or refused write leaves Firestore untouched.
+        if (resultado.kind !== 'recusado' && resultado.kind !== 'escrito') {
+          expect(c.db.escritas, rotulo).toEqual([]);
+        }
+      }
+      // Anti-vacuity: the sweep met sends, reflected stores, refused lowerings and unreadable ones.
+      for (const kind of ['escrito', 'refletido', 'nao-baixado', 'descartado', 'nao-enviado']) {
+        expect(vistos, kind).toContain(kind);
+      }
+    },
+  );
 });
