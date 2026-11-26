@@ -1,0 +1,14 @@
+{
+  "name": "@delfrance/legacy-mirror-functions",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "//": "NOT a pnpm workspace package — apps/legacy-mirror/functions is the deploy-artifact-only sub-build of @delfrance/legacy-mirror (its tsconfig, `eslint .` and vitest cover this folder). This file is the TEMPLATE that scripts/prepare-deploy.mjs reads to emit the MINIMAL .deploy/legacy-mirror-functions/package.json — only the 2 runtime deps below. Specs must stay LITERAL semver, never catalog:, because the file is copied verbatim into the artifact and resolved by plain npm. firebase-admin + firebase-functions are pinned EXACT (no `^`) because the artifact ships NO lockfile. Bump them here and in pnpm-workspace.yaml's catalog in the same commit — packages/config-eslint/rules/runtime-deps-pinned.test.js fails if they drift apart.",
+  "dependencies": {
+    "firebase-admin": "14.5.0",
+    "firebase-functions": "7.4.0"
+  }
+}

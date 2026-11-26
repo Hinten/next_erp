@@ -299,6 +299,25 @@ const CODEBASES = {
     // override the inlined value does not cover.
     runtimeOverrides: ['BALANCO_TASKS_REGION', 'KIT_ROLLUP_TASKS_REGION'],
   },
+  // ⚠️ TEMPORARY, migration-only — deployed into the LEGACY project, never into
+  // staging or the new one (ADR 0013, amendment 2026-11-26). Three Firestore
+  // triggers and nothing else, so it is the one codebase with NO task or schedule
+  // function: `taskFunctions: false` skips the TASKS_INVOKER_SA requirement and
+  // the Cloud Tasks region check, both of which are about functions it does not
+  // have. Its region must be the legacy DATABASE's location. Delete this row with
+  // the codebase after the cutover.
+  'legacy-mirror': {
+    deployConfig: 'firebase.legacy-mirror.deploy.json',
+    buildScript: 'apps/legacy-mirror/functions/build.mjs',
+    deployDoc: 'apps/legacy-mirror/functions/DEPLOY.md',
+    inlined: { FUNCTIONS_REGION: null },
+    taskFunctions: false,
+    tasksRegionVar: 'FUNCTIONS_REGION',
+    backendVar: null,
+    backendManifest: null,
+    deployShell: {},
+    runtimeOverrides: [],
+  },
 };
 
 /**
@@ -369,13 +388,17 @@ export function preflight(codebase, env = process.env, fromFile = new Set()) {
   const rows = [];
   const errors = [];
 
+  // A codebase with no task function has no `invoker` to omit, so requiring the
+  // variable there would be a refusal about nothing. The row stays, so the table
+  // still says why the value is absent.
+  const hasTaskFunctions = spec.taskFunctions !== false;
   const invoker = valueOf(env, 'TASKS_INVOKER_SA');
   rows.push({
     name: 'TASKS_INVOKER_SA',
-    value: invoker ?? '(unset)',
-    source: invoker ? sourceOf('TASKS_INVOKER_SA') : 'MISSING',
+    value: invoker ?? (hasTaskFunctions ? '(unset)' : '(not used — no task functions)'),
+    source: invoker ? sourceOf('TASKS_INVOKER_SA') : hasTaskFunctions ? 'MISSING' : 'n/a',
   });
-  if (!invoker) {
+  if (!invoker && hasTaskFunctions) {
     errors.push(
       [
         'TASKS_INVOKER_SA is not set, so `invoker` would be OMITTED from every',
@@ -444,7 +467,7 @@ export function preflight(codebase, env = process.env, fromFile = new Set()) {
 
   const tasksRegion =
     valueOf(env, spec.tasksRegionVar) ?? spec.inlined[spec.tasksRegionVar] ?? '(unset)';
-  if (REGIONS_WITHOUT_TASKS.has(tasksRegion)) {
+  if (hasTaskFunctions && REGIONS_WITHOUT_TASKS.has(tasksRegion)) {
     errors.push(
       [
         `${spec.tasksRegionVar} resolves to '${tasksRegion}', which has NO Cloud Tasks`,

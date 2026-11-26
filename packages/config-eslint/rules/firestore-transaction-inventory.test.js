@@ -126,6 +126,8 @@ const PATHSPECS = [
  * 2 event-clock watermark, 3 tell the human.
  */
 const INVENTARIO = {
+  'apps/legacy-mirror/functions/src/mirror.ts':
+    'B (migration-only, ADR 0013 amendment 2026-11-26) — the observation and the document data are read from the LEGACY source outside the transaction; the guard is the per-path watermark in `_mirrorWatermarks`, re-read with tx.get and compared inside every OCC attempt (ADR 0011 tier 2, the source commit clock: updateTime for a present doc, readTime for an absent one). A stale observation is refused; an equal stamp re-applies (idempotent, and how the replay repairs a doc the import overwrote). The watermark advances on the same write that wins. No network I/O inside the callback. Tests: watermark.test.ts, mirror.test.ts.',
   'apps/web/lib/produtos/kitChildren.ts':
     'B — candidate child ids and recipe baselines are selected outside the transaction. Every attempt rechecks parent kit status and child membership. Recipe writes reject changed baselines unless the intended recipe already landed. On reset, an implicit member mirrors the parent recipe read in the same attempt.',
   'apps/mercado-livre/lib/marketplace/notificacoes/missedFeedsSweep.ts':

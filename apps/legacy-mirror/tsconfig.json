@@ -1,0 +1,5 @@
+{
+  "extends": "@delfrance/config-tsconfig/node.json",
+  "include": ["functions/src/**/*.ts"],
+  "exclude": ["node_modules", "dist", "functions/dist"]
+}
