@@ -401,4 +401,176 @@ describing an arrangement that no longer exists.
 
 ## Status
 
-Accepted.
+Accepted. Amended 2026-11-26 — see below.
+
+## Amendment (2026-11-26): seed + one-way mirror
+
+The original text above stands as the record of what was decided in August. This
+section changes the **Phase 1/2 mechanics** and corrects six facts. Everything it
+does not mention — Phase 0, the custom domains, the drain valve, Auth, the URL
+rewrite, the Phase 3 order, the rollback — is unchanged. The region is still open
+in #1115 (direction `us-central1`).
+
+### The decision change
+
+The alternative **"Dual-write or live replication during the window"** is
+reopened, for a **one-way mirror only: legacy → new**. Dual-write stays rejected.
+
+- **Flutter stays the sole writer.** The mirror copies what Flutter already wrote;
+  it derives nothing, decides nothing and never writes back to legacy. Until the
+  switch, the new database is a **read-only replica** that no app reads or writes.
+  So root `CLAUDE.md` rule 8 still holds: there is no dual run, the two apps never
+  share a document, and the cutover is still one switch that turns Flutter off.
+- **Why:** it takes the export/import out of the freeze. The original freeze was
+  bounded by the export → import wall clock, which is why the dress rehearsal was
+  the downtime budget. Now the **seed runs a few days early**, a Cloud Functions
+  trigger deployed **into the legacy project** (`apps/legacy-mirror`, built in a
+  separate PR) keeps the new database current, and the freeze shrinks to **drain
+  the mirror + the final Storage delta + the app deploys**.
+
+The original objection — "no first-party Firestore-to-Firestore CDC" — is still
+true. A Firestore trigger is not CDC either: delivery is at-least-once and
+unordered. The mechanics below are what make that safe.
+
+### Mirror mechanics
+
+- **Triggers.** `onDocumentWritten` on every path at depths 1–3
+  (`{c}/{d}`, `{c}/{d}/{s}/{e}`, `{c}/{d}/{s}/{e}/{t}/{f}`) on the legacy
+  database `(default)`.
+- **The handler never trusts the event payload.** It re-reads the source
+  document and applies **what is there now**: a `set` of the current data, or a
+  `delete` when the document is absent. A late or duplicate event then carries
+  no stale state; it re-applies the latest one.
+- **Per-path watermark, ADR 0011 tier 2.** Inside a transaction on the new
+  database, the handler reads `_mirrorWatermarks/<encoded path>` and compares the
+  stored clock with the incoming one. The clock is the source document's
+  **`updateTime`**, or the re-read's **`readTime`** when the document is absent.
+  It **applies if incoming `>=` stored**, and the write that wins always advances
+  the watermark. `>=` and not `>` because a retry of the same event must still be
+  able to apply: the re-read makes the retry idempotent.
+- **The replay script.** The import (next section) writes the T0 version of every
+  document over whatever is there, including documents the mirror had already
+  brought past T0. So a `tools/migrations` script runs **after the import** and
+  re-applies every path whose watermark is newer than T0: re-read the source,
+  apply it under the same watermark rule. It follows the package contract
+  (`--project` required, dry run by default, JSONL log, a pure `transform.ts`
+  with tests) and is idempotent by construction. It is built in its own PR.
+- `_mirrorWatermarks` is mirror bookkeeping, not business data. It needs no
+  schema. The generated rules do not list it, so clients are denied by default,
+  and the mirror writes with Admin credentials. It is deleted after the switch.
+
+### Order
+
+The order is load-bearing; the mirror must already be running when T0 is taken.
+
+1. Phase 0 as before. **Indexes and rules first** on the new database — the
+   move-data page says to create indexes before importing "to avoid having to
+   process each document multiple times".
+2. **Deploy the mirror into legacy.** It starts writing into the new database at
+   once.
+3. **Take T0 after the deploy** and export with `--snapshot-time=T0`. Every write
+   after T0 has then reached the mirror, so nothing falls between the export and
+   the mirror.
+4. Copy the export to a bucket in the destination's location (correction 3
+   below), import it, then run the replay script.
+5. **The seed import is the data rehearsal.** It runs at production scale on the
+   real destination, days before the freeze, and nothing is waiting on it.
+6. The freeze: Flutter read-only → the mirror drains (the newest watermark stops
+   moving and the trigger backlog is empty) → final Storage batch → Phase 3.
+
+⚠️ **No functions and no App Hosting in the new project until the switch.**
+Every mirrored write is a real write in the new project, so any deployed trigger
+would fire on it: `onPedidoChanged` would re-derive history the export already
+carries, and every side effect would run once per mirrored change. Worse, the
+`storage` codebase's orphan sweeps could **delete transferred objects** whose
+`arquivos` documents have not arrived yet. So the Phase 0 items that need a
+deploy wait for Phase 3. Secrets, IAM and the custom domains can still go early,
+but not the deploy that creates the Cloud Tasks queues.
+
+### Storage
+
+1. **STS batch seed**, legacy bucket → new bucket, days early. Preserve custom
+   metadata, as before.
+2. **STS event-driven job** until the switch, fed by a Pub/Sub notification on
+   the legacy bucket.
+3. ⚠️ Event-driven transfers **do not propagate deletes** — Google's page says
+   object deletions "are not detected". So the **final batch** inside the freeze
+   runs with `--delete-from=destination-if-unique`, which removes what legacy
+   deleted in the meantime.
+
+STS GCS → GCS has **no service fee**. You pay only for the Storage operations and
+the inter-region transfer.
+
+### Corrections to the original text
+
+1. **The legacy database id is `(default)`, not `default`.**
+   `.old/triggers_eventarc/*.yaml` names `databases/(default)`. The Phase 1
+   export command's `--database=default` is wrong for legacy: use
+   `--database='(default)'` (or omit the flag). `default` is right only for the
+   **new** database.
+2. **The tie-break's "+15% on writes" is out of date.** The Enterprise price table
+   read on 2026-11-25 shows `us-east4` read and write units at the **same** price
+   as `us-central1`: `$0.05` / M reads, `$0.26` / M writes. Only storage
+   (~`$0.264` vs `$0.240` / GiB-month), PITR and backups are ~10% higher in
+   `us-east4`. The region choice now weighs latency against ~10% on storage
+   lines, not against the operations bill. That is still a cost delta, and the
+   other `us-central1` arguments (the #1108 task-queue fallback, earlier features)
+   are unchanged.
+3. **A cross-region move needs a bucket copy.** Google's move-data page: if the
+   source bucket's location differs from the destination's Firestore location,
+   "you must move your data files to a Cloud Storage bucket in the same location
+   as your destination project". Legacy (`us-east1`) to `us-central1` is
+   cross-region, so the export is copied bucket-to-bucket (STS or
+   `gcloud storage cp`) before the import. The original Phase 1 step 4 grant
+   still applies, but to the bucket the import reads.
+4. **TTL, backups and PITR go on the destination after the copy.** Google
+   suggests configuring them after the data lands, for import speed. This moves
+   them out of Phase 0 step 3. **Indexes and rules still go first.**
+   ⚠️ TTL rides the indexes deploy (`fieldOverrides`), so either deploy the TTL
+   overrides as a second pass, or accept that the policy is active during the
+   import. That is harmless only because legacy documents carry no `expiraEm`
+   stamps.
+5. **`--snapshot-time` does not shorten the freeze.** It makes the export
+   consistent against stray writers during the export. That is all it does. The
+   original text said it "lets the freeze end before the export does", and that
+   was wrong. Writes after T0 are not in the export, so a freeze ending at T0
+   loses them. It was always the import that bounded the freeze. Under this
+   amendment the mirror, not the snapshot, is what carries post-T0 writes.
+6. **The legacy region is `us-east1`** (Lucas, 2026-11-26). This answers the
+   *Run this first* question: legacy has no App Hosting region, so its
+   inter-region transfer charge is structural, as the original text predicted.
+
+### Cost note
+
+Example: 10 GiB / 5M documents in Firestore, 20k writes/day, a 2-week mirror,
+50 GiB in Storage, legacy `us-east1` → new `us-central1`.
+
+| Line | Rough cost |
+|---|---|
+| Seed export (one Standard read per document) | ~$1.50 |
+| Seed import (~2 write units per ~2 KiB document at `$0.26` / M) | ~$3 |
+| Export bucket copy across regions + its short-lived storage | < $0.50 |
+| Mirror, 2 weeks: ~280k events × (one Standard re-read + a watermark transaction: ~1 read unit and ~3 write units on Enterprise); invocations inside the free tier | < $1 |
+| Replay script (only paths newer than T0) | cents |
+| Storage: STS service fee | $0 |
+| Storage: 50 GiB inter-region transfer + destination operations | ~$1.50 |
+| New database and bucket at rest until the switch, legacy PITR retention | ~$4–5 |
+| **Total** | **≈ $15**, rounded up |
+
+The whole move costs about a day of normal operation. It is no reason to keep
+the freeze long. ⚠️ As with the tie-break, **confirm the rates in the pricing
+calculator** before the window. Sources: the Firestore pricing page for both
+editions (<https://cloud.google.com/firestore/pricing>), Cloud Storage pricing
+(<https://cloud.google.com/storage/pricing>) and Storage Transfer Service pricing
+(<https://cloud.google.com/storage-transfer/pricing>).
+
+### What changes in the consequences
+
+- The freeze no longer scales with the database size. It scales with the mirror's
+  drain time and the Storage delta, both measured during the mirror's weeks.
+- New risk: the mirror runs in the legacy project, which this repo never deployed
+  to before. It is a deploy into the live source project, and agents never run
+  it. Its blast radius is bounded: it only reads legacy and only writes the new
+  database.
+- Rollback is unchanged. Until the first operator write in the new project, the
+  new database is disposable: if the mirror misbehaves, stop it and re-seed.
