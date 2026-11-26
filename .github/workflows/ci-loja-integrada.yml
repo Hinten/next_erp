@@ -57,7 +57,16 @@ name: CI — Loja Integrada
 #     enqueues through the real producer root; then the kit FAN-OUT
 #     (`estoque-kits`) DISPATCHED to the real deployed `filaEstoqueLojaIntegrada`,
 #     observed through its one write, the global stagger slot
-#     `reconcileEstoqueLojaIntegrada/atual.proximoSlotMs`, read back raw.
+#     `reconcileEstoqueLojaIntegrada/atual.proximoSlotMs`, read back raw;
+#   - `apps/loja-integrada/lib/lojaIntegrada/preco/processarPreco.tasks.test.ts`
+#     — one price send run (step 13, PR 13-d) IN PROCESS, its valve and the read
+#     switch on as PARAMETERS only, against a scripted store: the masked produto
+#     and parent reads, the where-less links listing, the collection-group
+#     duplicate probe, and its one `deriva` follow-up enqueued through the real
+#     producer root onto `filaPrecoLojaIntegrada`. The DISPATCHED follow-up passes
+#     the price valve (`dry-run` in the job env, below) and stops at its write
+#     context on the read switch, writing nothing, so that hop is unobservable
+#     here by design; its options and dispatch are pinned offline.
 # ⚠️ The triggers fire on EVERY suite's writes, not only their own: the
 # functions emulator loads the whole codebase. The conta trigger fires on every
 # `integracao` write, the history trigger (`onHistoricoFreteLojaIntegrada`,
@@ -151,9 +160,9 @@ name: CI — Loja Integrada
 #     emulator — dispatch is pure FIFO (firebase-tools#8254, open). The reads
 #     queue sets none today; a producer that adds one must not assert it here,
 #     because a delayed enqueue would dispatch immediately and the test would
-#     pass for the wrong reason. The stock producer (step 12) sets a
-#     `scheduleTime`, which the emulator ignores the same way; its suite does not
-#     assert it, and the schedule is pinned offline.
+#     pass for the wrong reason. The stock producer (step 12) and the price
+#     producer (step 13) set a `scheduleTime`, which the emulator ignores the
+#     same way; neither suite asserts it, and both schedules are pinned offline.
 #   - `rateLimits` and `retryConfig`, and the writes queue's instance limits
 #     (`concurrency`, `maxInstances`). Whether the emulator honours
 #     `maxConcurrentDispatches` is unverified; the options are pinned OFFLINE, off
@@ -192,6 +201,12 @@ name: CI — Loja Integrada
 #     record first, so the suite drives the trigger's work in process instead;
 #     the map's TTL, the gate order and the clock-after-reads rule are pinned
 #     offline.
+#   - The stock and price queues' dispatch of a SEND run. A dispatched send run
+#     stops at its write context on the read switch and writes nothing (no
+#     failure store, no write on success), so an emulator cannot observe it; both
+#     queues' options and their dispatch are pinned offline
+#     (functions/src/index.test.ts, functions/src/filaEstoque.test.ts,
+#     functions/src/filaPreco.test.ts).
 #   - A PR that touches ONLY a shared package outside the app's `workspace:*`
 #     closure. The `changes` job below walks that graph from the app, so a change
 #     reaching the bundle by any other edge (a path alias, a copied file) does
@@ -387,6 +402,14 @@ jobs:
       # Integrada client exists, and writes nothing (under `dry-run` it neither
       # raises an aviso nor parks). Never `on`: vitest.tasks.setup.ts refuses it.
       LOJA_INTEGRADA_MODO_ESTOQUE: 'dry-run'
+      # The PRICE valve (step 13, PR 13-d), at `dry-run` so a dispatched price send
+      # run — today the price suite's one `deriva` follow-up — passes its valve and
+      # reaches its write context. SAFE for the same reason as the two valves
+      # above: with the read switch `off` every dispatched price run stops at its
+      # write context, before any Loja Integrada client exists, and writes nothing
+      # (under `dry-run` it neither raises an aviso nor parks). Never `on`, and no
+      # LOJA_INTEGRADA_CANARIO_PRECO: vitest.tasks.setup.ts refuses both.
+      LOJA_INTEGRADA_MODO_PRECO: 'dry-run'
       NEXT_TELEMETRY_DISABLED: '1'
     steps:
       - uses: actions/checkout@v6

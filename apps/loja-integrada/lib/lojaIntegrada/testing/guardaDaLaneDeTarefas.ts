@@ -19,6 +19,8 @@
  *    `LOJA_INTEGRADA_MODO_RASTREIO` to `dry-run` (so the trigger and the queue
  *    really run), and NO write valve may be exactly `on` and NO canary list may
  *    name a target — a run that passed the switch could then still never write.
+ *    The stock valve (step 12) and the price valve (step 13,
+ *    `LOJA_INTEGRADA_MODO_PRECO`) sit at `dry-run` there too, under the same rule.
  *
  * Two places could break either layer:
  *

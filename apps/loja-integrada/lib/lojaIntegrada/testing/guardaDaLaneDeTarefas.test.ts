@@ -8,7 +8,8 @@
  * Since master plan step 7 the lane's job env sets the write valve to
  * `dry-run`, so the refusals cover the write side too: no write valve exactly
  * `on` and no non-blank canary list, in the shell or in the artifact's env
- * files.
+ * files. Steps 12 and 13 put the stock and price valves at `dry-run` beside it;
+ * the last block reads the job env itself.
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -54,9 +55,11 @@ describe('the names, spelled out — and equal to the loader’s', () => {
   it('every write valve and every canary list falls under the guard’s prefix — none escapes it', () => {
     const valvulas = Object.values(VALVULA_ENV_LI);
     const canarios = Object.values(CANARIO_ENV_LI);
-    // ÂNCORA: the loader has the flows the guard means.
+    // ÂNCORA: the loader has the flows the guard means — the price flow's (step 13) included.
     expect(valvulas).toContain('LOJA_INTEGRADA_MODO_RASTREIO');
     expect(canarios).toContain('LOJA_INTEGRADA_CANARIO_RASTREIO');
+    expect(VALVULA_ENV_LI.preco).toBe('LOJA_INTEGRADA_MODO_PRECO');
+    expect(CANARIO_ENV_LI.preco).toBe('LOJA_INTEGRADA_CANARIO_PRECO');
     for (const v of valvulas) expect(v.startsWith(PREFIXO_DAS_VALVULAS_DA_LANE), v).toBe(true);
     for (const c of canarios) expect(c.startsWith(PREFIXO_DOS_CANARIOS_DA_LANE), c).toBe(true);
   });
@@ -91,6 +94,32 @@ describe('the shell', () => {
     ).toEqual(['LOJA_INTEGRADA_MODO_ESTOQUE', 'LOJA_INTEGRADA_MODO_RASTREIO']);
   });
 
+  it('the PRICE valve exactly `on` is refused (step 13) — alone, and beside the stock and status valves, sorted', () => {
+    expect(escritasLigadasNoAmbiente({ LOJA_INTEGRADA_MODO_PRECO: 'on' })).toEqual([
+      'LOJA_INTEGRADA_MODO_PRECO',
+    ]);
+    expect(
+      escritasLigadasNoAmbiente({
+        LOJA_INTEGRADA_MODO_RASTREIO: 'on',
+        LOJA_INTEGRADA_MODO_PRECO: 'on',
+        LOJA_INTEGRADA_MODO_ESTOQUE: 'on',
+      }),
+    ).toEqual([
+      'LOJA_INTEGRADA_MODO_ESTOQUE',
+      'LOJA_INTEGRADA_MODO_PRECO',
+      'LOJA_INTEGRADA_MODO_RASTREIO',
+    ]);
+  });
+
+  it('⚠️ NEAR-MISS: the price valve at `dry-run`, `off`, `ON`, ` on`, blank or unset is ACCEPTED — the loader reads each as not on', () => {
+    for (const valor of ['dry-run', 'off', 'ON', ' on', 'on ', '', undefined]) {
+      expect(
+        escritasLigadasNoAmbiente({ LOJA_INTEGRADA_MODO_PRECO: valor }),
+        String(valor),
+      ).toEqual([]);
+    }
+  });
+
   it('⚠️ NEAR-MISS: `dry-run`, `off`, blank and every value the loader reads as off are ACCEPTED — the lane runs at dry-run', () => {
     for (const valor of ['dry-run', 'off', '', 'ON', ' on', 'true', undefined]) {
       expect(
@@ -109,6 +138,23 @@ describe('the shell', () => {
     expect(escritasLigadasNoAmbiente({ LOJA_INTEGRADA_CANARIO_ESTOQUE: '*' })).toEqual([
       'LOJA_INTEGRADA_CANARIO_ESTOQUE',
     ]);
+  });
+
+  it('the PRICE canary list (step 13) that is not blank is refused — `*` and one target alike', () => {
+    for (const valor of ['*', 'conta-li-1:1001']) {
+      expect(escritasLigadasNoAmbiente({ LOJA_INTEGRADA_CANARIO_PRECO: valor }), valor).toEqual([
+        'LOJA_INTEGRADA_CANARIO_PRECO',
+      ]);
+    }
+  });
+
+  it('⚠️ NEAR-MISS: an unset, empty or whitespace-only price canary is accepted', () => {
+    for (const valor of ['', '   ', undefined]) {
+      expect(
+        escritasLigadasNoAmbiente({ LOJA_INTEGRADA_CANARIO_PRECO: valor }),
+        String(valor),
+      ).toEqual([]);
+    }
   });
 
   it('⚠️ NEAR-MISS: an unset, empty or whitespace-only canary is accepted (the loader reads no target)', () => {
@@ -157,6 +203,11 @@ describe('the artifact’s env files', () => {
     ['spaced', '  LOJA_INTEGRADA_MODO_RASTREIO = on  '],
     ['with a trailing comment', 'LOJA_INTEGRADA_MODO_RASTREIO=on # canário'],
     ['CRLF', 'OUTRA=1\r\nLOJA_INTEGRADA_MODO_ESTOQUE=on\r\n'],
+    ['the price valve, plain', 'LOJA_INTEGRADA_MODO_PRECO=on'],
+    ['the price valve, quoted', 'LOJA_INTEGRADA_MODO_PRECO="on"'],
+    ['the price valve, exported', 'export LOJA_INTEGRADA_MODO_PRECO=on'],
+    ['the price valve, CRLF', 'OUTRA=1\r\nLOJA_INTEGRADA_MODO_PRECO=on\r\n'],
+    ['the price canary', 'LOJA_INTEGRADA_CANARIO_PRECO=*'],
     ['a non-blank canary', 'LOJA_INTEGRADA_CANARIO_RASTREIO=*'],
     ['a quoted canary', 'LOJA_INTEGRADA_CANARIO_RASTREIO="conta-li-1:165"'],
     ['a line it cannot read', 'LOJA_INTEGRADA_CANARIO_RASTREIO'],
@@ -168,6 +219,8 @@ describe('the artifact’s env files', () => {
 
   it.each([
     ['dry-run', 'LOJA_INTEGRADA_MODO_RASTREIO=dry-run'],
+    ['the price valve at dry-run', 'LOJA_INTEGRADA_MODO_PRECO=dry-run'],
+    ['a blank price canary', 'LOJA_INTEGRADA_CANARIO_PRECO='],
     ['off', 'LOJA_INTEGRADA_MODO_RASTREIO=off'],
     ['blank', 'LOJA_INTEGRADA_MODO_RASTREIO='],
     ['a blank canary', 'LOJA_INTEGRADA_CANARIO_RASTREIO='],
@@ -229,5 +282,57 @@ describe('the setup runs every refusal, and throws on each answer', () => {
 
   it('still replaces the global fetch in the vitest process', () => {
     expect(setup).toMatch(/globalThis\.fetch = \(async \(/);
+  });
+});
+
+/**
+ * The lane's own job env, read off `ci-loja-integrada.yml`'s round-trip job: one `KEY: 'value'`
+ * line per variable (comments skipped). A line of the block that is neither is refused, so an
+ * unquoted value (`on` is a boolean to several YAML parsers) or a nested key cannot slip past.
+ */
+function ambienteDoJob(): Record<string, string> {
+  const texto = readFileSync(join(RAIZ_REPO, '.github/workflows/ci-loja-integrada.yml'), 'utf8');
+  const linhas = texto.split(/\r?\n/);
+  const job = linhas.indexOf('  loja-integrada-tasks-roundtrip:');
+  expect(job, 'the round-trip job').toBeGreaterThan(-1);
+  const env = linhas.indexOf('    env:', job);
+  const passos = linhas.indexOf('    steps:', job);
+  expect(env, 'its env block').toBeGreaterThan(job);
+  expect(passos, 'its steps').toBeGreaterThan(env);
+  const ambiente: Record<string, string> = {};
+  for (const linha of linhas.slice(env + 1, passos)) {
+    if (linha.trim() === '' || linha.trim().startsWith('#')) continue;
+    const m = /^ {6}([A-Z][A-Z0-9_]*): '([^']*)'$/.exec(linha);
+    expect(m, `an env line the pin cannot read: ${linha}`).not.toBeNull();
+    if (m !== null) ambiente[m[1] ?? ''] = m[2] ?? '';
+  }
+  return ambiente;
+}
+
+describe('the lane’s own job env', () => {
+  it("every line of its env block is one quoted `KEY: 'value'` the pins below can read", () => {
+    expect(Object.keys(ambienteDoJob()).length).toBeGreaterThan(0);
+  });
+
+  it('passes the guard it is held to: no read switch on, no write valve on, no canary', () => {
+    const ambiente = ambienteDoJob();
+    expect(chamadasLigadasNoAmbiente(ambiente)).toBe(false);
+    expect(escritasLigadasNoAmbiente(ambiente)).toEqual([]);
+  });
+
+  it('sets the read switch exactly `off` and the three write valves exactly `dry-run`', () => {
+    const ambiente = ambienteDoJob();
+    expect(ambiente[CHAMADAS_ENV_LI]).toBe('off');
+    expect(ambiente[VALVULA_ENV_LI.rastreio]).toBe('dry-run');
+    expect(ambiente[VALVULA_ENV_LI.estoque]).toBe('dry-run');
+    expect(ambiente[VALVULA_ENV_LI.preco]).toBe('dry-run');
+  });
+
+  it('names no canary list and no clear forma — the dispatched runs read every other value unset', () => {
+    const ambiente = ambienteDoJob();
+    expect(Object.keys(ambiente).filter((k) => k.startsWith(PREFIXO_DOS_CANARIOS_DA_LANE))).toEqual(
+      [],
+    );
+    expect(ambiente).not.toHaveProperty('LOJA_INTEGRADA_PRECO_PROMO_LIMPO');
   });
 });

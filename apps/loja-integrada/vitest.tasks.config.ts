@@ -127,6 +127,17 @@ import { defineConfig } from 'vitest/config';
 //     trigger's rules (its own produtos, the anchor awaited, the sync documents deleted before
 //     the records) and writes only an INLINE kits header, so no fan-out ever follows.
 //
+// ⚠️ Since step 13 (PR 13-d) the codebase loads a FOURTH queue, `filaPrecoLojaIntegrada`, and
+// `lib/lojaIntegrada/preco/processarPreco.tasks.test.ts` runs the price send run IN PROCESS (its
+// valve and the read switch on as PARAMETERS only). It seeds an `integracao` conta by a CREATE
+// (incomplete, so the conta trigger only reads; a create never fires its depósito arm), produtos
+// carrying `precos` and link docs — so it keeps the THIRD trigger's rules above (its own
+// produtos, the anchor's add awaited before the run, the links deleted and the conta's leaving
+// awaited before the produtos go) — and NO stock records, so the stock trigger never fires on
+// it. One case enqueues a `deriva` follow-up through the real price producer root; the lane sets
+// the price valve to `dry-run`, so that dispatched task runs its ERP reads and stops at its write
+// context (the read switch is off): it writes nothing, so it cannot spill into another file.
+//
 // Each file's `beforeEach` deletes what it reads, because the files
 // share one emulator and run one at a time (`fileParallelism: false`).
 export default defineConfig({
