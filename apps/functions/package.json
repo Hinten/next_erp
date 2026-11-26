@@ -29,9 +29,11 @@
     "@delfrance/core": "workspace:*",
     "@delfrance/data": "workspace:*",
     "@delfrance/schemas": "workspace:*",
+    "@firebase/rules-unit-testing": "catalog:",
     "@types/node": "catalog:",
     "esbuild": "catalog:",
     "eslint": "catalog:",
+    "firebase": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:",
     "zod": "catalog:"

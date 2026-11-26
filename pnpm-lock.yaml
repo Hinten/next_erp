@@ -15,6 +15,9 @@ catalogs:
     '@dnd-kit/utilities':
       specifier: ^3.2.2
       version: 3.2.2
+    '@firebase/rules-unit-testing':
+      specifier: ^5.0.1
+      version: 5.0.1
     '@hookform/resolvers':
       specifier: ^5.2.2
       version: 5.2.2
@@ -299,6 +302,9 @@ importers:
       '@delfrance/schemas':
         specifier: workspace:*
         version: link:../../packages/schemas
+      '@firebase/rules-unit-testing':
+        specifier: 'catalog:'
+        version: 5.0.1(firebase@12.13.0)
       '@types/node':
         specifier: 'catalog:'
         version: 24.12.4
@@ -308,6 +314,9 @@ importers:
       eslint:
         specifier: 'catalog:'
         version: 9.39.4
+      firebase:
+        specifier: 'catalog:'
+        version: 12.13.0
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
@@ -1565,7 +1574,7 @@ importers:
         specifier: workspace:*
         version: link:../config-tsconfig
       '@firebase/rules-unit-testing':
-        specifier: ^5.0.1
+        specifier: 'catalog:'
         version: 5.0.1(firebase@12.13.0)
       '@types/node':
         specifier: 'catalog:'

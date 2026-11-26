@@ -17,7 +17,13 @@ import {
   Text,
   UnstyledButton,
 } from '@mantine/core';
-import { Dropzone, IMAGE_MIME_TYPE, type FileWithPath } from '@mantine/dropzone';
+import {
+  Dropzone,
+  IMAGE_MIME_TYPE,
+  MIME_TYPES,
+  type FileRejection,
+  type FileWithPath,
+} from '@mantine/dropzone';
 import { notifications } from '@mantine/notifications';
 import {
   IconArrowBackUp,
@@ -85,6 +91,23 @@ export function buildSortableIds(fotos: readonly FotoIdParts[]): string[] {
     const n = seen.get(base) ?? 0;
     seen.set(base, n + 1);
     return `${base}#${n}`;
+  });
+}
+
+/**
+ * Raster images only — `storage.rules` refuses SVG (it can carry script and is
+ * served from a public tokened URL), so the picker must not offer it.
+ */
+export const PHOTO_MIME = IMAGE_MIME_TYPE.filter((t) => t !== MIME_TYPES.svg);
+
+/** Mirrors the 20 MiB photo cap in `storage.rules`. */
+export const MAX_PHOTO_BYTES = 20 * 1024 * 1024;
+
+function notifyRejected(rejections: FileRejection[]) {
+  if (rejections.length === 0) return;
+  notifications.show({
+    color: 'red',
+    message: `${rejections.length} arquivo(s) recusado(s): use JPG, PNG, GIF, WEBP, AVIF ou HEIC de até 20 MB.`,
   });
 }
 
@@ -464,7 +487,9 @@ export function PhotoManager({
       {!disabled && (
         <Dropzone
           onDrop={(files) => handleDrop(files)}
-          accept={IMAGE_MIME_TYPE}
+          onReject={notifyRejected}
+          accept={PHOTO_MIME}
+          maxSize={MAX_PHOTO_BYTES}
           loading={uploading}
           multiple
         >
@@ -473,7 +498,7 @@ export function PhotoManager({
             <div>
               <Text size="sm">Arraste imagens aqui ou clique para selecionar</Text>
               <Text size="xs" c="dimmed">
-                JPG, PNG, GIF ou WEBP
+                JPG, PNG, GIF, WEBP, AVIF ou HEIC · até 20 MB
               </Text>
             </div>
           </Group>
@@ -537,7 +562,9 @@ export function PhotoManager({
               {!disabled && (
                 <Dropzone
                   onDrop={(files) => handleDrop(files, section)}
-                  accept={IMAGE_MIME_TYPE}
+                  onReject={notifyRejected}
+                  accept={PHOTO_MIME}
+                  maxSize={MAX_PHOTO_BYTES}
                   loading={uploading}
                   multiple
                 >

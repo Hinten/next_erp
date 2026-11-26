@@ -28,7 +28,7 @@
   "devDependencies": {
     "@delfrance/config-eslint": "workspace:*",
     "@delfrance/config-tsconfig": "workspace:*",
-    "@firebase/rules-unit-testing": "^5.0.1",
+    "@firebase/rules-unit-testing": "catalog:",
     "@types/node": "catalog:",
     "eslint": "catalog:",
     "firebase": "catalog:",
