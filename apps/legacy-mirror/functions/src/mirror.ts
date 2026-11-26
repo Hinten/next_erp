@@ -1,9 +1,18 @@
 import { createHash } from 'node:crypto';
 
 import { rebindReferences } from './convert';
+import { type CredentialPolicy, isCredentialPath, withoutCredentialFields } from './credentials';
 import { type Observation, type Stamp, decide, parseWatermark } from './watermark';
 
 export { compareStamps, type Stamp } from './watermark';
+export {
+  type CredentialPolicy,
+  InvalidCredentialPolicyError,
+  credentialCollectionIds,
+  credentialFieldsOf,
+  isCredentialPath,
+  parseCredentialPolicy,
+} from './credentials';
 
 /**
  * The legacy Flutter project's database. It is Firestore STANDARD and literally
@@ -46,7 +55,8 @@ export interface TargetDb<R> {
   runTransaction<T>(fn: (tx: TargetTransaction<R>) => Promise<T>): Promise<T>;
 }
 
-export type MirrorOutcome = 'applied' | 'skipped';
+/** `denied`: a credential path under the `deny` policy (credentials.ts). */
+export type MirrorOutcome = 'applied' | 'skipped' | 'denied';
 
 /** Thrown for a path that is not a document path. */
 export class InvalidDocumentPathError extends Error {
@@ -96,18 +106,33 @@ export async function mirrorPath<R>(
   rawPath: string,
   source: SourceDb,
   target: TargetDb<R>,
+  options: { credentials: CredentialPolicy },
 ): Promise<MirrorOutcome> {
   const path = relativeDocumentPath(rawPath);
+  const documentRef = target.doc(path);
+
+  // `deny` (a test project): a credential document is never written, and any copy
+  // already there — from the seed import — is deleted. The source is not even
+  // read. No watermark: nothing about it is applied, so nothing needs ordering,
+  // and a delete of an absent document is a no-op.
+  if (options.credentials === 'deny' && isCredentialPath(path)) {
+    await target.runTransaction((tx) => {
+      tx.delete(documentRef);
+      return Promise.resolve();
+    });
+    return 'denied';
+  }
+
   const snap = await source.doc(path).get();
   const observed: Observation =
     snap.exists && snap.updateTime
       ? { exists: true, stamp: snap.updateTime }
       : { exists: false, stamp: snap.readTime };
-  const data = observed.exists
+  let data = observed.exists
     ? (rebindReferences(snap.data() ?? {}, (p) => target.doc(p)) as Record<string, unknown>)
     : null;
+  if (data && options.credentials === 'deny') data = withoutCredentialFields(path, data);
 
-  const documentRef = target.doc(path);
   const watermarkRef = target.doc(`${WATERMARKS_COLLECTION}/${watermarkId(path)}`);
 
   return target.runTransaction(async (tx) => {

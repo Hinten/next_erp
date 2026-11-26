@@ -7,12 +7,14 @@ trigger. Those all buy "survive indefinitely without a cutover", and there **is*
 a cutover (root `CLAUDE.md` rule 8 / ADR 0013), so they pay for something already
 bought and leave permanent compat code nobody deletes.
 
-Twenty-four dated subfolders live under `src/` today — nineteen that write
+Twenty-five dated subfolders live under `src/` today — twenty that write
 (`migrate.ts`, or `backfill.ts`; `2026-09-produto-sem-variacoes` also carries an
 `audit.ts`) and five read-only audits (`audit.ts` alone). One of the writers,
 `2026-12-legacy-mirror-replay`, is the only script here that talks to TWO
 projects (it reads legacy and writes the new one, through `projectBoundDb`), and
-it takes its own flags rather than the shared `parseArgs`. Most
+another, `2026-12-throwaway-credentials-scrub`, may only ever run against a
+throwaway TEST project. Both take their own flags rather than the shared
+`parseArgs`. Most
 carry a runbook beside this file — `telefone-e164.README.md`,
 `historico-estoque-v2.README.md`, and so on — with the reasoning, the target
 ordering and the verification for that one job. This file is only the contract

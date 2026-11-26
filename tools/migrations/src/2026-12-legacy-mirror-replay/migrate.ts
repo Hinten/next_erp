@@ -54,6 +54,8 @@ function handles(args: ReplayArgs): { source: Firestore; target: Firestore } {
 }
 
 async function replay(args: ReplayArgs, source: Firestore, target: Firestore): Promise<void> {
+  const credentials = args.credentials;
+  if (credentials === null) throw new Error('unreachable: parseReplayArgs requires --credentials');
   const log = openLog('legacy-mirror-replay', !args.apply);
   const since = new Timestamp(args.since.seconds, args.since.nanoseconds);
   // Unindexed on purpose: a migration-only collection gets no index, and the
@@ -71,6 +73,7 @@ async function replay(args: ReplayArgs, source: Firestore, target: Firestore): P
   console.log(`${paths.length} path(s) changed after T0 (${since.toDate().toISOString()}).`);
   let applied = 0;
   let skipped = 0;
+  let denied = 0;
   for (let i = 0; i < paths.length; i += PARALLEL) {
     const slice = paths.slice(i, i + PARALLEL);
     if (!args.apply) {
@@ -78,9 +81,12 @@ async function replay(args: ReplayArgs, source: Firestore, target: Firestore): P
         log.stream.write(`${JSON.stringify({ kind: 'would-replay', path })}\n`);
       continue;
     }
-    const outcomes = await Promise.all(slice.map((path) => mirrorPath(path, source, target)));
+    const outcomes = await Promise.all(
+      slice.map((path) => mirrorPath(path, source, target, { credentials })),
+    );
     outcomes.forEach((outcome, k) => {
       if (outcome === 'applied') applied += 1;
+      else if (outcome === 'denied') denied += 1;
       else skipped += 1;
       log.stream.write(`${JSON.stringify({ kind: outcome, path: slice[k] })}\n`);
     });
@@ -88,7 +94,8 @@ async function replay(args: ReplayArgs, source: Firestore, target: Firestore): P
   log.stream.end();
   console.log(
     args.apply
-      ? `replayed: ${applied} applied, ${skipped} skipped (a newer version was already there).`
+      ? `replayed: ${applied} applied, ${skipped} skipped (a newer version was already there), ` +
+          `${denied} credential path(s) denied.`
       : `dry-run: nothing written. Re-run with --apply.`,
   );
   console.log(`log: ${log.path}`);

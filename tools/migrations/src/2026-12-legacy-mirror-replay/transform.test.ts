@@ -2,7 +2,16 @@ import { describe, expect, it } from 'vitest';
 
 import { ReplayArgError, compareCounts, isAfter, parseReplayArgs, parseSince } from './transform';
 
-const base = ['--source-project', 'legacy', '--project', 'novo', '--since', '2026-12-17T03:00:00Z'];
+const base = [
+  '--source-project',
+  'legacy',
+  '--project',
+  'novo',
+  '--since',
+  '2026-12-17T03:00:00Z',
+  '--credentials',
+  'deny',
+];
 
 describe('parseReplayArgs', () => {
   it('parses the replay contract, dry-run by default', () => {
@@ -13,14 +22,20 @@ describe('parseReplayArgs', () => {
       apply: false,
       verify: false,
       groups: [],
+      credentials: 'deny',
     });
     expect(parseReplayArgs([...base, '--apply']).apply).toBe(true);
   });
 
   it('accepts the --flag=value form', () => {
     expect(
-      parseReplayArgs(['--source-project=legacy', '--project=novo', '--since=2026-12-17T03:00Z']),
-    ).toMatchObject({ sourceProjectId: 'legacy', projectId: 'novo' });
+      parseReplayArgs([
+        '--source-project=legacy',
+        '--project=novo',
+        '--since=2026-12-17T03:00Z',
+        '--credentials=copy',
+      ]),
+    ).toMatchObject({ sourceProjectId: 'legacy', projectId: 'novo', credentials: 'copy' });
   });
 
   it.each([
@@ -34,6 +49,8 @@ describe('parseReplayArgs', () => {
     [[...base, '--verify', '--apply'], /--verify writes nothing/],
     [['--source-project', '--project', 'novo'], /requires a value/],
     [[...base, '--target', 'x'], /Unknown argument/],
+    [base.slice(0, 6), /--credentials <deny\|copy> is required/],
+    [[...base.slice(0, 6), '--credentials', 'allow'], /must be 'deny' or 'copy'/],
   ])('refuses %j', (argv, message) => {
     expect(() => parseReplayArgs(argv)).toThrow(message);
   });

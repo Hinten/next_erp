@@ -32,6 +32,7 @@
     "migrate:produto-ultima-modificacao": "dotenv -e ../../.env.local -- tsx src/2026-08-produto-ultima-modificacao/migrate.ts",
     "migrate:shopee-int-frete": "dotenv -e ../../.env.local -- tsx src/2026-10-shopee-int-frete/backfill.ts",
     "migrate:telefone-e164": "dotenv -e ../../.env.local -- tsx src/2026-08-telefone-e164/migrate.ts",
+    "migrate:throwaway-credentials-scrub": "dotenv -e ../../.env.local -- tsx src/2026-12-throwaway-credentials-scrub/migrate.ts",
     "migrate:whatsapp-contato-cliente": "tsx src/2026-09-whatsapp-contato-cliente/migrate.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"

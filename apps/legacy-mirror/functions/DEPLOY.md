@@ -45,16 +45,29 @@ Enterprise read unit and ~6 write units per event).
      --role=roles/datastore.user
    ```
 
-3. **Target project id**: create `apps/legacy-mirror/functions/.env.deploy.<LEGACY>`
-   (gitignored by `.env.deploy*`):
+3. **Target and credential policy**: create
+   `apps/legacy-mirror/functions/.env.deploy.<LEGACY>` (gitignored by `.env.deploy*`):
 
    ```sh
-   LEGACY_MIRROR_TARGET_PROJECT_ID=<NEW>
+   LEGACY_MIRROR_TARGET_PROJECT_ID=<NEW or TESTE>
+   # deny = throwaway TEST project, copy = the real migration. No default.
+   LEGACY_MIRROR_CREDENTIALS=deny
    ```
 
-   `prepare-deploy.mjs` copies it into the artifact, so the `defineString` param
-   resolves without a prompt. The function refuses to start if the target equals
-   the project it runs in.
+   `prepare-deploy.mjs` copies it into the artifact, so both `defineString` params
+   resolve without a prompt. The function refuses to start if the target equals
+   the project it runs in, or if the policy is anything but `deny` / `copy`.
+   - **`deny`**: credential documents (`credentials.ts`: the ML / Melhor Envio /
+     Mercado Pago / Shopee / Amazon / Loja Integrada token subcollections and the
+     filial certificates) are never written, any copy already in the target is
+     deleted, and the WhatsApp `permanent_token` / `pin` fields are stripped.
+     Required for a test project: the ML and Melhor Envio refresh tokens are
+     single-use, so one refresh there would cut production off.
+   - **`copy`**: everything verbatim. Only for the real migration, whose project
+     runs no functions until the switch.
+
+   Only one target at a time. To move from the test run to the real run,
+   redeploy with the new target and policy.
 
 ## Deploy (D-3, before the export)
 
@@ -75,12 +88,15 @@ count the watermarks in the new project growing as operators work.
 1. Pick **T0 after the deploy** (a whole minute). Enable PITR on legacy first.
 2. Export at T0, copy to a bucket in the new database's location, import
    (ADR 0013 Phase 1–2 commands, with `--database='(default)'` on the export).
-3. The import overwrites documents the mirror already updated after T0 with their
+3. **Test project only:** the import brought the legacy credentials with it. Run
+   `tools/migrations` `throwaway-credentials-scrub` now, before anything is
+   deployed there.
+4. The import overwrites documents the mirror already updated after T0 with their
    T0 version, and leaves the watermarks alone. Run the replay script
-   (`tools/migrations`, `legacy-mirror-replay`): it re-applies every watermark
-   with a stamp after T0. The equal-stamp rule is what lets it repair those
-   documents.
-4. Verify counts per collection, legacy against new.
+   (`tools/migrations`, `legacy-mirror-replay`) with the same `--credentials` as
+   the mirror: it re-applies every watermark with a stamp after T0. The
+   equal-stamp rule is what lets it repair those documents.
+5. Verify counts per collection, legacy against new.
 
 ## Rehearsal checks (on the seed)
 

@@ -12,7 +12,13 @@
  */
 
 import { parseIsoToMillis } from '@delfrance/core/datetime';
-import { type Stamp, compareStamps } from '@delfrance/legacy-mirror/mirror';
+import {
+  type CredentialPolicy,
+  InvalidCredentialPolicyError,
+  type Stamp,
+  compareStamps,
+  parseCredentialPolicy,
+} from '@delfrance/legacy-mirror/mirror';
 
 export class ReplayArgError extends Error {
   constructor(message: string) {
@@ -33,6 +39,12 @@ export interface ReplayArgs {
   verify: boolean;
   /** Collection-group ids to count in `--verify`, beyond the root collections. */
   groups: string[];
+  /**
+   * The SAME policy the deployed mirror runs with — `deny` for a test project,
+   * `copy` for the real migration. Required to replay: a replay under the other
+   * policy would undo what the mirror decided.
+   */
+  credentials: CredentialPolicy | null;
   sourceServiceAccountPath?: string;
   serviceAccountPath?: string;
 }
@@ -66,6 +78,7 @@ export function parseSince(value: string): Stamp {
  *   --since <T0>                REQUIRED unless --verify
  *   --apply                     write (omit for a dry-run that only lists)
  *   --verify                    count both sides; writes nothing
+ *   --credentials <deny|copy>   REQUIRED unless --verify; the mirror's own policy
  *   --groups <a,b>              extra collection groups for --verify
  *   --source-service-account <path> / --service-account <path>
  */
@@ -76,6 +89,7 @@ export function parseReplayArgs(argv: readonly string[]): ReplayArgs {
   let apply = false;
   let verify = false;
   let groupsRaw = '';
+  let credentialsRaw: string | undefined;
   let sourceServiceAccountPath: string | undefined;
   let serviceAccountPath: string | undefined;
 
@@ -109,6 +123,9 @@ export function parseReplayArgs(argv: readonly string[]): ReplayArgs {
       case '--groups':
         groupsRaw = value();
         break;
+      case '--credentials':
+        credentialsRaw = value();
+        break;
       case '--source-service-account':
         sourceServiceAccountPath = value();
         break;
@@ -128,6 +145,24 @@ export function parseReplayArgs(argv: readonly string[]): ReplayArgs {
   if (apply && verify) throw new ReplayArgError('--verify writes nothing; drop --apply.');
   if (!verify && !sinceRaw)
     throw new ReplayArgError("--since <T0> is required (the export's --snapshot-time).");
+  if (!verify && credentialsRaw === undefined) {
+    throw new ReplayArgError(
+      '--credentials <deny|copy> is required: pass the LEGACY_MIRROR_CREDENTIALS the mirror runs with.',
+    );
+  }
+  let credentials: CredentialPolicy | null = null;
+  if (credentialsRaw !== undefined) {
+    try {
+      credentials = parseCredentialPolicy(credentialsRaw);
+    } catch (err) {
+      if (err instanceof InvalidCredentialPolicyError) {
+        throw new ReplayArgError(
+          `--credentials must be 'deny' or 'copy', got "${credentialsRaw}".`,
+        );
+      }
+      throw err;
+    }
+  }
 
   return {
     sourceProjectId,
@@ -139,6 +174,7 @@ export function parseReplayArgs(argv: readonly string[]): ReplayArgs {
       .split(',')
       .map((g) => g.trim())
       .filter((g) => g !== ''),
+    credentials,
     sourceServiceAccountPath,
     serviceAccountPath,
   };

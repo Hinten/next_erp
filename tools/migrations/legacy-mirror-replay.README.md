@@ -36,11 +36,15 @@ Two service accounts, each matched against its own project:
 pnpm --filter @delfrance/migrations migrate:legacy-mirror-replay \
   --source-project <LEGACY> --source-service-account <legacy-sa.json> \
   --project <NEW> --service-account <new-sa.json> \
-  --since 2026-12-17T03:00:00Z
+  --since 2026-12-17T03:00:00Z --credentials deny   # the mirror's own policy
 
 # The same, with --apply, AFTER the import has finished.
 pnpm --filter @delfrance/migrations migrate:legacy-mirror-replay ... --apply
 ```
+
+`--credentials` must be the `LEGACY_MIRROR_CREDENTIALS` the mirror runs with
+(`deny` for a test project, `copy` for the real migration). A replay under the
+other policy would undo what the mirror decided.
 
 `--since` is the export's `--snapshot-time`, a whole minute with an explicit zone.
 An offset-less time is refused, because it would be read in the machine's zone.

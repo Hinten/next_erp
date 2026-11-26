@@ -5,7 +5,7 @@ import './options';
 import { logger } from 'firebase-functions/v2';
 import { onDocumentWritten } from 'firebase-functions/v2/firestore';
 
-import { SOURCE_DATABASE_ID, sourceDb, targetDb } from './admin';
+import { SOURCE_DATABASE_ID, credentialPolicy, sourceDb, targetDb } from './admin';
 import { mirrorPath } from './mirror';
 
 /**
@@ -27,7 +27,9 @@ function mirrorTrigger(document: string) {
   return onDocumentWritten(
     { document, database: SOURCE_DATABASE_ID, retry: true },
     async (event) => {
-      const outcome = await mirrorPath(event.document, sourceDb(), targetDb());
+      const outcome = await mirrorPath(event.document, sourceDb(), targetDb(), {
+        credentials: credentialPolicy(),
+      });
       // Only the interesting case is logged: an applied copy is the norm, and one
       // log line per legacy write would be the largest line item of this codebase.
       if (outcome === 'skipped') {

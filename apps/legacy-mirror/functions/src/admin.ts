@@ -2,6 +2,7 @@ import { type App, getApps, initializeApp } from 'firebase-admin/app';
 import { type Firestore, getFirestore } from 'firebase-admin/firestore';
 import { defineString } from 'firebase-functions/params';
 
+import { type CredentialPolicy, parseCredentialPolicy } from './credentials';
 import { SOURCE_DATABASE_ID, TARGET_DATABASE_ID } from './mirror';
 
 export { SOURCE_DATABASE_ID, TARGET_DATABASE_ID };
@@ -15,6 +16,31 @@ export { SOURCE_DATABASE_ID, TARGET_DATABASE_ID };
 export const TARGET_PROJECT_ID = defineString('LEGACY_MIRROR_TARGET_PROJECT_ID', {
   description: 'Project id of the NEW Enterprise project the legacy mirror writes into.',
 });
+
+/**
+ * What to do with credential documents (credentials.ts). REQUIRED, no default:
+ * `deny` when the target is a throwaway test project, `copy` for the real
+ * migration. Supplied in the same `.env.deploy.<legacy-project-id>` file.
+ */
+export const CREDENTIALS_POLICY = defineString('LEGACY_MIRROR_CREDENTIALS', {
+  description: "'deny' for a test project, 'copy' for the real migration.",
+  input: {
+    select: {
+      options: [
+        { label: 'deny — test project: never copy tokens or certificates', value: 'deny' },
+        { label: 'copy — real migration: tokens must arrive current', value: 'copy' },
+      ],
+    },
+  },
+});
+
+let policy: CredentialPolicy | undefined;
+
+/** The deployed credential policy, validated once per instance. */
+export function credentialPolicy(): CredentialPolicy {
+  policy ??= parseCredentialPolicy(CREDENTIALS_POLICY.value());
+  return policy;
+}
 
 const TARGET_APP_NAME = 'legacy-mirror-target';
 

@@ -1,6 +1,6 @@
 import { initializeApp } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   InvalidDocumentPathError,
@@ -54,6 +54,73 @@ function fakeTarget(): TargetDb<Ref> & { store: Map<string, Record<string, unkno
 }
 
 const wm = (path: string) => `${WATERMARKS_COLLECTION}/${watermarkId(path)}`;
+const COPY = { credentials: 'copy' } as const;
+const DENY = { credentials: 'deny' } as const;
+
+describe('mirrorPath — credential policy', () => {
+  const token = 'integracao/ml/tokenDuravel/t1';
+
+  it('deny: never copies a credential document, and never reads it from the source', async () => {
+    const read = vi.fn();
+    const source: SourceDb = { doc: () => ({ get: read }) };
+    const target = fakeTarget();
+
+    await expect(mirrorPath(token, source, target, DENY)).resolves.toBe('denied');
+
+    expect(read).not.toHaveBeenCalled();
+    expect(target.store.has(token)).toBe(false);
+    expect(target.store.has(wm(token))).toBe(false);
+  });
+
+  it('deny: deletes a credential the seed import already brought in', async () => {
+    const target = fakeTarget();
+    target.store.set(token, { refresh_token: 'TG-imported' });
+
+    await mirrorPath(token, fakeSource(new Map()), target, DENY);
+
+    expect(target.store.has(token)).toBe(false);
+  });
+
+  it('deny: copies an integracao document without its WhatsApp token and PIN', async () => {
+    const versions = new Map<string, Version>([
+      [
+        'integracao/w',
+        { data: { nome: 'w', permanent_token: 'EAAG', pin: '1' }, updateTime: t(3) },
+      ],
+    ]);
+    const target = fakeTarget();
+
+    await expect(mirrorPath('integracao/w', fakeSource(versions), target, DENY)).resolves.toBe(
+      'applied',
+    );
+    expect(target.store.get('integracao/w')).toEqual({ nome: 'w' });
+  });
+
+  it('copy: copies credentials verbatim — the real migration needs them current', async () => {
+    const versions = new Map<string, Version>([
+      [token, { data: { refresh_token: 'TG-current' }, updateTime: t(9) }],
+      ['integracao/w', { data: { permanent_token: 'EAAG' }, updateTime: t(9) }],
+    ]);
+    const target = fakeTarget();
+
+    await expect(mirrorPath(token, fakeSource(versions), target, COPY)).resolves.toBe('applied');
+    await mirrorPath('integracao/w', fakeSource(versions), target, COPY);
+
+    expect(target.store.get(token)).toEqual({ refresh_token: 'TG-current' });
+    expect(target.store.get('integracao/w')).toEqual({ permanent_token: 'EAAG' });
+  });
+
+  it('deny: an ordinary document is mirrored as usual (near-miss)', async () => {
+    const versions = new Map<string, Version>([
+      ['pedidos/p/token/t', { data: { a: 1 }, updateTime: t(2) }],
+    ]);
+    const target = fakeTarget();
+
+    await expect(mirrorPath('pedidos/p/token/t', fakeSource(versions), target, DENY)).resolves.toBe(
+      'applied',
+    );
+  });
+});
 
 describe('mirrorPath', () => {
   it('copies the current source document and stamps its watermark', async () => {
@@ -62,7 +129,9 @@ describe('mirrorPath', () => {
     ]);
     const target = fakeTarget();
 
-    await expect(mirrorPath('pedidos/p1', fakeSource(versions), target)).resolves.toBe('applied');
+    await expect(mirrorPath('pedidos/p1', fakeSource(versions), target, COPY)).resolves.toBe(
+      'applied',
+    );
 
     expect(target.store.get('pedidos/p1')).toEqual({ estado: 'pago' });
     expect(target.store.get(wm('pedidos/p1'))).toEqual({
@@ -78,8 +147,8 @@ describe('mirrorPath', () => {
     const v2 = new Map<string, Version>([['p/1', { data: { v: 2 }, updateTime: t(11) }]]);
     const v1 = new Map<string, Version>([['p/1', { data: { v: 1 }, updateTime: t(10) }]]);
 
-    await mirrorPath('p/1', fakeSource(v2), target);
-    await expect(mirrorPath('p/1', fakeSource(v1), target)).resolves.toBe('skipped');
+    await mirrorPath('p/1', fakeSource(v2), target, COPY);
+    await expect(mirrorPath('p/1', fakeSource(v1), target, COPY)).resolves.toBe('skipped');
 
     expect(target.store.get('p/1')).toEqual({ v: 2 });
     expect(target.store.get(wm('p/1'))).toMatchObject({ stamp: t(11) });
@@ -91,9 +160,10 @@ describe('mirrorPath', () => {
       'p/1',
       fakeSource(new Map([['p/1', { data: { v: 1 }, updateTime: t(10) }]])),
       target,
+      COPY,
     );
     await expect(
-      mirrorPath('p/1', fakeSource(new Map([['p/1', { deletedAt: t(12) }]])), target),
+      mirrorPath('p/1', fakeSource(new Map([['p/1', { deletedAt: t(12) }]])), target, COPY),
     ).resolves.toBe('applied');
 
     expect(target.store.has('p/1')).toBe(false);
@@ -104,6 +174,7 @@ describe('mirrorPath', () => {
         'p/1',
         fakeSource(new Map([['p/1', { data: { v: 1 }, updateTime: t(10) }]])),
         target,
+        COPY,
       ),
     ).resolves.toBe('skipped');
     expect(target.store.has('p/1')).toBe(false);
@@ -117,10 +188,10 @@ describe('mirrorPath', () => {
       ['p/1', { data: { v: 'after-T0' }, updateTime: t(20) }],
     ]);
     const target = fakeTarget();
-    await mirrorPath('p/1', fakeSource(versions), target);
+    await mirrorPath('p/1', fakeSource(versions), target, COPY);
     target.store.set('p/1', { v: 'T0-from-import' });
 
-    await expect(mirrorPath('p/1', fakeSource(versions), target)).resolves.toBe('applied');
+    await expect(mirrorPath('p/1', fakeSource(versions), target, COPY)).resolves.toBe('applied');
     expect(target.store.get('p/1')).toEqual({ v: 'after-T0' });
   });
 
@@ -130,11 +201,11 @@ describe('mirrorPath', () => {
       ['pedidos/p1/nfev4/n1', { data: { b: 2 }, updateTime: t(5) }],
     ]);
     const target = fakeTarget();
-    await mirrorPath('pedidos/p1', fakeSource(versions), target);
+    await mirrorPath('pedidos/p1', fakeSource(versions), target, COPY);
 
-    await expect(mirrorPath('pedidos/p1/nfev4/n1', fakeSource(versions), target)).resolves.toBe(
-      'applied',
-    );
+    await expect(
+      mirrorPath('pedidos/p1/nfev4/n1', fakeSource(versions), target, COPY),
+    ).resolves.toBe('applied');
     expect(watermarkId('pedidos/p1')).not.toBe(watermarkId('pedidos/p1/nfev4/n1'));
   });
 
@@ -147,13 +218,13 @@ describe('mirrorPath', () => {
       ['p/1', { data: { cliente: legacy.doc('clientes/c1') }, updateTime: t(1) }],
     ]);
     const target = fakeTarget();
-    await mirrorPath('p/1', fakeSource(versions), target);
+    await mirrorPath('p/1', fakeSource(versions), target, COPY);
 
     expect(target.store.get('p/1')).toEqual({ cliente: { path: 'clientes/c1' } });
   });
 
   it('refuses a path that is not a document path', async () => {
-    await expect(mirrorPath('pedidos', fakeSource(new Map()), fakeTarget())).rejects.toThrow(
+    await expect(mirrorPath('pedidos', fakeSource(new Map()), fakeTarget(), COPY)).rejects.toThrow(
       InvalidDocumentPathError,
     );
   });
