@@ -425,3 +425,55 @@ describe('the price task’s producer (step 13, PR 13-d)', () => {
     },
   );
 });
+
+describe('a price run’s page producer (step 13, PR 13-e)', () => {
+  const PAGINA = {
+    v: 1,
+    tipo: 'preco-pagina',
+    contaId: CONTA,
+    execucaoId: 'exec-teste-0001',
+    pagina: 2,
+  };
+
+  it('★ enqueues onto the JOBS queue — the page NAMED by (conta, run, page), the re-kick by the stall, the pause UNNAMED 60 s later', async () => {
+    const { criarProdutorExecucaoPrecoAmazonDoAmbiente } = await import('./agendadorEstoque');
+    const { ATRASO_PAUSA_PAGINA_PRECO_S } =
+      await import('../../lib/amazon/preco/inicioExecucaoPreco');
+    const { nomePaginaPrecoAmazon, nomeRetomadaPrecoAmazon } =
+      await import('../../lib/amazon/preco/tarefaPreco');
+    ambiente({ tasksRegion: 'xx-regiao1', functionsRegion: 'xx-regiao1' });
+    const produtor = criarProdutorExecucaoPrecoAmazonDoAmbiente();
+
+    expect(await produtor.enfileirarPagina(CONTA, 'exec-teste-0001', 2)).toBe('enfileirada');
+    await produtor.enfileirarRetomada(CONTA, 'exec-teste-0001', 2, 1_800_000_000_000);
+    await produtor.enfileirarPausa(CONTA, 'exec-teste-0001', 2);
+
+    expect(h.enqueue.mock.calls).toEqual([
+      [PAGINA, { id: nomePaginaPrecoAmazon(CONTA, 'exec-teste-0001', 2) }],
+      [PAGINA, { id: nomeRetomadaPrecoAmazon(CONTA, 'exec-teste-0001', 2, 1_800_000_000_000) }],
+      [PAGINA, { scheduleDelaySeconds: ATRASO_PAUSA_PAGINA_PRECO_S }],
+    ]);
+    expect(new Set(h.taskQueue.mock.calls.map((c) => c[0]))).toEqual(
+      new Set(['locations/xx-regiao1/functions/processAmazonListingsJob']),
+    );
+    // NEAR-MISS: never the stock queue this root also binds.
+    expect(h.taskQueue).not.toHaveBeenCalledWith(
+      expect.stringContaining('processAmazonStockPatch'),
+    );
+  });
+
+  it('★ the SAME valve: exactly 1 refuses with the JOBS queue’s class, the SDK never touched; no region REFUSES before the transport', async () => {
+    const { criarProdutorExecucaoPrecoAmazonDoAmbiente } = await import('./agendadorEstoque');
+    ambiente({ functionsRegion: 'xx-regiao1', desligado: '1' });
+    await expect(
+      criarProdutorExecucaoPrecoAmazonDoAmbiente().enfileirarPagina(CONTA, 'exec-teste-0001', 0),
+    ).rejects.toBeInstanceOf(AmazonLotesTarefasDesligadasError);
+    expect(h.getFunctions).not.toHaveBeenCalled();
+    ambiente({});
+    await expect(
+      criarProdutorExecucaoPrecoAmazonDoAmbiente().enfileirarPagina(CONTA, 'exec-teste-0001', 0),
+    ).rejects.toBeInstanceOf(MissingRegionError);
+    expect(h.taskQueue).not.toHaveBeenCalled();
+    expect(h.enqueue).not.toHaveBeenCalled();
+  });
+});

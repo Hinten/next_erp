@@ -33,6 +33,10 @@
  *  - Every search writes ONE line under the flow's own event (`fase:
  *    'busca'`): the SKU count, the items, `truncada`, whether it was a
  *    re-search, and the rate Amazon applied (`limiteTaxa`). Never a SKU list.
+ *  - The answer carries `limiteTaxa`, the LOWEST `x-amzn-RateLimit-Limit` of
+ *    every search and GET it made (step 13, PR 13-e), `null` when none carried
+ *    one (never 0), for a caller's own line: a price page logs it, the stock
+ *    binding reads nothing of it.
  *  - A failed Amazon call (a 429, a 5xx, a refusal) is thrown UNTOUCHED, with
  *    its own class: what a failure means for the batch is its caller's to
  *    decide.
@@ -76,7 +80,7 @@ import {
   type ContextoDosListingsAmazon,
   type LeituraListingNaAmazon,
   buscarListingsNaAmazon,
-  lerListingNaAmazon,
+  lerListingComTaxaNaAmazon,
 } from './listingsAmazon';
 
 /* -------------------------------------------------------------------------- */
@@ -166,6 +170,8 @@ export type LeituraLoteListingsAmazon =
       /** One entry per distinct SKU asked. */
       readonly porSku: ReadonlyMap<string, LeituraSkuListingsAmazon>;
       readonly chamadas: ChamadasLeituraLoteListingsAmazon;
+      /** The lowest `x-amzn-RateLimit-Limit` of every call made; `null` when none carried one. */
+      readonly limiteTaxa: number | null;
     }
   | {
       readonly tipo: typeof DESFECHO_LEITURA_LOTE_LISTINGS_AMAZON.prazo;
@@ -173,6 +179,8 @@ export type LeituraLoteListingsAmazon =
       /** What was decided before the deadline (a subset of the SKUs asked). */
       readonly porSku: ReadonlyMap<string, LeituraSkuListingsAmazon>;
       readonly chamadas: ChamadasLeituraLoteListingsAmazon;
+      /** The lowest `x-amzn-RateLimit-Limit` of the calls made before the deadline; `null` when none. */
+      readonly limiteTaxa: number | null;
     };
 
 /* -------------------------------------------------------------------------- */
@@ -267,12 +275,18 @@ export async function lerListingsEmLoteAmazon(
   const skus = [...new Set(skusPedidos)].sort(porTexto);
   const chamadas = { buscas: 0, rebuscas: 0, gets: 0 };
   const porSku = new Map<string, LeituraSkuListingsAmazon>();
+  /** The lowest rate an answer carried so far; `null` while none carried one. */
+  let limiteTaxa: number | null = null;
+  const anotarTaxa = (taxa: number | null) => {
+    if (taxa !== null && (limiteTaxa === null || taxa < limiteTaxa)) limiteTaxa = taxa;
+  };
   const venceu = () => ctx.agora() >= opcoes.prazoMs;
   const prazo = (etapa: EtapaLeituraLoteListingsAmazon): LeituraLoteListingsAmazon => ({
     tipo: DESFECHO_LEITURA_LOTE_LISTINGS_AMAZON.prazo,
     etapa,
     porSku,
     chamadas: { ...chamadas },
+    limiteTaxa,
   });
   const ritmoBuscas = ritmo(ctx, INTERVALO_BUSCAS_LISTINGS_AMAZON_MS);
   const ritmoGets = ritmo(ctx, INTERVALO_GETS_LISTINGS_AMAZON_MS);
@@ -292,6 +306,7 @@ export async function lerListingsEmLoteAmazon(
     });
     chamadas.buscas += 1;
     if (rebusca) chamadas.rebuscas += 1;
+    anotarTaxa(resposta.limiteTaxa);
     const pedidos = new Set(grupo);
     const achados = new Map<string, ListingAmazon>();
     for (const item of resposta.itens) {
@@ -356,12 +371,13 @@ export async function lerListingsEmLoteAmazon(
     await ritmoGets.aguardar();
     if (venceu()) return prazo(ETAPA_LEITURA_LOTE_LISTINGS_AMAZON.leitura);
     ritmoGets.marcar();
-    const leitura = await lerListingNaAmazon(ctx.contexto, {
+    const { leitura, limiteTaxa: taxaDoGet } = await lerListingComTaxaNaAmazon(ctx.contexto, {
       sellerId: ctx.sellerId,
       sku,
       incluir,
     });
     chamadas.gets += 1;
+    anotarTaxa(taxaDoGet);
     porSku.set(sku, lido(leitura, confirmacoes.has(sku)));
   }
 
@@ -369,5 +385,6 @@ export async function lerListingsEmLoteAmazon(
     tipo: DESFECHO_LEITURA_LOTE_LISTINGS_AMAZON.completa,
     porSku,
     chamadas: { ...chamadas },
+    limiteTaxa,
   };
 }

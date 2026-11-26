@@ -615,3 +615,84 @@ describe('the shared read’s own proofs: the cap both ways, the re-search pacin
     expect(linha?.meta).toMatchObject({ skus: 2, itens: 3, encontrados: 2 });
   });
 });
+
+describe('(13-e) the lowest rate of the read, for a caller’s own line', () => {
+  /**
+   * Every answer's `x-amzn-RateLimit-Limit` from `taxa`: the search answers at
+   * `busca`, the single GET at `get` (the catalogue read the GET route makes
+   * sets it just before its answer is built).
+   */
+  function comTaxas(c: Cenario, taxas: { readonly busca: string; readonly get: string }) {
+    const ler = c.amazon.get.bind(c.amazon);
+    c.amazon.get = (sku: string) => {
+      c.limiteTaxa = taxas.get;
+      return ler(sku);
+    };
+    c.busca = (pedidos) => {
+      const items = pedidos.filter((s) => c.amazon.has(s) && !c.omitidos.has(s)).map(ler);
+      c.limiteTaxa = taxas.busca;
+      return { items, numberOfResults: items.length };
+    };
+  }
+
+  it.each<[FluxoListingAmazon]>([[FLUXO_LISTING_AMAZON.estoque], [FLUXO_LISTING_AMAZON.preco]])(
+    '★ the %s flow’s answer carries the LOWEST rate of its searches AND its GETs (a GET below the searches is taken)',
+    async (fluxo) => {
+      const c = cenario();
+      const skus = varios(c, 3);
+      c.omitidos.add(skus[0] as string);
+      comTaxas(c, { busca: '5', get: '2' });
+      const r = completa(await c.ler(skus, { fluxo }));
+      expect(gets(c)).toHaveLength(1);
+      expect(r.limiteTaxa).toBe(2);
+      // The search's own line still names ITS rate.
+      expect(c.log.linhas.find((l) => l.meta?.fase === 'busca')?.meta).toMatchObject({
+        limiteTaxa: 5,
+      });
+    },
+  );
+
+  it('★ NEAR-MISS: the lowest, never the last — a GET above the searches leaves the searches’ rate', async () => {
+    const c = cenario();
+    const skus = varios(c, 3);
+    c.omitidos.add(skus[0] as string);
+    comTaxas(c, { busca: '2', get: '5' });
+    const r = completa(await c.ler(skus));
+    expect(r.limiteTaxa).toBe(2);
+  });
+
+  it('★ NEAR-MISS: no answer carried the header ⇒ null, never 0', async () => {
+    const c = cenario();
+    const skus = varios(c, 2);
+    c.omitidos.add(skus[0] as string);
+    const r = completa(await c.ler(skus, { incluir: INCLUIR_LEITURA_PRECO }));
+    expect(gets(c)).toHaveLength(1);
+    expect(r.limiteTaxa).toBeNull();
+    expect(r.limiteTaxa).not.toBe(0);
+  });
+
+  it('a GET that reads "not listed" carries no rate; the searches’ still counts', async () => {
+    const c = cenario();
+    const skus = varios(c, 2);
+    c.amazon.delete(skus[0] as string);
+    c.limiteTaxa = '4';
+    const r = completa(await c.ler(skus));
+    expect(doSku(r, skus[0] as string)).toMatchObject({ leitura: NAO_LISTADO_AMAZON });
+    expect(r.limiteTaxa).toBe(4);
+  });
+
+  it('a read cut by its deadline carries the lowest rate of the calls it made', async () => {
+    const c = cenario();
+    const skus = varios(c, 3);
+    for (const sku of skus) c.omitidos.add(sku);
+    comTaxas(c, { busca: '6', get: '3' });
+    const r = await c.ler(skus, { prazoMs: AGORA_MS + 334 });
+    expect(r.tipo).toBe('prazo');
+    expect(gets(c)).toHaveLength(1);
+    expect(r.limiteTaxa).toBe(3);
+    const d = cenario();
+    const outros = varios(d, 2);
+    const nada = await d.ler(outros, { prazoMs: AGORA_MS });
+    expect(nada).toMatchObject({ tipo: 'prazo', limiteTaxa: null });
+  });
+});

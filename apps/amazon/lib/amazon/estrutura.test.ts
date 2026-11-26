@@ -211,6 +211,15 @@
  *    single-target entry gains the price task as its fourth caller; and the App
  *    Hosting forbidden list {@link MODULOS_DE_PRECO_FORA_DO_APP_HOSTING} is
  *    derived from the I/O roster (the producer stays reachable).
+ *  - (step 13, PR 13-e) the run's I/O joins the I/O roster: only the run's one
+ *    write and the parts writer make a Firestore write call
+ *    ({@link ESCRITORES_EM_PRECO}), and only they name their handles in
+ *    `preco/` besides the task's by-id reads; the claim module and the run's
+ *    one write stay App-Hosting-reachable ({@link PRECO_NO_APP_HOSTING}), and
+ *    the claim's own walk reaches neither the price task, the lease I/O nor
+ *    the one listings caller; and a run's page (`execucaoPreco.ts`) is wiring
+ *    the jobs root binds, off the App Hosting walk, writing through the run's
+ *    one write and the parts writer only.
  */
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, posix, relative, sep } from 'node:path';
@@ -1107,7 +1116,14 @@ const MODULOS_DE_LISTINGS_FORA_DO_APP_HOSTING = [
  * through it. A test derives this list from the I/O roster {@link E_S_EM_PRECO},
  * so a new I/O module of `preco/` reds until it is listed here.
  */
-const MODULOS_DE_PRECO_FORA_DO_APP_HOSTING = ['lib/amazon/preco/processarPreco.ts'];
+const MODULOS_DE_PRECO_FORA_DO_APP_HOSTING = [
+  'lib/amazon/preco/processarPreco.ts',
+  // (PR 13-e) The parts writer: a run's pages and Decide write and read parts through it
+  // (the price task reads its own part by id).
+  'lib/amazon/preco/divergenciasPrecoFirestore.ts',
+  // (PR 13-e) A run's page and its decision step: the walk, the live read, Decide.
+  'lib/amazon/preco/execucaoPreco.ts',
+];
 
 /** The manual stock push route (step 12, PR 12-g), relative to the APP root: a union-walk entry. */
 const ROTA_ENVIO_MANUAL_ESTOQUE = 'app/api/marketplace/amazon/enviar-estoque/route.ts';
@@ -5462,15 +5478,20 @@ const COMPARACAO_DE_PRECO =
  * imports it, with what. PR 13-c had none; PR 13-d wires the price task onto
  * the jobs queue, and nothing else: the dispatcher parses the payload contract
  * (the queue's whole union), the jobs root binds the task, and the stock root
- * binds the producer onto the jobs queue's path. The run, the feed provider
+ * binds the producer onto the jobs queue's path. PR 13-e adds the run's page
+ * to the jobs root and the page producer to the stock root. The feed provider
  * and the routes come in later PRs, each adding its row.
  */
 const IMPORTADORES_DE_PRECO: Readonly<Record<string, readonly string[]>> = {
   'functions/src/agendadorEstoque.ts': [
+    '../../lib/amazon/preco/inicioExecucaoPreco',
     '../../lib/amazon/preco/produtorPreco',
     '../../lib/amazon/preco/tarefaPreco',
   ],
-  'functions/src/filaLotes.ts': ['../../lib/amazon/preco/processarPreco'],
+  'functions/src/filaLotes.ts': [
+    '../../lib/amazon/preco/execucaoPreco',
+    '../../lib/amazon/preco/processarPreco',
+  ],
   'lib/amazon/feeds/processarLote.ts': ['../preco/tarefaPreco'],
 };
 
@@ -5503,8 +5524,58 @@ const PRECO_PUROS = [
  *   rungs, the one listings caller) and the read-failure ladder.
  * - `produtorPreco.ts` — the producer: the jobs queue's valve class and delay
  *   cap, and the shared producer core.
+ * - (PR 13-e) `execucaoPrecoFirestore.ts` — the run's I/O: the run handle, the
+ *   lost-precondition classes, the run schema.
+ * - (PR 13-e) `divergenciasPrecoFirestore.ts` — the parts' I/O: the parts
+ *   handle and the parts schema.
+ * - (PR 13-e) `inicioExecucaoPreco.ts` — the claim, re-kick, cancel and status,
+ *   and the page producer: the lease handle (a masked read), the schemas, the
+ *   region's class, the task SDK's classes, the logger, the flow names, the
+ *   jobs queue's valve class, delay cap and payload version, and the shared
+ *   producer core.
+ * - (PR 13-e) `execucaoPreco.ts` — a run's page and Decide: the conta handle (a
+ *   masked by-id read), the schemas, the SP-API package (the 429's class), the
+ *   aviso raiser, the logger, the valves, the payload version, the shared
+ *   listings wiring (the walk, the link reader, the live read, the one listings
+ *   caller's datasets, the masks, the flow names) and the read-failure ladder.
  */
 const E_S_EM_PRECO: Readonly<Record<string, readonly string[]>> = {
+  'preco/divergenciasPrecoFirestore.ts': [
+    '@delfrance/data/admin/collections',
+    '@delfrance/schemas',
+  ],
+  'preco/execucaoPreco.ts': [
+    '../avisos/avisos',
+    '../core/log',
+    '../core/valvulas',
+    '../feeds/tarefaLote',
+    '../listings/avaliacaoLoteVinculos',
+    '../listings/fluxoListing',
+    '../listings/leituraLoteListings',
+    '../listings/listingsAmazon',
+    '../listings/resolverVinculo',
+    '../listings/varreduraVinculos',
+    '../pedidos/falhaLeituraAmazon',
+    '@delfrance/data/admin/collections',
+    '@delfrance/integrations-amazon-sp-api',
+    '@delfrance/schemas',
+  ],
+  'preco/execucaoPrecoFirestore.ts': [
+    '@delfrance/data/admin/collections',
+    '@delfrance/data/admin/grpcErrors',
+    '@delfrance/schemas',
+  ],
+  'preco/inicioExecucaoPreco.ts': [
+    '../core/filaTarefas',
+    '../core/log',
+    '../core/valvulas',
+    '../feeds/agendadorLotes',
+    '../feeds/tarefaLote',
+    '../listings/produtorListing',
+    '@delfrance/core/region',
+    '@delfrance/data/admin/collections',
+    '@delfrance/schemas',
+  ],
   'preco/processarPreco.ts': [
     '../avisos/avisos',
     '../core/escrita',
@@ -5534,8 +5605,27 @@ const E_S_EM_PRECO: Readonly<Record<string, readonly string[]>> = {
  * (step 13, PR 13-d) The I/O modules of `preco/` an App Hosting entry may
  * reach: the producer (it reads nothing; a route enqueues price tasks through
  * it).
+ * (PR 13-e) The run's claim, re-kick, cancel and status (a route's body: a
+ * masked run read, one tier-1 write, page enqueues), and the run's one write
+ * it goes through.
  */
-const PRECO_NO_APP_HOSTING = ['preco/produtorPreco.ts'];
+const PRECO_NO_APP_HOSTING = [
+  'preco/produtorPreco.ts',
+  'preco/inicioExecucaoPreco.ts',
+  'preco/execucaoPrecoFirestore.ts',
+];
+
+/**
+ * (step 13, PR 13-e) The ONLY files under `preco/` that write Firestore, each
+ * with its write calls: the run's one write (a `create` on no run, an
+ * `update(…, { lastUpdateTime })` on the read it decided from) and the parts
+ * writer (the holding page's full `set` by id). Every other module of `preco/` writes
+ * through these, the shared write-back or the aviso raiser.
+ */
+const ESCRITORES_EM_PRECO: Readonly<Record<string, number>> = {
+  'preco/execucaoPrecoFirestore.ts': 2,
+  'preco/divergenciasPrecoFirestore.ts': 1,
+};
 
 /**
  * (step 13, PR 13-d) The Firestore collection handles the price task names,
@@ -5570,6 +5660,10 @@ describe('the step-13 price core guards (13-c)', () => {
 
   it('★ preco/ is Next-free, reads no process environment, never imports the @/ alias, and reaches nothing of estoque/', () => {
     expect(preco.map(rel).sort()).toEqual([
+      'preco/divergenciasPrecoFirestore.ts',
+      'preco/execucaoPreco.ts',
+      'preco/execucaoPrecoFirestore.ts',
+      'preco/inicioExecucaoPreco.ts',
       'preco/issuesPreco.ts',
       'preco/modoPreco.ts',
       'preco/motivosPreco.ts',
@@ -5591,12 +5685,13 @@ describe('the step-13 price core guards (13-c)', () => {
     }
   });
 
-  it('★ preco/’s PURE half loads only the allow-list (by type too) and names only the digest from the data barrel; NO module of preco/ makes a Firestore write call', () => {
+  it('★ preco/’s PURE half loads only the allow-list (by type too) and names only the digest from the data barrel; NO module of preco/ but ESCRITORES_EM_PRECO makes a Firestore write call', () => {
     for (const arquivo of preco) {
       const texto = readFileSync(arquivo, 'utf8');
       if (PRECO_PUROS.includes(rel(arquivo))) {
         expect(foraDoPuroEmPreco(texto), rel(arquivo)).toEqual([]);
       }
+      if (rel(arquivo) in ESCRITORES_EM_PRECO) continue;
       expect(semComentarios(texto).match(ESCRITA_FIRESTORE_EM_FEEDS), rel(arquivo)).toBeNull();
     }
     // Anti-vacuity: the scan reads real imports — the payloads' digest, the centavo.
@@ -5669,7 +5764,7 @@ describe('the step-13 price core guards (13-c)', () => {
         .map(relApp),
     ).toEqual(['lib/amazon/preco/planoPreco.ts']);
     const outros = preco.filter((p) => rel(p) !== 'preco/planoPreco.ts');
-    expect(outros).toHaveLength(7);
+    expect(outros).toHaveLength(11);
     for (const arquivo of outros) {
       const texto = readFileSync(arquivo, 'utf8');
       expect(especificadores(texto), rel(arquivo)).not.toContain('@delfrance/core/money');
@@ -5790,7 +5885,14 @@ describe('the step-13 price core guards (13-c)', () => {
       expect(paraES(readFileSync(arquivo, 'utf8')), rel(arquivo)).toEqual([]);
     }
     // Anti-vacuity: the I/O names are the two modules, and the scan sees both forms.
-    expect([...nomesES].sort()).toEqual(['./processarPreco', './produtorPreco']);
+    expect([...nomesES].sort()).toEqual([
+      './divergenciasPrecoFirestore',
+      './execucaoPreco',
+      './execucaoPrecoFirestore',
+      './inicioExecucaoPreco',
+      './processarPreco',
+      './produtorPreco',
+    ]);
     expect(paraES("import { x } from './processarPreco';\n")).toEqual(['./processarPreco']);
     expect(paraES("import type { P } from './produtorPreco';\n")).toEqual(['./produtorPreco']);
     // NEAR-MISS: a pure sibling stays allowed.
@@ -5886,6 +5988,156 @@ describe('the step-13 price core guards (13-c)', () => {
     }
     expect(caminhar('produtorPreco')).toEqual([]);
     expect(caminhar('tarefaPreco')).toEqual([]);
+  });
+
+  // An app-wide parse: CI headroom, not a budget.
+  it(
+    '★ (13-e) under preco/, ONLY ESCRITORES_EM_PRECO make a Firestore WRITE call, each its own count; across the APP, the run handle is named by the run’s one write and the task’s by-id read alone, the parts handle by the parts writer and the task’s',
+    { timeout: 30_000 },
+    () => {
+      const escritas = Object.fromEntries(
+        preco
+          .map((p) => [rel(p), semComentarios(readFileSync(p, 'utf8'))] as const)
+          .map(
+            ([arquivo, codigo]) =>
+              [arquivo, (codigo.match(ESCRITA_FIRESTORE_EM_FEEDS) ?? []).length] as const,
+          )
+          .filter(([, n]) => n !== 0),
+      );
+      expect(escritas).toEqual(ESCRITORES_EM_PRECO);
+      // Every production file of the app (lib/, app/, functions/src), not preco/
+      // alone: a route, a feed hook or a root naming a handle reds here too.
+      const producao = fontesDeProducaoDoApp();
+      const nomeiam = (re: RegExp) =>
+        producao
+          .filter((p) => re.test(semComentarios(readFileSync(p, 'utf8'))))
+          .map(relApp)
+          .sort();
+      expect(nomeiam(/\bprecoAmazonCollection\b/)).toEqual([
+        'lib/amazon/preco/execucaoPrecoFirestore.ts',
+        'lib/amazon/preco/processarPreco.ts',
+      ]);
+      expect(nomeiam(/\bdivergenciaPrecoAmazonCollection\b/)).toEqual([
+        'lib/amazon/preco/divergenciasPrecoFirestore.ts',
+        'lib/amazon/preco/processarPreco.ts',
+      ]);
+      // Anti-vacuity: the run's writes ARE a create and an update on the read's
+      // precondition, and the parts' write IS the handle's full set.
+      const execucao = semComentarios(lerDoApp('lib/amazon/preco/execucaoPrecoFirestore.ts') ?? '');
+      expect(execucao).toMatch(/\.create\(dados\)/);
+      expect(execucao).toMatch(/\.update\(dados, \{ lastUpdateTime: updateTime \}\)/);
+      expect(execucao).not.toMatch(/\b(?:ref|precoAmazonCollection)\s*\.\s*set\(/);
+      const partes = semComentarios(
+        lerDoApp('lib/amazon/preco/divergenciasPrecoFirestore.ts') ?? '',
+      );
+      expect(partes).toMatch(/\bdivergenciaPrecoAmazonCollection\.set\(/);
+      // NEAR-MISS: a write through the run handle anywhere else is seen by the scan.
+      expect(
+        'await precoAmazonCollection.docRef(db, {}, id).update(x);'.match(
+          ESCRITA_FIRESTORE_EM_FEEDS,
+        ),
+      ).not.toBeNull();
+      // Anti-vacuity: the app-wide list reaches beyond lib/ (the roots and the routes).
+      expect(producao.map(relApp)).toContain('functions/src/filaLotes.ts');
+      expect(producao.some((p) => relApp(p).startsWith('app/'))).toBe(true);
+    },
+  );
+
+  it('★ (13-e) the claim module’s own walk reaches neither the price task, a run’s page, the lease I/O, the one listings caller nor the engine; it does reach the run’s one write and the shared producer core', () => {
+    const CLAIM = 'lib/amazon/preco/inicioExecucaoPreco.ts';
+    const fecho = fechoDeImportacoes([CLAIM], lerDoApp, resolverAliasDoApp(lerDoApp));
+    expect(violacoesDoAppHosting(fecho)).toEqual([]);
+    for (const proibido of [
+      'lib/amazon/preco/processarPreco.ts',
+      'lib/amazon/preco/execucaoPreco.ts',
+      'lib/amazon/preco/divergenciasPrecoFirestore.ts',
+      'lib/amazon/feeds/vezFeedFirestore.ts',
+      'lib/amazon/listings/listingsAmazon.ts',
+      MOTOR_DE_ESCRITA,
+    ]) {
+      expect(fecho.arquivos, proibido).not.toContain(proibido);
+    }
+    expect(fecho.arquivos).toEqual(
+      expect.arrayContaining([
+        'lib/amazon/preco/execucaoPrecoFirestore.ts',
+        'lib/amazon/listings/produtorListing.ts',
+      ]),
+    );
+    // NEAR-MISS: the same module importing the lease I/O, the task or the
+    // listings caller is seen by this walk (the first two refused by the App
+    // Hosting list as well).
+    for (const [alvo, arquivo, proibido] of [
+      ['../feeds/vezFeedFirestore', 'lib/amazon/feeds/vezFeedFirestore.ts', true],
+      ['./processarPreco', 'lib/amazon/preco/processarPreco.ts', true],
+      ['./execucaoPreco', 'lib/amazon/preco/execucaoPreco.ts', true],
+      ['../listings/listingsAmazon', 'lib/amazon/listings/listingsAmazon.ts', false],
+    ] as const) {
+      const ler: LeitorDeFonte = (caminho) =>
+        caminho === CLAIM
+          ? `${lerDoApp(CLAIM) ?? ''}\nimport { x } from '${alvo}';\nexport const y = x;\n`
+          : lerDoApp(caminho);
+      const desvio = fechoDeImportacoes([CLAIM], ler, resolverAliasDoApp(ler));
+      expect(desvio.arquivos, alvo).toContain(arquivo);
+      expect(violacoesDoAppHosting(desvio).length > 0, alvo).toBe(proibido);
+    }
+  });
+
+  it('★ (13-e) every non-writer I/O module of preco/ names each collection handle it imports ONLY to build a by-id ref it reads: the page the conta’s, the claim the price lease’s', () => {
+    const naoEscritores = Object.keys(E_S_EM_PRECO).filter((a) => !(a in ESCRITORES_EM_PRECO));
+    expect([...naoEscritores].sort()).toEqual([
+      'preco/execucaoPreco.ts',
+      'preco/inicioExecucaoPreco.ts',
+      'preco/processarPreco.ts',
+      'preco/produtorPreco.ts',
+    ]);
+    const handles: Record<string, string[]> = {};
+    for (const arquivo of naoEscritores) {
+      const fonte = lerDoApp(`lib/amazon/${arquivo}`) ?? '';
+      const codigo = semComentarios(fonte);
+      const nomes = [...nomesImportadosDe(fonte, '@delfrance/data/admin/collections')].sort();
+      if (nomes.length > 0) handles[arquivo] = nomes;
+      for (const handle of nomes) {
+        expect(codigo, `${arquivo} ${handle}`).toMatch(new RegExp(`\\b${handle}\\.docRef\\(`));
+        expect(usosDeHandleForaDeRef(codigo, handle), `${arquivo} ${handle}`).toEqual([]);
+      }
+    }
+    expect(handles).toEqual({
+      'preco/execucaoPreco.ts': ['integracaoCollection'],
+      'preco/inicioExecucaoPreco.ts': ['vezFeedAmazonCollection'],
+      'preco/processarPreco.ts': [...HANDLES_LIDOS_EM_PRECO].sort(),
+    });
+    // NEAR-MISS: the page naming the run or the parts handle at all would show
+    // here (its run writes go through the run's one write, its part through the
+    // parts writer); and the import scan does see a second handle.
+    const pagina = semComentarios(lerDoApp('lib/amazon/preco/execucaoPreco.ts') ?? '');
+    expect(pagina).not.toMatch(/\b(?:precoAmazonCollection|divergenciaPrecoAmazonCollection)\b/);
+    expect(
+      nomesImportadosDe(
+        "import { integracaoCollection, precoAmazonCollection } from '@delfrance/data/admin/collections';\n",
+        '@delfrance/data/admin/collections',
+      ),
+    ).toContain('precoAmazonCollection');
+  });
+
+  it('★ (13-e) a run’s page writes ONLY through the run’s one write, the parts writer and the price aviso raiser — never an aviso writer of its own', () => {
+    const codigo = semComentarios(lerDoApp('lib/amazon/preco/execucaoPreco.ts') ?? '');
+    const outroEscritorDeAviso =
+      /\b(?:escreverAviso|resolverAviso|sincronizarAvisoContaEstoqueAmazon)\(/;
+    expect(codigo).toMatch(/\bescreverExecucaoPrecoAmazon\(/);
+    expect(codigo).toMatch(/\bgravarParteDivergenciaPrecoAmazon\(/);
+    expect(codigo).toMatch(/\bsincronizarAvisoContaListingsAmazon\(/);
+    expect(codigo).not.toMatch(outroEscritorDeAviso);
+    expect(codigo.match(ESCRITA_FIRESTORE_EM_FEEDS)).toBeNull();
+    // It enqueues through the two price producers only: never the feed core's
+    // jobs producer, never the stock queue's.
+    expect(codigo).not.toMatch(/\b(?:agendador|produtorEstoque)\b/);
+    expect(codigo).toMatch(/\bprodutorPaginas\(\)\.enfileirarPagina\(/);
+    expect(codigo).toMatch(/\bprodutorPreco\(\)\.enfileirarLote\(/);
+    // NEAR-MISS: a direct write or a second aviso writer is seen.
+    expect(
+      'await ref.update(x, { lastUpdateTime });'.match(ESCRITA_FIRESTORE_EM_FEEDS),
+    ).not.toBeNull();
+    expect('await escreverAviso(db, plano, deps);').toMatch(outroEscritorDeAviso);
   });
 });
 
