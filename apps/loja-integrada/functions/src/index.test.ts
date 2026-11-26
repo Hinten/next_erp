@@ -10,6 +10,7 @@ import {
   historicoFreteInicialCollection,
   importacaoLojaIntegradaCollection,
   integracaoCollection,
+  produtoCollection,
   produtoLojaIntegradaLinkCollection,
 } from '@delfrance/data/admin/collections';
 import { MAX_TENTATIVAS_DEFERRED, TASK_MAX_ATTEMPTS } from '@delfrance/data/admin/notifications';
@@ -119,6 +120,7 @@ const {
   onHistoricoFreteLojaIntegrada,
   onImportacaoLojaIntegradaCriada,
   onIntegracaoLojaIntegradaChanged,
+  onPrecoLojaIntegrada,
   onProdutoLojaIntegradaLinkChanged,
   pollLojaIntegradaPedidos,
   reconciliarEstoqueLojaIntegrada,
@@ -187,7 +189,9 @@ const FILAS = {
  * and fourth (`onProdutoLojaIntegradaLinkChanged`, the anchor, and
  * `onImportacaoLojaIntegradaCriada`, the import's job-creation trigger), step 12
  * the fifth (`onEstoqueLojaIntegrada`, the stock trigger, on every ERP stock
- * record — the same path `apps/functions`' storage codebase listens on); the
+ * record — the same path `apps/functions`' storage codebase listens on), step 13
+ * the sixth (`onPrecoLojaIntegrada`, the price trigger, on every ERP produto —
+ * the same path other codebases' produto triggers listen on); the
  * `every GATILHO…` tests below walk the MAP, never a named trigger, so each one
  * lands covered.
  */
@@ -197,6 +201,7 @@ const GATILHOS = {
   onProdutoLojaIntegradaLinkChanged,
   onImportacaoLojaIntegradaCriada,
   onEstoqueLojaIntegrada,
+  onPrecoLojaIntegrada,
 } as const;
 
 /**
@@ -230,6 +235,11 @@ const CAMINHOS_DOS_GATILHOS = {
     colecao: estoqueCollection.resolvePath({ produtoId: '{produtoId}' }),
     ancora: 'produtos/{produtoId}/estoques',
     folha: '{estoqueId}',
+  },
+  onPrecoLojaIntegrada: {
+    colecao: produtoCollection.resolvePath({}),
+    ancora: 'produtos',
+    folha: '{produtoId}',
   },
 } as const satisfies Record<
   keyof typeof GATILHOS,
@@ -1061,9 +1071,10 @@ describe('the Firestore triggers (GATILHOS)', () => {
     // before/after, and every arm but one is safe under that: the conta reconcile
     // reads neither (it re-reads the conta itself), the conta trigger's depósito arm
     // (PR 12-g) enqueues ONE task NAMED by the after side's update time (a replay
-    // re-meets it), the history trigger and the
-    // stock trigger enqueue NAMED tasks (the stock one keeps no state and writes
-    // nothing; its tasks re-read the stock when they run), and the anchor's
+    // re-meets it), the history trigger, the
+    // stock trigger and the price trigger enqueue NAMED tasks (the stock and
+    // price ones keep no state and write nothing; their tasks re-read the stock,
+    // or the ERP and the store, when they run), and the anchor's
     // remove re-derives from a guarded re-read of the
     // links stored now. ⚠️ The anchor's ADD is the exception: a blind `arrayUnion`
     // handled after its link's close (Eventarc gives no order, and a retried create
@@ -1143,7 +1154,7 @@ describe('every trigger of the codebase', () => {
     ]);
   });
 
-  it('every event-trigger export is in GATILHOS — exactly {onEstoqueLojaIntegrada, onHistoricoFreteLojaIntegrada, onImportacaoLojaIntegradaCriada, onIntegracaoLojaIntegradaChanged, onProdutoLojaIntegradaLinkChanged}', () => {
+  it('every event-trigger export is in GATILHOS — exactly {onEstoqueLojaIntegrada, onHistoricoFreteLojaIntegrada, onImportacaoLojaIntegradaCriada, onIntegracaoLojaIntegradaChanged, onPrecoLojaIntegrada, onProdutoLojaIntegradaLinkChanged}', () => {
     // The third exhaustiveness twin: the two above filter on `scheduleTrigger`
     // and `taskQueueTrigger`, so an `onDocument*` export would otherwise have its
     // `database`, region, secrets and `retry` read by nothing.
@@ -1153,6 +1164,7 @@ describe('every trigger of the codebase', () => {
       'onHistoricoFreteLojaIntegrada',
       'onImportacaoLojaIntegradaCriada',
       'onIntegracaoLojaIntegradaChanged',
+      'onPrecoLojaIntegrada',
       'onProdutoLojaIntegradaLinkChanged',
     ]);
   });
