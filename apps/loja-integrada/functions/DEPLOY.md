@@ -88,6 +88,13 @@ neither lane. At `dry-run` or `on` every write run still stops at its write
 context while the read switch is unset — before any Loja Integrada client
 exists — so nothing is ever written to Loja Integrada before the window.
 
+⚠️ **The price queue (master-plan step 13) stops at the price valve.**
+`filaPrecoLojaIntegrada` has no producer yet but its own `deriva` follow-up, so
+nothing enqueues onto it. With `LOJA_INTEGRADA_MODO_PRECO` unset every task
+returns `desligado` before any read; at `dry-run` or `on` each send run stops at
+its write context while the read switch is unset, before any Loja Integrada
+client exists.
+
 ## Prerequisites
 
 - `pnpm install` at the repo root (the junction needs `apps/loja-integrada/node_modules`).
@@ -223,14 +230,15 @@ exists — so nothing is ever written to Loja Integrada before the window.
 >
 > ⚠️ **Into a project that does not hold these queues yet** — which is every
 > project until the window, and a project that already holds the reads queue
-> still lacks the writes queue (master-plan step 7) and the stock queue
-> (master-plan step 12) — read **the first deploy of a NEW queue crashes on the
+> still lacks the writes queue (master-plan step 7), the stock queue
+> (master-plan step 12) and the price queue (master-plan step 13) — read **the
+> first deploy of a NEW queue crashes on the
 > enqueuer binding** under the IAM section below FIRST. On firebase-tools
 > 15.28.2 that deploy reports an error for each new queue's function, with a
 > misleading organization-policy message, and the fix is one `gcloud` grant per
 > identity FOR EACH NEW QUEUE (`filaLeituraLojaIntegrada`,
-> `filaEscritaLojaIntegrada` and `filaEstoqueLojaIntegrada`; the workaround
-> block lists all three) plus a re-run.
+> `filaEscritaLojaIntegrada`, `filaEstoqueLojaIntegrada` and
+> `filaPrecoLojaIntegrada`; the workaround block lists all four) plus a re-run.
 
 ```bash
 # from the repo root
@@ -261,11 +269,12 @@ are local builds; neither deploys anything.
 | `reprocessLojaIntegradaNotifications` | `onSchedule('*/30 * * * *')`                    | The backstop, draining BOTH lanes on one tick (`limit 10` each): `failed` notifications older than the hot window, then the deferred lane (a parked conta, an inactive conta, a missing credential, the switch off). Logged separately — summing them would hide a growing deferred backlog inside a healthy `processed`. `America/Sao_Paulo`, `timeoutSeconds 540`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `sweepLojaIntegradaTokenExpiry`       | `onSchedule('30 6 * * *')`                      | The DAILY token-expiry sweep: raises the expiry and reconnection avisos at the 30-day horizon, resolves them once a new date or credential lands, and closes the orphaned rows of contas that no longer exist. Reads only the stored credential — **no Loja Integrada call**, so the read switch does not gate it. `America/Sao_Paulo`, `timeoutSeconds 120`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `pollLojaIntegradaPedidos`            | `onSchedule('*/5 * * * *')`                     | The 5-minute order poller, behind TWO gates that each stop a tick with zero reads: the importer seam (filled in master-plan step 5, so it passes) and the read switch. Per active conta, one after another, starting from a different conta each tick (220 s per tick, at most 100 s per conta): a single-flight lease and a durable cursor on `pollPedidosLojaIntegrada/{id}`, `GET /v1/pedido/search/` paced at the reads interval (at most 20 pages), one synthetic notification per changed order onto the reads queue (persisted `failed` instead in sweep-only mode). A refusal or a stuck window is counted on the same document and raises the `critico` aviso `lojaIntegradaImportacaoParada`. Reads `LOJA_INTEGRADA_POLL_LOOKBACK_H`. `America/Sao_Paulo`, `timeoutSeconds 300`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `filaEscritaLojaIntegrada`            | `onTaskDispatched` (Cloud Tasks queue)          | Master-plan step 7 — the writes queue of the channel: every write to Loja Integrada but stock (today the status write-back; later the price and catalogue writes) and its own sweep. The body dispatches on the task's `tipo`: `rastreio` runs one write event through the writes pipeline (a fresh pedido read, the deciding read of the order, at most one write, the read-back), `varredura` runs both lanes of `notificacoesEscritaLojaIntegrada` INSIDE the queue (one row at a time, a 140 s budget), any other `tipo` is logged and dropped. `rateLimits { maxConcurrentDispatches: 1, maxDispatchesPerSecond: 1 }`, **`concurrency: 1` and `maxInstances: 1`** (one instance serving one request), `retryConfig` 3 attempts with a FLAT 300 s backoff (no doubling) — no write starts later than 260 s after a dispatch began, so a retry starts only after an abandoned attempt can no longer write — `timeoutSeconds 300`. **No `secrets:`.** Persists to `notificacoesEscritaLojaIntegrada` only on retry-exhaustion, a landed write whose effect is not confirmed, park or defer.                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `filaEscritaLojaIntegrada`            | `onTaskDispatched` (Cloud Tasks queue)          | Master-plan step 7 — the writes queue of the channel: every write to Loja Integrada but stock and price (today the status write-back; later the catalogue writes) and its own sweep. The body dispatches on the task's `tipo`: `rastreio` runs one write event through the writes pipeline (a fresh pedido read, the deciding read of the order, at most one write, the read-back), `varredura` runs both lanes of `notificacoesEscritaLojaIntegrada` INSIDE the queue (one row at a time, a 140 s budget), any other `tipo` is logged and dropped. `rateLimits { maxConcurrentDispatches: 1, maxDispatchesPerSecond: 1 }`, **`concurrency: 1` and `maxInstances: 1`** (one instance serving one request), `retryConfig` 3 attempts with a FLAT 300 s backoff (no doubling) — no write starts later than 260 s after a dispatch began, so a retry starts only after an abandoned attempt can no longer write — `timeoutSeconds 300`. **No `secrets:`.** Persists to `notificacoesEscritaLojaIntegrada` only on retry-exhaustion, a landed write whose effect is not confirmed, park or defer.                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `onHistoricoFreteLojaIntegrada`       | `onDocumentCreated` (Firestore)                 | Master-plan step 7 — the status write-back's producer, on `pedidos/{pedidoId}/historicoFtIni/{historicoId}`. For a created freight history row whose estado is `postado`, `entregue` or `aguardandoRetirada`, with the write valve at `dry-run` or `on`, it reads the pedido ONCE and, for an imported Loja Integrada order, enqueues ONE task named `rastreio-<event digest>` onto `filaEscritaLojaIntegrada` (`task-already-exists` is success). A non-target estado or the valve `off` returns with ZERO reads and no line; an unrecognised valve value logs ONE WARNING. Tasks disabled or a transient Cloud Tasks failure ⇒ the event is persisted `failed` for the varredura. `database` **`default`**, `retry: true`, **no secrets**, no Loja Integrada call.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `varrerEscritasLojaIntegrada`         | `onSchedule('15,45 * * * *')`                   | Master-plan step 7 — the writes queue's backstop timer. It only enqueues ONE `varredura` task per tick onto `filaEscritaLojaIntegrada`, named after the tick's schedule time; the sweep runs inside the queue, never here, so a retry can never race a fresh write. It does not read the write valve (the task does). Tasks disabled or a transient failure ⇒ one WARNING and the next tick tries again. `America/Sao_Paulo`, `timeoutSeconds 60`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `reconciliarEstoqueLojaIntegrada`     | `onSchedule('23 4 * * *')`, `America/Sao_Paulo` | Master-plan step 12 (PR 12-g) — the NIGHTLY start of the daily stock reconcile. It reads NO Firestore document and calls no Loja Integrada endpoint: with `LOJA_INTEGRADA_MODO_ESTOQUE` `off` (unset) it does nothing; otherwise — whatever the read switch says: the run's ERP side rebuilds the kits map, its store phase stops at the switch — it enqueues ONE named task, the run's first slice (`estoque-reconcile-<AAAAMMDD of the schedule time in São Paulo>`, seq 0), onto `filaLeituraLojaIntegrada`. `timeoutSeconds 60`, `retryCount 3` (a transient enqueue failure is rethrown; the retry carries the same schedule time, so the same name). The minute 23 is one no other schedule of this codebase fires at (`src/index.test.ts`). **No `secrets:`.**                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | `filaEstoqueLojaIntegrada`            | `onTaskDispatched` (Cloud Tasks queue)          | Master-plan step 12 (PR 12-e) — the STOCK queue: one send run of one child produto of one conta per task (`lib/lojaIntegrada/estoque/processarEstoque.ts`), a queue of its own so the status write-back never waits behind a stock pass. The payload is ids only (parsed strict; the quantity is derived when the task runs). `estoque` runs one send run; `estoque-kits` (PR 12-f) runs one component's kit fan-out (`processarKitsEstoque.ts`): one send per kit it holds at 0, paced on the global slot `reconcileEstoqueLojaIntegrada/atual.proximoSlotMs`, its only write; any other `tipo` is dropped. Options IDENTICAL to `filaEscritaLojaIntegrada`'s (`src/index.test.ts` pins the equality): one dispatch at a time, **`concurrency: 1` and `maxInstances: 1`**, 3 attempts with a FLAT 300 s backoff, `timeoutSeconds 300` (the worst run is 68 s). **No `secrets:`.** No failure store and **no Firestore write on success**; the only aviso it raises is `lojaIntegradaEstoqueRecusado` (a write refused on the last attempt). Producers (functions runtime SA): the stock trigger, the fan-out, the `deriva` follow-up, and the daily reconcile's queue phase (PR 12-g); (App Hosting runtime SA) the manual push `POST …/enviar-estoque` (PR 12-h). The whole stock sync is `lib/lojaIntegrada/estoque/README.md`. No Loja Integrada call until the window: the stock valve is unset (zero reads), then the read switch.                                                                                                         |
+| `filaPrecoLojaIntegrada`              | `onTaskDispatched` (Cloud Tasks queue)          | Master-plan step 13 (PR 13-d) — the PRICE queue: one send run of one linked produto of one conta per task (`lib/lojaIntegrada/preco/processarPreco.ts`), a queue of its own so a whole-catalogue reprice never holds the status write-back or a stock send behind it. The payload is ids only (parsed strict; the price is derived when the task runs, from the ERP and a fresh deciding read of the store). `preco` runs one send run — at most ONE `PUT /v1/produto_preco/{id}`, an event-origin one read back by its own GET (a drift ⇒ ONE `deriva` follow-up, generation 1, never another), a bulk-origin one with no read-back call; any other `tipo` is dropped. Options IDENTICAL to `filaEstoqueLojaIntegrada`'s (`src/index.test.ts` pins the equality): one dispatch at a time, **`concurrency: 1` and `maxInstances: 1`**, 3 attempts with a FLAT 300 s backoff, `timeoutSeconds 300` (the worst run is 68 s). **No `secrets:`.** No failure store and **no Firestore write on success**; the only aviso it raises is `lojaIntegradaPrecoRecusado` (a write refused on the last attempt, or a follow-up that still read a drift). Producers today (functions runtime SA): only the `deriva` follow-up; the price trigger, the nightly read and the operator's routes come in later PRs of step 13. The send run is `lib/lojaIntegrada/preco/README.md`. No Loja Integrada call until the window: the price valve is unset (zero reads), then the read switch.                                                                        |
 | `onIntegracaoLojaIntegradaChanged`    | `onDocumentWritten` (Firestore)                 | Master-plan step 20 — the codebase's FIRST Firestore trigger, on `integracao/{integracaoId}`. Keeps each Loja Integrada conta's `int_frete` doc (tipo `lojaIntegrada`) in step with the conta through the shared core `@delfrance/data/admin/frete`: adopt the migrated doc by `contaLojaIntegradaEnviosOuterRef`, else create `lojaIntegrada-<integracaoId>`; patch only the mirrored fields that moved (`nome`, `ativo`, the filial, `dataCadastro`), never `mapa` or `horarioDeCorte`; deactivate, never delete, once the conta is gone or no longer Loja Integrada. State-driven: the core re-reads the conta itself, so a replayed or out-of-order delivery cannot roll anything back. EVERY channel's conta write reaches it, and it returns with ZERO reads unless the conta is, or was, Loja Integrada and the write moved a mirrored field (or the tipo, or created or deleted the conta). Logs the conta id and the action with field names, never a value. `database` **`default`**, `retry: true`, **no secrets**, no `invoker` (Eventarc invokes it), no Loja Integrada call. No per-function `region:`. Since master-plan step 12 (PR 12-g) a SECOND arm: a Loja Integrada conta re-pointed at ANOTHER depósito (an update; folded, so one depósito in its two spellings is no change; never on a create, never when the depósito is removed) enqueues ONE named first slice of a full stock reconcile on `filaLeituraLojaIntegrada` (`estoque-reconcile-deposito-<µs of the write>`), zero reads, with the stock valve not `off`. |
 | `onProdutoLojaIntegradaLinkChanged`   | `onDocumentWritten` (Firestore)                 | Master-plan step 9 — the `integracoesComProduto` anchor, on `produtos/{produtoId}/produtolojaintegrada/{linkId}` (a parent's link under the ERP root and a child's under the ERP child alike). Keeps each produto's `integracoesComProduto` — the pre-filter the other channels' sweeps and this app's manual stock push open with (the stock trigger and the nightly stock reconcile read the links themselves) — in step with its Loja Integrada links, through the shared core `@delfrance/data/admin/produtos`: a link COUNTS when its `id` names a store product and it is not in the trash (hidden and blocked links count); a counting link created or pulled back out of the trash adds its conta (`arrayUnion`, tier 0), and a link that stops counting or is deleted makes the core re-read the produto's whole link subcollection inside its guarded write and remove the conta only when no counting link of it survives (tier 1). The decision is taken from the event payload before any read, so an edit that moves no membership (a name, the mirror fields, a publication code) costs ZERO reads. Logs the produto, the link doc and the conta ids with the write's outcome, never a value. `database` **`default`**, `retry: true`, **no secrets**, no `invoker` (Eventarc invokes it; it enqueues nothing), no index of its own, no Loja Integrada call. No per-function `region:`.                                                                                                                                           |
 | `onEstoqueLojaIntegrada`              | `onDocumentWritten` (Firestore)                 | Master-plan step 12 (PR 12-f) — the stock TRIGGER, on `produtos/{produtoId}/estoques/{estoqueId}`: EVERY ERP stock write of every depósito and channel. Gates in order: the payload alone (no available quantity moved — a `localizacao` edit, a stamp-only update, the paid → shipped pair ⇒ ZERO reads, no line), the stock valve (`off` ⇒ zero reads), the cached map of the contas' depósitos (one `integracao` query per 15 min per instance), then the produto's own links and the kits header per concerned conta. It enqueues onto `filaEstoqueLojaIntegrada` one send per linked child, one per kit the eager filter flags (at most `LOJA_INTEGRADA_ESTOQUE_KITS_IMEDIATO_MAX` kits per component), or ONE `estoque-kits` fan-out when a component with more kits can have sent one to 0; the clock read after every read, `task-already-exists` is success, a transient failure is rethrown, tasks disabled ⇒ one WARNING. It **writes nothing**. `database` **`default`**, `retry: true`, **no secrets**, no `invoker`, no Loja Integrada call. No per-function `region:`.                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
@@ -273,11 +282,11 @@ are local builds; neither deploys anything.
 
 ⚠️ **The export name IS the queue name.** Firebase binds one function per queue
 and names the queue after the function, so renaming `filaLeituraLojaIntegrada`,
-`filaEscritaLojaIntegrada` or `filaEstoqueLojaIntegrada` creates a NEW queue and
-strands whatever the old one held. Each name is fixed at its first deploy.
-`src/index.ts` carries a rename-safety assertion tying each export key to the
-constant its enqueuer targets (`FILA_LEITURA_LI`, `FILA_ESCRITA_LI`,
-`FILA_ESTOQUE_LI`).
+`filaEscritaLojaIntegrada`, `filaEstoqueLojaIntegrada` or `filaPrecoLojaIntegrada`
+creates a NEW queue and strands whatever the old one held. Each name is fixed at
+its first deploy. `src/index.ts` carries a rename-safety assertion tying each
+export key to the constant its enqueuer targets (`FILA_LEITURA_LI`,
+`FILA_ESCRITA_LI`, `FILA_ESTOQUE_LI`, `FILA_PRECO_LI`).
 
 ⚠️ **The history trigger shares its path with nothing else.**
 `onHistoricoFreteLojaIntegrada` is the only function in the project on
@@ -312,9 +321,9 @@ bounded: every run writes an ABSOLUTE quantity decided by its own fresh read of
 the store's row, never a delta, so whichever PUT lands LAST stands — which can
 be the one built on the OLDER read (a PUT may be in flight for up to its 20 s
 deadline while the other run reads and writes) — and the next event of the
-produto or the daily reconcile re-covers it. The two write queues together make
-at most two writes in flight per store, each paced by the engine
-(`lib/lojaIntegrada/core/ritmo.ts`: the theoretical worst per store is 150
+produto or the daily reconcile re-covers it. With the writes and price queues
+it makes at most three writes in flight per store, each paced by the engine
+(`lib/lojaIntegrada/core/ritmo.ts`: the theoretical worst per store is 180
 calls a minute against Loja Integrada's 100; a 429 throws and the retry
 re-derives). The stock queue keeps NO failure store: a task whose every attempt
 meets a 429 or a 5xx is dropped (the platform's error log is its only trace),
@@ -326,6 +335,30 @@ row's `quantidade` to the same product — through the same strict route, which
 sends only a NON-NEGATIVE quantity under the four fixed leaves (managed, the two
 fixed situações): a prior negative quantity, a prior unmanaged row or a prior
 lead-time setting cannot be restored through it.
+
+⚠️ **The price queue is single-file too, with the same settings** (master-plan
+step 13; `src/index.test.ts` pins them EQUAL to the stock queue's). The same two
+residuals remain — an abandoned dispatch still running when the next starts, and
+a rare duplicate delivery — and both are bounded the same way: every run sends
+an ABSOLUTE price, computed from the ERP and decided by its own fresh read of the
+store's produto detail, never a delta, so whichever PUT lands LAST stands, and
+the next event of the produto re-covers it. The price queue keeps NO failure
+store either: a task whose every attempt meets a 429 or a 5xx is dropped (the
+platform's error log is its only trace), and today only the next event of the
+produto re-covers it — the price sync's nightly read lands in a later PR of
+step 13. The whole send run is `lib/lojaIntegrada/preco/README.md`.
+
+**Undoing a price send.** Every deciding read writes a `restauracao` line with
+the produto detail's nine price-deciding leaves as they stood before the PUT,
+the four prices verbatim. To undo one, a person re-sends that line's
+`preco_cheio` and `preco_promocional` to the same product, in the window,
+through the same strict route (the package's price builder): a prior promotion
+of `null` or 0 goes back as the configured clear
+(`LOJA_INTEGRADA_PRECO_PROMO_LIMPO`), and a prior price with more than two
+decimal places, or a prior `null` or 0 full price, cannot be restored through
+it. A send echoes the store's own custo and `sob_consulta` from that same read,
+so it never changes them — save a store-panel edit landing between the read and
+the PUT, which the echo overwrites (the accepted residual).
 
 ⚠️ **The stock trigger shares its path, and sees every stock write.**
 `onEstoqueLojaIntegrada` listens on `produtos/{produtoId}/estoques/{estoqueId}`,
@@ -553,8 +586,8 @@ the wipe. Create `apps/loja-integrada/functions/.env.deploy` (gitignored):
 # 12-h, the manual stock push, which refuses with it off).
 # LOJA_INTEGRADA_CHAMADAS=on
 
-# The region of the three queues (reads, writes and stock: one region, read
-# through one reader for all three). LEAVE IT UNSET: blank or unset = the
+# The region of the four queues (reads, writes, stock and price: one region,
+# read through one reader for all four). LEAVE IT UNSET: blank or unset = the
 # FUNCTIONS_REGION inlined into the bundle (a blank value counts as unset, #1108).
 # The queue is created WITH its function, by this deploy, in FUNCTIONS_REGION and
 # nowhere else, so any other value names a queue that does not exist: every
@@ -581,6 +614,8 @@ the wipe. Create `apps/loja-integrada/functions/.env.deploy` (gitignored):
 # conta trigger's depósito arm log one WARNING, a reconcile slice's hand-off
 # releases the run's lease with one WARNING, and its queue phase drops its
 # candidates with one WARNING. The next event or night re-covers.
+# It closes the PRICE producer too (step 13): a price send run's drift
+# follow-up is one WARNING (its write stands), and the next event re-covers.
 # LOJA_INTEGRADA_TASKS_DISABLED=1
 
 # How far back, in HOURS, the poller's first window reaches for a conta with no
@@ -626,7 +661,14 @@ the wipe. Create `apps/loja-integrada/functions/.env.deploy` (gitignored):
 # the list (counted `foraDoCanario`), and its end writes avisos only for a conta
 # the list admits (`*`, or an entry of that conta). The whole stock sync is
 # `lib/lojaIntegrada/estoque/README.md`.
-# The other pairs have no reader yet.
+# Since step 13 (PR 13-d) this codebase reads LOJA_INTEGRADA_MODO_PRECO and
+# LOJA_INTEGRADA_CANARIO_PRECO in the price queue's send run (the App Hosting
+# backend has no reader of either yet): `off` (or unset) makes every price run
+# return before any read; `dry-run` makes it read, plan and log one diff line
+# with nothing sent (no aviso, no park); `on` sends only to a target the canary
+# list admits. Nothing enqueues a price task yet but the run's own follow-up. The
+# whole price send run is `lib/lojaIntegrada/preco/README.md`.
+# The anúncio and webhook-registration pairs have no reader yet.
 # ⚠️ STAGING HAZARD. Loja Integrada has no sandbox and the origin is fixed, so a
 # conta holding a token — real or invented — makes our code read LIVE (the
 # validating GET on a save, and the poller). With a valve `on` and a canary entry
@@ -692,6 +734,15 @@ the wipe. Create `apps/loja-integrada/functions/.env.deploy` (gitignored):
 # WARNING per run either way, never a refused run. A smaller page only costs
 # more calls; there is no reason to set it before the window.
 # LOJA_INTEGRADA_ESTOQUE_LIMITE_PAGINA=
+
+# The wire shape of a CLEARED promotion in the price sync (step 13, PR 13-d),
+# read by the price queue's send run at each run. LEAVE IT UNSET: unset or blank
+# = `nulo` (JSON null). `zero` sends 0; `igual-cheio` sends the full price — a
+# window-only fallback a person picks only after the canary shows the store
+# refusing both others, never the default. Spelled exactly (nothing trimmed or
+# case-folded): ANY other value refuses EVERY price run with one ERROR line,
+# nothing read or sent.
+# LOJA_INTEGRADA_PRECO_PROMO_LIMPO=
 ```
 
 ⚠️ The scheduled functions are deployed either way — a variable only decides
@@ -759,14 +810,23 @@ with the queue `filaEstoqueLojaIntegrada` and grant 3 with the service
 `filaestoquelojaintegrada` (or let `TASKS_INVOKER_SA` apply them); grant 2 is
 already in place for the functions runtime SA.
 
+**The price queue (master-plan step 13) needs the same three, for its own
+queue.** `filaPrecoLojaIntegrada` is enqueued today only by the price send run's
+own `deriva` follow-up, running as the functions runtime SA; the price trigger
+and the nightly read (later PRs of step 13) will enqueue as that SA too, and the
+operator's price routes as the App Hosting runtime SA. Run grant 1 with the
+queue `filaPrecoLojaIntegrada` and grant 3 with the service
+`filaprecolojaintegrada` (or let `TASKS_INVOKER_SA` apply them); grant 2 is
+already in place for both SAs.
+
 ⚠️ **The writes queue's bindings are the reads queue's, by construction.** Both
 queue functions spread the same `tasksInvokerOptions()`, and `TASKS_INVOKER_SA`
 is ONE authoritative list for the whole codebase: every identity named in it
 gets `roles/cloudtasks.enqueuer` on EVERY queue and `roles/run.invoker` on EVERY
-queue's service (three of each since master-plan step 12: the stock queue
-spreads the same options). Since PR 12-h that list names the App Hosting runtime
-SA too, so that identity holds the same rights on the writes queue — one of the
-two queues that write to Loja Integrada — although nothing in App Hosting
+queue's service (four of each since master-plan step 13: the stock and price
+queues spread the same options). Since PR 12-h that list names the App Hosting
+runtime SA too, so that identity holds the same rights on the writes queue — one
+of the three queues that write to Loja Integrada — although nothing in App Hosting
 enqueues onto it (the code pin in "App Hosting enqueues since PR 12-h" below is
 what keeps it so). PR 12-h accepts that
 rather than giving each queue its own invoker list; splitting the list is the
@@ -1054,20 +1114,27 @@ gcloud tasks queues add-iam-policy-binding filaEstoqueLojaIntegrada \
   --location=<region> --project=<project-id> \
   --member="serviceAccount:<sa>" \
   --role=roles/cloudtasks.enqueuer
+
+# and, for the price queue (master-plan step 13) — a NEW queue of its own:
+gcloud tasks queues add-iam-policy-binding filaPrecoLojaIntegrada \
+  --location=<region> --project=<project-id> \
+  --member="serviceAccount:<sa>" \
+  --role=roles/cloudtasks.enqueuer
 ```
 
 then re-run the SAME deploy: the policy now has a `bindings` array, so the
 deploy re-applies `TASKS_INVOKER_SA` authoritatively and finishes clean. This
-codebase has THREE queues, so a first deploy into a project pays it once per
+codebase has FOUR queues, so a first deploy into a project pays it once per
 queue per identity — and a project that already holds the reads queue (or the
-reads and writes queues) still pays it for each queue the deploy first creates.
+reads, writes and stock queues) still pays it for each queue the deploy first
+creates.
 **Production's included**: it is a separate project, so put the grants in the
 window's runbook.
 Verify the enqueue leg, which the `run` check above cannot see:
 `gcloud tasks queues get-iam-policy <queue> --location=<region>` must list
 `roles/cloudtasks.enqueuer` for every identity in `TASKS_INVOKER_SA`, for ALL
-THREE of `filaLeituraLojaIntegrada`, `filaEscritaLojaIntegrada` and
-`filaEstoqueLojaIntegrada`.
+FOUR of `filaLeituraLojaIntegrada`, `filaEscritaLojaIntegrada`,
+`filaEstoqueLojaIntegrada` and `filaPrecoLojaIntegrada`.
 
 ## Verifying a first deploy
 
@@ -1079,17 +1146,19 @@ either records no posting — and the valve never reaches `on` until every check
 of this section passes.
 
 1. Cloud Tasks lists the queues `filaLeituraLojaIntegrada`,
-   `filaEscritaLojaIntegrada` and `filaEstoqueLojaIntegrada`, each with
-   concurrency 1 and one dispatch per second (item 6 checks the writes queue in
-   full; the stock queue takes the SAME `describe` checks — rate, retry ladder,
-   the service's concurrency 1 and max instances 1 — before its valve leaves
-   `off`), and Cloud Scheduler lists the schedule functions.
+   `filaEscritaLojaIntegrada`, `filaEstoqueLojaIntegrada` and
+   `filaPrecoLojaIntegrada`, each with concurrency 1 and one dispatch per second
+   (item 6 checks the writes queue in full; the stock and price queues take the
+   SAME `describe` checks — rate, retry ladder, the service's concurrency 1 and
+   max instances 1 — before their valves leave `off`), and Cloud Scheduler lists
+   the schedule functions.
 2. For EACH queue, `gcloud run services get-iam-policy <service>` and
    `gcloud tasks queues get-iam-policy <queue>` both name every identity in
    `TASKS_INVOKER_SA` — `<queue>` the function name (`filaLeituraLojaIntegrada`,
-   `filaEscritaLojaIntegrada`, `filaEstoqueLojaIntegrada`), `<service>` the same
-   name LOWERCASED (`filaleituralojaintegrada`, `filaescritalojaintegrada`,
-   `filaestoquelojaintegrada`; confirm it with
+   `filaEscritaLojaIntegrada`, `filaEstoqueLojaIntegrada`,
+   `filaPrecoLojaIntegrada`), `<service>` the same name LOWERCASED
+   (`filaleituralojaintegrada`, `filaescritalojaintegrada`,
+   `filaestoquelojaintegrada`, `filaprecolojaintegrada`; confirm it with
    `gcloud run services list` first, as the IAM section says) — and
    `gcloud iam service-accounts get-iam-policy <functions-runtime-sa>` lists
    `roles/iam.serviceAccountUser` for each of them (grant 2, which no deploy

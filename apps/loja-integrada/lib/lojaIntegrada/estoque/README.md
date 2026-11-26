@@ -375,9 +375,10 @@ the run: it reads the STORE's reservation only through `alvoEstoqueLi`.
   nothing enqueued, the queue never resolved; `LiTarefasTransitoriasError` — Cloud Tasks hiccupped,
   the caller rethrows and its retry enqueues the same name; anything else rethrown EXACTLY as thrown
   (a broken deploy, a root's region guard, a bug).
-- **Load on the store**: the two write queues together make at most two writes in flight per store,
-  each paced by the engine (`../core/ritmo.ts`): the theoretical worst per store is 150 calls a
-  minute against Loja Integrada's 100; a 429 throws and the retry re-derives.
+- **Load on the store**: the write queues — the writes queue, this one and, since step 13, the price
+  queue — together make at most three writes in flight per store, each paced by the engine
+  (`../core/ritmo.ts`): the theoretical worst per store is 180 calls a minute against Loja
+  Integrada's 100; a 429 throws and the retry re-derives.
 - ⚠️ **The export name IS the queue name**: renaming the function creates a NEW queue and strands
   the old one's tasks (`functions/src/index.ts` asserts it equals `FILA_ESTOQUE_LI`).
 
@@ -685,7 +686,7 @@ nothing is trimmed or case-folded. The rows below are what each variable means f
 | `LOJA_INTEGRADA_ESTOQUE_KITS_IMEDIATO_MAX` | the trigger                                                                                                                     | —                                                                      | 30                                                                                                                             | anything but 0..30 in canonical decimal acts as 0, with ONE WARNING per event that reaches a kits header                                                                   |
 | `LOJA_INTEGRADA_ESTOQUE_LIMITE_PAGINA`     | a reconcile slice's store phase, when a conta's walk starts                                                                     | —                                                                      | 100                                                                                                                            | above 100 clamped to 100, anything else 100; ONE WARNING per run either way                                                                                                |
 | `LOJA_INTEGRADA_TASKS_DISABLED`            | every functions producer                                                                                                        | both stock routes (its own copy)                                       | open                                                                                                                           | only exact `1` closes                                                                                                                                                      |
-| `LOJA_INTEGRADA_TASKS_REGION`              | every functions producer (one region for all three queues)                                                                      | both stock routes                                                      | functions: the bundle's `FUNCTIONS_REGION` (blank counts as unset); App Hosting: `FUNCTIONS_REGION`, else `MissingRegionError` | a well-formed WRONG region drops every task while the enqueue reports success (#1108)                                                                                      |
+| `LOJA_INTEGRADA_TASKS_REGION`              | every functions producer (one region for all four queues)                                                                       | both stock routes                                                      | functions: the bundle's `FUNCTIONS_REGION` (blank counts as unset); App Hosting: `FUNCTIONS_REGION`, else `MissingRegionError` | a well-formed WRONG region drops every task while the enqueue reports success (#1108)                                                                                      |
 
 What `LOJA_INTEGRADA_TASKS_DISABLED=1` does to stock on the functions side: the trigger logs one
 WARNING and skips the event's remaining enqueues; a `deriva` follow-up is one WARNING (the write

@@ -15,11 +15,16 @@ Master plan: `.master_plans/loja-integrada/loja-integrada-marketplace-integratio
 - Step 15 (label routing and the paid re-check): the second route family,
   `pedidos/[pedidoId]/…` (below).
 - Step 7 (the status write-back, in stacked PRs): the write engine and its write context
-  (`core/escrita.ts`, `core/contextoEscrita.ts`; "Write engine" below). Two flows run on it —
-  the status write-back and, since PR 12-e, the stock send run ("Stock sync" below) — and every
-  write valve is off until the window. Step 12's engine seam (PR 12-d) adds the two stock kinds
-  and the stock detail's restore branch; step 13's (PR 13-c) the two price kinds and the produto
-  detail's, with no caller outside tests yet.
+  (`core/escrita.ts`, `core/contextoEscrita.ts`; "Write engine" below). Three flows run on it —
+  the status write-back, since PR 12-e the stock send run ("Stock sync" below) and since PR 13-d
+  the price send run ("Price sync" below) — and every write valve is off until the window.
+  Step 12's engine seam (PR 12-d) adds the two stock kinds and the stock detail's restore branch;
+  step 13's (PR 13-c) the two price kinds and the produto detail's.
+- Step 13 (the price sync, in stacked PRs). PR 13-d: the price SEND RUN
+  (`lib/lojaIntegrada/preco/`) and its queue `filaPrecoLojaIntegrada` in the functions codebase,
+  with the producer root its one `deriva` follow-up enqueues through. No producer beyond that
+  follow-up yet: the trigger, the nightly read and the operator's routes come in later PRs of
+  step 13 ("Price sync" below).
 - Step 10 (the catalogue reads): four `GET`s in the conta route family (below), the core
   `lib/lojaIntegrada/catalogo/catalogo.ts` and its caches `catalogo/cache.ts`. The web's
   variation linker reads the grades; categories and brands wait for step 11's product tab.
@@ -820,9 +825,9 @@ apps/loja-integrada/lib/lojaIntegrada/testing/especificacaoFolhas.json` (no pair
   a flat 300 s backoff), `varrerEscritas.ts` (`15,45 * * * *`: it only enqueues the
   varredura, named after its tick), `agendadorEscrita.ts` (the root, through the reads
   root's region and valve readers) and `depsEscrita.ts` (the one binding of a write run's
-  deps; the handler stamps the dispatch start FIRST). The writes queue and the stock queue
-  (step 12, below) are the only two places a write may run, and the writes queue the only
-  place its sweep may.
+  deps; the handler stamps the dispatch start FIRST). The writes queue, the stock queue
+  (step 12, below) and the price queue (step 13, below) are the only three places a write may
+  run, and the writes queue the only place its sweep may.
 - **Paid codigos only.** The first filter is step 15's `veredictoDoCodigoLi`; the matrix
   (`MATRIZ_RASTREIO_LI`) is typed over EVERY codigo, so a new one does not compile until its
   row is decided, and an unknown string is refused (`situacao-desconhecida`). `NUNCA_ESCREVER_LI`
@@ -942,6 +947,46 @@ Read it before touching stock code. What must never break:
   reaches the store only through the context loader. `prazos.test.ts` lists `ROTAS_DO_ESTOQUE`.
 - **No new index.** Every query is built from the constants its test pins against
   `firestore.indexes.json`; the group key index `produtolojaintegrada (__name__)` is PERMANENT.
+
+## Price sync (step 13)
+
+What exists today — the send run and its queue (PR 13-d) — its costs, failures, env, the
+emulator lane and the deploy items are `lib/lojaIntegrada/preco/README.md`. Read it before
+touching price code. The price function, the fold and the aviso tipos are `@delfrance/schemas`'
+(PR 13-a); the wire and the builder the package's (PR 13-b); the two write kinds the engine's
+(PR 13-c). What must never break:
+
+- ⚠️ **Ids only.** A `preco` task is a strict ids-only payload
+  (`packages/schemas/src/tarefaPrecoLojaIntegrada.ts`): a price in it is refused, and the target
+  is derived when the task RUNS (`precoAlvoLi`), the merge base from a fresh deciding read just
+  before the PUT. A new payload field ships to the consumer (this functions codebase) before any
+  producer sends it.
+- ⚠️ **The ERP custo is never sent.** The ERP reads are masked to what `precoAlvoLi` reads
+  (`paiId`, `precos`, `propagatePriceToChildren`); the body's custo and `sob_consulta` are the
+  deciding read's own, echoed (`null` custo ⇒ the key is omitted; one the builder cannot echo ⇒
+  omitted with ONE WARNING; one the restore line cannot carry ⇒ `sem-restauracao`, no PUT). A
+  non-boolean `sob_consulta` is skipped BEFORE the engine, which would otherwise throw.
+- ⚠️ **One send run = at most ONE PUT, and no Firestore write on success.** Every skip comes
+  before the write context (0 credential reads, 0 store calls; the whole cost table pinned in
+  `processarPreco.test.ts`, child and root). The refusal aviso is read only on an outcome that
+  resolves it, and written only when it is open.
+- ⚠️ **No lowering unless the task may** (`baixar`): a lower full price, a lower positive
+  promotion or a lower effective price is refused (`nao-baixado`), a clear always passes, and an
+  unreadable current price is skipped — all in integer centavos against the deciding read,
+  through `decidirBaixaPrecoLi` and `precoRefletidoLi` only (no money arithmetic here).
+- ⚠️ **The generation cap.** An event-like origin is read back; a drift on generation 0 enqueues
+  ONE `deriva` (generation 1, `baixar` inherited) and generation 1 never enqueues another (one
+  ERROR; under `on` a VERIFIED drift raises `nao-refletido` without resolving first — the aviso
+  clock drops a raise behind a same-run resolve). A bulk origin has no read-back call.
+- ⚠️ **The clear's forma is an env value** (`LOJA_INTEGRADA_PRECO_PROMO_LIMPO`, read by the run
+  from `deps.ambiente`): unset or blank = `nulo`, exactly `zero` or `igual-cheio` otherwise, and
+  anything else refuses every run. `igual-cheio` is a window-only fallback, never the default.
+- ⚠️ **The queue's options are the stock queue's, exactly** (`functions/src/index.test.ts` pins
+  the equality), its export name IS `FILA_PRECO_LI` (asserted at module load), and its producer
+  root binds that queue alone (`estrutura.test.ts`).
+- ⚠️ **The lane runs the price valve at `dry-run`, never `on`**, and names no price canary
+  (`vitest.tasks.setup.ts` refuses both; `testing/guardaDaLaneDeTarefas.test.ts` reads the job
+  env itself).
 
 ## Notification pipeline (step 3)
 
@@ -1093,7 +1138,7 @@ Read it before touching stock code. What must never break:
 - A re-import keeps the `externalOptionData` keys Loja Integrada does not own (`agency`).
 - `pedidos/importarPedido.firestore.test.ts` (emulator, CI below) pins the batch.
 
-## CI (steps 3, 5, 7, 9, 12 and 20)
+## CI (steps 3, 5, 7, 9, 12, 13 and 20)
 
 - Two homes, disjoint by filename suffix. `vitest.config.ts` (`pnpm test`, in `CI test`
   of `ci.yml`, unfiltered) EXCLUDES `*.firestore.test.ts` and `*.tasks.test.ts`;
@@ -1110,7 +1155,8 @@ firebase.loja-integrada.tasks.json --only firestore,functions,tasks` (ports 8085
   deploys), then `pnpm test:tasks`. Run it locally the same way (JDK 21) with
   `FUNCTIONS_REGION` = `LOJA_INTEGRADA_TASKS_REGION`, `FIREBASE_PROJECT_ID=demo-erp`,
   `FIREBASE_DATABASE_ID=default`, `REQUIRE_EMULATOR=1`, `LOJA_INTEGRADA_CHAMADAS=off`,
-  `LOJA_INTEGRADA_MODO_RASTREIO=dry-run`, `LOJA_INTEGRADA_MODO_ESTOQUE=dry-run`.
+  `LOJA_INTEGRADA_MODO_RASTREIO=dry-run`, `LOJA_INTEGRADA_MODO_ESTOQUE=dry-run`,
+  `LOJA_INTEGRADA_MODO_PRECO=dry-run`.
   A region mismatch is the silent drop of #1108: the poll times out instead of failing.
   On Windows the Firestore JVM can outlive `emulators:exec` and keep 8085: stop it after.
 - D17 holds in the lane through TWO layers. The job env sets `LOJA_INTEGRADA_CHAMADAS: 'off'`
@@ -1189,12 +1235,19 @@ firebase.loja-integrada.tasks.json --only firestore,functions,tasks` (ports 8085
   a kits header, moves a depósito or asserts on the run document — the run document
   `reconcileEstoqueLojaIntegrada/atual` wiped before and after each case (awaiting the slot write a
   fan-out it caused makes).
+- Since step 13 (PR 13-d) the price suite `preco/processarPreco.tasks.test.ts` shares the lane: one
+  price send run IN PROCESS (`ambiente` `on` only as a PARAMETER) against a scripted store, its
+  real masked reads, the links listing and the collection-group duplicate probe, and its one
+  `deriva` follow-up through the real producer root onto `filaPrecoLojaIntegrada`. The lane's
+  `dry-run` price valve lets that dispatched follow-up run its ERP reads and stop at its write
+  context, writing nothing. It seeds its conta by a create, its own produtos and links (the
+  anchor rules above) and no stock record.
 - The lane cannot prove: Cloud Scheduler firing (`onSchedule` is ignored),
   `scheduleDelaySeconds` and `scheduleTime` (firebase-tools#8254), index declarations, rules,
   that the emulator honours `maxConcurrentDispatches` or the instance limits, named-task dedup
   (the emulator accepts a named enqueue; a duplicate's answer is not asserted), Eventarc
-  ordering or redelivery, the stock queue's dispatch of a SEND run (above; the fan-out's dispatch
-  is observed), the deployed stock trigger end to end or its gate order and costs (pinned offline,
+  ordering or redelivery, the stock and price queues' dispatch of a SEND run (above; the
+  fan-out's dispatch is observed), the deployed stock trigger end to end or its gate order and costs (pinned offline,
   `gatilhoEstoque.test.ts`), or a trigger's `database` binding (pinned offline in
   `functions/src/index.test.ts`).
 

@@ -20,7 +20,7 @@ import { getAdminApp } from './lib/admin';
  * SDK's `scheduleTime`.
  *
  * The region and the sweep-only valve are read through the READS root's own readers
- * (`./agendador`), as the writes root does: ONE region for all three queues — each is created
+ * (`./agendador`), as the writes root does: ONE region for all four queues — each is created
  * with its function, by the same deploy, in `FUNCTIONS_REGION` — and one reader whose static
  * environment-read shape the bundle-inlining proof already covers. A second copy here would be a
  * second shape `define` must inline, and a second place to drift (#1108). This file reads no
