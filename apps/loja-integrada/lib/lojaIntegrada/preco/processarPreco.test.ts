@@ -100,8 +100,38 @@ const PUT = `PUT ${CAMINHO_PUT}`;
 /** One Loja Integrada call that runs to its whole deadline, read or write. */
 const PRAZO_DE_UMA_CHAMADA_MS = Math.max(PRAZO_LI_MS.leitura, PRAZO_LI_MS.escrita);
 
-/** Every scenario a test built: none may have sent more than one PUT (checked after each test). */
+/**
+ * Every scenario a test built: none may have sent more than one PUT, and none of the run's own
+ * lines may carry a key outside {@link CHAVES_DAS_LINHAS} or a fractional number (checked after
+ * each test).
+ */
 const cenariosDoTeste: Cenario[] = [];
+
+/**
+ * Every key the run's own WARNING/ERROR lines may carry: ids, motivos and classes, the task's
+ * generation and `baixar`, an HTTP status — never a price, a custo or a body. A line that gained
+ * any other key (a price "for context") fails every test that writes it.
+ */
+const CHAVES_DAS_LINHAS: ReadonlySet<string> = new Set([
+  'integracaoId',
+  'produtoId',
+  'origem',
+  'geracao',
+  'baixar',
+  'motivo',
+  'idLi',
+  'status',
+  'classe',
+  'retencao',
+  'variavel',
+]);
+
+/** The run's own lines (`[loja-integrada/preco] <motivo>`), WARNING and ERROR alike. */
+function linhasProprias(c: Cenario): { readonly linha: string; readonly meta: object }[] {
+  return [...c.avisos, ...c.erros]
+    .filter((args) => typeof args[0] === 'string' && args[0].startsWith(`${LINHA_PRECO_LI} `))
+    .map((args) => ({ linha: String(args[0]), meta: (args[1] ?? {}) as object }));
+}
 
 beforeEach(() => {
   __resetAllReadCaches();
@@ -112,7 +142,16 @@ beforeEach(() => {
   });
 });
 afterEach(() => {
-  for (const c of cenariosDoTeste.splice(0)) expect(c.p.puts().length).toBeLessThanOrEqual(1);
+  for (const c of cenariosDoTeste.splice(0)) {
+    expect(c.p.puts().length).toBeLessThanOrEqual(1);
+    for (const { linha, meta } of linhasProprias(c)) {
+      for (const [chave, valor] of Object.entries(meta)) {
+        expect(CHAVES_DAS_LINHAS.has(chave), `${linha}: ${chave}`).toBe(true);
+        if (typeof valor === 'number')
+          expect(Number.isInteger(valor), `${linha}: ${chave}`).toBe(true);
+      }
+    }
+  }
   __resetAllReadCaches();
   __setRelogioDoCacheParaTestes();
   vi.unstubAllGlobals();
@@ -433,8 +472,19 @@ describe('before anything is read: the payload, the valve, the clear forma', () 
     },
   );
 
+  it.each([null, MODO_LI.off])(
+    '⚠️ the valve comes BEFORE the clear forma: valve %j with an unreadable forma ⇒ desligado, zero reads, NO ERROR line',
+    async (modo) => {
+      const c = cenario({ modo, forma: 'NULO' });
+      expect(await c.rodar()).toEqual({ kind: 'desligado' });
+      expect(c.custo()).toEqual(SEM_CUSTO);
+      expect(c.erros).toEqual([]);
+      expect(doEvento(c, 'valvula')).toHaveLength(1);
+    },
+  );
+
   it.each(['NULO', ' nulo', 'null', '0', 'igual_cheio'])(
-    'the forma %j cannot be read ⇒ forma-invalida, ONE ERROR line, zero reads — in every mode',
+    'the forma %j cannot be read ⇒ forma-invalida, ONE ERROR line, zero reads — under dry-run and on alike',
     async (forma) => {
       for (const modo of [MODO_LI.on, MODO_LI.dryRun]) {
         __resetAllReadCaches();
@@ -694,6 +744,20 @@ describe('a bulk send carries its run’s tabelas', () => {
     });
     expect(c.motivosAviso()).toEqual(['tabela-mudou']);
     expect(c.custo()).toEqual(custoDeSkip(2));
+    // A ROOT pays the same: the skip comes before the produto is read.
+    __resetAllReadCaches();
+    const raiz = cenario({ produto: RAIZ, pai: null });
+    expect(await raiz.rodar(doLote({ tabelaNormalId: 'tab-velha' }))).toEqual({
+      kind: 'pulado',
+      motivo: 'tabela-mudou',
+    });
+    expect(raiz.custo()).toEqual(custoDeSkip(2));
+  });
+
+  it('⚠️ a BULK send whose conta is gone ⇒ pulado conta-inexistente after ONE conta read: no re-read, no throw', async () => {
+    const c = cenario({ conta: null });
+    expect(await c.rodar(doLote())).toEqual({ kind: 'pulado', motivo: 'conta-inexistente' });
+    expect(c.custo()).toEqual(custoDeSkip(1));
   });
 
   it('⚠️ the promotional tabela moved ⇒ tabela-mudou too', async () => {
@@ -944,7 +1008,16 @@ describe('the custo and sob_consulta are the STORE’s, echoed from the deciding
 
   it('⚠️ the ERP custo (99.99 on the produto, 77.77 on the parent) is never read and never sent', async () => {
     const c = cenario({ detalhe: { preco_custo: 12.34 } });
+    // NEVER READ is pinned on the reads themselves: the reader projects the same fields in code,
+    // so an unmasked (or custo-widened) read would leave the run's answer unchanged.
+    const getAll = vi.spyOn(c.db, 'getAll');
     await c.rodar();
+    expect(getAll).toHaveBeenCalledTimes(2);
+    for (const chamada of getAll.mock.calls) {
+      expect(chamada.at(-1)).toEqual({
+        fieldMask: ['paiId', 'precos', 'propagatePriceToChildren'],
+      });
+    }
     expect(c.p.textosDosPuts[0]).not.toContain('99.99');
     expect(c.p.textosDosPuts[0]).not.toContain('77.77');
     expect(c.p.textosDosPuts[0]).toContain('"custo":12.34');
@@ -1340,6 +1413,13 @@ describe('a PUT refused with a 3xx/4xx (not 401/403/429): rethrown until the LAS
     },
   );
 
+  it('a conta whose nome is EMPTY names the store by its conta id in the refusal aviso', async () => {
+    const c = cenario({ conta: { ...CONTA_PADRAO, nome: '' }, tentativa: TASK_MAX_ATTEMPTS - 1 });
+    c.p.fila.push(naProxima(CAMINHO_PUT, 'PUT', () => respostaJson(400, {})));
+    expect(await c.rodar()).toEqual({ kind: 'recusado', status: 400 });
+    expect(c.db.ler(AVISO_RECUSADO)).toMatchObject({ params: { loja: CONTA } });
+  });
+
   it('⚠️ under dry-run nothing is ever sent, so nothing is ever refused', async () => {
     const c = cenario({ modo: MODO_LI.dryRun, tentativa: 2 });
     c.p.fila.push(naProxima(CAMINHO_PUT, 'PUT', () => respostaJson(400, {})));
@@ -1388,6 +1468,18 @@ describe('401/403', () => {
     expect(c.p.puts()).toEqual([]);
   });
 
+  it('a 401 on the deciding GET, the credential CORRUPT meanwhile ⇒ dropped credencial-invalida, nothing parked', async () => {
+    const c = cenario({
+      aoResponder: (metodo, _caminho, n, cen) => {
+        if (metodo === 'GET' && n === 0) cen.db.seed(CREDENCIAL, { personalToken: 7 });
+      },
+    });
+    c.p.fila.push(naProxima(CAMINHO_DETALHE, 'GET', () => respostaJson(401, {})));
+    expect(await c.rodar()).toEqual({ kind: 'descartado', motivo: 'credencial-invalida' });
+    expect(c.p.puts()).toEqual([]);
+    expect(c.custo().escritas).toBe(0);
+  });
+
   it('401 on the PUT, refused again by the confirming deciding read ⇒ parked, dropped', async () => {
     const c = cenario();
     c.p.fila.push(naProxima(CAMINHO_PUT, 'PUT', () => respostaJson(401, {})));
@@ -1418,6 +1510,19 @@ describe('401/403', () => {
     c.p.fila.push(naProxima(CAMINHO_PUT, 'PUT', () => respostaJson(401, {})));
     c.p.fila.push(naProxima(CAMINHO_DETALHE, 'GET', () => respostaJson(404, undefined)));
     await expect(c.rodar()).rejects.toBeInstanceOf(LiAuthError);
+  });
+
+  it('401 on the PUT, the credential DELETED before the confirming read ⇒ dropped credencial-ausente on the LAST attempt: the confirming GET is never sent, no aviso', async () => {
+    const c = cenario({
+      tentativa: TASK_MAX_ATTEMPTS - 1,
+      aoResponder: async (metodo, _caminho, _n, cen) => {
+        if (metodo === 'PUT') await docCredencial(asDb(cen.db), CONTA).delete();
+      },
+    });
+    c.p.fila.push(naProxima(CAMINHO_PUT, 'PUT', () => respostaJson(401, {})));
+    expect(await c.rodar()).toEqual({ kind: 'descartado', motivo: 'credencial-ausente' });
+    expect(c.p.chamadas()).toEqual([GET, PUT]);
+    expect(c.db.ler(AVISO_RECUSADO)).toBeUndefined();
   });
 });
 
@@ -1470,6 +1575,39 @@ describe('what always THROWS, with nothing sent', () => {
     await expect(c.rodar()).rejects.toBeInstanceOf(PrazoDeEscritaEsgotadoLiError);
     expect(c.p.puts()).toEqual([]);
   });
+});
+
+describe('the write getter’s refusals DROP with their class, with nothing sent', () => {
+  it.each<[string, string, (cen: Cenario) => Promise<void> | void]>([
+    [
+      'the conta PARKED',
+      'conta-parada',
+      (cen) => {
+        seedCredencial(cen.db, CONTA, {
+          reconexaoPendente: { desdeMs: AGORA_MS - 10, status: 401, refCredencial: 'a.1' },
+        });
+      },
+    ],
+    [
+      'the credential DELETED',
+      'credencial-ausente',
+      async (cen) => {
+        await docCredencial(asDb(cen.db), CONTA).delete();
+      },
+    ],
+  ])(
+    '%s between the deciding GET and the PUT ⇒ dropped %s: the PUT is never sent',
+    async (_r, motivo, mudar) => {
+      const c = cenario({
+        aoResponder: async (metodo, _caminho, n, cen) => {
+          if (metodo === 'GET' && n === 0) await mudar(cen);
+        },
+      });
+      expect(await c.rodar()).toEqual({ kind: 'descartado', motivo });
+      expect(c.p.chamadas()).toEqual([GET]);
+      expect(c.db.ler(AVISO_RECUSADO)).toBeUndefined();
+    },
+  );
 });
 
 /* -------------------------------------------------------------------------- */
@@ -1624,7 +1762,53 @@ describe('the cost of every outcome past the write context, CHILD and ROOT (a ro
     ReturnType<typeof custoDe>,
   ];
   const nada = () => undefined;
+  const { preco_custo: _semCusto, ...semCusto } = detalhePrecoLi(ID, {
+    preco_cheio: 55.55,
+    preco_promocional: null,
+    preco_custo: null,
+  });
+  const refletePai = { pai: { precos: precos(55.55), propagatePriceToChildren: true } };
   const CASOS: Caso[] = [
+    [
+      'already reflected under dry-run',
+      { ...refletePai, modo: MODO_LI.dryRun },
+      nada,
+      tarefa(),
+      { kind: 'refletido' },
+      custoDe(6, 2, 1),
+    ],
+    [
+      'already reflected outside the canary',
+      { ...refletePai, canario: `${CONTA}:9` },
+      nada,
+      tarefa(),
+      { kind: 'refletido' },
+      custoDe(6, 2, 1),
+    ],
+    [
+      'already reflected with no canary',
+      { ...refletePai, canario: null },
+      nada,
+      tarefa(),
+      { kind: 'refletido' },
+      custoDe(6, 2, 1),
+    ],
+    [
+      'already reflected under `on` (the one refusal-aviso pre-read)',
+      refletePai,
+      nada,
+      tarefa(),
+      { kind: 'refletido' },
+      custoDe(7, 2, 1),
+    ],
+    [
+      'leitura-ilegivel (a detail missing one of its nine leaves)',
+      {},
+      (c) => c.p.fila.push(naProxima(CAMINHO_DETALHE, 'GET', () => respostaJson(200, semCusto))),
+      tarefa(),
+      { kind: 'descartado', motivo: 'leitura-ilegivel' },
+      custoDe(6, 2, 1),
+    ],
     [
       'dry-run',
       { modo: MODO_LI.dryRun },
@@ -1702,6 +1886,22 @@ describe('the cost of every outcome past the write context, CHILD and ROOT (a ro
       'a PUT that throws (429)',
       {},
       (c) => c.p.fila.push(naProxima(CAMINHO_PUT, 'PUT', () => respostaJson(429, {}))),
+      tarefa(),
+      'lanca',
+      custoDe(6, 3, 2),
+    ],
+    [
+      'a PUT answered 503 on the last attempt (thrown, never recusado)',
+      { tentativa: TASK_MAX_ATTEMPTS - 1 },
+      (c) => c.p.fila.push(naProxima(CAMINHO_PUT, 'PUT', () => respostaJson(503, {}))),
+      tarefa(),
+      'lanca',
+      custoDe(6, 3, 2),
+    ],
+    [
+      'a PUT refused 400 before the last attempt (rethrown)',
+      {},
+      (c) => c.p.fila.push(naProxima(CAMINHO_PUT, 'PUT', () => respostaJson(400, {}))),
       tarefa(),
       'lanca',
       custoDe(6, 3, 2),

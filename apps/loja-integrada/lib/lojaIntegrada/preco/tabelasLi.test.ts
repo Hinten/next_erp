@@ -120,6 +120,16 @@ describe('mesmasTabelasDoEnvioLi: promo == normal folded to null on BOTH sides',
       { tabelaNormalId: N, tabelaPromocionalId: null },
     ],
     [
+      'a conta with no normal tabela against a task naming none either',
+      { normal: null, promocional: null },
+      { tabelaNormalId: null, tabelaPromocionalId: null },
+    ],
+    [
+      'a conta with no normal tabela against a task with neither key',
+      { normal: null, promocional: null },
+      {},
+    ],
+    [
       'a task with no normal tabela',
       { normal: N, promocional: null },
       { tabelaNormalId: null, tabelaPromocionalId: null },

@@ -376,6 +376,20 @@ describe('any other `tipo`', () => {
     });
   });
 
+  it('⚠️ NEAR-MISS: a raw id of 128 characters rides the line, one of 129 is `null`', async () => {
+    const curto = 'c'.repeat(128);
+    const longo = 'p'.repeat(129);
+    await rodar({
+      data: { tipo: 'conciliacao', contaId: curto, produtoId: longo, origem: longo },
+      retryCount: 0,
+      id: 't',
+    });
+    const linha = linhaUnica();
+    expect(linha.contaId).toBe(curto);
+    expect(linha.produtoId).toBeNull();
+    expect(linha.origem).toBeNull();
+  });
+
   it('the line carries raw ids one by one — never a spread of the data', async () => {
     await rodar({
       data: {

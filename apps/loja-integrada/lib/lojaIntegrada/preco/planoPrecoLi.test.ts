@@ -221,6 +221,10 @@ describe('no-lower: refuse ANY lower buyer price unless the task may lower', () 
     expect(tipoDe(plano(alvo(5555, 4445), detalhe(55.55, 44.44)))).toBe('enviar');
   });
 
+  it('⚠️ NEAR-MISS (kills `<=` on the promotion): the same promotion with a RAISED full price ⇒ sent', () => {
+    expect(tipoDe(plano(alvo(5556, 4444), detalhe(55.55, 44.44)))).toBe('enviar');
+  });
+
   it('a CLEAR is never a lowering: 55.55 + clear over 55.55 / 44.44 ⇒ sent', () => {
     expect(tipoDe(plano(alvo(5555), detalhe(55.55, 44.44)))).toBe('enviar');
   });
@@ -361,14 +365,21 @@ describe('enviar: the builder inputs come FROM THE DECIDING READ', () => {
     }
   });
 
-  it('decidirEnvioPrecoLi alone takes the sob_consulta it is handed (the guard’s)', () => {
-    const d = decidirEnvioPrecoLi({
-      alvo: alvo(5555),
-      detalhe: detalhe(44.44, null),
-      sobConsulta: false,
-      baixar: false,
-      forma: FORMA_PROMO_LIMPA_LI.nulo,
-    });
-    expect(d.tipo === 'enviar' && d.entrada.sobConsulta).toBe(false);
-  });
+  it.each([
+    [true, false],
+    [false, true],
+  ])(
+    '⚠️ decidirEnvioPrecoLi alone takes the sob_consulta it is HANDED (%j), not the detail’s own (%j)',
+    (entregue, doDetalhe) => {
+      const d = decidirEnvioPrecoLi({
+        alvo: alvo(5555),
+        detalhe: detalhe(44.44, null, { preco_sob_consulta: doDetalhe }),
+        sobConsulta: entregue,
+        baixar: false,
+        forma: FORMA_PROMO_LIMPA_LI.nulo,
+      });
+      if (d.tipo !== 'enviar') throw new TypeError(`esperava enviar, veio ${d.tipo}`);
+      expect(d.entrada.sobConsulta).toBe(entregue);
+    },
+  );
 });

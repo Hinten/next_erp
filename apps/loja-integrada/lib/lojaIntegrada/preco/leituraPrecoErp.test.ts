@@ -5,7 +5,7 @@
  * identity. A property sweep shows the mask is SUFFICIENT: the price function answers the same on
  * the masked reads as on the whole documents.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { precoAlvoLi } from '@delfrance/schemas';
 
 import * as leituraEstoque from '../estoque/leituraEstoqueErp';
@@ -38,7 +38,15 @@ describe('lerProdutoPrecoLi: ONE masked point read', () => {
       componentesKit: { c1: { quantidade: 1 } },
       sku: 'SKU-INVENTADO',
     });
+    // The MASK itself is pinned on the call, spelled out (a widened constant fails too): the
+    // reader projects the same fields in code, so its result alone would read the same with an
+    // unmasked (dearer) read, or one that also fetched the custo.
+    const getAll = vi.spyOn(db, 'getAll');
     const lido = await lerProdutoPrecoLi(asDb(db), 'p-filho-preco');
+    expect(getAll).toHaveBeenCalledTimes(1);
+    expect(getAll.mock.calls[0]?.at(-1)).toEqual({
+      fieldMask: ['paiId', 'precos', 'propagatePriceToChildren'],
+    });
     expect(lido).toEqual({
       id: 'p-filho-preco',
       dados: {
