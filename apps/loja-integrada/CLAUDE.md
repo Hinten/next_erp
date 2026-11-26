@@ -980,7 +980,8 @@ touching price code. The price function, the fold and the aviso tipos are `@delf
   clock drops a raise behind a same-run resolve). A bulk origin has no read-back call.
 - ⚠️ **The clear's forma is an env value** (`LOJA_INTEGRADA_PRECO_PROMO_LIMPO`, read by the run
   from `deps.ambiente`): unset or blank = `nulo`, exactly `zero` or `igual-cheio` otherwise, and
-  anything else refuses every run. `igual-cheio` is a window-only fallback, never the default.
+  anything else refuses every run that passes the valve (read AFTER it, so an `off` valve never
+  reports a misspelling). `igual-cheio` is a window-only fallback, never the default.
 - ⚠️ **The queue's options are the stock queue's, exactly** (`functions/src/index.test.ts` pins
   the equality), its export name IS `FILA_PRECO_LI` (asserted at module load), and its producer
   root binds that queue alone (`estrutura.test.ts`).

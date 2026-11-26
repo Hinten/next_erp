@@ -13,9 +13,10 @@ import { getAdminApp } from './lib/admin';
 /**
  * The COMPOSITION ROOT of the PRICE-queue producer for this functions codebase (master plan
  * step 13, PR 13-d): today only the send run's one `deriva` follow-up enqueues through it; the
- * price trigger and the nightly reconcile (later PRs of step 13) will too. The manual price push
- * and "Atualizar preços" will enqueue from App Hosting, through that backend's own root. What a
- * rejection means, the window, the task name and the schedule are the pure module's
+ * price trigger and the nightly reconcile's price queue phase (later PRs of step 13) will too —
+ * "Atualizar preços" included, which only starts one full reconcile run and enqueues no send
+ * itself. Only the manual price push will enqueue from App Hosting, through that backend's own
+ * root. What a rejection means, the window, the task name and the schedule are the pure module's
  * (`lib/lojaIntegrada/preco/agendadorPreco.ts`); this file only binds the Admin SDK's task queue,
  * mapping the producer's `agendarParaMs` onto the SDK's `scheduleTime`.
  *

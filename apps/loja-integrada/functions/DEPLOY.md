@@ -740,8 +740,10 @@ the wipe. Create `apps/loja-integrada/functions/.env.deploy` (gitignored):
 # = `nulo` (JSON null). `zero` sends 0; `igual-cheio` sends the full price — a
 # window-only fallback a person picks only after the canary shows the store
 # refusing both others, never the default. Spelled exactly (nothing trimmed or
-# case-folded): ANY other value refuses EVERY price run with one ERROR line,
-# nothing read or sent.
+# case-folded): ANY other value refuses every price run that passes the valve
+# (`dry-run` or `on`) with one ERROR line, nothing read or sent. With the valve
+# off the run returns before reading it, so a misspelling logs nothing: check
+# the spelling before flipping the valve.
 # LOJA_INTEGRADA_PRECO_PROMO_LIMPO=
 ```
 
@@ -813,8 +815,10 @@ already in place for the functions runtime SA.
 **The price queue (master-plan step 13) needs the same three, for its own
 queue.** `filaPrecoLojaIntegrada` is enqueued today only by the price send run's
 own `deriva` follow-up, running as the functions runtime SA; the price trigger
-and the nightly read (later PRs of step 13) will enqueue as that SA too, and the
-operator's price routes as the App Hosting runtime SA. Run grant 1 with the
+and the nightly reconcile's price queue phase (later PRs of step 13) will enqueue
+as that SA too — "Atualizar preços" included, which only starts one full
+reconcile run whose queue phase enqueues the sends —, and the operator's manual
+price push as the App Hosting runtime SA. Run grant 1 with the
 queue `filaPrecoLojaIntegrada` and grant 3 with the service
 `filaprecolojaintegrada` (or let `TASKS_INVOKER_SA` apply them); grant 2 is
 already in place for both SAs.
@@ -825,10 +829,12 @@ is ONE authoritative list for the whole codebase: every identity named in it
 gets `roles/cloudtasks.enqueuer` on EVERY queue and `roles/run.invoker` on EVERY
 queue's service (four of each since master-plan step 13: the stock and price
 queues spread the same options). Since PR 12-h that list names the App Hosting
-runtime SA too, so that identity holds the same rights on the writes queue — one
-of the three queues that write to Loja Integrada — although nothing in App Hosting
-enqueues onto it (the code pin in "App Hosting enqueues since PR 12-h" below is
-what keeps it so). PR 12-h accepts that
+runtime SA too, so that identity holds the same rights on the writes queue and —
+until the operator's manual price push lands in a later PR of step 13 — on the
+price queue, two of the three queues that write to Loja Integrada, although
+nothing in App Hosting enqueues onto either (the code pin in "App Hosting
+enqueues since PR 12-h" below, which pins that root's queue set exactly, is what
+keeps it so). PR 12-h accepts that
 rather than giving each queue its own invoker list; splitting the list is the
 fix if the exposure ever matters.
 

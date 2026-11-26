@@ -14,8 +14,9 @@
  *  2. The valve FIRST (`iniciarEscritaLi`, the `preco` flow): `off` — recognised or not — is
  *     `desligado`, zero reads.
  *  3. The clear's forma (`LOJA_INTEGRADA_PRECO_PROMO_LIMPO`, from the environment the entry point
- *     passes): unset or blank ⇒ `nulo`; anything but an exact forma refuses EVERY run
- *     (`forma-invalida`, one ERROR line, zero reads), in every mode.
+ *     passes): unset or blank ⇒ `nulo`; anything but an exact forma refuses EVERY run that
+ *     passed the valve (`forma-invalida`, one ERROR line, zero reads), under `dry-run` and `on`
+ *     alike — an `off` valve returns at step 2, before the forma is read.
  *  4. The conta (the cached reader): gone, not a Loja Integrada conta, inactive, or no normal
  *     tabela (`sem-tabela`, one WARNING) ⇒ skipped. A BULK send (`reconcile`, `atualizacao`)
  *     carries the tabelas its run priced at: a cached conta naming others is read once more past

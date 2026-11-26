@@ -1,7 +1,8 @@
 # Loja Integrada price sync (master plan step 13)
 
-The price sync sends the price the ERP gives a LINKED store CHILD (or a simple root) to that
-product in Loja Integrada: one `PUT /v1/produto_preco/{produto id}` per send run, through the write
+The price sync sends the price the ERP gives a LINKED store CHILD (a variation; the ERP produto
+itself may be a child or a root with no parent) to that product in Loja Integrada — a store
+simple product is skipped (`nao-suportado`): one `PUT /v1/produto_preco/{produto id}` per send run, through the write
 engine (`../core/escrita.ts`), with the full price, the promotion (or the configured clear) and the
 store's own custo and `sob_consulta` echoed back from the deciding read.
 
@@ -78,7 +79,9 @@ The rules an agent must not break before touching price code are the short list 
 - **The clear's forma** (`configPrecoLi.ts`, `LOJA_INTEGRADA_PRECO_PROMO_LIMPO`): how a CLEARED
   promotion goes on the wire — `nulo` (JSON `null`, the default for unset or blank), `zero` (0) or
   `igual-cheio` (the full price, a window-only fallback). Spelled exactly; anything else refuses
-  every run (`forma-invalida`, one ERROR line, zero reads).
+  every run that passed the valve, `dry-run` or `on` (`forma-invalida`, one ERROR line, zero
+  reads). With the valve off the run returns before reading it, so a misspelling says nothing
+  until the valve moves: check the value before flipping the valve.
 
 ## 4. The target and the plan
 

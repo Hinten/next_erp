@@ -135,9 +135,10 @@ async function despachar(
  *
  * Its enqueuers: today only the send run ITSELF — its one `deriva` follow-up after a read-back saw
  * a drift, through `./agendadorPreco` — under the functions runtime SA. Later PRs of step 13 add the
- * price trigger and the nightly reconcile (functions runtime SA, through the same root), and the
- * manual price push and "Atualizar preços" (the App Hosting runtime SA) — an identity the one
- * codebase-wide `TASKS_INVOKER_SA` list already names.
+ * price trigger and the nightly reconcile's price queue phase (functions runtime SA, through the
+ * same root; "Atualizar preços" only starts one such full reconcile run, whose queue phase enqueues
+ * the sends under that SA), and the manual price push `POST …/enviar-precos` (the App Hosting
+ * runtime SA) — an identity the one codebase-wide `TASKS_INVOKER_SA` list already names.
  *
  * ⚠️ The export name IS the deployed function AND queue name, and it must equal `FILA_PRECO_LI` —
  * the producer targets that string. `index.ts` asserts the pair at module load; rename both
