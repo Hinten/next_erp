@@ -4,10 +4,12 @@
  * enumeration of Loja Integrada contas, and the wrong-store guard built on it.
  *
  * ⚠️ Every read here decides a write, so none of them may come from
- * `contaCache.ts`. ONE caller caches the enumeration in its own module: the
- * stock trigger's depósito map (`estoque/depositosLi.ts`, 15 min), whose answer
- * decides only whether to ENQUEUE a send run — the run reads the conta again
- * itself before it writes anything. Every other caller reads it here, uncached.
+ * `contaCache.ts`. TWO callers cache the enumeration, each in its own module:
+ * the stock trigger's depósito map (`estoque/depositosLi.ts`) and the price
+ * trigger's tabela map (`preco/mapaTabelasLi.ts`), each for 15 min, whose
+ * answers decide only whether to ENQUEUE a send run — the run reads the conta
+ * again itself before it writes anything. Every other caller reads it here,
+ * uncached.
  *
  * ⚠️ **The enumeration's clauses are load-bearing.** `where('tipo', '==', 3)
  * .orderBy('nome')` is exactly the declared `integracao (tipo ASC, nome ASC)`
@@ -34,6 +36,7 @@ import { integracaoCollection } from '@delfrance/data/admin/collections';
 import { INTEGRACAO_TIPO, depositoDaContaLi } from '@delfrance/schemas';
 
 import { relogioDoDocumentoUs } from '../avisos/avisos';
+import { tabelasDaContaLi } from '../preco/tabelasLi';
 import { fingerprintDoToken } from './credencial';
 import { lerCredencial } from './credentialStore';
 import { LiCredencialInvalidaError } from './erros';
@@ -78,6 +81,14 @@ export interface ContaLojaIntegradaResumo {
    * sync reads the conta's records at.
    */
   readonly depositoId: string | null;
+  /**
+   * The conta's NORMAL price tabela as a BARE `listaDePrecos` document id
+   * (`tabelasDaContaLi`: either stored form of `tabelaNormalOuterRef`), or `null`
+   * when it names none — what the price sync prices the conta at.
+   */
+  readonly tabelaNormalId: string | null;
+  /** The PROMOTIONAL one, AS STORED (it may equal the normal one), or `null`. */
+  readonly tabelaPromocionalId: string | null;
 }
 
 /** The enumeration, and WHEN it was read. */
@@ -107,11 +118,14 @@ export async function listarContasLojaIntegrada(db: Firestore): Promise<ContasLo
     .get();
   const contas = snap.docs.map((doc) => {
     const data = doc.data() as Record<string, unknown>;
+    const tabelas = tabelasDaContaLi(data);
     return {
       integracaoId: doc.id,
       nome: typeof data.nome === 'string' ? data.nome : '',
       ativo: data.ativo !== false,
       depositoId: depositoDaContaLi(data),
+      tabelaNormalId: tabelas.normal,
+      tabelaPromocionalId: tabelas.promocional,
     };
   });
   return { contas, leituraUs: relogioDoDocumentoUs(snap.readTime) };

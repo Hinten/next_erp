@@ -343,6 +343,8 @@ const CONTA: ContaLojaIntegradaResumo = {
   nome: NOME,
   ativo: true,
   depositoId: null,
+  tabelaNormalId: null,
+  tabelaPromocionalId: null,
 };
 
 function executar(alvo: Firestore, r: Run): Promise<ResultadoContaPollLi> {
