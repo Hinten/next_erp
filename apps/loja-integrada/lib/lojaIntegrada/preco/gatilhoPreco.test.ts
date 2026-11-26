@@ -571,12 +571,17 @@ describe('a child — at most ONE masked parent read', () => {
     'a parent id %j that names NO document ⇒ ZERO reads, ONE task baixar:true',
     async (paiId) => {
       const h = montar();
-      await tratarEventoPrecoLi(
+      const r = await tratarEventoPrecoLi(
         h.deps,
         evento(filho({ [TN1]: 11.11 }, { paiId }), filho({ [TN1]: 22.22 }, { paiId })),
       );
       expect(custos(h)).toEqual({ mapa: 1, pai: 0, familia: 0, tarefas: 1, baixar: [true] });
       expect(h.db.leituras).toEqual([]);
+      // The result and the line report the read it did NOT make.
+      expect(r).toMatchObject({ tipo: 'processado', leiturasDoPai: 0, tarefas: 1 });
+      expect(linhasDe(h, 'INFO').map((l) => l[2])).toEqual([
+        expect.objectContaining({ leiturasDoPai: 0, tarefas: 1 }),
+      ]);
     },
   );
 
@@ -597,6 +602,22 @@ describe('a child — at most ONE masked parent read', () => {
       await tratarEventoPrecoLi(h.deps, evento(lado(a), lado(b)));
       expect(custos(h)).toEqual({ mapa: 1, pai: 0, familia: 0, tarefas: 2, baixar: [false] });
       expect(tarefasDe(h)).toEqual([tarefa(C1, P, false), tarefa(C2, P, false)]);
+      // An event that read nothing beyond the map but ENQUEUED still writes its ONE line.
+      expect(h.linhas).toEqual([
+        [
+          'INFO',
+          '[loja-integrada/preco] gatilho decidido',
+          {
+            produtoId: P,
+            caminho: 'filho',
+            contas: [C1, C2],
+            leiturasDoPai: 0,
+            consultas: 0,
+            tarefas: 2,
+            recusadas: 0,
+          },
+        ],
+      ]);
     },
   );
 

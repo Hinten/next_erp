@@ -368,4 +368,16 @@ describe('total over an unvalidated body', () => {
     ).not.toThrow();
     expect(() => relevanciaEventoPrecoLi(ev(precos({}), estranho))).not.toThrow();
   });
+
+  it.each([
+    ['undefined', undefined],
+    ['a number', 7],
+    ['a string', 'x'],
+  ])('a side that is no object at all (%s) reads as EMPTY, never a throw', (_r, lado) => {
+    const estranho = lado as unknown as DadosProdutoPrecoLi;
+    const r = relevanciaEventoPrecoLi(ev(estranho, precos({ [N]: { valor: 11.11 } })));
+    expect(r).toMatchObject({ relevante: true, paiAntes: null, flagMudou: false });
+    if (r.relevante) expect([...r.tabelasMovidas]).toEqual([N]);
+    expect(relevanciaEventoPrecoLi(ev(estranho, estranho))).toEqual({ relevante: false });
+  });
 });
