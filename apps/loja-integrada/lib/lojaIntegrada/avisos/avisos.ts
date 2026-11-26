@@ -151,6 +151,16 @@ export function relogioDoEnvioDeEstoqueUs(ms: number): number {
   return agoraUsDe({ nowMs: ms });
 }
 
+/**
+ * A price send run's dispatch start (ms) → the µs `relogioEvento` of its refusal aviso (step 13,
+ * `preco/avisosPreco.ts`), for the stock flow's reason: a later run starts later, so an older one
+ * can neither reopen nor close a newer one's row. Through {@link agoraUsDe}, so this module still
+ * converts at exactly its two sites.
+ */
+export function relogioDoEnvioDePrecoUs(ms: number): number {
+  return agoraUsDe({ nowMs: ms });
+}
+
 /** A stored expiry (ms) → the aviso's `prazo` (µs). Copied, never computed. */
 export function prazoUsDe(ms: number): number {
   return millisToMicros(ms);

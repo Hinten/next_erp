@@ -85,8 +85,14 @@ runConfig:
 #   LOJA_INTEGRADA_MODO_PRECO              exact `on` writes and the exact `dry-run`
 #   LOJA_INTEGRADA_MODO_ANUNCIO            diffs. On this backend only
 #   LOJA_INTEGRADA_MODO_WEBHOOK_REGISTRO   LOJA_INTEGRADA_MODO_ESTOQUE has a reader
-#                                          (since PR 12-h, below); the other three
-#                                          have none anywhere yet, and are listed so
+#                                          (since PR 12-h, below). Since step 13
+#                                          (PR 13-d) the functions codebase's price
+#                                          queue reads LOJA_INTEGRADA_MODO_PRECO and
+#                                          LOJA_INTEGRADA_CANARIO_PRECO; this backend
+#                                          has no reader of either yet (a later PR of
+#                                          step 13 adds the operator's price routes:
+#                                          set both alike then). The other two have
+#                                          no reader anywhere yet, and are listed so
 #                                          the step that reads one declares it here.
 #   LOJA_INTEGRADA_CANARIO_ESTOQUE         Canary lists: unset = no target, exactly
 #   LOJA_INTEGRADA_CANARIO_PRECO           `*` = every target, else `<contaId>:<n>,…`
@@ -150,7 +156,9 @@ runConfig:
 # here would be read by nothing: LOJA_INTEGRADA_POLL_LOOKBACK_H and — since step
 # 12, the stock upper cap, the stock trigger's eager kit ceiling and the daily
 # reconcile's page size — LOJA_INTEGRADA_ESTOQUE_MAX,
-# LOJA_INTEGRADA_ESTOQUE_KITS_IMEDIATO_MAX and LOJA_INTEGRADA_ESTOQUE_LIMITE_PAGINA
+# LOJA_INTEGRADA_ESTOQUE_KITS_IMEDIATO_MAX and LOJA_INTEGRADA_ESTOQUE_LIMITE_PAGINA,
+# and — since step 13, the price sync's clear forma —
+#   LOJA_INTEGRADA_PRECO_PROMO_LIMPO
 # live in `functions/.env.deploy`.
 #
 # No `env:` block: nothing here needs a value baked into the manifest.

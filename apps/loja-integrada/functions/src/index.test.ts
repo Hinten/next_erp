@@ -28,6 +28,8 @@ import { DURACAO_MAXIMA_SLICE_RECONCILE_LI_MS } from '../../lib/lojaIntegrada/es
 import { DURACAO_MAXIMA_DESPACHO_IMPORTACAO_LI_MS } from '../../lib/lojaIntegrada/importacao/orcamento';
 import type { ImportadorPedidoLi } from '../../lib/lojaIntegrada/notificacoes/notificacao';
 import { importarPedidoLi } from '../../lib/lojaIntegrada/pedidos/importarPedido';
+import { FILA_PRECO_LI } from '../../lib/lojaIntegrada/preco/agendadorPreco';
+import { PIOR_EXECUCAO_PRECO_LI_MS } from '../../lib/lojaIntegrada/preco/processarPreco';
 import {
   PIOR_EXECUCAO_RASTREIO_LI_MS,
   PIOR_TENTATIVA_RECUSADA_RASTREIO_LI_MS,
@@ -112,6 +114,7 @@ const {
   filaEscritaLojaIntegrada,
   filaEstoqueLojaIntegrada,
   filaLeituraLojaIntegrada,
+  filaPrecoLojaIntegrada,
   onEstoqueLojaIntegrada,
   onHistoricoFreteLojaIntegrada,
   onImportacaoLojaIntegradaCriada,
@@ -151,19 +154,22 @@ const AGENDAMENTOS = {
 } as const;
 
 /**
- * Every TASK-QUEUE trigger: exactly THREE — the reads queue, the writes queue
- * (master plan step 7) and the stock queue (step 12), each dispatching on `tipo`
- * (Firebase binds one function per queue). Stock has a queue of its own because
- * a full stock pass enqueues one task per produto and the status write-back must
- * never wait behind it; it takes the writes queue's options exactly (pinned
- * below), so each write queue stays single-file on its own. A FOURTH
- * `onTaskDispatched` here is a defect, not a feature: price and the catalogue
- * join the writes queue.
+ * Every TASK-QUEUE trigger: exactly FOUR — the reads queue, the writes queue
+ * (master plan step 7), the stock queue (step 12) and the price queue (step 13),
+ * each dispatching on `tipo` (Firebase binds one function per queue). Stock has a
+ * queue of its own because a full stock pass enqueues one task per produto and the
+ * status write-back must never wait behind it; price has one for the same reason
+ * twice over — a whole-catalogue reprice would hold the status write-back for
+ * about a day on the writes queue, and every stock send on the stock queue. Both
+ * take the writes queue's options exactly (pinned below), so each write queue
+ * stays single-file on its own. A FIFTH `onTaskDispatched` here is a defect, not
+ * a feature: the catalogue joins the writes queue.
  */
 const FILAS = {
   filaLeituraLojaIntegrada,
   filaEscritaLojaIntegrada,
   filaEstoqueLojaIntegrada,
+  filaPrecoLojaIntegrada,
 } as const;
 
 /**
@@ -891,6 +897,90 @@ describe('filaEstoqueLojaIntegrada — the declared options', () => {
   });
 });
 
+/**
+ * The PRICE queue (master plan step 13, PR 13-d). Its options are the stock
+ * queue's, EXACTLY — and so the writes queue's — for the same reasons: one send
+ * run at a time, one instance serving one request, and a retry that can only
+ * start after an abandoned attempt can no longer write. The real Cloud Tasks
+ * honours them; no emulator lane can — so this block is the only place a change
+ * to them fails.
+ */
+describe('filaPrecoLojaIntegrada — the declared options', () => {
+  const fila = filaDe(filaPrecoLojaIntegrada);
+  const endpoint = endpointOf(filaPrecoLojaIntegrada);
+  const timeoutMs = (endpoint.timeoutSeconds as number) * 1000;
+
+  it('dispatches ONE task at a time, one per second', () => {
+    expect(fila.rateLimits).toEqual({ maxConcurrentDispatches: 1, maxDispatchesPerSecond: 1 });
+  });
+
+  it('runs on ONE instance serving ONE request', () => {
+    // NEAR-MISS of the codebase default (`maxInstances: 10`, options.ts) and of
+    // the gen2 default concurrency. Narrowed, not closed: an abandoned handler
+    // still running and a duplicate delivery remain, each writing an ABSOLUTE
+    // price decided by its own fresh read.
+    expect(endpoint.maxInstances).toBe(1);
+    expect(endpoint.concurrency).toBe(1);
+  });
+
+  it('gives up exactly when the run concludes a refused write: maxAttempts IS TASK_MAX_ATTEMPTS', () => {
+    expect(fila.retryConfig.maxAttempts).toBe(TASK_MAX_ATTEMPTS);
+    expect(TASK_MAX_ATTEMPTS).toBe(3);
+  });
+
+  it('backs off a FLAT 300 s (no doubling)', () => {
+    expect(fila.retryConfig.minBackoffSeconds).toBe(300);
+    expect(fila.retryConfig.maxBackoffSeconds).toBe(300);
+    expect(fila.retryConfig.maxDoublings).toBe(0);
+  });
+
+  it('a retry starts only after the abandoned attempt can no longer write: minBackoff ≥ the last PUT start + one PUT deadline', () => {
+    expect((fila.retryConfig.minBackoffSeconds ?? 0) * 1000).toBeGreaterThanOrEqual(
+      PRAZO_ULTIMA_ESCRITA_MS + PRAZO_LI_MS.escrita,
+    );
+    expect(PRAZO_ULTIMA_ESCRITA_MS + PRAZO_LI_MS.escrita).toBeLessThanOrEqual(timeoutMs);
+  });
+
+  it('has timeoutSeconds 300, and the worst run (68 s) fits in it, its PUT starting far inside the write deadline', () => {
+    expect(endpoint.timeoutSeconds).toBe(300);
+    // MEASURED on the run's real call and wait sequence (every call at its full
+    // deadline): `processarPreco.test.ts` pins that no run of its grid is slower
+    // and that the grid reaches it exactly. ÂNCORA: the value stated.
+    expect(PIOR_EXECUCAO_PRECO_LI_MS).toBe(68_000);
+    expect(PIOR_EXECUCAO_PRECO_LI_MS).toBeLessThanOrEqual(timeoutMs);
+    // The PUT follows the deciding GET at once: two pacer intervals and one read
+    // deadline after the dispatch began, at the latest.
+    const inicioDoPutMs = 2 * RITMO_ESCRITA_LI_MS + PRAZO_LI_MS.leitura;
+    expect(inicioDoPutMs).toBe(24_000);
+    expect(inicioDoPutMs).toBeLessThan(PRAZO_ULTIMA_ESCRITA_MS);
+  });
+
+  it('closes its whole retry ladder inside half an hour: 3 × 300 + 2 × 300 = 1 500 ≤ 1 800', () => {
+    const tentativas = fila.retryConfig.maxAttempts ?? 0;
+    const execucao = endpoint.timeoutSeconds as number;
+    const backoff = fila.retryConfig.maxBackoffSeconds ?? 0;
+    const escadaSegundos = tentativas * execucao + Math.max(tentativas - 1, 0) * backoff;
+    expect(escadaSegundos).toBe(1500);
+    expect(escadaSegundos).toBeLessThanOrEqual(1800);
+  });
+
+  it('declares the invoker, the leg whose absence fails invisibly (#1133)', () => {
+    expect(fila.invoker).toEqual([
+      'apphosting@p.iam.gserviceaccount.com',
+      '1-compute@developer.gserviceaccount.com',
+    ]);
+  });
+
+  it('its options are the stock queue’s, EXACTLY — queue, retry ladder, instances and timeout', () => {
+    expect(filaDe(filaPrecoLojaIntegrada)).toEqual(filaDe(filaEstoqueLojaIntegrada));
+    const estoque = endpointOf(filaEstoqueLojaIntegrada);
+    expect(endpoint.concurrency).toBe(estoque.concurrency);
+    expect(endpoint.maxInstances).toBe(estoque.maxInstances);
+    expect(endpoint.timeoutSeconds).toBe(estoque.timeoutSeconds);
+    expect(endpoint.region).toEqual(estoque.region);
+  });
+});
+
 describe('reconciliarEstoqueLojaIntegrada — the options (master plan step 12, PR 12-g)', () => {
   /** The minutes past the hour a five-field cron fires at, computed (`*`, `*\/n`, `a,b`). */
   function minutosDoCron(cron: string): Set<number> {
@@ -1043,12 +1133,13 @@ describe('every trigger of the codebase', () => {
     ]);
   });
 
-  it('the task exports are EXACTLY {filaEscritaLojaIntegrada, filaEstoqueLojaIntegrada, filaLeituraLojaIntegrada}', () => {
+  it('the task exports are EXACTLY {filaEscritaLojaIntegrada, filaEstoqueLojaIntegrada, filaLeituraLojaIntegrada, filaPrecoLojaIntegrada}', () => {
     expect(exportadosCom('taskQueueTrigger')).toEqual(Object.keys(FILAS).sort());
     expect(exportadosCom('taskQueueTrigger')).toEqual([
       'filaEscritaLojaIntegrada',
       'filaEstoqueLojaIntegrada',
       'filaLeituraLojaIntegrada',
+      'filaPrecoLojaIntegrada',
     ]);
   });
 
@@ -1154,6 +1245,24 @@ describe('every trigger of the codebase', () => {
     }
   });
 
+  it('the PRICE queue export key is exactly FILA_PRECO_LI — every price producer’s target', () => {
+    expect(FILA_PRECO_LI in modulo).toBe(true);
+    expect(FILA_PRECO_LI).toBe('filaPrecoLojaIntegrada');
+  });
+
+  it('and its own module-load assertion fires on a half-rename of the price queue', async () => {
+    vi.resetModules();
+    vi.doMock('./filaPreco', () => ({ filaPrecoRenomeada: {} }));
+    try {
+      await expect(import('./index')).rejects.toThrow(
+        "function-name drift: functions/src/filaPreco.ts must export a handler named 'filaPrecoLojaIntegrada'",
+      );
+    } finally {
+      vi.doUnmock('./filaPreco');
+      vi.resetModules();
+    }
+  });
+
   it('declares NO secret anywhere — the token lives per conta in Firestore, and the conta trigger never calls the platform', () => {
     // A declared secret missing from Secret Manager fails the whole deploy.
     for (const [nome, fn] of Object.entries(TODOS)) {
@@ -1167,8 +1276,12 @@ describe('every trigger of the codebase', () => {
     }
   });
 
-  it('caps instances at 10 — except the two write queues, each held to ONE', () => {
-    const umaInstancia = new Set(['filaEscritaLojaIntegrada', 'filaEstoqueLojaIntegrada']);
+  it('caps instances at 10 — except the THREE write queues, each held to ONE', () => {
+    const umaInstancia = new Set([
+      'filaEscritaLojaIntegrada',
+      'filaEstoqueLojaIntegrada',
+      'filaPrecoLojaIntegrada',
+    ]);
     for (const [nome, fn] of Object.entries(TODOS)) {
       const esperado = umaInstancia.has(nome) ? 1 : 10;
       expect(endpointOf(fn).maxInstances, nome).toBe(esperado);

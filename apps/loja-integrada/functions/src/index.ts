@@ -26,11 +26,13 @@ import {
   reprocessarAdiadasLi,
   reprocessarNotificacoesLi,
 } from '../../lib/lojaIntegrada/notificacoes/notificacao';
+import { FILA_PRECO_LI } from '../../lib/lojaIntegrada/preco/agendadorPreco';
 import { FILA_ESCRITA_LI } from '../../lib/lojaIntegrada/rastreio/notificacaoEscrita';
 import { depsDeLeituraLi } from './depsLeitura';
 import * as filaEscrita from './filaEscrita';
 import * as filaEstoque from './filaEstoque';
 import * as filaLeitura from './filaLeitura';
+import * as filaPreco from './filaPreco';
 import { getDb } from './lib/admin';
 
 /**
@@ -52,8 +54,8 @@ import { getDb } from './lib/admin';
  *
  * Master plan step 7 adds the status write-back: the WRITES queue
  * (`filaEscritaLojaIntegrada`, ./filaEscrita) — one dispatch at a time, one
- * instance, every write of the channel but stock (step 12 has its own queue,
- * below) and its own sweep — its producer, the
+ * instance, every write of the channel but stock and price (steps 12 and 13
+ * have their own queues, below) and its own sweep — its producer, the
  * freight-history trigger (`onHistoricoFreteLojaIntegrada`,
  * ./onHistoricoFreteLojaIntegrada), and the 30-minute timer that enqueues the
  * in-queue sweep (`varrerEscritasLojaIntegrada`, ./varrerEscritas). Until the
@@ -96,6 +98,14 @@ import { getDb } from './lib/admin';
  * depósito enqueues ONE full run at once, zero reads), and the run's queue phase
  * enqueues its sends onto the STOCK queue at their reserved global-slot instants.
  *
+ * Master plan step 13 (PR 13-d) adds the PRICE queue (`filaPrecoLojaIntegrada`,
+ * ./filaPreco): one price send run of one produto per task, options identical to
+ * the stock queue's, a queue of its own so a whole-catalogue reprice never holds
+ * the status write-back or a stock send behind it. Its only producer today is the
+ * run's own `deriva` follow-up (./agendadorPreco); the price trigger, the nightly
+ * reconcile and the operator's routes come in later PRs of step 13. Until the
+ * window the price valve is unset, so every run returns before any read.
+ *
  * Every export below is a Cloud Function name, and the names are unique across
  * codebases (`functions-export-names.test.js`): keep the exports explicit and
  * named, never a wildcard. `index.test.ts` pins every trigger's options and
@@ -136,12 +146,21 @@ if (!(FILA_ESTOQUE_LI in filaEstoque)) {
   );
 }
 
+// And for the PRICE queue: every price producer enqueues against `FILA_PRECO_LI`.
+if (!(FILA_PRECO_LI in filaPreco)) {
+  throw new Error(
+    '[loja-integrada] function-name drift: functions/src/filaPreco.ts must export a ' +
+      `handler named '${FILA_PRECO_LI}' (the enqueue target). ` +
+      'Rename the export and the FILA_PRECO_LI constant together.',
+  );
+}
+
 /** The ONE reads queue (rate-limited to one dispatch at a time, retry with backoff). */
 export { filaLeituraLojaIntegrada } from './filaLeitura';
 
 /**
  * The writes queue (master plan step 7): one dispatch at a time on one
- * instance, every write to Loja Integrada but stock, and its own sweep
+ * instance, every write to Loja Integrada but stock and price, and its own sweep
  * (./filaEscrita).
  */
 export { filaEscritaLojaIntegrada } from './filaEscrita';
@@ -151,6 +170,12 @@ export { filaEscritaLojaIntegrada } from './filaEscrita';
  * time on one instance, beside the writes queue (./filaEstoque).
  */
 export { filaEstoqueLojaIntegrada } from './filaEstoque';
+
+/**
+ * The price queue (master plan step 13): one price send run per task, one dispatch
+ * at a time on one instance, beside the stock queue (./filaPreco).
+ */
+export { filaPrecoLojaIntegrada } from './filaPreco';
 
 /**
  * The status write-back trigger: a freight history row of an imported Loja

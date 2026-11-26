@@ -183,8 +183,9 @@ async function despachar(
  *
  * Why a queue of its own, and not an arm of the writes queue (`./filaEscrita`): a full stock pass
  * enqueues one task per produto, and the status write-back must never wait behind it. Each queue
- * is single-file on its own; together they make at most two writes in flight per store, each
- * paced by the engine (the worst per store rises to 150 calls a minute, `core/ritmo.ts`).
+ * is single-file on its own; with the price queue (step 13, `./filaPreco`) they make at most three
+ * writes in flight per store, each paced by the engine (the worst per store rises to 180 calls a
+ * minute, `core/ritmo.ts`).
  *
  * ⚠️ The export name IS the deployed function AND queue name, and it must equal `FILA_ESTOQUE_LI`
  * — the producer targets that string. `index.ts` asserts the pair at module load; rename both
