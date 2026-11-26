@@ -2,6 +2,7 @@ import type { z } from 'zod';
 import type { DomainSchema } from '@delfrance/schemas';
 import { resolvePermissions, type ClaimCheck } from './claims-map';
 import { clausesForSchema } from './constraints';
+import type { WriteGuard } from './writeGuards';
 
 /**
  * Assembles the ruleset body: the `p()` claim helper, whitelisted field
@@ -24,6 +25,7 @@ export function emitRules(
   domains: ReadonlyArray<DomainSchema<z.ZodTypeAny>>,
   extraBlocks: ReadonlyArray<ExtraMatchBlock>,
   validatorWhitelist: ReadonlySet<string>,
+  writeGuards: ReadonlyMap<string, WriteGuard> = new Map(),
 ): string {
   validatePaths(domains);
 
@@ -36,6 +38,13 @@ export function emitRules(
   // count their first segment so a leaf can never silently collide with them.
   for (const extra of extraBlocks) topLevel.add(extra.path.split('/')[0]!);
 
+  const known = new Set(domains.map((d) => d.meta.collectionPath));
+  for (const path of writeGuards.keys()) {
+    if (!known.has(path)) {
+      throw new Error(`write guard for '${path}' names no registered collection`);
+    }
+  }
+
   for (const domain of [...domains].sort(byPath)) {
     const { collectionPath } = domain.meta;
     const perms = resolvePermissions(domain.meta);
@@ -45,6 +54,13 @@ export function emitRules(
       throw new Error(
         `${collectionPath}: serverOwned collections cannot be validator-whitelisted — ` +
           `Admin SDK writes bypass rules entirely, so a field validator would never run.`,
+      );
+    }
+    const guard = writeGuards.get(collectionPath) ?? null;
+    if (serverOwned && guard) {
+      throw new Error(
+        `${collectionPath}: serverOwned collections cannot carry a write guard — ` +
+          `every client write is already denied, so the guard would never run.`,
       );
     }
     if (serverOwned && (domain.meta.serverOwnedFields?.length ?? 0) > 0) {
@@ -77,6 +93,7 @@ export function emitRules(
         validatorName,
         domain.meta.serverOwnedFields ?? [],
         serverOwned,
+        guard,
       ),
     );
 
@@ -142,6 +159,13 @@ export function emitRules(
     lines.push('    }');
   }
 
+  for (const path of [...writeGuards.keys()].sort()) {
+    lines.push('');
+    for (const fnLine of writeGuards.get(path)!.functions) {
+      lines.push(fnLine ? `    ${fnLine}` : '');
+    }
+  }
+
   for (const block of flatBlocks) {
     lines.push('');
     lines.push(...block);
@@ -181,6 +205,7 @@ function matchBlock(
   validatorName: string | null,
   serverOwnedFields: ReadonlyArray<string>,
   serverOwned: boolean,
+  guard: WriteGuard | null,
 ): string[] {
   const lines: string[] = [];
   lines.push(`    match /${collectionPath}/{docId} {`);
@@ -216,18 +241,28 @@ function matchBlock(
       ? `!request.resource.data.diff(resource.data).affectedKeys().hasAny([${ownedList}])`
       : '';
 
+  // Every extra condition is ANDed after the permission check, outside the su
+  // bypass: validator, then the server-owned-field guard, then the write guard.
+  const createConds = [w];
+  const updateConds = [w];
   if (validatorName) {
-    const createExtra = createGuard ? ` && ${createGuard}` : '';
-    const updateExtra = updateGuard ? ` && ${updateGuard}` : '';
-    lines.push(
-      `      allow create: if ${w} && ${validatorName}(request.resource.data, request.resource.data.keys())${createExtra};`,
+    createConds.push(`${validatorName}(request.resource.data, request.resource.data.keys())`);
+    updateConds.push(
+      `${validatorName}(request.resource.data, request.resource.data.diff(resource.data).affectedKeys())`,
     );
-    lines.push(
-      `      allow update: if ${w} && ${validatorName}(request.resource.data, request.resource.data.diff(resource.data).affectedKeys())${updateExtra};`,
-    );
-  } else if (owned.length > 0) {
-    lines.push(`      allow create: if ${w} && ${createGuard};`);
-    lines.push(`      allow update: if ${w} && ${updateGuard};`);
+  }
+  if (owned.length > 0) {
+    createConds.push(createGuard);
+    updateConds.push(updateGuard);
+  }
+  if (guard) {
+    createConds.push(guard.create);
+    updateConds.push(guard.update);
+  }
+
+  if (createConds.length > 1) {
+    lines.push(`      allow create: if ${createConds.join(' && ')};`);
+    lines.push(`      allow update: if ${updateConds.join(' && ')};`);
   } else {
     lines.push(
       `      allow create, update: if isSuperUser() || p('${perms.write.claim}', ${perms.write.k});`,

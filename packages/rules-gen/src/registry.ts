@@ -1,7 +1,12 @@
 import type { z } from 'zod';
 import type { DomainSchema } from '@delfrance/schemas';
-import { ALL_DOMAINS, AVISOS_LEITURA_COLLECTION_PATH } from '@delfrance/schemas';
+import {
+  ALL_DOMAINS,
+  ARQUIVOS_COLLECTION,
+  AVISOS_LEITURA_COLLECTION_PATH,
+} from '@delfrance/schemas';
 import { GRUPO_ECONOMICO_COLLECTION_PATH } from '@delfrance/core/tenant';
+import { ARQUIVO_PATH_GUARD, type WriteGuard } from './writeGuards';
 
 /** Every schema-backed domain the generator emits match blocks for. */
 export const DOMAINS: ReadonlyArray<DomainSchema<z.ZodTypeAny>> = ALL_DOMAINS;
@@ -18,6 +23,15 @@ export const VALIDATOR_WHITELIST: ReadonlySet<string> = new Set([
   'pedidos',
   'pedidos/{pedidoId}/pagamentos',
   'metodo_pgto',
+]);
+
+/**
+ * Hand-written write guards, by collectionPath — for invariants a schema-derived
+ * validator cannot state, because they tie a doc's fields to its own id or to
+ * another doc. ANDed outside the su bypass like a validator. See `writeGuards.ts`.
+ */
+export const WRITE_GUARDS: ReadonlyMap<string, WriteGuard> = new Map([
+  [ARQUIVOS_COLLECTION, ARQUIVO_PATH_GUARD],
 ]);
 
 /**

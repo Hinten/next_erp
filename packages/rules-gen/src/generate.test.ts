@@ -140,3 +140,52 @@ describe.each([
     expect(validador).toContain("d.get('primeiroNomePagador', null).size() <= 20");
   });
 });
+
+/**
+ * The `arquivos` path binding, asserted on the GENERATED source for the same
+ * reason as the payment-link block above: a snapshot refresh accepts anything.
+ * The behaviour lives in `test/firestore.rules.test.ts` (emulator only); this
+ * pins the posture on every machine — `onArquivoDeleted` deletes whatever object
+ * a deleted doc names, so a permission-only rule here is a server-side delete
+ * primitive.
+ */
+describe.each([
+  { variante: 'production', e2e: false },
+  { variante: 'e2e', e2e: true },
+])('generateRulesSource ($variante) — the arquivos path binding', ({ e2e }) => {
+  function bloco(): string {
+    const found = generateRulesSource({ e2e }).match(/match \/arquivos\/\{docId\} \{[^}]*\}/)?.[0];
+    expect(found, 'no arquivos block').toBeDefined();
+    return found ?? '';
+  }
+
+  it('binds create to the id and freezes filepath/filename on update, outside the su bypass', () => {
+    const arquivos = bloco();
+    expect(arquivos).toContain(
+      "allow create: if (isSuperUser() || p('d_arquivo', 2)) && arquivoPathOk(docId, request.resource.data);",
+    );
+    expect(arquivos).toContain(
+      "allow update: if (isSuperUser() || p('d_arquivo', 2)) && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['filename', 'filepath']);",
+    );
+    // Near-miss: the old permission-only merged rule is gone.
+    expect(arquivos).not.toContain('allow create, update:');
+  });
+
+  it('emits the guard functions once, with every storagePaths root', () => {
+    const out = generateRulesSource({ e2e });
+    expect(out.split('function arquivoPathOk(id, d) {').length).toBe(2);
+    expect(out.split('function arquivoIdOwnsPath(id, fp, h) {').length).toBe(2);
+    expect(out).toContain("fn.matches('^[0-9a-f]{128}([.][a-z0-9]{1,16})?$')");
+    expect(out).toContain("(fp == 'media' && id == h)");
+    // The chat sibling check reads the sibling's PATH — an existence test alone
+    // would refuse chat_<hash> beside a same-bytes generic upload under media/.
+    expect(out).toContain(".data.get('filepath', null) != 'chat';");
+    expect(out).toContain(
+      "parts[0] == 'produtos' && parts[2] in ['originals', 'videos', 'anexos']",
+    );
+    expect(out).toContain("parts[0] == 'tabMedi' && parts[2] == 'originals'");
+    // Near-miss: derivatives (and whatsapp/) are never client-nameable.
+    expect(out).not.toMatch(/arquivoIdOwnsPath[\s\S]*'derivatives'[\s\S]*function /);
+    expect(out).not.toContain("fp == 'whatsapp'");
+  });
+});

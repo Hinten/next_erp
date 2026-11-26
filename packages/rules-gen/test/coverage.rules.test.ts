@@ -36,9 +36,17 @@ const VALIDATED_PAYLOAD: Record<string, Record<string, unknown>> = {
   metodo_pgto: { tipo: 1 },
 };
 
+// Collections whose write guard binds the payload to the DOC ID (see
+// `src/writeGuards.ts`) need a matching id, not the generic `mtxdoc`.
+const MTX_HASH = 'a'.repeat(128);
+const PATH_BOUND: Record<string, { id: string; payload: Record<string, unknown> }> = {
+  arquivos: { id: MTX_HASH, payload: { filepath: 'media', filename: `${MTX_HASH}.png` } },
+};
+
 /** Fill `{placeholder}` segments with a literal id and append a doc id. */
 function concretePath(collectionPath: string): string {
-  return `${collectionPath.replace(/\{[^}]*\}/g, 'mtx')}/mtxdoc`;
+  const id = PATH_BOUND[collectionPath]?.id ?? 'mtxdoc';
+  return `${collectionPath.replace(/\{[^}]*\}/g, 'mtx')}/${id}`;
 }
 
 describe.skipIf(!EMULATED)('CRUD coverage matrix — every domain is governed (#160)', () => {
@@ -65,7 +73,7 @@ describe.skipIf(!EMULATED)('CRUD coverage matrix — every domain is governed (#
     if (domain.meta.serverOwned) continue;
     it(`${path}: superuser can create/get/update and delete follows metadata`, async () => {
       const ref = doc(su(), concretePath(path));
-      const payload = VALIDATED_PAYLOAD[path] ?? { mtx: 1 };
+      const payload = PATH_BOUND[path]?.payload ?? VALIDATED_PAYLOAD[path] ?? { mtx: 1 };
       await assertSucceeds(setDoc(ref, payload)); // create
       await assertSucceeds(getDoc(ref)); // get
       await assertSucceeds(updateDoc(ref, payload)); // update

@@ -165,9 +165,35 @@ service cloud.firestore {
         && (!c.hasAny(['videos']) || (d.get('videos', null) == null || d.get('videos', null) is list));
     }
 
+    // arquivos: a client-created doc may only name the storage object its id implies.
+    // d = incoming document. See packages/rules-gen/src/writeGuards.ts.
+    function arquivoPathOk(id, d) {
+      let fp = d.get('filepath', null);
+      let fn = d.get('filename', null);
+      return fp is string && fn is string && fn.matches('^[0-9a-f]{128}([.][a-z0-9]{1,16})?$')
+        && arquivoIdOwnsPath(id, fp, fn.split('[.]')[0]);
+    }
+
+    function arquivoIdOwnsPath(id, fp, h) {
+      let parts = fp.split('/');
+      return (fp == 'media' && id == h)
+        || (fp == 'chat' && id == 'chat_' + h && arquivoChatFree(h))
+        || (fp == 'chat' && id == h && arquivoChatFree('chat_' + h))
+        || (parts.size() == 3 && parts[1].size() > 0 && id == parts[1] + '_' + h
+          && ((parts[0] == 'produtos' && parts[2] in ['originals', 'videos', 'anexos'])
+            || (parts[0] == 'tabMedi' && parts[2] == 'originals')));
+    }
+
+    // True unless the sibling id already names the shared chat/ object.
+    function arquivoChatFree(siblingId) {
+      return !exists(/databases/$(database)/documents/arquivos/$(siblingId))
+        || get(/databases/$(database)/documents/arquivos/$(siblingId)).data.get('filepath', null) != 'chat';
+    }
+
     match /arquivos/{docId} {
       allow read: if isSuperUser() || p('d_arquivo', 1);
-      allow create, update: if isSuperUser() || p('d_arquivo', 2);
+      allow create: if (isSuperUser() || p('d_arquivo', 2)) && arquivoPathOk(docId, request.resource.data);
+      allow update: if (isSuperUser() || p('d_arquivo', 2)) && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['filename', 'filepath']);
       allow delete: if isSuperUser() || p('d_arquivo', 4);
     }
 
