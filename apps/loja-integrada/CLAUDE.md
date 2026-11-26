@@ -758,11 +758,14 @@ apps/loja-integrada/lib/lojaIntegrada/testing/especificacaoFolhas.json` (no pair
   form (step 13): a PROJECTION of the nine leaves a price write decides on (`id`, `tipo`,
   `ativo`, `bloqueado`, `removido` and the four `preco_*`), in the body's own order, every other
   key dropped, the four prices verbatim — the store's custo included; only the `fixture` profile
-  fakes it. In both, a leaf missing or one the walk would alter ⇒ `null`. Every other catalogue
-  path (the stock slash form, the produto no-slash form and both lists included) is `null`. The
-  line's `politica` is its path's (`estrutural`, or `catalogo` for both details). Capped at 200 KB
-  on the EXACT line (`linhaSerializadaLi`, UTF-8, newline excluded): over the cap or `null` ⇒
-  no line and NO write (`sem-restauracao`), never a truncated snapshot.
+  fakes it. In both, a leaf missing or one the walk would alter ⇒ `null`. ⚠️ So a store custo
+  the walk cannot carry verbatim (non-decimal text such as `'abc'` or `'1,50'`, a boolean, an
+  object) BLOCKS the price write (`sem-restauracao`), unlike the package's builder, which omits
+  a custo it cannot echo and sends: a masked custo would corrupt the only rollback. Every other
+  catalogue path (the stock slash form, the produto no-slash form and both lists included) is
+  `null`. The line's `politica` is its path's (`estrutural`, or `catalogo` for both details).
+  Capped at 200 KB on the EXACT line (`linhaSerializadaLi`, UTF-8, newline excluded): over the
+  cap or `null` ⇒ no line and NO write (`sem-restauracao`), never a truncated snapshot.
 - **The serialiser.** A structured value reaches a line only through `serializarValorLi`
   (`log.ts`): JSON for a JSON value, a marker (`<ciclo>`, `<bigint>`, `<ausente>`, `<fundo>`
   past depth 32, `<nao-serializavel>`) otherwise, no getter ever called, no `catch`. The
@@ -792,8 +795,9 @@ apps/loja-integrada/lib/lojaIntegrada/testing/especificacaoFolhas.json` (no pair
   the clear under the configured forma, so `'11.0000'` is `11` and `'22'` is not 22.22) plus
   `sob_consulta` EXACTLY, and never the custo (the store's own value echoed back, which no
   re-send could correct). After a landed price write the engine logs ONE `eco` line at zero
-  calls: `igual` or `sem-eco` at INFO, `deriva` at WARNING; an echo that did not read, or lacks
-  its `cheio` or `promocional`, is `sem-eco`, never a drift. It never changes the result
+  calls: `igual` or `sem-eco` at INFO, `deriva` at WARNING; the echo of a 202 (accepted, not
+  yet applied, whatever its body holds), an echo that did not read, or one that lacks its
+  `cheio` or `promocional`, is `sem-eco`, never a drift. It never changes the result
   (`enviado`) and triggers nothing; for a lote it is the only same-run evidence.
 - **The unit kill-switch.** `vitest.setup.ts` (the unit config's `setupFiles`) makes a
   `fetch` to any non-local host throw; `vitest.setup.test.ts` proves it, against `.invalid`
