@@ -18,7 +18,8 @@ Master plan: `.master_plans/loja-integrada/loja-integrada-marketplace-integratio
   (`core/escrita.ts`, `core/contextoEscrita.ts`; "Write engine" below). Two flows run on it —
   the status write-back and, since PR 12-e, the stock send run ("Stock sync" below) — and every
   write valve is off until the window. Step 12's engine seam (PR 12-d) adds the two stock kinds
-  and the stock detail's restore branch.
+  and the stock detail's restore branch; step 13's (PR 13-c) the two price kinds and the produto
+  detail's, with no caller outside tests yet.
 - Step 10 (the catalogue reads): four `GET`s in the conta route family (below), the core
   `lib/lojaIntegrada/catalogo/catalogo.ts` and its caches `catalogo/cache.ts`. The web's
   variation linker reads the grades; categories and brands wait for step 11's product tab.
@@ -715,18 +716,29 @@ apps/loja-integrada/lib/lojaIntegrada/testing/especificacaoFolhas.json` (no pair
   both getters refuse a different stored ref with ZERO requests (`LiCredencialTrocadaError`,
   transient). The ref carries the save's stamp, so even the same token saved again is
   refused. A park still throws `LiContaParadaError` first.
-- **Four write kinds, two readers** (`TipoEscritaLi`): the order kinds `objeto-envio` and
+- **Six write kinds, three readers** (`TipoEscritaLi`): the order kinds `objeto-envio` and
   `situacao-pedido` read the order detail `GET /v1/pedido/{numero}/`; the stock kinds
   (step 12) `estoque-produto` and `estoque-produto-lote` read one product's stock detail
   `GET /v1/produto_estoque/{produto id}` (no slash, keyed by the PRODUCT id — a stock row's own
   id answers 404, `ausente`) and write its four-leaf body (`campo: 'estoque'`, the package's
-  three fixed leaves plus the quantity, checked before the diff). The base and the read-back are
-  unions discriminated by `leitura`. A kind is sent, or diffed, only under its own flow's valve
-  (`FLUXO_DO_TIPO_ESCRITA_LI`). `estoque-produto` is read back by its own GET;
-  `estoque-produto-lote` declares `leituraDeVolta: 'lista'` and has NO read-back call (the stock
-  list's next walk is its read-back). The history read and the confirming read are the order
-  flow's only. Whether the row read names the product asked for is the flow's to check
-  (`produtoIdDoEstoqueLi`), not the engine's.
+  three fixed leaves plus the quantity, checked before the diff); the price kinds (step 13)
+  `preco-produto` and `preco-produto-lote` read the produto detail
+  `GET /v1/produto/{produto id}/` (the SLASH form, the merge base and the guard; a detail
+  missing one of its nine leaves is the package's `LiSchemaError`, never `ausente`) and write
+  `PUT /v1/produto_preco/{produto id}` from the package's BUILDER INPUTS, never a body
+  (`campo: 'preco'`: the target in integer centavos, the configured clear, and the deciding
+  read's OWN custo and `sob_consulta` — any other is a `TypeError`, with no diff line). The
+  engine builds that body ONCE, before the target decision, so a target no send may carry is
+  the builder's `RangeError` with nothing sent, the run still open and the base unspent. The
+  base and the read-back are unions discriminated by `leitura`. A kind is sent, or diffed, only
+  under its own flow's valve (`FLUXO_DO_TIPO_ESCRITA_LI`). `estoque-produto` and
+  `preco-produto` are read back by their own GET; `estoque-produto-lote` and
+  `preco-produto-lote` declare `leituraDeVolta: 'lista'` and have NO read-back call (the stock
+  list's next walk, and the price sync's next nightly by-id read, are their read-backs). The
+  history read and the confirming read are the order flow's only. Whether the row read names
+  the product asked for is the flow's to check (`produtoIdDoEstoqueLi`), not the engine's, and
+  so is whether a produto detail is one the price flow may price (its `id`, `tipo`, `removido`
+  and `bloqueado` come back as read).
 - **Every write has its own deciding read** (`lerBaseLi(motor, alvo, leitura)`, with the
   reader its kind's `LEITURA_PREVIA_LI` row names: two pacer intervals, the detail read, the
   pin, the restore line). A deciding read decides at most ONE write attempt, a write refuses a
@@ -739,12 +751,16 @@ apps/loja-integrada/lib/lojaIntegrada/testing/especificacaoFolhas.json` (no pair
 - **The restore line** (`evento: 'restauracao'`, INFO): the read's token-scrubbed text
   through `corpoDeRestauracaoLi` (`redacao.ts`: the estrutural keep-list walk, NO 2 KB cut;
   `null` for a configuration or webhook path, a non-2xx, a non-JSON body, over 1 MiB or deeper
-  than 256). Of the catalogue paths ONLY the stock detail `/v1/produto_estoque/{id}`, in its
-  exact no-slash form, has a branch: byte-faithful or `null` — all nine leaves of the stock
-  detail present and carried verbatim (the store's reservation included), an unknown extra key
-  kept with a `<redacted>` value; a leaf missing or one the walk would alter ⇒ `null`. Every
-  other catalogue path (the slash form and the stock list included) is `null`. The line's
-  `politica` is its path's (`estrutural`, or `catalogo` for the stock detail). Capped at 200 KB
+  than 256). Of the catalogue paths exactly TWO have a branch, each byte-faithful or `null`. The
+  stock detail `/v1/produto_estoque/{id}`, in its exact no-slash form: all nine leaves of the
+  stock detail present and carried verbatim (the store's reservation included), an unknown extra
+  key kept with a `<redacted>` value. The produto detail `/v1/produto/{id}/`, in its exact SLASH
+  form (step 13): a PROJECTION of the nine leaves a price write decides on (`id`, `tipo`,
+  `ativo`, `bloqueado`, `removido` and the four `preco_*`), in the body's own order, every other
+  key dropped, the four prices verbatim — the store's custo included; only the `fixture` profile
+  fakes it. In both, a leaf missing or one the walk would alter ⇒ `null`. Every other catalogue
+  path (the stock slash form, the produto no-slash form and both lists included) is `null`. The
+  line's `politica` is its path's (`estrutural`, or `catalogo` for both details). Capped at 200 KB
   on the EXACT line (`linhaSerializadaLi`, UTF-8, newline excluded): over the cap or `null` ⇒
   no line and NO write (`sem-restauracao`), never a truncated snapshot.
 - **The serialiser.** A structured value reaches a line only through `serializarValorLi`
@@ -770,7 +786,15 @@ apps/loja-integrada/lib/lojaIntegrada/testing/especificacaoFolhas.json` (no pair
 - **`deepEqual` has ONE home:** `core/igualdadeJsonLi.ts`, a leaf that imports nothing (the
   sanitizer's closure admits it; `estrutura.test.ts` pins that it stays a leaf). It folds key
   order only. `fixtures/piiScan.ts` and the engine call it; a wider fold is named in its
-  caller and gets its own inventory row.
+  caller and gets its own inventory row. The engine's one wider fold is the price kinds': their
+  dry-run `mudou`, their read-back and their PUT echo go through the shared `precoRefletidoLi`
+  (`@delfrance/schemas`: the full price and a positive promotion in the same integer centavos,
+  the clear under the configured forma, so `'11.0000'` is `11` and `'22'` is not 22.22) plus
+  `sob_consulta` EXACTLY, and never the custo (the store's own value echoed back, which no
+  re-send could correct). After a landed price write the engine logs ONE `eco` line at zero
+  calls: `igual` or `sem-eco` at INFO, `deriva` at WARNING; an echo that did not read, or lacks
+  its `cheio` or `promocional`, is `sem-eco`, never a drift. It never changes the result
+  (`enviado`) and triggers nothing; for a lote it is the only same-run evidence.
 - **The unit kill-switch.** `vitest.setup.ts` (the unit config's `setupFiles`) makes a
   `fetch` to any non-local host throw; `vitest.setup.test.ts` proves it, against `.invalid`
   hosts only (a real host there would be reached the day the switch broke), and refuses any
@@ -856,8 +880,11 @@ apps/loja-integrada/lib/lojaIntegrada/testing/especificacaoFolhas.json` (no pair
   index, no re-drive index); doc id = the event digest, task id `rastreio-<evento>`; the
   producer treats an answered `functions/task-already-exists` as success.
 - Tests: `testing/plataformaEscritaLi.ts` is a stateful LI (one order, its history, both
-  order write routes, and the store's stock rows by product id for the engine's stock suite,
-  `core/escritaEstoque.test.ts`); the global `fetch` is stubbed to throw in every suite.
+  order write routes, the store's stock rows by product id for the engine's stock suite,
+  `core/escritaEstoque.test.ts`, and the store's produto details with the price PUT for its
+  price suite, `core/escritaPreco.test.ts` — the detail in its slash form only, invented values
+  only, the storage and the echo scriptable so a test can model a store that coerces what it
+  stores); the global `fetch` is stubbed to throw in every suite.
 
 ## Stock sync (step 12)
 
