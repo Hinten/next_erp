@@ -3298,7 +3298,8 @@ describe('corpoDeRestauracaoLi — the produto detail (step 13): a byte-faithful
     );
     if (!fixture.ok) throw new TypeError(`fixture recusada: ${fixture.motivo}`);
     expect(fixture.politica).toBe('catalogo');
-    expect(folha(fixture.corpo, 'preco_custo')).not.toBe(12.34);
+    // FAKED, not dropped and not redacted: a number of the same type, the fixture fake's 0.
+    expect(folha(fixture.corpo, 'preco_custo')).toBe(0);
     expect(CHAVES_FALSAS_CATALOGO_LI.has('preco_custo')).toBe(true);
     const log = redigirCorpo({ caminho: CAMINHO_PRODUTO, status: 200, corpo: texto }, 'log');
     expect(log.politica).toBe('catalogo');

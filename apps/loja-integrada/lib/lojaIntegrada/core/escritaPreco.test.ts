@@ -20,6 +20,7 @@ import {
   type ProdutoComPrecoDetalheLi,
   corpoPrecoProdutoLi,
   liEstoqueProdutoDetalheSchema,
+  liProdutoComPrecoDetalheSchema,
 } from '@delfrance/integrations-loja-integrada';
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
 import {
@@ -43,11 +44,17 @@ import {
   caminhoPrecoProdutoLi,
   caminhoProdutoDetalheLi,
   criarPlataformaEscritaLi,
+  gravarPrecoPadraoLi,
   linhaEstoqueLi,
   naProxima,
   respostaJson,
 } from '../testing/plataformaEscritaLi';
-import { ID_SEM_PRODUTO_PRECO_LI, PARES_DETALHE_PRECO_LI } from '../testing/precoLi';
+import {
+  ID_SEM_PRODUTO_PRECO_LI,
+  PARES_DETALHE_PRECO_LI,
+  idDaLinhaDePrecoLi,
+  uriProdutoPrecoLi,
+} from '../testing/precoLi';
 import { __setRelogioDoCacheParaTestes } from './contaCache';
 import {
   type ContextoEscritaLojaIntegrada,
@@ -1023,6 +1030,15 @@ describe('the PUT echo: ONE `eco` line after a landed price write, through the s
         new Response('<html>ok</html>', { status: 200, headers: { 'content-type': 'text/html' } }),
     ],
     ['a 202 with no body', () => new Response(null, { status: 202 })],
+    // Accepted, not yet applied: whatever a 202's body holds proves nothing either way.
+    [
+      'a 202 whose body echoes the target in full',
+      () => respostaJson(202, { cheio: '33.00', promocional: '22.22', sob_consulta: false }),
+    ],
+    [
+      'a 202 whose body still holds the OLD full price',
+      () => respostaJson(202, { cheio: '55.55', promocional: '22.22', sob_consulta: false }),
+    ],
     ['a JSON array', () => respostaJson(200, [{ cheio: '33.00', promocional: '22.22' }])],
     ['an echo with no `cheio`', () => respostaJson(200, { promocional: '22.22' })],
     ['an echo with no `promocional`', () => respostaJson(200, { cheio: '33.00' })],
@@ -1184,7 +1200,7 @@ function grafia(centavos: number, qual: number): unknown {
 describe('conferirEscritaLi — a property sweep over drawn price writes', () => {
   // CI runners are about 5× slower under load: the sweep gets an explicit bound.
   it(
-    '1,000 drawn cases: every spelling and any custo ⇒ `igual`; one centavo or a `sob_consulta` flip ⇒ ONE deriva',
+    '1,000 drawn cases: every spelling and any custo ⇒ `igual`; one centavo on either price, a positive promotion where the target clears, or a `sob_consulta` flip ⇒ ONE deriva',
     { timeout: 60_000 },
     async () => {
       const m = await montar();
@@ -1238,9 +1254,372 @@ describe('conferirEscritaLi — a property sweep over drawn price writes', () =>
           'deriva',
         );
         expect(doEvento(m.linhas, 'deriva')).toHaveLength(antes + 2);
+        // The promotion leaf: one centavo off a positive target promotion; where the
+        // target clears, a positive store promotion — equal to the full price, which
+        // only `igual-cheio` reads as the landed clear, and one centavo below it.
+        if (promo !== null) {
+          const quasePromo = volta({ preco_promocional: grafia(promo + (r() < 0.5 ? -1 : 1), n) });
+          expect(
+            conferirEscritaLi(m.motor, PRECO, payload, quasePromo),
+            `promo #${String(n)}`,
+          ).toBe('deriva');
+        } else {
+          const promoCheia = volta({ preco_promocional: grafia(cheio, n) });
+          const igualCheio = forma === FORMA_PROMO_LIMPA_LI.igualCheio;
+          expect(
+            conferirEscritaLi(m.motor, PRECO, payload, promoCheia),
+            `promo = cheio #${String(n)}`,
+          ).toBe(igualCheio ? 'igual' : 'deriva');
+          if (igualCheio) {
+            const quaseCheia = volta({ preco_promocional: grafia(cheio - 1, n) });
+            expect(
+              conferirEscritaLi(m.motor, PRECO, payload, quaseCheia),
+              `promo = cheio - 1 #${String(n)}`,
+            ).toBe('deriva');
+          }
+        }
+        // Exactly ONE more deriva line on every path above.
+        expect(doEvento(m.linhas, 'deriva')).toHaveLength(antes + 3);
       }
       // Nothing was sent: the sweep compares constructed read-backs only.
       expect(m.p.requisicoes).toEqual([]);
     },
   );
+});
+
+/* -------------------------------------------------------------------------- */
+/*        The lote kind, `sob_consulta`, the echo and the store, pinned        */
+/* -------------------------------------------------------------------------- */
+
+/** A verified read-back of 1103 after ALVO_PROMO landed, `over` applied, parsed as the reader parses it. */
+const voltaVerificada = (over: DocData = {}) =>
+  ({
+    verificado: true,
+    leitura: 'produto-detalhe',
+    produtoDetalhe: liProdutoComPrecoDetalheSchema.parse(detalheDepois(over)),
+    status: 200,
+  }) as const;
+
+/** One `on` write of `alvo` under `forma` (the event kind) whose PUT answers `eco`. */
+async function escreverComEco(
+  eco: () => Response,
+  alvo: EnvioPrecoLi = ALVO_PROMO,
+  forma: FormaPromoLimpaLi = FORMA_PROMO_LIMPA_LI.nulo,
+) {
+  const m = await montar();
+  const base = lida(await lerBaseLi(m.motor, ALVO, 'produto-detalhe'));
+  m.p.fila.push(naProxima(CAMINHO_PUT, 'PUT', eco));
+  const r = await escreverLi(m.motor, PRECO, preco(base, alvo, forma), base);
+  return { m, r };
+}
+
+describe('preco-produto-lote: the same price predicate and the same input check as the event kind', () => {
+  it.each([
+    [
+      'the target as four-decimal text',
+      false,
+      { preco_cheio: '33.0000', preco_promocional: '22.2200' },
+    ],
+    ['the target as numbers', false, { preco_cheio: 33, preco_promocional: 22.22 }],
+    ['the promotion truncated (`"22"`)', true, { preco_cheio: 33, preco_promocional: '22' }],
+  ] as const)(
+    'a lote dry-run against a detail holding %s ⇒ ONE diff line, `mudou: %s`, no PUT',
+    async (_c, mudou, over) => {
+      const m = await montar({ modo: MODO_LI.dryRun, p: plataforma({ over }) });
+      const base = lida(await lerBaseLi(m.motor, ALVO, 'produto-detalhe'));
+      const payload = preco(base, ALVO_PROMO);
+      expect(await escreverLi(m.motor, LOTE, payload, base)).toEqual({
+        kind: 'nao-enviado',
+        motivo: 'valvula',
+      });
+      expect(doEvento(m.linhas, 'diff').map((l) => l.campos)).toEqual([
+        expect.objectContaining({
+          tipo: 'preco-produto-lote',
+          campo: 'preco',
+          antes: JSON.stringify({
+            cheio: over.preco_cheio,
+            promocional: over.preco_promocional,
+            custo: 12.34,
+            sob_consulta: false,
+          }),
+          depois: JSON.stringify(corpoPrecoProdutoLi(entradaDe(payload)).corpo),
+          mudou,
+        }),
+      ]);
+      expect(m.p.puts()).toEqual([]);
+    },
+  );
+
+  it('conferirEscritaLi of a lote: a spelling ⇒ `igual`, no line; a truncation or a `sob_consulta` flip ⇒ ONE deriva each', async () => {
+    const m = await montar();
+    const base = lida(await lerBaseLi(m.motor, ALVO, 'produto-detalhe'));
+    const payload = preco(base, ALVO_PROMO);
+    const quatroCasas = voltaVerificada({ preco_cheio: '33.0000', preco_promocional: '22.2200' });
+    expect(conferirEscritaLi(m.motor, LOTE, payload, quatroCasas)).toBe('igual');
+    expect(doEvento(m.linhas, 'deriva')).toEqual([]);
+    const truncada = voltaVerificada({ preco_promocional: '22' });
+    expect(conferirEscritaLi(m.motor, LOTE, payload, truncada)).toBe('deriva');
+    const sobConsulta = voltaVerificada({ preco_sob_consulta: true });
+    expect(conferirEscritaLi(m.motor, LOTE, payload, sobConsulta)).toBe('deriva');
+    expect(doEvento(m.linhas, 'deriva').map((l) => l.campos.tipo)).toEqual([
+      'preco-produto-lote',
+      'preco-produto-lote',
+    ]);
+  });
+
+  it.each([
+    ['a custo of 11.11 against the read’s 12.34', 11.11, false],
+    ['`sobConsulta: true` against the read’s false', 12.34, true],
+  ] as const)(
+    '⚠️ NEAR-MISS: a lote with %s ⇒ TypeError, no diff line, no PUT',
+    async (_c, custo, sob) => {
+      for (const modo of [MODO_LI.on, MODO_LI.dryRun]) {
+        const m = await montar({ modo });
+        const base = lida(await lerBaseLi(m.motor, ALVO, 'produto-detalhe'));
+        await expect(escreverLi(m.motor, LOTE, precoAvulso(custo, sob), base)).rejects.toThrow(
+          /custo e o sob_consulta/,
+        );
+        expect(m.p.puts()).toEqual([]);
+        expect(doEvento(m.linhas, 'diff')).toEqual([]);
+      }
+    },
+  );
+});
+
+describe('`sob_consulta` is compared EXACTLY — never by truthiness', () => {
+  it.each([
+    ['`null`', null],
+    ['`0`', 0],
+    ['the empty text', ''],
+  ] as const)(
+    '⚠️ NEAR-MISS: read back as %s after false ⇒ `deriva`, ONE WARNING line',
+    async (_c, sob) => {
+      const { m, resultado } = await escreverEConferir({
+        alvo: ALVO_PROMO,
+        volta: detalheDepois({ preco_sob_consulta: sob }),
+      });
+      expect(resultado).toBe('deriva');
+      expect(doEvento(m.linhas, 'deriva').map((l) => l.severidade)).toEqual(['WARNING']);
+    },
+  );
+
+  it.each([
+    ['`null`', null],
+    ['`0`', 0],
+    ['the empty text', ''],
+  ] as const)(
+    '⚠️ NEAR-MISS: echoed as %s after false ⇒ `deriva`, WARNING — still `enviado`, no extra call',
+    async (_c, sob) => {
+      const { m, r } = await escreverComEco(() =>
+        respostaJson(200, { cheio: '33.00', promocional: '22.22', sob_consulta: sob }),
+      );
+      expect(r.kind).toBe('enviado');
+      expect(doEvento(m.linhas, 'eco').map((l) => [l.severidade, l.campos.resultado])).toEqual([
+        ['WARNING', 'deriva'],
+      ]);
+      expect(m.p.chamadas()).toHaveLength(2);
+    },
+  );
+
+  it.each([
+    ['`null`', null, true],
+    ['the empty text', '', true],
+    ['the text `"false"`', 'false', false],
+  ] as const)(
+    '⚠️ NEAR-MISS: a deciding read whose `sob_consulta` is %s cannot be echoed, even as that same value ⇒ TypeError, no diff line, no PUT',
+    async (_c, sob, restauracao) => {
+      for (const modo of [MODO_LI.on, MODO_LI.dryRun]) {
+        const m = await montar({ modo, p: plataforma({ over: { preco_sob_consulta: sob } }) });
+        const base = lida(await lerBaseLi(m.motor, ALVO, 'produto-detalhe'));
+        // `null` and `''` ride the restore line verbatim, so the refusal is the input check's.
+        expect(base.restauracao).toBe(restauracao);
+        await expect(escreverLi(m.motor, PRECO, precoAvulso(12.34, sob), base)).rejects.toThrow(
+          /custo e o sob_consulta/,
+        );
+        expect(m.p.puts()).toEqual([]);
+        expect(doEvento(m.linhas, 'diff')).toEqual([]);
+      }
+    },
+  );
+});
+
+describe('the PUT echo: the configured forma, the echo’s OWN full price, how the echo read', () => {
+  it('EQUAL pair: under igual-cheio, the clear echoed as the full price (the default store) ⇒ `igual`, INFO', async () => {
+    const m = await montar();
+    const base = lida(await lerBaseLi(m.motor, ALVO, 'produto-detalhe'));
+    const payload = preco(base, ALVO_LIMPA, FORMA_PROMO_LIMPA_LI.igualCheio);
+    expect((await escreverLi(m.motor, PRECO, payload, base)).kind).toBe('enviado');
+    expect(m.p.textosDosPuts[0]).toContain('"promocional":33');
+    expect(doEvento(m.linhas, 'eco').map((l) => [l.severidade, l.campos.resultado])).toEqual([
+      ['INFO', 'igual'],
+    ]);
+  });
+
+  it('⚠️ NEAR-MISS: under nulo and zero, a clear echoed as the full price ⇒ `deriva`, WARNING', async () => {
+    for (const forma of [FORMA_PROMO_LIMPA_LI.nulo, FORMA_PROMO_LIMPA_LI.zero]) {
+      const { m } = await escreverComEco(
+        () => respostaJson(200, { cheio: '33.00', promocional: '33.00', sob_consulta: false }),
+        ALVO_LIMPA,
+        forma,
+      );
+      expect(
+        doEvento(m.linhas, 'eco').map((l) => [l.severidade, l.campos.resultado]),
+        forma,
+      ).toEqual([['WARNING', 'deriva']]);
+    }
+  });
+
+  it.each([
+    ['one centavo above (`"33.01"`)', '33.01'],
+    ['the OLD full price (`"55.55"`: the store ignored the write)', '55.55'],
+  ])(
+    '⚠️ NEAR-MISS: an echo whose full price is %s ⇒ `deriva`, WARNING — still `enviado`, no extra call',
+    async (_c, cheio) => {
+      const { m, r } = await escreverComEco(() =>
+        respostaJson(200, { cheio, promocional: '22.22', sob_consulta: false }),
+      );
+      expect(r.kind).toBe('enviado');
+      expect(doEvento(m.linhas, 'eco').map((l) => [l.severidade, l.campos.resultado])).toEqual([
+        ['WARNING', 'deriva'],
+      ]);
+      expect(m.p.chamadas()).toHaveLength(2);
+    },
+  );
+
+  it.each([
+    ['an empty 200', 'vazio', () => respostaJson(200, undefined)],
+    [
+      'a non-JSON 200',
+      'nao-json',
+      () =>
+        new Response('<html>ok</html>', { status: 200, headers: { 'content-type': 'text/html' } }),
+    ],
+    [
+      'a JSON array',
+      'formato',
+      () => respostaJson(200, [{ cheio: '33.00', promocional: '22.22' }]),
+    ],
+  ] as const)(
+    'a `sem-eco` line says how the echo read: %s ⇒ `leituraEco: %s`',
+    async (_c, leituraEco, eco) => {
+      const { m } = await escreverComEco(eco);
+      expect(doEvento(m.linhas, 'eco').map((l) => l.campos)).toEqual([
+        expect.objectContaining({ resultado: 'sem-eco', leituraEco }),
+      ]);
+    },
+  );
+});
+
+describe('the call lines tell the deciding read from the read-back', () => {
+  it('`lerProdutoParaEscrita`, then `lerProdutoDeVolta` — both GETs of the produto detail', async () => {
+    const m = await montar();
+    const base = lida(await lerBaseLi(m.motor, ALVO, 'produto-detalhe'));
+    await escreverLi(m.motor, PRECO, preco(base, ALVO_PROMO), base);
+    await lerDeVoltaLi(m.motor, ALVO, 'preco-produto');
+    expect(
+      doEvento(m.linhas, 'chamada')
+        .filter((l) => l.campos.metodo === 'GET')
+        .map((l) => l.campos.operacao),
+    ).toEqual(['lerProdutoParaEscrita', 'lerProdutoDeVolta']);
+  });
+});
+
+describe('the stateful store’s price model (the fake every price suite stands on)', () => {
+  it.each([
+    [FORMA_PROMO_LIMPA_LI.nulo, null],
+    [FORMA_PROMO_LIMPA_LI.zero, 0],
+    [FORMA_PROMO_LIMPA_LI.igualCheio, 33],
+  ] as const)(
+    'a clear under `%s` is STORED as sent (%j) and echoed back `igual`',
+    async (forma, promocional) => {
+      const m = await montar();
+      const base = lida(await lerBaseLi(m.motor, ALVO, 'produto-detalhe'));
+      await escreverLi(m.motor, PRECO, preco(base, ALVO_LIMPA, forma), base);
+      expect(m.p.estado.produtos.get(PRODUTO_ID)).toMatchObject({
+        preco_cheio: 33,
+        preco_promocional: promocional,
+      });
+      expect(doEvento(m.linhas, 'eco').map((l) => l.campos.resultado)).toEqual(['igual']);
+    },
+  );
+
+  it.each([
+    ['a null custo', null],
+    ['a custo as decimal text', '12.3400'],
+  ] as const)(
+    'a body that omits the custo (%s) keeps the stored one — the fake’s stated assumption',
+    async (_c, custo) => {
+      const m = await montar({ p: plataforma({ over: { preco_custo: custo } }) });
+      const base = lida(await lerBaseLi(m.motor, ALVO, 'produto-detalhe'));
+      await escreverLi(m.motor, PRECO, preco(base, ALVO_PROMO), base);
+      expect(m.p.textosDosPuts[0]).not.toContain('"custo"');
+      expect(m.p.estado.produtos.get(PRODUTO_ID)).toHaveProperty('preco_custo', custo);
+    },
+  );
+
+  it('its echo is the price ROW: the row’s own id (produto + 8000) and the produto’s URI — never the produto id', async () => {
+    const p = plataforma();
+    const resposta = await p.fetch(`https://loja.invalid${CAMINHO_PUT}`, {
+      method: 'PUT',
+      body: JSON.stringify({ cheio: 33, promocional: null, sob_consulta: false }),
+    });
+    const eco: unknown = await resposta.json();
+    expect(eco).toMatchObject({
+      id: idDaLinhaDePrecoLi(PRODUTO_ID),
+      produto: uriProdutoPrecoLi(PRODUTO_ID),
+      cheio: '33',
+      promocional: null,
+    });
+    expect(eco).not.toMatchObject({ id: PRODUTO_ID });
+  });
+
+  it('a store that COERCES what it stores (`gravacaoPreco`: the promotion truncated to whole reais) ⇒ its echo AND the read-back of its own state both `deriva`', async () => {
+    const m = await montar({
+      p: plataforma({
+        gravacaoPreco: (corpo, detalhe) => {
+          gravarPrecoPadraoLi(corpo, detalhe);
+          detalhe.preco_promocional = '22';
+        },
+      }),
+    });
+    const base = lida(await lerBaseLi(m.motor, ALVO, 'produto-detalhe'));
+    const payload = preco(base, ALVO_PROMO);
+    expect((await escreverLi(m.motor, PRECO, payload, base)).kind).toBe('enviado');
+    expect(m.p.estado.produtos.get(PRODUTO_ID)).toMatchObject({
+      preco_cheio: 33,
+      preco_promocional: '22',
+    });
+    expect(doEvento(m.linhas, 'eco').map((l) => [l.severidade, l.campos.resultado])).toEqual([
+      ['WARNING', 'deriva'],
+    ]);
+    // No scripted answer: the read-back reads what the store itself kept.
+    const leitura = await lerDeVoltaLi(m.motor, ALVO, 'preco-produto');
+    if (!leitura.verificado) throw new TypeError(`não verificada: ${leitura.classe}`);
+    expect(conferirEscritaLi(m.motor, PRECO, payload, leitura)).toBe('deriva');
+    expect(doEvento(m.linhas, 'deriva')).toHaveLength(1);
+    expect(m.p.chamadas()).toEqual([`GET ${CAMINHO}`, `PUT ${CAMINHO_PUT}`, `GET ${CAMINHO}`]);
+  });
+
+  it('a store that only ACCEPTS (`ecoPreco`: a 202 echoing the price in full) ⇒ `pendente`, `sem-eco` — and the read-back of what it stored ⇒ `igual`', async () => {
+    const m = await montar({
+      p: plataforma({
+        ecoPreco: (detalhe) =>
+          respostaJson(202, {
+            cheio: String(detalhe.preco_cheio),
+            promocional: String(detalhe.preco_promocional),
+            sob_consulta: detalhe.preco_sob_consulta,
+          }),
+      }),
+    });
+    const base = lida(await lerBaseLi(m.motor, ALVO, 'produto-detalhe'));
+    const payload = preco(base, ALVO_PROMO);
+    expect((await escreverLi(m.motor, PRECO, payload, base)).kind).toBe('enviado');
+    expect(doEvento(m.linhas, 'escrita').map((l) => l.campos.resultado)).toEqual(['pendente']);
+    expect(doEvento(m.linhas, 'eco').map((l) => [l.severidade, l.campos.resultado])).toEqual([
+      ['INFO', 'sem-eco'],
+    ]);
+    const leitura = await lerDeVoltaLi(m.motor, ALVO, 'preco-produto');
+    if (!leitura.verificado) throw new TypeError(`não verificada: ${leitura.classe}`);
+    expect(conferirEscritaLi(m.motor, PRECO, payload, leitura)).toBe('igual');
+  });
 });

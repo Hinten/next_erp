@@ -48,7 +48,11 @@
  *     stock detail and the produto detail, a detail whose nine leaves would not
  *     come out verbatim — the produto detail's line is a projection of its nine,
  *     its four prices and the store's custo verbatim) ⇒ that write is not made
- *     (`sem-restauracao`). A deciding read
+ *     (`sem-restauracao`). So a store custo the walk cannot carry verbatim
+ *     (non-decimal text such as `'abc'` or `'1,50'`, a boolean, an object)
+ *     blocks a price write, where the package's builder alone would omit it
+ *     and send: the line is the only rollback, and a masked custo in it would
+ *     corrupt that rollback. A deciding read
  *     decides at most ONE write attempt, and a read-back is never a deciding
  *     read (another type), so after a refused write the next one needs a fresh
  *     read and its own line.
@@ -521,8 +525,9 @@ async function esperarIntervalos(e: EstadoMotorLi, n: number): Promise<void> {
 /**
  * The target's key as a path segment, after the conta check (a programming
  * error otherwise): the order `numero`, or the PRODUCT id of a stock or price
- * target — never a stock row's or a price row's own `id`, which the store
- * answers 404 for.
+ * target — never a stock row's own `id`, which the store answers 404 for, nor a
+ * price row's own `id` (another number sequence: on the produto detail it may
+ * name ANOTHER product, which is why the price flow checks the detail's `id`).
  */
 function idDoAlvo(e: EstadoMotorLi, alvo: AlvoLi): string {
   if (alvo.contaId !== e.integracaoId) {
@@ -1062,9 +1067,11 @@ function ehRegistroLi(v: unknown): v is Readonly<Record<string, unknown>> {
 /**
  * The ONE `eco` line after a landed price write (requirement 5): the PUT's 200
  * echo through the same rule as the read-back, at ZERO calls. `sem-eco` when
- * there is nothing to judge — the echo did not read (`leituraEco` not `ok`: a
- * 202 with no body, an empty, cut or non-JSON 200, a JSON array), or lacks its
- * own `cheio` or `promocional` — never a `deriva`. `igual` when
+ * there is nothing to judge — the write was only ACCEPTED (a 202, `aplicada`
+ * not `sim`: whatever its body holds, the store has not applied it yet, so it
+ * proves nothing either way), the echo did not read (`leituraEco` not `ok`: an
+ * empty, cut or non-JSON 200, a JSON array), or it lacks its own `cheio` or
+ * `promocional` — never a `deriva`. `igual` when
  * `precoRefletidoLi` finds the target in it and its `sob_consulta`, when it has
  * one, is the one sent; `deriva` otherwise. It never changes the write's result
  * and triggers nothing; for a lote it is the only same-run evidence. Total
@@ -1087,6 +1094,7 @@ function registrarEcoDoPrecoLi(
   }
   let resultado: ResultadoEcoLi;
   if (
+    resposta.aplicada !== 'sim' ||
     resposta.leituraEco !== 'ok' ||
     !Object.hasOwn(lido, 'cheio') ||
     !Object.hasOwn(lido, 'promocional')
