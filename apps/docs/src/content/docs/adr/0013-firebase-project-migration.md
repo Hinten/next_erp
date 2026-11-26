@@ -56,7 +56,10 @@ Do this weeks early. Nothing here is reversible in a hurry, and one item
    and alert thresholds on day one. Cost visibility is the point of the exercise;
    wiring it after the first invoice is wiring it too late.
 2. **Create the database**:
-   `gcloud firestore databases create --database=default --edition=enterprise --location=<region>`.
+   `gcloud firestore databases create --database=default --edition=enterprise --location=<region> --enable-firestore-data-access --enable-realtime-updates --no-enable-mongodb-compatible-data-access`.
+   ⚠️ *Corrected 2026-11-26* — the three data-access flags were missing, and
+   without them the database is unusable from the Firebase SDKs. See the
+   Amendment, correction 7.
    The id is literally `default`, not `(default)` — see the root `CLAUDE.md`
    Critical rule 1, and everything that passes it explicitly to `getFirestore()`.
    ⚠️ **`<region>` is a placeholder, not shorthand for a value already agreed.
@@ -407,7 +410,7 @@ Accepted. Amended 2026-11-26 — see below.
 
 The original text above stands as the record of what was decided in August. This
 section changes the **Phase 1/2 mechanics**, adds a **full test migration**
-before the real one, and corrects six facts. Everything it does not mention —
+before the real one, and corrects seven facts. Everything it does not mention —
 the custom domains, the drain valve, Auth, the URL rewrite, the Phase 3 order,
 the rollback — is unchanged. The region is still open in #1115 (direction
 `us-central1`).
@@ -473,9 +476,22 @@ unordered. The mechanics below are what make that safe.
 
 The mirror must already be running when T0 is taken.
 
-1. Create the destination project and database. **Indexes and rules first** —
-   the move-data page says to create indexes before importing "to avoid having to
-   process each document multiple times".
+1. Create the destination project and database, with the data-access flags of
+   correction 7:
+
+   ```bash
+   gcloud firestore databases create --project=<destination> \
+     --database=default --edition=enterprise --location=<region> \
+     --enable-firestore-data-access --enable-realtime-updates \
+     --no-enable-mongodb-compatible-data-access
+   gcloud firestore databases describe --project=<destination> --database=default
+   ```
+
+   The `describe` output must show Firestore data access **enabled**, realtime
+   updates **enabled** and MongoDB-compatible data access **disabled**. Check it
+   before anything else lands, because a wrong mode means deleting the database.
+   Then **indexes and rules** — the move-data page says to create indexes before
+   importing "to avoid having to process each document multiple times".
 2. **Deploy the mirror into legacy**, targeting the destination. It starts
    writing at once.
 3. **Take T0 after the deploy** and export with `--snapshot-time=T0`. Every write
@@ -606,6 +622,23 @@ the inter-region transfer.
 6. **The legacy region is `us-east1`** (Lucas, 2026-11-26). This answers the
    *Run this first* question: legacy has no App Hosting region, so its
    inter-region transfer charge is structural, as the original text predicted.
+7. **Phase 0 step 2's create command made an unusable database.** Measured on
+   2026-11-26 on the test project: the original command (`--database=default
+   --edition=enterprise --location=us-central1`, nothing else) created the
+   Enterprise database in **MongoDB-compatible mode**. The Admin SDK then failed
+   on its first read with `9 FAILED_PRECONDITION ... 'firestore_data_access_mode'
+   is set to 'DATA_ACCESS_MODE_DISABLED'` (reason
+   `FIRESTORE_DATA_ACCESS_DISABLED`). `gcloud firestore databases create --help`
+   confirms the Enterprise defaults: MongoDB-compatible data access **on**,
+   Firestore API data access **off**, realtime updates **off**. The command needs
+   all three flags: `--enable-firestore-data-access`,
+   `--enable-realtime-updates` (the web app runs on `onSnapshot` listeners) and
+   `--no-enable-mongodb-compatible-data-access`. Phase 0 step 2 now carries
+   them, and *Order* step 1 adds the `describe` check.
+   ⚠️ **Data access modes cannot be changed after creation.** On the final
+   project, a wrong mode costs a delete and recreate of the database, plus
+   redeploying all 224 composite indexes in `firestore.indexes.json`. The test
+   project already paid that once.
 
 ### Cost note
 
