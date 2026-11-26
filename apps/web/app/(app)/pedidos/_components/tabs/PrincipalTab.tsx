@@ -237,6 +237,7 @@ export function PrincipalTab({ form, db, disabled, observacoesDisabled }: Princi
             onBlur={field.onBlur}
             disabled={disabled}
             error={fieldState.error?.message}
+            showCustomerLink
           />
         )}
       />
