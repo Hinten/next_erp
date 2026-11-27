@@ -26,8 +26,11 @@ const link = (conta: string, id: number, over: Record<string, unknown> = {}) => 
   ...over,
 });
 
-/** Two contas of the run with their stock and price states, and a page of four groups. */
-async function mundo() {
+/**
+ * Two contas of the run with their stock and price states, and a page of four groups. Only C1 is
+ * priced, unless `c2Precificada` (C2's one link, 2001, is then priced too, on the same page).
+ */
+async function mundo(o: { readonly c2Precificada?: boolean } = {}) {
   const fake = new FakeDb();
   for (const [conta, deposito] of [
     ['C1', 'dep-1'],
@@ -37,17 +40,18 @@ async function mundo() {
       execucao: { execucaoId: RUN_A, depositoId: deposito, vistos: [], amostras: {}, mapa: null },
     });
   }
-  // Only C1 is priced.
-  fake.seed('sincPrecoLojaIntegrada/C1', {
-    execucaoPreco: {
-      execucaoId: RUN_A,
-      tabelas: { normal: 'tab-n', promocional: null },
-      amostras: {},
-      contadores: {},
-      candidatos: [],
-      mantidos: [],
-    },
-  });
+  for (const conta of o.c2Precificada === true ? ['C1', 'C2'] : ['C1']) {
+    fake.seed(`sincPrecoLojaIntegrada/${conta}`, {
+      execucaoPreco: {
+        execucaoId: RUN_A,
+        tabelas: { normal: 'tab-n', promocional: null },
+        amostras: {},
+        contadores: {},
+        candidatos: [],
+        mantidos: [],
+      },
+    });
+  }
   seedProduto(fake, 'f1', { paiId: 'pai-1', precos: { 'tab-n': { valor: 11.11 } }, custo: 9 });
   seedProduto(fake, 'f2', { precos: { 'tab-n': { valor: 22.22 } } });
   seedProduto(fake, 'g1', { precos: { 'tab-n': { valor: 33.33 } } });
@@ -133,8 +137,11 @@ describe('the read of a page, in each combination of arms', () => {
 });
 
 describe('the price arm’s containment per (page, conta)', () => {
-  async function comArma(arma: typeof avaliarPrecoDaPaginaLi) {
-    const w = await mundo();
+  async function comArma(
+    arma: typeof avaliarPrecoDaPaginaLi,
+    o: { readonly c2Precificada?: boolean } = {},
+  ) {
+    const w = await mundo(o);
     const log = loggerGravador();
     const semPreco = await mundo();
     const base = await avaliarPaginaReconcileLi(semPreco.db, semPreco.grupos, {
@@ -185,6 +192,45 @@ describe('the price arm’s containment per (page, conta)', () => {
       expect([...(w.precos.get('C1')?.entradas() ?? [])]).toEqual([]);
     },
   );
+
+  it('a fault for the FIRST priced conta leaves the NEXT one on the same page priced — contained per conta, never the rest of the page', async () => {
+    const { w, log, r } = await comArma(
+      (a) => {
+        if (a.conta.contaId === 'C1') throw new TypeError('x');
+        return avaliarPrecoDaPaginaLi(a);
+      },
+      { c2Precificada: true },
+    );
+    await r;
+    expect(w.precos.get('C1')?.contador('armaFalhou')).toBe(1);
+    expect(w.precos.get('C2')?.entrada('2001')).toEqual({ p: 'g1', f: 'v', n: 3333 });
+    expect(w.precos.get('C2')?.contador('validos')).toBe(1);
+    expect(w.precos.get('C2')?.contador('armaFalhou')).toBe(0);
+    expect(log.linhas.map((l) => l.meta.contaId)).toEqual(['C1']);
+  });
+
+  it('a COUNTER the root’s schema refuses (a fraction, a name off its form, a negative) ⇒ contained as a ZodError, nothing of the page applied', async () => {
+    for (const ruim of [
+      ['validos', 0.5],
+      ['pai-invalido', 1],
+      ['validos', -1],
+    ] as const) {
+      const { w, log, r } = await comArma((a) => ({
+        ...avaliarPrecoDaPaginaLi(a),
+        contadores: new Map([ruim]),
+      }));
+      await r;
+      expect([...(w.precos.get('C1')?.entradas() ?? [])], ruim[0]).toEqual([]);
+      expect(w.precos.get('C1')?.raiz.execucaoPreco.contadores, ruim[0]).toEqual({
+        armaFalhou: 1,
+      });
+      expect(
+        log.linhas.map((l) => [l.meta.motivo, l.meta.classe]),
+        ruim[0],
+      ).toEqual([['arma-preco-falhou', 'ZodError']]);
+      expect(() => w.precos.get('C1')?.escritas()).not.toThrow();
+    }
+  });
 
   it('a conta that already faulted is skipped on the next page: its arm is not called again', async () => {
     const { w, r } = await comArma(() => {

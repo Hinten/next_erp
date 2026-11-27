@@ -104,9 +104,12 @@ import {
  * again valid, the previous target as `ap` and the previous deferral as `tp`: what makes the
  * in-transit rule ("the ERP target moved since the previous run") and its "never two nights in a
  * row" cost zero reads. The carry is the bucket's own `anteriores` field: the replace at first
- * touch moves every previous valid entry's `a` and `t` there, keyed by id, and the walk — which
- * reaches the bucket's ids over many slices — takes each one back as it re-writes that id. Nothing
- * else carries over: every entry is one the walk wrote this run.
+ * touch moves every previous valid entry's `a` and `t` there, keyed by id — from an entry the
+ * previous run never priced (no `a`: it ended early, or its price arm faulted), the `ap` / `tp` it
+ * had carried, and for an id it never re-wrote, the carry its bucket still held, so an unfinished
+ * run never drops the one before it — and the walk — which reaches the bucket's ids over many
+ * slices — takes each one back as it re-writes that id. Nothing else carries over: every entry is
+ * one the walk wrote this run.
  *
  * ## Units
  *

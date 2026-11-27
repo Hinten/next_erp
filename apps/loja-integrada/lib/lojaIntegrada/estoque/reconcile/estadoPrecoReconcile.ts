@@ -21,8 +21,10 @@
  * replaced on load by an empty one of this run, marked to be written, so the first ERP slice
  * writes all 32 and by the end of the walk every bucket carries this run's id. From a bucket of
  * another run that parses, every VALID entry's previous target and deferral move into the new
- * bucket's `anteriores` (`{ ap: a, tp: t }`, absent keys omitted); nothing is carried from a
- * bucket off its schema. Writing a `v` entry for an id takes `ap` / `tp` back out of `anteriores`
+ * bucket's `anteriores` (`{ ap: a, tp: t }`, absent keys omitted) — from an entry that run never
+ * priced (no `a`), the `ap` / `tp` it carried, and for an id that run never re-wrote, the carry
+ * its bucket still held, so an unfinished run never drops the one before it; nothing is carried
+ * from a bucket off its schema. Writing a `v` entry for an id takes `ap` / `tp` back out of `anteriores`
  * and removes the key (`sincPrecoLojaIntegrada.ts`, "The life of an entry").
  *
  * ## Which entry wins ({@link mesclarEntradaPrecoLi}, pure)
@@ -40,6 +42,18 @@
  * In the conta's own root (`execucaoPreco.contadores`, `.amostras`), never in the run document:
  * the stock's `ultimoReconcile` never picks one up, and the run document's byte budget stays the
  * stock's.
+ *
+ * ## The commit's bytes
+ *
+ * A walk page spreads its store ids over all 32 buckets, and a bucket is written WHOLE, so every
+ * ERP slice rewrites each priced conta's whole price snapshot — in the same commit as the stock
+ * writes and the run document, which Firestore refuses whole past its 10 MiB request limit (and on
+ * every retry, until the last attempt releases the run, stock included). So the price documents of
+ * one commit are held to {@link MAX_BYTES_PRECO_LOTE_RECONCILE_LI}, each counted by Firestore's
+ * storage formula ({@link bytesDaEscritaPrecoLi}): in run order, a conta whose writes would pass it
+ * loses its bucket writes for the slice and its price arm for the run
+ * ({@link conterBytesDoLotePrecoLi}; the caller counts and logs it), and its root still writes. The
+ * stock share of the commit is what it was before the price arm.
  *
  * Next-free, `db` a parameter, every access through a `@delfrance/data/admin/collections` handle.
  * ⚠️ Never name the Admin SDK's multi-document read-and-write call here (`estrutura.test.ts`).
@@ -314,6 +328,19 @@ export class EstadoContaPrecoLi {
     return saida;
   }
 
+  /** The bytes this conta's pending writes add to a commit (module header, "The commit's bytes"). */
+  bytesPendentes(): number {
+    return this.escritas().reduce((soma, w) => soma + bytesDaEscritaPrecoLi(w), 0);
+  }
+
+  /**
+   * Drops every pending BUCKET write of this slice (module header, "The commit's bytes"): the
+   * stored buckets stay as the last commit left them; the root still writes.
+   */
+  descartarBaldesPendentes(): void {
+    for (const balde of this.baldes.values()) balde.sujo = false;
+  }
+
   /** After the batch landed: each written document's new stamp, and nothing left to write. */
   gravado(versoes: ReadonlyMap<string, Timestamp | null>): void {
     for (const doc of [this.raiz, ...this.baldes.values()]) {
@@ -325,22 +352,108 @@ export class EstadoContaPrecoLi {
   }
 }
 
+/**
+ * The most bytes the price documents may add to ONE commit (module header, "The commit's bytes"):
+ * 4 MiB of Firestore's 10 MiB request limit, so the stock writes and the run document keep the
+ * share they had before the price arm.
+ */
+export const MAX_BYTES_PRECO_LOTE_RECONCILE_LI = 4 * 1024 * 1024;
+
+/** UTF-8 bytes of a string. */
+function bytesUtf8(texto: string): number {
+  return new TextEncoder().encode(texto).length;
+}
+
+/**
+ * A stored value's size by Firestore's storage formula: `null` and a boolean 1 byte, a number 8, a
+ * string its UTF-8 bytes + 1, an array its elements, a map each key (UTF-8 + 1) and its value.
+ * `undefined` is never stored (0). Plain data only: the price documents hold no other type.
+ */
+export function bytesArmazenadosLi(valor: unknown): number {
+  if (valor === null || typeof valor === 'boolean') return 1;
+  if (typeof valor === 'number') return 8;
+  if (typeof valor === 'string') return bytesUtf8(valor) + 1;
+  if (Array.isArray(valor)) {
+    return (valor as readonly unknown[]).reduce<number>((s, v) => s + bytesArmazenadosLi(v), 0);
+  }
+  if (typeof valor === 'object') {
+    return Object.entries(valor).reduce<number>(
+      (s, [chave, v]) => s + bytesUtf8(chave) + 1 + bytesArmazenadosLi(v),
+      0,
+    );
+  }
+  return 0;
+}
+
+/**
+ * The bytes one write adds to a commit: the whole document it writes — its name (each path segment
+ * UTF-8 + 1, plus 16), its fields and the fixed 32 — since every price document is written whole.
+ */
+export function bytesDaEscritaPrecoLi(w: EscritaSincLi): number {
+  const nome = w.ref.path.split('/').reduce((s, segmento) => s + bytesUtf8(segmento) + 1, 16);
+  return nome + 32 + (w.tipo === 'apagar' ? 0 : bytesArmazenadosLi(w.dados));
+}
+
+/**
+ * The commit's price share (module header, "The commit's bytes"): in run order, every conta whose
+ * pending writes would take the running total past `orcamento` is handed to `descartar` (which
+ * drops its bucket writes); what it still writes counts toward the total. Exactly `orcamento`
+ * fits. Reads nothing.
+ */
+export function conterBytesDoLotePrecoLi(
+  estados: Iterable<EstadoContaPrecoLi>,
+  orcamento: number,
+  descartar: (estado: EstadoContaPrecoLi, bytes: number) => void,
+): void {
+  let total = 0;
+  for (const e of [...estados].sort((a, b) => a.conta.idx - b.conta.idx)) {
+    const bytes = e.bytesPendentes();
+    if (total + bytes <= orcamento) {
+      total += bytes;
+      continue;
+    }
+    descartar(e, bytes);
+    total += e.bytesPendentes();
+  }
+}
+
 /** Whether the buckets are loaded with the roots (`todos`) or not (`nenhum`). */
 export type BaldesDoCarregamentoPrecoLi = 'todos' | 'nenhum';
 
-/** The previous run's carry of a bucket of another run that parses (module header). */
+/**
+ * The previous run's carry of a bucket of another run that parses (module header): for each VALID
+ * entry, its `a` and `t`; for one that run never priced (no `a`: it ended before its parents unit,
+ * or its price arm faulted), the `ap` / `tp` it had taken instead — the last run that DID — and,
+ * for an id that run never re-wrote at all, the carry its bucket still held. So one unfinished run
+ * never loses the carry of the run before it.
+ */
 function anterioresDe(
-  e: Readonly<Record<string, EntradaSnapshotPrecoLi>>,
+  balde: {
+    readonly e: Readonly<Record<string, EntradaSnapshotPrecoLi>>;
+    readonly anteriores: Readonly<Record<string, AnteriorPrecoLi>>;
+  },
   id: string,
 ): Map<string, AnteriorPrecoLi> {
   const saida = new Map<string, AnteriorPrecoLi>();
-  for (const [idLi, entrada] of Object.entries(e)) {
-    if (entrada.f !== FLAG_ENTRADA_PRECO_LI.valido || baldeSnapshotEstoqueLi(idLi) !== id) continue;
-    const anterior: AnteriorPrecoLi = {
-      ...(entrada.a == null ? {} : { ap: entrada.a }),
-      ...(entrada.t === true ? { tp: true as const } : {}),
-    };
+  const guardar = (idLi: string, anterior: AnteriorPrecoLi): void => {
     if (Object.keys(anterior).length > 0) saida.set(idLi, anterior);
+  };
+  for (const [idLi, anterior] of Object.entries(balde.anteriores)) {
+    if (baldeSnapshotEstoqueLi(idLi) !== id || Object.hasOwn(balde.e, idLi)) continue;
+    guardar(idLi, {
+      ...(anterior.ap == null ? {} : { ap: anterior.ap }),
+      ...(anterior.tp === true ? { tp: true as const } : {}),
+    });
+  }
+  for (const [idLi, entrada] of Object.entries(balde.e)) {
+    if (entrada.f !== FLAG_ENTRADA_PRECO_LI.valido || baldeSnapshotEstoqueLi(idLi) !== id) continue;
+    const precificada = entrada.a != null;
+    const ap = precificada ? entrada.a : entrada.ap;
+    const tp = entrada.t === true || (!precificada && entrada.tp === true);
+    guardar(idLi, {
+      ...(ap == null ? {} : { ap }),
+      ...(tp ? { tp: true as const } : {}),
+    });
   }
   return saida;
 }
@@ -366,7 +479,7 @@ function baldeLido(snap: DocumentSnapshot, id: string, execucaoId: string): Bald
     versao,
     sujo: true,
     e: new Map(),
-    anteriores: lido.success ? anterioresDe(lido.data.e, id) : new Map(),
+    anteriores: lido.success ? anterioresDe(lido.data, id) : new Map(),
   };
 }
 

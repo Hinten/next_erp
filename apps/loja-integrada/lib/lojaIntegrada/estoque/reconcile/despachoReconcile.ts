@@ -58,10 +58,15 @@
  *     - `fim`: per conta, the stock end unit then the price end unit (`fimPrecoReconcile.ts`), which
  *       never split across slices; entering it clears `fasePreco` in the same patch.
  *     A price unit's coding bug or schema refusal is contained per conta (`armaFalhou`, ONE ERROR:
- *     no more price phases and no price aviso for it); a failure a retry may change is
- *     checkpointed and rethrown, and on the queue's last attempt contained the same way. A price
- *     failure never releases the lease. With the price valve unset, everything here is the
- *     stock-only reconcile, read for read and write for write.
+ *     no more price phases and no price aviso for it); a failure a retry may change — the load of
+ *     the conta's price state included — is checkpointed and rethrown, and on the queue's last
+ *     attempt contained the same way. A price failure never releases the lease. (The ERP phase's
+ *     price-state load belongs to the walk's own reads, as the stock state's does: its failure is
+ *     the walk's.) A commit's price documents are held to a byte share
+ *     (`estadoPrecoReconcile.ts`, "The commit's bytes"): a conta past it loses its price arm for
+ *     the run (ONE ERROR `lote-preco-excedido`), never the stock writes their commit. With the
+ *     price valve unset, everything here is the stock-only reconcile, read for read and write for
+ *     write.
  *  6. ONE end-of-slice checkpoint: the run document (`seq + 1`, the lease extended, or released at
  *     `fim`) and every per-conta document the slice changed, in ONE batch; then the NAMED
  *     continuation `(execucaoId, seq + 1)`, 2 s later — 60 s after a 429 PAUSE of the store
@@ -166,7 +171,9 @@ import { tabelasDobradasLi } from './contasPrecoReconcile';
 import {
   type BaldesDoCarregamentoPrecoLi,
   type EstadoContaPrecoLi,
+  MAX_BYTES_PRECO_LOTE_RECONCILE_LI,
   carregarEstadosPrecoLi,
+  conterBytesDoLotePrecoLi,
 } from './estadoPrecoReconcile';
 import {
   type EscritaSincLi,
@@ -220,6 +227,12 @@ const TAG = '[loja-integrada/estoque] reconcile';
 /** The price arm's lines (step 13): its own prefix, so a review filters the two flows apart. */
 const TAG_PRECO = '[loja-integrada/preco] reconcile';
 
+/** The motivo of a priced conta whose writes do not fit a commit's price share (`fontesDoLote`). */
+export const MOTIVO_LOTE_PRECO_EXCEDIDO_LI = 'lote-preco-excedido';
+
+/** The conta counter of that drop, beside `armaFalhou`. */
+export const CONTADOR_LOTE_PRECO_EXCEDIDO_LI = 'loteExcedido';
+
 /** Takes of the lease lost to a concurrent writer before {@link LiReconcileEstoqueConcorrenteError}. */
 const MAX_TENTATIVAS_ASSUMIR_LI = 3;
 
@@ -255,6 +268,11 @@ export interface DepsReconcileEstoqueLi {
   readonly tamanhoPaginaCaminhada?: number;
   /** The candidate list's byte budget (default: the module's); a test shrinks it. */
   readonly orcamentoBytesCandidatos?: number;
+  /**
+   * Step 13: the price documents' byte share of one commit (default
+   * `MAX_BYTES_PRECO_LOTE_RECONCILE_LI`); a test shrinks it.
+   */
+  readonly orcamentoBytesPrecoLote?: number;
   /** Test seams, forwarded to the store phase's context as-is. */
   readonly fetch?: typeof globalThis.fetch;
   readonly escrever?: EscritorLogLi;
@@ -980,6 +998,29 @@ async function executarSliceLi(
   });
   /** Every per-conta state the slice holds: what its batches write. */
   const fontes = (): EstadoQueGravaLi[] => [...estados.values(), ...estadosPreco.values()];
+  /**
+   * The states a commit is about to write, the price share held to its byte budget first
+   * (`estadoPrecoReconcile.ts`, "The commit's bytes"): a conta whose price writes do not fit loses
+   * its bucket writes and its price arm for the run — ONE ERROR, counted `armaFalhou` — and the
+   * stock writes ride the commit as they would without the price arm.
+   */
+  const fontesDoLote = (): EstadoQueGravaLi[] => {
+    conterBytesDoLotePrecoLi(
+      estadosPreco.values(),
+      deps.orcamentoBytesPrecoLote ?? MAX_BYTES_PRECO_LOTE_RECONCILE_LI,
+      (e, bytes) => {
+        e.descartarBaldesPendentes();
+        if (e.contador(CONTADOR_ARMA_FALHOU_LI) > 0) return;
+        e.contar(CONTADOR_ARMA_FALHOU_LI);
+        e.contar(CONTADOR_LOTE_PRECO_EXCEDIDO_LI);
+        deps.logger.error(
+          `${TAG_PRECO} estado de preço grande demais para o lote — a conta fica sem preço nesta execução`,
+          { ...ids, contaId: e.conta.contaId, motivo: MOTIVO_LOTE_PRECO_EXCEDIDO_LI, bytes },
+        );
+      },
+    );
+    return fontes();
+  };
   /** After the stock arm's phases (or in their place): the price arm, or the end. */
   const depoisDoEstoque = (): void => {
     idxConta = 0;
@@ -1004,8 +1045,9 @@ async function executarSliceLi(
    * checkpointed at the SAME `seq` and the caller rethrows the ORIGINAL error (`checkpoint: false`
    * — the end phase — rethrows with none, as the stock end does). Anything else the caller
    * rethrows as is (`relancar`). A price failure never releases the lease. `e` is the conta's
-   * state when the unit had loaded it (`undefined`: it failed first, so only a bug is contained —
-   * logged, with nothing to count it on).
+   * state when the unit had loaded it; `undefined` when the load of that state is what failed —
+   * the same rule then, logged with nothing to count it on (the conta's root keeps no
+   * `paisConcluido`, so its end decides no aviso).
    */
   const falhaDoPreco = async (
     err: unknown,
@@ -1023,9 +1065,9 @@ async function executarSliceLi(
       );
       return 'contida';
     }
-    if (!retentavel(err) || e === undefined) return 'relancar';
+    if (!retentavel(err)) return 'relancar';
     if (deps.tentativa >= TASK_MAX_ATTEMPTS - 1) {
-      e.contar('tentativasEsgotadas');
+      e?.contar('tentativasEsgotadas');
       deps.logger.error(
         `${TAG_PRECO} tentativas esgotadas no braço de preço — a conta fica sem preço nesta execução`,
         { ...meta, motivo: 'tentativas-esgotadas' },
@@ -1037,7 +1079,7 @@ async function executarSliceLi(
         db,
         estado,
         progresso(),
-        fontes(),
+        fontesDoLote(),
         deps.agoraMs,
       );
       if (parado) return 'parado';
@@ -1149,7 +1191,7 @@ async function executarSliceLi(
             db,
             estado,
             progresso(),
-            fontes(),
+            fontesDoLote(),
             deps.agoraMs,
           );
           if (parado) return { kind: 'parado' };
@@ -1187,7 +1229,7 @@ async function executarSliceLi(
             db,
             estado,
             progresso(),
-            fontes(),
+            fontesDoLote(),
             deps.agoraMs,
           );
           if (parado) return { kind: 'parado' };
@@ -1207,21 +1249,22 @@ async function executarSliceLi(
         continue;
       }
       if (!orcamentoPreco.cabe(UNIDADE_PRECO_RECONCILE_LI.paisPreco)) break;
-      await carregarPreco([{ idx: idxConta, contaId }], 'todos');
-      const e = estadosPreco.get(contaId);
-      if (e === undefined || e.contador(CONTADOR_ARMA_FALHOU_LI) > 0) {
-        idxConta += 1;
-        continue;
-      }
       let passo: 'unidade' | 'conta-encerrada';
       try {
-        passo = await paisDoSlice().unidade(e);
+        // The load is the unit's too: its failure is the conta's, never the run's.
+        await carregarPreco([{ idx: idxConta, contaId }], 'todos');
+        const e = estadosPreco.get(contaId);
+        // Not priced by this run, or its price arm already ended: nothing to do for it.
+        passo =
+          e === undefined || e.contador(CONTADOR_ARMA_FALHOU_LI) > 0
+            ? 'conta-encerrada'
+            : await paisDoSlice().unidade(e);
       } catch (err) {
         const desfecho = await falhaDoPreco(
           err,
           FASE_RECONCILE_PRECO_LI.paisPreco,
           contaId,
-          e,
+          estadosPreco.get(contaId),
           true,
         );
         if (desfecho === 'relancar') throw err;
@@ -1270,7 +1313,7 @@ async function executarSliceLi(
   }
 
   // 6. The end-of-slice checkpoint: per-conta documents first when they exceed one batch.
-  const escritas = [...fontes().flatMap((e) => e.escritas()), ...escritasDoFim];
+  const escritas = [...fontesDoLote().flatMap((e) => e.escritas()), ...escritasDoFim];
   while (escritas.length > MAX_ESCRITAS_LOTE_RECONCILE_LI) {
     const parte = escritas.splice(0, MAX_ESCRITAS_LOTE_RECONCILE_LI);
     const r = await gravarLoteReconcileLi(

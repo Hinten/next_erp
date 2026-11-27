@@ -33,6 +33,7 @@ import {
   type EntradaSnapshotPrecoLi,
   type ProdutoPrecoLi,
   baldeSnapshotEstoqueLi,
+  contadoresEstoqueLiSchema,
   entradaSnapshotPrecoLiSchema,
   vinculoDaContaLi,
 } from '@delfrance/schemas';
@@ -170,15 +171,19 @@ export async function avaliarPaginaReconcileLi(
     let contadores: ReadonlyMap<string, number>;
     try {
       const r = arma({ grupos, produtos, conta });
-      // Validated whole BEFORE anything is applied (module header): an entry off its schema, or a
-      // store id no bucket holds, fails the page for this conta and leaves nothing of it behind.
+      // Validated whole BEFORE anything is applied (module header): an entry off its schema, a
+      // store id no bucket holds, or a counter the root's schema refuses (a name off its form, a
+      // count that is not a non-negative integer) fails the page for this conta and leaves nothing
+      // of it behind — never the slice's one batch, which carries the stock writes too.
       entradas = r.entradas.map(([idLi, e]) => {
         if (baldeSnapshotEstoqueLi(idLi) === null) {
           throw new RangeError('reconcile: id da loja fora da forma no braço de preço');
         }
         return [idLi, entradaSnapshotPrecoLiSchema.parse(e)] as const;
       });
-      contadores = r.contadores;
+      contadores = new Map(
+        Object.entries(contadoresEstoqueLiSchema.parse(Object.fromEntries(r.contadores))),
+      );
     } catch (err) {
       if (!falhaContidaDoPrecoLi(err)) throw err;
       estado.contar(CONTADOR_ARMA_FALHOU_LI);

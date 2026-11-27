@@ -1,17 +1,21 @@
 /**
  * `estadoPrecoReconcile.ts` (master plan step 13, PR 13-f1): the per-conta price state of one
  * slice — which contas are priced, the replace at load and its carry (`anteriores`), the entry
- * precedence, and what the state writes back. Against `testing/fakeDb.ts`; invented ids and
- * prices.
+ * precedence, what the state writes back, and the commit's price share in bytes. Against
+ * `testing/fakeDb.ts`; invented ids and prices.
  */
 import { describe, expect, it } from 'vitest';
 import { type EntradaSnapshotPrecoLi, FLAG_ENTRADA_PRECO_LI } from '@delfrance/schemas';
 
 import { FakeDb, asDb } from '../../testing/fakeDb';
 import { RUN_A, RUN_B } from '../../testing/reconcileEstoqueLi';
+import { dbRastreadoLi } from '../../testing/reconcilePrecoLi';
 import {
   type EstadoContaPrecoLi,
+  bytesArmazenadosLi,
+  bytesDaEscritaPrecoLi,
   carregarEstadosPrecoLi,
+  conterBytesDoLotePrecoLi,
   mesclarEntradaPrecoLi,
 } from './estadoPrecoReconcile';
 
@@ -113,21 +117,29 @@ describe('the load — which contas are priced', () => {
   });
 
   it('`todos` = ONE getAll of the roots, then ONE of the 32 buckets of the PRICED contas only; `nenhum` = the roots alone', async () => {
-    const db = new FakeDb();
-    semear(db, 'C1', RUN_A);
-    semear(db, 'C2', RUN_B);
-    const antes = db.leituras.length;
-    const estados = await carregar(db, ['C1', 'C2']);
-    const lidas = db.leituras.slice(antes);
-    expect(lidas.slice(0, 2)).toEqual([raiz('C1'), raiz('C2')]);
-    expect(lidas.slice(2)).toEqual(
+    const fake = new FakeDb();
+    semear(fake, 'C1', RUN_A);
+    semear(fake, 'C2', RUN_B);
+    const { db, getAlls } = dbRastreadoLi(fake);
+    const contas = [
+      { idx: 0, contaId: 'C1' },
+      { idx: 1, contaId: 'C2' },
+    ];
+    const estados = await carregarEstadosPrecoLi(db, RUN_A, contas, { baldes: 'todos' });
+    expect(getAlls.map((g) => g.caminhos)).toEqual([
+      [raiz('C1'), raiz('C2')],
       Array.from({ length: 32 }, (_, b) => balde('C1', String(b).padStart(2, '0'))),
-    );
+    ]);
     expect(estados.get('C1')?.comBaldes).toBe(true);
-    const so = db.leituras.length;
-    const raizes = await carregar(db, ['C1', 'C2'], 'nenhum');
-    expect(db.leituras.slice(so)).toEqual([raiz('C1'), raiz('C2')]);
+    const so = getAlls.length;
+    const raizes = await carregarEstadosPrecoLi(db, RUN_A, contas, { baldes: 'nenhum' });
+    expect(getAlls.slice(so).map((g) => g.caminhos)).toEqual([[raiz('C1'), raiz('C2')]]);
     expect(raizes.get('C1')?.comBaldes).toBe(false);
+    // No read at all for no conta, and none of the buckets when no conta is priced.
+    const vazio = getAlls.length;
+    await carregarEstadosPrecoLi(db, RUN_A, [], { baldes: 'todos' });
+    await carregarEstadosPrecoLi(db, RUN_A, [{ idx: 0, contaId: 'C2' }], { baldes: 'todos' });
+    expect(getAlls.slice(vazio).map((g) => g.caminhos)).toEqual([[raiz('C2')]]);
   });
 });
 
@@ -167,7 +179,12 @@ describe('a bucket of another run is REPLACED at load, carrying `a`/`t` into `an
         e: { '7': v('p7', { n: 1111 }) },
         anteriores: { '39': { tp: true } },
       },
-      '08': { execucaoId: RUN_B, e: { '8': { p: 'p8', f: 'v', n: 0 } } },
+      // Off its schema (a 0 reading) beside a VALID entry that does carry a target: nothing of
+      // either is carried.
+      '08': {
+        execucaoId: RUN_B,
+        e: { '8': { p: 'p8', f: 'v', n: 0 }, '40': v('p40', { a: { c: 1111, q: null }, t: true }) },
+      },
     });
     const e = await estadoDeC1(db);
     expect(e.entrada('7')).toEqual(v('p7', { n: 1111 }));
@@ -177,6 +194,74 @@ describe('a bucket of another run is REPLACED at load, carrying `a`/`t` into `an
       execucaoId: RUN_A,
       e: {},
       anteriores: {},
+    });
+  });
+
+  it('from a run that never priced an id (no `a`), its carried `ap` / `tp`; for an id it never re-wrote, its bucket’s own carry — NEAR-MISS: a priced entry’s old `tp` does not stick', async () => {
+    const db = new FakeDb();
+    semear(db, 'C1', RUN_A, {
+      '07': {
+        execucaoId: RUN_B,
+        e: {
+          // Re-written by that run, which ended before its parents unit: the carry it took.
+          '7': v('p7', { n: 2222, ap: { c: 1111, q: null }, tp: true }),
+          // Priced by that run: ITS target; the deferral before it is not carried again.
+          '39': v('p39', { a: { c: 3333, q: null }, ap: { c: 1111, q: null }, tp: true }),
+          // A non-valid entry carries nothing, its own carry included.
+          '71': { p: 'p71', f: 'pai' },
+        },
+        anteriores: {
+          // Never re-written by that run: what its bucket still carried.
+          '103': { ap: { c: 4444, q: 999 } },
+          '71': { ap: { c: 5555, q: null } },
+        },
+      },
+    });
+    const e = await estadoDeC1(db);
+    expect(dadosEm(e, balde('C1', '07'))?.anteriores).toEqual({
+      '103': { ap: { c: 4444, q: 999 } },
+      '39': { ap: { c: 3333, q: null } },
+      '7': { ap: { c: 1111, q: null }, tp: true },
+    });
+  });
+
+  it('one unfinished run between two never drops the carry: R1 prices, R2 faults on the conta, R3 still carries R1’s target', async () => {
+    const R3 = 'estoque-reconcile-20270117';
+    const db = new FakeDb();
+    // R1 (RUN_B) finished: its targets stand in the bucket.
+    semear(db, 'C1', RUN_A, {
+      '07': {
+        execucaoId: RUN_B,
+        e: {
+          '7': v('p7', { a: { c: 1111, q: null } }),
+          '39': v('p39', { a: { c: 2222, q: null } }),
+        },
+      },
+    });
+    // R2 (RUN_A) re-writes id 7 and faults before its parents unit: no target of its own.
+    const r2 = await estadoDeC1(db);
+    r2.aplicar('7', v('p7', { n: 3333 }));
+    for (const w of r2.escritas()) {
+      if (w.tipo === 'gravar') db.seed(w.ref.path, { ...(db.ler(w.ref.path) ?? {}), ...w.dados });
+    }
+    // R3 loads R2's bucket.
+    db.seed(raiz('C1'), {
+      execucaoPreco: {
+        execucaoId: R3,
+        tabelas: TABELAS,
+        amostras: {},
+        contadores: {},
+        candidatos: [],
+        mantidos: [],
+      },
+    });
+    const r3 = (
+      await carregarEstadosPrecoLi(asDb(db), R3, [{ idx: 0, contaId: 'C1' }], { baldes: 'todos' })
+    ).get('C1');
+    if (r3 === undefined) throw new Error('C1 não carregada por R3');
+    expect(dadosEm(r3, balde('C1', '07'))?.anteriores).toEqual({
+      '39': { ap: { c: 2222, q: null } },
+      '7': { ap: { c: 1111, q: null } },
     });
   });
 
@@ -289,6 +374,25 @@ describe('counters, samples, targets and the write back', () => {
     });
   });
 
+  it('`contar(nome, 0)` adds no key and dirties nothing: a slice that only counts zeros writes no price document', async () => {
+    const db = new FakeDb();
+    db.seed(raiz('C1'), {
+      execucaoPreco: {
+        execucaoId: RUN_A,
+        tabelas: TABELAS,
+        amostras: {},
+        contadores: { validos: 2 },
+        candidatos: [],
+        mantidos: [],
+      },
+    });
+    const e = (await carregar(db, ['C1'], 'nenhum')).get('C1');
+    if (e === undefined) throw new Error('C1 não carregada');
+    e.contar('paisAusentes', 0);
+    expect(e.raiz.execucaoPreco.contadores).toEqual({ validos: 2 });
+    expect(e.escritas()).toEqual([]);
+  });
+
   it('after the batch lands nothing is left to write, and the next write is under the new stamp', async () => {
     const db = new FakeDb();
     semear(db, 'C1', RUN_A);
@@ -302,5 +406,58 @@ describe('counters, samples, targets and the write back', () => {
     e.contar('validos');
     const [proxima] = e.escritas();
     expect(proxima?.tipo === 'gravar' ? proxima.versao : null).toBe(carimbo);
+  });
+});
+
+describe('the commit’s bytes — Firestore’s storage formula, and the price share of one commit', () => {
+  it('bytesArmazenadosLi: null and a boolean 1, a number 8, a string UTF-8 + 1, an array its elements, a map its keys and values', () => {
+    expect(bytesArmazenadosLi(null)).toBe(1);
+    expect(bytesArmazenadosLi(true)).toBe(1);
+    expect(bytesArmazenadosLi(1111)).toBe(8);
+    expect(bytesArmazenadosLi(0.5)).toBe(8);
+    expect(bytesArmazenadosLi('ab')).toBe(3);
+    // Multi-byte text counts its UTF-8 bytes, never its length.
+    expect(bytesArmazenadosLi('é')).toBe(3);
+    expect(bytesArmazenadosLi([1, 'a'])).toBe(10);
+    expect(bytesArmazenadosLi({ p: 'p7', f: 'v', n: 2222 })).toBe(2 + 3 + 2 + 2 + 2 + 8);
+    expect(bytesArmazenadosLi({ a: { c: 1, q: null } })).toBe(2 + 2 + 8 + 2 + 1);
+    expect(bytesArmazenadosLi(undefined)).toBe(0);
+  });
+
+  it('bytesDaEscritaPrecoLi: the whole document — its name (each segment + 1, plus 16), the fixed 32 and its fields', async () => {
+    const db = new FakeDb();
+    semear(db, 'C1', RUN_A);
+    const e = await estadoDeC1(db);
+    e.contar('validos');
+    const w = e.escritas().find((x) => x.ref.path === raiz('C1'));
+    if (w === undefined || w.tipo === 'apagar') throw new Error('sem escrita da raiz');
+    const nome = 'sincPrecoLojaIntegrada'.length + 1 + 'C1'.length + 1 + 16;
+    expect(bytesDaEscritaPrecoLi(w)).toBe(nome + 32 + bytesArmazenadosLi(w.dados));
+  });
+
+  it('conterBytesDoLotePrecoLi: in run order, EXACTLY the budget fits; one byte under drops the conta that passes it, whose root still counts', async () => {
+    const db = new FakeDb();
+    semear(db, 'C1', RUN_A);
+    semear(db, 'C2', RUN_A);
+    const estados = await carregar(db, ['C1', 'C2']);
+    const c1 = estados.get('C1');
+    const c2 = estados.get('C2');
+    if (c1 === undefined || c2 === undefined) throw new Error('contas não carregadas');
+    c1.contar('validos');
+    c2.contar('validos');
+    const total = c1.bytesPendentes() + c2.bytesPendentes();
+    const fora: string[] = [];
+    const descartar = (e: EstadoContaPrecoLi): void => {
+      fora.push(e.conta.contaId);
+      e.descartarBaldesPendentes();
+    };
+    // Handed C2 first: the RUN's order (C1 at 0, C2 at 1) decides, never the iterable's.
+    conterBytesDoLotePrecoLi([c2, c1], total, descartar);
+    expect(fora).toEqual([]);
+    conterBytesDoLotePrecoLi([c2, c1], total - 1, descartar);
+    expect(fora).toEqual(['C2']);
+    // C2 kept its root only: the 32 buckets are no longer written this slice.
+    expect(c2.escritas().map((x) => x.ref.path)).toEqual([raiz('C2')]);
+    expect(c1.escritas()).toHaveLength(33);
   });
 });

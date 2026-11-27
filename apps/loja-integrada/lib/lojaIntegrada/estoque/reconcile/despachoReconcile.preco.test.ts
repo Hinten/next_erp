@@ -1,7 +1,8 @@
 /**
  * `despachoReconcile.ts` with the price arm (master plan step 13, PR 13-f1), slice by slice: the
- * both-valve gate at zero reads, the arms a run carries and drops, a price-only run, the take's
- * price fields and lines, the parents phase's containment, and the end pair that never splits.
+ * both-valve gate at zero reads, the arms a run carries and drops (in each phase), a price-only
+ * run, the take's price fields and lines, where the price side reads, the parents phase's and the
+ * end's containment (a failed price-state load included), and the end pair that never splits.
  * Against `testing/fakeDb.ts` and the scripted store (`testing/reconcilePrecoLi.ts`).
  *
  * No call to the store: the global `fetch` throws in every test of this file.
@@ -10,10 +11,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
 import { TASK_MAX_ATTEMPTS } from '@delfrance/data/admin/notifications';
 import { isGrpcStatusError } from '@delfrance/data/admin/grpcErrors';
-import { FASE_RECONCILE_ESTOQUE_LI, TIPO_TAREFA_RECONCILE_ESTOQUE_LI } from '@delfrance/schemas';
+import {
+  FASE_RECONCILE_ESTOQUE_LI,
+  FASE_RECONCILE_PRECO_LI,
+  type ReconcileEstoqueLojaIntegrada,
+  TIPO_TAREFA_RECONCILE_ESTOQUE_LI,
+  reconcileEstoqueLojaIntegradaSchema,
+} from '@delfrance/schemas';
 
 import { __setRelogioDoCacheParaTestes } from '../../core/contaCache';
-import { CHAMADAS_ENV_LI, VALVULA_ENV_LI } from '../../core/valvulas';
+import { type AmbienteLi, CHAMADAS_ENV_LI, VALVULA_ENV_LI } from '../../core/valvulas';
 import { FORMA_PROMO_LIMPA_ENV_LI } from '../../preco/configPrecoLi';
 import { FakeDb, asDb, grpc, increment } from '../../testing/fakeDb';
 import { espiarStdout } from '../../testing/fixtures';
@@ -32,8 +39,10 @@ import {
   AMBIENTE_ESTOQUE_LIGADO_LI,
   CONTA_PRECO_A,
   CONTA_PRECO_B,
+  type GetAllRastreadoLi,
   type MundoReconcilePrecoLi,
   encadearReconcilePrecoLi,
+  linhaEstavelLi,
   mundoReconcilePrecoLi,
 } from '../../testing/reconcilePrecoLi';
 import { TETO_ESTOQUE_ENV_LI } from '../configEstoqueLi';
@@ -82,6 +91,69 @@ function ultimoReconcilePreco(m: MundoReconcilePrecoLi, conta: string) {
     | null
     | undefined;
 }
+
+type RunGuardado = Partial<ReconcileEstoqueLojaIntegrada> & Record<string, unknown>;
+
+/** One slice of a traced chain: the run document as it stood BEFORE it, and its own records. */
+interface FatiaLi {
+  readonly antes: RunGuardado | undefined;
+  readonly r: ResultadoReconcileLi;
+  readonly leituras: readonly string[];
+  readonly getAlls: readonly GetAllRastreadoLi[];
+  readonly consultas: number;
+  readonly requisicoes: number;
+  readonly enviadas: number;
+}
+
+/**
+ * A chain from `seq` 0 whose n-th slice runs under `ambienteDe(antes, n)` (the run document as it
+ * stood before the slice) and with `extraDe(antes, n)` deps.
+ */
+async function cadeiaRastreada(
+  m: MundoReconcilePrecoLi,
+  ambienteDe: (antes: RunGuardado | undefined, n: number) => AmbienteLi,
+  extraDe: (
+    antes: RunGuardado | undefined,
+    n: number,
+  ) => Partial<DepsReconcileEstoqueLi> = () => ({}),
+): Promise<FatiaLi[]> {
+  const fatias: FatiaLi[] = [];
+  let seq = 0;
+  for (let n = 0; n < 60; n += 1) {
+    const antes = m.fake.ler(CAMINHO_RUN_RECONCILE_LI) as RunGuardado | undefined;
+    const marca = {
+      l: m.fake.leituras.length,
+      g: m.getAlls.length,
+      q: m.fake.consultas.length,
+      req: m.plataforma.requisicoes.length,
+      est: m.estoque.enviadas.length,
+    };
+    const r = await despacharReconcileEstoqueLi(
+      m.db,
+      tarefa(seq),
+      m.deps({ inicioMs: m.relogio.agora, ambiente: ambienteDe(antes, n), ...extraDe(antes, n) }),
+    );
+    fatias.push({
+      antes,
+      r,
+      leituras: m.fake.leituras.slice(marca.l),
+      getAlls: m.getAlls.slice(marca.g),
+      consultas: m.fake.consultas.length - marca.q,
+      requisicoes: m.plataforma.requisicoes.length - marca.req,
+      enviadas: m.estoque.enviadas.length - marca.est,
+    });
+    if (r.kind !== 'continua') return fatias;
+    seq = r.seq;
+    m.relogio.agora += m.entreFatiasMs;
+  }
+  throw new Error('a cadeia não terminou');
+}
+
+/** Whether the run document stood in the price parents phase. */
+const emPais = (a: RunGuardado | undefined): boolean =>
+  a?.fase === FASE_RECONCILE_ESTOQUE_LI.fila && a.fasePreco === FASE_RECONCILE_PRECO_LI.paisPreco;
+
+const AMBOS: AmbienteLi = { ...AMBIENTE_ESTOQUE_LIGADO_LI, [P]: 'dry-run' };
 
 /** A chain from `seq` 0 whose environment `ambienteDe(n)` gives for its n-th slice. */
 async function cadeiaComAmbientes(
@@ -224,23 +296,22 @@ describe('a price-only run (stock off, price dry-run)', () => {
           ? `${f.resultado.fase}${f.resultado.fasePreco === undefined ? '' : `/${f.resultado.fasePreco}`}`
           : f.resultado.kind,
       );
-      // Never the stock phases; the parents phase ran between the walk and the end.
-      expect(fases.every((f) => ['erp', 'fila/pais-preco', 'fim', 'encerrado'].includes(f))).toBe(
-        true,
-      );
-      expect(fases.at(-1)).toBe('encerrado');
+      // Never the stock phases, and IN ORDER: the walk, the parents phase and the end (each only
+      // when a slice hands off inside it), the release — each entered once (consecutive slices of
+      // one phase collapsed).
+      const colapsadas = fases.filter((f, n) => n === 0 || fases[n - 1] !== f);
+      const ORDEM = ['erp', 'fila/pais-preco', 'fim', 'encerrado'];
+      expect(colapsadas).toEqual(ORDEM.filter((f) => colapsadas.includes(f)));
+      expect(colapsadas[0]).toBe('erp');
+      // The parents phase ran after the walk and before the release: each conta's targets once.
       const ordem = m.log.linhas.map((l) => l.msg);
-      const primeiroAlvo = ordem.findIndex((msg) => msg.includes('alvos da conta calculados'));
-      expect(primeiroAlvo).toBeGreaterThan(-1);
-      expect(
-        ordem.slice(primeiroAlvo).some((msg) => msg.includes('alvos da conta calculados')),
-      ).toBe(true);
-      expect(
-        fatias.findIndex(
-          (f) =>
-            f.resultado.kind === 'continua' && f.resultado.fase === FASE_RECONCILE_ESTOQUE_LI.fim,
-        ),
-      ).not.toBe(0);
+      const alvos = m.log.linhas.filter((l) => l.msg.includes('alvos da conta calculados'));
+      expect(alvos.map((l) => l.meta.contaId)).toEqual([CONTA_PRECO_A, CONTA_PRECO_B]);
+      const ultimoAlvo = ordem
+        .map((msg) => msg.includes('alvos da conta calculados'))
+        .lastIndexOf(true);
+      const encerrada = ordem.findIndex((msg) => msg.includes('reconcile execução encerrada'));
+      expect(encerrada).toBeGreaterThan(ultimoAlvo);
       const run = m.fake.ler(CAMINHO_RUN_RECONCILE_LI);
       expect(run).toMatchObject({ fase: 'fim', fasePreco: null, emExecucaoAteMs: 0 });
       expect(run?.contadores).toMatchObject({ precoNoRun: 1, estoqueForaDoRun: 1 });
@@ -278,6 +349,53 @@ describe('a price-only run (stock off, price dry-run)', () => {
       ).toHaveLength(1);
       expect(caminhosEscritos(m, 'sincEstoqueLojaIntegrada/')).toEqual([]);
       expect(ultimoReconcilePreco(m, CONTA_PRECO_A)?.contadores.paisConcluido).toBe(1);
+    },
+  );
+
+  it(
+    'reads NO stock root (neither at the take nor at the release) and logs no cap ERROR',
+    { timeout: 30_000 },
+    async () => {
+      const m = mundoReconcilePrecoLi({ ambiente: SO_PRECO });
+      const fatias = await cadeiaRastreada(m, () => SO_PRECO);
+      expect(fatias.at(-1)?.r).toEqual({ kind: 'encerrado' });
+      // The take needs no stock stamp, and the release makes no depósito revision.
+      expect(m.fake.leituras.filter((c) => c.startsWith('sincEstoqueLojaIntegrada/'))).toEqual([]);
+      expect(m.fake.ler(CAMINHO_RUN_RECONCILE_LI)?.contadores).not.toHaveProperty('depositoMudou');
+      // The stock valve is off: its cap is not read, so it cannot be "unreadable".
+      expect(m.log.linhas.filter((l) => l.meta.motivo === 'teto-invalido')).toEqual([]);
+    },
+  );
+});
+
+describe('an unreadable clear forma beside a running stock flow', () => {
+  it(
+    'skips ONLY the price arm: a stock-only run, write for write, with ONE `forma-promo-invalida` ERROR per slice',
+    // Two whole chains; CI runners are slower under load.
+    { timeout: 30_000 },
+    async () => {
+      const base = mundoReconcilePrecoLi({ ambiente: AMBIENTE_ESTOQUE_LIGADO_LI });
+      const fatiasBase = await encadearReconcilePrecoLi(base);
+      __resetAllReadCaches();
+      const m = mundoReconcilePrecoLi({
+        ambiente: { ...AMBOS, [FORMA_PROMO_LIMPA_ENV_LI]: 'NULO' },
+      });
+      const fatias = await encadearReconcilePrecoLi(m);
+      expect(fatias.at(-1)?.resultado).toEqual({ kind: 'encerrado' });
+      expect(fatias.map((f) => f.resultado)).toEqual(fatiasBase.map((f) => f.resultado));
+      expect(m.fake.ler(CAMINHO_RUN_RECONCILE_LI)?.contadores).not.toHaveProperty('precoNoRun');
+      expect(caminhosEscritos(m, 'sincPrecoLojaIntegrada/')).toEqual([]);
+      const estoque = (w: MundoReconcilePrecoLi) =>
+        w.fake.escritas
+          .filter((e) => e.caminho.startsWith('sincEstoqueLojaIntegrada/'))
+          .map((e) => linhaEstavelLi({ verbo: e.verbo, caminho: e.caminho, dados: e.dados }));
+      expect(estoque(m)).toEqual(estoque(base));
+      expect(m.estoque.enviadas.map((t) => linhaEstavelLi(t))).toEqual(
+        base.estoque.enviadas.map((t) => linhaEstavelLi(t)),
+      );
+      expect(
+        m.log.linhas.filter((l) => l.nivel === 'error' && l.meta.motivo === 'forma-promo-invalida'),
+      ).toHaveLength(fatias.length);
     },
   );
 });
@@ -350,6 +468,172 @@ describe('the arms a run carries can only be dropped', () => {
       expect(resultados.at(-1)).toEqual({ kind: 'encerrado' });
       expect(m.fake.escritas.some((e) => e.caminho.startsWith('sincPreco'))).toBe(false);
       expect(m.fake.ler(CAMINHO_RUN_RECONCILE_LI)?.contadores).not.toHaveProperty('precoNoRun');
+    },
+  );
+
+  it(
+    'stock dropped at the store phase (its valve off from the slice that starts at `li`): no store call from that slice on',
+    { timeout: 30_000 },
+    async () => {
+      const m = mundoReconcilePrecoLi({ ambiente: AMBOS });
+      let desde = -1;
+      const fatias = await cadeiaRastreada(m, (antes, n) => {
+        if (desde < 0 && antes?.fase === FASE_RECONCILE_ESTOQUE_LI.li) desde = n;
+        return desde >= 0 ? { ...AMBOS, [E]: undefined } : AMBOS;
+      });
+      expect(desde).toBeGreaterThan(0);
+      expect(fatias.at(-1)?.r).toEqual({ kind: 'encerrado' });
+      expect(fatias.slice(desde).map((f) => f.requisicoes)).toEqual(
+        fatias.slice(desde).map(() => 0),
+      );
+    },
+  );
+
+  it(
+    'stock dropped at its queue phase by an unreadable cap (valve still `on`): no stock send from that slice on, and the cap ERROR exactly ONCE — never the `arma-parada` WARNING',
+    { timeout: 30_000 },
+    async () => {
+      const m = mundoReconcilePrecoLi({ ambiente: AMBOS });
+      let desde = -1;
+      const fatias = await cadeiaRastreada(m, (antes, n) => {
+        if (desde < 0 && antes?.fase === FASE_RECONCILE_ESTOQUE_LI.fila && antes.fasePreco == null)
+          desde = n;
+        return desde >= 0 ? { ...AMBOS, [TETO_ESTOQUE_ENV_LI]: 'abc' } : AMBOS;
+      });
+      expect(desde).toBeGreaterThan(0);
+      expect(fatias[desde]?.antes?.candidatos?.length ?? 0).toBeGreaterThan(0);
+      expect(fatias.at(-1)?.r).toEqual({ kind: 'encerrado' });
+      expect(fatias.slice(desde).reduce((s, f) => s + f.enviadas, 0)).toBe(0);
+      expect(m.fake.ler(CAMINHO_RUN_RECONCILE_LI)?.contadores).toMatchObject({
+        estoqueForaDoRun: 1,
+      });
+      expect(
+        m.log.linhas.filter((l) => l.nivel === 'error' && l.meta.motivo === 'teto-invalido'),
+      ).toHaveLength(1);
+      expect(
+        m.log.linhas.filter(
+          (l) => l.meta.motivo === 'arma-parada' && l.msg.startsWith('[loja-integrada/estoque]'),
+        ),
+      ).toEqual([]);
+    },
+  );
+
+  it(
+    'price dropped DURING the parents phase: the run still clears `fasePreco`, parses and releases',
+    { timeout: 30_000 },
+    async () => {
+      const m = mundoReconcilePrecoLi({ ambiente: AMBOS });
+      let desde = -1;
+      const fatias = await cadeiaRastreada(m, (antes, n) => {
+        if (desde < 0 && emPais(antes)) desde = n;
+        return desde >= 0 ? AMBIENTE_ESTOQUE_LIGADO_LI : AMBOS;
+      });
+      expect(desde).toBeGreaterThan(0);
+      expect(fatias.at(-1)?.r).toEqual({ kind: 'encerrado' });
+      const run = m.fake.ler(CAMINHO_RUN_RECONCILE_LI);
+      expect(run).toMatchObject({ fase: 'fim', fasePreco: null, emExecucaoAteMs: 0 });
+      expect(reconcileEstoqueLojaIntegradaSchema.safeParse(run).success).toBe(true);
+      for (const conta of [CONTA_PRECO_A, CONTA_PRECO_B]) {
+        expect(
+          m.fake.ler(`sincEstoqueLojaIntegrada/${conta}`)?.ultimoReconcile,
+          conta,
+        ).toBeTruthy();
+      }
+    },
+  );
+
+  it(
+    'a stock-only run whose stock arm drops while the price valve is set (never carried): released in that slice, the walk not read on for nothing',
+    { timeout: 30_000 },
+    async () => {
+      const m = mundoReconcilePrecoLi({ ambiente: AMBIENTE_ESTOQUE_LIGADO_LI });
+      let desde = -1;
+      const fatias = await cadeiaRastreada(m, (antes, n) => {
+        if (
+          desde < 0 &&
+          n > 0 &&
+          antes?.fase === FASE_RECONCILE_ESTOQUE_LI.erp &&
+          antes.walk?.concluida !== true
+        ) {
+          desde = n;
+        }
+        return desde >= 0
+          ? { ...AMBIENTE_ESTOQUE_LIGADO_LI, [TETO_ESTOQUE_ENV_LI]: 'abc', [P]: 'dry-run' }
+          : AMBIENTE_ESTOQUE_LIGADO_LI;
+      });
+      expect(desde).toBeGreaterThan(0);
+      expect(fatias).toHaveLength(desde + 1);
+      expect(fatias[desde]?.r).toEqual({ kind: 'encerrado' });
+      expect(fatias[desde]?.consultas).toBe(0);
+    },
+  );
+});
+
+describe('the price side reads only where it needs them', () => {
+  it(
+    'a slice that starts at `erp` with the walk DONE (the kits map) reads no price document',
+    { timeout: 30_000 },
+    async () => {
+      const m = mundoReconcilePrecoLi({ ambiente: AMBOS });
+      const fatias = await cadeiaRastreada(m, () => AMBOS);
+      const doMapa = fatias.filter(
+        (f) => f.antes?.fase === FASE_RECONCILE_ESTOQUE_LI.erp && f.antes.walk?.concluida === true,
+      );
+      expect(doMapa.length).toBeGreaterThan(0);
+      for (const f of doMapa) {
+        expect(f.leituras.filter((c) => c.startsWith('sincPrecoLojaIntegrada/'))).toEqual([]);
+      }
+    },
+  );
+
+  it(
+    'a walking ERP slice reads the price state ONCE: the run contas’ roots, then the priced contas’ 32 buckets — two getAlls',
+    { timeout: 30_000 },
+    async () => {
+      const m = mundoReconcilePrecoLi({ ambiente: AMBOS });
+      const fatias = await cadeiaRastreada(m, () => AMBOS);
+      const andando = fatias.filter(
+        (f) => f.antes?.fase === FASE_RECONCILE_ESTOQUE_LI.erp && f.antes.walk?.concluida !== true,
+      );
+      expect(andando.length).toBeGreaterThan(1);
+      const raizes = [CONTA_PRECO_A, CONTA_PRECO_B].map((c) => `sincPrecoLojaIntegrada/${c}`);
+      const baldes = raizes.flatMap((r) =>
+        Array.from({ length: 32 }, (_, b) => `${r}/snapshot/${String(b).padStart(2, '0')}`),
+      );
+      for (const f of andando) {
+        const doPreco = f.getAlls.filter((g) =>
+          g.caminhos.every((c) => c.startsWith('sincPrecoLojaIntegrada/')),
+        );
+        expect(doPreco.map((g) => g.caminhos)).toEqual([raizes, baldes]);
+        expect(f.leituras.filter((c) => c.startsWith('sincPrecoLojaIntegrada/'))).toHaveLength(
+          raizes.length + baldes.length,
+        );
+      }
+    },
+  );
+
+  it(
+    'the parents unit starts only while its worst case fits: 55 s spent ⇒ handed off at `fila`/`pais-preco`, no bucket read',
+    { timeout: 30_000 },
+    async () => {
+      const m = mundoReconcilePrecoLi({ ambiente: AMBOS });
+      let alvo = -1;
+      const fatias = await cadeiaRastreada(
+        m,
+        () => AMBOS,
+        (antes, n) => {
+          if (alvo < 0 && emPais(antes)) alvo = n;
+          return n === alvo ? { inicioMs: m.relogio.agora - 55_000 } : {};
+        },
+      );
+      expect(alvo).toBeGreaterThan(0);
+      expect(fatias[alvo]?.r).toMatchObject({
+        kind: 'continua',
+        fase: 'fila',
+        fasePreco: 'pais-preco',
+      });
+      expect(fatias[alvo]?.leituras.filter((c) => c.includes('/snapshot/'))).toEqual([]);
+      expect(fatias.at(-1)?.r).toEqual({ kind: 'encerrado' });
     },
   );
 });
@@ -514,6 +798,41 @@ describe('the price phases’ failures never touch the stock flow or the lease',
       expect(m.fake.ler(CAMINHO_RUN_RECONCILE_LI)?.emExecucaoAteMs).toBe(0);
     },
   );
+
+  it(
+    '⚠️ a Firestore failure LOADING a conta’s price state in the parents phase, on the last attempt: contained for that conta (ONE ERROR) — every conta’s stock end lands and the run releases',
+    { timeout: 30_000 },
+    async () => {
+      const m = mundoReconcilePrecoLi({ ambiente: AMBOS });
+      const falha: { conta: string | null } = { conta: null };
+      const fatias = await cadeiaRastreada(
+        m,
+        () => AMBOS,
+        (antes) => {
+          if (falha.conta !== null || !emPais(antes)) return {};
+          // The first slice that starts in the parents phase: the pending conta's root fails once.
+          const conta = antes?.contas?.[antes.idxConta ?? 0] ?? 'nenhuma';
+          falha.conta = conta;
+          m.fake.falharProximaLeitura(`sincPrecoLojaIntegrada/${conta}`, grpc(14, 'UNAVAILABLE'));
+          return { tentativa: TASK_MAX_ATTEMPTS - 1 };
+        },
+      );
+      const conta = falha.conta ?? 'nenhuma';
+      expect([CONTA_PRECO_A, CONTA_PRECO_B]).toContain(conta);
+      expect(fatias.at(-1)?.r).toEqual({ kind: 'encerrado' });
+      expect(
+        m.log.linhas
+          .filter((l) => l.meta.motivo === 'tentativas-esgotadas')
+          .map((l) => [l.nivel, l.meta.contaId, l.meta.fase]),
+      ).toEqual([['error', conta, 'pais-preco']]);
+      for (const c of [CONTA_PRECO_A, CONTA_PRECO_B]) {
+        expect(m.fake.ler(`sincEstoqueLojaIntegrada/${c}`)?.ultimoReconcile, c).toBeTruthy();
+      }
+      // The conta whose load failed has no target: its end decides no aviso.
+      expect(ultimoReconcilePreco(m, conta)?.contadores.paisConcluido ?? null).toBeNull();
+      expect(m.fake.ler(CAMINHO_RUN_RECONCILE_LI)?.emExecucaoAteMs).toBe(0);
+    },
+  );
 });
 
 describe('a Firestore failure of the price STATE load is no price-arm fault', () => {
@@ -623,6 +942,62 @@ describe('the end pair never splits', () => {
     ).toEqual(['fim']);
     expect(m.fake.ler(`sincEstoqueLojaIntegrada/${CONTA_PRECO_A}`)?.ultimoReconcile).toBeTruthy();
     expect(ultimoReconcilePreco(m, CONTA_PRECO_B)).toBeTruthy();
+  });
+
+  it('a Firestore failure in the price end before the last attempt is RETHROWN (the queue retries) — never swallowed, the lease still held', async () => {
+    vi.spyOn(FimPrecoReconcileLi.prototype, 'unidade').mockRejectedValueOnce(
+      grpc(14, 'UNAVAILABLE'),
+    );
+    const m = noFim();
+    await expect(
+      despacharReconcileEstoqueLi(
+        m.db,
+        tarefa(7),
+        m.deps({ agoraMs: () => AGORA_RECONCILE_MS, inicioMs: AGORA_RECONCILE_MS }),
+      ),
+    ).rejects.toMatchObject({ code: 14 });
+    expect(m.fake.ler(CAMINHO_RUN_RECONCILE_LI)?.emExecucaoAteMs).toBeGreaterThan(0);
+  });
+
+  it('⚠️ a Firestore failure LOADING the price state in the end, on the last attempt: contained for that conta (ONE ERROR) — its stock end and every later conta’s ends land, the run releases', async () => {
+    const m = noFim();
+    m.fake.falharProximaLeitura(`sincPrecoLojaIntegrada/${CONTA_PRECO_A}`, grpc(14, 'UNAVAILABLE'));
+    const r = await despacharReconcileEstoqueLi(
+      m.db,
+      tarefa(7),
+      m.deps({
+        agoraMs: () => AGORA_RECONCILE_MS,
+        inicioMs: AGORA_RECONCILE_MS,
+        tentativa: TASK_MAX_ATTEMPTS - 1,
+      }),
+    );
+    expect(r).toEqual({ kind: 'encerrado' });
+    expect(
+      m.log.linhas
+        .filter((l) => l.meta.motivo === 'tentativas-esgotadas')
+        .map((l) => [l.nivel, l.meta.contaId, l.meta.fase]),
+    ).toEqual([['error', CONTA_PRECO_A, 'fim']]);
+    for (const conta of [CONTA_PRECO_A, CONTA_PRECO_B]) {
+      expect(m.fake.ler(`sincEstoqueLojaIntegrada/${conta}`)?.ultimoReconcile, conta).toBeTruthy();
+    }
+    expect(ultimoReconcilePreco(m, CONTA_PRECO_A)).toBeUndefined();
+    expect(ultimoReconcilePreco(m, CONTA_PRECO_B)).toBeTruthy();
+    expect(m.fake.ler(CAMINHO_RUN_RECONCILE_LI)?.emExecucaoAteMs).toBe(0);
+  });
+
+  it('NEAR-MISS: the same load failure BEFORE the last attempt is rethrown with nothing written', async () => {
+    const m = noFim();
+    m.fake.falharProximaLeitura(`sincPrecoLojaIntegrada/${CONTA_PRECO_A}`, grpc(14, 'UNAVAILABLE'));
+    const escritasAntes = m.fake.escritas.length;
+    await expect(
+      despacharReconcileEstoqueLi(
+        m.db,
+        tarefa(7),
+        m.deps({ agoraMs: () => AGORA_RECONCILE_MS, inicioMs: AGORA_RECONCILE_MS }),
+      ),
+    ).rejects.toMatchObject({ code: 14 });
+    expect(m.fake.escritas.length).toBe(escritasAntes);
+    expect(m.log.linhas.some((l) => l.meta.motivo === 'tentativas-esgotadas')).toBe(false);
   });
 });
 

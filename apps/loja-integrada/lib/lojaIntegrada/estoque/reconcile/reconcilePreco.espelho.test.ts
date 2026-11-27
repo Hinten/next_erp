@@ -5,7 +5,8 @@
  * set and the price arm of a walk page made to fail through its seam — and the stock side of the
  * two runs must be the same: the run's counters (less the price arm's own), every write under
  * `sincEstoqueLojaIntegrada/`, every stock enqueue, every stock aviso. The price side must show the
- * fault where it was contained, and nowhere else.
+ * fault where it was contained, and nowhere else — a thrown error, a returned entry or counter off
+ * its schema, and a conta whose writes do not fit the commit's price share alike.
  *
  * No call to the store: the global `fetch` throws; the store is the scripted one.
  */
@@ -226,7 +227,88 @@ describe('MIRROR — a fault in the price arm leaves the stock flow exactly as w
   );
 
   it(
-    'NEAR-MISS: with no fault, the same run prices both contas (the arm is live in this harness)',
+    '⚠️ an arm that RETURNS a counter its root’s schema refuses (a fraction, a name off its form, a negative): contained like a thrown ZodError — never the slice’s batch',
+    // Four whole chains; CI runners are slower under load.
+    { timeout: 60_000 },
+    async () => {
+      const base = await rodar(AMBIENTE_ESTOQUE_LIGADO_LI);
+      for (const ruim of [
+        ['validos', 0.5],
+        ['pai-invalido', 1],
+        ['validos', -1],
+      ] as const) {
+        const r = await rodar(PRECO_DRY, {
+          armaPrecoDePaginaLi: (args) => ({
+            ...avaliarPrecoDaPaginaLi(args),
+            contadores: new Map([ruim]),
+          }),
+        });
+        expect(ladoEstoque(r), ruim[0]).toEqual(ladoEstoque(base));
+        expect(r.fatias.at(-1)?.resultado, ruim[0]).toEqual({ kind: 'encerrado' });
+        expect(
+          errosDoBraco(r).map((l) => [l.meta.contaId, l.meta.classe]),
+          ruim[0],
+        ).toEqual([
+          [CONTA_PRECO_A, 'ZodError'],
+          [CONTA_PRECO_B, 'ZodError'],
+        ]);
+      }
+    },
+  );
+
+  it(
+    'a fault for the FIRST conta on a page leaves the NEXT conta on the SAME page priced: the containment is per (page, conta)',
+    { timeout: 30_000 },
+    async () => {
+      const base = await rodar(AMBIENTE_ESTOQUE_LIGADO_LI);
+      // Page 1 holds the second conta's only link: the first conta faults on that very page.
+      const r = await rodar(PRECO_DRY, {
+        armaPrecoDePaginaLi: armaQueFalha(() => new TypeError('falha injetada'), {
+          conta: CONTA_PRECO_A,
+          pagina: 1,
+        }),
+      });
+      expect(ladoEstoque(r)).toEqual(ladoEstoque(base));
+      expect(errosDoBraco(r).map((l) => l.meta.contaId)).toEqual([CONTA_PRECO_A]);
+      const b = contadoresDePreco(r, CONTA_PRECO_B);
+      expect(b.armaFalhou).toBeUndefined();
+      expect(b.validos).toBe(1);
+      expect(b.paisConcluido).toBe(1);
+    },
+  );
+
+  it(
+    '⚠️ a priced conta whose writes do not fit the commit’s price share: ONE ERROR `lote-preco-excedido` per conta, no bucket written, its price arm ends — the stock side as without the price arm',
+    { timeout: 30_000 },
+    async () => {
+      const base = await rodar(AMBIENTE_ESTOQUE_LIGADO_LI);
+      const r = await rodar(PRECO_DRY, { orcamentoBytesPrecoLote: 1 });
+      expect(ladoEstoque(r)).toEqual(ladoEstoque(base));
+      expect(r.fatias.at(-1)?.resultado).toEqual({ kind: 'encerrado' });
+      expect(
+        r.m.log.linhas
+          .filter((l) => l.meta.motivo === 'lote-preco-excedido')
+          .map((l) => [l.nivel, l.meta.contaId]),
+      ).toEqual([
+        ['error', CONTA_PRECO_A],
+        ['error', CONTA_PRECO_B],
+      ]);
+      expect(
+        r.m.fake.escritas.filter(
+          (e) =>
+            e.caminho.startsWith('sincPrecoLojaIntegrada/') && e.caminho.includes('/snapshot/'),
+        ),
+      ).toEqual([]);
+      for (const conta of [CONTA_PRECO_A, CONTA_PRECO_B]) {
+        const c = contadoresDePreco(r, conta);
+        expect(c, conta).toMatchObject({ armaFalhou: 1, loteExcedido: 1 });
+        expect(c.paisConcluido, conta).toBeUndefined();
+      }
+    },
+  );
+
+  it(
+    'NEAR-MISS: with no fault, the same run prices both contas (the arm is live in this harness) — and touches nothing beyond the price state, the ERP reads and the run document',
     { timeout: 30_000 },
     async () => {
       const base = await rodar(AMBIENTE_ESTOQUE_LIGADO_LI);
@@ -236,6 +318,21 @@ describe('MIRROR — a fault in the price arm leaves the stock flow exactly as w
       for (const conta of [CONTA_PRECO_A, CONTA_PRECO_B]) {
         expect(contadoresDePreco(r, conta).paisConcluido, conta).toBe(1);
       }
+      // A dry-run makes ERP reads and price-state writes only: no store request, no slot.
+      expect(r.m.plataforma.requisicoes).toEqual(base.m.plataforma.requisicoes);
+      const escritosNaBase = new Set(base.m.fake.escritas.map((e) => e.caminho));
+      expect(
+        r.m.fake.escritas
+          .map((e) => e.caminho)
+          .filter((c) => !escritosNaBase.has(c) && !c.startsWith('sincPrecoLojaIntegrada/')),
+      ).toEqual([]);
+      expect(r.m.fake.escritas.some((e) => e.caminho.endsWith('/slot-preco'))).toBe(false);
+      const lidosNaBase = new Set(base.m.fake.leituras);
+      expect(
+        [...new Set(r.m.fake.leituras)].filter(
+          (c) => !lidosNaBase.has(c) && !/^(produtos|integracao|sincPrecoLojaIntegrada)\//.test(c),
+        ),
+      ).toEqual([]);
     },
   );
 });
