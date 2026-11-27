@@ -16,11 +16,13 @@ import {
 import type { RegistroLoteAmazon } from '../../lib/amazon/feeds/incertoFeed';
 import {
   type DepsProcessarLoteAmazon,
+  type ProcessadorPaginaPrecoAmazon,
   type ProcessadorPaginaReconciliacaoAmazon,
   type ProcessadorTarefaPrecoSkuAmazon,
   processarLoteAmazon,
 } from '../../lib/amazon/feeds/processarLote';
 import { sanitizarFalhaDaTarefaAmazon } from '../../lib/amazon/notificacoes/notificacao';
+import { paginaPrecoAmazon } from '../../lib/amazon/preco/execucaoPreco';
 import {
   processarPrecoSkuAmazon,
   soValidacaoDoDespachoPrecoAmazon,
@@ -28,6 +30,7 @@ import {
 import {
   criarAgendadorLotesAmazonDoAmbiente,
   criarProdutorEstoqueAmazonDoAmbiente,
+  criarProdutorExecucaoPrecoAmazonDoAmbiente,
   criarProdutorPrecoAmazonDoAmbiente,
 } from './agendadorEstoque';
 import { getDb } from './lib/admin';
@@ -150,6 +153,30 @@ export const TAREFA_PRECO_SKU_AMAZON: ProcessadorTarefaPrecoSkuAmazon = (db, tar
   });
 
 /**
+ * A price run's page (step 13, PR 13-e), BOUND: ONE `preco-pagina` dispatch of
+ * THIS queue, the dispatch's own deps handed through, plus what only the page
+ * needs — the context loader, the page producer and the price task's producer
+ * from the stock root (THUNKS, onto this queue's own path), the preview flag
+ * read from the dispatch's own environment (the price task's one reader), and
+ * a real sleep for the live read's pacing. No new queue, root or grant.
+ */
+export const PAGINA_PRECO_AMAZON: ProcessadorPaginaPrecoAmazon = (db, tarefa, deps) =>
+  paginaPrecoAmazon(db, tarefa, {
+    ambiente: deps.ambiente,
+    agora: deps.agora,
+    logger: deps.logger,
+    increment: deps.increment,
+    registro: deps.registro,
+    fetch: deps.fetch,
+    gerarCorrelationId: deps.gerarCorrelationId,
+    carregarContexto: loadAmazonContext,
+    produtorPaginas: criarProdutorExecucaoPrecoAmazonDoAmbiente,
+    produtorPreco: criarProdutorPrecoAmazonDoAmbiente,
+    soValidacao: soValidacaoDoDespachoPrecoAmazon(deps.ambiente, deps.logger, deps.registro),
+    esperar: esperarMs,
+  });
+
+/**
  * The dependencies of ONE jobs-queue dispatch, bound to the runtime — the one
  * place this codebase binds them:
  *
@@ -173,6 +200,8 @@ export const TAREFA_PRECO_SKU_AMAZON: ProcessadorTarefaPrecoSkuAmazon = (db, tar
  *   ({@link PAGINA_RECONCILIACAO_AMAZON}).
  * - `tarefaPrecoSku` (step 13, PR 13-d): the price task, BOUND
  *   ({@link TAREFA_PRECO_SKU_AMAZON}).
+ * - `paginaPreco` (step 13, PR 13-e): a price run's page, BOUND
+ *   ({@link PAGINA_PRECO_AMAZON}).
  */
 export function depsDosLotesAmazon(registro: RegistroLoteAmazon): DepsProcessarLoteAmazon {
   return {
@@ -186,6 +215,7 @@ export function depsDosLotesAmazon(registro: RegistroLoteAmazon): DepsProcessarL
     fetch: (input, init) => globalThis.fetch(input, init),
     paginaReconciliacao: PAGINA_RECONCILIACAO_AMAZON,
     tarefaPrecoSku: TAREFA_PRECO_SKU_AMAZON,
+    paginaPreco: PAGINA_PRECO_AMAZON,
   };
 }
 
@@ -202,7 +232,8 @@ export function depsDosLotesAmazon(registro: RegistroLoteAmazon): DepsProcessarL
  * wake-up (through `lib/firebase/filaLeitura.ts`, the App Hosting runtime SA).
  * Since step 13 (PR 13-d) it also carries the PRICE task (`preco-sku`, one
  * SKU's offer, {@link TAREFA_PRECO_SKU_AMAZON}), whose own check, wait and
- * pause come back through the stock root: price has no queue of its own.
+ * pause come back through the stock root, and (PR 13-e) a price run's pages
+ * (`preco-pagina`, {@link PAGINA_PRECO_AMAZON}): price has no queue of its own.
  *
  * ⚠️ The export name IS the deployed function AND queue name, and it must equal
  * `FILA_LOTES_AMAZON` — the producers target that string. `index.ts` asserts

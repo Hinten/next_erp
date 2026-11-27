@@ -14,10 +14,17 @@ import {
 } from '../../lib/amazon/feeds/agendadorLotes';
 import type { TarefaLoteAmazon } from '../../lib/amazon/feeds/tarefaLote';
 import {
+  type ProdutorExecucaoPrecoAmazon,
+  criarProdutorExecucaoPrecoAmazon,
+} from '../../lib/amazon/preco/inicioExecucaoPreco';
+import {
   type ProdutorPrecoAmazon,
   criarProdutorPrecoAmazon,
 } from '../../lib/amazon/preco/produtorPreco';
-import type { TarefaPrecoSkuAmazon } from '../../lib/amazon/preco/tarefaPreco';
+import type {
+  TarefaPaginaPrecoAmazon,
+  TarefaPrecoSkuAmazon,
+} from '../../lib/amazon/preco/tarefaPreco';
 import { getAdminApp } from './lib/admin';
 
 /**
@@ -45,8 +52,10 @@ import { getAdminApp } from './lib/admin';
  * Since step 13 (PR 13-d) a THIRD producer rides the jobs queue's path: the
  * price task's (`preco-sku`: its check, its wait behind a price feed and its
  * pause, bound by `./filaLotes`), its own because the jobs producer's typed
- * transport carries the feed core's payloads only. Price has no queue of its
- * own; the valve and the region below are the same ones.
+ * transport carries the feed core's payloads only; and (PR 13-e) a FOURTH, a
+ * price run's pages (`preco-pagina`: the next page, a step-0 heal, a 429's
+ * pause, bound by `./filaLotes` for the page). Price has no queue of its own;
+ * the valve and the region below are the same ones.
  *
  * What a rejection means, the names and the delay rules are the pure modules'
  * (`lib/amazon/feeds/agendadorLotes.ts`, `lib/amazon/estoque/produtorEstoque.ts`);
@@ -133,9 +142,24 @@ export function criarProdutorPrecoAmazonDoAmbiente(): ProdutorPrecoAmazon {
 }
 
 /**
+ * A price run's page producer (step 13, PR 13-e), from the environment: the
+ * JOBS queue's path again, the same valve read ONCE, the same lazily resolved
+ * region, the same admin app.
+ */
+export function criarProdutorExecucaoPrecoAmazonDoAmbiente(): ProdutorExecucaoPrecoAmazon {
+  return criarProdutorExecucaoPrecoAmazon({
+    desligado: tarefasDoEstoqueAmazonDesligadas(),
+    fila: () =>
+      filaDoAmbiente<TarefaPaginaPrecoAmazon>(
+        caminhoDaFilaLotesAmazon(regiaoDasFilasDoEstoqueAmazon()),
+      ),
+  });
+}
+
+/**
  * The Admin SDK's task queue at `caminho` — the file's ONE `getFunctions(`
- * call, which both producers resolve through, per enqueue.
- * (Since step 13, PR 13-d, the price task's producer too.)
+ * call, which every producer here resolves through, per enqueue (since step
+ * 13 the price task's and a price run's pages too).
  */
 function filaDoAmbiente<T>(caminho: string) {
   return getFunctions(getAdminApp()).taskQueue<T>(caminho);

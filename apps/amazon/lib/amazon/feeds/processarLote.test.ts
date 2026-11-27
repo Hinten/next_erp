@@ -21,6 +21,7 @@ import {
   TIPO_TAREFA_LOTE_AMAZON,
   type TarefaLoteAmazon,
   tarefaLoteAmazonSchema,
+  tipoTarefaLoteAmazonSchema,
 } from './tarefaLote';
 
 const espioes = vi.hoisted(() => ({
@@ -420,7 +421,7 @@ describe('the price task on the jobs queue (step 13, PR 13-d)', () => {
 
   it('the queue’s union is the feed core’s plus the price task, and the feed core’s own union is unchanged', () => {
     expect([...tipoTarefaFilaLotesAmazonSchema.options].sort()).toEqual(
-      [...Object.values(TIPO_TAREFA_LOTE_AMAZON), 'preco-sku'].sort(),
+      [...Object.values(TIPO_TAREFA_LOTE_AMAZON), 'preco-sku', 'preco-pagina'].sort(),
     );
     expect(TIPO_TAREFA_FILA_LOTES_AMAZON.precoSku).toBe('preco-sku');
     expect(tarefaFilaLotesAmazonSchema.parse(PRECO_SKU).tipo).toBe('preco-sku');
@@ -430,5 +431,99 @@ describe('the price task on the jobs queue (step 13, PR 13-d)', () => {
         tarefaLoteAmazonSchema.parse(payload),
       );
     }
+  });
+});
+
+describe('a price run’s page on the jobs queue (step 13, PR 13-e)', () => {
+  /** A valid `preco-pagina` payload: one page of one run. */
+  const PRECO_PAGINA = {
+    v: 1,
+    tipo: 'preco-pagina',
+    contaId: CONTA,
+    execucaoId: EXEC,
+    pagina: 4,
+  } as const;
+
+  /** The world above with the price page bound (or not) by the jobs root. */
+  function comPagina(vinculada: boolean) {
+    const m = mundo();
+    const paginaPreco = vi.fn(() => Promise.resolve({ acao: 'espiada-pagina' }));
+    const tarefaPreco = vi.fn(() => Promise.resolve({ acao: 'espiado-preco' }));
+    const deps = vinculada
+      ? { ...m.deps, paginaPreco, tarefaPrecoSku: tarefaPreco }
+      : { ...m.deps, tarefaPrecoSku: tarefaPreco };
+    return {
+      ...m,
+      paginaPreco,
+      tarefaPreco,
+      deps,
+      rodar: (d: unknown) => processarLoteAmazon(asDb(m.fake), d, deps),
+    };
+  }
+
+  it('★ preco-pagina ⇒ the BOUND page, with this dispatch’s db, the parsed payload and deps whole; neither the price task nor a feed handler', async () => {
+    const m = comPagina(true);
+    const r = await m.rodar(PRECO_PAGINA);
+    expect(r).toEqual({ tipo: 'preco-pagina', r: { acao: 'espiada-pagina' } });
+    expect(m.paginaPreco).toHaveBeenCalledTimes(1);
+    const [db, t, deps] = m.paginaPreco.mock.calls[0] as unknown as [unknown, unknown, unknown];
+    expect(db).toBe(asDb(m.fake));
+    expect(t).toEqual(PRECO_PAGINA);
+    expect(deps).toBe(m.deps);
+    expect(m.tarefaPreco).not.toHaveBeenCalled();
+    for (const espiao of Object.values(espioes)) expect(espiao).not.toHaveBeenCalled();
+    expect(m.log.linhas).toEqual([]);
+  });
+
+  it('★ NEAR-MISS: a dispatcher built WITHOUT the page refuses it with the price task’s ONE ERROR shape (sem-processador), no throw, nothing read', async () => {
+    const m = comPagina(false);
+    const r = await m.rodar(PRECO_PAGINA);
+    expect(r).toEqual({ tipo: null, recusa: RECUSA_DO_LOTE.semProcessador });
+    expect(m.log.linhas).toEqual([
+      expect.objectContaining({
+        nivel: 'error',
+        meta: expect.objectContaining({
+          recusa: 'sem-processador',
+          tipo: 'preco-pagina',
+          campos: '',
+        }),
+      }),
+    ]);
+    expect(m.fake.operacoes).toBe(0);
+    expect(m.paginaPreco).not.toHaveBeenCalled();
+    expect(m.tarefaPreco).not.toHaveBeenCalled();
+  });
+
+  it('★ the page payload is STRICT: an unknown key ⇒ payload-invalido naming the tipo and the field, the page never called', async () => {
+    const m = comPagina(true);
+    const r = await m.rodar({ ...PRECO_PAGINA, baixarPreco: true });
+    expect(r).toEqual({ tipo: null, recusa: RECUSA_DO_LOTE.payloadInvalido });
+    expect(m.log.linhas.at(-1)).toMatchObject({
+      nivel: 'error',
+      meta: { recusa: 'payload-invalido', tipo: 'preco-pagina' },
+    });
+    expect(m.paginaPreco).not.toHaveBeenCalled();
+  });
+
+  it('NEAR-MISS: the stock reconcile’s page payload, the same fields under its own tipo, still reaches the stock page, never the price one', async () => {
+    const m = comPagina(true);
+    await m.rodar({ ...PRECO_PAGINA, tipo: 'reconciliacao' });
+    expect(espioes.reconciliacao).toHaveBeenCalledTimes(1);
+    expect(m.paginaPreco).not.toHaveBeenCalled();
+  });
+
+  it('a page’s throw is the queue’s retry: rethrown as it came', async () => {
+    const m = comPagina(true);
+    const erro = new Error('da página de preço');
+    m.paginaPreco.mockRejectedValueOnce(erro);
+    await expect(m.rodar(PRECO_PAGINA)).rejects.toBe(erro);
+  });
+
+  it('the queue’s union holds the page; the feed core’s own union does not', () => {
+    expect(TIPO_TAREFA_FILA_LOTES_AMAZON.precoPagina).toBe('preco-pagina');
+    expect(tipoTarefaFilaLotesAmazonSchema.options).toContain('preco-pagina');
+    expect(tarefaFilaLotesAmazonSchema.parse(PRECO_PAGINA)).toEqual(PRECO_PAGINA);
+    expect(tarefaLoteAmazonSchema.safeParse(PRECO_PAGINA).success).toBe(false);
+    expect(tipoTarefaLoteAmazonSchema.options).not.toContain('preco-pagina');
   });
 });
