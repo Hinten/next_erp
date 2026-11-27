@@ -227,6 +227,18 @@
  *    but for by-id reads. The provider writes only through the run's one write
  *    (its ledger), the shared write-back and the price aviso raiser; the daily
  *    step imports no sibling of `preco/` at all (it never reads a run).
+ *  - (step 13, PR 13-g) the four price routes ({@link ROTAS_DE_PRECO}) are
+ *    every route that imports `preco/`, each thin, behind
+ *    `PERM.integracao.write`, calling ONE function of their one body
+ *    (`preco/envioManualPreco.ts`, App-Hosting-reachable, imported by those
+ *    four alone and by no functions root); none of them, their body, the
+ *    run's claim module or the shared selection read names a valve, a canary
+ *    or the preview flag (comments included), a way to reach Amazon, a price
+ *    computation or the task's, the page's, the provider's or the daily step's
+ *    entry; none makes a write of its own; and each route's own walk reaches
+ *    the body, the claim module and the producers, never the engine, the
+ *    price task, a run's page, the parts writer, the provider, the daily
+ *    step, the lease I/O or the one listings caller.
  */
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, posix, relative, sep } from 'node:path';
@@ -4582,7 +4594,8 @@ const LISTINGS_NO_APP_HOSTING = ['listings/selecaoManual.ts', 'listings/produtor
  *   the document-id check) and the order import's own query, dono read, hop
  *   and count.
  * - `selecaoManual.ts` — the manual selection read: the produto and link
- *   handles (masked by-id reads, the children seek, the partition listings).
+ *   handles (masked by-id reads, the children seek, the partition listings);
+ *   since PR 13-g the valves' own target predicate (`skuAlvoAmazon`).
  * - `varreduraVinculos.ts` — the walk and its page core: the link handle (the
  *   group query and the cursor's ref), the conta ref forms (the walk's two
  *   `==`) and the schemas (the index-field tuple, the cursor grammar).
@@ -4610,7 +4623,7 @@ const E_S_EM_LISTINGS: Readonly<Record<string, readonly string[]>> = {
     '@delfrance/schemas',
     'firebase-admin/firestore',
   ],
-  'listings/selecaoManual.ts': ['@delfrance/data/admin/collections'],
+  'listings/selecaoManual.ts': ['../core/valvulas', '@delfrance/data/admin/collections'],
   'listings/varreduraVinculos.ts': [
     '@delfrance/data/admin/collections',
     '@delfrance/data/admin/produtos',
@@ -5492,10 +5505,19 @@ const COMPARACAO_DE_PRECO =
  * binds the producer onto the jobs queue's path. PR 13-e adds the run's page
  * to the jobs root and the page producer to the stock root. PR 13-f fills the
  * seam's price row (the provider's factory, the price producer's type for the
- * root) and binds the daily price step into the daily root. The routes come in
- * a later PR, adding its row.
+ * root) and binds the daily price step into the daily root. PR 13-g adds the
+ * four price routes (their bodies) and the App Hosting root (the price task's
+ * producer and the run's page producer).
  */
 const IMPORTADORES_DE_PRECO: Readonly<Record<string, readonly string[]>> = {
+  'app/api/marketplace/amazon/atualizar-precos/cancelar/route.ts': [
+    '@/lib/amazon/preco/envioManualPreco',
+  ],
+  'app/api/marketplace/amazon/atualizar-precos/route.ts': ['@/lib/amazon/preco/envioManualPreco'],
+  'app/api/marketplace/amazon/atualizar-precos/status/route.ts': [
+    '@/lib/amazon/preco/envioManualPreco',
+  ],
+  'app/api/marketplace/amazon/enviar-precos/route.ts': ['@/lib/amazon/preco/envioManualPreco'],
   'functions/src/agendadorEstoque.ts': [
     '../../lib/amazon/preco/inicioExecucaoPreco',
     '../../lib/amazon/preco/produtorPreco',
@@ -5508,6 +5530,11 @@ const IMPORTADORES_DE_PRECO: Readonly<Record<string, readonly string[]>> = {
   'functions/src/reconciliacaoEstoque.ts': ['../../lib/amazon/preco/backstopPreco'],
   'lib/amazon/feeds/destinosLote.ts': ['../preco/produtorPreco', '../preco/provedorLotePreco'],
   'lib/amazon/feeds/processarLote.ts': ['../preco/tarefaPreco'],
+  'lib/firebase/filaLeitura.ts': [
+    '../amazon/preco/inicioExecucaoPreco',
+    '../amazon/preco/produtorPreco',
+    '../amazon/preco/tarefaPreco',
+  ],
 };
 
 /** (step 13, PR 13-c) The PURE modules of `preco/`, held to {@link VALORES_PERMITIDOS_EM_PRECO}. */
@@ -5564,6 +5591,12 @@ const PRECO_PUROS = [
  * - (PR 13-f) `backstopPreco.ts` — the daily price step: the conta query, the
  *   logger, the valves, the jobs producer's classes, the feed backstop and the
  *   lease's parse class, and the shared boundary's classifier.
+ * - (PR 13-g) `envioManualPreco.ts` — the four price routes' bodies: the conta
+ *   handle (a masked by-id read), the schemas, the SP-API package (the path
+ *   check), `zod` (the strict bodies), the region's class, the task SDK's
+ *   classes, the logger, the read switch, the environment's names, the jobs
+ *   queue's path, classes and payload version, the bounded body read, and the
+ *   shared selection read and flow names.
  */
 const E_S_EM_PRECO: Readonly<Record<string, readonly string[]>> = {
   'preco/backstopPreco.ts': [
@@ -5578,6 +5611,22 @@ const E_S_EM_PRECO: Readonly<Record<string, readonly string[]>> = {
   'preco/divergenciasPrecoFirestore.ts': [
     '@delfrance/data/admin/collections',
     '@delfrance/schemas',
+  ],
+  'preco/envioManualPreco.ts': [
+    '../core/filaTarefas',
+    '../core/log',
+    '../core/valvulas',
+    '../env',
+    '../feeds/agendadorLotes',
+    '../feeds/tarefaLote',
+    '../listings/fluxoListing',
+    '../listings/selecaoManual',
+    '../notificacoes/corpo',
+    '@delfrance/core/region',
+    '@delfrance/data/admin/collections',
+    '@delfrance/integrations-amazon-sp-api',
+    '@delfrance/schemas',
+    'zod',
   ],
   'preco/execucaoPreco.ts': [
     '../avisos/avisos',
@@ -5662,11 +5711,14 @@ const E_S_EM_PRECO: Readonly<Record<string, readonly string[]>> = {
  * (PR 13-e) The run's claim, re-kick, cancel and status (a route's body: a
  * masked run read, one tier-1 write, page enqueues), and the run's one write
  * it goes through.
+ * (PR 13-g) The four price routes' bodies (a masked conta read, the shared
+ * selection read, named enqueues, the claim, status and cancel).
  */
 const PRECO_NO_APP_HOSTING = [
   'preco/produtorPreco.ts',
   'preco/inicioExecucaoPreco.ts',
   'preco/execucaoPrecoFirestore.ts',
+  'preco/envioManualPreco.ts',
 ];
 
 /**
@@ -5716,6 +5768,7 @@ describe('the step-13 price core guards (13-c)', () => {
     expect(preco.map(rel).sort()).toEqual([
       'preco/backstopPreco.ts',
       'preco/divergenciasPrecoFirestore.ts',
+      'preco/envioManualPreco.ts',
       'preco/execucaoPreco.ts',
       'preco/execucaoPrecoFirestore.ts',
       'preco/inicioExecucaoPreco.ts',
@@ -5820,7 +5873,7 @@ describe('the step-13 price core guards (13-c)', () => {
         .map(relApp),
     ).toEqual(['lib/amazon/preco/planoPreco.ts']);
     const outros = preco.filter((p) => rel(p) !== 'preco/planoPreco.ts');
-    expect(outros).toHaveLength(13);
+    expect(outros).toHaveLength(14);
     for (const arquivo of outros) {
       const texto = readFileSync(arquivo, 'utf8');
       expect(especificadores(texto), rel(arquivo)).not.toContain('@delfrance/core/money');
@@ -5948,6 +6001,7 @@ describe('the step-13 price core guards (13-c)', () => {
     expect([...nomesES].sort()).toEqual([
       './backstopPreco',
       './divergenciasPrecoFirestore',
+      './envioManualPreco',
       './execucaoPreco',
       './execucaoPrecoFirestore',
       './inicioExecucaoPreco',
@@ -6033,8 +6087,14 @@ describe('the step-13 price core guards (13-c)', () => {
       lerDoApp,
     );
     expect(fila.arquivos).toEqual(expect.arrayContaining(MODULOS_DE_PRECO_FORA_DO_APP_HOSTING));
+    // (PR 13-g) The price routes' bodies are App Hosting's alone: the union walk
+    // reaches them, the jobs root never needs to.
+    const DAS_ROTAS = 'preco/envioManualPreco.ts';
+    expect(fecho.arquivos).toContain(`lib/amazon/${DAS_ROTAS}`);
     expect(fila.arquivos).toEqual(
-      expect.arrayContaining(PRECO_NO_APP_HOSTING.map((a) => `lib/amazon/${a}`)),
+      expect.arrayContaining(
+        PRECO_NO_APP_HOSTING.filter((a) => a !== DAS_ROTAS).map((a) => `lib/amazon/${a}`),
+      ),
     );
   });
 
@@ -6151,6 +6211,7 @@ describe('the step-13 price core guards (13-c)', () => {
     const naoEscritores = Object.keys(E_S_EM_PRECO).filter((a) => !(a in ESCRITORES_EM_PRECO));
     expect([...naoEscritores].sort()).toEqual([
       'preco/backstopPreco.ts',
+      'preco/envioManualPreco.ts',
       'preco/execucaoPreco.ts',
       'preco/inicioExecucaoPreco.ts',
       'preco/processarPreco.ts',
@@ -6169,6 +6230,7 @@ describe('the step-13 price core guards (13-c)', () => {
       }
     }
     expect(handles).toEqual({
+      'preco/envioManualPreco.ts': ['integracaoCollection'],
       'preco/execucaoPreco.ts': ['integracaoCollection'],
       'preco/inicioExecucaoPreco.ts': ['vezFeedAmazonCollection'],
       'preco/processarPreco.ts': [...HANDLES_LIDOS_EM_PRECO].sort(),
@@ -6245,6 +6307,460 @@ describe('the step-13 price core guards (13-c)', () => {
     expect(doPasso("import { lerExecucaoPrecoAmazon } from './execucaoPrecoFirestore';\n")).toEqual(
       ['./execucaoPrecoFirestore'],
     );
+  });
+});
+
+/**
+ * (step 13, PR 13-g) The four price routes, relative to the APP root, each with
+ * its method and the ONE function of their body it calls: the manual push, and
+ * the conta run's start, status and cancel. Union-walk entries (App Hosting).
+ */
+const ROTAS_DE_PRECO = [
+  ['app/api/marketplace/amazon/enviar-precos/route.ts', 'POST', 'enviarPrecoManualAmazon'],
+  [
+    'app/api/marketplace/amazon/atualizar-precos/route.ts',
+    'POST',
+    'iniciarAtualizacaoPrecosAmazon',
+  ],
+  [
+    'app/api/marketplace/amazon/atualizar-precos/status/route.ts',
+    'GET',
+    'resumoAtualizacaoPrecosAmazon',
+  ],
+  [
+    'app/api/marketplace/amazon/atualizar-precos/cancelar/route.ts',
+    'POST',
+    'cancelarAtualizacaoPrecosAmazon',
+  ],
+] as const;
+
+/** The two price routes that ENQUEUE (the manual push's tasks, a run's page 0), with their producer. */
+const ROTAS_DE_PRECO_QUE_ENFILEIRAM: Readonly<Record<string, string>> = {
+  'app/api/marketplace/amazon/enviar-precos/route.ts': 'produtorDaFilaPrecoAmazon',
+  'app/api/marketplace/amazon/atualizar-precos/route.ts': 'produtorDaExecucaoPrecoAmazon',
+};
+
+/** Their ONE body, relative to `lib/amazon`: on the I/O roster, App-Hosting-reachable. */
+const ARQUIVO_ROTAS_DE_PRECO = 'preco/envioManualPreco.ts';
+
+/**
+ * Every file the price routes' answers are decided in, relative to the APP
+ * root: the four routes, their body, the run's claim, status and cancel the
+ * body calls, and the shared selection read.
+ */
+const ARQUIVOS_DAS_ROTAS_DE_PRECO = [
+  ...ROTAS_DE_PRECO.map(([rota]) => rota),
+  `lib/amazon/${ARQUIVO_ROTAS_DE_PRECO}`,
+  'lib/amazon/preco/inicioExecucaoPreco.ts',
+  'lib/amazon/listings/selecaoManual.ts',
+];
+
+/**
+ * What no file of {@link ARQUIVOS_DAS_ROTAS_DE_PRECO} may NAME, comments
+ * INCLUDED (a route that names one in prose is one edit from reading it): any
+ * write valve, canary list or the price preview flag, and every reader of
+ * them. The task, the run's pages and the feed's send read them on the
+ * functions surface; the routes are valve-blind.
+ */
+const VALVULAS_NAS_ROTAS_DE_PRECO =
+  /\b(?:lerValvula|decidirAlvo|decidirLote|lerModo|lerCanario|VALVULA_ENV_AMAZON|CANARIO_ENV_AMAZON|AMAZON_MODO_\w+|AMAZON_CANARIO_\w+|AMAZON_PRECO_SO_VALIDACAO|PRECO_SO_VALIDACAO_ENV|valvulaPrecoEfetiva|lerPrecoSoValidacaoAmazon|soValidacaoDoDespachoPrecoAmazon)\b/g;
+
+/**
+ * What the routes, their body and the selection read may never name in CODE
+ * (comments aside): every way to reach Amazon (the context, a client, the
+ * engine's two entries, the package's listings helpers and the app's wrappers,
+ * the feed helpers' module, a raw fetch); a price computed, read or compared
+ * (the faixa, the shared price readers and the fold, the plan, the offer's
+ * builder and reader, the produto's `precos` map — a route PATH's `-precos` is
+ * not it); the entries of the price task, a run's page, the feed provider, the
+ * daily step and the re-kick (only the claim re-kicks); and the produto's
+ * anchor list.
+ */
+const PROIBIDOS_NAS_ROTAS_DE_PRECO =
+  /\b(?:loadAmazonContext|criarClienteSpApi|criarClienteEscritaSpApi|executarEscritaAmazon|executarLoteEscritaAmazon|lerListingAmazon|buscarListingsAmazon|enviarDisponibilidadeAmazon|enviarOfertaAmazon|lerListingNaAmazon|lerListingComTaxaNaAmazon|buscarListingsNaAmazon|enviarDisponibilidadeNaAmazon|enviarOfertaNaAmazon|enviarOfertaComTaxaNaAmazon|listingsAmazon|feedsAmazon|vezFeedFirestore|faixaDePrecoAmazon|fontesPrecoDaUnidadeAmazon|precoDoFilhoNaTabela|precoDaTabela|mesmoPrecoEmReais|centavosDeReais|planejarPrecoAmazon|patchOfertaAmazon|ofertaDoListingAmazon|processarPrecoSkuAmazon|paginaPrecoAmazon|criarProvedorLotePrecoAmazon|executarBackstopDiarioPrecoAmazon|retomarExecucaoPrecoAmazon|integracoesComProduto|fetch)\b|(?<![-\w])precos\b/g;
+
+/**
+ * What no price route's OWN walk may reach (type edges and the `@/` alias
+ * walked): the engine, the price task, a run's page, the parts writer, the
+ * feed provider, the daily step, the lease I/O, the feed send and the one
+ * listings caller — the last NOT on the shared App Hosting list (the label
+ * route's run reaches it), so it is pinned here, per route.
+ */
+const NUNCA_NAS_ROTAS_DE_PRECO = [
+  MOTOR_DE_ESCRITA,
+  'lib/amazon/preco/processarPreco.ts',
+  'lib/amazon/preco/execucaoPreco.ts',
+  'lib/amazon/preco/divergenciasPrecoFirestore.ts',
+  'lib/amazon/preco/provedorLotePreco.ts',
+  'lib/amazon/preco/backstopPreco.ts',
+  'lib/amazon/feeds/vezFeedFirestore.ts',
+  'lib/amazon/feeds/enviarFeed.ts',
+  CHAMADOR_DOS_LISTINGS,
+];
+
+/** Why one price route's own walk breaks its rules; empty when it does not. */
+function violacoesDaRotaDePreco(rota: string, ler: LeitorDeFonte): string[] {
+  const fecho = fechoDeImportacoes([rota], ler, resolverAliasDoApp(ler));
+  return [
+    ...violacoesDoAppHosting(fecho),
+    ...NUNCA_NAS_ROTAS_DE_PRECO.filter((proibido) => fecho.arquivos.includes(proibido)).map(
+      (proibido) => `reaches ${proibido}`,
+    ),
+  ];
+}
+
+/**
+ * (PR 13-g) The price pair, the preview flag and their readers: what no App
+ * Hosting file may NAME, comments included, but the two modules that DEFINE
+ * them ({@link DEFINEM_O_PAR_DE_PRECO}). App-wide, so a later route that never
+ * imports `preco/` is held to it too.
+ */
+const PAR_DE_PRECO_NO_APP_HOSTING =
+  /\b(?:AMAZON_MODO_PRECO|AMAZON_CANARIO_PRECO|AMAZON_PRECO_SO_VALIDACAO|PRECO_SO_VALIDACAO_ENV|valvulaPrecoEfetiva|lerPrecoSoValidacaoAmazon|soValidacaoDoDespachoPrecoAmazon)\b/;
+const DEFINEM_O_PAR_DE_PRECO = ['lib/amazon/core/valvulas.ts', 'lib/amazon/env.ts'];
+
+/** Any flow's valve readers: on the union walk, only the valves' own module names them. */
+const LEITORES_DE_VALVULA =
+  /\b(?:lerValvula|decidirAlvo|decidirLote|lerModo|lerCanario|VALVULA_ENV_AMAZON|CANARIO_ENV_AMAZON)\b/;
+
+/**
+ * Which files the walk from `entradas` reaches (type edges and the `@/` alias
+ * walked) name the price pair outside its definers, or, with `leitores`, a
+ * valve reader outside the valves' module; empty when none does.
+ */
+function nomeiamValvulasNoAppHosting(
+  entradas: readonly string[],
+  ler: LeitorDeFonte,
+  leitores: boolean,
+): string[] {
+  const { arquivos } = fechoDeImportacoes(entradas, ler, resolverAliasDoApp(ler));
+  return arquivos.flatMap((arquivo) => {
+    const texto = ler(arquivo) ?? '';
+    return [
+      ...(!DEFINEM_O_PAR_DE_PRECO.includes(arquivo) && PAR_DE_PRECO_NO_APP_HOSTING.test(texto)
+        ? [`${arquivo} names the price pair`]
+        : []),
+      ...(leitores && arquivo !== 'lib/amazon/core/valvulas.ts' && LEITORES_DE_VALVULA.test(texto)
+        ? [`${arquivo} names a valve reader`]
+        : []),
+    ];
+  });
+}
+
+describe('the step-13 price route guards (13-g)', () => {
+  it('★ the four price routes are EVERY route that imports preco/ (a new one reds until it is listed here and held to these guards), and each imports exactly their body', () => {
+    // IMPORTADORES_DE_PRECO is itself DERIVED (its own test scans every file of
+    // the app), so a route importing preco/ lands there first, then reds here.
+    const rotas = ROTAS_DE_PRECO.map(([rota]) => rota);
+    expect(new Set(rotas).size).toBe(4);
+    expect(
+      Object.keys(IMPORTADORES_DE_PRECO)
+        .filter((a) => a.startsWith('app/'))
+        .sort(),
+    ).toEqual([...rotas].sort());
+    for (const rota of rotas) {
+      expect(IMPORTADORES_DE_PRECO[rota], rota).toEqual(['@/lib/amazon/preco/envioManualPreco']);
+      expect(lerDoApp(rota), rota).not.toBeNull();
+    }
+    // NEAR-MISS: that scan sees a route's alias import of preco/, and not a
+    // sibling folder that merely starts the same way.
+    expect(IMPORTA_PRECO.test('@/lib/amazon/preco/envioManualPreco')).toBe(true);
+    expect(IMPORTA_PRECO.test('@/lib/amazon/precos/envioManualPreco')).toBe(false);
+  });
+
+  it('★ the body is imported by the four routes ALONE — no sibling, no root, no functions file — and is classified exactly: I/O, App-Hosting-reachable, no writer, not pure', () => {
+    const corpo = `lib/amazon/${ARQUIVO_ROTAS_DE_PRECO}`;
+    const importam = fontesDeProducaoDoApp()
+      .map((p) => [relApp(p), readFileSync(p, 'utf8')] as const)
+      .filter(([arquivo, texto]) => importaModulo(arquivo, texto, corpo.slice(0, -'.ts'.length)))
+      .map(([arquivo]) => arquivo)
+      .sort();
+    expect(importam).toEqual(ROTAS_DE_PRECO.map(([rota]) => rota).sort());
+    expect(Object.keys(E_S_EM_PRECO)).toContain(ARQUIVO_ROTAS_DE_PRECO);
+    expect(PRECO_NO_APP_HOSTING).toContain(ARQUIVO_ROTAS_DE_PRECO);
+    expect(MODULOS_DE_PRECO_FORA_DO_APP_HOSTING).not.toContain(corpo);
+    expect(PROIBIDOS_NO_APP_HOSTING).not.toContain(corpo);
+    expect(Object.keys(ESCRITORES_EM_PRECO)).not.toContain(ARQUIVO_ROTAS_DE_PRECO);
+    expect(PRECO_PUROS).not.toContain(ARQUIVO_ROTAS_DE_PRECO);
+    // The functions bundle never carries it: no functions root reaches it.
+    const raizes = fontesDasFuncoes().map(relApp);
+    expect(fechoDeImportacoes(raizes, lerDoApp).arquivos).not.toContain(corpo);
+    // NEAR-MISS: the import scan sees the body's specifier from a route's place.
+    expect(
+      importaModulo(
+        'app/api/marketplace/amazon/x/route.ts',
+        "import { y } from '@/lib/amazon/preco/envioManualPreco';",
+        corpo.slice(0, -'.ts'.length),
+      ),
+    ).toBe(true);
+  });
+
+  it('★ no route, body, claim module or selection read NAMES a write valve, a canary list or the preview flag — comments included', () => {
+    for (const arquivo of ARQUIVOS_DAS_ROTAS_DE_PRECO) {
+      const texto = lerDoApp(arquivo) ?? '';
+      expect(texto, arquivo).not.toBe('');
+      expect(texto.match(VALVULAS_NAS_ROTAS_DE_PRECO) ?? [], arquivo).toEqual([]);
+    }
+    // Anti-vacuity: the body DOES read the read switch, by its own names.
+    const corpo = lerDoApp(`lib/amazon/${ARQUIVO_ROTAS_DE_PRECO}`) ?? '';
+    expect(corpo).toContain('lerChaveDeChamadasAmazon(');
+    expect(corpo).toContain('registrarChamadaBloqueadaAmazon(');
+  });
+
+  it('the valve scan flags each name it exists for, in prose too, and nothing alike (near-misses)', () => {
+    for (const [fonte, achado] of [
+      ['const v = lerValvula(FLUXO_AMAZON.preco, a);', 'lerValvula'],
+      ['decidirAlvo(v, contaId, sku)', 'decidirAlvo'],
+      ['decidirLote(v)', 'decidirLote'],
+      ['lerModo(x)', 'lerModo'],
+      ['lerCanario(x, t)', 'lerCanario'],
+      ['a[VALVULA_ENV_AMAZON.preco]', 'VALVULA_ENV_AMAZON'],
+      ['a[CANARIO_ENV_AMAZON.preco]', 'CANARIO_ENV_AMAZON'],
+      ["a['AMAZON_MODO_PRECO']", 'AMAZON_MODO_PRECO'],
+      ['a.AMAZON_CANARIO_PRECO', 'AMAZON_CANARIO_PRECO'],
+      ['// never reads AMAZON_PRECO_SO_VALIDACAO', 'AMAZON_PRECO_SO_VALIDACAO'],
+      ['a[PRECO_SO_VALIDACAO_ENV]', 'PRECO_SO_VALIDACAO_ENV'],
+      ['valvulaPrecoEfetiva(v, f)', 'valvulaPrecoEfetiva'],
+      ['lerPrecoSoValidacaoAmazon(a)', 'lerPrecoSoValidacaoAmazon'],
+      ['soValidacaoDoDespachoPrecoAmazon(a, l)', 'soValidacaoDoDespachoPrecoAmazon'],
+      // Another flow's pair is no less a valve.
+      ["a['AMAZON_MODO_ESTOQUE']", 'AMAZON_MODO_ESTOQUE'],
+    ] as const) {
+      expect(fonte.match(VALVULAS_NAS_ROTAS_DE_PRECO), fonte).toEqual([achado]);
+    }
+    // NEAR-MISS: the read switch, the queue valve and the flow names are none of those.
+    expect(
+      'lerChaveDeChamadasAmazon(a); CHAMADAS_ENV_AMAZON; AMAZON_CHAMADAS; AMAZON_TASKS_DISABLED; FLUXO_AMAZON.preco; deps.filaDesligada; alvoValido(f, s);'.match(
+        VALVULAS_NAS_ROTAS_DE_PRECO,
+      ),
+    ).toBeNull();
+  });
+
+  it('★ neither a route, their body nor the selection read names a way to reach Amazon, a price computation, the task’s, a page’s, the provider’s, the daily step’s or the re-kick’s entry, or the anchor list', () => {
+    const naoDaExecucao = ARQUIVOS_DAS_ROTAS_DE_PRECO.filter(
+      (a) => a !== 'lib/amazon/preco/inicioExecucaoPreco.ts',
+    );
+    expect(naoDaExecucao).toHaveLength(ARQUIVOS_DAS_ROTAS_DE_PRECO.length - 1);
+    for (const arquivo of naoDaExecucao) {
+      const codigo = semComentarios(lerDoApp(arquivo) ?? '');
+      expect(codigo, arquivo).not.toBe('');
+      expect(codigo.match(PROIBIDOS_NAS_ROTAS_DE_PRECO) ?? [], arquivo).toEqual([]);
+    }
+    // Anti-vacuity: the body enqueues through the producer's batch, after its
+    // payload's own parse, and calls the claim, the status and the cancel.
+    const corpo = semComentarios(lerDoApp(`lib/amazon/${ARQUIVO_ROTAS_DE_PRECO}`) ?? '');
+    expect(corpo).toContain('.enfileirarLote(');
+    expect(corpo).toContain('tarefaPrecoSkuAmazonSchema.parse(');
+    expect(corpo).toContain('iniciarExecucaoPrecoAmazon(');
+    expect(corpo).toContain('resumoExecucaoPrecoAmazon(');
+    expect(corpo).toContain('cancelarExecucaoPrecoAmazon(');
+    expect(corpo).toContain('lerSelecaoManualAmazon(');
+    expect(corpo).toContain('skuAlvoAmazon(');
+    // The route PATHS are strings of the body, and not the price map.
+    expect(corpo).toContain('atualizar-precos/status');
+  });
+
+  it('the Amazon/price scan flags what it exists for, and nothing alike (near-misses)', () => {
+    for (const [fonte, achado] of [
+      ['await loadAmazonContext(db, id, d)', 'loadAmazonContext'],
+      ['await fetch(url)', 'fetch'],
+      ['await lerListingComTaxaNaAmazon(c, s)', 'lerListingComTaxaNaAmazon'],
+      ['await enviarOfertaNaAmazon(c, s)', 'enviarOfertaNaAmazon'],
+      ["import { x } from '../listings/listingsAmazon';", 'listingsAmazon'],
+      ["import { x } from '../feeds/vezFeedFirestore';", 'vezFeedFirestore'],
+      ['const f = faixaDePrecoAmazon(fontes, tabelas);', 'faixaDePrecoAmazon'],
+      ['mesmoPrecoEmReais(a, b)', 'mesmoPrecoEmReais'],
+      ['const c = centavosDeReais(p);', 'centavosDeReais'],
+      ['patchOfertaAmazon(o, t)', 'patchOfertaAmazon'],
+      ['await processarPrecoSkuAmazon(t, d)', 'processarPrecoSkuAmazon'],
+      ['await retomarExecucaoPrecoAmazon(db, c, d)', 'retomarExecucaoPrecoAmazon'],
+      ['const p = produto.precos;', 'precos'],
+      ["q.select('precos')", 'precos'],
+    ] as const) {
+      expect(fonte.match(PROIBIDOS_NAS_ROTAS_DE_PRECO), fonte).toEqual([achado]);
+    }
+    // NEAR-MISS: a route path, the switch, the claim's own entries, the SKU's
+    // path check and the target grammar are none of those.
+    expect(
+      "const r = 'atualizar-precos/cancelar'; '/api/marketplace/amazon/enviar-precos'; lerChaveDeChamadasAmazon(a); iniciarExecucaoPrecoAmazon(d); skuTemCaminhoAmazon(s); skuAlvoAmazon(f, s); const precosAtualizados = 1;".match(
+        PROIBIDOS_NAS_ROTAS_DE_PRECO,
+      ),
+    ).toBeNull();
+  });
+
+  // (The transaction call is named by no file of the app at all: the guard above.)
+  it('★ neither a route, their body nor the selection read makes a Firestore write, names an aviso writer, the run’s one write, the parts writer or a run or lease handle: the claim and the cancel are the body’s only writes, through the claim module', () => {
+    const outraEscrita =
+      /\b(?:escreverAviso|resolverAviso|sincronizarAvisoConta\w*|escreverExecucaoPrecoAmazon|gravarParteDivergenciaPrecoAmazon|gravarEnvioListingAmazon|precoAmazonCollection|divergenciaPrecoAmazonCollection|vezFeedAmazonCollection)\b/;
+    const semExecucao = ARQUIVOS_DAS_ROTAS_DE_PRECO.filter(
+      (a) => a !== 'lib/amazon/preco/inicioExecucaoPreco.ts',
+    );
+    for (const arquivo of semExecucao) {
+      const codigo = semComentarios(lerDoApp(arquivo) ?? '');
+      expect(codigo.match(ESCRITA_FIRESTORE_EM_FEEDS) ?? [], arquivo).toEqual([]);
+      expect(codigo, arquivo).not.toMatch(outraEscrita);
+      expect(codigo, arquivo).not.toMatch(/\.\s*set\s*\(\s*(?:ref|doc)/);
+    }
+    // The claim module writes only through the run's one write.
+    const claim = semComentarios(lerDoApp('lib/amazon/preco/inicioExecucaoPreco.ts') ?? '');
+    expect(claim.match(ESCRITA_FIRESTORE_EM_FEEDS) ?? []).toEqual([]);
+    expect(claim).toMatch(/\bescreverExecucaoPrecoAmazon\(/);
+    // NEAR-MISS: a direct write and the run's one write by name are seen.
+    expect(
+      'await ref.update(x, { lastUpdateTime });'.match(ESCRITA_FIRESTORE_EM_FEEDS),
+    ).not.toBeNull();
+    expect('await escreverExecucaoPrecoAmazon(db, c, d);').toMatch(outraEscrita);
+    expect('await sincronizarAvisoContaListingsAmazon(db, d, p);').toMatch(outraEscrita);
+  });
+
+  it('★ each route file is THIN: PERM.integracao.write (never a read, pedido or frete bit), its one method, its one body function — and only the two that enqueue bind the jobs queue’s valve, region and their producer', () => {
+    for (const [rota, metodo, funcao] of ROTAS_DE_PRECO) {
+      const codigo = semComentarios(lerDoApp(rota) ?? '');
+      expect(codigo, rota).toContain('verifyCaller(req, PERM.integracao.write)');
+      expect(codigo, rota).not.toMatch(/PERM\.(?:pedido|frete)|PERM\.integracao\.read/);
+      expect(codigo, rota).toMatch(new RegExp(`export async function ${metodo}\\(`));
+      expect(codigo.match(/export async function (?:GET|POST|PUT|PATCH|DELETE)\(/g), rota).toEqual([
+        `export async function ${metodo}(`,
+      ]);
+      expect(codigo.split(`${funcao}(`).length - 1, rota).toBe(1);
+      const produtor = ROTAS_DE_PRECO_QUE_ENFILEIRAM[rota];
+      if (produtor === undefined) {
+        // The status and the cancel enqueue nothing: no producer, no region, no queue valve.
+        expect(codigo, rota).not.toMatch(
+          /\b(?:produtorDa\w+|regiaoDaFila\w+|fila\w*Desligada\w*)\b/,
+        );
+        expect(codigo, rota).not.toContain('@/lib/firebase/filaLeitura');
+      } else {
+        expect(codigo, rota).toContain(`produtor: ${produtor},`);
+        expect(codigo, rota).toContain('filaDesligada: filaLotesDesligadaAmazon(),');
+        expect(codigo, rota).toContain('regiao: regiaoDaFilaLeituraAmazon,');
+        // Never the stock queue's.
+        expect(codigo, rota).not.toMatch(
+          /\b(?:produtorDaFilaEstoqueAmazon|filaEstoqueDesligadaAmazon)\b/,
+        );
+      }
+    }
+    // The run is claimed for THE CALLER.
+    const inicio = semComentarios(lerDoApp(ROTAS_DE_PRECO[1][0]) ?? '');
+    expect(inicio).toContain('iniciarAtualizacaoPrecosAmazon(req, auth.caller.uid,');
+  });
+
+  it('★ each price route’s OWN walk (type edges, the @/ alias) reaches the body, the claim module, the selection read and the producers — never the engine, the price task, a run’s page, the parts writer, the provider, the daily step, the lease I/O, the feed send or the one listings caller', () => {
+    const uniao = entradasDaUniaoDoAppHosting();
+    for (const [rota] of ROTAS_DE_PRECO) {
+      expect(uniao, rota).toContain(rota);
+      expect(violacoesDaRotaDePreco(rota, lerDoApp), rota).toEqual([]);
+      const fecho = fechoDeImportacoes([rota], lerDoApp, resolverAliasDoApp(lerDoApp));
+      expect(fecho.arquivos, rota).toEqual(
+        expect.arrayContaining([
+          rota,
+          `lib/amazon/${ARQUIVO_ROTAS_DE_PRECO}`,
+          'lib/amazon/preco/inicioExecucaoPreco.ts',
+          'lib/amazon/preco/execucaoPrecoFirestore.ts',
+          'lib/amazon/preco/produtorPreco.ts',
+          'lib/amazon/preco/tarefaPreco.ts',
+          'lib/amazon/listings/selecaoManual.ts',
+          'lib/amazon/listings/produtorListing.ts',
+        ]),
+      );
+      // Only the two that enqueue reach the App Hosting root that binds the producers.
+      expect(fecho.arquivos.includes(ARQUIVO_RAIZ_DA_FILA), rota).toBe(
+        ROTAS_DE_PRECO_QUE_ENFILEIRAM[rota] !== undefined,
+      );
+      for (const proibido of NUNCA_NAS_ROTAS_DE_PRECO) {
+        expect(fecho.arquivos, `${rota} ${proibido}`).not.toContain(proibido);
+      }
+      // No file it reaches names the write client, or calls the listings or feed helpers.
+      expect(
+        fecho.arquivos.filter((a) => nomeiaClienteDeEscrita(lerDoApp(a) ?? '')),
+        rota,
+      ).toEqual([]);
+      expect(
+        fecho.arquivos
+          .filter((a) => nomeiaOsListings(lerDoApp(a) ?? ''))
+          .filter((a) => !NOMEIAM_LISTINGS_SEM_CHAMAR.includes(a)),
+        rota,
+      ).toEqual([]);
+      expect(
+        fecho.arquivos
+          .filter((a) => nomeiaOsFeeds(lerDoApp(a) ?? ''))
+          .filter((a) => !NOMEIAM_FEEDS_SEM_CHAMAR.includes(a)),
+        rota,
+      ).toEqual([]);
+    }
+  });
+
+  it('★ (13-g mutation 6) a price route importing the lease I/O, the task, a page, the provider, the daily step or the one listings caller is refused by its walk; NEAR-MISS: one importing the producer or the payload passes', () => {
+    const STATUS = ROTAS_DE_PRECO[2][0];
+    const comImportacao = (alvo: string) => {
+      const ler: LeitorDeFonte = (caminho) =>
+        caminho === STATUS
+          ? `${lerDoApp(STATUS) ?? ''}\nimport { x } from '@/lib/amazon/${alvo}';\nexport const y = x;\n`
+          : lerDoApp(caminho);
+      return violacoesDaRotaDePreco(STATUS, ler);
+    };
+    for (const proibido of NUNCA_NAS_ROTAS_DE_PRECO) {
+      const alvo = proibido.slice('lib/amazon/'.length, -'.ts'.length);
+      expect(comImportacao(alvo), alvo).toContain(`reaches ${proibido}`);
+    }
+    // The one listings caller is on THIS list, not the shared one: the shared
+    // walk alone would let it through.
+    expect(PROIBIDOS_NO_APP_HOSTING).not.toContain(CHAMADOR_DOS_LISTINGS);
+    expect(comImportacao('preco/produtorPreco')).toEqual([]);
+    expect(comImportacao('preco/tarefaPreco')).toEqual([]);
+    expect(comImportacao('listings/produtorListing')).toEqual([]);
+  });
+
+  it('★ APP-WIDE, comments included: no file the App Hosting union walk reaches names the price pair or the preview flag but their two definers, nor a valve reader but the valves’ module; the label route’s own walk names the price pair nowhere either (NEAR-MISS: a new route reading `process.env.AMAZON_MODO_PRECO`, or one whose body outside preco/ calls `lerValvula`, is flagged)', () => {
+    const uniao = entradasDaUniaoDoAppHosting();
+    expect(nomeiamValvulasNoAppHosting(uniao, lerDoApp, true)).toEqual([]);
+    expect(nomeiamValvulasNoAppHosting([ARQUIVO_ROTA_ETIQUETA], lerDoApp, false)).toEqual([]);
+    // Anti-vacuity: the walk reaches both definers and the root that binds the
+    // price producers, and each definer names what it defines.
+    const { arquivos } = fechoDeImportacoes(uniao, lerDoApp, resolverAliasDoApp(lerDoApp));
+    expect(arquivos).toEqual(
+      expect.arrayContaining([...DEFINEM_O_PAR_DE_PRECO, ARQUIVO_RAIZ_DA_FILA]),
+    );
+    for (const definidor of DEFINEM_O_PAR_DE_PRECO) {
+      expect(lerDoApp(definidor) ?? '', definidor).toMatch(PAR_DE_PRECO_NO_APP_HOSTING);
+    }
+    expect(lerDoApp('lib/amazon/core/valvulas.ts') ?? '').toMatch(LEITORES_DE_VALVULA);
+    // NEAR-MISS: a new route that imports nothing of preco/ is held to it too.
+    const ROTA_NOVA = 'app/api/marketplace/amazon/x/route.ts';
+    const CORPO_NOVO = 'lib/amazon/x/corpo.ts';
+    const com =
+      (fontes: Readonly<Record<string, string>>): LeitorDeFonte =>
+      (caminho) =>
+        fontes[caminho] ?? lerDoApp(caminho);
+    expect(
+      nomeiamValvulasNoAppHosting(
+        [...uniao, ROTA_NOVA],
+        com({ [ROTA_NOVA]: 'export const modo = process.env.AMAZON_MODO_PRECO;\n' }),
+        true,
+      ),
+    ).toEqual([`${ROTA_NOVA} names the price pair`]);
+    expect(
+      nomeiamValvulasNoAppHosting(
+        [...uniao, ROTA_NOVA],
+        com({
+          [ROTA_NOVA]: "import { ler } from '@/lib/amazon/x/corpo';\nexport const v = ler;\n",
+          [CORPO_NOVO]:
+            "import { lerValvula } from '../core/valvulas';\nexport const ler = (a: never) => lerValvula('preco', a);\n",
+        }),
+        true,
+      ),
+    ).toEqual([`${CORPO_NOVO} names a valve reader`]);
+    // …and the stock pair or the read switch is not the price pair.
+    expect(
+      nomeiamValvulasNoAppHosting(
+        [...uniao, ROTA_NOVA],
+        com({
+          [ROTA_NOVA]:
+            'export const m = [process.env.AMAZON_MODO_ESTOQUE, process.env.AMAZON_CHAMADAS];\n',
+        }),
+        true,
+      ),
+    ).toEqual([]);
   });
 });
 

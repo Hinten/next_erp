@@ -3,7 +3,8 @@
  * producer of its pages. App-Hosting-safe: it reads and writes the run only
  * through the run's ONE write (`execucaoPrecoFirestore.ts`), reads the PRICE
  * lease raw by id, and enqueues page tasks only. It never reaches a page, the
- * feed core's lease I/O, Amazon or a write valve. No route calls it yet.
+ * feed core's lease I/O, Amazon or a write valve. The three run routes call it
+ * through `envioManualPreco.ts` (step 13, PR 13-g).
  *
  * ## The claim ({@link iniciarExecucaoPrecoAmazon})
  *

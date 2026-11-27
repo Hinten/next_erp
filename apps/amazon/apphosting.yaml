@@ -13,8 +13,15 @@
 # (`POST /api/marketplace/amazon/etiqueta`, PR 15-d), the one route here that
 # writes to Amazon: inside one request it reads the live order, sends the
 # scheduling bulk (which answers the label's link) and downloads the label; it
-# writes no pedido, freight, scheduling or aviso document. The other
-# Firestore-backed flows arrive in later steps.
+# writes no pedido, freight, scheduling or aviso document. Step 12 adds the
+# manual stock push (`POST /api/marketplace/amazon/enviar-estoque`), which only
+# enqueues onto the stock queue. Step 13 adds the four price routes (PR 13-g):
+# the manual price push (`POST /api/marketplace/amazon/enviar-precos`, one price
+# task per SKU) and the conta's price run (`POST …/atualizar-precos`, its
+# `GET …/atualizar-precos/status` and `POST …/atualizar-precos/cancelar`), which
+# only enqueue onto the jobs queue `processAmazonListingsJob` or claim, show or
+# cancel the run's own document; none calls Amazon. The other Firestore-backed
+# flows arrive in later steps.
 runConfig:
   cpu: 1
   memoryMiB: 512
@@ -40,7 +47,7 @@ runConfig:
 # call by its LWA access token alone (no AWS IAM or SigV4 since 2023-10-02,
 # master plan step 1).
 #
-# Environment this backend reads (steps 2, 2b, 3, 14 and 15). None of it gets an `env:` row below,
+# Environment this backend reads (steps 2, 2b, 3, 12, 13, 14 and 15). None of it gets an `env:` row below,
 # on purpose: COMMENT ROWS ONLY, so nothing baked into the manifest can override
 # a console value during the window, and the list stays here so the next step
 # that reads a variable declares it in the same change:
@@ -82,9 +89,11 @@ runConfig:
 #                                without consuming the attempt; the NF-e re-drive
 #                                answers the same 503 and enqueues nothing (the
 #                                task it would enqueue reads the functions
-#                                codebase's copy); the label route answers it too,
-#                                having read nothing. Set it on BOTH surfaces (this
-#                                console and the functions codebase).
+#                                codebase's copy); the label route, the manual
+#                                stock and price pushes and the three price run
+#                                routes answer it too, having read nothing. Set it
+#                                on BOTH surfaces (this console and the functions
+#                                codebase).
 #   AMAZON_RELAY_SECRET          Secret Manager. The push receiver's relay key: what
 #                                the AWS relay sends in `x-erp-relay-key` (the SAME
 #                                value lives in AWS Secrets Manager). 32 to 512
@@ -100,16 +109,18 @@ runConfig:
 #                                (`filaLeituraAmazon`), the NF-e queue
 #                                (`processAmazonNfeUpload`, step 14), the jobs
 #                                queue (`processAmazonListingsJob`, step 12a: the
-#                                receiver's feed wake-up) and the stock queue
-#                                (`processAmazonStockPatch`, step 12: the manual
-#                                stock push) — equal to the
+#                                receiver's feed wake-up; step 13: the price
+#                                routes' price tasks and a price run's pages) and
+#                                the stock queue (`processAmazonStockPatch`, step
+#                                12: the manual stock push) — equal to the
 #                                functions codebase's FUNCTIONS_REGION. Falls back to
 #                                FUNCTIONS_REGION; with neither set the receiver
 #                                answers 503, and the NF-e re-drive and (with the
-#                                queue valve open) the manual stock push fail (500,
-#                                one ERROR line) before any read. NO default: a wrong
+#                                queue valve open) the manual stock and price pushes
+#                                and a price run's start fail (500, one ERROR line)
+#                                before any read. NO default: a wrong
 #                                region drops the task silently (#1108).
-#   AMAZON_TASKS_DISABLED        OPTIONAL queue valve of THIS backend's four
+#   AMAZON_TASKS_DISABLED        OPTIONAL queue valve of THIS backend's six
 #                                producers: exactly `1` makes the receiver persist
 #                                each order push as `failed` for the reprocess sweep
 #                                instead of enqueuing, drops a feed result's wake-up
@@ -117,7 +128,11 @@ runConfig:
 #                                persisted: the feed's own poll chain still reads
 #                                it), makes the manual stock push answer its
 #                                listings `nao-tentado` (nothing enqueued; the tick
-#                                and the daily reconcile still send what moved), and
+#                                and the daily reconcile still send what moved),
+#                                makes the manual price push answer its listings
+#                                `nao-tentado` (nothing enqueued) and a price run's
+#                                start answer 503 AMAZON_PRECO_ENFILEIRAMENTO_FALHOU
+#                                (`fila-desligada`: nothing claimed), and
 #                                makes the NF-e re-drive
 #                                answer 503 AMAZON_TAREFAS_DESLIGADAS having read
 #                                nothing and written NO aviso (the caller retries
@@ -146,8 +161,14 @@ runConfig:
 # never reads it; the stock pair is read by the functions codebase's stock task,
 # tick, reconcile and feed (step 12), and the manual stock push route here
 # (`POST /api/marketplace/amazon/enviar-estoque`) deliberately never reads it
-# either. Both routes only enqueue: the task is the one source of truth for a
-# write. Every one stays UNSET
+# either; the price pair and the preview flag below are read by the functions
+# codebase's price task, price-run pages, price feed and daily price step
+# (step 13), and the four price routes here (`POST
+# /api/marketplace/amazon/enviar-precos`, `POST …/atualizar-precos`, `GET
+# …/atualizar-precos/status`, `POST …/atualizar-precos/cancelar`) deliberately
+# never read or name any of them.
+# These routes only enqueue (the price run's routes also claim, show or cancel
+# the run): the task is the one source of truth for a write. Every one stays UNSET
 # until the migration window opens its flow (master plan §5, W8: `dry-run`, then
 # a canary list, then `on`, then `*`), and each is set ALIKE on both surfaces
 # (this console and the functions codebase), or the two disagree about what is

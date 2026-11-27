@@ -30,6 +30,12 @@ import { AmazonNfeTarefasDesligadasError } from '../amazon/nfe/agendadorNfe';
 import { tarefaInicialNfeAmazon } from '../amazon/nfe/tarefaNfe';
 import { AmazonTarefasDesligadasError } from '../amazon/notificacoes/agendador';
 import type { PayloadNotificacaoAmazon } from '../amazon/notificacoes/notificacao';
+import {
+  type TarefaPrecoSkuAmazon,
+  nomeDaTarefaPrecoAmazon,
+  nomePaginaPrecoAmazon,
+  tarefaPrecoSkuAmazonSchema,
+} from '../amazon/preco/tarefaPreco';
 
 const h = vi.hoisted(() => ({
   caminhos: [] as string[],
@@ -52,7 +58,9 @@ const {
   filaLeituraDesligadaAmazon,
   filaLotesDesligadaAmazon,
   filaNfeDesligadaAmazon,
+  produtorDaExecucaoPrecoAmazon,
   produtorDaFilaEstoqueAmazon,
+  produtorDaFilaPrecoAmazon,
   regiaoDaFilaLeituraAmazon,
 } = await import('./filaLeitura');
 
@@ -357,12 +365,82 @@ describe('produtorDaFilaEstoqueAmazon (step 12, PR 12-g: the manual push route�
     expect(h.chamadas).toEqual([]);
   });
 
-  it('★ the file still has ONE `getFunctions(` call, now behind FOUR producers', () => {
+  it('★ the file still has ONE `getFunctions(` call, now behind SIX producers', () => {
     const fonte = readFileSync(new URL('./filaLeitura.ts', import.meta.url), 'utf8');
     const codigo = fonte.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
     expect(codigo.match(/\bgetFunctions\s*\(/g)).toHaveLength(1);
-    // Its four CALLS (the declaration aside), one per producer.
-    expect(codigo.match(/(?<!function )\bfilaDoAppHosting<\w+>\(/g)).toHaveLength(4);
+    // Its six CALLS (the declaration aside), one per producer.
+    expect(codigo.match(/(?<!function )\bfilaDoAppHosting<\w+>\(/g)).toHaveLength(6);
     expect(codigo).toMatch(/caminhoDaFilaEstoqueAmazon\(regiaoDaFilaLeituraAmazon\(\)\)/);
+  });
+});
+
+describe('the price routes’ producers (step 13, PR 13-g): the JOBS queue, no queue of their own', () => {
+  /** The manual price push's payload: one SKU, `origem: 'manual'`, the request's reference. */
+  const TAREFA_PRECO: TarefaPrecoSkuAmazon = tarefaPrecoSkuAmazonSchema.parse({
+    v: 1,
+    tipo: 'preco-sku',
+    contaId: 'conta-teste',
+    sku: 'SKU-1',
+    origem: 'manual',
+    referencia: 'req-1',
+    parte: null,
+    baixarPreco: false,
+    solicitadoEmMs: 1,
+    codigosAntes: [],
+  });
+
+  it('★ the price task: NAMED by its own fields on the region-qualified JOBS queue, the payload and its name ALONE', async () => {
+    vi.stubEnv('AMAZON_TASKS_REGION', 'xx-tarefas-1');
+    await expect(produtorDaFilaPrecoAmazon().enfileirar(TAREFA_PRECO)).resolves.toBe('enfileirada');
+    expect(h.caminhos).toEqual(['locations/xx-tarefas-1/functions/processAmazonListingsJob']);
+    expect(h.chamadas).toEqual([[TAREFA_PRECO, { id: nomeDaTarefaPrecoAmazon(TAREFA_PRECO) }]]);
+    expect(h.getFunctions).toHaveBeenCalledWith({ name: 'app-de-teste' });
+  });
+
+  it('★ a run’s page 0: NAMED by (conta, run, page) on the same jobs queue', async () => {
+    vi.stubEnv('FUNCTIONS_REGION', 'xx-funcoes-1');
+    await expect(
+      produtorDaExecucaoPrecoAmazon().enfileirarPagina('conta-teste', 'exec-1', 0),
+    ).resolves.toBe('enfileirada');
+    expect(h.caminhos).toEqual(['locations/xx-funcoes-1/functions/processAmazonListingsJob']);
+    expect(h.chamadas).toEqual([
+      [
+        { v: 1, tipo: 'preco-pagina', contaId: 'conta-teste', execucaoId: 'exec-1', pagina: 0 },
+        { id: nomePaginaPrecoAmazon('conta-teste', 'exec-1', 0) },
+      ],
+    ]);
+  });
+
+  it('★ closed (the jobs queue’s valve) ⇒ both reject the JOBS queue’s OWN class and the SDK is never touched', async () => {
+    vi.stubEnv('AMAZON_TASKS_DISABLED', '1');
+    await expect(produtorDaFilaPrecoAmazon().enfileirar(TAREFA_PRECO)).rejects.toBeInstanceOf(
+      AmazonLotesTarefasDesligadasError,
+    );
+    await expect(
+      produtorDaExecucaoPrecoAmazon().enfileirarPagina('conta-teste', 'exec-1', 0),
+    ).rejects.toBeInstanceOf(AmazonLotesTarefasDesligadasError);
+    expect(h.getFunctions).not.toHaveBeenCalled();
+  });
+
+  it('an unset region rejects THAT enqueue (resolved per enqueue, never at module load)', async () => {
+    const tarefa = produtorDaFilaPrecoAmazon();
+    const paginas = produtorDaExecucaoPrecoAmazon();
+    await expect(tarefa.enfileirar(TAREFA_PRECO)).rejects.toBeInstanceOf(MissingRegionError);
+    await expect(paginas.enfileirarPagina('conta-teste', 'exec-1', 0)).rejects.toBeInstanceOf(
+      MissingRegionError,
+    );
+    expect(h.chamadas).toEqual([]);
+  });
+
+  it('★ both price producers are bound to the jobs queue’s path in the source (never another queue’s)', () => {
+    const fonte = readFileSync(new URL('./filaLeitura.ts', import.meta.url), 'utf8');
+    const codigo = fonte.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+    expect(
+      codigo.match(/filaDoAppHosting<TarefaPrecoSkuAmazon>\(\s*caminhoDaFilaLotesAmazon\(/g),
+    ).toHaveLength(1);
+    expect(
+      codigo.match(/filaDoAppHosting<TarefaPaginaPrecoAmazon>\(\s*caminhoDaFilaLotesAmazon\(/g),
+    ).toHaveLength(1);
   });
 });

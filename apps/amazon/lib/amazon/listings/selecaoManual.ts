@@ -31,16 +31,38 @@
  * EARLIEST failure in list order).
  *
  * ⚠️ READ-ONLY, and safe on App Hosting: no write, no clock, no network, no
- * Amazon call, and nothing of the write engine, a task or a flow's valve.
+ * Amazon call, nothing of the write engine or a task, and no valve READ (only
+ * the valves' pure target predicate, below).
+ *
+ * ## The target grammar (step 13, PR 13-g)
+ *
+ * {@link skuAlvoAmazon} answers whether a flow's task can write a SKU at all.
+ * It CALLS the write valves' own target predicate (`alvoValido`,
+ * `core/valvulas.ts`) and restates nothing of it, so a route that asks it
+ * before answering a SKU `enviado` never answers `enviado` for a SKU that no
+ * valve setting lets its task write (one outside the target grammar). The
+ * task can still refuse a SKU for its own reasons (its verdict, its gate, the
+ * valve or the canary at run time).
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import { produtoAmazonLinkCollection, produtoCollection } from '@delfrance/data/admin/collections';
 import type { produtoAmazonLinkSchema, produtoSchema } from '@delfrance/schemas';
 
+import { alvoValido } from '../core/valvulas';
+import type { FluxoListingAmazon } from './fluxoListing';
 import { skusDaConta, sondasDoProduto } from './sondasVinculos';
 
 /** The most Firestore reads the selection keeps in flight. */
 export const LARGURA_LEITURAS_SELECAO_MANUAL_AMAZON = 16;
+
+/**
+ * Whether `fluxo`'s task can write `sku` at all (module header, "The target
+ * grammar"): the write valves' own target predicate for that flow, called.
+ * Pure; it reads no valve and no environment.
+ */
+export function skuAlvoAmazon(fluxo: FluxoListingAmazon, sku: string): boolean {
+  return alvoValido(fluxo, sku);
+}
 
 /** The produto fields read 1 reads off a SELECTED produto: the parent pointer and the label. */
 export const CAMPOS_PRODUTO_SELECAO_MANUAL_AMAZON = [
