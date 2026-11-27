@@ -80,6 +80,18 @@ describe('leituraSnapshotDaTabelaLi / leituraTabelaDoSnapshotLi', () => {
     expect(leituraSnapshotDaTabelaLi({ valor: 1e10 })).toBe(1e12);
   });
 
+  it('ZERO centavos is no price — `{ valor: 0 }` and a value that rounds to 0 ⇒ `il` (the schema refuses a 0); NEAR-MISS: one centavo is a price', () => {
+    expect(leituraSnapshotDaTabelaLi({ valor: 0 })).toBe('il');
+    expect(leituraSnapshotDaTabelaLi({ valor: 0.004 })).toBe('il');
+    expect(leituraSnapshotDaTabelaLi({ valor: 0.01 })).toBe(1);
+    for (const valor of [0, 0.004, 0.01]) {
+      expect(
+        leituraSnapshotPrecoLiSchema.safeParse(leituraSnapshotDaTabelaLi({ valor })).success,
+        String(valor),
+      ).toBe(true);
+    }
+  });
+
   it('`ausente` ⇒ null, NEVER `il`; `ilegivel` ⇒ `il`, NEVER null — and each replays as itself', () => {
     expect(leituraSnapshotDaTabelaLi('ausente')).toBeNull();
     expect(leituraSnapshotDaTabelaLi('ilegivel')).toBe('il');

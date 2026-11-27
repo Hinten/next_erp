@@ -63,17 +63,20 @@ function semearRaiz(
 
 const RETIDOS = { paisConcluido: 1, retidos: 3, retidosIlegiveis: 1, retidosSemPai: 1, alvos: 5 };
 
-/** One price end over C1, at the fixtures' clock; returns the state's writes and the lines. */
-async function fim(db: FakeDb, ambiente: Record<string, string> = LIGADO) {
+/**
+ * One price end over C1, at the fixtures' clock moved `diaMs` on (a later run's); returns the
+ * state's writes and the lines.
+ */
+async function fim(db: FakeDb, ambiente: Record<string, string> = LIGADO, diaMs = 0) {
   const log = loggerGravador();
   const estados = await carregarEstadosPrecoLi(asDb(db), RUN_A, [{ idx: 0, contaId: 'C1' }], {
     baldes: 'nenhum',
   });
   const f = new FimPrecoReconcileLi({
     db: asDb(db),
-    deps: { agoraMs: () => AGORA_RECONCILE_MS, increment, logger: log.logger },
+    deps: { agoraMs: () => AGORA_RECONCILE_MS + diaMs, increment, logger: log.logger },
     execucaoId: RUN_A,
-    runIniciadoEmMs: INICIO_RUN_RECONCILE_MS,
+    runIniciadoEmMs: INICIO_RUN_RECONCILE_MS + diaMs,
     contas: ['C1'],
     valvula: lerValvula(FLUXO_LI.preco, ambiente),
     estadoDe: async () => estados.get('C1') ?? null,
@@ -182,6 +185,21 @@ describe('the "sem preço no ERP" aviso', () => {
     expect(nenhum.escritasEm(AVISO)).toEqual([]);
   });
 
+  it('NEAR-MISS: a row already RESOLVED, met by a later run counting none again, is left untouched — no rewrite each night', async () => {
+    const db = new FakeDb();
+    semearConta(db);
+    semearRaiz(db, RETIDOS, { retido: ['p1'] });
+    await fim(db);
+    semearRaiz(db, { paisConcluido: 1, retidos: 0 });
+    await fim(db, LIGADO, 86_400_000);
+    expect(db.ler(AVISO)?.resolvidoEm).not.toBeNull();
+    const escritasAteAqui = db.escritasEm(AVISO).length;
+
+    semearRaiz(db, { paisConcluido: 1, retidos: 0 });
+    await fim(db, LIGADO, 2 * 86_400_000);
+    expect(db.escritasEm(AVISO)).toHaveLength(escritasAteAqui);
+  });
+
   it.each([
     ['dry-run', { [VALVULA_ENV_LI.preco]: 'dry-run', [CANARIO_ENV_LI.preco]: '*' }, {}, {}],
     [
@@ -207,6 +225,18 @@ describe('the "sem preço no ERP" aviso', () => {
       expect(info[0]?.meta).toMatchObject({ produtos: 3, amostra: ['p1', 'p2'] });
     },
   );
+
+  it('NEAR-MISS: not live and NONE held ⇒ no INFO line (only a non-zero row is a finding)', async () => {
+    const db = new FakeDb();
+    semearConta(db);
+    semearRaiz(db, { paisConcluido: 1, retidos: 0 });
+    const { log, escritas } = await fim(db, {
+      [VALVULA_ENV_LI.preco]: 'dry-run',
+      [CANARIO_ENV_LI.preco]: '*',
+    });
+    expect(log.linhas).toEqual([]);
+    expect(escritas).toHaveLength(1);
+  });
 
   it('undecidable — the parents phase did not finish the conta ⇒ neither raised, nor resolved, nor logged', async () => {
     const db = new FakeDb();
@@ -277,5 +307,54 @@ describe('contasPrecoReconcile — the fold and the re-read', () => {
     expect(indisponibilidadePrecoLi(undefined, TABELAS_DO_RUN)).toBe(
       INDISPONIBILIDADE_PRECO_LI.ausente,
     );
+  });
+
+  it('the price end re-reads the contas ONCE per slice, however many contas the slice ends', async () => {
+    const db = new FakeDb();
+    const contas = ['C1', 'C2', 'C3'];
+    for (const conta of contas) {
+      db.seed(`integracao/${conta}`, {
+        tipo: INTEGRACAO_TIPO.lojaIntegrada,
+        nome: `Loja ${conta}`,
+        ativo: true,
+        tabelaNormalOuterRef: 'documents/listaDePrecos/tab-n',
+        tabelaPromocionalOuterRef: 'listaDePrecos/tab-p',
+      });
+      db.seed(`sincPrecoLojaIntegrada/${conta}`, {
+        execucaoPreco: {
+          execucaoId: RUN_A,
+          tabelas: TABELAS_DO_RUN,
+          amostras: {},
+          contadores: { paisConcluido: 1, retidos: 0 },
+          candidatos: [],
+          mantidos: [],
+        },
+      });
+    }
+    const estados = await carregarEstadosPrecoLi(
+      asDb(db),
+      RUN_A,
+      contas.map((contaId, idx) => ({ idx, contaId })),
+      { baldes: 'nenhum' },
+    );
+    const f = new FimPrecoReconcileLi({
+      db: asDb(db),
+      deps: { agoraMs: () => AGORA_RECONCILE_MS, increment, logger: loggerGravador().logger },
+      execucaoId: RUN_A,
+      runIniciadoEmMs: INICIO_RUN_RECONCILE_MS,
+      contas,
+      valvula: lerValvula(FLUXO_LI.preco, {
+        [VALVULA_ENV_LI.preco]: 'dry-run',
+        [CANARIO_ENV_LI.preco]: '*',
+      }),
+      estadoDe: async (idx) => estados.get(contas[idx] ?? '') ?? null,
+    });
+    for (let idx = 0; idx < contas.length; idx += 1) await f.unidade(idx);
+    for (const conta of contas) {
+      expect(
+        db.leituras.filter((c) => c === `integracao/${conta}`),
+        conta,
+      ).toHaveLength(1);
+    }
   });
 });

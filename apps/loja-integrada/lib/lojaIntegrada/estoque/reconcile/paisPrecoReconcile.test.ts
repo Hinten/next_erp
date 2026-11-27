@@ -274,4 +274,45 @@ describe('one unit of the parents phase', () => {
     if (estado === undefined) throw new Error('C1 não carregada');
     await expect(pais.unidade(estado)).rejects.toBeInstanceOf(TypeError);
   });
+
+  it('a conta the phase already CLOSED, re-entered by a later slice (its root says `paisConcluido`): nothing read, counted, written or logged again', async () => {
+    const fake = new FakeDb();
+    semear(fake, {
+      '1001': v('r1', { n: 2222 }),
+      '1002': v('f1', { pai: 'pai-x', n: 3333 }),
+      '1003': v('r2', { n: 'il' }),
+    });
+    fake.seed('produtos/pai-x', { precos: { 'tab-n': { valor: 44.44 } } });
+
+    const primeira = await fatia(fake);
+    expect(await primeira.pais.unidade(primeira.estado)).toBe('conta-encerrada');
+    const contadores = { ...primeira.estado.raiz.execucaoPreco.contadores };
+    expect(contadores).toMatchObject({ paisConcluido: 1, alvos: 2, retidos: 1, paisLidos: 1 });
+    persistir(fake, primeira.estado);
+
+    // A slice that re-enters the same conta (a resumed slice whose run document did not land).
+    const segunda = await fatia(fake);
+    const getAllsAntes = segunda.getAlls.length;
+    expect(await segunda.pais.unidade(segunda.estado)).toBe('conta-encerrada');
+    expect(segunda.getAlls.length).toBe(getAllsAntes);
+    expect(segunda.estado.raiz.execucaoPreco.contadores).toEqual(contadores);
+    expect(segunda.estado.escritas()).toEqual([]);
+    expect(segunda.log.linhas).toEqual([]);
+  });
+});
+
+describe('the end counters', () => {
+  it('a promotion EQUAL to the full price is `promoNaoMenor`; NEAR-MISS: one centavo below is not', async () => {
+    const fake = new FakeDb();
+    semear(fake, {
+      '1001': v('igual', { n: 5555, pr: 5555 }),
+      '1002': v('menor', { n: 5555, pr: 5554 }),
+    });
+    const s = await fatia(fake);
+    expect(await s.pais.unidade(s.estado)).toBe('conta-encerrada');
+    expect(s.estado.entrada('1001')?.a).toEqual({ c: 5555, q: 5555 });
+    expect(s.estado.entrada('1002')?.a).toEqual({ c: 5555, q: 5554 });
+    expect(s.estado.contador('alvos')).toBe(2);
+    expect(s.estado.contador('promoNaoMenor')).toBe(1);
+  });
 });

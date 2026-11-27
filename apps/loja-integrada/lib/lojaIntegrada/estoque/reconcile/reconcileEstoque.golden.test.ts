@@ -77,26 +77,31 @@ describe('GOLDEN — the price valve unset: the trace is the stock-only reconcil
     },
   );
 
-  it('scenario A is a real run: several slices, the walk, the store, the queue phase and the release', async () => {
-    const fatias = await traco(CENARIOS.A);
-    expect(fatias.length).toBeGreaterThan(3);
-    expect(fatias.at(-1)?.resultado).toEqual({ kind: 'encerrado' });
-    const texto = textoDoTracoLi(fatias);
-    for (const marca of [
-      'produtolojaintegrada',
-      'sincEstoqueLojaIntegrada/C1/snapshot/',
-      'sincEstoqueLojaIntegrada/C1/kits/',
-      'fila-estoque ',
-      '"msg":"[loja-integrada/estoque] reconcile execução encerrada"',
-      '"caminho":"avisos/',
-    ]) {
-      expect(texto, marca).toContain(marca);
-    }
-    // The catalogue's prices are there to be leaked: nothing of them is read or written.
-    expect(texto).not.toContain('sincPrecoLojaIntegrada');
-    expect(texto).not.toContain('"precos"');
-    expect(texto).not.toContain('"propagatePriceToChildren"');
-  });
+  it(
+    'scenario A is a real run: several slices, the walk, the store, the queue phase and the release',
+    // The same whole chain as scenario A above; CI runners are slower under load.
+    { timeout: 30_000 },
+    async () => {
+      const fatias = await traco(CENARIOS.A);
+      expect(fatias.length).toBeGreaterThan(3);
+      expect(fatias.at(-1)?.resultado).toEqual({ kind: 'encerrado' });
+      const texto = textoDoTracoLi(fatias);
+      for (const marca of [
+        'produtolojaintegrada',
+        'sincEstoqueLojaIntegrada/C1/snapshot/',
+        'sincEstoqueLojaIntegrada/C1/kits/',
+        'fila-estoque ',
+        '"msg":"[loja-integrada/estoque] reconcile execução encerrada"',
+        '"caminho":"avisos/',
+      ]) {
+        expect(texto, marca).toContain(marca);
+      }
+      // The catalogue's prices are there to be leaked: nothing of them is read or written.
+      expect(texto).not.toContain('sincPrecoLojaIntegrada');
+      expect(texto).not.toContain('"precos"');
+      expect(texto).not.toContain('"propagatePriceToChildren"');
+    },
+  );
 
   it('E: the price valve `off` EXACTLY ⇒ scenario A’s trace', { timeout: 30_000 }, async () => {
     const fatias = await traco({ ...CENARIOS.A, [VALVULA_ENV_LI.preco]: 'off' });

@@ -231,4 +231,29 @@ describe('the take with the price arm', () => {
       execucaoId: RUN_A,
     });
   });
+
+  it('an existing price root that moved after the take read it ⇒ the whole take is lost (`perdido`): nothing lands, the newer root kept', async () => {
+    const db = new FakeDb();
+    const caminho = 'sincPrecoLojaIntegrada/C1';
+    db.seed(caminho, { execucaoPreco: { execucaoId: RUN_B, tabelas: TABELAS } });
+    const lida = db.carimboDe(caminho);
+    // A writer lands on the root between the take's read and its commit.
+    db.seed(caminho, { execucaoPreco: { execucaoId: RUN_B, tabelas: TABELAS }, marca: 1 });
+    expect(db.carimboDe(caminho)).not.toEqual(lida);
+
+    const r = await assumirLeaseReconcileLi(asDb(db), {
+      lido: await lerRunReconcileLi(asDb(db)),
+      tarefa: TAREFA,
+      agoraMs: AGORA_RECONCILE_MS,
+      raizes: [raizEstoque(db, 'C1')],
+      preco: {
+        contadores: { precoNoRun: 1 },
+        campos: { ...camposPrecoDaTomadaReconcileLi(TAREFA) },
+        raizes: [{ ...raizPreco(db, 'C1'), versao: (lida ?? null) as never }],
+      },
+    });
+    expect(r.tipo).toBe('perdido');
+    expect(db.ler(caminho)).toMatchObject({ execucaoPreco: { execucaoId: RUN_B }, marca: 1 });
+    expect(db.ler(CAMINHO_RUN_RECONCILE_LI)).toBeUndefined();
+  });
 });
