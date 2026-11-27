@@ -91,7 +91,8 @@ import { getDb } from './lib/admin';
  * schedule (`reconciliarEstoqueLojaIntegrada`, ./reconciliarEstoque) that reads
  * nothing and enqueues the run's first slice onto the READS queue, which runs
  * each slice (`tipo: estoque-reconcile`) — one chain for every conta — and
- * enqueues the next one by name. With the stock valve `off` the schedule
+ * enqueues the next one by name. With BOTH the stock and the price valve `off`
+ * (since PR 13-f1 the run carries the price arm's ERP side too) the schedule
  * enqueues nothing; it never reads the read switch (with it off, the run's ERP
  * phase still runs and its store phase stops at the switch). The conta trigger
  * gains its depósito-change arm (an UPDATE re-pointing a Loja Integrada conta's

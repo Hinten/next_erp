@@ -29,8 +29,8 @@
  *    fields only; the stock store phase stopping at the read switch; both ends written.
  *
  * Isolation (`vitest.tasks.config.ts`, the price arm's rule set): conta, depósito, tabela and produto
- * ids no other suite seeds; the conta CREATED (the conta trigger's arms never fire on a create) with
- * no filial, so that trigger only reads; every produto CREATED after a delete and never updated, so
+ * ids no other suite seeds; the conta CREATED (a create never fires the depósito arm) with no
+ * filial, so the conta trigger only reads; every produto CREATED after a delete and never updated, so
  * the price trigger stops at its relevance gate; every link create's anchor write awaited; no stock
  * record written, so the stock trigger never fires; the run document AND the price slot wiped
  * before and after every case; the teardown deletes the price documents (root and buckets) FIRST,

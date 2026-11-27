@@ -165,8 +165,8 @@ import { defineConfig } from 'vitest/config';
 // by `lib/lojaIntegrada/estoque/reconcile/reconcilePreco.tasks.test.ts`, which drives the price
 // arm IN PROCESS (its valves as PARAMETERS, its hand-offs recorded):
 //   - conta, depósito, tabela and produto ids no other suite seeds;
-//   - the conta seeded by a CREATE (neither the depósito arm nor a tabela arm fires on a create),
-//     with no filial, so the conta trigger only reads;
+//   - the conta seeded by a CREATE (a create never fires the depósito arm) with no filial, so the
+//     conta trigger only reads;
 //   - produtos created and NEVER updated on `precos`, `propagatePriceToChildren` or `paiId`, so the
 //     price trigger stops at its relevance gate with zero reads; no stock record, so the stock
 //     trigger never fires;

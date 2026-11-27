@@ -75,7 +75,15 @@ name: CI — Loja Integrada
 #     limited), and its enqueues through the real price producer root onto
 #     `filaPrecoLojaIntegrada`. Each event's before and after are handed in, and
 #     the suite edits no price field in the emulator, so the DEPLOYED trigger never
-#     passes its relevance gate on it.
+#     passes its relevance gate on it;
+#   - `apps/loja-integrada/lib/lojaIntegrada/estoque/reconcile/reconcileEstoque.tasks.test.ts`
+#     — the daily stock reconcile's chain (step 12, PR 12-g) IN PROCESS against
+#     the real key walk, snapshot and kits map, and one DISPATCHED depósito-arm
+#     run observed through the run document;
+#   - `apps/loja-integrada/lib/lojaIntegrada/estoque/reconcile/reconcilePreco.tasks.test.ts`
+#     — the same reconcile carrying the price arm's ERP side (step 13, PR 13-f1)
+#     IN PROCESS: a price-only run and a run carrying both arms, the masks the
+#     server answers, the price state and the parents' one masked read.
 # ⚠️ The triggers fire on EVERY suite's writes, not only their own: the
 # functions emulator loads the whole codebase. The conta trigger fires on every
 # `integracao` write, the history trigger (`onHistoricoFreteLojaIntegrada`,
@@ -429,7 +437,10 @@ jobs:
       # write context, before any Loja Integrada client exists, and writes nothing
       # (under `dry-run` it neither raises an aviso nor parks). Never `on`, and no
       # LOJA_INTEGRADA_CANARIO_PRECO: vitest.tasks.setup.ts refuses both. Since PR
-      # 13-e the price trigger enqueues at it too, as under `on`.
+      # 13-e the price trigger enqueues at it too, as under `on`. Since PR 13-f1
+      # every DISPATCHED reconcile run also carries the price arm's ERP side
+      # (price-state writes in the emulator, no store call, no enqueue;
+      # vitest.tasks.config.ts, the seventh rule set).
       LOJA_INTEGRADA_MODO_PRECO: 'dry-run'
       NEXT_TELEMETRY_DISABLED: '1'
     steps:

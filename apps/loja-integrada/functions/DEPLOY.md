@@ -430,8 +430,10 @@ operator needs:
   no enqueue on this side. Lines worth an alert:
   - `forma-promo-invalida` (ONE ERROR per slice): `LOJA_INTEGRADA_PRECO_PROMO_LIMPO`
     does not read, so the price arm stays out of the run (below);
-  - `teto-invalido` with the price valve set (ONE ERROR per run): the cap does not
-    read, so the stock arm stays out and the run goes on price-only;
+  - `teto-invalido` with the price arm ACTIVE (the price valve set AND the clear's
+    forma readable; ONE ERROR per run): the cap does not read, so the stock arm
+    stays out and the run goes on price-only. With the forma unreadable too, every
+    slice logs both and stops at zero reads;
   - `arma-preco-falhou` (ONE ERROR per page and conta, or per unit): a coding bug
     or a document off its schema in the price arm, contained — that conta gets no
     price arm that night and the stock flow is untouched. It needs a code fix if it
@@ -449,6 +451,19 @@ operator needs:
   then (a run started more than 48 h ago is abandoned at once, with ONE WARNING).
   Never delete the document: it also holds the global slot (`proximoSlotMs`) the
   kit fan-out writes — delete the reconcile fields only if a person must.
+- **Rolling this codebase back to a build older than PR 13-f1** (a person's step):
+  the first build that stores a non-null `fasePreco` on the run document is PR
+  13-f1's, and an older take never writes that field. A run that dies — or is
+  running — in the price parents phase leaves `fasePreco: 'pais-preco'` stored
+  beside `fase: 'fila'`; an older build then writes its own `fase` beside it, the
+  run document stops parsing (a price phase only beside `fila`), and every slice after
+  each night's first ends at `nada` — silently, every night. So, before deploying
+  the older build: set `LOJA_INTEGRADA_MODO_PRECO` off on the CURRENT build and let
+  the running chain release (its next slice drops the price arm and clears
+  `fasePreco`), or wait for its lease to expire; then read
+  `reconcileEstoqueLojaIntegrada/atual`, and when its `fasePreco` is still set,
+  delete that FIELD — and `precoSolicitado` with it. Never the document: it holds
+  the slot.
 - **The safety gate**: a conta where more than 5% of the evaluated children have
   a stock record elsewhere but none at the conta's depósito gets NOTHING sent that
   night — ONE ERROR `deposito-sem-registros` and, under `on`, the

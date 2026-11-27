@@ -485,7 +485,9 @@ run's `execucaoPreco` is not priced by this run (skipped, never a stop: a price 
 the stock flow). A bucket of another run, off its schema or absent is REPLACED at first load — so
 the first ERP slice writes all 32, and by the end of the walk every bucket carries this run's id —
 and each of its valid entries' previous target `a` and deferral `t` moves into the bucket's
-`anteriores`; the walk takes them back as `ap` / `tp` when it writes that id again, and the parents
+`anteriores` (from an entry that run never priced, the `ap` / `tp` it carried; for an id it never
+re-wrote, its bucket's own carry — so an unfinished run never drops the one before it); the walk
+takes them back as `ap` / `tp` when it writes that id again, and the parents
 phase's end clears what is left. Buckets are written WHOLE, `anteriores` always included (an
 `update` keeps a field it omits). Two produtos on one store id meet as `dup`, as in the stock
 snapshot.
@@ -523,10 +525,14 @@ returns values, and only an infallible apply touches the price state. So a `Type
 counted, ONE ERROR `arma-preco-falhou` — and can neither move the stock state nor leave a partial
 page; a Firestore failure is not contained. A conta with `armaFalhou` runs no further price phase
 and raises or resolves no price aviso (its end still writes `ultimoReconcilePreco`). The parents
-phase and the price end follow the same rule per conta; a failure a retry may change is
-checkpointed at the same `seq` and rethrown, and on the queue's last attempt contained the same way
-(`tentativas-esgotadas`). ⚠️ A price failure never releases the lease: the stock end and the
-release always run. `reconcilePreco.espelho.test.ts` (MIRROR) injects faults into the arm and holds
+phase and the price end follow the same rule per conta; a failure a retry may change — the load
+of the conta's price state included — is checkpointed at the same `seq` and rethrown, and on the
+queue's last attempt contained the same way (`tentativas-esgotadas`; a conta whose state never
+loaded has nothing to count it on, and its end decides no aviso). ⚠️ A price failure never
+releases the lease: the stock end and the release always run. The one read outside that rule is
+the ERP phase's price-state load, which belongs to the walk's own reads as the stock state's does:
+its Firestore failure is the walk's. The arm's returned counters are validated with its entries,
+so a counter off the root's schema is contained too, never left to fail the slice's batch. `reconcilePreco.espelho.test.ts` (MIRROR) injects faults into the arm and holds
 every stock write, enqueue, aviso and counter equal to the run without them.
 
 ### The parents phase (`pais-preco`, `paisPrecoReconcile.ts`)
@@ -576,19 +582,35 @@ slices. The price end:
 | `fimComPreco` | one conta's WHOLE end with price carried: the stock end unit and the price end unit           | the stock `fim` + 20 s = 40 s |
 
 With price carried (C run contas, Cp priced): an ERP slice reads the C price roots and the 32·Cp
-buckets once, no extra produto document (the same `getAll`, three more masked fields), and writes
-at most 33·Cp more documents in its batch; a price-only run pays the walk's key queries and the
+buckets once (two `getAll`s), no extra produto document (the same `getAll`, three more masked
+fields), and writes at most 33·Cp more documents in its batch — in practice every one of them,
+since a page spreads its store ids over all 32 buckets and a bucket is written whole, so EVERY ERP
+slice rewrites each priced conta's whole price snapshot; a price-only run pays the walk's key queries and the
 price-masked produto reads itself. A parents unit reads at most 300 parent documents; the end reads
 the price roots and makes one uncached contas `getAll` per slice. No new index (point reads,
 `getAll`s by id and the shared key walk), no rules change, and the run document keeps the stock's
 600 000-byte candidate budget. The costs and the staging measurements are in
 [`../../preco/README.md`](../../preco/README.md).
 
+### The commit's bytes
+
+That rewrite rides the SAME commit as the stock writes and the run document, and Firestore refuses
+a commit past its 10 MiB request limit whole — on every retry, until the last attempt releases the
+run, stock included. So the price documents of one commit are held to 4 MiB
+(`MAX_BYTES_PRECO_LOTE_RECONCILE_LI`), each counted by Firestore's storage formula: in run order, a
+priced conta whose writes would pass it loses its bucket writes for that slice and its price arm
+for the run — `armaFalhou` and `loteExcedido` counted, ONE ERROR `lote-preco-excedido` — and its
+root still writes. The stock share of the commit is what it was before the price arm. The bytes of
+the largest commit are among the staging measurements.
+
 ### Persistence (root `CLAUDE.md` rule 7)
 
 Every price write is tier 1 and rides the slice's ONE batch under the run document's
 `lastUpdateTime`: a price root or bucket `create`d when absent, else `update`d under the slice's
 own read of it. The run document's price fields and counters ride the same patch. No transaction.
+⚠️ PR 13-f1's is the first build to store a non-null `fasePreco`, which an older take never resets:
+before rolling the functions codebase back past it, clear that field (`functions/DEPLOY.md`, the
+rollback item).
 
 ### The emulator lane
 

@@ -515,15 +515,19 @@ seeded produtos and no token saved:
   non-propagating one, a `''` root, a parent link and a produto with no normal price:
   - against the previous stock-only night, the key-walk entries and the produto documents read do
     not move (the same `getAll`, three more fields: record the bytes the wider mask adds); the
-    parent documents read are at most the distinct parents; at most 33 price-state documents read
-    per priced conta per ERP slice, and every slice stays within its 100 s;
+    parent documents read are at most the distinct parents; at most C + 32·Cp price-state
+    documents read per ERP slice (C run contas, Cp of them priced), and every slice stays within
+    its 100 s;
   - the six ERP read-path counters of the run's end line equal the previous stock-only night's;
   - the largest bucket and the price root in bytes, at a recorded entry count, extrapolated
     linearly (the documents' 1 MiB limit);
+  - the largest end-of-slice commit in bytes — its stock and its price documents apart — at a
+    recorded entry count, extrapolated linearly against Firestore's 10 MiB request limit and the
+    price share of one commit (4 MiB; no `lote-preco-excedido` ERROR expected);
   - the write units per KiB for a bucket and for the root;
   - `[loja-integrada/preco] reconcile alvos da conta calculados` once per priced conta,
-    `sincPrecoLojaIntegrada/{conta}.ultimoReconcilePreco` naming the run, and no
-    `arma-preco-falhou` ERROR.
+    `sincPrecoLojaIntegrada/{conta}.ultimoReconcilePreco` naming the run, and neither an
+    `arma-preco-falhou` nor a `lote-preco-excedido` ERROR.
 
 ## 15. Window items
 
@@ -616,9 +620,11 @@ queue phase come in the next PRs of step 13.
 
 Per night with price carried, beside today's stock costs (C run contas, Cp of them priced; P walk
 pages): the walk's produto reads are the SAME documents (three more masked fields, so more bytes,
-never more reads); each ERP slice reads the C price roots and the 32·Cp buckets once and writes at
-most 33·Cp more documents in its one batch (every bucket in the first ERP slice, the dirty ones
-after); the parents phase reads each conta's distinct parents once (≤ 300 a unit) and writes its
+never more reads); each ERP slice reads the C price roots and the 32·Cp buckets once (two
+`getAll`s) and writes up to 33·Cp more documents in its one batch — in practice all of them, every
+ERP slice: a walk page spreads its store ids over all 32 buckets and a bucket is written whole, so
+each slice rewrites every priced conta's whole price snapshot, in the same commit as the stock
+writes; the parents phase reads each conta's distinct parents once (≤ 300 a unit) and writes its
 buckets once more with the targets; the end reads the price roots, one uncached contas `getAll` per
 slice, and under `on` at most one aviso read per conta (a write only when it moves). A price-only
 run (stock `off`) pays the walk itself: one key query per page and its price-masked produto reads.
@@ -626,7 +632,10 @@ No store call, no enqueue, no new index, rule, TTL, function, queue or schedule.
 
 A bucket holds about one in 32 of the conta's linked entries, at about 90 bytes each plus about 40
 bytes of carry while the walk runs; the root holds counters and samples. Both are among the staging
-measurements (section 14).
+measurements (section 14), and so is the commit they ride: Firestore refuses a commit past 10 MiB
+whole, on every retry, so the price documents of one commit are held to 4 MiB
+(`../estoque/reconcile/README.md`, "The commit's bytes") — a conta past it loses its price arm for
+the night with ONE ERROR `lote-preco-excedido`, and the stock writes keep their commit.
 
 ### Environment
 

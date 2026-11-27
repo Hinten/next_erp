@@ -41,7 +41,8 @@ import { getDb } from './lib/admin';
  * Integrada conta re-pointed at another depósito (folded: one depósito in its two stored spellings
  * is no change; a CREATE never fires — the nightly run bootstraps a new conta; a depósito removed
  * never fires) enqueues ONE full stock reconcile at once, named after the after side's update time
- * (`estoque-reconcile-deposito-<µs>`), with the stock valve not `off`. Its decision is the payload's
+ * (`estoque-reconcile-deposito-<µs>`), with the stock and price valves not BOTH `off` (PR 13-f1:
+ * the run carries both flows). Its decision is the payload's
  * and the environment's alone, so it costs ZERO reads, and it calls no Loja Integrada endpoint
  * (`lib/lojaIntegrada/estoque/reconcile/gatilhoDepositoLi.ts`, which also says what happens when a
  * reconcile already runs). The two arms are independent: one write can take both, and each logs at

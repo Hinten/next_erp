@@ -976,9 +976,9 @@ What exists today — the send run and its queue (PR 13-d), the price TRIGGER, t
 producer (PR 13-e), and the nightly reconcile's price arm on its ERP side (PR 13-f1, folded into
 the stock reconcile: `estoque/reconcile/README.md`, section 14) — with their costs, failures, env,
 the emulator lane and the deploy items is `lib/lojaIntegrada/preco/README.md`. Read it before
-touching price code. The price function,
-the fold and the aviso tipos are `@delfrance/schemas`' (PR 13-a); the wire and the builder the
-package's (PR 13-b); the two write kinds the engine's (PR 13-c). What must never break:
+touching price code. The price function, the fold and the aviso tipos are `@delfrance/schemas`'
+(PR 13-a); the wire and the builder the package's (PR 13-b); the two write kinds the engine's (PR
+13-c). What must never break:
 
 - ⚠️ **Ids only.** A `preco` task is a strict ids-only payload
   (`packages/schemas/src/tarefaPrecoLojaIntegrada.ts`): a price in it is refused, and the target
@@ -1025,7 +1025,7 @@ package's (PR 13-b); the two write kinds the engine's (PR 13-c). What must never
 - ⚠️ **A child costs at most ONE masked parent read; a root ONE family query per concerned
   conta** (`paiId ==` and `array-contains` the conta, projected, `limit 51`, built from the
   manual stock push's index constant on the declared `produtos (paiId, integracoesComProduto,
-__name__)`; no new index). The echo rule: a child's price move under a parent that propagates
+  __name__)`; no new index). The echo rule: a child's price move under a parent that propagates
   AND whose anchor names the conta enqueues NOTHING (the parent's own event owns the family).
   `baixar` is true only for an ERP price decision (a concerned tabela, or the flag), false for a
   parent move, which wins in a write that moves both. The clock is read inside each enqueue,
@@ -1054,7 +1054,10 @@ __name__)`; no new index). The echo rule: a child's price move under a parent th
   writes `ultimoReconcilePreco` with the RUN's tabelas and `lojaIntegradaPrecoSemErp` only under
   `on`. A conta's stock and price ends never split across slices. Every price write is tier 1 in
   the slice's ONE batch (create when absent, else update under the slice's own read); no
-  transaction, no new index. `estrutura.test.ts` walks its modules with the trigger's rules.
+  transaction, no new index. Every ERP slice rewrites each priced conta's WHOLE price snapshot in
+  that batch, so a commit's price documents are held to 4 MiB of Firestore's 10 MiB request limit
+  (a conta past it loses its price arm for the night, ONE ERROR `lote-preco-excedido`; the stock
+  writes keep their commit). `estrutura.test.ts` walks its modules with the trigger's rules.
 
 ## Notification pipeline (step 3)
 

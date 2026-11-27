@@ -12,8 +12,8 @@ import { criarAgendadorEstoqueLiDoAmbiente } from './agendadorEstoque';
  * and the producer.
  *
  * - `ambiente`: the process environment, passed whole and LIVE: the stock valve, the cap, the store
- *   list's page size and — by the store phase's context loader, as its first act — the read switch
- *   are read from it. `lib/` never names the process environment (`estrutura.test.ts`).
+ *   list's page size, the price valve and the clear's forma (PR 13-f1, `armasReconcile.ts`) and — by
+ *   the store phase's context loader, as its first act — the read switch are read from it. `lib/` never names the process environment (`estrutura.test.ts`).
  * - `agoraMs`: the one clock, in ms — the slice's budget (measured from `inicioMs`), the lease and
  *   every stamp of the run.
  * - `inicioMs`: when THIS slice began, stamped by the queue's handler as its FIRST statement.
