@@ -36,12 +36,13 @@ function depsDoGatilhoPrecoLi(): DepsGatilhoPrecoLi {
  * header states the gates, their costs and the rejection contract.
  *
  * ⚠️ It fires on EVERY write of `produtos/{produtoId}`, every channel's produtos included — the
- * same path `apps/functions`' produto trigger (the storage codebase) and Mercado Livre's category
+ * same path `apps/functions`' produto triggers (the storage codebase) and Mercado Livre's category
  * trigger listen on, in other codebases; all of them are independent. So the first two gates (the
- * payload's relevance, the valve `LOJA_INTEGRADA_MODO_PRECO`) cost ZERO reads and log NOTHING,
- * the third (the payload's own anchor) reads nothing either, and the fourth reads only a cached
- * map of the Loja Integrada contas' price tabelas. Past them, at most ONE masked parent read for a
- * child or ONE family query per concerned conta for a root.
+ * payload's relevance, the valve `LOJA_INTEGRADA_MODO_PRECO`) cost ZERO reads and log nothing (an
+ * unrecognised valve value: ONE latched WARNING per instance), the third (the payload's own
+ * anchor) reads nothing either, and the fourth reads only a cached map of the Loja Integrada
+ * contas' price tabelas. Past them, at most ONE masked parent read for a child or ONE family query
+ * per concerned conta for a root.
  *
  * ⚠️ Targets the NAMED `default` database, inlined at build time by `build.mjs`
  * (`onIntegracaoLojaIntegradaChanged`'s docblock says why): an `onDocument*` bound to

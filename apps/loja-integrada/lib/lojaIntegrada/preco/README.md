@@ -189,8 +189,8 @@ refused lowering, a drift or a dry-run.
 `produtos/{produtoId}`, database `default` (inlined at build time: an `onDocument*` bound to
 `(default)` deploys fine and NEVER fires), `retry: true`, no secrets, no `region:`, and no
 `maxInstances` of its own (the codebase's 10). It shares the path with `apps/functions`' produto
-trigger and Mercado Livre's category trigger, in other codebases; they are independent. It fires on
-EVERY ERP produto write of every channel, so its gates run from the cheapest up:
+triggers and Mercado Livre's category trigger, in other codebases; they are independent. It fires
+on EVERY ERP produto write of every channel, so its gates run from the cheapest up:
 
 1. **Relevance, from the payload alone** (`relevanciaPrecoLi.ts`): zero reads, no line. It reads
    the produto's own `precos`, `propagatePriceToChildren` and `paiId` — the send run's mask — and
@@ -383,7 +383,7 @@ will, and both surfaces are then set alike.
 `LOJA_INTEGRADA_MODO_PRECO=dry-run`, functions only, is the ONE price value allowed before the
 window: set first in `.env.deploy.<staging-project-id>` for the staging measurements (section 14),
 and carried by the deploy that opens operations, so the first-deploy check (`functions/DEPLOY.md`,
-"Verifying a first deploy", item 11) watches one real price edit enqueue a task before any switch
+"Verifying a first deploy", item 11) watches a real price edit enqueue its tasks before any switch
 is flipped. That mirrors the stock valve. With the read switch off and no token saved it calls
 nothing and writes nothing to a store: each relevant event enqueues tasks that stop at their write
 context. With the read switch on, each such task makes one deciding GET (reads only) and sends
@@ -479,8 +479,9 @@ and before the window, with the price valve at `dry-run` on staging only, the re
 seeded produtos and no token saved:
 
 - irrelevant produto writes (a name, an anchor write, a custo, float residue) ⇒ zero trigger reads;
-- the family query's `explain` for families of 1, 7 and 50 linked children: the index chosen, the
-  entries scanned, the documents returned;
+- the family query's `explain` for a family of one linked child, a mid-sized one and one at the
+  50-child cap (the store's variation cap): the index chosen, the entries scanned, the documents
+  returned;
 - a child edit under a parent that does not propagate ⇒ one parent read and one task; an anchored
   echo under a propagating parent ⇒ one parent read and zero tasks;
 - a staged reprice of seeded propagating families ⇒ at most one family query per family per conta,
@@ -493,8 +494,13 @@ seeded produtos and no token saved:
   `integracoesComProduto` (section 7);
 - whether the deploy that opens operations carries `LOJA_INTEGRADA_MODO_PRECO=dry-run` (functions
   only) is the owner's decision (section 10 recommends it); if it does, the next real price edit of
-  a linked child enqueues one task whose dispatch line shows the run stopping at the read switch —
-  never hand-edit a real price to check it;
+  a linked produto enqueues what its family shape gives (`functions/DEPLOY.md`, item 11): a
+  propagating root one task per child anchored to the conta, a simple produto its own task, a
+  non-propagating root with anchored children none, the ERP's echo onto the children of an
+  anchored propagating parent none (one parent read and one INFO line each), and a child's own
+  write one task only when its parent does not propagate or is not anchored to the conta. Each
+  dispatch line shows the run stopping at the read switch while it is off, or, with it on, one
+  deciding GET and its diff line with nothing sent — never hand-edit a real price to check it;
 - a Firestore import fires no trigger: the migrated prices reach a store only through a send run
   (the nightly price phase and "Atualizar preços", later PRs of step 13), and the trigger covers
   the ERP price edits after the switch-over;

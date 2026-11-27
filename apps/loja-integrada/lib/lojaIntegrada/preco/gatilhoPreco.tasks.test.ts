@@ -17,9 +17,11 @@
  *
  * Every positive is the in-process result plus the payloads the producer root ACCEPTED (each
  * recorded only once its real enqueue resolved); nothing here polls for an absence. A dispatched
- * price run passes the lane's `dry-run` price valve and stops at its write context on the read
- * switch: it reads, writes nothing and logs in the emulator's process, so that hop is unobservable
- * here by design (`processarPreco.tasks.test.ts` says the same of its follow-up).
+ * price run passes the lane's `dry-run` price valve and writes nothing: the single-file queue
+ * usually reaches it after its case's teardown removed the produto or its link (it skips,
+ * `produto-inexistente` or `sem-vinculo`), and otherwise it stops at its write context on the read
+ * switch. Either way it logs in the emulator's process, so that hop is unobservable here by design
+ * (`processarPreco.tasks.test.ts` says the same of its follow-up).
  *
  * ⚠️ Why the trigger's work runs IN PROCESS and not through the deployed trigger. Its conta map
  * is a 15-minute cache in the emulator's worker, warmed by whichever suite first writes a produto,
