@@ -8,10 +8,15 @@
  *
  *  1. The payload, strict (`tarefaReconcileEstoqueLiSchema`): one that does not parse is DROPPED,
  *     zero reads.
- *  2. The valve `LOJA_INTEGRADA_MODO_ESTOQUE`: `off` — unset, blank, a typo (one WARNING) — returns
- *     with zero reads. `dry-run` and `on` run alike up to the queue phase.
- *  3. The cap `LOJA_INTEGRADA_ESTOQUE_MAX`: unreadable ⇒ ONE ERROR and zero reads (the diff
- *     applies it, and every send would refuse it).
+ *  2. The valves (`armasReconcile.ts`, step 13): `LOJA_INTEGRADA_MODO_ESTOQUE` AND
+ *     `LOJA_INTEGRADA_MODO_PRECO` both `off` — unset, blank, a typo (one WARNING each) — return with
+ *     zero reads. `dry-run` and `on` run alike up to the queue phase.
+ *  3. The settings, zero reads. With no price arm able to run, the stock-only path exactly: the
+ *     cap `LOJA_INTEGRADA_ESTOQUE_MAX` unreadable ⇒ ONE ERROR and zero reads (the diff applies it,
+ *     and every send would refuse it); a price valve set over an unreadable clear forma
+ *     (`LOJA_INTEGRADA_PRECO_PROMO_LIMPO`) ⇒ ONE ERROR, and with the stock valve `off` too, zero
+ *     reads. With a price arm able to run, an unreadable cap only keeps stock out of the run (its
+ *     ERROR once per run, at the take or where a carried stock arm is dropped).
  *  4. The run document, and the decision (`execucaoReconcile.ts`): `nada`, `ocupado` (one INFO
  *     line), `adiar` (a retryable throw), `continuacao` (the named successor re-enqueued at 60 s,
  *     nothing else), `revisao` (the depósito re-run asked for again from the stored counter,
@@ -35,6 +40,33 @@
  *       the list;
  *     - `fim`: per conta (`idxConta`), the end phase (`fimReconcile.ts`): the avisos (only under
  *       `on`), `ultimoReconcile`; then the lease is released.
+ *
+ *     ## The price arm (step 13, PR 13-f1)
+ *
+ *     A run CARRIES each arm whose valve was set and whose setting read at the take, recorded in
+ *     its counters (`armasReconcile.ts`); a later slice that finds an arm inactive DROPS it (ONE
+ *     line) and goes on with the other, and an arm is never added mid-run. The run's contas are the
+ *     stock list's; of those, a conta naming a normal tabela at the take is PRICED, its tabelas
+ *     fixed, folded, in its price root (`sincPrecoLojaIntegrada/{conta}`, written in the take's
+ *     batch). With price carried:
+ *     - `erp`: each walk page is read ONCE for both arms (`paginaErpReconcile.ts`: the union mask);
+ *       the price arm, pure (`armaPrecoErp.ts`), fills each priced conta's price snapshot
+ *       (`estadoPrecoReconcile.ts`), contained per (page, conta). Without stock, no stock state, no
+ *       kits map, no `li`, no stock `fila`, no stock `fim`, no depósito revision;
+ *     - `pais-preco` (`fase` `fila`, `fasePreco` `pais-preco`), after the stock queue phase: per
+ *       priced conta, its parents read once and every child's target (`paisPrecoReconcile.ts`);
+ *     - `fim`: per conta, the stock end unit then the price end unit (`fimPrecoReconcile.ts`), which
+ *       never split across slices; entering it clears `fasePreco` in the same patch.
+ *     A price unit's coding bug or schema refusal is contained per conta (`armaFalhou`, ONE ERROR:
+ *     no more price phases and no price aviso for it); a failure a retry may change — the load of
+ *     the conta's price state included — is checkpointed and rethrown, and on the queue's last
+ *     attempt contained the same way. A price failure never releases the lease. (The ERP phase's
+ *     price-state load belongs to the walk's own reads, as the stock state's does: its failure is
+ *     the walk's.) A commit's price documents are held to a byte share
+ *     (`estadoPrecoReconcile.ts`, "The commit's bytes"): a conta past it loses its price arm for
+ *     the run (ONE ERROR `lote-preco-excedido`), never the stock writes their commit. With the
+ *     price valve unset, everything here is the stock-only reconcile, read for read and write for
+ *     write.
  *  6. ONE end-of-slice checkpoint: the run document (`seq + 1`, the lease extended, or released at
  *     `fim`) and every per-conta document the slice changed, in ONE batch; then the NAMED
  *     continuation `(execucaoId, seq + 1)`, 2 s later — 60 s after a 429 PAUSE of the store
@@ -86,46 +118,63 @@
  * Every line carries ids and counts only. ⚠️ Never name the Admin SDK's multi-document
  * read-and-write call here — not even in a comment (`estrutura.test.ts`).
  */
-import type { Firestore } from 'firebase-admin/firestore';
-import { sincEstoqueLojaIntegradaCollection } from '@delfrance/data/admin/collections';
+import type { Firestore, Timestamp } from 'firebase-admin/firestore';
+import {
+  sincEstoqueLojaIntegradaCollection,
+  sincPrecoLojaIntegradaCollection,
+} from '@delfrance/data/admin/collections';
 import { isGrpcStatusError } from '@delfrance/data/admin/grpcErrors';
 import { TASK_MAX_ATTEMPTS } from '@delfrance/data/admin/notifications';
 import {
   ETAPA_MAPA_ESTOQUE_LI,
   FASE_RECONCILE_ESTOQUE_LI,
+  FASE_RECONCILE_PRECO_LI,
   type FaseReconcileEstoqueLi,
+  type FaseReconcilePrecoLi,
   type ReconcileEstoqueLojaIntegrada,
   TIPO_TAREFA_RECONCILE_ESTOQUE_LI,
   type TarefaReconcileEstoqueLi,
   type WalkReconcileEstoqueLi,
+  camposPrecoDaTomadaReconcileLi,
   reconcileEstoqueLojaIntegradaSchema,
   tarefaReconcileEstoqueLiSchema,
 } from '@delfrance/schemas';
 
-import { listarContasLojaIntegrada } from '../../core/contas';
-import {
-  type AmbienteLi,
-  FLUXO_LI,
-  MODO_LI,
-  type ValvulaLi,
-  lerValvula,
-  registrarValvulaLi,
-} from '../../core/valvulas';
+import { type ContaLojaIntegradaResumo, listarContasLojaIntegrada } from '../../core/contas';
+import { type AmbienteLi, MODO_LI, registrarValvulaLi } from '../../core/valvulas';
 import { guardaOPatchLi } from '../../importacao/job';
 import {
   ATRASO_CONTINUACAO_IMPORTACAO_LI_S,
   ATRASO_PAUSA_429_IMPORTACAO_LI_S,
 } from '../../importacao/agendadorImportacao';
 import type { EscritorLogLi } from '../../core/log';
+import { FORMA_PROMO_LIMPA_ENV_LI } from '../../preco/configPrecoLi';
 import type { AgendadorEstoqueLi } from '../agendadorEstoque';
-import { TETO_ESTOQUE_ENV_LI, lerTetoEstoqueLi } from '../configEstoqueLi';
+import { TETO_ESTOQUE_ENV_LI } from '../configEstoqueLi';
 import {
   type AgendadorReconcileEstoqueLi,
   LiTarefasDesligadasError,
   LiTarefasTransitoriasError,
 } from './agendadorReconcile';
+import type { avaliarPrecoDaPaginaLi } from './armaPrecoErp';
+import {
+  type ArmasDoSliceLi,
+  CONTADOR_ESTOQUE_FORA_DO_RUN_LI,
+  CONTADOR_PRECO_ABANDONADO_LI,
+  CONTADOR_PRECO_NO_RUN_LI,
+  armasDoRunLi,
+  lerArmasDoSliceLi,
+} from './armasReconcile';
 import { TAMANHO_PAGINA_CAMINHADA_LI, lerPaginaCaminhadaLi } from './caminhadaVinculos';
 import { ListaCandidatosReconcileLi } from './candidatosReconcile';
+import { tabelasDobradasLi } from './contasPrecoReconcile';
+import {
+  type BaldesDoCarregamentoPrecoLi,
+  type EstadoContaPrecoLi,
+  MAX_BYTES_PRECO_LOTE_RECONCILE_LI,
+  carregarEstadosPrecoLi,
+  conterBytesDoLotePrecoLi,
+} from './estadoPrecoReconcile';
 import {
   type EscritaSincLi,
   type EstadoEscritaReconcileLi,
@@ -133,6 +182,7 @@ import {
   LiReconcileEstoqueAdiadoError,
   LiReconcileEstoqueConcorrenteError,
   MAX_ESCRITAS_LOTE_RECONCILE_LI,
+  type PrecoDaTomadaLi,
   type RaizParaAssumirLi,
   type ResultadoAssumirLi,
   type RunLidoLi,
@@ -141,10 +191,10 @@ import {
   gravarLoteReconcileLi,
   lerRunReconcileLi,
 } from './execucaoReconcile';
-import { avaliarPaginaErpLi } from './faseErp';
 import { FaseLiReconcileLi } from './faseLi';
 import { FilaReconcileLi } from './filaReconcile';
 import { CONTADOR_DEPOSITO_MUDOU_LI, idExecucaoRedepositoLi } from './contasReconcile';
+import { FimPrecoReconcileLi } from './fimPrecoReconcile';
 import { FimReconcileLi } from './fimReconcile';
 import {
   type MapaKitsMontadoLi,
@@ -153,7 +203,19 @@ import {
   proximoLoteDeEscritaDoMapaLi,
   proximoLoteDeVarreduraDoMapaLi,
 } from './mapaKitsReconcile';
+import {
+  UNIDADE_PRECO_RECONCILE_LI,
+  abrirOrcamentoPrecoReconcileLi,
+} from './orcamentoPrecoReconcile';
 import { UNIDADE_RECONCILE_LI, abrirOrcamentoReconcileLi } from './orcamentoReconcile';
+import {
+  CONTADOR_ARMA_FALHOU_LI,
+  MOTIVO_ARMA_PRECO_FALHOU_LI,
+  avaliarPaginaReconcileLi,
+  classeDaFalhaLi,
+  falhaContidaDoPrecoLi,
+} from './paginaErpReconcile';
+import { PaisPrecoReconcileLi } from './paisPrecoReconcile';
 import {
   type EstadoContaReconcileLi,
   carregarEstadosReconcileLi,
@@ -161,6 +223,15 @@ import {
 } from './snapshotReconcile';
 
 const TAG = '[loja-integrada/estoque] reconcile';
+
+/** The price arm's lines (step 13): its own prefix, so a review filters the two flows apart. */
+const TAG_PRECO = '[loja-integrada/preco] reconcile';
+
+/** The motivo of a priced conta whose writes do not fit a commit's price share (`fontesDoLote`). */
+export const MOTIVO_LOTE_PRECO_EXCEDIDO_LI = 'lote-preco-excedido';
+
+/** The conta counter of that drop, beside `armaFalhou`. */
+export const CONTADOR_LOTE_PRECO_EXCEDIDO_LI = 'loteExcedido';
 
 /** Takes of the lease lost to a concurrent writer before {@link LiReconcileEstoqueConcorrenteError}. */
 const MAX_TENTATIVAS_ASSUMIR_LI = 3;
@@ -197,18 +268,30 @@ export interface DepsReconcileEstoqueLi {
   readonly tamanhoPaginaCaminhada?: number;
   /** The candidate list's byte budget (default: the module's); a test shrinks it. */
   readonly orcamentoBytesCandidatos?: number;
+  /**
+   * Step 13: the price documents' byte share of one commit (default
+   * `MAX_BYTES_PRECO_LOTE_RECONCILE_LI`); a test shrinks it.
+   */
+  readonly orcamentoBytesPrecoLote?: number;
   /** Test seams, forwarded to the store phase's context as-is. */
   readonly fetch?: typeof globalThis.fetch;
   readonly escrever?: EscritorLogLi;
+  /**
+   * Step 13: the price arm of one walk page (default `avaliarPrecoDaPaginaLi`); a test seam, so a
+   * fault can be injected where the containment must answer it.
+   */
+  readonly armaPrecoDePaginaLi?: typeof avaliarPrecoDaPaginaLi;
 }
 
 /** Every outcome of one slice. */
 export type ResultadoReconcileLi =
   | { readonly kind: 'payload-invalido' }
-  /** The valve is `off`: nothing was read. */
+  /** Both valves are `off`: nothing was read. */
   | { readonly kind: 'desligado' }
-  /** The cap cannot be read: nothing was read. */
+  /** The cap cannot be read and no price arm can run: nothing was read. */
   | { readonly kind: 'teto-invalido' }
+  /** Step 13: the clear's forma cannot be read and the stock valve is `off`: nothing was read. */
+  | { readonly kind: 'forma-invalida' }
   /** A stale slice: nothing was done. */
   | { readonly kind: 'nada' }
   /** Another run holds the lease. */
@@ -217,8 +300,13 @@ export type ResultadoReconcileLi =
   | { readonly kind: 'continuacao'; readonly seq: number }
   /** A released run's depósito re-run was asked for again (the release's repair). */
   | { readonly kind: 'revisao' }
-  /** The slice ran and handed off to `seq`. */
-  | { readonly kind: 'continua'; readonly fase: FaseReconcileEstoqueLi; readonly seq: number }
+  /** The slice ran and handed off to `seq` (`fasePreco` only while the run is in a price phase). */
+  | {
+      readonly kind: 'continua';
+      readonly fase: FaseReconcileEstoqueLi;
+      readonly seq: number;
+      readonly fasePreco?: FaseReconcilePrecoLi;
+    }
   /** The run reached its end and released the lease. */
   | { readonly kind: 'encerrado' }
   /** No conta to reconcile: released at once. */
@@ -246,12 +334,24 @@ function proximoLease(estado: EstadoEscritaReconcileLi, agoraMs: number): number
   return Math.max(agoraMs + LEASE_RECONCILE_ESTOQUE_LI_MS, minimo);
 }
 
-/** The active Loja Integrada contas with a depósito, in the listing's order, with their roots. */
+/** The run's contas at the take, with their stock roots and the listing's summaries. */
+interface ContasDoRunLi {
+  readonly raizes: RaizParaAssumirLi[];
+  /** Each conta of `raizes`, as the listing summarised it (its tabelas, step 13). */
+  readonly resumos: ReadonlyMap<string, ContaLojaIntegradaResumo>;
+}
+
+/**
+ * The active Loja Integrada contas with a depósito, in the listing's order, with their roots —
+ * read only when the run carries the stock arm (`lerRaizes`; a price-only run writes no stock
+ * root, so it needs no stamp).
+ */
 async function contasDoRunLi(
   db: Firestore,
   deps: DepsReconcileEstoqueLi,
   execucaoId: string,
-): Promise<RaizParaAssumirLi[]> {
+  lerRaizes = true,
+): Promise<ContasDoRunLi> {
   const { contas } = await listarContasLojaIntegrada(db);
   const ativas = contas.filter((c) => c.ativo);
   for (const conta of ativas.filter((c) => c.depositoId === null)) {
@@ -263,17 +363,124 @@ async function contasDoRunLi(
   const comDeposito = ativas.flatMap((c) =>
     c.depositoId === null ? [] : [{ contaId: c.integracaoId, depositoId: c.depositoId }],
   );
-  if (comDeposito.length === 0) return [];
+  const resumos = new Map(
+    ativas.filter((c) => c.depositoId !== null).map((c) => [c.integracaoId, c] as const),
+  );
+  if (comDeposito.length === 0) return { raizes: [], resumos };
   const refs = comDeposito.map((c) => sincEstoqueLojaIntegradaCollection.docRef(db, {}, c.contaId));
-  const snaps = await db.getAll(...refs);
-  return comDeposito.map((c, i) => {
-    const snap = snaps[i];
-    return {
-      ...c,
-      ref: refs[i] ?? sincEstoqueLojaIntegradaCollection.docRef(db, {}, c.contaId),
-      versao: snap?.exists ? (snap.updateTime ?? null) : null,
-    };
+  const snaps = lerRaizes ? await db.getAll(...refs) : [];
+  return {
+    resumos,
+    raizes: comDeposito.map((c, i) => {
+      const snap = snaps[i];
+      return {
+        ...c,
+        ref: refs[i] ?? sincEstoqueLojaIntegradaCollection.docRef(db, {}, c.contaId),
+        versao: snap?.exists ? (snap.updateTime ?? null) : null,
+      };
+    }),
+  };
+}
+
+/**
+ * The price arm's share of the take (module header of `execucaoReconcile.ts`), or `null` when
+ * the take writes exactly the stock-only patch. The price fields are written whenever either could
+ * be non-null — the run carries the price arm, the task carries a request, or the STORED document
+ * holds either key (so a dead price run's values are always erased); with none of the three the
+ * patch is the stock-only one. A carried price arm reads each priced conta's root (ONE `getAll`):
+ * a conta of the run is priced when it names a normal tabela.
+ */
+async function precoDaTomadaLi(
+  db: Firestore,
+  tarefa: TarefaReconcileEstoqueLi,
+  lido: RunLidoLi,
+  armas: ArmasDoSliceLi,
+  doRun: ContasDoRunLi,
+): Promise<PrecoDaTomadaLi | null> {
+  const carrega = armas.preco.ativa;
+  const guardado =
+    Object.hasOwn(lido.dados, 'fasePreco') || Object.hasOwn(lido.dados, 'precoSolicitado');
+  if (!carrega && tarefa.precoSolicitado == null && !guardado) return null;
+  const campos = { ...camposPrecoDaTomadaReconcileLi(tarefa) };
+  if (!carrega) return { contadores: {}, campos, raizes: [] };
+  const contadores = {
+    [CONTADOR_PRECO_NO_RUN_LI]: 1,
+    ...(armas.estoque.ativa ? {} : { [CONTADOR_ESTOQUE_FORA_DO_RUN_LI]: 1 }),
+  };
+  const precificadas = doRun.raizes.flatMap((r) => {
+    const resumo = doRun.resumos.get(r.contaId);
+    const tabelas =
+      resumo === undefined
+        ? null
+        : tabelasDobradasLi({
+            normal: resumo.tabelaNormalId,
+            promocional: resumo.tabelaPromocionalId,
+          });
+    if (resumo === undefined || tabelas === null) return [];
+    const igual =
+      resumo.tabelaPromocionalId !== null && resumo.tabelaPromocionalId === tabelas.normal;
+    const contadoresDaConta: Record<string, number> = igual ? { promoIgualNormal: 1 } : {};
+    return [{ contaId: r.contaId, tabelas, contadores: contadoresDaConta }];
   });
+  if (precificadas.length === 0) return { contadores, campos, raizes: [] };
+  const refs = precificadas.map((p) => sincPrecoLojaIntegradaCollection.docRef(db, {}, p.contaId));
+  const snaps = await db.getAll(...refs);
+  return {
+    contadores,
+    campos,
+    raizes: precificadas.map((p, i) => {
+      const snap = snaps[i];
+      const versao: Timestamp | null = snap?.exists === true ? (snap.updateTime ?? null) : null;
+      return {
+        ...p,
+        ref: refs[i] ?? sincPrecoLojaIntegradaCollection.docRef(db, {}, p.contaId),
+        versao,
+      };
+    }),
+  };
+}
+
+/** The take's price lines (module header of the price arm), once the take LANDED. */
+function registrarTomadaDePrecoLi(
+  deps: DepsReconcileEstoqueLi,
+  tarefa: TarefaReconcileEstoqueLi,
+  armas: ArmasDoSliceLi,
+  doRun: ContasDoRunLi,
+  preco: PrecoDaTomadaLi | null,
+): void {
+  const ids = { execucaoId: tarefa.execucaoId, seq: tarefa.seq };
+  const pedido = tarefa.precoSolicitado ?? null;
+  if (pedido !== null && !doRun.raizes.some((r) => r.contaId === pedido.contaId)) {
+    deps.logger.warn(`${TAG_PRECO} pedido de atualização para conta fora da execução — ignorado`, {
+      ...ids,
+      contaId: pedido.contaId,
+    });
+  }
+  if (!armas.preco.ativa || preco === null) return;
+  if (armas.estoque.valvula.modo !== MODO_LI.off && armas.estoque.teto === null) {
+    deps.logger.error(`${TAG} teto de estoque ilegível — o estoque fica fora desta execução`, {
+      ...ids,
+      motivo: 'teto-invalido',
+      variavel: TETO_ESTOQUE_ENV_LI,
+    });
+  }
+  const precificadas = new Set(preco.raizes.map((r) => r.contaId));
+  for (const raiz of doRun.raizes) {
+    if (!precificadas.has(raiz.contaId)) {
+      deps.logger.info(`${TAG_PRECO} conta sem tabela normal — sem preço nesta execução`, {
+        ...ids,
+        contaId: raiz.contaId,
+      });
+    }
+  }
+  for (const raiz of preco.raizes) {
+    if ((raiz.contadores.promoIgualNormal ?? 0) > 0) {
+      deps.logger.warn(`${TAG_PRECO} tabela promocional igual à normal — a promoção será limpa`, {
+        ...ids,
+        contaId: raiz.contaId,
+      });
+    }
+  }
 }
 
 /** The context of the slice the last-attempt rule needs (module header, "Failures"). */
@@ -299,21 +506,40 @@ export async function despacharReconcileEstoqueLi(
   const tarefa = lida.data;
   const ids = { execucaoId: tarefa.execucaoId, seq: tarefa.seq };
 
-  // 2. The valve. Zero reads.
-  const valvula = lerValvula(FLUXO_LI.estoque, deps.ambiente);
-  if (valvula.modo === MODO_LI.off) {
-    if (!valvula.modoReconhecido) registrarValvulaLi(valvula, { conta: null });
+  // 2. Both valves (`armasReconcile.ts`): both `off` ⇒ nothing. Zero reads.
+  const armas = lerArmasDoSliceLi(deps.ambiente);
+  const valvula = armas.estoque.valvula;
+  if (!valvula.modoReconhecido) registrarValvulaLi(valvula, { conta: null });
+  if (!armas.preco.valvula.modoReconhecido) {
+    registrarValvulaLi(armas.preco.valvula, { conta: null });
+  }
+  if (valvula.modo === MODO_LI.off && armas.preco.valvula.modo === MODO_LI.off) {
     return { kind: 'desligado' };
   }
 
-  // 3. The cap. Zero reads.
-  if (lerTetoEstoqueLi(deps.ambiente) === null) {
-    deps.logger.error(`${TAG} teto de estoque ilegível — nada lido`, {
-      ...ids,
-      motivo: 'teto-invalido',
-      variavel: TETO_ESTOQUE_ENV_LI,
-    });
-    return { kind: 'teto-invalido' };
+  // 3. The settings. Zero reads. With no price arm the stock-only path, exactly: an unreadable cap
+  // stops the slice. With a price arm, an unreadable cap only keeps stock out of the run — logged
+  // once per run, by the take or by the slice that drops a carried stock arm.
+  if (!armas.preco.ativa) {
+    if (armas.preco.valvula.modo !== MODO_LI.off) {
+      deps.logger.error(
+        `${TAG_PRECO} forma da limpeza ilegível — o preço fica fora desta execução`,
+        {
+          ...ids,
+          motivo: 'forma-promo-invalida',
+          variavel: FORMA_PROMO_LIMPA_ENV_LI,
+        },
+      );
+      if (valvula.modo === MODO_LI.off) return { kind: 'forma-invalida' };
+    }
+    if (armas.estoque.teto === null) {
+      deps.logger.error(`${TAG} teto de estoque ilegível — nada lido`, {
+        ...ids,
+        motivo: 'teto-invalido',
+        variavel: TETO_ESTOQUE_ENV_LI,
+      });
+      return { kind: 'teto-invalido' };
+    }
   }
 
   // 4. The run document, and the decision.
@@ -366,7 +592,9 @@ export async function despacharReconcileEstoqueLi(
           if (decisao.abandonada === 'fora-do-formato') deps.logger.error(linha, meta);
           else deps.logger.warn(linha, meta);
         }
-        const raizes = await contasDoRunLi(db, deps, tarefa.execucaoId);
+        const doRun = await contasDoRunLi(db, deps, tarefa.execucaoId, armas.estoque.ativa);
+        const raizes = doRun.raizes;
+        const preco = await precoDaTomadaLi(db, tarefa, lido, armas, doRun);
         let tomada: ResultadoAssumirLi;
         try {
           tomada = await assumirLeaseReconcileLi(db, {
@@ -374,6 +602,8 @@ export async function despacharReconcileEstoqueLi(
             tarefa,
             agoraMs: deps.agoraMs(),
             raizes,
+            ...(armas.estoque.ativa ? {} : { escreverRaizesEstoque: false }),
+            ...(preco === null ? {} : { preco }),
           });
         } catch (err) {
           // A take that LANDED behind its error holds the lease with no slice running.
@@ -395,7 +625,12 @@ export async function despacharReconcileEstoqueLi(
           return { kind: 'sem-contas' };
         }
         estado = tomada.estado;
-        deps.logger.info(`${TAG} execução iniciada`, { ...ids, contas: raizes.length });
+        deps.logger.info(`${TAG} execução iniciada`, {
+          ...ids,
+          contas: raizes.length,
+          ...(armas.preco.ativa ? { precificadas: preco?.raizes.length ?? 0 } : {}),
+        });
+        registrarTomadaDePrecoLi(deps, tarefa, armas, doRun, preco);
         break;
       }
     }
@@ -406,7 +641,7 @@ export async function despacharReconcileEstoqueLi(
     atrasoDoFim: ATRASO_CONTINUACAO_IMPORTACAO_LI_S,
   };
   try {
-    return await executarSliceLi(db, tarefa, estado, deps, rastro, valvula);
+    return await executarSliceLi(db, tarefa, estado, deps, rastro, armas);
   } catch (err) {
     if (deps.tentativa < TASK_MAX_ATTEMPTS - 1) throw err;
     if (!retentavel(err)) {
@@ -549,6 +784,12 @@ function runDoEstado(estado: EstadoEscritaReconcileLi): ReconcileEstoqueLojaInte
   });
 }
 
+/** A per-conta state the end-of-slice batch writes: the stock one or the price one. */
+interface EstadoQueGravaLi {
+  escritas(): EscritaSincLi[];
+  gravado(versoes: ReadonlyMap<string, Timestamp | null>): void;
+}
+
 /** Steps 5 and 6 of the module header. */
 async function executarSliceLi(
   db: Firestore,
@@ -556,12 +797,15 @@ async function executarSliceLi(
   estado: EstadoEscritaReconcileLi,
   deps: DepsReconcileEstoqueLi,
   rastro: RastroDoSliceLi,
-  valvula: ValvulaLi,
+  armas: ArmasDoSliceLi,
 ): Promise<ResultadoReconcileLi> {
   const ids = { execucaoId: tarefa.execucaoId, seq: tarefa.seq };
   const run = runDoEstado(estado);
+  const valvula = armas.estoque.valvula;
   const orcamento = abrirOrcamentoReconcileLi(deps.agoraMs, deps.inicioMs);
+  const orcamentoPreco = abrirOrcamentoPrecoReconcileLi(deps.agoraMs, deps.inicioMs);
   let fase: FaseReconcileEstoqueLi = run.fase ?? FASE_RECONCILE_ESTOQUE_LI.erp;
+  let fasePreco: FaseReconcilePrecoLi | null = run.fasePreco ?? null;
   let walk: WalkReconcileEstoqueLi | null = run.walk;
   let idxConta = run.idxConta;
   const contadores: Record<string, number> = { ...run.contadores };
@@ -573,10 +817,41 @@ async function executarSliceLi(
   };
   const candidatos = new ListaCandidatosReconcileLi(run.candidatos, deps.orcamentoBytesCandidatos);
 
+  // The arms the run carries (`armasReconcile.ts`), less what this slice finds inactive: an arm is
+  // only ever DROPPED mid-run, with ONE line, and the run goes on with the other.
+  const doTomado = armasDoRunLi(contadores);
+  if (doTomado.estoque && !armas.estoque.ativa) {
+    contadores[CONTADOR_ESTOQUE_FORA_DO_RUN_LI] = 1;
+    if (valvula.modo !== MODO_LI.off) {
+      deps.logger.error(`${TAG} teto de estoque ilegível — o estoque fica fora desta execução`, {
+        ...ids,
+        motivo: 'teto-invalido',
+        variavel: TETO_ESTOQUE_ENV_LI,
+      });
+    } else {
+      deps.logger.warn(
+        `${TAG} braço parado — a válvula ou a configuração mudou durante a execução`,
+        { ...ids, motivo: 'arma-parada' },
+      );
+    }
+  }
+  if (doTomado.preco && !armas.preco.ativa) {
+    contadores[CONTADOR_PRECO_ABANDONADO_LI] = 1;
+    deps.logger.warn(
+      `${TAG_PRECO} braço parado — a válvula ou a configuração mudou durante a execução`,
+      { ...ids, motivo: 'arma-parada' },
+    );
+  }
+  const { estoque: comEstoque, preco: comPreco } = armasDoRunLi(contadores);
+  // A run that ever carried the price arm writes `fasePreco` in every patch (so leaving a price
+  // phase always clears it); one that never did writes exactly the stock-only patch.
+  const escreveFasePreco =
+    (run.contadores[CONTADOR_PRECO_NO_RUN_LI] ?? 0) > 0 || run.fasePreco != null;
+
   // Every per-conta state the slice loads, ONE copy per conta whichever phase loaded it: the
   // ERP phase loads them all at once, the store phase one conta at a time.
   const estados = new Map<string, EstadoContaReconcileLi>();
-  if (fase === FASE_RECONCILE_ESTOQUE_LI.erp) {
+  if (fase === FASE_RECONCILE_ESTOQUE_LI.erp && comEstoque) {
     const todos = await carregarEstadosReconcileLi(db, tarefa.execucaoId, run.contas);
     if (todos === null) {
       deps.logger.warn(`${TAG} estado de conta de outra execução — o slice para`, ids);
@@ -610,6 +885,30 @@ async function executarSliceLi(
     if (lido !== null) estados.set(conta.contaId, lido);
     return lido;
   };
+
+  // The PRICE states (`estadoPrecoReconcile.ts`), loaded lazily and once per slice per conta: the
+  // ERP phase loads every priced conta's root and buckets at once, the parents phase one conta at
+  // a time, the end phase every remaining root at once. A conta absent from the map is not priced
+  // by this run (another run's root, or none).
+  const estadosPreco = new Map<string, EstadoContaPrecoLi>();
+  const pedidasPreco = new Set<string>();
+  const contasDoRun = run.contas.map((contaId, idx) => ({ idx, contaId }));
+  const carregarPreco = async (
+    pedidas: readonly { readonly idx: number; readonly contaId: string }[],
+    baldes: BaldesDoCarregamentoPrecoLi,
+  ): Promise<void> => {
+    const faltam = pedidas.filter((c) => !pedidasPreco.has(c.contaId));
+    if (faltam.length === 0) return;
+    const lidos = await carregarEstadosPrecoLi(db, tarefa.execucaoId, faltam, { baldes });
+    for (const c of faltam) pedidasPreco.add(c.contaId);
+    for (const [contaId, e] of lidos) estadosPreco.set(contaId, e);
+  };
+  if (fase === FASE_RECONCILE_ESTOQUE_LI.erp && comPreco && (walk === null || !walk.concluida)) {
+    await carregarPreco(contasDoRun, 'todos');
+  }
+  const contasPreco = () =>
+    [...estadosPreco.values()].map((e) => e.conta).sort((a, b) => a.idx - b.idx);
+
   // The store phase, built when the slice reaches it.
   let faseLi: FaseLiReconcileLi | null = null;
   const faseLiDoSlice = (): FaseLiReconcileLi => {
@@ -618,8 +917,8 @@ async function executarSliceLi(
       deps,
       execucaoId: tarefa.execucaoId,
       runIniciadoEmMs: run.iniciadoEmMs ?? 0,
-      // Read and checked at step 3: never null here.
-      teto: lerTetoEstoqueLi(deps.ambiente) ?? 0,
+      // Read and checked at the gate: never null while the stock arm is carried.
+      teto: armas.estoque.teto ?? 0,
       orcamento,
       candidatos,
       contar,
@@ -665,6 +964,28 @@ async function executarSliceLi(
     });
     return fim;
   };
+  // The price arm's parents phase and end, built when the slice reaches them.
+  let pais: PaisPrecoReconcileLi | null = null;
+  const paisDoSlice = (): PaisPrecoReconcileLi => {
+    pais ??= new PaisPrecoReconcileLi({ db, execucaoId: tarefa.execucaoId, logger: deps.logger });
+    return pais;
+  };
+  let fimPreco: FimPrecoReconcileLi | null = null;
+  const fimPrecoDoSlice = (): FimPrecoReconcileLi => {
+    fimPreco ??= new FimPrecoReconcileLi({
+      db,
+      deps,
+      execucaoId: tarefa.execucaoId,
+      runIniciadoEmMs: run.iniciadoEmMs ?? 0,
+      contas: run.contas,
+      valvula: armas.preco.valvula,
+      estadoDe: async (idx) => {
+        await carregarPreco(contasDoRun.slice(idx), 'nenhum');
+        return estadosPreco.get(run.contas[idx] ?? '') ?? null;
+      },
+    });
+    return fimPreco;
+  };
 
   /** The run document's fields as the slice leaves them, but `seq` and the lease. */
   const progresso = (): Record<string, unknown> => ({
@@ -673,13 +994,109 @@ async function executarSliceLi(
     idxConta,
     contadores,
     ...(candidatos.sujo ? { candidatos: candidatos.lista() } : {}),
+    ...(escreveFasePreco ? { fasePreco } : {}),
   });
+  /** Every per-conta state the slice holds: what its batches write. */
+  const fontes = (): EstadoQueGravaLi[] => [...estados.values(), ...estadosPreco.values()];
+  /**
+   * The states a commit is about to write, the price share held to its byte budget first
+   * (`estadoPrecoReconcile.ts`, "The commit's bytes"): a conta whose price writes do not fit loses
+   * its bucket writes and its price arm for the run — ONE ERROR, counted `armaFalhou` — and the
+   * stock writes ride the commit as they would without the price arm.
+   */
+  const fontesDoLote = (): EstadoQueGravaLi[] => {
+    conterBytesDoLotePrecoLi(
+      estadosPreco.values(),
+      deps.orcamentoBytesPrecoLote ?? MAX_BYTES_PRECO_LOTE_RECONCILE_LI,
+      (e, bytes) => {
+        e.descartarBaldesPendentes();
+        if (e.contador(CONTADOR_ARMA_FALHOU_LI) > 0) return;
+        e.contar(CONTADOR_ARMA_FALHOU_LI);
+        e.contar(CONTADOR_LOTE_PRECO_EXCEDIDO_LI);
+        deps.logger.error(
+          `${TAG_PRECO} estado de preço grande demais para o lote — a conta fica sem preço nesta execução`,
+          { ...ids, contaId: e.conta.contaId, motivo: MOTIVO_LOTE_PRECO_EXCEDIDO_LI, bytes },
+        );
+      },
+    );
+    return fontes();
+  };
+  /** After the stock arm's phases (or in their place): the price arm, or the end. */
+  const depoisDoEstoque = (): void => {
+    idxConta = 0;
+    if (comPreco) {
+      fase = FASE_RECONCILE_ESTOQUE_LI.fila;
+      fasePreco = FASE_RECONCILE_PRECO_LI.paisPreco;
+    } else {
+      fase = FASE_RECONCILE_ESTOQUE_LI.fim;
+      fasePreco = null;
+    }
+  };
+  /** Into the end: `fasePreco` cleared in the SAME patch (a price phase only beside `fila`). */
+  const paraOFim = (): void => {
+    fase = FASE_RECONCILE_ESTOQUE_LI.fim;
+    fasePreco = null;
+    idxConta = 0;
+  };
+  /**
+   * A price unit's failure (module header, "Failures"): a coding bug or a value off its schema is
+   * CONTAINED — the conta's price arm ends for the run (`armaFalhou`), ONE ERROR — and so is a
+   * failure a retry could change on the queue's LAST attempt; before it, the slice's progress is
+   * checkpointed at the SAME `seq` and the caller rethrows the ORIGINAL error (`checkpoint: false`
+   * — the end phase — rethrows with none, as the stock end does). Anything else the caller
+   * rethrows as is (`relancar`). A price failure never releases the lease. `e` is the conta's
+   * state when the unit had loaded it; `undefined` when the load of that state is what failed —
+   * the same rule then, logged with nothing to count it on (the conta's root keeps no
+   * `paisConcluido`, so its end decides no aviso).
+   */
+  const falhaDoPreco = async (
+    err: unknown,
+    faseDaFalha: string,
+    contaId: string,
+    e: EstadoContaPrecoLi | undefined,
+    checkpoint: boolean,
+  ): Promise<'contida' | 'parado' | 'relancar'> => {
+    const meta = { ...ids, fase: faseDaFalha, contaId, classe: classeDaFalhaLi(err) };
+    if (falhaContidaDoPrecoLi(err)) {
+      e?.contar(CONTADOR_ARMA_FALHOU_LI);
+      deps.logger.error(
+        `${TAG_PRECO} falha no braço de preço — a conta fica sem preço nesta execução`,
+        { ...meta, motivo: MOTIVO_ARMA_PRECO_FALHOU_LI },
+      );
+      return 'contida';
+    }
+    if (!retentavel(err)) return 'relancar';
+    if (deps.tentativa >= TASK_MAX_ATTEMPTS - 1) {
+      e?.contar('tentativasEsgotadas');
+      deps.logger.error(
+        `${TAG_PRECO} tentativas esgotadas no braço de preço — a conta fica sem preço nesta execução`,
+        { ...meta, motivo: 'tentativas-esgotadas' },
+      );
+      return 'contida';
+    }
+    if (checkpoint) {
+      const parado = await gravarProgressoAntesDaFalhaLi(
+        db,
+        estado,
+        progresso(),
+        fontesDoLote(),
+        deps.agoraMs,
+      );
+      if (parado) return 'parado';
+    }
+    return 'relancar';
+  };
 
   let final = false;
   let atraso = ATRASO_CONTINUACAO_IMPORTACAO_LI_S;
   maquina: for (;;) {
     if (fase === FASE_RECONCILE_ESTOQUE_LI.erp) {
       if (walk === null || !walk.concluida) {
+        // Neither arm left (both dropped): nothing to walk for.
+        if (!comEstoque && !comPreco) {
+          paraOFim();
+          continue;
+        }
         if (!orcamento.cabe(UNIDADE_RECONCILE_LI.erp)) break;
         const pagina = await lerPaginaCaminhadaLi(
           db,
@@ -687,7 +1104,21 @@ async function executarSliceLi(
           deps.tamanhoPaginaCaminhada ?? TAMANHO_PAGINA_CAMINHADA_LI,
         );
         const global = new Map<string, number>();
-        const porConta = await avaliarPaginaErpLi(db, pagina.grupos, contas, estados, { global });
+        const { porContaEstoque: porConta } = await avaliarPaginaReconcileLi(db, pagina.grupos, {
+          estoque: comEstoque ? { contas, estados } : null,
+          preco: comPreco
+            ? {
+                contas: contasPreco(),
+                estados: estadosPreco,
+                ...(deps.armaPrecoDePaginaLi === undefined
+                  ? {}
+                  : { arma: deps.armaPrecoDePaginaLi }),
+              }
+            : null,
+          global,
+          logger: deps.logger,
+          execucaoId: tarefa.execucaoId,
+        });
         for (const [nome, n] of global) contar(nome, n);
         for (const conta of contas) {
           for (const [nome, n] of porConta.get(conta.contaId) ?? []) {
@@ -721,11 +1152,19 @@ async function executarSliceLi(
         if (unidade.feito) idxConta += 1;
         continue;
       }
+      if (!comEstoque) {
+        depoisDoEstoque();
+        continue;
+      }
       fase = FASE_RECONCILE_ESTOQUE_LI.li;
       idxConta = 0;
       continue;
     }
     if (fase === FASE_RECONCILE_ESTOQUE_LI.li) {
+      if (!comEstoque) {
+        depoisDoEstoque();
+        continue;
+      }
       const contaId = run.contas[idxConta];
       if (contaId === undefined) {
         fase = FASE_RECONCILE_ESTOQUE_LI.fila;
@@ -752,7 +1191,7 @@ async function executarSliceLi(
             db,
             estado,
             progresso(),
-            estados,
+            fontesDoLote(),
             deps.agoraMs,
           );
           if (parado) return { kind: 'parado' };
@@ -760,14 +1199,24 @@ async function executarSliceLi(
         }
       }
     }
-    if (fase === FASE_RECONCILE_ESTOQUE_LI.fila) {
+    if (fase === FASE_RECONCILE_ESTOQUE_LI.fila && fasePreco === null) {
+      if (!comEstoque) {
+        depoisDoEstoque();
+        continue;
+      }
       const passo = await filaDoSlice().unidade();
       switch (passo.tipo) {
         case 'unidade':
           continue maquina;
         case 'concluida':
-          fase = FASE_RECONCILE_ESTOQUE_LI.fim;
-          idxConta = 0;
+          if (comPreco) {
+            // Its candidates are gone: `fase` stays `fila` beside the price phase.
+            fasePreco = FASE_RECONCILE_PRECO_LI.paisPreco;
+            idxConta = 0;
+          } else {
+            fase = FASE_RECONCILE_ESTOQUE_LI.fim;
+            idxConta = 0;
+          }
           continue maquina;
         case 'sem-orcamento':
           break maquina;
@@ -780,7 +1229,7 @@ async function executarSliceLi(
             db,
             estado,
             progresso(),
-            estados,
+            fontesDoLote(),
             deps.agoraMs,
           );
           if (parado) return { kind: 'parado' };
@@ -788,12 +1237,68 @@ async function executarSliceLi(
         }
       }
     }
+    if (fase === FASE_RECONCILE_ESTOQUE_LI.fila) {
+      // The price arm's phases (step 13): `pais-preco`, then the end.
+      if (!comPreco || fasePreco !== FASE_RECONCILE_PRECO_LI.paisPreco) {
+        paraOFim();
+        continue;
+      }
+      const contaId = run.contas[idxConta];
+      if (contaId === undefined) {
+        paraOFim();
+        continue;
+      }
+      if (!orcamentoPreco.cabe(UNIDADE_PRECO_RECONCILE_LI.paisPreco)) break;
+      let passo: 'unidade' | 'conta-encerrada';
+      try {
+        // The load is the unit's too: its failure is the conta's, never the run's.
+        await carregarPreco([{ idx: idxConta, contaId }], 'todos');
+        const e = estadosPreco.get(contaId);
+        // Not priced by this run, or its price arm already ended: nothing to do for it.
+        passo =
+          e === undefined || e.contador(CONTADOR_ARMA_FALHOU_LI) > 0
+            ? 'conta-encerrada'
+            : await paisDoSlice().unidade(e);
+      } catch (err) {
+        const desfecho = await falhaDoPreco(
+          err,
+          FASE_RECONCILE_PRECO_LI.paisPreco,
+          contaId,
+          estadosPreco.get(contaId),
+          true,
+        );
+        if (desfecho === 'relancar') throw err;
+        if (desfecho === 'parado') return { kind: 'parado' };
+        passo = 'conta-encerrada';
+      }
+      if (passo === 'conta-encerrada') idxConta += 1;
+      continue;
+    }
     if (idxConta < run.contas.length) {
-      const passo = await fimDoSlice().unidade(idxConta);
-      if (passo.tipo === 'sem-orcamento') break;
-      if (passo.tipo === 'parado') {
-        deps.logger.warn(`${TAG} estado de conta de outra execução — o slice para`, ids);
-        return { kind: 'parado' };
+      // A conta's two ends never split across slices: both fit, or the slice hands off first.
+      if (comPreco && !orcamentoPreco.cabe(UNIDADE_PRECO_RECONCILE_LI.fimComPreco)) break;
+      if (comEstoque) {
+        const passo = await fimDoSlice().unidade(idxConta);
+        if (passo.tipo === 'sem-orcamento') break;
+        if (passo.tipo === 'parado') {
+          deps.logger.warn(`${TAG} estado de conta de outra execução — o slice para`, ids);
+          return { kind: 'parado' };
+        }
+      }
+      if (comPreco) {
+        try {
+          await fimPrecoDoSlice().unidade(idxConta);
+        } catch (err) {
+          const contaId = run.contas[idxConta] ?? '';
+          const desfecho = await falhaDoPreco(
+            err,
+            FASE_RECONCILE_ESTOQUE_LI.fim,
+            contaId,
+            estadosPreco.get(contaId),
+            false,
+          );
+          if (desfecho !== 'contida') throw err;
+        }
       }
       idxConta += 1;
       continue;
@@ -803,10 +1308,12 @@ async function executarSliceLi(
   }
 
   // The release's check (module header, step 6): stored in the release patch's counters.
-  if (final) registrarMaximo(CONTADOR_DEPOSITO_MUDOU_LI, await fimDoSlice().revisaoDeDeposito());
+  if (final && comEstoque) {
+    registrarMaximo(CONTADOR_DEPOSITO_MUDOU_LI, await fimDoSlice().revisaoDeDeposito());
+  }
 
   // 6. The end-of-slice checkpoint: per-conta documents first when they exceed one batch.
-  const escritas = [...[...estados.values()].flatMap((e) => e.escritas()), ...escritasDoFim];
+  const escritas = [...fontesDoLote().flatMap((e) => e.escritas()), ...escritasDoFim];
   while (escritas.length > MAX_ESCRITAS_LOTE_RECONCILE_LI) {
     const parte = escritas.splice(0, MAX_ESCRITAS_LOTE_RECONCILE_LI);
     const r = await gravarLoteReconcileLi(
@@ -816,7 +1323,7 @@ async function executarSliceLi(
       parte,
     );
     if (r.tipo === 'parar') return { kind: 'parado' };
-    for (const e of estados.values()) e.gravado(r.versoes);
+    for (const e of fontes()) e.gravado(r.versoes);
   }
   const patchDoFim: Record<string, unknown> = {
     ...progresso(),
@@ -835,24 +1342,25 @@ async function executarSliceLi(
     await pedirRevisaoDeDepositoLi(contadores[CONTADOR_DEPOSITO_MUDOU_LI] ?? 0, tarefa, deps);
     return { kind: 'encerrado' };
   }
-  return passarAdiante(db, tarefa, estado, tarefa.seq + 1, atraso, deps, fase);
+  return passarAdiante(db, tarefa, estado, tarefa.seq + 1, atraso, deps, fase, fasePreco);
 }
 
 /**
  * The progress checkpoint of a store-phase failure a retry may change (module header,
- * "Failures"): the run document at the SAME `seq` and every per-conta document the slice changed.
- * `true` when the lease is no longer this slice's (it stops). A failure of this write itself —
- * Firestore's, or another dispatch of the slice — is left to the retry: the caller rethrows the
- * ORIGINAL error, and the retry resumes from the last checkpoint that landed.
+ * "Failures"): the run document at the SAME `seq` and every per-conta document the slice changed
+ * (the price states too, step 13). `true` when the lease is no longer this slice's (it stops). A
+ * failure of this write itself — Firestore's, or another dispatch of the slice — is left to the
+ * retry: the caller rethrows the ORIGINAL error, and the retry resumes from the last checkpoint
+ * that landed.
  */
 async function gravarProgressoAntesDaFalhaLi(
   db: Firestore,
   estado: EstadoEscritaReconcileLi,
   patch: Readonly<Record<string, unknown>>,
-  estados: ReadonlyMap<string, EstadoContaReconcileLi>,
+  estados: readonly EstadoQueGravaLi[],
   agoraMs: () => number,
 ): Promise<boolean> {
-  const escritas = [...estados.values()].flatMap((e) => e.escritas());
+  const escritas = estados.flatMap((e) => e.escritas());
   try {
     while (escritas.length > MAX_ESCRITAS_LOTE_RECONCILE_LI) {
       const parte = escritas.splice(0, MAX_ESCRITAS_LOTE_RECONCILE_LI);
@@ -863,7 +1371,7 @@ async function gravarProgressoAntesDaFalhaLi(
         parte,
       );
       if (r.tipo === 'parar') return true;
-      for (const e of estados.values()) e.gravado(r.versoes);
+      for (const e of estados) e.gravado(r.versoes);
     }
     const r = await gravarLoteReconcileLi(
       db,
@@ -1007,6 +1515,7 @@ async function passarAdiante(
   atrasoS: number,
   deps: DepsReconcileEstoqueLi,
   fase: FaseReconcileEstoqueLi,
+  fasePreco: FaseReconcilePrecoLi | null = null,
 ): Promise<ResultadoReconcileLi> {
   try {
     await deps
@@ -1025,7 +1534,7 @@ async function passarAdiante(
     });
     return { kind: 'tarefas-desligadas' };
   }
-  return { kind: 'continua', fase, seq };
+  return { kind: 'continua', fase, seq, ...(fasePreco === null ? {} : { fasePreco }) };
 }
 
 /**
@@ -1121,6 +1630,7 @@ async function encerrarNaUltimaTentativaLi(
       atraso,
       deps,
       run.fase ?? FASE_RECONCILE_ESTOQUE_LI.erp,
+      run.fasePreco ?? null,
     );
   } catch (err) {
     if (!(err instanceof LiTarefasTransitoriasError)) throw err;
@@ -1146,5 +1656,6 @@ export function camposDoRegistroDoReconcileLi(
     seq: campo('seq'),
     kind: r.kind,
     fase: r.kind === 'continua' ? r.fase : null,
+    ...(r.kind === 'continua' && r.fasePreco !== undefined ? { fasePreco: r.fasePreco } : {}),
   };
 }

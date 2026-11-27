@@ -57,6 +57,12 @@
  *    stock trigger's rules, the PRICE producer's root a leaf, its closure reaches no context
  *    loader, park, pacer, write engine or send run — the price send run banned on top — names no
  *    client, calls no `fetch`, and loads the package only through the same allow-list;
+ *  - the daily reconcile's price arm, ERP side (step 13, PR 13-f1), is reached from the stock
+ *    reconcile's task path and calls nothing outside the ERP: each of its modules is in that path's
+ *    closure, and their own closure, walked with the stock trigger's rules (the producer roots
+ *    leaves, the price send run banned on top), reaches no context loader, park, pacer, write
+ *    engine or send run, names no client and calls no `fetch` — and no module of it so much as
+ *    names one, comments included;
  *  - the two operator STOCK routes (`ROTAS_DE_ENFILEIRAMENTO_ESTOQUE_LI`: the manual push
  *    `POST …/enviar-estoque` and the reconcile `POST …/conta/[id]/estoque/reconciliar`, step 12,
  *    PR 12-h) only enqueue: walked with the stock trigger's rules — the App Hosting producer root
@@ -502,6 +508,35 @@ const CAMINHO_DA_TAREFA_DO_RECONCILE = [
 
 /** The reconcile's store phase: the one module of that path that calls Loja Integrada. */
 const FASE_LI_DO_RECONCILE = 'lib/lojaIntegrada/estoque/reconcile/faseLi.ts';
+
+/**
+ * The daily reconcile's PRICE ARM, ERP side (step 13, PR 13-f1), each module reached from the
+ * slice: the both-valve gate, the price state, the pure walk arm and its page reader, the parents
+ * phase, the uncached conta re-read with the folded tabelas, the price end and the price units'
+ * budget. None calls Loja Integrada, so each is walked with the stock trigger's rules (no context,
+ * park, pacer, write engine or send run, no client named, no `fetch`) and must ALSO be in the
+ * task path's closure — a module the slice stopped reaching would leave these rows proving nothing.
+ */
+const MODULOS_DO_BRACO_DE_PRECO_DO_RECONCILE = [
+  'lib/lojaIntegrada/estoque/reconcile/armasReconcile.ts',
+  'lib/lojaIntegrada/estoque/reconcile/estadoPrecoReconcile.ts',
+  'lib/lojaIntegrada/estoque/reconcile/armaPrecoErp.ts',
+  'lib/lojaIntegrada/estoque/reconcile/paginaErpReconcile.ts',
+  'lib/lojaIntegrada/estoque/reconcile/paisPrecoReconcile.ts',
+  'lib/lojaIntegrada/estoque/reconcile/contasPrecoReconcile.ts',
+  'lib/lojaIntegrada/estoque/reconcile/fimPrecoReconcile.ts',
+  'lib/lojaIntegrada/estoque/reconcile/orcamentoPrecoReconcile.ts',
+] as const;
+
+/**
+ * The shared time-budget arithmetic (`importacao/orcamento.ts`: the import's, the stock reconcile's
+ * and the price arm's one rule), a LEAF of the price arm's walk: it reads the package's two request
+ * deadlines and the pacer's interval as CONSTANTS to size a unit's worst case, so walking into it
+ * would put the package and the pacer module in a closure that calls neither. Its own text is still
+ * scanned (no `fetch`, no client, no context loader named); what it computes is pinned where it
+ * lives (`importacao/orcamento.test.ts`, `prazos.test.ts`).
+ */
+const ORCAMENTO_DA_IMPORTACAO = 'lib/lojaIntegrada/importacao/orcamento.ts';
 
 /** The complete step's photos (step 9, PR 9-d): the dispatch's ONE path to the CDN. */
 const MODULO_DAS_FOTOS = 'lib/lojaIntegrada/importacao/fotos.ts';
@@ -1270,6 +1305,76 @@ describe('lib/lojaIntegrada layout', () => {
       expect(faseLi.split('loadLojaIntegradaContext(')).toHaveLength(2);
       expect(faseLi).toContain('lerPaginaEstoqueLi(contexto.cliente');
       expect(faseLi).toContain('buscarEstoqueProdutoLi(contexto.cliente');
+    },
+  );
+
+  it(
+    'the reconcile’s price arm, ERP side (step 13, PR 13-f1), rides the stock task path and calls NOTHING outside the ERP: every module in the slice’s closure, none reaching a context, park, pacer, write engine or send run, naming a client or a context loader, or calling fetch',
+    { timeout: 30_000 },
+    () => {
+      for (const modulo of MODULOS_DO_BRACO_DE_PRECO_DO_RECONCILE) {
+        expect(lerDoApp(modulo), modulo).not.toBeNull();
+      }
+      // Each one is reached from the task path (walked as the read routes are walked above).
+      const ler: LeitorDeFonte = (c) => {
+        const texto = lerDoApp(c);
+        return texto === null ? null : semImportacoesDeTipo(texto);
+      };
+      const daTarefa = fechoDeImportacoes(
+        CAMINHO_DA_TAREFA_DO_RECONCILE,
+        ler,
+        resolverAliasDoApp(ler),
+      );
+      expect(daTarefa.arquivos).toEqual(
+        expect.arrayContaining([...MODULOS_DO_BRACO_DE_PRECO_DO_RECONCILE]),
+      );
+      // Their own closure, walked with the stock trigger's rules plus the price send run's ban:
+      // the producer roots leaves, as for the triggers, and so is the shared budget arithmetic
+      // (below).
+      const folhas = [
+        RAIZ_DO_PRODUTOR_DE_ESTOQUE,
+        RAIZ_DO_PRODUTOR_DE_LEITURA,
+        RAIZ_DO_PRODUTOR_DE_PRECO,
+        ORCAMENTO_DA_IMPORTACAO,
+      ];
+      expect(
+        violacoesDoGatilhoDeEstoque(
+          MODULOS_DO_BRACO_DE_PRECO_DO_RECONCILE,
+          lerDoApp,
+          folhas,
+          MODULOS_FORA_DO_GATILHO_DE_PRECO,
+        ),
+      ).toEqual([]);
+      // RAW text, comments included: none names the context loader, a client or `fetch` at all.
+      for (const modulo of MODULOS_DO_BRACO_DE_PRECO_DO_RECONCILE) {
+        const texto = lerDoApp(modulo) ?? '';
+        expect(texto, modulo).not.toMatch(NOMES_DE_CHAMADA_DO_GATILHO_DE_ESTOQUE);
+        expect(texto, modulo).not.toMatch(/\bfetch\b/);
+      }
+      // Anti-vacuity: the walk entered the stock walk's page evaluator and readers, the shared
+      // link reader, the clear's forma and the avisos; and the rules bite — walked by them, the
+      // reconcile's store phase fails on the context loader it reaches.
+      const doBraco = fechoDeImportacoes(
+        MODULOS_DO_BRACO_DE_PRECO_DO_RECONCILE,
+        leitorDoGatilhoDeEstoque(lerDoApp, folhas),
+        resolverAliasDoApp(leitorDoGatilhoDeEstoque(lerDoApp, folhas)),
+      );
+      expect(doBraco.arquivos).toEqual(
+        expect.arrayContaining([
+          ORCAMENTO_DA_IMPORTACAO,
+          'lib/lojaIntegrada/estoque/reconcile/faseErp.ts',
+          'lib/lojaIntegrada/estoque/leituraEstoqueErp.ts',
+          'lib/lojaIntegrada/preco/leituraPrecoErp.ts',
+          'lib/lojaIntegrada/preco/configPrecoLi.ts',
+          'lib/lojaIntegrada/preco/tabelasLi.ts',
+          'lib/lojaIntegrada/core/valvulas.ts',
+          'lib/lojaIntegrada/avisos/avisos.ts',
+          ...CARREGAM_O_PACOTE_NO_GATILHO_DE_ESTOQUE,
+        ]),
+      );
+      expect(
+        violacoesDoGatilhoDeEstoque([FASE_LI_DO_RECONCILE], lerDoApp, folhas).length,
+      ).toBeGreaterThan(0);
     },
   );
 

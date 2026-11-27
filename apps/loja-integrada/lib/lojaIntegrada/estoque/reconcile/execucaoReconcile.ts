@@ -69,7 +69,10 @@ import type {
   Firestore,
   Timestamp,
 } from 'firebase-admin/firestore';
-import { reconcileEstoqueLojaIntegradaCollection } from '@delfrance/data/admin/collections';
+import {
+  reconcileEstoqueLojaIntegradaCollection,
+  sincPrecoLojaIntegradaCollection,
+} from '@delfrance/data/admin/collections';
 import {
   isAlreadyExists,
   isFailedPrecondition,
@@ -79,6 +82,7 @@ import {
   FASE_RECONCILE_ESTOQUE_LI,
   ID_RECONCILE_ESTOQUE_LI,
   type ReconcileEstoqueLojaIntegrada,
+  type TabelasPrecoLi,
   type TarefaReconcileEstoqueLi,
   reconcileEstoqueLojaIntegradaSchema,
 } from '@delfrance/schemas';
@@ -433,6 +437,29 @@ export interface RaizParaAssumirLi {
   readonly versao: Timestamp | null;
 }
 
+/**
+ * One PRICED conta of a new run (step 13, PR 13-f1): the tabelas the run fixes for it (folded:
+ * promo `null` when absent or equal to the normal one), its first price counters, and the stamp of
+ * the read of its price root (`null` = absent).
+ */
+export interface RaizPrecoParaAssumirLi {
+  readonly contaId: string;
+  readonly tabelas: TabelasPrecoLi;
+  readonly contadores: Readonly<Record<string, number>>;
+  readonly ref: DocumentReference;
+  readonly versao: Timestamp | null;
+}
+
+/** The price arm's share of a take (step 13, PR 13-f1). */
+export interface PrecoDaTomadaLi {
+  /** Merged into the run's first `contadores` (`precoNoRun`, `estoqueForaDoRun`). */
+  readonly contadores: Readonly<Record<string, number>>;
+  /** The price fields of the patch (`camposPrecoDaTomadaReconcileLi`). */
+  readonly campos: Readonly<Record<string, unknown>>;
+  /** Each priced conta's price root, written in the SAME batch. */
+  readonly raizes: readonly RaizPrecoParaAssumirLi[];
+}
+
 /** How a take ended. */
 export type ResultadoAssumirLi =
   | { readonly tipo: 'assumido'; readonly estado: EstadoEscritaReconcileLi }
@@ -447,6 +474,17 @@ export type ResultadoAssumirLi =
  * fixes now). With NO conta the run is released at once (`fim`, lease 0, `seq` 1) and nothing else
  * is written. A lost race (6 or 9) is `perdido` unless the document holds this very patch (a lost
  * reply).
+ *
+ * Step 13 (PR 13-f1), both options additive — with neither, the patch and the batch are exactly
+ * the stock-only take's:
+ *
+ *  - `escreverRaizesEstoque: false` (a run that does not carry the stock arm): no stock root is
+ *    written;
+ *  - `preco`: the price fields and counters merged into the patch, and each priced conta's price
+ *    root `sincPrecoLojaIntegrada/{conta}` in the SAME batch — `create` when absent, else `update`
+ *    under its read (tier 1) — with this run's `execucaoPreco` (the folded tabelas, empty samples,
+ *    candidates and kept rows, its first counters). The cursor and the last run are left as they
+ *    are: a cursor of another run is read as none.
  */
 export async function assumirLeaseReconcileLi(
   db: Firestore,
@@ -455,6 +493,8 @@ export async function assumirLeaseReconcileLi(
     readonly tarefa: Pick<TarefaReconcileEstoqueLi, 'execucaoId' | 'seq'>;
     readonly agoraMs: number;
     readonly raizes: readonly RaizParaAssumirLi[];
+    readonly escreverRaizesEstoque?: boolean;
+    readonly preco?: PrecoDaTomadaLi;
   },
 ): Promise<ResultadoAssumirLi> {
   const vazio = args.raizes.length === 0;
@@ -470,14 +510,15 @@ export async function assumirLeaseReconcileLi(
       idxConta: 0,
       walk: null,
       candidatos: [],
-      contadores: {},
+      contadores: { ...args.preco?.contadores },
+      ...args.preco?.campos,
     },
   );
   const ref = refRunReconcileLi(db);
   const lote = db.batch();
   if (args.lido.versao === null) lote.create(ref, patch);
   else lote.update(ref, patch, { lastUpdateTime: args.lido.versao });
-  for (const raiz of args.raizes) {
+  for (const raiz of args.escreverRaizesEstoque === false ? [] : args.raizes) {
     const dados = {
       execucao: {
         execucaoId: args.tarefa.execucaoId,
@@ -487,6 +528,20 @@ export async function assumirLeaseReconcileLi(
         mapa: null,
       },
     };
+    if (raiz.versao === null) lote.create(raiz.ref, dados);
+    else lote.update(raiz.ref, dados, { lastUpdateTime: raiz.versao });
+  }
+  for (const raiz of args.preco?.raizes ?? []) {
+    const dados = sincPrecoLojaIntegradaCollection.parseMerge({
+      execucaoPreco: {
+        execucaoId: args.tarefa.execucaoId,
+        tabelas: raiz.tabelas,
+        amostras: {},
+        contadores: { ...raiz.contadores },
+        candidatos: [],
+        mantidos: [],
+      },
+    });
     if (raiz.versao === null) lote.create(raiz.ref, dados);
     else lote.update(raiz.ref, dados, { lastUpdateTime: raiz.versao });
   }

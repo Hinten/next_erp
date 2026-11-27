@@ -158,6 +158,29 @@ import { defineConfig } from 'vitest/config';
 //     (`lib/lojaIntegrada/preco/gatilhoPreco.tasks.test.ts`, the cache reset per case), each
 //     event's before and after handed in.
 //
+// ⚠️ Since step 13 (PR 13-f1) the daily reconcile carries the PRICE arm too: one run walks the
+// ERP once for both flows, and the lane's `dry-run` price valve makes every DISPATCHED reconcile
+// run (today the stock suite's depósito-arm case) price each conta of its list that names a normal
+// tabela — its walk's price snapshot, the parents' reads, the price end. A seventh rule set, kept
+// by `lib/lojaIntegrada/estoque/reconcile/reconcilePreco.tasks.test.ts`, which drives the price
+// arm IN PROCESS (its valves as PARAMETERS, its hand-offs recorded):
+//   - conta, depósito, tabela and produto ids no other suite seeds;
+//   - the conta seeded by a CREATE (a create never fires the depósito arm) with no filial, so the
+//     conta trigger only reads;
+//   - produtos created and NEVER updated on `precos`, `propagatePriceToChildren` or `paiId`, so the
+//     price trigger stops at its relevance gate with zero reads; no stock record, so the stock
+//     trigger never fires;
+//   - every link created with its anchor write awaited (the third trigger's rules);
+//   - the run document `reconcileEstoqueLojaIntegrada/atual` AND the price slot
+//     `reconcileEstoqueLojaIntegrada/slot-preco` wiped before and after every case;
+//   - the teardown deletes the conta's price documents (`sincPrecoLojaIntegrada/{conta}` and its
+//     buckets) FIRST, then its stock ones, the links (the anchor's last write awaited), the
+//     produtos, the conta and its avisos;
+//   - its conta HAS a depósito, so it would join any dispatched run's conta list: the files run one
+//     at a time and the conta is gone at its teardown, which keeps the stock suite's exact
+//     `run.contas` assertion true. So a suite that seeds a conta with a depósito and a normal tabela
+//     deletes it before it ends, like any conta with a depósito.
+//
 // Each file's `beforeEach` deletes what it reads, because the files
 // share one emulator and run one at a time (`fileParallelism: false`).
 export default defineConfig({

@@ -49,7 +49,8 @@ describe('the Loja Integrada price-sync handles (step 13)', () => {
       e: { '7': { p: 'f1', f: FLAG_ENTRADA_PRECO_LI.valido, n: 5000, a: { c: 5000, q: null } } },
     };
     const pais = { execucaoId: RUN, pais: { pai1: { pp: true, n: 5000, pr: null } } };
-    expect(snapshotPrecoLiCollection.parse(balde)).toEqual(balde);
+    // Step 13, PR 13-f1: the bucket's additive `anteriores` reads `{}` when it was not written.
+    expect(snapshotPrecoLiCollection.parse(balde)).toEqual({ ...balde, anteriores: {} });
     expect(paisErpSnapshotPrecoLiCollection.parse(pais)).toEqual(pais);
     expect(() => paisErpSnapshotPrecoLiCollection.parse({ execucaoId: RUN, pais: 'x' })).toThrow();
     expect(() =>

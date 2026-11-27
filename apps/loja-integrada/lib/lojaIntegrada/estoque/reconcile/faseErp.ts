@@ -65,6 +65,7 @@ import {
   type ContagemRegistrosNoDepositoLi,
   componentesQueLimitamLi,
   emParaleloLi,
+  lerProdutosEstoqueComCamposLi,
   lerProdutosEstoqueLi,
   lerRegistrosNoDepositoLi,
   quantidadesQueLimitamLi,
@@ -157,6 +158,26 @@ function composicaoDoKitLi(
 }
 
 /**
+ * Step 2's read: the stock reader as before, or — with `camposExtras` (step 13) — the union-mask
+ * reader, whose stock views are the same and whose raw data goes to `aoLerProdutos`.
+ */
+async function lerProdutosDaPaginaLi(
+  db: Firestore,
+  produtoIds: readonly string[],
+  opcoes: {
+    readonly camposExtras?: readonly string[];
+    readonly aoLerProdutos?: (
+      brutos: ReadonlyMap<string, Readonly<Record<string, unknown>> | null>,
+    ) => void;
+  },
+): Promise<ReadonlyMap<string, ProdutoEstoqueLi | null>> {
+  if (opcoes.camposExtras === undefined) return lerProdutosEstoqueLi(db, produtoIds);
+  const lidos = await lerProdutosEstoqueComCamposLi(db, produtoIds, opcoes.camposExtras);
+  opcoes.aoLerProdutos?.(new Map([...lidos].map(([id, p]) => [id, p?.bruto ?? null])));
+  return new Map([...lidos].map(([id, p]) => [id, p?.estoque ?? null]));
+}
+
+/**
  * Evaluates one walk page for every conta of the run, writing into each conta's state in memory
  * (module header). Returns each conta's counters of the page, by conta id.
  */
@@ -169,6 +190,16 @@ export async function avaliarPaginaErpLi(
     readonly concorrencia?: number;
     /** The RUN's read-path counters of the page are added here (module header). */
     readonly global?: ContadoresErpLi;
+    /**
+     * Step 13 (the price arm, `paginaErpReconcile.ts`): more produto fields to read in the SAME
+     * masked `getAll` of step 2 (`lerProdutosEstoqueComCamposLi`, the union mask). Absent ⇒ step 2
+     * reads exactly as before.
+     */
+    readonly camposExtras?: readonly string[];
+    /** With `camposExtras`: handed each produto's masked raw data, by id (`null`: absent). */
+    readonly aoLerProdutos?: (
+      brutos: ReadonlyMap<string, Readonly<Record<string, unknown>> | null>,
+    ) => void;
   } = {},
 ): Promise<Map<string, ContadoresErpLi>> {
   const concorrencia = opcoes.concorrencia ?? CONCURRENCIA_LEITURAS_ERP_LI;
@@ -226,9 +257,9 @@ export async function avaliarPaginaErpLi(
   }
   if (vinculados.length === 0) return contadores;
 
-  // 2. The produtos, masked.
+  // 2. The produtos, masked (with the price arm's fields too, in the same read, when asked).
   const aLerProdutos = vinculados.map((v) => v.produtoId);
-  const produtos = await lerProdutosEstoqueLi(db, aLerProdutos);
+  const produtos = await lerProdutosDaPaginaLi(db, aLerProdutos, opcoes);
   somar(global, 'erpProdutosLidos', new Set(aLerProdutos).size);
 
   // 3. Parity, and what each depósito must read.

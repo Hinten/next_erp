@@ -1,0 +1,3 @@
+=== fatia 0 ===
+resultado {"kind":"teto-invalido"}
+linha {"meta":{"execucaoId":"estoque-reconcile-20270115","motivo":"teto-invalido","seq":0,"variavel":"LOJA_INTEGRADA_ESTOQUE_MAX"},"msg":"[loja-integrada/estoque] reconcile teto de estoque ilegível — nada lido","nivel":"error"}

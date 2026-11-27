@@ -7,8 +7,9 @@
  *
  * ## In order
  *
- *  1. The valve `LOJA_INTEGRADA_MODO_ESTOQUE`: `off` (unset, blank, a typo — one WARNING) ⇒
- *     nothing.
+ *  1. The valves (`armasReconcile.ts`, step 13): BOTH `LOJA_INTEGRADA_MODO_ESTOQUE` and
+ *     `LOJA_INTEGRADA_MODO_PRECO` `off` (unset, blank, a typo — one WARNING each) ⇒ nothing. With
+ *     either one set the run starts, and carries whichever flow can run.
  *  2. ONE enqueue: `{ tipo: 'estoque-reconcile', execucaoId: 'estoque-reconcile-<AAAAMMDD>',
  *     seq: 0 }` at once, the date the SCHEDULE TIME's civil date in São Paulo — so a Cloud
  *     Scheduler retry of the same night names the same run, and its task id
@@ -31,14 +32,9 @@
 import { dataCivilNoFuso, parseIsoToMillis } from '@delfrance/core/datetime';
 import { FUSO_FISCAL, TIPO_TAREFA_RECONCILE_ESTOQUE_LI } from '@delfrance/schemas';
 
-import {
-  type AmbienteLi,
-  FLUXO_LI,
-  MODO_LI,
-  lerValvula,
-  registrarValvulaLi,
-} from '../../core/valvulas';
+import { type AmbienteLi, FLUXO_LI, lerValvula, registrarValvulaLi } from '../../core/valvulas';
 import { type AgendadorReconcileEstoqueLi, LiTarefasDesligadasError } from './agendadorReconcile';
+import { reconcileDesligadoLi } from './armasReconcile';
 
 const TAG = '[loja-integrada/estoque] reconcile agendado';
 
@@ -69,9 +65,11 @@ export async function agendarReconcileEstoqueLi(args: {
     warn(msg: string, meta?: Record<string, unknown>): void;
   };
 }): Promise<ResultadoAgendamentoReconcileLi> {
-  const valvula = lerValvula(FLUXO_LI.estoque, args.ambiente);
-  if (valvula.modo === MODO_LI.off) {
-    if (!valvula.modoReconhecido) registrarValvulaLi(valvula, { conta: null });
+  if (reconcileDesligadoLi(args.ambiente)) {
+    for (const fluxo of [FLUXO_LI.estoque, FLUXO_LI.preco]) {
+      const valvula = lerValvula(fluxo, args.ambiente);
+      if (!valvula.modoReconhecido) registrarValvulaLi(valvula, { conta: null });
+    }
     return { kind: 'desligado' };
   }
   const doTick = args.horaAgendada === undefined ? null : parseIsoToMillis(args.horaAgendada);

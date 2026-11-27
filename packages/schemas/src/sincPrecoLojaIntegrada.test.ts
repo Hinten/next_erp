@@ -446,8 +446,32 @@ describe('the snapshot (the stock’s buckets, the price entries)', () => {
         '12': { p: 'p5', f: FLAG_ENTRADA_PRECO_LI.naoSuportado },
       },
     };
+    // PR 13-f1: the additive `anteriores` reads `{}` on a bucket written without it.
+    expect(snapshotPrecoLiSchema.parse(balde)).toEqual({ ...balde, anteriores: {} });
+    expect(snapshotPrecoLiSchema.parse({ execucaoId: RUN })).toEqual({
+      execucaoId: RUN,
+      e: {},
+      anteriores: {},
+    });
+  });
+
+  it('PR 13-f1: `anteriores` carries the previous run’s `a` / `t` by store id — and nothing else', () => {
+    const balde = {
+      execucaoId: RUN,
+      e: {},
+      anteriores: {
+        '7': { ap: { c: 5000, q: null } },
+        '39': { tp: true },
+        '71': { ap: { r: 'sem-preco' }, tp: true },
+      },
+    };
     expect(snapshotPrecoLiSchema.parse(balde)).toEqual(balde);
-    expect(snapshotPrecoLiSchema.parse({ execucaoId: RUN })).toEqual({ execucaoId: RUN, e: {} });
+    const ok = (anteriores: unknown) =>
+      snapshotPrecoLiSchema.safeParse({ execucaoId: RUN, anteriores }).success;
+    // NEAR-MISS: a non-canonical id, a `false` deferral and a price that is no target are refused.
+    expect(ok({ '07': { tp: true } })).toBe(false);
+    expect(ok({ '7': { tp: false } })).toBe(false);
+    expect(ok({ '7': { ap: { c: 0, q: null } } })).toBe(false);
   });
 
   it('⚠️ NEAR-MISS: every entry names its produto, and prices ONLY on a valid one', () => {

@@ -98,13 +98,18 @@ import {
  * run's `fasePreco` would stand beside the new run's `fase: 'erp'` — which the invariant below
  * refuses, so the shared run document would stop parsing and the stock reconcile with it — and a
  * dead run's `precoSolicitado` would hand the operator's "permitir baixar preços" to a nightly
- * nobody asked to lower. So the take ALWAYS writes both, through
- * {@link camposPrecoDaTomadaReconcileLi} (`fasePreco: null`; the task's request stamped with its
- * run, or `null`), and the request is read only through {@link precoSolicitadoDoRunLi}, which
- * ignores one of another `execucaoId` — a second guard for a write that skipped the first. A
- * build that predates the price arm never writes either field: a document it took over while a
- * price build's dead run held a price phase fails the invariant, reads as out of format, and the
- * next take (which resets both) recovers it.
+ * nobody asked to lower. So the take writes both, through {@link camposPrecoDaTomadaReconcileLi}
+ * (`fasePreco: null`; the task's request stamped with its run, or `null`), whenever either could be
+ * non-null: a run that carries the price arm, a request in the task, or a stored document that
+ * holds either key (PR 13-f1: a stock-only take over a document that never held them writes
+ * exactly the stock fields, as before). The request is read only through
+ * {@link precoSolicitadoDoRunLi}, which ignores one of another `execucaoId` — a second guard for a
+ * write that skipped the first.
+ *
+ * A build that predates the price arm never writes either field: a document it took over while a
+ * price build's dead run held a price phase fails the invariant and reads as out of format. The
+ * next take by a build of PR 13-f1 or later (which resets both) recovers it; an older build never
+ * does, so a rollback clears the field first (`apps/loja-integrada/functions/DEPLOY.md`).
  *
  * ## The price slot (`slot-preco`)
  *
