@@ -21,7 +21,9 @@
  *
  * ## What it does ({@link agendarReconcileDoDepositoLi})
  *
- *  1. The stock valve: `off` ⇒ nothing (zero reads). `dry-run` and `on` alike: the run decides
+ *  1. The valves (`armasReconcile.ts`, step 13): BOTH the stock and the price valve `off` ⇒ nothing
+ *     (zero reads) — a full run carries the price arm too, so a depósito change with only the price
+ *     flow on still starts one. `dry-run` and `on` alike: the run decides
  *     itself what a dry-run means (it diffs and enqueues nothing). The read switch is NOT read
  *     here: a run with the switch off still walks the ERP side — that is how its cost is measured
  *     before the window.
@@ -62,14 +64,9 @@ import {
 } from '@delfrance/schemas';
 
 import { relogioDoDocumentoUs } from '../../avisos/avisos';
-import {
-  type AmbienteLi,
-  FLUXO_LI,
-  MODO_LI,
-  lerValvula,
-  registrarValvulaLi,
-} from '../../core/valvulas';
+import { type AmbienteLi, FLUXO_LI, lerValvula, registrarValvulaLi } from '../../core/valvulas';
 import { type AgendadorReconcileEstoqueLi, LiTarefasDesligadasError } from './agendadorReconcile';
+import { reconcileDesligadoLi } from './armasReconcile';
 
 const TAG = '[loja-integrada/estoque] reconcile do depósito';
 
@@ -116,9 +113,11 @@ export async function agendarReconcileDoDepositoLi(args: {
   if (!mudouDepositoDaContaLi(args.before, args.after) || args.atualizadoEm === undefined) {
     return { kind: 'ignorado' };
   }
-  const valvula = lerValvula(FLUXO_LI.estoque, args.ambiente);
-  if (valvula.modo === MODO_LI.off) {
-    if (!valvula.modoReconhecido) registrarValvulaLi(valvula, { conta: args.integracaoId });
+  if (reconcileDesligadoLi(args.ambiente)) {
+    for (const fluxo of [FLUXO_LI.estoque, FLUXO_LI.preco]) {
+      const valvula = lerValvula(fluxo, args.ambiente);
+      if (!valvula.modoReconhecido) registrarValvulaLi(valvula, { conta: args.integracaoId });
+    }
     return { kind: 'desligado' };
   }
   const execucaoId = idExecucaoDoDepositoLi(relogioDoDocumentoUs(args.atualizadoEm));
