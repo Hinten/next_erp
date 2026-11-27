@@ -102,10 +102,9 @@ export const PERM = {
   // Arquivo — file/storage metadata (`arquivos` collection): product images +
   // derivatives, videos, attachments, chat media. Cross-domain, so it gets its
   // own byte. Mirrored by `arquivoMeta` in packages/schemas/src/storage/arquivo.ts.
-  // NOTE: the legacy `storage.rules` gates Storage by the old `q1` claim, and
-  // migrated users carry claims minted under that layout; this bit is consumed
-  // by the Next side (data layer + the future rules phase), not by the live
-  // rules yet.
+  // Also gates Cloud Storage: the root `storage.rules` reads `d_arquivo` (and the
+  // owner's `d_produto` / `d_mensagem`) — see storageRules.claims.test.ts in
+  // apps/functions, which fails if this domain is renamed.
   arquivo: {
     read: 1n << 80n,
     write: 1n << 81n,

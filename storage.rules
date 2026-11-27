@@ -1,53 +1,182 @@
 rules_version = '2';
 
-// ⚠️ NOT DEPLOYED. The legacy project's own `storage.rules` (legacy `su`/`q1`
-// claims) governs the legacy bucket; the two apps never share one — see
-// docs `guides/coexistence.md` and root `CLAUDE.md`, Critical rules. This file is
-// the proposed Next-side ruleset: it enforces the product-scoped path layout
-// + content-type + size limits and is loaded by the Storage emulator in CI.
-// Fine-grained per-domain permission checks land with the rules phase; it is
-// intentionally NOT wired into the deploy `firebase.json`.
+// Cloud Storage rules for the ERP bucket. HAND-WRITTEN (CLAUDE.md rule 3 allows
+// exactly two generators, and this is not one of them), but it authorises with
+// the SAME custom claims the generated `firestore.rules` uses: `su` (break-glass
+// super user) and the `d_<domain>` bitfields minted by
+// `packages/data/src/admin/cargoClaims/claims.ts` (k = 1 read, 2 write, 4 delete).
+// `p()` and `isSuperUser()` below are byte-identical to the generated ones, and
+// `apps/functions/src/arquivos/storageRules.claims.test.ts` fails if they drift or
+// if a `d_*` named here stops being a PERM domain.
+//
+// Deploy is a MANUAL, coordinated human step — agents never run `firebase deploy`
+// (CLAUDE.md rule 2/8). Staging: `firebase deploy --only storage --config
+// firebase.staging.json --project <staging>`; production: inside the cutover
+// window (ADR 0013), via the root `firebase.json`.
+//
+// What these rules do NOT govern, on purpose:
+//   - Reads through a stored `arquivo.url`. Every display surface, Meta (WhatsApp
+//     outbound media), Mercado Livre and Shopee fetch the TOKENED download URL,
+//     which bypasses rules by design. The only rule-checked client read is the
+//     `getDownloadURL` metadata `get` right after an upload.
+//   - The Admin SDK (Cloud Functions, channel backends, migrations). It writes
+//     every derivative, all `whatsapp/` and `mercado-livre/` media and the
+//     marketplace photo imports, and it is the ONLY deleter: an object is freed
+//     by deleting its `arquivos` doc (`onArquivoDeleted`), never directly — so no
+//     client may delete or list anything.
+//
+// Client writers are the `@delfrance/storage` helpers (`packages/storage/src/
+// upload.ts`); path math lives in `packages/schemas/src/storage/storagePaths.ts`.
+// Every client object is content-addressed (`<sha512 hex>[.<ext>]`) and tagged with
+// `customMetadata.arquivoId` = the id of its anchor `arquivos` doc. The finalize
+// trigger trusts that tag and the resize trigger skips objects tagged `resized`,
+// so both are pinned here: the id must be the one the path implies, and the
+// server-only keys can never come from a client. Writes allow `update` as well as
+// `create` because the dedup heal path re-uploads over an existing object.
+//
+// Size caps sit at or just above the UI's own limits so a legitimate upload never
+// reaches a bare permission error. Anything not matched below is denied.
 
 service firebase.storage {
   match /b/{bucket}/o {
-    // Product photo originals — clients upload here; the resize Cloud Function
-    // (admin SDK, bypasses rules) generates the derivatives.
+    // Claim bit test without bitwise operators — identical to firestore.rules.
+    function p(d, k) {
+      return request.auth != null && (request.auth.token.get(d, 0) / k) % 2 == 1;
+    }
+
+    // Break-glass super user — identical to firestore.rules.
+    function isSuperUser() {
+      return request.auth != null && request.auth.token.get('su', false) == true;
+    }
+
+    // The `getDownloadURL` metadata read that follows an upload.
+    function canGet() {
+      return isSuperUser() || p('d_arquivo', 1);
+    }
+
+    // An upload writes the `arquivos` anchor doc AND attaches it to its owner, so
+    // it needs write on both domains (owner: d_produto or d_mensagem).
+    function canUpload(ownerDomain) {
+      return isSuperUser() || (p('d_arquivo', 2) && p(ownerDomain, 2));
+    }
+
+    // `<128 lowercase hex>` with an optional lowercase extension.
+    function isHashName(fileName) {
+      return fileName.matches('^[0-9a-f]{128}([.][a-z0-9]+)?$');
+    }
+
+    function stem(fileName) {
+      return fileName.split('[.]')[0];
+    }
+
+    // Inclusive, like the Dropzone `maxSize` the UI enforces (it rejects only
+    // `size > maxSize`), so a file exactly at the UI cap is not refused here.
+    function atMost(mib) {
+      return request.resource.size <= mib * 1024 * 1024;
+    }
+
+    // `arquivoId` must be one the path implies; `resized` / `originalPath` are
+    // stamped by the resize function only.
+    function hasArquivoId(allowedIds) {
+      return request.resource.metadata.get('arquivoId', '') in allowedIds
+        && !request.resource.metadata.keys().hasAny(['resized', 'originalPath']);
+    }
+
+    // Raster images only — SVG can carry script and would be served from a
+    // public tokened URL.
+    function isRasterImage() {
+      return request.resource.contentType
+        .matches('^image/(jpeg|png|webp|gif|heic|heif|avif|bmp|tiff)$');
+    }
+
+    function isVideo() {
+      return request.resource.contentType.matches('^video/.+$');
+    }
+
+    // Owner-scoped original photo (produtos/ and tabMedi/ — both feed the resize
+    // pipeline; tabMedi is governed by d_produto in firestore.rules too).
+    function canUploadOwnedPhoto(ownerId, fileName) {
+      return canUpload('d_produto')
+        && isHashName(fileName)
+        && isRasterImage()
+        && atMost(20)
+        && hasArquivoId([ownerId + '_' + stem(fileName)]);
+    }
+
+    // ── produtos/<produtoId>/… ────────────────────────────────────────────
     match /produtos/{produtoId}/originals/{fileName} {
-      allow read: if request.auth != null;
-      allow write: if request.auth != null
-        && request.resource.size < 15 * 1024 * 1024
-        && request.resource.contentType.matches('image/.*');
+      allow get: if canGet();
+      allow create, update: if canUploadOwnedPhoto(produtoId, fileName);
+      allow list, delete: if false;
     }
 
-    // Server-generated derivatives — written by the function only.
-    match /produtos/{produtoId}/derivatives/{fileName} {
-      allow read: if request.auth != null;
-      allow write: if false;
-    }
-
-    // Product videos — not resized; larger size budget.
     match /produtos/{produtoId}/videos/{fileName} {
-      allow read: if request.auth != null;
-      allow write: if request.auth != null
-        && request.resource.size < 200 * 1024 * 1024
-        && request.resource.contentType.matches('video/.*');
+      allow get: if canGet();
+      allow create, update: if canUpload('d_produto')
+        && isHashName(fileName)
+        && isVideo()
+        && atMost(32)
+        && hasArquivoId([produtoId + '_' + stem(fileName)]);
+      allow list, delete: if false;
     }
 
-    // Product attachments (anexos) — arbitrary files (PDFs, datasheets…); not
-    // resized. Any content type, capped at 25 MB.
+    // Attachments (PDFs, datasheets…) — any content type.
     match /produtos/{produtoId}/anexos/{fileName} {
-      allow read: if request.auth != null;
-      allow write: if request.auth != null
-        && request.resource.size < 25 * 1024 * 1024;
+      allow get: if canGet();
+      allow create, update: if canUpload('d_produto')
+        && isHashName(fileName)
+        && atMost(25)
+        && hasArquivoId([produtoId + '_' + stem(fileName)]);
+      allow list, delete: if false;
     }
 
-    // Generic, non-product media.
+    // ── tabMedi/<tabMediId>/… (size-chart photos) ────────────────────────
+    match /tabMedi/{tabMediId}/originals/{fileName} {
+      allow get: if canGet();
+      allow create, update: if canUploadOwnedPhoto(tabMediId, fileName);
+      allow list, delete: if false;
+    }
+
+    // Resize-function output for both owners — Admin SDK only.
+    match /{owner}/{ownerId}/derivatives/{fileName} {
+      allow get: if owner in ['produtos', 'tabMedi'] && canGet();
+      allow write, list: if false;
+    }
+
+    // ── chat/<hash>[.<ext>] (inbox composer attachments) ─────────────────
+    // `chat_<hash>` is the current anchor id; the bare `<hash>` is the
+    // pre-namespace one `uploadChatFile` still reuses for its own objects.
+    // 100 MiB covers WhatsApp's largest (document) limit.
+    match /chat/{fileName} {
+      allow get: if canGet();
+      allow create, update: if canUpload('d_mensagem')
+        && isHashName(fileName)
+        && atMost(100)
+        && hasArquivoId(['chat_' + stem(fileName), stem(fileName)]);
+      allow list, delete: if false;
+    }
+
+    // ── media/<hash>[.<ext>] (generic `uploadFile` default) ─────────────
     match /media/{fileName} {
-      allow read: if request.auth != null;
-      allow write: if request.auth != null
-        && request.resource.size < 50 * 1024 * 1024;
+      allow get: if canGet();
+      allow create, update: if (isSuperUser() || p('d_arquivo', 2))
+        && isHashName(fileName)
+        && atMost(50)
+        && hasArquivoId([stem(fileName)]);
+      allow list, delete: if false;
     }
 
-    // Anything else is denied by default (no allow rule).
+    // ── Server-only media ────────────────────────────────────────────────
+    // Inbound WhatsApp media (apps/whatsapp) and ML post-sale/claim
+    // attachments (apps/mercado-livre) — written by the Admin SDK only.
+    match /whatsapp/{contaId}/{mediaId} {
+      allow get: if canGet();
+      allow write, list: if false;
+    }
+
+    match /mercado-livre/{path=**} {
+      allow get: if canGet();
+      allow write, list: if false;
+    }
   }
 }

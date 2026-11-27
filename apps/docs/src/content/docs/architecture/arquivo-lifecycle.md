@@ -59,6 +59,42 @@ timestamp:
 
 Derivative variants are `200` (200px), `400` (400px), and `jpeg` (full-size re-encode).
 
+## Storage rules
+
+`storage.rules` (repo root) is **hand-written** — only two generators exist
+(root `CLAUDE.md` rule 3) — but it authorises with the generated
+`firestore.rules`' claims: `su`, and the `d_<domain>` bitfields
+(k = 1 read, 2 write). An upload writes the `arquivos` anchor doc **and**
+attaches it to its owner, so it needs write on both domains.
+
+| Path | Client upload needs | Content | Cap |
+| --- | --- | --- | --- |
+| `produtos/<id>/originals/*`, `tabMedi/<id>/originals/*` | `d_arquivo` + `d_produto` write | raster `image/*` (no SVG) | 20 MiB |
+| `produtos/<id>/videos/*` | `d_arquivo` + `d_produto` write | `video/*` | 32 MiB |
+| `produtos/<id>/anexos/*` | `d_arquivo` + `d_produto` write | any | 25 MiB |
+| `chat/*` | `d_arquivo` + `d_mensagem` write | any | 100 MiB |
+| `media/*` | `d_arquivo` write | any | 50 MiB |
+| `*/derivatives/*`, `whatsapp/**`, `mercado-livre/**` | — (Admin SDK only) | | |
+
+Every client write must also be content-addressed (`<sha512 hex>[.<ext>]`), carry
+the `customMetadata.arquivoId` its path implies (the finalize trigger trusts that
+tag), and never set the server-only `resized` / `originalPath` keys (the resize
+trigger skips `resized` objects). Caps are inclusive, matching the Dropzone
+`maxSize` in the UI. `get` (the `getDownloadURL` after an upload) needs
+`d_arquivo` read; **no client may delete or list** — freeing an object is
+`onArquivoDeleted`'s job.
+
+⚠️ Rules do **not** govern reads through the stored, **tokened** `arquivo.url`.
+That is deliberate: every display surface, Meta (WhatsApp outbound), Mercado Livre
+and Shopee fetch it without credentials.
+
+Tests: `apps/functions/src/arquivos/storageRules.storage.test.ts` (behaviour, on
+the Storage emulator in `ci-storage.yml`) and `storageRules.claims.test.ts`
+(offline — every `d_*` named is a PERM domain, and `p` / `isSuperUser` match
+`firestore.rules` byte for byte). Deploy is manual: `firebase deploy --only storage`
+with `firebase.staging.json` on staging, and the root `firebase.json` inside the
+cutover window (ADR 0013).
+
 ## 1 · Upload (create-first) + finalize
 
 ```mermaid
