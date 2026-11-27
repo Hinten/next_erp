@@ -63,8 +63,22 @@ describe('listarContasLojaIntegrada', () => {
     seedConta(db, 'a', { nome: 'Alfa' });
     seedConta(db, 's', { nome: 'Shopee', tipo: 5 });
     expect((await listarContasLojaIntegrada(asDb(db))).contas).toEqual([
-      { integracaoId: 'a', nome: 'Alfa', ativo: true, depositoId: null },
-      { integracaoId: 'b', nome: 'Beta', ativo: false, depositoId: null },
+      {
+        integracaoId: 'a',
+        nome: 'Alfa',
+        ativo: true,
+        depositoId: null,
+        tabelaNormalId: null,
+        tabelaPromocionalId: null,
+      },
+      {
+        integracaoId: 'b',
+        nome: 'Beta',
+        ativo: false,
+        depositoId: null,
+        tabelaNormalId: null,
+        tabelaPromocionalId: null,
+      },
     ]);
     expect(db.consultas).toEqual([
       {
@@ -102,14 +116,98 @@ describe('listarContasLojaIntegrada', () => {
     ]);
   });
 
+  it('carries each conta’s price tabelas as BARE ids, from either stored form of each ref, at the SAME row (no extra read)', async () => {
+    const db = new FakeDb();
+    db.seed(caminhoConta('a'), {
+      tipo: 3,
+      nome: 'A',
+      tabelaNormalOuterRef: 'documents/listaDePrecos/T1',
+      tabelaPromocionalOuterRef: 'listaDePrecos/T2',
+    });
+    db.seed(caminhoConta('b'), {
+      tipo: 3,
+      nome: 'B',
+      tabelaNormalOuterRef: 'listaDePrecos/T1',
+      tabelaPromocionalOuterRef: 'documents/listaDePrecos/T1',
+    });
+    const { contas } = await listarContasLojaIntegrada(asDb(db));
+    expect(contas.map((c) => [c.integracaoId, c.tabelaNormalId, c.tabelaPromocionalId])).toEqual([
+      ['a', 'T1', 'T2'],
+      // A promotional tabela equal to the normal one is kept AS STORED (the price function reads
+      // it as "no promo list"; folding it here would lose that signal).
+      ['b', 'T1', 'T1'],
+    ]);
+    expect(db.consultas).toHaveLength(1);
+    expect(db.leituras).toEqual([]);
+  });
+
+  it.each([
+    ['another collection', 'documents/outra/T1'],
+    ['a nested path', 'documents/listaDePrecos/T1/sub/x'],
+    ['an empty string', ''],
+    ['a number', 7],
+    ['a reserved id', 'documents/listaDePrecos/__x__'],
+    ['null', null],
+  ])(
+    '⚠️ NEAR-MISS: a tabela ref that is %s names NO tabela (null), on either side',
+    async (_r, ref) => {
+      const db = new FakeDb();
+      db.seed(caminhoConta('a'), {
+        tipo: 3,
+        nome: 'A',
+        tabelaNormalOuterRef: ref,
+        tabelaPromocionalOuterRef: ref,
+      });
+      db.seed(caminhoConta('b'), { tipo: 3, nome: 'B' });
+      const { contas } = await listarContasLojaIntegrada(asDb(db));
+      expect(contas.map((c) => [c.integracaoId, c.tabelaNormalId, c.tabelaPromocionalId])).toEqual([
+        ['a', null, null],
+        ['b', null, null],
+      ]);
+    },
+  );
+
+  it('⚠️ NEAR-MISS: the promotional id is read from ITS OWN ref, never the normal one', async () => {
+    const db = new FakeDb();
+    db.seed(caminhoConta('a'), {
+      tipo: 3,
+      nome: 'A',
+      tabelaNormalOuterRef: 'listaDePrecos/T1',
+    });
+    db.seed(caminhoConta('b'), {
+      tipo: 3,
+      nome: 'B',
+      tabelaPromocionalOuterRef: 'listaDePrecos/T2',
+    });
+    const { contas } = await listarContasLojaIntegrada(asDb(db));
+    expect(contas.map((c) => [c.integracaoId, c.tabelaNormalId, c.tabelaPromocionalId])).toEqual([
+      ['a', 'T1', null],
+      ['b', null, 'T2'],
+    ]);
+  });
+
   it('⚠️ a tipo-3 conta LACKING nome is not enumerated (orderBy filters for existence); a null nome is, as ""', async () => {
     const db = new FakeDb();
     seedConta(db, 'a', { nome: 'Alfa' });
     db.seed(caminhoConta('sem-nome'), { tipo: 3, ativo: true });
     db.seed(caminhoConta('nome-nulo'), { tipo: 3, nome: null, ativo: true });
     expect((await listarContasLojaIntegrada(asDb(db))).contas).toEqual([
-      { integracaoId: 'nome-nulo', nome: '', ativo: true, depositoId: null },
-      { integracaoId: 'a', nome: 'Alfa', ativo: true, depositoId: null },
+      {
+        integracaoId: 'nome-nulo',
+        nome: '',
+        ativo: true,
+        depositoId: null,
+        tabelaNormalId: null,
+        tabelaPromocionalId: null,
+      },
+      {
+        integracaoId: 'a',
+        nome: 'Alfa',
+        ativo: true,
+        depositoId: null,
+        tabelaNormalId: null,
+        tabelaPromocionalId: null,
+      },
     ]);
   });
 });

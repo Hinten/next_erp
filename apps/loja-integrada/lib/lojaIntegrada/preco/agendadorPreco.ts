@@ -1,9 +1,9 @@
 /**
  * The price-queue PRODUCER, pure (master plan step 13, PR 13-d): what an enqueue onto
  * `filaPrecoLojaIntegrada` means, with the transport handed in, and how a price task is NAMED and
- * SCHEDULED. Today its only caller is the send run's ONE `deriva` follow-up
- * (`preco/processarPreco.ts`); the price trigger, the nightly reconcile, the manual push and
- * "Atualizar preços" (later PRs of step 13) enqueue through it too.
+ * SCHEDULED. Today its callers are the price trigger (`preco/gatilhoPreco.ts`, PR 13-e) and the
+ * send run's ONE `deriva` follow-up (`preco/processarPreco.ts`); the nightly reconcile, the manual
+ * push and "Atualizar preços" (later PRs of step 13) enqueue through it too.
  *
  * The queue itself is bound by a composition root, never here — the functions codebase's
  * (`functions/src/agendadorPreco.ts`), which resolves the region-qualified queue path and reads the

@@ -39,8 +39,9 @@
  * reads; no stock record is written, so the stock trigger never fires; every link create fires the
  * anchor trigger, so each linked produto's anchor write is awaited before the run, and every case
  * ends by deleting its links and awaiting the conta leaving each array before its produtos go
- * (`testing/ancoraLi.ts`). Nothing here writes `historicoFtIni` or an import job. Every value is
- * INVENTED (`testing/precoLi.ts`).
+ * (`testing/ancoraLi.ts`). Every produto is CREATED after a delete and never edited, so the price
+ * trigger (`onPrecoLojaIntegrada`, PR 13-e) never passes its relevance gate on this suite. Nothing
+ * here writes `historicoFtIni` or an import job. Every value is INVENTED (`testing/precoLi.ts`).
  */
 import { type DocumentData, FieldValue, type Firestore } from 'firebase-admin/firestore';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';

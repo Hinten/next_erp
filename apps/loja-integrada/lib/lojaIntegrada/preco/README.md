@@ -6,20 +6,22 @@ simple product is skipped (`nao-suportado`): one `PUT /v1/produto_preco/{produto
 engine (`../core/escrita.ts`), with the full price, the promotion (or the configured clear) and the
 store's own custo and `sob_consulta` echoed back from the deciding read.
 
-This file covers what exists today: the SEND RUN and its QUEUE (PR 13-d). The price function, the
-fold and the aviso tipos are `@delfrance/schemas`' (PR 13-a); the wire and the body builder are the
-package's (PR 13-b); the engine's two price kinds and the produto detail's restore projection are
-PR 13-c's. Not built yet, each landing in a later PR of step 13: the price TRIGGER on an ERP produto
-write, the NIGHTLY by-id read and its reconcile, the operator's routes ("Enviar preços",
-"Atualizar preços") and the web. Until then nothing enqueues a price task but the send run's own
-`deriva` follow-up.
+This file covers what exists today: the SEND RUN and its QUEUE (PR 13-d), and the price TRIGGER on
+an ERP produto write, the queue's first producer (PR 13-e). The price function, the fold and the
+aviso tipos are `@delfrance/schemas`' (PR 13-a); the wire and the body builder are the package's
+(PR 13-b); the engine's two price kinds and the produto detail's restore projection are PR 13-c's.
+Not built yet, each landing in a later PR of step 13: the NIGHTLY by-id read and its reconcile (the
+price phase that re-covers what an event missed), the tabela re-point arm, the operator's routes
+("Enviar preços", "Atualizar preços") and the web. Until then a price task is enqueued only by the
+trigger and by the send run's own `deriva` follow-up.
 
 It ships INERT. The price valve `LOJA_INTEGRADA_MODO_PRECO`, its canary list and the read switch
-`LOJA_INTEGRADA_CHAMADAS` are unset today, so every run returns `desligado` with zero reads. No test
-can call the store: this app's two vitest setups make a `fetch` to any non-local host throw, the
-suites that script the store pass a `deps.fetch`, and in the emulator lane a dispatched send run
-stops at the read switch (section 10). Every test value is INVENTED (`../testing/precoLi.ts`); no
-capture of the store's prices is committed.
+`LOJA_INTEGRADA_CHAMADAS` are unset today, so every produto write returns at the trigger's
+zero-read gates and every run returns `desligado` with zero reads. No test can call the store: this
+app's two vitest setups make a `fetch` to any non-local host throw, the suites that script the store
+pass a `deps.fetch`, and in the emulator lane a dispatched send run stops at the read switch
+(section 11). Every test value is INVENTED (`../testing/precoLi.ts`); no capture of the store's
+prices is committed.
 
 The rules an agent must not break before touching price code are the short list in
 [`apps/loja-integrada/CLAUDE.md`](../../../CLAUDE.md), "Price sync (step 13)". Also:
@@ -36,8 +38,16 @@ The rules an agent must not break before touching price code are the short list 
 ## 1. At a glance
 
 ```text
+ an ERP produto write  produtos/{produtoId}   (every channel's produtos)
+        │
+        ▼
+ onPrecoLojaIntegrada  (functions/src/onPrecoLojaIntegrada.ts → gatilhoPreco.ts)
+   relevance (payload) → valve → anchor (payload) → conta map (cached)
+   → a child: ≤ 1 masked parent read  |  a root: ≤ 1 family query per conta
+        │   named tasks, ids only, origin `evento` (section 7)
+        ▼
  a price task {tipo: preco, contaId, produtoId, origem, janela, geracao, baixar}
-        │   (today: only the run's own `deriva` follow-up enqueues one)
+        │   (also: the run's own `deriva` follow-up)
         ▼
  filaPrecoLojaIntegrada  (functions/src/filaPreco.ts; options = the stock queue's)
         │
@@ -51,19 +61,24 @@ The rules an agent must not break before touching price code are the short list 
 
 ## 2. Files
 
-| file                                       | what                                                                                                |
-| ------------------------------------------ | --------------------------------------------------------------------------------------------------- |
-| `processarPreco.ts`                        | ONE send run, in the stock run's order and shape; the outcomes the queue's line reads               |
-| `planoPrecoLi.ts`                          | pure: the write kind by origin, the guard on the deciding read, the no-lower and reflected decision |
-| `leituraPrecoErp.ts`                       | the ERP reads: the masked produto and parent, and the stock flow's link listing and duplicate probe |
-| `tabelasLi.ts`                             | pure: the conta's tabela refs folded to bare ids, and the bulk send's "same tabelas" check          |
-| `configPrecoLi.ts`                         | the clear's forma, read from the environment the entry point passes                                 |
-| `avisosPreco.ts`                           | the run's ONE aviso tipo, `lojaIntegradaPrecoRecusado`                                              |
-| `agendadorPreco.ts`                        | the price-queue PRODUCER (pure; the transport handed in): window, name, schedule, strict payload    |
-| `processarPreco.tasks.test.ts`             | the emulator round trip (section 10)                                                                |
-| `../../../functions/src/filaPreco.ts`      | the queue: `tipo` dispatch, the dispatch-start stamp, one line per dispatch                         |
-| `../../../functions/src/agendadorPreco.ts` | the producer's composition root (the region and the sweep-only valve through the reads root)        |
-| `../../../functions/src/depsEscrita.ts`    | `depsDePrecoLi`: the run's deps, bound beside the writes and stock queues'                          |
+| file                                             | what                                                                                                |
+| ------------------------------------------------ | --------------------------------------------------------------------------------------------------- |
+| `processarPreco.ts`                              | ONE send run, in the stock run's order and shape; the outcomes the queue's line reads               |
+| `planoPrecoLi.ts`                                | pure: the write kind by origin, the guard on the deciding read, the no-lower and reflected decision |
+| `leituraPrecoErp.ts`                             | the ERP reads: the masked produto and parent, and the stock flow's link listing and duplicate probe |
+| `tabelasLi.ts`                                   | pure: the conta's tabela refs folded to bare ids, and the bulk send's "same tabelas" check          |
+| `configPrecoLi.ts`                               | the clear's forma, read from the environment the entry point passes                                 |
+| `avisosPreco.ts`                                 | the run's ONE aviso tipo, `lojaIntegradaPrecoRecusado`                                              |
+| `agendadorPreco.ts`                              | the price-queue PRODUCER (pure; the transport handed in): window, name, schedule, strict payload    |
+| `relevanciaPrecoLi.ts`                           | pure: the trigger's relevance from the payload alone, each tabela key through the shared fold       |
+| `mapaTabelasLi.ts`                               | the trigger's cached conta map (active contas naming a normal tabela) and the payload's anchor      |
+| `gatilhoPreco.ts`                                | the trigger's work: the gates, the parent read, the family query, the enqueues (section 7)          |
+| `processarPreco.tasks.test.ts`                   | the send run's emulator round trip (section 11)                                                     |
+| `gatilhoPreco.tasks.test.ts`                     | the trigger's work against the emulators (section 11)                                               |
+| `../../../functions/src/filaPreco.ts`            | the queue: `tipo` dispatch, the dispatch-start stamp, one line per dispatch                         |
+| `../../../functions/src/agendadorPreco.ts`       | the producer's composition root (the region and the sweep-only valve through the reads root)        |
+| `../../../functions/src/depsEscrita.ts`          | `depsDePrecoLi`: the run's deps, bound beside the writes and stock queues'                          |
+| `../../../functions/src/onPrecoLojaIntegrada.ts` | the trigger: `onDocumentWritten` on `produtos/{produtoId}`, its deps bound per event                |
 
 ## 3. The data
 
@@ -168,7 +183,104 @@ refused lowering, a drift or a dry-run.
   event that caused it. A bulk producer (later) names by its run's window and passes a not-before
   bound. An answered already-exists is success.
 
-## 7. Costs (Firestore operations / credential reads / store calls)
+## 7. The trigger (PR 13-e, `gatilhoPreco.ts`)
+
+`onPrecoLojaIntegrada` (`functions/src/onPrecoLojaIntegrada.ts`) is an `onDocumentWritten` on
+`produtos/{produtoId}`, database `default` (inlined at build time: an `onDocument*` bound to
+`(default)` deploys fine and NEVER fires), `retry: true`, no secrets, no `region:`, and no
+`maxInstances` of its own (the codebase's 10). It shares the path with `apps/functions`' produto
+triggers and Mercado Livre's category trigger, in other codebases; they are independent. It fires
+on EVERY ERP produto write of every channel, so its gates run from the cheapest up:
+
+1. **Relevance, from the payload alone** (`relevanciaPrecoLi.ts`): zero reads, no line. It reads
+   the produto's own `precos`, `propagatePriceToChildren` and `paiId` — the send run's mask — and
+   nothing else. A create, a delete, and an update that moves no tabela reading, no folded
+   propagation flag and no parent stop here: the anchor's array writes, a new counting link, the
+   custo, the name, the photos, `publicado`, a kit rollup, a mirror field. Each tabela key is read
+   through the shared `leituraTabelaPrecoLi` and compared in integer centavos, so float residue
+   (10 → 10.004) and a key that can name no tabela stop here too; 49.99 → 50, and an unreadable
+   value against a readable one (fail-open), go on. The custo is not a signal (the ERP custo is
+   never sent), and neither is a new counting link: an "only link" import must not become an
+   unreviewed mass price change.
+2. **The valve** `LOJA_INTEGRADA_MODO_PRECO`: `off` (unset, blank, a typo) ⇒ zero reads; an
+   UNRECOGNISED value logs ONE WARNING per instance (latched); `dry-run` and `on` go on alike. The
+   trigger reads no canary list and no read switch.
+3. **The anchor**: the contas the produto's `integracoesComProduto` lists, before ∪ after, from the
+   payload, matched exactly. None ⇒ return, still zero reads.
+4. **The conta map** (`mapaTabelasLi.ts`, below): the anchor ∩ the cached map of ACTIVE contas that
+   name a normal tabela. No conta concerned ⇒ return: a conta with no normal tabela, or an inactive
+   one, is inert.
+5. **A child** (a parent on either side):
+   - the parent moved ⇒ ONE task per concerned conta, `baixar: false`, zero reads. It wins over a
+     price that moved in the same write;
+   - otherwise only the contas one of whose OWN tabelas moved go on (the normal one, and the
+     promotional one when it is not the normal one again), and for them ONE masked read of the
+     parent (its flag and its anchor), shared by every conta. The parent propagates AND its anchor
+     names the conta ⇒ NO task: under propagation the child's own map never prices it, and the
+     parent's own event owns the family — this is what removes the duplicates the ERP's propagation
+     echo would cause. It propagates but its anchor lacks the conta, or it does not propagate, or it
+     is missing ⇒ ONE task, `baixar: true`. A parent id that names no document costs no read and
+     counts as missing; a ref is never built from a raw `paiId`.
+6. **A root** (no parent on either side: absent, `''`, or itself), per concerned conta: it affects
+   its children when (the flag is on after AND one of the conta's tabelas moved) OR the flag
+   flipped, and itself when one of the conta's tabelas moved. If either, ONE family query (below).
+   Children found and affected ⇒ ONE task each; none found and the root affected ⇒ the root's own
+   task; children found and only the root's own price moved (a parent that does not propagate) ⇒
+   nothing. Every one `baixar: true`.
+
+**The family query** (`lerFilhosDaRaizPrecoLi`): `produtos where paiId == <root> and
+integracoesComProduto array-contains <conta>`, projected to `paiId`, `limit` 51, built from the
+manual stock push's own index constant (`CAMPOS_INDICE_FILHOS_ENVIO_MANUAL_LI`) on the declared
+COLLECTION index `produtos (paiId, integracoesComProduto, __name__)` — no new index. The per-conta
+queries run concurrently. A 51st child ⇒ ONE WARNING `familia-excede-limite` and only the first 50,
+in document-id order (the store's variation cap); until the nightly price phase ships, nothing
+covers the rest. A root's own document never counts as its child (a self-parent matches its own
+query), and a `''` root is queried by its id, never read at `produtos/''`.
+
+**`baixar`** is `true` exactly when an ERP PRICE decision moved the target (a concerned tabela, or
+the flag, which switches which map prices the family), `false` for a structural parent move.
+
+**The enqueues come after EVERY read**, through the price producer (`agendadorPreco.ts`): origin
+`evento`, generation 0, ids only (a non-bulk origin carries no tabela id), deduplicated and sorted,
+at most 8 at a time, each named by the minute window of a clock read right before ITS enqueue —
+never the event's time, never a value read before the reads. Rejections: an answered already-exists
+is success; the closed sweep-only valve is ONE WARNING and the event's remaining enqueues are
+skipped; a payload the strict schema refuses is ONE WARNING with field names, and only that task is
+skipped; a transient Cloud Tasks failure, or anything else, is rethrown once its round settled, for
+Eventarc's retry (a retry inside the window re-meets its names; one in a later window is one more
+run, never a loss). A conta-map load, a parent read or a family query that throws is rethrown too,
+with nothing enqueued.
+
+**One INFO line** (`[loja-integrada/preco] gatilho decidido`, ids and counts) for each event that
+read a parent, ran a family query or enqueued — so the echoes that read the parent and enqueued
+nothing can be counted; none for an event that stopped at the relevance gate, the valve, the anchor
+or the map. The run's own lines share the `[loja-integrada/preco]` prefix.
+
+**It never** writes to Firestore (so it cannot trigger itself or anything else, and root rule 7
+holds at tier 0: the names are deterministic by window, and every send run re-reads), calls Loja
+Integrada or builds a client, reads the produto document, the credential, the canary or the switch,
+or logs a price, a tabela id or an environment value.
+
+**The conta map** (`mapaTabelasLi.ts`) caches `listarContasLojaIntegrada` — ONE query on the
+declared `integracao (tipo, nome)` index — through a module-scope `createReadCache`, TTL
+`READ_CACHE_TTL.config` (15 min) per warm instance; an EMPTY map is cached too (a project with no
+conta pays one query per TTL, not one per produto write). It keeps a conta exactly when it is ACTIVE
+and names a normal tabela (`core/contas.ts` folds both stored ref forms to bare ids on the same row,
+at no extra read; the promotional one is kept as stored). Unlike the depósito map, inactive contas
+are DROPPED: a reactivation is seen within the TTL per instance, and the events in between wait for
+the produto's next event or the nightly. A conta created or re-pointed to another tabela is seen
+within the TTL too; the re-point's immediate full run is the tabela arm's (a later PR of step 13).
+Its answer decides only whether to ENQUEUE: the run reads the conta again itself.
+
+⚠️ **The anchor is load-bearing for price.** The trigger pre-filters on `integracoesComProduto`, so
+a counting link whose conta is missing from that array makes it skip that produto's price events
+silently — the window's anchor census (`functions/DEPLOY.md`, Prerequisites) runs before the price
+valve reaches `on`. The other direction is cheap: a conta listed with no counting link costs one
+send run that skips (`sem-vinculo`).
+
+## 8. Costs (Firestore operations / credential reads / store calls)
+
+### One send run
 
 Pinned in `processarPreco.test.ts`, child (a produto with a parent) and root (no parent: one ERP
 read less after the links). Writes and enqueues are 0 unless stated.
@@ -197,7 +309,43 @@ An OPEN refusal row adds one write on a resolving outcome. The worst run is
 `PIOR_EXECUCAO_PRECO_LI_MS` = 68 s (the deciding GET 4 s + 20 s, the PUT 20 s, the read-back 4 s +
 20 s), measured by the run's timed grid; the PUT starts at most 24 s after the dispatch began.
 
-## 8. Failures and the last attempt
+### The trigger, per event
+
+Pinned row by row in `gatilhoPreco.test.ts`. Every event is one invocation, and every row makes
+ZERO credential reads, ZERO store calls and ZERO Firestore writes. "Map" is the cached conta
+enumeration: zero queries on a warm instance, ONE `integracao (tipo, nome)` query per 15 min per
+instance otherwise (at most 10 instances). `k` = the concerned contas; `k'` = those one of whose own
+tabelas moved; `m_c` = the root's children whose anchor names conta `c`.
+
+| event                                                                                                                                                                                         | map | parent reads       | family queries (documents)                   | tasks (`baixar`)                                         | lines                               |
+| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --- | ------------------ | -------------------------------------------- | -------------------------------------------------------- | ----------------------------------- |
+| a create or a delete                                                                                                                                                                          | 0   | 0                  | 0                                            | 0                                                        | none                                |
+| an update moving no tabela reading, flag or parent (an anchor write, a new counting link, the custo, the name, photos, `publicado`, a kit rollup, a mirror field, float residue, a ghost key) | 0   | 0                  | 0                                            | 0                                                        | none                                |
+| relevant, the valve off (unset, blank, a typo)                                                                                                                                                | 0   | 0                  | 0                                            | 0                                                        | one WARNING per instance for a typo |
+| relevant, the anchor empty on both sides                                                                                                                                                      | 0   | 0                  | 0                                            | 0                                                        | none                                |
+| relevant, the anchor names no active conta with a normal tabela                                                                                                                               | map | 0                  | 0                                            | 0                                                        | none                                |
+| concerned contas, but only another tabela (or a child's own flag) moved                                                                                                                       | map | 0                  | 0                                            | 0                                                        | none                                |
+| a child, its parent moved                                                                                                                                                                     | map | 0                  | 0                                            | `k` (`false`)                                            | one INFO                            |
+| a child's price move, the parent propagating and anchored to every conta in `k'`                                                                                                              | map | 1                  | 0                                            | 0                                                        | one INFO                            |
+| … the parent propagating, its anchor lacking `j` of them                                                                                                                                      | map | 1                  | 0                                            | `j` (`true`)                                             | one INFO                            |
+| … the parent not propagating                                                                                                                                                                  | map | 1                  | 0                                            | `k'` (`true`)                                            | one INFO                            |
+| … the parent missing                                                                                                                                                                          | map | 1 (not found)      | 0                                            | `k'` (`true`)                                            | one INFO                            |
+| … a parent id that names no document                                                                                                                                                          | map | 0                  | 0                                            | `k'` (`true`)                                            | one INFO                            |
+| a root, flag on, its own concerned tabela moved, anchored children                                                                                                                            | map | 0                  | 1 per such conta (min(`m_c`, 51), projected) | Σ min(`m_c`, 50) (`true`)                                | one INFO                            |
+| a root with no anchored child, its own concerned tabela moved                                                                                                                                 | map | 0                  | 1 per such conta (0)                         | 1 per such conta (`true`)                                | one INFO                            |
+| a root, flag off, its own tabela moved, anchored children                                                                                                                                     | map | 0                  | 1 per such conta (min(`m_c`, 51))            | 0                                                        | one INFO                            |
+| a root, the flag flipped                                                                                                                                                                      | map | 0                  | 1 per concerned conta                        | `m_c` per conta (`true`), or 0 with none and no own move | one INFO                            |
+| a root with a 51st anchored child                                                                                                                                                             | map | 0                  | 1 (51)                                       | 50 (`true`)                                              | one WARNING + one INFO              |
+| a propagating root's price edit with `m` anchored children: the root's event and its `m` echo events                                                                                          | map | `m` (one per echo) | 1 per conta                                  | `m` per conta, about 0 duplicates                        | 1 + `m` INFO                        |
+
+The index entries one family query scans on `produtos (paiId, integracoesComProduto, __name__)` are
+about the family's entries for that conta plus one; the planner may pick another index and apply
+the array as a residual filter (then up to the family's size): the staging `explain` (section 14)
+records which. Each task the trigger enqueues then costs one send run (the table above): while the
+read switch is off it stops at its write context (a child: 6/0/0); at `dry-run` with the switch on
+it makes one deciding GET (6/2/1) and sends nothing.
+
+## 9. Failures and the last attempt
 
 The stock run's table, mirrored function by function (the stock module stays untouched):
 
@@ -214,23 +362,35 @@ There is no failure store: a task whose three attempts all meet a 429 or a 5xx i
 platform's error log is its only trace). Until the nightly read exists, only the next event of the
 produto re-covers it.
 
-## 9. Environment and valves
+## 10. Environment and valves
 
-All read by the run itself from `deps.ambiente` (the functions codebase passes `process.env` whole
-and live); see `functions/DEPLOY.md` for the runtime env block.
+All read by the run (the valve by the trigger too) from `deps.ambiente`: the functions codebase
+passes `process.env` whole and live, per event. See `functions/DEPLOY.md` for the runtime env
+block.
 
-| variable                           | rule                                                                                                 |
-| ---------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `LOJA_INTEGRADA_MODO_PRECO`        | the valve: only the exact `on` writes, the exact `dry-run` diffs; anything else (unset too) is `off` |
-| `LOJA_INTEGRADA_CANARIO_PRECO`     | the targets an `on` valve writes to: unset = none, `*` = every target, else `<contaId>:<store id>,…` |
-| `LOJA_INTEGRADA_CHAMADAS`          | the read switch: only the exact `on` lets the write context build a client                           |
-| `LOJA_INTEGRADA_PRECO_PROMO_LIMPO` | the clear's forma (section 3): unset = `nulo`                                                        |
-| `LOJA_INTEGRADA_TASKS_DISABLED`    | exactly `1` closes the producer: a drift follow-up is one WARNING, the write stands                  |
+| variable                           | rule                                                                                                                                                   |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `LOJA_INTEGRADA_MODO_PRECO`        | the valve: only the exact `on` writes, the exact `dry-run` diffs; anything else (unset too) is `off`. The trigger enqueues at `dry-run` and `on` alike |
+| `LOJA_INTEGRADA_CANARIO_PRECO`     | the targets an `on` valve writes to: unset = none, `*` = every target, else `<contaId>:<store id>,…`                                                   |
+| `LOJA_INTEGRADA_CHAMADAS`          | the read switch: only the exact `on` lets the write context build a client                                                                             |
+| `LOJA_INTEGRADA_PRECO_PROMO_LIMPO` | the clear's forma (section 3): unset = `nulo`                                                                                                          |
+| `LOJA_INTEGRADA_TASKS_DISABLED`    | exactly `1` closes the producer: the trigger logs one WARNING and skips the event's enqueues; a drift follow-up is one WARNING, the write stands       |
 
 The App Hosting backend reads none of the price variables yet; the operator's routes (a later PR)
 will, and both surfaces are then set alike.
 
-## 10. The emulator lane
+**Before the window — decided by the owner (2026-11-27).**
+`LOJA_INTEGRADA_MODO_PRECO=dry-run`, functions only, is the ONE price value allowed before the
+window: set first in `.env.deploy.<staging-project-id>` for the staging measurements (section 14),
+and carried by the deploy that opens operations, so the first-deploy check (`functions/DEPLOY.md`,
+"Verifying a first deploy", item 11) watches a real price edit enqueue its tasks before any switch
+is flipped. That mirrors the stock valve. With the read switch off and no token saved it calls
+nothing and writes nothing to a store: each relevant event enqueues tasks that stop at their write
+context. With the read switch on, each such task makes one deciding GET (reads only) and sends
+nothing. The alternative, leaving the price valve unset until its ramp in the window, was not
+taken. `on`, any canary entry, the clear forma and the read switch stay window decisions.
+
+## 11. The emulator lane
 
 `processarPreco.tasks.test.ts` runs ONE send run IN PROCESS against the emulators
 (`.github/workflows/ci-loja-integrada.yml`), the valve, canary and read switch on as a PARAMETER
@@ -243,43 +403,115 @@ unobservable by design, and the queue's options and dispatch are pinned offline.
 its conta by a create, its own produtos and links (the anchor rules), and no stock record. The
 emulator ignores the schedule (firebase-tools#8254).
 
-## 11. Guards
+`gatilhoPreco.tasks.test.ts` runs the TRIGGER's work IN PROCESS (the valve `dry-run` as a
+PARAMETER, the map's cache reset per case, each event's before and after handed in): the conta
+map's real `integracao` query (a conta storing its normal tabela BARE and its promotional one
+canonical), the masked parent read (an echo under a propagating anchored parent, a parent with no
+link, one that does not propagate, a parent id no document has), the family query (only the
+ANCHORED children of the root; a childless root; a root stored with `paiId: ''`), and every enqueue
+through the real price producer root — each accepted only if the artifact registers the queue. The
+deployed trigger's map is a 15-minute cache in the emulator's worker, warmed by whichever suite
+writes a produto first, which is why the work is driven in process.
 
-| what                                                                         | pinned by                                                         |
-| ---------------------------------------------------------------------------- | ----------------------------------------------------------------- |
-| every cost of section 7, child and root; ≤ 1 PUT in every scenario           | `processarPreco.test.ts`                                          |
-| the no-lower and reflected decisions against an independent oracle           | `planoPrecoLi.test.ts`, `planoPrecoLi.propriedade.test.ts`        |
-| the mask is sufficient for `precoAlvoLi`                                     | `leituraPrecoErp.test.ts`                                         |
-| the queue's options, their equality with the stock queue's, the export name  | `functions/src/index.test.ts`                                     |
-| the dispatch, the bindings (the PRICE producer, the live env, the attempt)   | `functions/src/filaPreco.test.ts`                                 |
-| the producer root's queue path, region and valve                             | `functions/src/agendadorPreco.test.ts`                            |
-| five producer roots, each binding only its own queues                        | `estrutura.test.ts`                                               |
-| the lane refuses the price valve `on` and a price canary; the job env itself | `testing/guardaDaLaneDeTarefas.test.ts`                           |
-| the queue's `invoker`                                                        | `packages/config-eslint/rules/tasks-invoker-inventory.test.js`    |
-| what `planoPrecoLi.ts` treats as the same price                              | `packages/config-eslint/rules/equivalence-fold-inventory.test.js` |
-| the env variable is documented, never an `env:` row                          | `configPrecoLi.test.ts`                                           |
+**What fires on every suite's writes.** Since PR 13-e the deployed PRICE trigger fires on every
+suite's `produtos/*` writes (the anchor's own array writes included). Its relevance gate stops a
+create, a delete and an update that moves no price field at zero reads; past it, at the lane's
+`dry-run`, it may enqueue send runs (which write nothing), and only for a produto whose anchor names
+an ACTIVE conta with a NORMAL tabela — a conta with no normal tabela is inert. So a suite that writes
+produtos seeds them by a CREATE (after a delete) and never updates `precos`,
+`propagatePriceToChildren` or `paiId` on a produto anchored to a conta with a normal tabela (only
+the two price suites seed such a conta, under ids no other suite uses, by a create, and neither
+edits a price field in the emulator), and asserts only what its own in-process run decides
+(`vitest.tasks.config.ts`).
 
-## 12. Deploy, IAM, indexes (listed, owner-run)
+The lane cannot prove the deployed trigger end to end, its gate order or its costs (pinned offline:
+`gatilhoPreco.test.ts`, `functions/src/onPrecoLojaIntegrada.test.ts`), the map's TTL, named-task
+dedup, or the declared indexes (the emulator auto-creates every one; `gatilhoPreco.test.ts` and
+`mapaTabelasLi.test.ts` pin both queries against `firestore.indexes.json`).
+
+## 12. Guards
+
+| what                                                                                                           | pinned by                                                                   |
+| -------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| every cost of section 8's send-run table, child and root; ≤ 1 PUT in every scenario                            | `processarPreco.test.ts`                                                    |
+| the trigger's gate order, every row of its cost table, the clock after every read, the rejection contract      | `gatilhoPreco.test.ts`                                                      |
+| the relevance's per-key fold and its near-misses; a move of `precoAlvoLi` never judged irrelevant              | `relevanciaPrecoLi.test.ts`, `relevanciaPrecoLi.propriedade.test.ts`        |
+| the conta map: active, a normal tabela, the exact anchor match, cached (an empty map too)                      | `mapaTabelasLi.test.ts`                                                     |
+| both trigger queries ride a declared index (the family query on the manual push's constant)                    | `gatilhoPreco.test.ts`, `mapaTabelasLi.test.ts`                             |
+| the trigger's options: database `default`, `retry`, its path, no secret, the inherited region and instance cap | `functions/src/index.test.ts`, `functions/src/onPrecoLojaIntegrada.test.ts` |
+| the trigger calls nothing outside the ERP: no context, park, pacer, engine or send run                         | `estrutura.test.ts`                                                         |
+| the no-lower and reflected decisions against an independent oracle                                             | `planoPrecoLi.test.ts`, `planoPrecoLi.propriedade.test.ts`                  |
+| the mask is sufficient for `precoAlvoLi`                                                                       | `leituraPrecoErp.test.ts`                                                   |
+| the queue's options, their equality with the stock queue's, the export name                                    | `functions/src/index.test.ts`                                               |
+| the dispatch, the bindings (the PRICE producer, the live env, the attempt)                                     | `functions/src/filaPreco.test.ts`                                           |
+| the producer root's queue path, region and valve                                                               | `functions/src/agendadorPreco.test.ts`                                      |
+| five producer roots, each binding only its own queues                                                          | `estrutura.test.ts`                                                         |
+| the lane refuses the price valve `on` and a price canary; the job env itself                                   | `testing/guardaDaLaneDeTarefas.test.ts`                                     |
+| the queue's `invoker`                                                                                          | `packages/config-eslint/rules/tasks-invoker-inventory.test.js`              |
+| what `planoPrecoLi.ts` and `relevanciaPrecoLi.ts` treat as the same price                                      | `packages/config-eslint/rules/equivalence-fold-inventory.test.js`           |
+| the env variable is documented, never an `env:` row                                                            | `configPrecoLi.test.ts`                                                     |
+
+## 13. Deploy, IAM, indexes (listed, owner-run)
 
 None of this is an agent's to run (root `CLAUDE.md` rule 8):
 
-- deploy `functions:loja-integrada` only — one new function and its queue. It changes no behaviour:
-  nothing enqueues a price task yet, and with the valve unset every run returns `desligado`;
+- deploy `functions:loja-integrada` only — the price queue (PR 13-d) and, since PR 13-e, its
+  trigger `onPrecoLojaIntegrada`, the codebase's sixth Firestore trigger. It changes no behaviour
+  while the price valve is unset: every produto write returns at the trigger's zero-read gates, and
+  every run returns `desligado`. No App Hosting, web, rules, index or TTL deploy;
+- the trigger's binding: `gcloud eventarc triggers list --project <project-id>` shows a trigger for
+  `onprecolojaintegrada`, event type `google.cloud.firestore.document.v1.written`, database
+  `default`, path `produtos/*`; confirm that the Eventarc and Firestore service-agent grants serving
+  the other five Firestore triggers serve it too. One bound to `(default)` deploys fine and never
+  fires (`functions/DEPLOY.md`, "Verifying a first deploy", item 11);
 - the new queue's enqueuer grant, per project, for each identity in `TASKS_INVOKER_SA` (the first
   deploy of a new queue crashes on that binding: `functions/DEPLOY.md`), then the same deploy
   re-run; verify both the queue's and the service's IAM policy;
 - the index the duplicate probe rides, already declared for the stock flow:
-  `produtolojaintegrada (contaLojaIntegrada, id)` READY. No new index.
+  `produtolojaintegrada (contaLojaIntegrada, id)` READY; and the two the trigger rides, declared
+  too: `produtos (paiId, integracoesComProduto, __name__)` (the manual stock push's) and
+  `integracao (tipo, nome)`. No new index.
 
-## 13. Window items
+## 14. Staging measurements to record
+
+None is recorded at HEAD. The owner measures them on staging, in the #785 style, after the merge
+and before the window, with the price valve at `dry-run` on staging only, the read switch unset,
+seeded produtos and no token saved:
+
+- irrelevant produto writes (a name, an anchor write, a custo, float residue) ⇒ zero trigger reads;
+- the family query's `explain` for a family of one linked child, a mid-sized one and one at the
+  50-child cap (the store's variation cap): the index chosen, the entries scanned, the documents
+  returned;
+- a child edit under a parent that does not propagate ⇒ one parent read and one task; an anchored
+  echo under a propagating parent ⇒ one parent read and zero tasks;
+- a staged reprice of seeded propagating families ⇒ at most one family query per family per conta,
+  one parent read per echo, tasks ≈ children, and the event lag with `maxInstances` 10.
+
+## 15. Window items
 
 - the consumer (this functions codebase) deploys before any price producer ships;
+- the migrated links' anchor census runs before the valve reaches `on`: the trigger pre-filters on
+  `integracoesComProduto` (section 7);
+- the deploy that opens operations carries `LOJA_INTEGRADA_MODO_PRECO=dry-run` (functions only,
+  the owner's decision, section 10), so the next real price edit of a linked produto enqueues what its family shape gives (`functions/DEPLOY.md`, item 11): a
+  propagating root one task per child anchored to the conta, a simple produto its own task, a
+  non-propagating root with anchored children none, the ERP's echo onto the children of an
+  anchored propagating parent none (one parent read and one INFO line each), and a child's own
+  write one task only when its parent does not propagate or is not anchored to the conta. Each
+  dispatch line shows the run stopping at the read switch while it is off, or, with it on, one
+  deciding GET and its diff line with nothing sent — never hand-edit a real price to check it;
+- a Firestore import fires no trigger: the migrated prices reach a store only through a send run
+  (the nightly price phase and "Atualizar preços", later PRs of step 13), and the trigger covers
+  the ERP price edits after the switch-over;
+- at `dry-run` with the read switch on, a whole-catalogue reprice is one deciding GET per linked
+  child on the price queue (reads only, one at a time, for hours on a large catalogue): keep it in
+  mind before a bulk change of prices in the window;
 - the legacy app is off before the valve reaches `on`; the first real writes are a per-conta canary
   through the operator's manual push (a later PR of step 13);
 - `LOJA_INTEGRADA_PRECO_PROMO_LIMPO` stays unset (`nulo`) unless the canary shows the store refusing
   it — then `zero`, and `igual-cheio` only as the last resort, set by a person.
 
-## 14. Accepted residuals
+## 16. Accepted residuals
 
 - A store-panel edit of the full price or the promotion that lands between the deciding GET and the
   PUT is overwritten, by design: the ERP is the source of the price.
@@ -291,3 +523,16 @@ None of this is an agent's to run (root `CLAUDE.md` rule 8):
 - A refusal row of a produto unlinked after the refusal stands until the aviso retention closes it.
 - A target past the builder's exact round trip (centavos far above any real price) is the builder's
   `RangeError`, thrown on every attempt and then dropped.
+- A write that moves the parent and a price together sends `baixar: false`: a lowering in it waits
+  for a later event, or for "Atualizar preços" with lowering allowed.
+- A family whose root's link no longer counts gets its children's tasks only from the echo path (a
+  propagating parent); a flag turned OFF on such a root reaches no child until the nightly.
+- The conta map is up to 15 min stale per warm instance (a conta created, re-pointed or
+  reactivated).
+- A counting link whose conta is missing from the anchor is skipped silently (the census gate,
+  section 15).
+- More than 50 linked children of one root in one conta: the first 50 are enqueued and ONE WARNING
+  is written; a self-parent root (legacy data) with more than 50 may enqueue 50 with no WARNING.
+- ⚠️ Until the nightly's price phase ships (a later PR of step 13), nothing re-covers a missed event
+  — a task dropped after three 429/5xx attempts, a period with the valve off, the cases above —
+  except the produto's next event.

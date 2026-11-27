@@ -53,6 +53,10 @@
  *    closure (the stock producer's root seen as a leaf) reaches no context loader, park, pacer,
  *    write engine or send run, names no client, calls no `fetch`, and loads the package only
  *    where an allow-list says why;
+ *  - the price TRIGGER (step 13, PR 13-e) calls nothing outside the ERP either: walked with the
+ *    stock trigger's rules, the PRICE producer's root a leaf, its closure reaches no context
+ *    loader, park, pacer, write engine or send run — the price send run banned on top — names no
+ *    client, calls no `fetch`, and loads the package only through the same allow-list;
  *  - the two operator STOCK routes (`ROTAS_DE_ENFILEIRAMENTO_ESTOQUE_LI`: the manual push
  *    `POST …/enviar-estoque` and the reconcile `POST …/conta/[id]/estoque/reconciliar`, step 12,
  *    PR 12-h) only enqueue: walked with the stock trigger's rules — the App Hosting producer root
@@ -567,6 +571,27 @@ const RAIZ_DO_PRODUTOR_DE_ESTOQUE = 'functions/src/agendadorEstoque.ts';
  * walking into it would put the whole reads queue in a closure that enqueues one task.
  */
 const RAIZ_DO_PRODUTOR_DE_LEITURA = 'functions/src/agendador.ts';
+
+/**
+ * The PRICE trigger (step 13, PR 13-e): it calls nothing outside the ERP, and may reach nothing a
+ * call needs. Walked with the stock trigger's rules, the PRICE producer's root a leaf, and the
+ * price SEND RUN banned on top (its closure holds the write context, the pacer and the engine).
+ */
+const CAMINHO_DO_GATILHO_DE_PRECO = [
+  'functions/src/onPrecoLojaIntegrada.ts',
+  'lib/lojaIntegrada/preco/gatilhoPreco.ts',
+] as const;
+
+/**
+ * The price queue's producer ROOT (`functions/src/agendadorPreco.ts`), a LEAF of that walk for the
+ * stock root's reason: it binds the Admin SDK's task queue through the reads root's region and
+ * valve readers, so walking into it would put every reads-queue module in the trigger's closure.
+ * What it may do is pinned where it lives (`functions/src/agendadorPreco.test.ts`).
+ */
+const RAIZ_DO_PRODUTOR_DE_PRECO = 'functions/src/agendadorPreco.ts';
+
+/** What the price trigger's closure may additionally never reach: the price send run. */
+const MODULOS_FORA_DO_GATILHO_DE_PRECO = ['lib/lojaIntegrada/preco/processarPreco.ts'];
 
 /**
  * The reconcile's NIGHTLY START and its DEPÓSITO-CHANGE arm (step 12, PR 12-g), and the conta
@@ -1279,6 +1304,59 @@ describe('lib/lojaIntegrada layout', () => {
         violacoesDoGatilhoDeEstoque(['lib/lojaIntegrada/estoque/processarEstoque.ts'], lerDoApp)
           .length,
       ).toBeGreaterThan(0);
+    },
+  );
+
+  it(
+    'the price trigger (step 13, PR 13-e) calls NOTHING outside the ERP: no context, park, pacer, write engine or send run, no client named, no fetch, and the package loaded only for constants',
+    { timeout: 30_000 },
+    () => {
+      const folhas = [RAIZ_DO_PRODUTOR_DE_PRECO, RAIZ_DO_PRODUTOR_DE_ESTOQUE];
+      for (const entrada of CAMINHO_DO_GATILHO_DE_PRECO) {
+        expect(lerDoApp(entrada), entrada).not.toBeNull();
+      }
+      expect(lerDoApp(RAIZ_DO_PRODUTOR_DE_PRECO)).not.toBeNull();
+      expect(
+        violacoesDoGatilhoDeEstoque(
+          CAMINHO_DO_GATILHO_DE_PRECO,
+          lerDoApp,
+          folhas,
+          MODULOS_FORA_DO_GATILHO_DE_PRECO,
+        ),
+      ).toEqual([]);
+      // Anti-vacuity: the walk entered the relevance gate, the conta map and its enumeration, the
+      // tabela fold, the valve, the index constant's module and the producer, and saw its root.
+      const ler = leitorDoGatilhoDeEstoque(lerDoApp, folhas);
+      const fecho = fechoDeImportacoes(CAMINHO_DO_GATILHO_DE_PRECO, ler, resolverAliasDoApp(ler));
+      expect(fecho.arquivos).toEqual(
+        expect.arrayContaining([
+          ...CAMINHO_DO_GATILHO_DE_PRECO,
+          'lib/lojaIntegrada/preco/relevanciaPrecoLi.ts',
+          'lib/lojaIntegrada/preco/mapaTabelasLi.ts',
+          'lib/lojaIntegrada/preco/tabelasLi.ts',
+          'lib/lojaIntegrada/preco/agendadorPreco.ts',
+          'lib/lojaIntegrada/core/contas.ts',
+          'lib/lojaIntegrada/core/valvulas.ts',
+          'lib/lojaIntegrada/estoque/envioManualEstoqueLi.ts',
+          RAIZ_DO_PRODUTOR_DE_PRECO,
+        ]),
+      );
+      // The one package load is the allow-listed one, and it is real.
+      expect(
+        fecho.arquivos.filter((arquivo) =>
+          especificadores(ler(arquivo) ?? '').includes('@delfrance/integrations-loja-integrada'),
+        ),
+      ).toEqual(CARREGAM_O_PACOTE_NO_GATILHO_DE_ESTOQUE);
+      // The rules bite: walked by them, the price send run fails on what it reaches — and the ban
+      // on top is what names it.
+      const doEnvio = violacoesDoGatilhoDeEstoque(
+        ['lib/lojaIntegrada/preco/processarPreco.ts'],
+        lerDoApp,
+        folhas,
+        MODULOS_FORA_DO_GATILHO_DE_PRECO,
+      );
+      expect(doEnvio.length).toBeGreaterThan(0);
+      expect(doEnvio).toContain('reaches lib/lojaIntegrada/preco/processarPreco.ts');
     },
   );
 

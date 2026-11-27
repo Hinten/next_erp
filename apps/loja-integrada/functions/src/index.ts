@@ -101,10 +101,18 @@ import { getDb } from './lib/admin';
  * Master plan step 13 (PR 13-d) adds the PRICE queue (`filaPrecoLojaIntegrada`,
  * ./filaPreco): one price send run of one produto per task, options identical to
  * the stock queue's, a queue of its own so a whole-catalogue reprice never holds
- * the status write-back or a stock send behind it. Its only producer today is the
- * run's own `deriva` follow-up (./agendadorPreco); the price trigger, the nightly
- * reconcile and the operator's routes come in later PRs of step 13. Until the
- * window the price valve is unset, so every run returns before any read.
+ * the status write-back or a stock send behind it. Its producers today are the
+ * price trigger (below) and the run's own `deriva` follow-up, both through
+ * ./agendadorPreco; the nightly reconcile and the operator's routes come in later
+ * PRs of step 13. Until the window the price valve is unset, so every run returns
+ * before any read.
+ *
+ * Master plan step 13 (PR 13-e) adds the price TRIGGER, `onPrecoLojaIntegrada`
+ * (./onPrecoLojaIntegrada), on every ERP produto write: zero reads for a write
+ * that moves no tabela entry, propagation flag or parent, or with the price valve
+ * off; then the cached map of the contas' price tabelas, and at most ONE masked
+ * parent read for a child or ONE family query per concerned conta for a root. It
+ * enqueues named price tasks, writes nothing and makes no Loja Integrada call.
  *
  * Every export below is a Cloud Function name, and the names are unique across
  * codebases (`functions-export-names.test.js`): keep the exports explicit and
@@ -219,6 +227,12 @@ export { onImportacaoLojaIntegradaCriada } from './onImportacaoLojaIntegradaCria
  * ./onEstoqueLojaIntegrada).
  */
 export { onEstoqueLojaIntegrada } from './onEstoqueLojaIntegrada';
+
+/**
+ * The price trigger: an ERP produto write ⇒ the named price send tasks it may
+ * need, on the price queue (master plan step 13, ./onPrecoLojaIntegrada).
+ */
+export { onPrecoLojaIntegrada } from './onPrecoLojaIntegrada';
 
 /**
  * Documents examined per lane on each tick of the reprocess sweep. NOT exported:

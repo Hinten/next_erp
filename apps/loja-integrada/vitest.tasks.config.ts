@@ -138,6 +138,26 @@ import { defineConfig } from 'vitest/config';
 // the price valve to `dry-run`, so that dispatched task runs its ERP reads and stops at its write
 // context (the read switch is off): it writes nothing, so it cannot spill into another file.
 //
+// ⚠️ Since step 13 (PR 13-e) a SIXTH trigger loads, the price trigger `onPrecoLojaIntegrada`, on
+// EVERY write of `produtos/*` — every suite's produto documents, the anchor's own array writes
+// included. Its relevance gate reads the payload alone: a create, a delete, and an update that moves
+// no tabela entry, no propagation flag and no parent (the anchor's writes, a name, a mirror field)
+// stop there with zero reads. Past it, at the lane's `dry-run` price valve, it reads its cached
+// conta map (one `integracao` query per 15 minutes per emulator worker) and, only for a conta that is
+// ACTIVE, names a normal tabela AND appears in the produto's anchor, at most one masked parent read
+// or one family query, then enqueues send runs onto `filaPrecoLojaIntegrada` — which, dispatched,
+// stop at their write context (the read switch is off) and write nothing. A conta with no normal
+// tabela is inert. So a suite that writes produtos:
+//   - seeds them by a CREATE (after a delete) and never UPDATES `precos`,
+//     `propagatePriceToChildren` or `paiId` on a produto whose anchor names a conta with a normal
+//     tabela — today only `lib/lojaIntegrada/preco/processarPreco.tasks.test.ts` and the trigger's
+//     own suite seed such a conta, and neither edits a price field in the emulator;
+//   - seeds a conta with a normal tabela only under ids no other suite uses, by a create;
+//   - asserts only what its own in-process run decides: the deployed trigger's map may be warm from
+//     an earlier file without this suite's conta, so the trigger's work is driven IN PROCESS
+//     (`lib/lojaIntegrada/preco/gatilhoPreco.tasks.test.ts`, the cache reset per case), each
+//     event's before and after handed in.
+//
 // Each file's `beforeEach` deletes what it reads, because the files
 // share one emulator and run one at a time (`fileParallelism: false`).
 export default defineConfig({

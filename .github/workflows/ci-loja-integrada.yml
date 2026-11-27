@@ -66,7 +66,16 @@ name: CI — Loja Integrada
 #     producer root onto `filaPrecoLojaIntegrada`. The DISPATCHED follow-up passes
 #     the price valve (`dry-run` in the job env, below) and stops at its write
 #     context on the read switch, writing nothing, so that hop is unobservable
-#     here by design; its options and dispatch are pinned offline.
+#     here by design; its options and dispatch are pinned offline;
+#   - `apps/loja-integrada/lib/lojaIntegrada/preco/gatilhoPreco.tasks.test.ts`
+#     — the price trigger's work (step 13, PR 13-e) IN PROCESS against the real
+#     Firestore: the cached conta map's real `integracao` query (a conta storing
+#     its normal tabela under the BARE ref form), the masked parent read, the
+#     family query (`paiId ==` and `array-contains` the conta, projected and
+#     limited), and its enqueues through the real price producer root onto
+#     `filaPrecoLojaIntegrada`. Each event's before and after are handed in, and
+#     the suite edits no price field in the emulator, so the DEPLOYED trigger never
+#     passes its relevance gate on it.
 # ⚠️ The triggers fire on EVERY suite's writes, not only their own: the
 # functions emulator loads the whole codebase. The conta trigger fires on every
 # `integracao` write, the history trigger (`onHistoricoFreteLojaIntegrada`,
@@ -77,7 +86,11 @@ name: CI — Loja Integrada
 # the STOCK trigger (`onEstoqueLojaIntegrada`, step 12) on every
 # `produtos/*/estoques/*` write: at this job's `dry-run` stock valve it may
 # enqueue send runs (which stop at their write context and write nothing) and,
-# for a seeded kits header, a fan-out (whose one write is the slot document). The
+# for a seeded kits header, a fan-out (whose one write is the slot document) —
+# and the PRICE trigger (`onPrecoLojaIntegrada`, step 13) on every `produtos/*`
+# write: at this job's `dry-run` price valve it may enqueue send runs (which stop
+# at their write context and write nothing), and only for a produto whose anchor
+# names an active conta with a normal tabela. The
 # rules that keep the files apart (unique conta, pedido and produto ids, the
 # step-3 suites' incomplete seeds, a trigger suite awaiting its own last effect)
 # are in `vitest.tasks.config.ts`.
@@ -195,12 +208,19 @@ name: CI — Loja Integrada
 #     filter, by counting its reads and enqueues) and, for the stock trigger,
 #     functions/src/onEstoqueLojaIntegrada.test.ts and
 #     lib/lojaIntegrada/estoque/gatilhoEstoque.test.ts (its gate order and its
-#     cost per event, by counting).
+#     cost per event, by counting) and, for the price trigger,
+#     functions/src/onPrecoLojaIntegrada.test.ts and
+#     lib/lojaIntegrada/preco/gatilhoPreco.test.ts.
 #   - The DEPLOYED stock trigger end to end. Its depósito map is a 15-minute
 #     cache in the emulator's worker, warmed by whichever suite writes a stock
 #     record first, so the suite drives the trigger's work in process instead;
 #     the map's TTL, the gate order and the clock-after-reads rule are pinned
 #     offline.
+#   - The DEPLOYED price trigger end to end: its conta map is a 15-minute cache
+#     in the emulator's worker, and a dispatched price run at `dry-run` with the
+#     read switch off writes nothing to observe, so the suite drives the
+#     trigger's work in process; the gate order, the costs per event and the
+#     clock-after-reads rule are pinned offline.
 #   - The stock and price queues' dispatch of a SEND run. A dispatched send run
 #     stops at its write context on the read switch and writes nothing (no
 #     failure store, no write on success), so an emulator cannot observe it; both
@@ -408,7 +428,8 @@ jobs:
       # above: with the read switch `off` every dispatched price run stops at its
       # write context, before any Loja Integrada client exists, and writes nothing
       # (under `dry-run` it neither raises an aviso nor parks). Never `on`, and no
-      # LOJA_INTEGRADA_CANARIO_PRECO: vitest.tasks.setup.ts refuses both.
+      # LOJA_INTEGRADA_CANARIO_PRECO: vitest.tasks.setup.ts refuses both. Since PR
+      # 13-e the price trigger enqueues at it too, as under `on`.
       LOJA_INTEGRADA_MODO_PRECO: 'dry-run'
       NEXT_TELEMETRY_DISABLED: '1'
     steps:

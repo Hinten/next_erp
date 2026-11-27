@@ -22,10 +22,13 @@ import { getDb } from './lib/admin';
  *
  * Why it exists: that array is the ANCHOR PRE-FILTER the other channels' stock and price sweeps
  * open with and, for Loja Integrada, the manual stock push's (master plan step 12, PR 12-h,
- * `lib/lojaIntegrada/estoque/envioManualEstoqueLi.ts`). This app's stock trigger and nightly stock
+ * `lib/lojaIntegrada/estoque/envioManualEstoqueLi.ts`) and, since step 13 (PR 13-e), the price
+ * trigger's (`lib/lojaIntegrada/preco/gatilhoPreco.ts`). This app's stock trigger and nightly stock
  * reconcile read the links themselves and never read the array. A conta listed with no counting
- * link costs one wasted read (the push still classifies the produto by its links); a counting link
- * with no conta entry makes the manual push skip that produto silently, never with an error — a
+ * link costs one wasted read (the push still classifies the produto by its links) or one price
+ * send run that skips; a counting link with no conta entry makes the price trigger skip that
+ * produto's price events silently (until the price sync's nightly phase, a later PR of step 13),
+ * and makes the manual push skip that produto silently, never with an error — a
  * selected produto answers `sem-vinculo` when another selected produto names the conta and gets no
  * Loja Integrada row when none does (the web picks the contas to call from the selection's arrays);
  * a child of a selected root is never found by the root's expansion, which filters on the array
@@ -72,8 +75,9 @@ import { getDb } from './lib/admin';
  * this channel runs no audit that drops stale entries. Only a manual fix clears it (the window's
  * anchor census looks for the opposite gap: a counting link whose conta is missing).
  * Accepted (the core's event-derived tier-0 add, as Shopee's trigger makes it): it is the
- * over-inclusive direction — one wasted link listing in the manual push, since no sweep reads
- * this channel's entries of the array — never the silent outage. Closing it would mean routing
+ * over-inclusive direction — one wasted link listing in the manual push, or one price send run
+ * that skips, since no sweep reads this channel's entries of the array — never the silent
+ * outage. Closing it would mean routing
  * the event's add through the core's guarded `adicionarContaSeViva` — one more guarded write and
  * survivor read per add that moves membership.
  *
