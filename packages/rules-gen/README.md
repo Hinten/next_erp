@@ -73,6 +73,16 @@ Each `gen:` invocation writes **one** file, so a schema change needs **both**.
 
 Skipping step 1 or 2 reds `ci-rules.yml`.
 
+## Write guards
+
+A schema-derived validator can only say what each field LOOKS like. An invariant
+that ties a doc's fields to its own id, or to another doc, goes in
+`WRITE_GUARDS` (`src/registry.ts`) instead: hand-written rules functions plus a
+`create` and an `update` condition, ANDed outside the su bypass exactly like a
+validator. Today there is one — `arquivos`, whose `filepath`/`filename` must be
+what the doc id implies (`src/writeGuards.ts` says why). Its behaviour suite is
+`test/arquivos.rules.test.ts`.
+
 ## Datetime fields
 
 Datetimes are epoch integers (#484), declared through `millisSinceEpoch()` /

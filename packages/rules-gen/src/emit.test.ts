@@ -265,6 +265,80 @@ describe('emitRules', () => {
     expect(out).toContain('match /x/{xId} {\n      allow read: if false;\n    }');
   });
 
+  describe('write guards', () => {
+    const guard = {
+      functions: ['function g(id) {', "  return id == 'ok';", '}'],
+      create: 'g(docId)',
+      update: "!request.resource.data.diff(resource.data).affectedKeys().hasAny(['k'])",
+    };
+
+    it('splits create/update and ANDs the guard outside the su bypass', () => {
+      const out = emitRules(
+        [domain('foo'), domain('bar')],
+        [],
+        new Set(),
+        new Map([['foo', guard]]),
+      );
+      expect(out).toContain("allow create: if (isSuperUser() || p('d_cliente', 2)) && g(docId);");
+      expect(out).toContain(
+        "allow update: if (isSuperUser() || p('d_cliente', 2)) && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['k']);",
+      );
+      // Near-miss: an unguarded sibling keeps the merged permission-only rule.
+      expect(out).toContain(
+        'match /bar/{docId} {\n' +
+          "      allow read: if isSuperUser() || p('d_cliente', 1);\n" +
+          "      allow create, update: if isSuperUser() || p('d_cliente', 2);\n",
+      );
+      expect(out).toContain("    function g(id) {\n      return id == 'ok';\n    }");
+    });
+
+    it('ANDs the guard after the validator and the server-owned-field guard', () => {
+      const withOwned: DomainSchema<z.ZodTypeAny> = {
+        schema: z.object({ nome: z.string().max(10), snap: z.string().nullable() }),
+        meta: {
+          collectionPath: 'foo',
+          permissions: {
+            read: PERM.cliente.read,
+            write: PERM.cliente.write,
+            delete: PERM.cliente.delete,
+          },
+          serverOwnedFields: ['snap'],
+        },
+      };
+      const out = emitRules([withOwned], [], new Set(['foo']), new Map([['foo', guard]]));
+      expect(out).toContain(
+        "allow create: if (isSuperUser() || p('d_cliente', 2)) && v_foo(request.resource.data, request.resource.data.keys()) && (!request.resource.data.keys().hasAny(['snap']) || request.resource.data.get('snap', null) == null) && g(docId);",
+      );
+      expect(out).toContain(
+        "allow update: if (isSuperUser() || p('d_cliente', 2)) && v_foo(request.resource.data, request.resource.data.diff(resource.data).affectedKeys()) && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['snap']) && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['k']);",
+      );
+    });
+
+    it('throws when a guard names no registered collection', () => {
+      expect(() => emitRules([domain('foo')], [], new Set(), new Map([['fooo', guard]]))).toThrow(
+        /names no registered collection/,
+      );
+    });
+
+    it('throws when a guard targets a serverOwned collection', () => {
+      const owned: DomainSchema<z.ZodTypeAny> = {
+        schema: z.object({ nome: z.string() }),
+        meta: {
+          collectionPath: 'foo',
+          permissions: {
+            read: PERM.cliente.read,
+            write: PERM.cliente.write,
+            delete: PERM.cliente.delete,
+          },
+          serverOwned: true,
+        },
+      };
+      expect(() => emitRules([owned], [], new Set(), new Map([['foo', guard]]))).toThrow(
+        /cannot carry a write guard/,
+      );
+    });
+  });
+
   it('fails when a whitelisted schema yields no clauses', () => {
     const empty = domain('foo', undefined, z.object({ blob: z.unknown() }));
     expect(() => emitRules([empty], [], new Set(['foo']))).toThrow(/no clauses/);

@@ -292,8 +292,14 @@ Start from the owner-scoped or globally-shared pattern above; do not mix them.
   `scripts/check-sweep-indexes.mjs` Query Explain before functions deployment.
 - **`.nullable().default(null)`, never bare `.optional()`** — Firebase JS SDK v12
   rejects `undefined` in `setDoc`/`addDoc`.
-- **Rules**: the `arquivos` rules block is **permission-only** over a
+- **Rules**: the `arquivos` rules block carries no field validator over its
   `.passthrough()` schema — adding an arquivo field causes **no rules-gen drift**.
+  It DOES carry a write guard (`packages/rules-gen/src/writeGuards.ts`): a
+  client-created doc's `filepath`/`filename` must be what its id implies per
+  `storagePaths.ts`, and no client update may touch either. That is what stops
+  a crafted doc from making `onArquivoDeleted` delete someone else's object. ⚠️
+  A NEW storage root or id shape for client uploads needs a matching arm there,
+  or every upload to it is denied.
   Still run `pnpm --filter @delfrance/rules-gen gen:rules` (CI's drift check
   confirms). Never hand-edit `firestore.rules` (it's generated).
 - **Functions deploy does not read `.env.local`** — the build bundles src and
