@@ -177,6 +177,53 @@ export async function lerProdutosEstoqueLi(
   return lidos;
 }
 
+/** One produto of {@link lerProdutosEstoqueComCamposLi}: the stock view, and the masked raw data. */
+export interface ProdutoComCamposLi {
+  /** As {@link lerProdutosEstoqueLi} reads it. */
+  readonly estoque: ProdutoEstoqueLi;
+  /** Every field of the union mask the document holds, as stored (own keys only). */
+  readonly bruto: Readonly<Record<string, unknown>>;
+}
+
+/**
+ * {@link lerProdutosEstoqueLi} with MORE fields in the SAME read (the daily reconcile's price arm,
+ * step 13): ONE `getAll` per {@link MAX_PRODUTOS_POR_LEITURA_ESTOQUE_LI} distinct ids, masked to
+ * {@link CAMPOS_PRODUTO_ESTOQUE_LI} plus `extras` (the union, each field once). Each produto's
+ * stock view is exactly what {@link lerProdutosEstoqueLi} answers — the extra fields never reach
+ * it — beside the masked raw data. `null` for an absent document; no read for an empty list.
+ */
+export async function lerProdutosEstoqueComCamposLi(
+  db: Firestore,
+  produtoIds: readonly string[],
+  extras: readonly string[],
+): Promise<ReadonlyMap<string, ProdutoComCamposLi | null>> {
+  const mascara = [...new Set<string>([...CAMPOS_PRODUTO_ESTOQUE_LI, ...extras])];
+  const unicos = [...new Set(produtoIds)];
+  const lidos = new Map<string, ProdutoComCamposLi | null>();
+  for (let i = 0; i < unicos.length; i += MAX_PRODUTOS_POR_LEITURA_ESTOQUE_LI) {
+    const fatia = unicos.slice(i, i + MAX_PRODUTOS_POR_LEITURA_ESTOQUE_LI);
+    const snaps = await db.getAll(...fatia.map((id) => produtoCollection.docRef(db, {}, id)), {
+      fieldMask: mascara,
+    });
+    fatia.forEach((id, n) => {
+      const snap = snaps[n];
+      const estoque = produtoDoSnapshotLi(snap);
+      if (snap === undefined || estoque === null) {
+        lidos.set(id, null);
+        return;
+      }
+      const dados: Readonly<Record<string, unknown>> = snap.data() ?? {};
+      lidos.set(id, {
+        estoque,
+        bruto: Object.fromEntries(
+          mascara.filter((c) => Object.hasOwn(dados, c)).map((c) => [c, dados[c]]),
+        ),
+      });
+    });
+  }
+  return lidos;
+}
+
 /** The produto's OWN `produtolojaintegrada` documents, raw, every conta's (a where-less listing). */
 export async function lerVinculosDoProdutoLi(db: Firestore, produtoId: string): Promise<unknown[]> {
   const snap = await produtoLojaIntegradaLinkCollection.ref(db, { produtoId }).get();
