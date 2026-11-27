@@ -10,8 +10,9 @@ It ships INERT. The stock valve `LOJA_INTEGRADA_MODO_ESTOQUE`, its canary list a
 `LOJA_INTEGRADA_CHAMADAS` are unset today, so every trigger event, send run and fan-out returns
 with zero reads — and every reconcile slice, the nightly start and the depósito arm too while
 `LOJA_INTEGRADA_MODO_PRECO` is unset as well: since step 13 one nightly run carries both flows, and
-it stops only when BOTH valves are off ([`reconcile/README.md`](reconcile/README.md), section 14). Before the migration window the valve may be set to `dry-run` and to
-nothing else (the staging measurement path, section 13); the canary list and the switch stay unset.
+it stops only when BOTH valves are off ([`reconcile/README.md`](reconcile/README.md), section 14).
+Before the migration window the valve may be set to `dry-run` and to nothing else (the staging
+measurement path, section 13); the canary list and the switch stay unset.
 No test can call the store: this app's two vitest setups make a `fetch` to any non-local host
 throw, the suites that script the store pass a `deps.fetch`, and in the emulator lane a dispatched
 send run or reconcile store phase stops at the read switch while the fan-out makes no store call
@@ -736,8 +737,8 @@ nothing) and, for a seeded kits header, a fan-out (whose one write is the slot).
 depósito arm fires on an UPDATE that moves a Loja Integrada conta's depósito, and its dispatched run
 walks every link and conta in the emulator — and, at the lane's `dry-run` price valve (since PR
 13-f1), carries the price arm, writing `sincPrecoLojaIntegrada/{conta}` for a conta naming a normal
-tabela (`../../../vitest.tasks.config.ts`, the seventh rule set); the run document is the one the fan-out writes its slot
-on. So a suite that writes stock records or contas:
+tabela (`../../../vitest.tasks.config.ts`, the seventh rule set); the run document is the one the
+fan-out writes its slot on. So a suite that writes stock records or contas:
 
 - uses produtos and contas no other suite seeds, and seeds contas with a depósito by a CREATE (the
   arm never fires on one);
