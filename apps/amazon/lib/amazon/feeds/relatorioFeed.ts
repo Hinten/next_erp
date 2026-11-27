@@ -31,6 +31,17 @@
  * `codigos` (for the dispatch line) holds the distinct issue codes that match
  * a short token grammar, sorted, at most {@link MAX_CODIGOS_RELATORIO_FEED}:
  * never a message, never a SKU.
+ *
+ * ## The items' own issues (step 13, PR 13-f)
+ *
+ * A document whose header asked for a `report` gets back `items[]`: each
+ * member's listing after processing, with ITS issues (which carry
+ * `categories`, unlike the report's own). Only a caller's predicate selects
+ * any of them (`issueDeItemRelevante`): those it keeps are grouped by the
+ * item's own `sku`, exactly as written, into `issuesDosItens` — the link shape
+ * with `categories` KEPT, `ERROR` first, at most {@link MAX_PROBLEMAS_POR_SKU}
+ * per SKU. With no predicate, or a report without `items`, the map is empty.
+ * `codigos` never counts them. The same {@link skusParaGravar} bounds both maps.
  */
 import type { RelatorioProcessamentoListings } from '@delfrance/integrations-amazon-sp-api';
 import type { ProblemasSemSkuFeedAmazon, ResultadoFeedAmazon } from '@delfrance/schemas';
@@ -65,12 +76,26 @@ export interface ProblemaSku {
   readonly categories: null;
 }
 
+/** One issue of a report ITEM (module header), in the link docs' issue shape: its categories kept. */
+export interface ProblemaItemSku {
+  readonly code: string | null;
+  readonly message: string | null;
+  readonly severity: string | null;
+  readonly attributeNames: readonly string[] | null;
+  readonly categories: readonly string[] | null;
+}
+
 /** What one report reduces to. */
 export interface ReducaoRelatorioFeed {
   /** The report's summary, as the record's `resultado`. */
   readonly resumo: ResultadoFeedAmazon;
   /** SKU → its problems (≤ {@link MAX_PROBLEMAS_POR_SKU}, `ERROR` first), for every SKU attributed one. */
   readonly porSku: ReadonlyMap<string, readonly ProblemaSku[]>;
+  /**
+   * SKU → its items' issues the predicate kept (module header, "The items' own
+   * issues"); empty with no predicate.
+   */
+  readonly issuesDosItens: ReadonlyMap<string, readonly ProblemaItemSku[]>;
   /** The feed-level issues, counted by severity. */
   readonly semSku: ProblemasSemSkuFeedAmazon;
   /** Distinct loggable issue codes, sorted, bounded. */
@@ -100,9 +125,67 @@ function paraProblema(issue: IssueRelatorioFeed): ProblemaSku {
   };
 }
 
-/** The report, reduced (module header). */
+/** One report item's issue, as the package's tolerant schema reads it. */
+type IssueItemRelatorioFeed = NonNullable<
+  NonNullable<RelatorioProcessamentoListings['items']>[number]['issues']
+>[number];
+
+function paraProblemaDoItem(issue: IssueItemRelatorioFeed): ProblemaItemSku {
+  return {
+    code: issue.code ?? null,
+    message: issue.message ?? null,
+    severity: issue.severity ?? null,
+    attributeNames: issue.attributeNames ? [...issue.attributeNames] : null,
+    categories: issue.categories ? [...issue.categories] : null,
+  };
+}
+
+/** Each SKU's list, ERROR first then WARNING then the rest (report order within), cut to the cap. */
+function ordenadosPorSeveridade<P extends { readonly severity: string | null }>(
+  agrupados: ReadonlyMap<string, readonly P[]>,
+): Map<string, readonly P[]> {
+  const porSku = new Map<string, readonly P[]>();
+  for (const [sku, lista] of agrupados) {
+    // A stable sort: report order within each severity.
+    const ordenada = [...lista].sort(
+      (a, b) => ordemDaSeveridade(a.severity) - ordemDaSeveridade(b.severity),
+    );
+    porSku.set(sku, ordenada.slice(0, MAX_PROBLEMAS_POR_SKU));
+  }
+  return porSku;
+}
+
+/**
+ * The report items' issues the predicate keeps, by the item's own `sku`
+ * (module header, "The items' own issues"). An item with no `sku`, an empty
+ * one or no issue kept adds nothing.
+ */
+function issuesDosItensDoRelatorio(
+  relatorio: RelatorioProcessamentoListings,
+  issueDeItemRelevante: ((issue: unknown) => boolean) | undefined,
+): Map<string, readonly ProblemaItemSku[]> {
+  if (issueDeItemRelevante === undefined) return new Map();
+  const agrupados = new Map<string, ProblemaItemSku[]>();
+  for (const item of relatorio.items ?? []) {
+    const sku = item.sku;
+    if (typeof sku !== 'string' || sku === '') continue;
+    for (const issue of item.issues ?? []) {
+      if (!issueDeItemRelevante(issue)) continue;
+      const lista = agrupados.get(sku);
+      if (lista === undefined) agrupados.set(sku, [paraProblemaDoItem(issue)]);
+      else lista.push(paraProblemaDoItem(issue));
+    }
+  }
+  return ordenadosPorSeveridade(agrupados);
+}
+
+/**
+ * The report, reduced (module header). `issueDeItemRelevante` selects the
+ * report items' own issues kept in `issuesDosItens`; absent, it keeps none.
+ */
 export function reduzirRelatorioFeed(
   relatorio: RelatorioProcessamentoListings,
+  issueDeItemRelevante?: (issue: unknown) => boolean,
 ): ReducaoRelatorioFeed {
   const agrupados = new Map<string, ProblemaSku[]>();
   const semSku = { erros: 0, avisos: 0 };
@@ -121,14 +204,7 @@ export function reduzirRelatorioFeed(
     else if (issue.severity === SEVERIDADE_ISSUE_FEED.aviso) semSku.avisos += 1;
   }
 
-  const porSku = new Map<string, readonly ProblemaSku[]>();
-  for (const [sku, lista] of agrupados) {
-    // A stable sort: report order within each severity.
-    const ordenada = [...lista].sort(
-      (a, b) => ordemDaSeveridade(a.severity) - ordemDaSeveridade(b.severity),
-    );
-    porSku.set(sku, ordenada.slice(0, MAX_PROBLEMAS_POR_SKU));
-  }
+  const porSku = ordenadosPorSeveridade(agrupados);
 
   const { summary } = relatorio;
   return {
@@ -140,32 +216,34 @@ export function reduzirRelatorioFeed(
       invalidas: summary.messagesInvalid,
     },
     porSku,
+    issuesDosItens: issuesDosItensDoRelatorio(relatorio, issueDeItemRelevante),
     semSku,
     codigos: [...codigos].sort(compararTexto).slice(0, MAX_CODIGOS_RELATORIO_FEED),
   };
 }
 
 /** What {@link skusParaGravar} keeps, and how many it left out. */
-export interface SkusParaGravarFeed {
-  readonly problemas: ReadonlyMap<string, readonly ProblemaSku[]>;
+export interface SkusParaGravarFeed<P = ProblemaSku> {
+  readonly problemas: ReadonlyMap<string, readonly P[]>;
   readonly omitidos: number;
 }
 
 /**
  * The SKUs written back (module header): at most
  * {@link MAX_SKUS_COM_PROBLEMA_GRAVADOS}, a SKU with an `ERROR` before one
- * without, then SKU order.
+ * without, then SKU order. The report's own problems and the items' issues
+ * are bounded alike.
  */
-export function skusParaGravar(
-  porSku: ReadonlyMap<string, readonly ProblemaSku[]>,
-): SkusParaGravarFeed {
+export function skusParaGravar<P extends { readonly severity: string | null } = ProblemaSku>(
+  porSku: ReadonlyMap<string, readonly P[]>,
+): SkusParaGravarFeed<P> {
   const ordemDoSku = (sku: string): number =>
     Math.min(...(porSku.get(sku) ?? []).map((p) => ordemDaSeveridade(p.severity)), 2);
   const ordenados = [...porSku.keys()].sort(
     (a, b) => ordemDoSku(a) - ordemDoSku(b) || compararTexto(a, b),
   );
   const mantidos = ordenados.slice(0, MAX_SKUS_COM_PROBLEMA_GRAVADOS);
-  const problemas = new Map<string, readonly ProblemaSku[]>();
+  const problemas = new Map<string, readonly P[]>();
   for (const sku of mantidos) problemas.set(sku, porSku.get(sku) ?? []);
   return { problemas, omitidos: ordenados.length - mantidos.length };
 }

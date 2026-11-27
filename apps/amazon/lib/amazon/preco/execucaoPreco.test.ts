@@ -31,6 +31,7 @@ import {
   LIMIAR_FEED_PRECO_AMAZON,
   MAX_PARTES_EXECUCAO_PRECO_AMAZON,
   MOTIVO_CONTA_AMAZON,
+  ORIGEM_LOTE_FEED_AMAZON_REGEX,
   TIPO_OFERTA_PRECO_AMAZON,
   idDivergenciaPrecoAmazon,
 } from '@delfrance/schemas';
@@ -38,7 +39,19 @@ import {
 import { chaveContaPrecisaAtencao, relogioDoDocumentoUs } from '../avisos/avisos';
 import { __setRelogioDoCacheParaTestes } from '../core/contaCache';
 import { loadAmazonContext } from '../core/contexto';
-import { MAX_PARTES_LOTE_BLOCOS_FEED_AMAZON } from '../feeds/tarefaLote';
+import {
+  AmazonLotesTarefasDesligadasError,
+  type FilaLotesAmazon,
+  criarAgendadorLotesAmazon,
+} from '../feeds/agendadorLotes';
+import { ABANDONO_FEED_MS } from '../feeds/registroFeed';
+import {
+  MAX_PARTES_LOTE_BLOCOS_FEED_AMAZON,
+  type TarefaLoteAmazon,
+  execucaoIdDoLoteBlocosFeed,
+  nomeEnvioFeed,
+  tarefaEnviarFeedAmazonSchema,
+} from '../feeds/tarefaLote';
 import { FakeDb, asDb, grpc, increment } from '../testing/fakeDb';
 import { falhaDeTarefaJaExistente } from '../testing/falhaDeEnfileiramento';
 import {
@@ -58,8 +71,10 @@ import {
   ACAO_PAGINA_PRECO_AMAZON,
   CAMPOS_PAGINA_EXECUCAO_PRECO_AMAZON,
   type DepsPaginaPrecoAmazon,
+  ESPERA_LOTE_BLOCOS_PRECO_MS,
   MOTIVO_FEED_NECESSARIO_PRECO_AMAZON,
   ORCAMENTO_PAGINA_PRECO_MS,
+  ORIGEM_LOTE_EXECUCAO_PRECO_AMAZON,
   type ResultadoPaginaPrecoAmazon,
   paginaPrecoAmazon,
   severidadePaginaPrecoAmazon,
@@ -163,6 +178,7 @@ function mundo() {
   const log = loggerEspiao();
   const idsPaginas = new Set<string>();
   const idsPreco = new Set<string>();
+  const idsLotes = new Set<string>();
   let execucoes = 0;
   const m = {
     fake,
@@ -178,6 +194,17 @@ function mundo() {
     /** Every page name the queue refused because it already held it, in order. */
     paginasRecusadas: [] as string[],
     tarefas: [] as Enfileirada<TarefaPrecoSkuAmazon>[],
+    /** Every jobs-queue enqueue (a block batch's `feed-enviar`), with the run's ledger and wait at that instant. */
+    lotes: [] as (Enfileirada<TarefaLoteAmazon> & {
+      readonly livroGuardado: unknown;
+      readonly esperaGuardada: unknown;
+    })[],
+    /** Every batch name the jobs queue refused because it already held it, in order. */
+    lotesRecusados: [] as string[],
+    /** A failure for the next jobs-queue enqueue, consumed once. */
+    falhaLote: null as Error | null,
+    /** The jobs queue's valve (`AMAZON_TASKS_DISABLED=1`), as a root would read it. */
+    filaLotesDesligada: false,
     despachadas: new Set<number>(),
     /** A failure for the next price-task enqueue, consumed once. */
     falhaPreco: null as Error | null,
@@ -294,6 +321,7 @@ function mundo() {
               },
             }),
           }),
+        agendadorLotes: m.agendadorLotes,
         soValidacao: m.soValidacao,
         esperar: (ms) => {
           m.relogio += ms;
@@ -301,6 +329,37 @@ function mundo() {
         },
       };
     },
+    /** The REAL jobs producer over a recording queue (a held name refused with the SDK’s 409). */
+    agendadorLotes: () =>
+      criarAgendadorLotesAmazon({
+        desligado: m.filaLotesDesligada,
+        fila: (): FilaLotesAmazon => ({
+          enqueue: (tarefa, opcoes) => {
+            const falha = m.falhaLote;
+            if (falha !== null) {
+              m.falhaLote = null;
+              return Promise.reject(falha);
+            }
+            const id = opcoes?.id;
+            if (id !== undefined) {
+              if (idsLotes.has(id)) {
+                m.lotesRecusados.push(id);
+                return Promise.reject(falhaDeTarefaJaExistente(id));
+              }
+              idsLotes.add(id);
+            }
+            m.lotes.push({
+              tarefa,
+              nome: id ?? null,
+              atrasoS: opcoes?.scheduleDelaySeconds ?? 0,
+              decisaoGuardada: m.fake.ler(RUN)?.decisao,
+              livroGuardado: m.fake.ler(RUN)?.lotes,
+              esperaGuardada: m.fake.ler(RUN)?.esperaLotesAteMs,
+            });
+            return Promise.resolve();
+          },
+        }),
+      }),
     run: () => fake.ler(RUN) as (ExecucaoPrecoAmazon & Record<string, unknown>) | undefined,
     iniciar: (pedido: { baixarPreco?: boolean; confirmarReducaoEmMassa?: boolean } = {}) =>
       iniciarExecucaoPrecoAmazon(
@@ -848,8 +907,25 @@ describe('★ dense parts', () => {
     expect(r.decide).toMatchObject({ decisao: 'lotes', lotes: 1, tarefas: 0 });
     expect(r.motivo).toBe(MOTIVO_FEED_NECESSARIO_PRECO_AMAZON);
     expect(m.tarefas).toEqual([]);
-    // Log-only: no batch on the run, no wait stamped, nothing enqueued.
-    expect(m.run()).toMatchObject({ decisao: 'lotes', lotes: {}, esperaLotesAteMs: null });
+    // ONE batch on the run's ledger, covering all 31 parts, its wait stamped, and
+    // ONE `feed-enviar` named after it (no task, no page).
+    expect(m.run()).toMatchObject({
+      decisao: 'lotes',
+      lotes: {
+        '0': {
+          execucaoIdLote: execucaoIdDoLoteBlocosFeed(CONTA, EXEC_SEMEADA, 0),
+          parteInicial: 0,
+          partes: 31,
+          itens: 31,
+          desfecho: null,
+          motivoSemEnvio: null,
+        },
+      },
+      esperaLotesAteMs: AGORA_MS + ESPERA_LOTE_BLOCOS_PRECO_MS,
+    });
+    expect(m.lotes.map((x) => [x.nome, x.tarefa.tipo])).toEqual([
+      [nomeEnvioFeed(CONTA, execucaoIdDoLoteBlocosFeed(CONTA, EXEC_SEMEADA, 0)), 'feed-enviar'],
+    ]);
     expect(m.paginas).toEqual([]);
     expect(MAX_PARTES_LOTE_BLOCOS_FEED_AMAZON).toBeGreaterThanOrEqual(31);
     expect(m.linhasPagina().at(-1)).toMatchObject({
@@ -859,8 +935,305 @@ describe('★ dense parts', () => {
   });
 });
 
+describe('★ (13-f) Decide names every block batch at once', () => {
+  const partesDeUm = (n: number, prefixo: string) =>
+    Array.from({ length: n }, (_v, i) => [`${prefixo}-${String(i)}`]);
+  const loteId = (k: number) => execucaoIdDoLoteBlocosFeed(CONTA, EXEC_SEMEADA, k);
+
+  it('★ K = 3: 101 parts of one SKU ⇒ THREE batches — the ledger and the wait STORED before the first enqueue, one NAMED feed-enviar each, no delay, no part read', async () => {
+    expect(ESPERA_LOTE_BLOCOS_PRECO_MS).toBe(48 * 60 * MIN_MS);
+    expect(ESPERA_LOTE_BLOCOS_PRECO_MS).toBe(ABANDONO_FEED_MS);
+    const m = mundo();
+    const t = await semearDecidindo(m, partesDeUm(101, 'SKU-K3'));
+    const leituras = m.fake.leituras.length;
+    const r = await m.pagina(t);
+    expect(r.decide).toMatchObject({
+      decisao: 'lotes',
+      planoGuardado: false,
+      lotes: 3,
+      lotesJaEnfileirados: 0,
+      tarefas: 0,
+    });
+    const espera = AGORA_MS + ESPERA_LOTE_BLOCOS_PRECO_MS;
+    const faixas = [
+      [0, 50],
+      [50, 50],
+      [100, 1],
+    ] as const;
+    const livro = Object.fromEntries(
+      faixas.map(([parteInicial, partes], k) => [
+        String(k),
+        {
+          execucaoIdLote: loteId(k),
+          parteInicial,
+          partes,
+          itens: partes,
+          desfecho: null,
+          motivoSemEnvio: null,
+        },
+      ]),
+    );
+    expect(m.run()).toMatchObject({
+      fase: 'concluida',
+      decisao: 'lotes',
+      esperaLotesAteMs: espera,
+    });
+    expect(m.run()?.lotes).toEqual(livro);
+    expect(m.lotes.map((x) => x.tarefa)).toEqual(
+      faixas.map(([parteInicial, partes], k) =>
+        tarefaEnviarFeedAmazonSchema.parse({
+          v: 1,
+          tipo: 'feed-enviar',
+          fluxo: 'preco',
+          contaId: CONTA,
+          execucaoId: loteId(k),
+          origem: ORIGEM_LOTE_EXECUCAO_PRECO_AMAZON,
+          lote: {
+            tipo: 'blocos',
+            execucaoIdRun: EXEC_SEMEADA,
+            parteInicial,
+            partes,
+            esperaAteMs: espera,
+          },
+        }),
+      ),
+    );
+    for (const [k, x] of m.lotes.entries()) {
+      expect(x.nome, String(k)).toBe(nomeEnvioFeed(CONTA, loteId(k)));
+      expect(x.atrasoS, String(k)).toBe(0);
+      // Each batch saw the WHOLE plan already on the run: its ledger and its wait.
+      expect(x.decisaoGuardada, String(k)).toBe('lotes');
+      expect(x.livroGuardado, String(k)).toEqual(livro);
+      expect(x.esperaGuardada, String(k)).toBe(espera);
+    }
+    // The batches read their own parts: Decide reads none for a `lotes` plan.
+    expect(
+      m.fake.leituras.slice(leituras).filter((l) => l.includes('divergenciasPrecoAmazon')),
+    ).toEqual([]);
+    expect(m.tarefas).toEqual([]);
+    expect(m.paginas).toEqual([]);
+  });
+
+  it('a batch’s range counts PARTS and its size ITEMS: 20 parts of two SKUs ⇒ ONE batch of 20 parts and 40 items (NEAR-MISS: one SKU a part, the two counts coincide)', async () => {
+    const m = mundo();
+    const partes = Array.from({ length: 20 }, (_v, i) => [
+      `SKU-PAR-${String(i)}-a`,
+      `SKU-PAR-${String(i)}-b`,
+    ]);
+    const r = await m.pagina(await semearDecidindo(m, partes));
+    expect(r.decide).toMatchObject({ decisao: 'lotes', lotes: 1 });
+    expect(m.run()?.lotes).toEqual({
+      '0': expect.objectContaining({ parteInicial: 0, partes: 20, itens: 40 }),
+    });
+    expect(m.lotes.map((x) => x.tarefa.tipo === 'feed-enviar' && x.tarefa.lote)).toEqual([
+      expect.objectContaining({ parteInicial: 0, partes: 20 }),
+    ]);
+  });
+
+  it('the batches’ producer label is the price run’s own, inside the payload grammar (a record or a line tells a price batch from a stock one)', () => {
+    expect(ORIGEM_LOTE_EXECUCAO_PRECO_AMAZON).toBe('execucao-preco');
+    expect(ORIGEM_LOTE_FEED_AMAZON_REGEX.test(ORIGEM_LOTE_EXECUCAO_PRECO_AMAZON)).toBe(true);
+    // NEAR-MISS: the stock reconcile's label is another.
+    expect(ORIGEM_LOTE_EXECUCAO_PRECO_AMAZON).not.toBe('reconciliacao');
+  });
+
+  it('★ a retried Decide carries out the STORED ledger: the same names, each held one counted, the stored wait (NEAR-MISS: a later clock never moves it)', async () => {
+    const m = mundo();
+    const t = await semearDecidindo(m, partesDeUm(51, 'SKU-RETRY'));
+    expect((await m.pagina(t)).decide).toMatchObject({ lotes: 2, lotesJaEnfileirados: 0 });
+    const livro = m.run()?.lotes;
+    const espera = m.run()?.esperaLotesAteMs;
+    // The run as a Decide that died after its enqueues left it, two hours later.
+    m.fake.seed(RUN, { ...m.fake.ler(RUN), fase: 'decidindo' });
+    m.relogio = AGORA_MS + 120 * MIN_MS;
+    const r = await m.pagina(t);
+    expect(r.decide).toMatchObject({
+      decisao: 'lotes',
+      planoGuardado: true,
+      lotes: 2,
+      lotesJaEnfileirados: 2,
+    });
+    expect(m.lotes).toHaveLength(2);
+    expect(m.lotesRecusados).toEqual([0, 1].map((k) => nomeEnvioFeed(CONTA, loteId(k))));
+    expect(m.run()).toMatchObject({ fase: 'concluida', esperaLotesAteMs: espera });
+    expect(m.run()?.lotes).toEqual(livro);
+    expect(espera).toBe(AGORA_MS + ESPERA_LOTE_BLOCOS_PRECO_MS);
+  });
+
+  it('★ a crash after the plan write and before the batches ⇒ the re-run enqueues EXACTLY the planned names, with the stored wait', async () => {
+    const m = mundo();
+    const t = await semearDecidindo(m, partesDeUm(51, 'SKU-CRASH'));
+    m.falhaLote = grpc(14, 'UNAVAILABLE');
+    await expect(m.pagina(t)).rejects.toThrow();
+    // The plan landed before the enqueue that failed; the run still decides.
+    expect(m.run()).toMatchObject({
+      fase: 'decidindo',
+      decisao: 'lotes',
+      esperaLotesAteMs: AGORA_MS + ESPERA_LOTE_BLOCOS_PRECO_MS,
+    });
+    expect(Object.keys(m.run()?.lotes ?? {})).toEqual(['0', '1']);
+    expect(m.lotes).toEqual([]);
+    m.relogio = AGORA_MS + 30 * MIN_MS;
+    const r = await m.pagina(t);
+    expect(r.decide).toMatchObject({ planoGuardado: true, lotes: 2, lotesJaEnfileirados: 0 });
+    expect(m.lotes.map((x) => [x.nome, x.tarefa.tipo === 'feed-enviar' && x.tarefa.lote])).toEqual(
+      [0, 1].map((k) => [
+        nomeEnvioFeed(CONTA, loteId(k)),
+        expect.objectContaining({ esperaAteMs: AGORA_MS + ESPERA_LOTE_BLOCOS_PRECO_MS }),
+      ]),
+    );
+    expect(m.run()?.fase).toBe('concluida');
+  });
+
+  it('★ a concurrent Decide’s STORED ledger wins whole: this Decide enqueues ITS batches and its wait, never its own packing', async () => {
+    const m = mundo();
+    const t = await semearDecidindo(m, partesDeUm(31, 'SKU-CONC'));
+    const deles = {
+      '0': {
+        execucaoIdLote: loteId(0),
+        parteInicial: 0,
+        partes: 31,
+        itens: 31,
+        desfecho: null,
+        motivoSemEnvio: null,
+      },
+    };
+    const esperaDeles = AGORA_MS + 60 * MIN_MS;
+    m.fake.antesDaProximaEscrita(RUN, () => {
+      m.fake.seed(RUN, {
+        ...m.fake.ler(RUN),
+        decisao: 'lotes',
+        lotes: deles,
+        esperaLotesAteMs: esperaDeles,
+      });
+    });
+    const r = await m.pagina(t);
+    expect(r.decide).toMatchObject({ decisao: 'lotes', lotes: 1 });
+    expect(m.run()).toMatchObject({ lotes: deles, esperaLotesAteMs: esperaDeles });
+    expect(m.lotes.map((x) => x.tarefa.tipo === 'feed-enviar' && x.tarefa.lote)).toEqual([
+      expect.objectContaining({ esperaAteMs: esperaDeles }),
+    ]);
+  });
+
+  it('a stored lotes plan with NO ledger (a handler that named none) gets its ledger and wait in THIS Decide’s write, before the enqueue (NEAR-MISS: a stored ledger is never rewritten)', async () => {
+    const m = mundo();
+    const t = await semearDecidindo(m, partesDeUm(31, 'SKU-SEM-LIVRO'));
+    m.fake.seed(RUN, { ...m.fake.ler(RUN), decisao: 'lotes' });
+    m.relogio = AGORA_MS + 5 * MIN_MS;
+    const r = await m.pagina(t);
+    expect(r.decide).toMatchObject({ decisao: 'lotes', planoGuardado: true, lotes: 1 });
+    const espera = AGORA_MS + 5 * MIN_MS + ESPERA_LOTE_BLOCOS_PRECO_MS;
+    expect(m.run()).toMatchObject({ esperaLotesAteMs: espera });
+    expect(m.lotes.map((x) => [x.nome, x.livroGuardado, x.esperaGuardada])).toEqual([
+      [nomeEnvioFeed(CONTA, loteId(0)), m.run()?.lotes, espera],
+    ]);
+    // NEAR-MISS: the same Decide again finds the ledger stored and writes no plan.
+    m.fake.seed(RUN, { ...m.fake.ler(RUN), fase: 'decidindo' });
+    const escritas = m.fake.escritasEm(RUN).length;
+    m.relogio += MIN_MS;
+    await m.pagina(t);
+    // One write: `concluida` (no plan write before it).
+    expect(m.fake.escritasEm(RUN)).toHaveLength(escritas + 1);
+    expect(m.run()?.esperaLotesAteMs).toBe(espera);
+  });
+
+  it('★ only a lotes plan names batches: the mass stop, nada, a canary list and tasks store NO ledger and no wait, and enqueue no feed-enviar (NEAR-MISS: 31 under dry-run ⇒ the batches, named — each send dry-runs)', async () => {
+    const casos: [string, () => Promise<{ m: Mundo; t: TarefaPaginaPrecoAmazon }>, string][] = [
+      [
+        'mass stop',
+        async () => {
+          const m = mundo();
+          const t = await semearDecidindo(m, partesDeUm(31, 'SKU-MASSA'), { baixarPreco: true });
+          const run = m.fake.ler(RUN) as ExecucaoPrecoAmazon;
+          m.fake.seed(RUN, {
+            ...run,
+            contagens: { ...run.contagens, desce: 1, quedaExcessiva: 1 },
+          });
+          return { m, t };
+        },
+        'reducao-em-massa',
+      ],
+      [
+        'nothing to send',
+        async () => {
+          const m = mundo();
+          return { m, t: await semearDecidindo(m, []) };
+        },
+        'nada',
+      ],
+      [
+        'a canary list',
+        async () => {
+          const m = mundo();
+          m.ambiente.AMAZON_CANARIO_PRECO = `${CONTA}:SKU-CAN-0`;
+          return { m, t: await semearDecidindo(m, partesDeUm(31, 'SKU-CAN')) };
+        },
+        'canario',
+      ],
+      [
+        'tasks',
+        async () => {
+          const m = mundo();
+          return { m, t: await semearDecidindo(m, partesDeUm(30, 'SKU-TAR')) };
+        },
+        'tarefas',
+      ],
+      [
+        'dry-run at the switch',
+        async () => {
+          const m = mundo();
+          m.ambiente.AMAZON_MODO_PRECO = 'dry-run';
+          return { m, t: await semearDecidindo(m, partesDeUm(30, 'SKU-DRY')) };
+        },
+        'dry-run',
+      ],
+    ];
+    for (const [nome, preparar, decisao] of casos) {
+      const { m, t } = await preparar();
+      const r = await m.pagina(t);
+      expect(r.decide?.decisao, nome).toBe(decisao);
+      expect(r.decide, nome).toMatchObject({ lotes: 0, lotesJaEnfileirados: 0 });
+      expect(m.run(), nome).toMatchObject({ lotes: {}, esperaLotesAteMs: null });
+      expect(m.lotes, nome).toEqual([]);
+    }
+    const n = mundo();
+    n.ambiente.AMAZON_MODO_PRECO = 'dry-run';
+    const r = await n.pagina(await semearDecidindo(n, partesDeUm(31, 'SKU-DRY-31')));
+    expect(r.decide).toMatchObject({ decisao: 'lotes', lotes: 1, simulados: 0 });
+    expect(n.lotes.map((x) => x.nome)).toEqual([nomeEnvioFeed(CONTA, loteId(0))]);
+    expect(n.tarefas).toEqual([]);
+  });
+
+  it('the jobs queue’s valve closed ⇒ the Decide THROWS for the queue’s retry: the plan stored, nothing enqueued, the run still deciding', async () => {
+    const m = mundo();
+    m.filaLotesDesligada = true;
+    const t = await semearDecidindo(m, partesDeUm(31, 'SKU-VALVULA'));
+    await expect(m.pagina(t)).rejects.toBeInstanceOf(AmazonLotesTarefasDesligadasError);
+    expect(m.run()).toMatchObject({ fase: 'decidindo', decisao: 'lotes' });
+    expect(Object.keys(m.run()?.lotes ?? {})).toEqual(['0']);
+    expect(m.lotes).toEqual([]);
+  });
+
+  it('the line: the batches named and those already held, motivo feed-necessario, a WARNING (a plan on the feed path)', async () => {
+    const m = mundo();
+    const t = await semearDecidindo(m, partesDeUm(51, 'SKU-LINHA'));
+    const r = await m.pagina(t);
+    expect(severidadePaginaPrecoAmazon(r)).toBe('WARNING');
+    expect(m.linhasPagina().at(-1)).toMatchObject({
+      nivel: 'warn',
+      meta: expect.objectContaining({
+        decisao: 'lotes',
+        motivo: 'feed-necessario',
+        lotes: 2,
+        lotesJaEnfileirados: 0,
+        tarefas: 0,
+      }),
+    });
+  });
+});
+
 describe('★ Decide', () => {
-  it('★ 30 sendable pathful ⇒ 30 tasks, each with its parte (NEAR-MISS triple: 31 ⇒ the placeholder; 29 + one pathless ⇒ the placeholder)', async () => {
+  it('★ 30 sendable pathful ⇒ 30 tasks, each with its parte (NEAR-MISS triple: 31 ⇒ the block batches; 29 + one pathless ⇒ the block batches)', async () => {
     const m = mundo();
     const skus = varios(m, LIMIAR_FEED_PRECO_AMAZON, 'SKU-TRINTA');
     const { ultima } = await rodar(m);
@@ -874,6 +1247,7 @@ describe('★ Decide', () => {
     expect(r31?.decide?.decisao).toBe('lotes');
     expect(r31?.motivo).toBe('feed-necessario');
     expect(n.tarefas).toEqual([]);
+    expect(n.lotes.map((x) => x.tarefa.tipo)).toEqual(['feed-enviar']);
 
     const o = mundo();
     varios(o, LIMIAR_FEED_PRECO_AMAZON - 1, 'SKU-VINTE-NOVE');
@@ -882,9 +1256,12 @@ describe('★ Decide', () => {
     expect(o.run()?.contagens).toMatchObject({ enviaveis: 30, semCaminho: 1 });
     expect(r29?.decide?.decisao).toBe('lotes');
     expect(o.tarefas).toEqual([]);
+    expect(o.lotes.map((x) => x.tarefa.tipo)).toEqual(['feed-enviar']);
+    // The 30-task run named no batch.
+    expect(m.lotes).toEqual([]);
   });
 
-  it('★ a canary LIST with hits in parts 0 and 7 ⇒ TWO tasks (parte 0 and 7), no placeholder', async () => {
+  it('★ a canary LIST with hits in parts 0 and 7 ⇒ TWO tasks (parte 0 and 7), no batch', async () => {
     const m = mundo();
     const partes = Array.from({ length: 8 }, (_v, i) =>
       Array.from({ length: 5 }, (_w, j) => `SKU-C${String(i)}-${String(j)}`),
@@ -894,6 +1271,8 @@ describe('★ Decide', () => {
     const r = await m.pagina(t);
     expect(r.decide).toMatchObject({ decisao: 'canario', tarefas: 2, simulados: 38 });
     expect(r.motivo).toBeNull();
+    expect(m.lotes).toEqual([]);
+    expect(m.run()).toMatchObject({ lotes: {}, esperaLotesAteMs: null });
     expect(m.tarefas.map((x) => [x.tarefa.sku, x.tarefa.parte]).sort()).toEqual([
       ['SKU-C0-3', 0],
       ['SKU-C7-1', 7],
@@ -1717,5 +2096,103 @@ describe('the step order of a refused SKU', () => {
     expect(m.run()?.contagens).toMatchObject({ semPreco: 1, enviaveis: 0 });
     expect(m.run()?.contagens.porChave).toMatchObject({ 'nao-listado': 1 });
     expect(m.tarefas).toEqual([]);
+  });
+});
+
+describe('★ (13-f) Decide carries out the STORED ledger: its packing, its ends', () => {
+  const partesDeUm = (n: number, prefixo: string) =>
+    Array.from({ length: n }, (_v, i) => [`${prefixo}-${String(i)}`]);
+  const loteId = (k: number) => execucaoIdDoLoteBlocosFeed(CONTA, EXEC_SEMEADA, k);
+  const entrada = (k: number, parteInicial: number, partes: number) => ({
+    execucaoIdLote: loteId(k),
+    parteInicial,
+    partes,
+    itens: partes,
+    desfecho: null,
+    motivoSemEnvio: null,
+  });
+
+  it('★ a concurrent Decide’s ledger that packs DIFFERENTLY (two batches over the 31 parts this Decide packs as one) is carried out as stored: its two names and ranges', async () => {
+    const m = mundo();
+    const t = await semearDecidindo(m, partesDeUm(31, 'SKU-OUTRO-LIVRO'));
+    const deles = { '0': entrada(0, 0, 16), '1': entrada(1, 16, 15) };
+    const esperaDeles = AGORA_MS + 60 * MIN_MS;
+    m.fake.antesDaProximaEscrita(RUN, () => {
+      m.fake.seed(RUN, {
+        ...m.fake.ler(RUN),
+        decisao: 'lotes',
+        lotes: deles,
+        esperaLotesAteMs: esperaDeles,
+      });
+    });
+    const r = await m.pagina(t);
+    expect(r.decide).toMatchObject({ decisao: 'lotes', lotes: 2, lotesEncerrados: 0 });
+    expect(m.run()?.lotes).toEqual(deles);
+    expect(
+      m.lotes.map((x) => [x.nome, x.tarefa.tipo === 'feed-enviar' ? x.tarefa.lote : null]),
+    ).toEqual([
+      [
+        nomeEnvioFeed(CONTA, loteId(0)),
+        expect.objectContaining({ parteInicial: 0, partes: 16, esperaAteMs: esperaDeles }),
+      ],
+      [
+        nomeEnvioFeed(CONTA, loteId(1)),
+        expect.objectContaining({ parteInicial: 16, partes: 15, esperaAteMs: esperaDeles }),
+      ],
+    ]);
+  });
+
+  it('★ a stalled Decide run again after some batches ENDED enqueues only those with no end recorded, counting the rest (NEAR-MISS: every end recorded ⇒ nothing enqueued, no producer built)', async () => {
+    const m = mundo();
+    const t = await semearDecidindo(m, partesDeUm(101, 'SKU-ENCERRADO'));
+    await m.pagina(t);
+    const livro = m.run()?.lotes ?? {};
+    expect(Object.keys(livro)).toEqual(['0', '1', '2']);
+    // Batches 0 and 1 ended; the run's `concluida` never landed, and the names are free again.
+    m.fake.seed(RUN, {
+      ...m.fake.ler(RUN),
+      fase: 'decidindo',
+      lotes: {
+        '0': { ...livro['0'], desfecho: 'falhou' },
+        '1': { ...livro['1'], desfecho: 'sem-envio', motivoSemEnvio: 'simulado' },
+        '2': livro['2'],
+      },
+    });
+    m.lotes.length = 0;
+    const recusadosAntes = m.lotesRecusados.length;
+    m.relogio = AGORA_MS + 90 * MIN_MS;
+    const r = await m.pagina(t);
+    expect(r.decide).toMatchObject({
+      planoGuardado: true,
+      lotes: 3,
+      lotesEncerrados: 2,
+      lotesJaEnfileirados: 1,
+    });
+    // Only batch 2's name was asked for (the recording queue still holds it).
+    expect(m.lotes).toEqual([]);
+    expect(m.lotesRecusados.slice(recusadosAntes)).toEqual([nomeEnvioFeed(CONTA, loteId(2))]);
+    expect(m.linhasPagina().at(-1)?.meta).toMatchObject({ lotesEncerrados: 2 });
+
+    const n = mundo();
+    const tn = await semearDecidindo(n, partesDeUm(31, 'SKU-TODOS-FIM'));
+    await n.pagina(tn);
+    const so = n.run()?.lotes ?? {};
+    n.fake.seed(RUN, {
+      ...n.fake.ler(RUN),
+      fase: 'decidindo',
+      lotes: { '0': { ...so['0'], desfecho: 'concluido' } },
+    });
+    n.lotes.length = 0;
+    let construidos = 0;
+    const real = n.agendadorLotes;
+    n.agendadorLotes = () => {
+      construidos += 1;
+      return real();
+    };
+    const rn = await n.pagina(tn);
+    expect(rn.decide).toMatchObject({ lotes: 1, lotesEncerrados: 1, lotesJaEnfileirados: 0 });
+    expect(n.lotes).toEqual([]);
+    expect(construidos).toBe(0);
+    expect(n.run()?.fase).toBe('concluida');
   });
 });

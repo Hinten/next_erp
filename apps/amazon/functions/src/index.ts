@@ -79,7 +79,7 @@ import { getDb } from './lib/admin';
  * handlers through its own composition root (./agendadorEstoque); a feed is
  * submitted only behind the read switch, the fluxo's valve and a canary list of
  * exactly `*`, and the seam that names a fluxo's provider holds the stock one
- * since PR 12-f (the price row stays empty until step 13).
+ * since PR 12-f and the price one since step 13 (PR 13-f).
  * Step 12 (PR 12-e1) adds the STOCK queue (`processAmazonStockPatch`,
  * ./filaEstoque), the FIFTH task queue: one SKU's availability PATCH per task,
  * its quantity computed when the task runs, fed by its own read-back and 429
@@ -211,6 +211,10 @@ export { sweepAmazonStock } from './sweepEstoque';
  * The daily stock reconcile (step 12, PR 12-f), 03:44: per conta, the stock
  * feed's daily backstop, then the start of its reconcile run, whose pages run
  * on the jobs queue (./reconciliacaoEstoque). No Amazon call here, no secret.
+ * Since step 13 (PR 13-f) it then runs the daily PRICE step whatever the stock
+ * step's outcome: per conta, the price feed's daily backstop — adoption only,
+ * behind the read switch and the price valve, never a run re-kick or a send.
+ * Its deployed name stays.
  */
 export { reconcileAmazonStock } from './reconciliacaoEstoque';
 

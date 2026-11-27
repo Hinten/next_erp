@@ -5,9 +5,10 @@
  * reads Amazon's live offers of the SKUs it evaluates, and writes what differs
  * as ONE part of the run; past the walk's last page, the same dispatch runs
  * Decide. Nothing here PATCHes or posts a feed: every send is a `preco-sku`
- * task (13-d's), which recomputes the faixa when it runs. The run's claim,
- * re-kick, cancel and status are `inicioExecucaoPreco.ts`'s; the run's ONE
- * write is `execucaoPrecoFirestore.ts`'s; the parts' I/O is
+ * task (13-d's) or a block batch's `feed-enviar` (the feed core's send, built
+ * by the price provider), and each recomputes the faixa when it runs. The
+ * run's claim, re-kick, cancel and status are `inicioExecucaoPreco.ts`'s; the
+ * run's ONE write is `execucaoPrecoFirestore.ts`'s; the parts' I/O is
  * `divergenciasPrecoFirestore.ts`'s. Built beside the stock reconcile's page,
  * never through it.
  *
@@ -70,18 +71,27 @@
  *  2. The plan: the STORED `decisao` when the run has one (a retried Decide
  *     enqueues the same names, each held one counted), else
  *     `decidirFimPrecoAmazon` over the run's counts and the effective valve's
- *     batch form, WRITTEN onto the run before any enqueue.
+ *     batch form, WRITTEN onto the run before any enqueue. A `lotes` plan is
+ *     written WITH its batch ledger — batch `k` of the packing under its own id
+ *     `execucaoIdDoLoteBlocosFeed(conta, run, k)`, its part range and item
+ *     count, `desfecho: null` — and `esperaLotesAteMs` = this dispatch's clock
+ *     + {@link ESPERA_LOTE_BLOCOS_PRECO_MS}. A stored `lotes` plan with no
+ *     ledger gets it in the same write, before any enqueue.
  *  3. `preco-reducao-em-massa` raised for `reducao-em-massa`, RESOLVED by every
  *     other plan.
  *  4. The plan carried out: `reducao-em-massa`, `nada` ⇒ nothing; `dry-run` ⇒
  *     the line's count and the run's decrease sample; `canario` ⇒ EVERY part
  *     read by id, one task per SKU the canary list names; `tarefas` ⇒ the parts
  *     read by id, per SKU `decidirAlvo`: `on` ⇒ one task, any other mode counted;
- *     `lotes` ⇒ a WARNING `feed-necessario` line, nothing enqueued (the feed
- *     batches are a later PR's). Every task is `origem: 'execucao'`, its
- *     `referencia` the run, its `parte` the part that counted it, the run's
- *     consent, `solicitadoEmMs` this dispatch's clock: the task then reads its
- *     part's floor and stands down with the run.
+ *     `lotes` ⇒ EVERY batch of the STORED ledger with no end recorded enqueued
+ *     at once onto the jobs queue, one `feed-enviar` each (`fluxo: 'preco'`, a
+ *     block batch of the run's parts, `esperaAteMs` the stored wait), NAMED
+ *     `nomeEnvioFeed(conta, <its id>)`: the lease serialises them, and the
+ *     send's own valve decides each one's form, so nothing chains one batch to
+ *     the next; an ended batch is counted (`lotesEncerrados`). Every task is
+ *     `origem: 'execucao'`, its `referencia` the run, its `parte` the part that
+ *     counted it, the run's consent, `solicitadoEmMs` this dispatch's clock:
+ *     the task then reads its part's floor and stands down with the run.
  *  5. `fase: 'concluida'`, LAST.
  *
  * No delay on any send: a price has no order-import race to wait out.
@@ -93,7 +103,9 @@
  * re-derive re-checks that THIS dispatch still holds the run (the run, the page
  * and the phase), else it writes nothing (`vez-perdida`). The part is the
  * holding page's overwrite by id, written before the run update. Every enqueue
- * is NAMED but the 429's pause. No transaction, no batch.
+ * is NAMED but the 429's pause; a failed one is thrown, and the retry carries
+ * out the stored plan again (the names already queued are held). No
+ * transaction, no batch.
  *
  * ONE `evento: 'preco'` line per dispatch (`fase: 'execucao'`, `etapa:
  * 'pagina'`): counts, closed codes, ids, the page's and the run's decrease
@@ -112,9 +124,11 @@ import {
   type ExecucaoPrecoAmazon,
   FASE_EXECUCAO_PRECO_AMAZON,
   type ItemDivergenciaPrecoAmazon,
+  type LotesExecucaoPrecoAmazon,
   MOTIVO_CONTA_AMAZON,
   MOTIVO_FIM_EXECUCAO_PRECO_AMAZON,
   type MotivoFimExecucaoPrecoAmazon,
+  TIPO_LOTE_FEED_AMAZON,
   type TabelasDePrecoAmazon,
   type TimestampLike,
   fontesPrecoDaUnidadeAmazon,
@@ -143,8 +157,15 @@ import {
   registrarValvulaAmazon,
 } from '../core/valvulas';
 import type { AmbienteAmazon } from '../env';
+import type { AgendadorLotesAmazon } from '../feeds/agendadorLotes';
 import type { RegistroLoteAmazon } from '../feeds/incertoFeed';
-import { VERSAO_TAREFA_LOTE_AMAZON } from '../feeds/tarefaLote';
+import {
+  TIPO_TAREFA_LOTE_AMAZON,
+  type TarefaEnviarFeedAmazon,
+  VERSAO_TAREFA_LOTE_AMAZON,
+  execucaoIdDoLoteBlocosFeed,
+  nomeEnvioFeed,
+} from '../feeds/tarefaLote';
 import {
   DESFECHO_AVALIACAO_VINCULOS_AMAZON,
   type VinculoAvaliadoAmazon,
@@ -184,6 +205,7 @@ import { FASE_LOG_EXECUCAO_PRECO, type ProdutorExecucaoPrecoAmazon } from './ini
 import { type VereditoValvulaPrecoAmazon, valvulaPrecoEfetiva } from './modoPreco';
 import {
   type EntradaSkuPrecoAmazon,
+  type IntervaloLotePrecoAmazon,
   type ResumoPaginaPrecoAmazon,
   decidirFimPrecoAmazon,
   lotesDePartesPrecoAmazon,
@@ -223,6 +245,8 @@ export const CAMPOS_PAGINA_EXECUCAO_PRECO_AMAZON = [
   'contagens',
   'amostraReducoes',
   'decisao',
+  'lotes',
+  'esperaLotesAteMs',
   'progressoEmMs',
   'relogioInicio',
 ] as const;
@@ -261,8 +285,21 @@ export const ACAO_PAGINA_PRECO_AMAZON = {
 export type AcaoPaginaPrecoAmazon =
   (typeof ACAO_PAGINA_PRECO_AMAZON)[keyof typeof ACAO_PAGINA_PRECO_AMAZON];
 
-/** The motivo of a `lotes` plan's line: the batches are a later PR's, nothing is enqueued. */
+/** The motivo of a `lotes` plan's line: the drift leaves as block feeds, every batch named at once. */
 export const MOTIVO_FEED_NECESSARIO_PRECO_AMAZON = 'feed-necessario';
+
+/**
+ * How long a price block batch keeps waiting behind a held lease (48 h, from
+ * Decide's clock): every batch of a run is named at once and waits for the ones
+ * before it, each up to the hours a feed can take plus the price submission
+ * floor, an uncertain one up to its 12-h wait. Equal to a feed's own
+ * abandonment mark (`ABANDONO_FEED_MS`, pinned by the test). A batch still
+ * turned away then ends `lote-expirado`: the operator runs again.
+ */
+export const ESPERA_LOTE_BLOCOS_PRECO_MS = 172_800_000;
+
+/** The producer label of a price run's block batches, on each `feed-enviar`. */
+export const ORIGEM_LOTE_EXECUCAO_PRECO_AMAZON = 'execucao-preco';
 
 /** Everything one page dispatch needs — bound by the jobs root, doubles in the tests. */
 export interface DepsPaginaPrecoAmazon {
@@ -283,6 +320,8 @@ export interface DepsPaginaPrecoAmazon {
   readonly produtorPaginas: () => ProdutorExecucaoPrecoAmazon;
   /** The price task's producer — built only when Decide enqueues a task. */
   readonly produtorPreco: () => ProdutorPrecoAmazon;
+  /** The jobs queue's producer of the feed core — built only when Decide names batches. */
+  readonly agendadorLotes: () => AgendadorLotesAmazon;
   /** The validation-preview flag (`AMAZON_PRECO_SO_VALIDACAO`), as the root read it. */
   readonly soValidacao: boolean;
   /** A sleep of `ms` milliseconds: the live read's pacing between two Amazon calls. */
@@ -335,8 +374,11 @@ export interface DecisaoPaginaPrecoAmazon {
   readonly simulados: number;
   /** Parts the plan read that no longer exist (their SKUs not sent). */
   readonly partesAusentes: number;
-  /** The batches a `lotes` plan would name. */
+  /** The batches a `lotes` plan named (its stored ledger), and those Cloud Tasks already held. */
   readonly lotes: number;
+  readonly lotesJaEnfileirados: number;
+  /** The ledger's batches whose end is already recorded: never enqueued again. */
+  readonly lotesEncerrados: number;
 }
 
 /** What one page dispatch did (logged ONCE). */
@@ -433,7 +475,8 @@ const ACOES_EM_WARNING: ReadonlySet<AcaoPaginaPrecoAmazon> = new Set([
 /**
  * The line's severity: ERROR for the preview flag met with `*`; WARNING for an
  * end a person should look at (a throttled or lost page, a run cut short, a plan
- * that needs the feed path or stopped a mass decrease, a part gone); else INFO.
+ * on the feed path — each batch a feed whose report a person reads — or one that
+ * stopped a mass decrease, a part gone); else INFO.
  */
 export function severidadePaginaPrecoAmazon(r: ResultadoPaginaPrecoAmazon): SeveridadeAmazon {
   if (r.veredito !== null) return 'ERROR';
@@ -499,6 +542,8 @@ function registrarPagina(
     simulados: d?.simulados ?? null,
     partesAusentes: d?.partesAusentes ?? null,
     lotes: d?.lotes ?? null,
+    lotesJaEnfileirados: d?.lotesJaEnfileirados ?? null,
+    lotesEncerrados: d?.lotesEncerrados ?? null,
     amostraExecucao: r.amostraExecucao,
     avisos: r.avisos,
     previa: r.previa,
@@ -1083,6 +1128,124 @@ async function enviarComoTarefas(
   return { tarefas: r.enfileiradas, jaEnfileiradas: r.jaEnfileiradas, simulados, partesAusentes };
 }
 
+/**
+ * A `lotes` plan's batch ledger and wait (module header, Decide step 2): batch
+ * `k` of `intervalos` under its own send id, its part range and item count, no
+ * end recorded; every batch waiting to `decideEmMs` +
+ * {@link ESPERA_LOTE_BLOCOS_PRECO_MS}.
+ */
+function livroDosLotes(
+  contaId: string,
+  execucaoIdRun: string,
+  intervalos: readonly IntervaloLotePrecoAmazon[],
+  decideEmMs: number,
+): Pick<ExecucaoPrecoAmazon, 'lotes' | 'esperaLotesAteMs'> {
+  const lotes: LotesExecucaoPrecoAmazon = {};
+  for (const [k, intervalo] of intervalos.entries()) {
+    lotes[String(k)] = {
+      execucaoIdLote: execucaoIdDoLoteBlocosFeed(contaId, execucaoIdRun, k),
+      parteInicial: intervalo.parteInicial,
+      partes: intervalo.partes,
+      itens: intervalo.itens,
+      desfecho: null,
+      motivoSemEnvio: null,
+    };
+  }
+  return { lotes, esperaLotesAteMs: decideEmMs + ESPERA_LOTE_BLOCOS_PRECO_MS };
+}
+
+/**
+ * What Decide's plan write adds to `run` (module header, Decide step 2): no
+ * plan ⇒ the plan (a `lotes` one with its ledger and wait); a stored `lotes`
+ * plan with no ledger ⇒ the ledger and the wait; else nothing (`null`). A
+ * function of the read it is given, so a concurrent Decide's stored plan wins.
+ *
+ * @throws {RangeError} a count outside its domain (`decidirFimPrecoAmazon`).
+ */
+function planoDaExecucao(
+  e: Execucao,
+  run: ExecucaoPaginaPrecoAmazon,
+  decideEmMs: number,
+): Readonly<Partial<ExecucaoPrecoAmazon>> | null {
+  if (run.decisao === null) {
+    const fim = decidirFimPrecoAmazon({
+      itensPorParte: run.itensPorParte,
+      semCaminho: run.contagens.semCaminho,
+      decisaoLote: decidirLote(e.valvula),
+      contagens: run.contagens,
+      baixarPreco: run.baixarPreco,
+      confirmarReducaoEmMassa: run.confirmarReducaoEmMassa,
+    });
+    if (fim.decisao !== DECISAO_EXECUCAO_PRECO_AMAZON.lotes) return { decisao: fim.decisao };
+    return {
+      decisao: fim.decisao,
+      ...livroDosLotes(e.t.contaId, run.execucaoId, fim.lotes, decideEmMs),
+    };
+  }
+  if (run.decisao === DECISAO_EXECUCAO_PRECO_AMAZON.lotes && Object.keys(run.lotes).length === 0) {
+    const intervalos = lotesDePartesPrecoAmazon(run.itensPorParte);
+    return livroDosLotes(e.t.contaId, run.execucaoId, intervalos, decideEmMs);
+  }
+  return null;
+}
+
+/** What a `lotes` plan enqueued: the batches of its ledger, those already held, those ended. */
+interface EnvioDosLotes {
+  readonly lotes: number;
+  readonly lotesJaEnfileirados: number;
+  readonly lotesEncerrados: number;
+}
+
+/**
+ * A `lotes` plan carried out (module header, Decide step 4): EVERY batch of the
+ * STORED ledger whose end is not recorded yet, in index order, one NAMED
+ * `feed-enviar` each, no delay, all waiting to the stored `esperaLotesAteMs`;
+ * an ended batch is counted, never enqueued again (its task name may be free
+ * by the time a stalled decision step runs again). A failed enqueue is thrown:
+ * the page's retry carries out the same stored ledger, and the names already
+ * queued answer `ja-enfileirada`.
+ */
+async function enviarComoLotes(
+  e: Execucao,
+  run: ExecucaoPaginaPrecoAmazon,
+): Promise<EnvioDosLotes> {
+  const esperaAteMs = run.esperaLotesAteMs;
+  const livro = Object.entries(run.lotes).sort(([a], [b]) => Number(a) - Number(b));
+  if (esperaAteMs === null || livro.length === 0) {
+    // The plan write stores both with every `lotes` plan: only a bug reaches this.
+    throw new TypeError('execucaoPreco.ts: um plano de lotes sempre guarda o livro e a espera');
+  }
+  const pendentes = livro.filter(([, lote]) => lote.desfecho === null);
+  const encerrados = livro.length - pendentes.length;
+  if (pendentes.length === 0) {
+    return { lotes: livro.length, lotesJaEnfileirados: 0, lotesEncerrados: encerrados };
+  }
+  const produtorLotes = e.deps.agendadorLotes();
+  let jaEnfileirados = 0;
+  for (const [, lote] of pendentes) {
+    const tarefa: TarefaEnviarFeedAmazon = {
+      v: VERSAO_TAREFA_LOTE_AMAZON,
+      tipo: TIPO_TAREFA_LOTE_AMAZON.enviar,
+      fluxo: FLUXO_AMAZON.preco,
+      contaId: e.t.contaId,
+      execucaoId: lote.execucaoIdLote,
+      origem: ORIGEM_LOTE_EXECUCAO_PRECO_AMAZON,
+      lote: {
+        tipo: TIPO_LOTE_FEED_AMAZON.blocos,
+        execucaoIdRun: run.execucaoId,
+        parteInicial: lote.parteInicial,
+        partes: lote.partes,
+        esperaAteMs,
+      },
+    };
+    const r = await produtorLotes.enfileirarLote(tarefa, {
+      nome: nomeEnvioFeed(e.t.contaId, lote.execucaoIdLote),
+    });
+    if (r === 'ja-enfileirada') jaEnfileirados += 1;
+  }
+  return { lotes: livro.length, lotesJaEnfileirados: jaEnfileirados, lotesEncerrados: encerrados };
+}
+
 /** Decide (module header), then `concluida`. */
 async function decidir(
   e: Execucao,
@@ -1115,26 +1278,17 @@ async function decidir(
     );
   }
 
-  // 2. The plan: the stored one, else decided and WRITTEN before any enqueue.
+  // 2. The plan: the stored one, else decided — a `lotes` plan with its batch
+  // ledger and wait — and WRITTEN before any enqueue.
   let atual = base;
   let decisao = run.decisao;
   const planoGuardado = decisao !== null;
-  if (decisao === null) {
-    const fim = decidirFimPrecoAmazon({
-      itensPorParte: run.itensPorParte,
-      semCaminho: c.semCaminho,
-      decisaoLote: decidirLote(e.valvula),
-      contagens: c,
-      baixarPreco: run.baixarPreco,
-      confirmarReducaoEmMassa: run.confirmarReducaoEmMassa,
-    });
-    decisao = fim.decisao;
-    const decidida = fim.decisao;
-    const planejado = await atualizar(e, base, donoDoDecide(t), (estado) =>
-      estado.decisao === null
-        ? { decisao: decidida, progressoEmMs: deps.agora() }
-        : { progressoEmMs: deps.agora() },
-    );
+  const decideEmMs = deps.agora();
+  if (planoDaExecucao(e, run, decideEmMs) !== null) {
+    const planejado = await atualizar(e, base, donoDoDecide(t), (estado) => ({
+      ...(planoDaExecucao(e, estado, decideEmMs) ?? {}),
+      progressoEmMs: deps.agora(),
+    }));
     if (planejado === null) {
       return resultado(e, ACAO_PAGINA_PRECO_AMAZON.vezPerdida, {
         ...extra,
@@ -1143,7 +1297,10 @@ async function decidir(
     }
     atual = planejado;
     // A concurrent Decide's stored plan wins over this one (never two plans for one run).
-    decisao = planejado.estado?.decisao ?? decisao;
+    decisao = planejado.estado?.decisao ?? null;
+  }
+  if (decisao === null) {
+    throw new TypeError('execucaoPreco.ts: o Decide grava um plano antes de cumpri-lo');
   }
 
   // 3. The mass-decrease aviso: raised by that stop, resolved by every other plan.
@@ -1161,7 +1318,7 @@ async function decidir(
   const estado = atual.estado ?? run;
   let envio: EnvioDasTarefas = { tarefas: 0, jaEnfileiradas: 0, simulados: 0, partesAusentes: 0 };
   let motivo: string | null = null;
-  let lotes = 0;
+  let lotes: EnvioDosLotes = { lotes: 0, lotesJaEnfileirados: 0, lotesEncerrados: 0 };
   if (decisao === DECISAO_EXECUCAO_PRECO_AMAZON.tarefas) {
     envio = await enviarComoTarefas(e, estado, false);
   } else if (decisao === DECISAO_EXECUCAO_PRECO_AMAZON.canario) {
@@ -1169,13 +1326,12 @@ async function decidir(
   } else if (decisao === DECISAO_EXECUCAO_PRECO_AMAZON.dryRun) {
     envio = { ...envio, simulados: c.enviaveis };
   } else if (decisao === DECISAO_EXECUCAO_PRECO_AMAZON.lotes) {
-    // The feed batches are a later PR's: the packing is only counted here.
     motivo = MOTIVO_FEED_NECESSARIO_PRECO_AMAZON;
-    lotes = lotesDePartesPrecoAmazon(estado.itensPorParte).length;
+    lotes = await enviarComoLotes(e, estado);
   }
 
   // 5. `concluida`, LAST.
-  const decide: DecisaoPaginaPrecoAmazon = { decisao, planoGuardado, lotes, ...envio };
+  const decide: DecisaoPaginaPrecoAmazon = { decisao, planoGuardado, ...lotes, ...envio };
   const amostraExecucao = juntar(estado.amostraReducoes);
   const fechado = await atualizar(e, atual, donoDoDecide(t), () => ({
     fase: FASE_EXECUCAO_PRECO_AMAZON.concluida,

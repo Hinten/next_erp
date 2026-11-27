@@ -81,6 +81,7 @@ import {
   type ResultadoLoteAmazon,
 } from './provedorLote';
 import { ABANDONO_FEED_MS, PRAZO_FEED_MS } from './registroFeed';
+import { MAX_SKUS_COM_PROBLEMA_GRAVADOS } from './relatorioFeed';
 import {
   ACAO_ADOCAO_FEED,
   ACAO_RESULTADO_FEED,
@@ -1944,5 +1945,125 @@ describe('★ the daily backstop (adotarFeedParadoAmazon, step 12 PR 12-f)', () 
     expect(dataSaoPauloAmazon(Date.UTC(2026, 10, 18, 3, 0))).toBe('2026-11-18');
     expect(dataSaoPauloAmazon(Date.UTC(2026, 10, 18, 2, 59, 59, 999))).toBe('2026-11-17');
     expect(dataSaoPauloAmazon(MADRUGADA)).toBe('2027-01-15');
+  });
+});
+
+describe('(13-f) R7 — the report items’ own issues reach a provider that asks for them', () => {
+  /** The report with two items: one price issue and one about another attribute. */
+  const comItens = JSON.stringify({
+    ...RELATORIO,
+    items: [
+      {
+        sku: 'SKU-TESTE-02',
+        issues: [
+          { code: '19037', severity: 'ERROR', message: 'x', categories: ['INVALID_PRICE'] },
+          { code: '90220', severity: 'ERROR', message: 'y', attributeNames: ['item_name'] },
+        ],
+      },
+      { sku: 'SKU-TESTE-03', issues: [{ code: '90220', severity: 'ERROR', message: 'z' }] },
+    ],
+  });
+
+  it('★ a provider declaring issueDeItemRelevante gets issuesDosItens — only what it selects, categories kept — and the line counts them; the report’s own issues are reduced as before', async () => {
+    const m = mundo();
+    semear(m, registro());
+    const base = m.provedores.estoque;
+    if (base === null) throw new Error('teste: linha de estoque vazia');
+    m.provedores.estoque = {
+      ...base,
+      issueDeItemRelevante: (issue) => (issue as { code?: unknown }).code === '19037',
+    };
+    m.rotas.feed = [feedEm('DONE')];
+    m.rotas.relatorio = [{ status: 200, bytes: comItens }];
+    const r = await m.resultado(rodada(0));
+    expect(r).toMatchObject({ relatorio: 'baixado', skusComIssueDeItem: 1, skusComProblema: 2 });
+    const [gravado] = m.espiao.gravacoes;
+    expect([...(gravado?.issuesDosItens?.keys() ?? [])]).toEqual(['SKU-TESTE-02']);
+    expect(gravado?.issuesDosItens?.get('SKU-TESTE-02')).toEqual([
+      {
+        code: '19037',
+        message: 'x',
+        severity: 'ERROR',
+        attributeNames: null,
+        categories: ['INVALID_PRICE'],
+      },
+    ]);
+    expect([...(gravado?.problemas.keys() ?? [])]).toEqual(['SKU-TESTE-01', ' SKU com espaco ']);
+    expect(m.log.linhas.at(-1)?.meta).toMatchObject({ fase: 'resultado', skusComIssueDeItem: 1 });
+  });
+
+  it('★ NEAR-MISS: a provider declaring no predicate (the stock shape) gets no issuesDosItens at all, and the line says null', async () => {
+    const m = mundo();
+    semear(m, registro());
+    m.rotas.feed = [feedEm('DONE')];
+    m.rotas.relatorio = [{ status: 200, bytes: comItens }];
+    const r = await m.resultado(rodada(0));
+    expect(r).toMatchObject({ relatorio: 'baixado', skusComIssueDeItem: null });
+    const [gravado] = m.espiao.gravacoes;
+    expect(gravado !== undefined && 'issuesDosItens' in gravado).toBe(false);
+    expect(Object.keys(gravado ?? {}).sort()).toEqual(['emMs', 'feedId', 'problemas', 'relogio']);
+  });
+
+  it('★ issuesDosItens is BOUNDED like the report’s own: at most 200 SKUs, an ERROR item first, then SKU order; the line counts every item SKU (NEAR-MISS: exactly 200 ⇒ all kept)', async () => {
+    const itens = (n: number) =>
+      Array.from({ length: n }, (_, i) => ({
+        sku: `SKU-ITEM-${String(i).padStart(3, '0')}`,
+        issues: [
+          {
+            code: '19037',
+            severity: i === n - 1 ? 'ERROR' : 'WARNING',
+            message: 'x',
+            categories: ['INVALID_PRICE'],
+          },
+        ],
+      }));
+    const rodar = async (n: number) => {
+      const m = mundo();
+      semear(m, registro());
+      const base = m.provedores.estoque;
+      if (base === null) throw new Error('teste: linha de estoque vazia');
+      m.provedores.estoque = { ...base, issueDeItemRelevante: () => true };
+      m.rotas.feed = [feedEm('DONE')];
+      m.rotas.relatorio = [
+        { status: 200, bytes: JSON.stringify({ ...RELATORIO, items: itens(n) }) },
+      ];
+      const r = await m.resultado(rodada(0));
+      return { r, chaves: [...(m.espiao.gravacoes[0]?.issuesDosItens?.keys() ?? [])] };
+    };
+    const acima = await rodar(MAX_SKUS_COM_PROBLEMA_GRAVADOS + 1);
+    expect(acima.r).toMatchObject({ skusComIssueDeItem: MAX_SKUS_COM_PROBLEMA_GRAVADOS + 1 });
+    expect(acima.chaves).toHaveLength(MAX_SKUS_COM_PROBLEMA_GRAVADOS);
+    expect(acima.chaves[0]).toBe('SKU-ITEM-200');
+    expect(acima.chaves.at(-1)).toBe('SKU-ITEM-198');
+    expect(acima.chaves).not.toContain('SKU-ITEM-199');
+
+    const exato = await rodar(MAX_SKUS_COM_PROBLEMA_GRAVADOS);
+    expect(exato.chaves).toHaveLength(MAX_SKUS_COM_PROBLEMA_GRAVADOS);
+    expect(exato.chaves).toContain('SKU-ITEM-198');
+  });
+});
+
+describe('(13-f) the result line of a provider with no item predicate keeps its keys', () => {
+  it('★ the stock-shaped provider’s line carries no skusComIssueDeItem key (NEAR-MISS: a provider declaring the predicate’s line counts them)', async () => {
+    const m = mundo();
+    semear(m, registro());
+    m.rotas.feed = [feedEm('DONE')];
+    m.rotas.relatorio = [{ status: 200, bytes: JSON.stringify(RELATORIO) }];
+    expect(await m.resultado(rodada(0))).toMatchObject({ relatorio: 'baixado' });
+    const linha = m.log.linhas.filter((l) => l.meta?.fase === 'resultado').at(-1)?.meta ?? {};
+    expect(Object.keys(linha).length).toBeGreaterThan(0);
+    expect(linha).not.toHaveProperty('skusComIssueDeItem');
+
+    const n = mundo();
+    semear(n, registro());
+    const base = n.provedores.estoque;
+    if (base === null) throw new Error('teste: linha de estoque vazia');
+    n.provedores.estoque = { ...base, issueDeItemRelevante: () => true };
+    n.rotas.feed = [feedEm('DONE')];
+    n.rotas.relatorio = [{ status: 200, bytes: JSON.stringify(RELATORIO) }];
+    await n.resultado(rodada(0));
+    expect(n.log.linhas.filter((l) => l.meta?.fase === 'resultado').at(-1)?.meta).toMatchObject({
+      skusComIssueDeItem: 0,
+    });
   });
 });

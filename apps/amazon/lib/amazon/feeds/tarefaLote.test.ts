@@ -41,6 +41,7 @@ import {
   referenciaVezFeed,
   tarefaLoteAmazonSchema,
   tarefaPaginaReconciliacaoAmazonSchema,
+  tarefaEnviarFeedAmazonSchema,
   tarefaRecuperarFeedAmazonSchema,
   tipoTarefaLoteAmazonSchema,
 } from './tarefaLote';
@@ -702,5 +703,31 @@ describe('(12-f) the reconcile page: its payload and its names', () => {
     expect(() => nomePaginaReconciliacao(CONTA, EXECUCAO, 0.5)).toThrow(RangeError);
     expect(() => nomeRetomadaReconciliacao(CONTA, EXECUCAO, 0, -1)).toThrow(RangeError);
     expect(() => nomeRetomadaReconciliacao(CONTA, EXECUCAO, 0, 1.5)).toThrow(RangeError);
+  });
+});
+
+describe('(13-f) ★ the payload refinement: a PRICE batch is always a block batch', () => {
+  const preco = (lote: Record<string, unknown>) => ({
+    ...enviar(lote),
+    fluxo: FLUXO_FEED_AMAZON.preco,
+  });
+
+  it('a price WINDOW batch is refused, on the batch kind’s path; a price BLOCK batch is accepted', () => {
+    for (const janela of [JANELA_DO_TICK, JANELA_DA_RECUPERACAO, JANELA_SEM_SNAPSHOT]) {
+      const r = tarefaEnviarFeedAmazonSchema.safeParse(preco(janela));
+      expect(r.success).toBe(false);
+      expect(r.error?.issues.map((i) => i.path.join('.'))).toEqual(['lote.tipo']);
+      expect(aceita(preco(janela))).toBe(false);
+    }
+    expect(aceita(preco(BLOCOS))).toBe(true);
+  });
+
+  it('NEAR-MISS: a STOCK window batch is still accepted, and the block cap is the same for both fluxos', () => {
+    expect(aceita(enviar(JANELA_DO_TICK))).toBe(true);
+    expect(aceita(enviar(BLOCOS))).toBe(true);
+    const cheio = { ...BLOCOS, partes: MAX_PARTES_LOTE_BLOCOS_FEED_AMAZON };
+    const demais = { ...BLOCOS, partes: MAX_PARTES_LOTE_BLOCOS_FEED_AMAZON + 1 };
+    expect([aceita(enviar(cheio)), aceita(preco(cheio))]).toEqual([true, true]);
+    expect([aceita(enviar(demais)), aceita(preco(demais))]).toEqual([false, false]);
   });
 });

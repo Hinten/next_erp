@@ -16,7 +16,9 @@
  *    not advanced (the part, written before the update, is there to be
  *    overwritten by a re-run of the same page);
  *  - ★ a 429 stamps the run's progress on the server and pauses the SAME page,
- *    unnamed.
+ *    unnamed;
+ *  - ★ (PR 13-f) a `lotes` Decide lands its batch ledger and wait on the server
+ *    BEFORE it names any batch, and a retried Decide names the same batches.
  *
  * The concurrent writer is injected by spying on the database's own `getAll`
  * (the real call runs; the competing write lands right after the run's read).
@@ -44,6 +46,7 @@ import {
   INTEGRACAO_TIPO,
   MOTIVO_CONTA_AMAZON,
   RETENCAO_DIVERGENCIA_PRECO_AMAZON_DIAS,
+  TIPO_OFERTA_PRECO_AMAZON,
   idDivergenciaPrecoAmazon,
   motivoContaAmazonSchema,
 } from '@delfrance/schemas';
@@ -53,6 +56,13 @@ import { getAdminFirestore } from '@/lib/firebase/admin';
 import { chaveContaPrecisaAtencao } from '../avisos/avisos';
 import { loadAmazonContext } from '../core/contexto';
 import type { AmbienteAmazon } from '../env';
+import { criarAgendadorLotesAmazon } from '../feeds/agendadorLotes';
+import {
+  type TarefaLoteAmazon,
+  execucaoIdDoLoteBlocosFeed,
+  nomeEnvioFeed,
+} from '../feeds/tarefaLote';
+import { falhaDeTarefaJaExistente } from '../testing/falhaDeEnfileiramento';
 import {
   AMBIENTE_LIGADO,
   DIA_MS,
@@ -62,9 +72,11 @@ import {
   credencialDoc,
   loggerEspiao,
 } from '../testing/fixtures';
+import { gravarParteDivergenciaPrecoAmazon } from './divergenciasPrecoFirestore';
 import {
   ACAO_PAGINA_PRECO_AMAZON,
   CAMPOS_PAGINA_EXECUCAO_PRECO_AMAZON,
+  ESPERA_LOTE_BLOCOS_PRECO_MS,
   paginaPrecoAmazon,
 } from './execucaoPreco';
 import {
@@ -197,10 +209,31 @@ function fetchRoteirizado(o: { readonly limitar?: boolean } = {}) {
   return { fetch, buscas };
 }
 
-/** The two recorders: the run's pages and Decide's tasks (nothing reaches a real queue). */
+/**
+ * The three recorders: the run's pages, Decide's tasks and (PR 13-f) Decide's
+ * block batches — each batch with the run as the SERVER held it at that
+ * enqueue (nothing reaches a real queue).
+ */
 function produtores() {
   const paginas: { readonly tarefa: TarefaPaginaPrecoAmazon; readonly opcoes: unknown }[] = [];
   const tarefas: { readonly tarefa: TarefaPrecoSkuAmazon; readonly opcoes: unknown }[] = [];
+  const lotes: {
+    readonly tarefa: TarefaLoteAmazon;
+    readonly opcoes: unknown;
+    readonly run: Record<string, unknown> | undefined;
+  }[] = [];
+  const nomesLotes = new Set<string>();
+  const agendadorLotes = criarAgendadorLotesAmazon({
+    desligado: false,
+    fila: () => ({
+      enqueue: async (tarefa, opcoes) => {
+        const id = opcoes?.id;
+        if (id !== undefined && nomesLotes.has(id)) throw falhaDeTarefaJaExistente(id);
+        if (id !== undefined) nomesLotes.add(id);
+        lotes.push({ tarefa, opcoes, run: (await db().doc(RUN).get()).data() });
+      },
+    }),
+  });
   const produtorPaginas = criarProdutorExecucaoPrecoAmazon({
     desligado: false,
     fila: () => ({
@@ -219,7 +252,7 @@ function produtores() {
       },
     }),
   });
-  return { paginas, tarefas, produtorPaginas, produtorPreco };
+  return { paginas, tarefas, lotes, produtorPaginas, produtorPreco, agendadorLotes };
 }
 
 /** The claim, in-process (its page 0 recorded, never enqueued). */
@@ -258,6 +291,7 @@ function pagina(
     carregarContexto: loadAmazonContext,
     produtorPaginas: () => p.produtorPaginas,
     produtorPreco: () => p.produtorPreco,
+    agendadorLotes: () => p.agendadorLotes,
     soValidacao: false,
     esperar: () => Promise.resolve(),
   });
@@ -404,5 +438,97 @@ describe.skipIf(!EMULATED)('a price run’s page on real Firestore (emulator)', 
       opcoes: { scheduleDelaySeconds: ATRASO_PAUSA_PAGINA_PRECO_S },
     });
     expect((await db().collection(`${RUN}/divergenciasPrecoAmazon`).get()).empty).toBe(true);
+  });
+
+  it('★ (13-f) a lotes Decide: the batch ledger and the wait are ON THE SERVER before the first batch is named; a retried Decide names the same batches (each held), the wait unmoved', async () => {
+    await semear();
+    const execucaoId = `${P}exec-lotes`;
+    // 31 parts of one SKU each: past the switch, ONE block batch.
+    for (let n = 0; n < 31; n += 1) {
+      await gravarParteDivergenciaPrecoAmazon(db(), {
+        contaId: CONTA,
+        execucaoId,
+        parte: n,
+        itens: [
+          {
+            sku: `${P}LOTE-${String(n)}`,
+            vinculo: `produtos/${P}prod-lote-${String(n)}/prodAmazon/${P}link`,
+            unidadeId: `${P}prod-lote-${String(n)}`,
+            oferta: { tipo: TIPO_OFERTA_PRECO_AMAZON.lida, base: 50, minimo: 50, maximo: 50 },
+            faixa: { base: 60, minimo: 60, maximo: 60 },
+            tipoProduto: 'LUGGAGE',
+            lidoEmMs: Date.now(),
+          },
+        ],
+        agoraMs: Date.now(),
+      });
+    }
+    await db()
+      .doc(RUN)
+      .set({
+        execucaoId,
+        fase: 'decidindo',
+        baixarPreco: false,
+        solicitadaPor: `${P}uid`,
+        cursores: {
+          canonica: { ultimoCaminho: null, concluida: true },
+          nua: { ultimoCaminho: null, concluida: true },
+        },
+        proximaPagina: 4,
+        proximaParte: 31,
+        itensPorParte: Array.from({ length: 31 }, () => 1),
+        contagens: { enviaveis: 31, sobe: 31 },
+        iniciadaEmMs: Date.now() - 60_000,
+        progressoEmMs: Date.now() - 60_000,
+        relogioInicio: null,
+      });
+    const p = produtores();
+    const t: TarefaPaginaPrecoAmazon = {
+      v: 1,
+      tipo: 'preco-pagina',
+      contaId: CONTA,
+      execucaoId,
+      pagina: 4,
+    };
+    const { fetch, buscas } = fetchRoteirizado();
+    const antes = Date.now();
+    const r = await pagina(t, p, fetch);
+    expect(r.acao).toBe(ACAO_PAGINA_PRECO_AMAZON.concluida);
+    expect(r.decide).toMatchObject({ decisao: 'lotes', lotes: 1, lotesJaEnfileirados: 0 });
+    expect(buscas).toEqual([]);
+    const loteId = execucaoIdDoLoteBlocosFeed(CONTA, execucaoId, 0);
+    expect(p.lotes).toHaveLength(1);
+    const [lote] = p.lotes;
+    expect(lote?.opcoes).toEqual({ id: nomeEnvioFeed(CONTA, loteId) });
+    // At the enqueue the server already held the whole plan.
+    expect(lote?.run).toMatchObject({
+      fase: 'decidindo',
+      decisao: 'lotes',
+      lotes: {
+        '0': { execucaoIdLote: loteId, parteInicial: 0, partes: 31, itens: 31, desfecho: null },
+      },
+    });
+    const espera = lote?.run?.esperaLotesAteMs as number;
+    expect(espera).toBeGreaterThanOrEqual(antes + ESPERA_LOTE_BLOCOS_PRECO_MS);
+    expect(espera).toBeLessThanOrEqual(Date.now() + ESPERA_LOTE_BLOCOS_PRECO_MS);
+    expect(lote?.tarefa).toMatchObject({
+      tipo: 'feed-enviar',
+      fluxo: 'preco',
+      execucaoId: loteId,
+      lote: { tipo: 'blocos', execucaoIdRun: execucaoId, parteInicial: 0, partes: 31 },
+    });
+    expect(lote?.tarefa.tipo === 'feed-enviar' ? lote.tarefa.lote.esperaAteMs : null).toBe(espera);
+    expect((await db().doc(RUN).get()).data()?.fase).toBe('concluida');
+
+    // A retried Decide (the run deciding again): the stored ledger, the same name, held.
+    await db().doc(RUN).update({ fase: 'decidindo' });
+    const de = await pagina(t, p, fetch);
+    expect(de.decide).toMatchObject({ planoGuardado: true, lotes: 1, lotesJaEnfileirados: 1 });
+    expect(p.lotes).toHaveLength(1);
+    expect((await db().doc(RUN).get()).data()).toMatchObject({
+      fase: 'concluida',
+      esperaLotesAteMs: espera,
+    });
+    expect(p.tarefas).toEqual([]);
   });
 });

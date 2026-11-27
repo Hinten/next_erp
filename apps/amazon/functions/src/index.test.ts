@@ -1203,9 +1203,9 @@ describe('processAmazonListingsJob — the declared options (step 12a, PR 12-c)'
     expect(segredosDe(processAmazonListingsJob)).toEqual([SEGREDO_LWA]);
   });
 
-  it('★ binds the seam table itself, ONCE — the stock row filled (PR 12-f), the price row still null', () => {
+  it('★ binds the seam table itself, ONCE — the stock row filled (PR 12-f), the price row filled (PR 13-f)', () => {
     expect(DESTINO_LOTE_AMAZON.estoque).not.toBeNull();
-    expect(DESTINO_LOTE_AMAZON.preco).toBeNull();
+    expect(DESTINO_LOTE_AMAZON.preco).not.toBeNull();
     expect(fonte).toContain(
       'vincularDestinosLoteAmazon( RAIZ_DOS_LOTES_AMAZON, DESTINO_LOTE_AMAZON, );',
     );

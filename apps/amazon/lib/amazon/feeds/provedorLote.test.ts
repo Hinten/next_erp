@@ -4,6 +4,8 @@
  * the seam with no stock import.
  */
 import { MOTIVO_CONTA_AMAZON, type RegistroFeedAmazon } from '@delfrance/schemas';
+// (13-f) The price run ledger's vocabulary the closed ends are pinned to.
+import { motivoSemEnvioLotePrecoAmazonSchema } from '@delfrance/schemas';
 import type { Timestamp } from 'firebase-admin/firestore';
 import { describe, expect, expectTypeOf, it } from 'vitest';
 
@@ -16,12 +18,15 @@ import {
   ESPERA_MAXIMA_ATRAS_DE_FEED_MS,
   ESPERA_MAXIMA_LOTE_RECUPERACAO_MS,
   ESPERA_SONDA_DISJUNTOR_MS,
+  FIM_SEM_ENVIO_LOTE,
+  type FimSemEnvioLote,
   MAX_FALHAS_SEGUIDAS_FEED,
   MOTIVO_ABORTO_LOTE,
   type MotivoAbortoLote,
   type ProvedorLoteAmazon,
   type ResultadoLoteAmazon,
 } from './provedorLote';
+import type { ProblemaItemSku } from './relatorioFeed';
 
 describe('the provider seam', () => {
   it('the abort motivos are a closed set of three', () => {
@@ -79,5 +84,61 @@ describe('the provider seam', () => {
       abortado: 'snapshot-lento',
       aviso: null,
     });
+  });
+});
+
+describe('(13-f) the OPTIONAL members and the closed ends without a send', () => {
+  it('★ FIM_SEM_ENVIO_LOTE is a closed set of nine, the price run ledger’s vocabulary member by member', () => {
+    expect(Object.values(FIM_SEM_ENVIO_LOTE).sort()).toEqual([
+      'abortado',
+      'documento-falhou',
+      'lote-expirado',
+      'recusa-definitiva',
+      'repassado',
+      'repasse-abortado',
+      'sem-escrita',
+      'simulado',
+      'so-patches',
+    ]);
+    expect(Object.values(FIM_SEM_ENVIO_LOTE).sort()).toEqual(
+      [...motivoSemEnvioLotePrecoAmazonSchema.options].sort(),
+    );
+    expectTypeOf<FimSemEnvioLote>().toEqualTypeOf<
+      (typeof motivoSemEnvioLotePrecoAmazonSchema.options)[number]
+    >();
+  });
+
+  it('a provider declaring the four optional members fits the seam; one declaring none still does', async () => {
+    const base: ProvedorLoteAmazon<typeof FLUXO_AMAZON.preco, null> = {
+      fluxo: FLUXO_AMAZON.preco,
+      membros: () => Promise.resolve({ skus: [], dados: null }),
+      montar: () => Promise.resolve({ mensagens: [], snapshotEmMs: 1, diff: {} }),
+      gravarResultado: () => Promise.resolve(),
+      recuperar: () => Promise.resolve({ nada: true }),
+      repassarParaPatches: () => Promise.resolve({ tarefas: 0 }),
+      motivoFalha: MOTIVO_CONTA_AMAZON.contaSemOperacao,
+    };
+    const fins: FimSemEnvioLote[] = [];
+    const completo: ProvedorLoteAmazon<typeof FLUXO_AMAZON.preco, null> = {
+      ...base,
+      relatorio: { incluir: ['issues'] },
+      issueDeItemRelevante: (issue) => issue !== null,
+      valvulaEfetiva: (v) => v,
+      aoFimSemEnvio: (_ctx, _entrada, fim) => {
+        fins.push(fim);
+        return Promise.resolve();
+      },
+    };
+    expect(base.relatorio).toBeUndefined();
+    expect(base.aoFimSemEnvio).toBeUndefined();
+    await completo.aoFimSemEnvio?.(
+      {} as ContextoLoteAmazon,
+      {} as Parameters<NonNullable<typeof completo.aoFimSemEnvio>>[1],
+      FIM_SEM_ENVIO_LOTE.loteExpirado,
+    );
+    expect(fins).toEqual(['lote-expirado']);
+    expectTypeOf<ResultadoLoteAmazon['issuesDosItens']>().toEqualTypeOf<
+      ReadonlyMap<string, readonly ProblemaItemSku[]> | undefined
+    >();
   });
 });

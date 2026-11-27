@@ -91,6 +91,7 @@ import { FEED_ID_AMAZON_REGEX } from '@delfrance/integrations-amazon-sp-api';
 import {
   CONTA_ID_AMAZON_REGEX,
   DESFECHO_FEED_AMAZON,
+  FLUXO_FEED_AMAZON,
   ID_LOTE_FEED_AMAZON_REGEX,
   ORIGEM_LOTE_FEED_AMAZON_REGEX,
   TIPO_LOTE_FEED_AMAZON,
@@ -261,7 +262,12 @@ export type LoteFeedAmazon = z.infer<typeof loteFeedAmazonSchema>;
 
 /* --------------------------------- the payloads ------------------------------- */
 
-/** `feed-enviar` (module header). */
+/**
+ * `feed-enviar` (module header). A PRICE batch is always a block batch (step
+ * 13, PR 13-f): refined on the explicit `fluxo` and `lote.tipo`, never inferred
+ * from another field, because the block schema cannot see the fluxo and a
+ * price window has no producer.
+ */
 export const tarefaEnviarFeedAmazonSchema = z
   .object({
     v: z.literal(VERSAO_TAREFA_LOTE_AMAZON),
@@ -273,7 +279,16 @@ export const tarefaEnviarFeedAmazonSchema = z
     origem: origemLoteSchema(),
     lote: loteFeedAmazonSchema,
   })
-  .strict();
+  .strict()
+  .superRefine((t, ctx) => {
+    if (t.fluxo === FLUXO_FEED_AMAZON.preco && t.lote.tipo !== TIPO_LOTE_FEED_AMAZON.blocos) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'um lote de preço é sempre um lote de blocos',
+        path: ['lote', 'tipo'],
+      });
+    }
+  });
 export type TarefaEnviarFeedAmazon = z.infer<typeof tarefaEnviarFeedAmazonSchema>;
 
 /** `feed-resultado` (module header). */

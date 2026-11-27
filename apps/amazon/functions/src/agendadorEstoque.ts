@@ -51,8 +51,10 @@ import { getAdminApp } from './lib/admin';
  *
  * Since step 13 (PR 13-d) a THIRD producer rides the jobs queue's path: the
  * price task's (`preco-sku`: its check, its wait behind a price feed and its
- * pause, bound by `./filaLotes`), its own because the jobs producer's typed
- * transport carries the feed core's payloads only; and (PR 13-e) a FOURTH, a
+ * pause, bound by `./filaLotes`; since PR 13-f also the price feed provider's
+ * hand-off of a batch's canary members, through the same `raiz`), its own
+ * because the jobs producer's typed transport carries the feed core's
+ * payloads only; and (PR 13-e) a FOURTH, a
  * price run's pages (`preco-pagina`: the next page, a step-0 heal, a 429's
  * pause, bound by `./filaLotes` for the page). Price has no queue of its own;
  * the valve and the region below are the same ones.
