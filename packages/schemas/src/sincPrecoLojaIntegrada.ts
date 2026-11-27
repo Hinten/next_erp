@@ -1,7 +1,11 @@
 import { z } from 'zod';
+import { centavosDeReais } from '@delfrance/core/money';
 import { MAX_AMOSTRA_AVISO_PRECO_LI, motivoPrecoParadoLiSchema } from './aviso';
 import {
   ASSINATURA_ENVIO_PRECO_LI_REGEX,
+  type AlvoPrecoLi,
+  type EnvioPrecoLi,
+  type LeituraTabelaPrecoLi,
   motivoRetencaoPrecoLiSchema,
 } from './precoErpLojaIntegrada';
 import { millisSinceEpoch } from './shared/datetime';
@@ -58,21 +62,26 @@ import {
  *  - `snapshot/{'00'..'31'}`: {@link snapshotPrecoLiSchema} — one entry per store product id the
  *    ERP side knows, bucketed by the STOCK snapshot's own function, `baldeSnapshotEstoqueLi`
  *    (the id modulo 32; one bucketing rule for both flows);
- *  - `snapshot/paisErp`: {@link paisErpSnapshotPrecoLiSchema} — the parents unit's working state:
- *    the ERP parents of the snapshot's children, each read ONCE per run after the key walk.
+ *  - `snapshot/paisErp`: {@link paisErpSnapshotPrecoLiSchema} — RESERVED: the parents unit as
+ *    built keeps no working state there (below), so nothing reads or writes it.
  *
  * ## The life of an entry in one run
  *
  *  1. the shared key walk (`erp`) writes `p`, `f` and, for a valid child, its parent (`pai`) and
  *     its OWN two readings (`n`, `pr`) — the produto's own `precos` read through
- *     `leituraTabelaPrecoLi` at the run's tabelas, in centavos. A child whose `paiId` names a
- *     parent that is NOT an ERP document id (`paiDoProdutoErp` returns it, the entry's `pai`
- *     refuses it) is no root: the walk stores it already held, `a: { r: 'pai-ausente' }`, with no
- *     `pai`, `n` or `pr` — what `precoAlvoLi` answers for it, with no parent to read;
- *  2. the parents unit (`pais-preco`) reads every distinct `pai` once into `paisErp`, then
- *     computes the target `a` of each valid entry the walk left without one, by replaying the
- *     readings through `precoAlvoLi` (`precosDasLeiturasLi` rebuilds a map that reads back exactly
- *     as the stored readings), never through a second copy of the rule;
+ *     `leituraTabelaPrecoLi` at the run's tabelas, in centavos ({@link leituraSnapshotDaTabelaLi}).
+ *     A child whose `paiId` names a parent that is NOT an ERP document id (`paiDoProdutoErp`
+ *     returns it, the entry's `pai` refuses it) is no root: the walk stores it already held,
+ *     `a: { r: 'pai-ausente' }`, with no `pai`, `n` or `pr` — what `precoAlvoLi` answers for it,
+ *     with no parent to read. Writing a `v` entry takes the previous run's `a` and `t` of the same
+ *     id out of the bucket's `anteriores` as its `ap` and `tp`;
+ *  2. the parents unit (`pais-preco`) reads the distinct `pai` of the children still without a
+ *     target, at most 300 a unit and each ONCE per run, and computes those children's `a` in the
+ *     same unit, by replaying the readings through `precoAlvoLi` (`precosDasLeiturasLi` rebuilds a
+ *     map that reads back exactly as the stored readings, {@link leituraTabelaDoSnapshotLi}), never
+ *     through a second copy of the rule. A resumed unit re-derives what is left from the buckets,
+ *     which already hold the targets of the units that landed, so it keeps no state of its own;
+ *     its end clears every bucket's `anteriores`;
  *  3. the store read (`li-preco`) goes through the conta's buckets in order, `'00'` to `'31'`, and
  *     inside each through its ids by numeric value, asking the store — at most
  *     {@link MAX_IDS_SET_PRECO_LI} ids a call, one call spanning buckets — for every `v` entry
@@ -94,7 +103,10 @@ import {
  * carries this run's id (as in the stock snapshot), carrying forward, for every entry that is
  * again valid, the previous target as `ap` and the previous deferral as `tp`: what makes the
  * in-transit rule ("the ERP target moved since the previous run") and its "never two nights in a
- * row" cost zero reads. Nothing else carries over: every entry is one the walk wrote this run.
+ * row" cost zero reads. The carry is the bucket's own `anteriores` field: the replace at first
+ * touch moves every previous valid entry's `a` and `t` there, keyed by id, and the walk — which
+ * reaches the bucket's ids over many slices — takes each one back as it re-writes that id. Nothing
+ * else carries over: every entry is one the walk wrote this run.
  *
  * ## Units
  *
@@ -113,6 +125,9 @@ import {
  * memory and `mantidos` already on the root (never a fixed candidate budget like the stock run's,
  * which leaves the memory out), so that the root stays under 900 000 bytes; a row dropped by the
  * cap is counted and found again the next night, as the stock run does with its own.
+ *
+ * A bucket holds its share of the conta's entries (one in 32), about 90 bytes each, plus about 40
+ * bytes per carried `anteriores` row while the key walk runs; the parents unit's end clears them.
  *
  * ## Writers (root `CLAUDE.md` rule 7)
  *
@@ -423,11 +438,30 @@ export const entradaSnapshotPrecoLiSchema = z
   });
 export type EntradaSnapshotPrecoLi = z.infer<typeof entradaSnapshotPrecoLiSchema>;
 
+/**
+ * The previous run's `a` and `t` of one valid entry, as a bucket replaced at first touch carries
+ * them (module header, "The life of an entry"): taken back as `ap` / `tp` when this run's walk
+ * writes the id again, and dropped with the rest when the parents unit ends. Absent keys are
+ * omitted; a row carries at least one.
+ */
+export const anteriorPrecoLiSchema = z.object({
+  ap: alvoSnapshotPrecoLiSchema.nullable().optional(),
+  tp: z.literal(true).nullable().optional(),
+});
+export type AnteriorPrecoLi = z.infer<typeof anteriorPrecoLiSchema>;
+
 /** `snapshot/{'00'..'31'}`: the entries of one bucket, keyed by store product id. */
 export const snapshotPrecoLiSchema = z.object({
   /** The run that wrote this bucket. */
   execucaoId: idExecucaoEstoqueLiSchema,
   e: z.record(idProdutoLiTextoSchema, entradaSnapshotPrecoLiSchema).default({}),
+  /**
+   * The carry of the previous run (PR 13-f1, additive: a bucket an older build wrote reads `{}`),
+   * by store product id: what the walk has not yet re-written of it ({@link anteriorPrecoLiSchema}).
+   * Written WHOLE with every bucket, an emptied one as `{}`, since an `update` keeps a field it
+   * omits.
+   */
+  anteriores: z.record(idProdutoLiTextoSchema, anteriorPrecoLiSchema).default({}),
 });
 export type SnapshotPrecoLi = z.infer<typeof snapshotPrecoLiSchema>;
 
@@ -436,6 +470,11 @@ export type SnapshotPrecoLi = z.infer<typeof snapshotPrecoLiSchema>;
  * `propagaPrecoAosFilhos` (only a stored literal `false` is `false`); `n`, `pr`, its own normal and
  * promo readings at the run's tabelas. `null` = the parent document does not exist (its children
  * are held `pai-ausente`).
+ *
+ * ⚠️ RESERVED (PR 13-f1): the parents unit as built is INCREMENTAL — each unit reads at most 300
+ * parents, prices all their children in that unit and re-derives what is left from the buckets —
+ * so it keeps no working state here, and no parents document can grow toward the 1 MiB limit and
+ * stall the slice's one batch (the stock flow's writes ride it too). Kept as a schema only.
  */
 export const paiErpPrecoLiSchema = z
   .object({
@@ -447,13 +486,92 @@ export const paiErpPrecoLiSchema = z
 export type PaiErpPrecoLi = z.infer<typeof paiErpPrecoLiSchema>;
 
 /**
- * `snapshot/paisErp`: the parents unit's working state — every distinct parent the snapshot's
- * valid children name, as it was read (`pais`, by ERP produto id). A parent absent from the map is
- * not read yet; the unit reads them in masked batches, ONCE per run, and computes the targets when
- * none is left.
+ * `snapshot/paisErp`: RESERVED (see {@link paiErpPrecoLiSchema}). It was to be the parents unit's
+ * working state — every distinct parent the snapshot's valid children name, as it was read
+ * (`pais`, by ERP produto id); the unit as built keeps none, and nothing reads or writes it.
  */
 export const paisErpSnapshotPrecoLiSchema = z.object({
   execucaoId: idExecucaoEstoqueLiSchema,
   pais: z.record(idDocumentoEstoqueLiSchema, paiErpPrecoLiSchema).default({}),
 });
 export type PaisErpSnapshotPrecoLi = z.infer<typeof paisErpSnapshotPrecoLiSchema>;
+
+/* -------------------------------------------------------------------------- */
+/*                 The short forms ⇄ the price function's types                */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * Pure and total, shared by the reconcile's key walk, its parents unit, its store read and their
+ * property tests, so the snapshot's short forms have ONE reading. No rounding of their own: a
+ * reading enters centavos through `centavosDeReais` (`@delfrance/core/money`) only.
+ */
+
+/**
+ * A tabela reading (`leituraTabelaPrecoLi`) in the snapshot's short form:
+ *
+ *  - `{ valor }` ⇒ its centavos, ONLY when they are a positive safe integer that reads back as
+ *    itself (`centavosDeReais(c / 100) === c`, so {@link leituraTabelaDoSnapshotLi} replays the
+ *    same price); otherwise `'il'` — a price no send could carry is held as unreadable, the
+ *    reversible direction;
+ *  - `'ilegivel'` ⇒ `'il'`;
+ *  - `'ausente'` ⇒ `null` (the field is then omitted).
+ *
+ * Equal: `{ valor: 10 }` ⇒ 1000, and `{ valor: 10.004 }` ⇒ 1000 (rounded once). Distinct:
+ * `'ausente'` ⇒ `null`, never `'il'`; `'ilegivel'` ⇒ `'il'`, never `null`.
+ */
+export function leituraSnapshotDaTabelaLi(l: LeituraTabelaPrecoLi): LeituraSnapshotPrecoLi | null {
+  if (l === 'ausente') return null;
+  if (l === 'ilegivel') return 'il';
+  const c = centavosDeReais(l.valor);
+  return Number.isSafeInteger(c) && c > 0 && centavosDeReais(c / 100) === c ? c : 'il';
+}
+
+/**
+ * The inverse of {@link leituraSnapshotDaTabelaLi}: centavos `c` ⇒ `{ valor: c / 100 }`, `'il'` ⇒
+ * `'ilegivel'`, `null` or absent ⇒ `'ausente'`. Fed to `precosDasLeiturasLi`, it rebuilds a map
+ * that `leituraTabelaPrecoLi` reads back as the stored reading.
+ */
+export function leituraTabelaDoSnapshotLi(
+  s: LeituraSnapshotPrecoLi | null | undefined,
+): LeituraTabelaPrecoLi {
+  if (s === null || s === undefined) return 'ausente';
+  if (s === 'il') return 'ilegivel';
+  return { valor: valorDosCentavosSnapshotLi(s) };
+}
+
+/** A target (`precoAlvoLi`) in short form: `enviar` ⇒ `{ c, q }` (`q` `null` = the clear), `retido` ⇒ `{ r }`. */
+export function alvoSnapshotDoAlvoLi(a: AlvoPrecoLi): AlvoSnapshotPrecoLi {
+  if (a.tipo === 'retido') return { r: a.motivo };
+  return { c: a.cheioCentavos, q: a.promo === 'limpar' ? null : a.promo.centavos };
+}
+
+/** The send a short target asks for — `{ c, q }` ⇒ the full price and the promotion or the clear; `{ r }` ⇒ `null`. */
+export function envioDoAlvoSnapshotLi(a: AlvoSnapshotPrecoLi): EnvioPrecoLi | null {
+  if ('r' in a) return null;
+  return { cheioCentavos: a.c, promo: a.q === null ? 'limpar' : { centavos: a.q } };
+}
+
+/**
+ * Two short targets are the same: equal integers, or the same hold motivo. Absent never equals
+ * present (two absents are the same: nothing). Not a fold — the values are already integers.
+ *
+ * Equal: `{ c: 1111, q: null }` ≡ `{ c: 1111, q: null }`. Distinct: `{ c: 1111, q: null }` vs
+ * `{ c: 1111, q: 999 }` vs `{ c: 1112, q: null }`; `{ r: 'sem-preco' }` vs `{ r: 'ilegivel' }`;
+ * absent vs either.
+ */
+export function mesmoAlvoSnapshotLi(
+  a: AlvoSnapshotPrecoLi | null | undefined,
+  b: AlvoSnapshotPrecoLi | null | undefined,
+): boolean {
+  if (a == null || b == null) return a == null && b == null;
+  if ('r' in a || 'r' in b) return 'r' in a && 'r' in b && a.r === b.r;
+  return a.c === b.c && a.q === b.q;
+}
+
+/**
+ * Stored centavos as the JSON number a price reader reads back as exactly `c` (`c / 100`): how a
+ * stored target is handed to a comparison that takes store-shaped values.
+ */
+export function valorDosCentavosSnapshotLi(c: number): number {
+  return c / 100;
+}
