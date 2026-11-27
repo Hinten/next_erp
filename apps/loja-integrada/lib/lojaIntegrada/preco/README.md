@@ -6,14 +6,16 @@ simple product is skipped (`nao-suportado`): one `PUT /v1/produto_preco/{produto
 engine (`../core/escrita.ts`), with the full price, the promotion (or the configured clear) and the
 store's own custo and `sob_consulta` echoed back from the deciding read.
 
-This file covers what exists today: the SEND RUN and its QUEUE (PR 13-d), and the price TRIGGER on
-an ERP produto write, the queue's first producer (PR 13-e). The price function, the fold and the
-aviso tipos are `@delfrance/schemas`' (PR 13-a); the wire and the body builder are the package's
-(PR 13-b); the engine's two price kinds and the produto detail's restore projection are PR 13-c's.
-Not built yet, each landing in a later PR of step 13: the NIGHTLY by-id read and its reconcile (the
-price phase that re-covers what an event missed), the tabela re-point arm, the operator's routes
-("Enviar preços", "Atualizar preços") and the web. Until then a price task is enqueued only by the
-trigger and by the send run's own `deriva` follow-up.
+This file covers what exists today: the SEND RUN and its QUEUE (PR 13-d), the price TRIGGER on an
+ERP produto write, the queue's first producer (PR 13-e), and the ERP side of the NIGHTLY reconcile's
+price arm (PR 13-f1, section 17), folded into the stock reconcile. The price function, the fold and
+the aviso tipos are `@delfrance/schemas`' (PR 13-a); the wire and the body builder are the
+package's (PR 13-b); the engine's two price kinds and the produto detail's restore projection are
+PR 13-c's. Not built yet, each landing in a later PR of step 13: the nightly's by-id STORE read and
+its queue phase (what re-covers what an event missed), the tabela re-point arm, the operator's
+routes ("Enviar preços", "Atualizar preços") and the web. Until then a price task is enqueued only
+by the trigger and by the send run's own `deriva` follow-up: the nightly's ERP side reads the ERP
+and writes its own price state, and enqueues nothing.
 
 It ships INERT. The price valve `LOJA_INTEGRADA_MODO_PRECO`, its canary list and the read switch
 `LOJA_INTEGRADA_CHAMADAS` are unset today, so every produto write returns at the trigger's
@@ -368,13 +370,13 @@ All read by the run (the valve by the trigger too) from `deps.ambiente`: the fun
 passes `process.env` whole and live, per event. See `functions/DEPLOY.md` for the runtime env
 block.
 
-| variable                           | rule                                                                                                                                                   |
-| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `LOJA_INTEGRADA_MODO_PRECO`        | the valve: only the exact `on` writes, the exact `dry-run` diffs; anything else (unset too) is `off`. The trigger enqueues at `dry-run` and `on` alike |
-| `LOJA_INTEGRADA_CANARIO_PRECO`     | the targets an `on` valve writes to: unset = none, `*` = every target, else `<contaId>:<store id>,…`                                                   |
-| `LOJA_INTEGRADA_CHAMADAS`          | the read switch: only the exact `on` lets the write context build a client                                                                             |
-| `LOJA_INTEGRADA_PRECO_PROMO_LIMPO` | the clear's forma (section 3): unset = `nulo`                                                                                                          |
-| `LOJA_INTEGRADA_TASKS_DISABLED`    | exactly `1` closes the producer: the trigger logs one WARNING and skips the event's enqueues; a drift follow-up is one WARNING, the write stands       |
+| variable                           | rule                                                                                                                                                                                                                                                                                                     |
+| ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `LOJA_INTEGRADA_MODO_PRECO`        | the valve: only the exact `on` writes, the exact `dry-run` diffs; anything else (unset too) is `off`. The trigger enqueues at `dry-run` and `on` alike. Since PR 13-f1 it also gates the nightly reconcile's price arm, and with the stock valve it STARTS the nightly and the depósito arm (section 17) |
+| `LOJA_INTEGRADA_CANARIO_PRECO`     | the targets an `on` valve writes to: unset = none, `*` = every target, else `<contaId>:<store id>,…`                                                                                                                                                                                                     |
+| `LOJA_INTEGRADA_CHAMADAS`          | the read switch: only the exact `on` lets the write context build a client                                                                                                                                                                                                                               |
+| `LOJA_INTEGRADA_PRECO_PROMO_LIMPO` | the clear's forma (section 3): unset = `nulo`. Unreadable, it also keeps the price arm out of every nightly run (ONE ERROR, section 17)                                                                                                                                                                  |
+| `LOJA_INTEGRADA_TASKS_DISABLED`    | exactly `1` closes the producer: the trigger logs one WARNING and skips the event's enqueues; a drift follow-up is one WARNING, the write stands                                                                                                                                                         |
 
 The App Hosting backend reads none of the price variables yet; the operator's routes (a later PR)
 will, and both surfaces are then set alike.
@@ -389,6 +391,12 @@ nothing and writes nothing to a store: each relevant event enqueues tasks that s
 context. With the read switch on, each such task makes one deciding GET (reads only) and sends
 nothing. The alternative, leaving the price valve unset until its ramp in the window, was not
 taken. `on`, any canary entry, the clear forma and the read switch stay window decisions.
+
+⚠️ **Since PR 13-f1 that same `dry-run` makes EVERY nightly reconcile run carry the price arm's ERP
+side** (section 17): the walk's produto read takes three more masked fields, each priced conta's
+price state is read and written in each ERP slice, its parents are read, and its targets are
+written — still no store call and no enqueue. And the nightly STARTS when only the price valve is
+set (the stock valve unset), so stopping it takes both valves `off`.
 
 ## 11. The emulator lane
 
@@ -412,6 +420,14 @@ ANCHORED children of the root; a childless root; a root stored with `paiId: ''`)
 through the real price producer root — each accepted only if the artifact registers the queue. The
 deployed trigger's map is a 15-minute cache in the emulator's worker, warmed by whichever suite
 writes a produto first, which is why the work is driven in process.
+
+`../estoque/reconcile/reconcilePreco.tasks.test.ts` (PR 13-f1) drives the NIGHTLY reconcile's price
+arm IN PROCESS (the valves as PARAMETERS, the hand-offs recorded): a price-only run (stock `off`,
+price `dry-run`) over the real collection group, its produto and parent reads watched by a Proxy
+that records each `getAll`'s field mask and the fields the server answered with, every bucket and
+the price root on the server, the end; and a run carrying both arms, whose walk reads each produto
+once through the union mask (section 17). Its conta has a depósito AND a normal tabela, so it keeps
+a rule set of its own (`vitest.tasks.config.ts`): seeded by a create, deleted at the teardown.
 
 **What fires on every suite's writes.** Since PR 13-e the deployed PRICE trigger fires on every
 suite's `produtos/*` writes (the anchor's own array writes included). Its relevance gate stops a
@@ -450,6 +466,10 @@ dedup, or the declared indexes (the emulator auto-creates every one; `gatilhoPre
 | the queue's `invoker`                                                                                          | `packages/config-eslint/rules/tasks-invoker-inventory.test.js`              |
 | what `planoPrecoLi.ts` and `relevanciaPrecoLi.ts` treat as the same price                                      | `packages/config-eslint/rules/equivalence-fold-inventory.test.js`           |
 | the env variable is documented, never an `env:` row                                                            | `configPrecoLi.test.ts`                                                     |
+| the nightly with the price valve unset (or `off`, or unrecognised) is the stock-only reconcile, byte for byte  | `../estoque/reconcile/reconcileEstoque.golden.test.ts`                      |
+| a fault in the nightly's price arm leaves every stock write, enqueue, aviso and counter unchanged              | `../estoque/reconcile/reconcilePreco.espelho.test.ts`                       |
+| the both-valve gate, at zero reads; the arms a run carries and drops; the end pair never split                 | `armasReconcile.test.ts`, `despachoReconcile.preco.test.ts` (reconcile)     |
+| the nightly's price arm calls nothing outside the ERP, and rides the reconcile's task path                     | `estrutura.test.ts`                                                         |
 
 ## 13. Deploy, IAM, indexes (listed, owner-run)
 
@@ -470,7 +490,11 @@ None of this is an agent's to run (root `CLAUDE.md` rule 8):
 - the index the duplicate probe rides, already declared for the stock flow:
   `produtolojaintegrada (contaLojaIntegrada, id)` READY; and the two the trigger rides, declared
   too: `produtos (paiId, integracoesComProduto, __name__)` (the manual stock push's) and
-  `integracao (tipo, nome)`. No new index.
+  `integracao (tipo, nome)`. No new index;
+- since PR 13-f1 the same `functions:loja-integrada` deploy changes the reads queue's reconcile
+  slice and the nightly start: with the price valve unset nothing changes (the stock-only
+  reconcile, byte for byte); with the decided `dry-run`, every nightly also runs the price arm's
+  ERP side (section 17). No new function, queue, schedule, secret, index, rule, TTL or IAM grant.
 
 ## 14. Staging measurements to record
 
@@ -485,7 +509,21 @@ seeded produtos and no token saved:
 - a child edit under a parent that does not propagate ⇒ one parent read and one task; an anchored
   echo under a propagating parent ⇒ one parent read and zero tasks;
 - a staged reprice of seeded propagating families ⇒ at most one family query per family per conta,
-  one parent read per echo, tasks ≈ children, and the event lag with `maxInstances` 10.
+  one parent read per echo, tasks ≈ children, and the event lag with `maxInstances` 10;
+- the nightly with the price arm's ERP side (PR 13-f1, section 17), stock and price at `dry-run`,
+  the read switch off, a conta with a depósito and both tabelas seeded with a propagating family, a
+  non-propagating one, a `''` root, a parent link and a produto with no normal price:
+  - against the previous stock-only night, the key-walk entries and the produto documents read do
+    not move (the same `getAll`, three more fields: record the bytes the wider mask adds); the
+    parent documents read are at most the distinct parents; at most 33 price-state documents read
+    per priced conta per ERP slice, and every slice stays within its 100 s;
+  - the six ERP read-path counters of the run's end line equal the previous stock-only night's;
+  - the largest bucket and the price root in bytes, at a recorded entry count, extrapolated
+    linearly (the documents' 1 MiB limit);
+  - the write units per KiB for a bucket and for the root;
+  - `[loja-integrada/preco] reconcile alvos da conta calculados` once per priced conta,
+    `sincPrecoLojaIntegrada/{conta}.ultimoReconcilePreco` naming the run, and no
+    `arma-preco-falhou` ERROR.
 
 ## 15. Window items
 
@@ -500,9 +538,13 @@ seeded produtos and no token saved:
   write one task only when its parent does not propagate or is not anchored to the conta. Each
   dispatch line shows the run stopping at the read switch while it is off, or, with it on, one
   deciding GET and its diff line with nothing sent — never hand-edit a real price to check it;
+- that same `dry-run` makes every nightly reconcile run carry the price arm's ERP side (section
+  17), and starts the nightly even with the stock valve unset: stopping a running chain takes BOTH
+  valves `off`. The clear forma must read (unset, or exactly `zero` / `igual-cheio`) before any
+  price-carrying nightly, or every run drops its price arm with ONE ERROR `forma-promo-invalida`;
 - a Firestore import fires no trigger: the migrated prices reach a store only through a send run
-  (the nightly price phase and "Atualizar preços", later PRs of step 13), and the trigger covers
-  the ERP price edits after the switch-over;
+  (the nightly's store read and queue phase and "Atualizar preços", later PRs of step 13), and the
+  trigger covers the ERP price edits after the switch-over;
 - at `dry-run` with the read switch on, a whole-catalogue reprice is one deciding GET per linked
   child on the price queue (reads only, one at a time, for hours on a large catalogue): keep it in
   mind before a bulk change of prices in the window;
@@ -533,6 +575,68 @@ seeded produtos and no token saved:
   section 15).
 - More than 50 linked children of one root in one conta: the first 50 are enqueued and ONE WARNING
   is written; a self-parent root (legacy data) with more than 50 may enqueue 50 with no WARNING.
-- ⚠️ Until the nightly's price phase ships (a later PR of step 13), nothing re-covers a missed event
-  — a task dropped after three 429/5xx attempts, a period with the valve off, the cases above —
-  except the produto's next event.
+- ⚠️ Until the nightly's store read and queue phase ship (later PRs of step 13; its ERP side alone,
+  section 17, enqueues nothing), nothing re-covers a missed event — a task dropped after three
+  429/5xx attempts, a period with the valve off, the cases above — except the produto's next event.
+
+## 17. The nightly reconcile's price arm: its ERP side (PR 13-f1)
+
+The price reconcile is FOLDED into the daily stock reconcile: one schedule, one lease and run
+document, one ERP key walk, one batch per slice. The design in depth — the gate, the arms, the price
+state, the walk arm, the parents phase, the end, containment, persistence — is
+[`../estoque/reconcile/README.md`](../estoque/reconcile/README.md), section 14. In short:
+
+- **The both-valve gate.** A slice, the nightly start and the depósito arm return at zero reads
+  only when BOTH `LOJA_INTEGRADA_MODO_ESTOQUE` and `LOJA_INTEGRADA_MODO_PRECO` are `off`. The price
+  arm is active when its valve is not `off` and the clear's forma reads; an unreadable cap keeps
+  only the stock arm out (ONE ERROR per run), an unreadable forma only the price arm (ONE ERROR
+  `forma-promo-invalida`). With the price valve unset, the nightly is the stock-only reconcile, read
+  for read and write for write (`reconcileEstoque.golden.test.ts`).
+- **Which contas.** The run's contas stay the stock list (active, with a depósito); a conta naming
+  a normal tabela at the take is priced, its tabelas folded and fixed for the run in its root
+  `sincPrecoLojaIntegrada/{conta}`. A conta with a normal tabela but no depósito is not priced by
+  the nightly; its events still are.
+- **The walk.** Each page's produtos are read ONCE for both arms (the stock mask widened by `paiId`,
+  `precos` and `propagatePriceToChildren`; a price-only read when stock is not carried — never the
+  ERP custo). A PURE arm per priced conta writes the page's entries into the conta's 32 buckets
+  (the produto's own readings, in centavos), contained per (page, conta): a bug or a value off its
+  schema costs that conta its price arm for the night, never the stock flow.
+- **The parents phase** (`pais-preco`): each distinct parent read ONCE per conta per run, at most
+  300 per masked `getAll`, and every child's target computed by `precoAlvoLi` itself — the same
+  rule the send run applies.
+- **The end**: `ultimoReconcilePreco` (the run's tabelas and counters) per priced conta, and the
+  aviso `lojaIntegradaPrecoSemErp` (children the ERP cannot price: no normal price, an unreadable
+  one, a missing parent) only under the price valve exactly `on` and live for the conta; at
+  `dry-run`, ONE INFO line per conta instead.
+
+Nothing here calls the store or enqueues a send: the by-id store read, the candidates and the
+queue phase come in the next PRs of step 13.
+
+### Costs
+
+Per night with price carried, beside today's stock costs (C run contas, Cp of them priced; P walk
+pages): the walk's produto reads are the SAME documents (three more masked fields, so more bytes,
+never more reads); each ERP slice reads the C price roots and the 32·Cp buckets once and writes at
+most 33·Cp more documents in its one batch (every bucket in the first ERP slice, the dirty ones
+after); the parents phase reads each conta's distinct parents once (≤ 300 a unit) and writes its
+buckets once more with the targets; the end reads the price roots, one uncached contas `getAll` per
+slice, and under `on` at most one aviso read per conta (a write only when it moves). A price-only
+run (stock `off`) pays the walk itself: one key query per page and its price-masked produto reads.
+No store call, no enqueue, no new index, rule, TTL, function, queue or schedule.
+
+A bucket holds about one in 32 of the conta's linked entries, at about 90 bytes each plus about 40
+bytes of carry while the walk runs; the root holds counters and samples. Both are among the staging
+measurements (section 14).
+
+### Environment
+
+No new variable. The price valve now gates the nightly's price arm and, with the stock valve,
+starts the nightly and the depósito arm (section 10); the clear's forma must read before any
+price-carrying nightly; `dry-run` is the decided opening value (section 10). Stopping a running
+chain takes BOTH valves `off` (`functions/DEPLOY.md`).
+
+### The emulator lane
+
+`../estoque/reconcile/reconcilePreco.tasks.test.ts` (section 11) drives a price-only run and a run
+carrying both arms IN PROCESS on the real emulators. It cannot prove the indexes (none is new), the
+schedule, named-task dedup or a store call (none on this side).

@@ -24,9 +24,11 @@ Master plan: `.master_plans/loja-integrada/loja-integrada-marketplace-integratio
   (`lib/lojaIntegrada/preco/`) and its queue `filaPrecoLojaIntegrada` in the functions codebase,
   with the producer root its one `deriva` follow-up enqueues through. PR 13-e: the price
   TRIGGER `functions/src/onPrecoLojaIntegrada.ts` on every ERP produto write, the queue's first
-  producer (its work `preco/gatilhoPreco.ts`, `relevanciaPrecoLi.ts`, `mapaTabelasLi.ts`). The
-  nightly read, the tabela re-point arm and the operator's routes come in later PRs of step 13
-  ("Price sync" below).
+  producer (its work `preco/gatilhoPreco.ts`, `relevanciaPrecoLi.ts`, `mapaTabelasLi.ts`). PR
+  13-f1: the NIGHTLY reconcile's price arm, its ERP side, folded into the stock reconcile
+  (`lib/lojaIntegrada/estoque/reconcile/`: the both-valve gate, the walk's price arm, the parents
+  phase, the price end). The nightly's store read by id and its queue phase, the tabela re-point
+  arm and the operator's routes come in later PRs of step 13 ("Price sync" below).
 - Step 10 (the catalogue reads): four `GET`s in the conta route family (below), the core
   `lib/lojaIntegrada/catalogo/catalogo.ts` and its caches `catalogo/cache.ts`. The web's
   variation linker reads the grades; categories and brands wait for step 11's product tab.
@@ -915,10 +917,27 @@ Read it before touching stock code. What must never break:
   forked). The cap is applied at diff and send time, never stored, never 0. "Reflected" needs all
   four leaves.
 - ⚠️ **No store write before the cutover.** Only the write engine sends. `LOJA_INTEGRADA_MODO_ESTOQUE`
-  unset ⇒ every trigger event, send run, fan-out and reconcile slice returns with zero reads (the
-  nightly start and the depósito arm enqueue nothing; both operator routes answer 503); only the
-  exact `on` plus a canary entry writes, and the read switch stops every send at its write
-  context. `dry-run` is the one value allowed before the window.
+  unset ⇒ every trigger event, send run and fan-out returns with zero reads (both operator routes
+  answer 503) — and so do every reconcile slice, the nightly start and the depósito arm when the
+  price valve is unset too (below); only the exact `on` plus a canary entry writes, and the read
+  switch stops every send at its write context. `dry-run` is the one value allowed before the
+  window.
+- ⚠️ **The reconcile's both-valve gate (step 13, PR 13-f1; `estoque/reconcile/armasReconcile.ts`).**
+  One run carries the stock AND the price arm. A reconcile slice, the nightly start and the
+  depósito arm return at zero reads only when BOTH `LOJA_INTEGRADA_MODO_ESTOQUE` and
+  `LOJA_INTEGRADA_MODO_PRECO` are `off`, so stopping a running chain takes both. An arm is active
+  when its valve is not `off` and its setting reads; the arms a run carries are recorded as run
+  counters at the take (`precoNoRun`, `estoqueForaDoRun`, `precoAbandonado`) and can only be
+  DROPPED mid-run. ⚠️ **An unreadable cap skips only the stock arm** (ONE ERROR per run) when the
+  price arm can run, and an unreadable clear forma only the price arm (ONE ERROR
+  `forma-promo-invalida` per slice); with no price arm able to run, an unreadable cap stops the
+  slice exactly as before (`teto-invalido`).
+- ⚠️ **With the price valve unset the reconcile is the stock-only one, byte for byte**: every read
+  path, `getAll` field mask, query, write, enqueue and log line
+  (`estoque/reconcile/reconcileEstoque.golden.test.ts`, its `.snap` files recorded before the price
+  arm existed and never regenerated). A price-arm fault never moves a stock write, enqueue, aviso
+  or counter (`reconcilePreco.espelho.test.ts`), and never releases the lease. Any change to the
+  reconcile is additive and optional: every shipped stock reconcile suite stays as it is.
 - ⚠️ **One send run = at most ONE PUT, and no Firestore write on success.** Every skip comes before
   the write context (0 credential reads, 0 store calls; costs pinned in `processarEstoque.test.ts`).
   A read-back that sees a drift enqueues ONE `deriva` (generation 1 never enqueues another).
@@ -953,9 +972,11 @@ Read it before touching stock code. What must never break:
 
 ## Price sync (step 13)
 
-What exists today — the send run and its queue (PR 13-d), and the price TRIGGER, the queue's
-first producer (PR 13-e) — with their costs, failures, env, the emulator lane and the deploy items
-is `lib/lojaIntegrada/preco/README.md`. Read it before touching price code. The price function,
+What exists today — the send run and its queue (PR 13-d), the price TRIGGER, the queue's first
+producer (PR 13-e), and the nightly reconcile's price arm on its ERP side (PR 13-f1, folded into
+the stock reconcile: `estoque/reconcile/README.md`, section 14) — with their costs, failures, env,
+the emulator lane and the deploy items is `lib/lojaIntegrada/preco/README.md`. Read it before
+touching price code. The price function,
 the fold and the aviso tipos are `@delfrance/schemas`' (PR 13-a); the wire and the builder the
 package's (PR 13-b); the two write kinds the engine's (PR 13-c). What must never break:
 
@@ -1004,7 +1025,7 @@ package's (PR 13-b); the two write kinds the engine's (PR 13-c). What must never
 - ⚠️ **A child costs at most ONE masked parent read; a root ONE family query per concerned
   conta** (`paiId ==` and `array-contains` the conta, projected, `limit 51`, built from the
   manual stock push's index constant on the declared `produtos (paiId, integracoesComProduto,
-  __name__)`; no new index). The echo rule: a child's price move under a parent that propagates
+__name__)`; no new index). The echo rule: a child's price move under a parent that propagates
   AND whose anchor names the conta enqueues NOTHING (the parent's own event owns the family).
   `baixar` is true only for an ERP price decision (a concerned tabela, or the flag), false for a
   parent move, which wins in a write that moves both. The clock is read inside each enqueue,
@@ -1017,7 +1038,23 @@ package's (PR 13-b); the two write kinds the engine's (PR 13-c). What must never
   run banned on top — names no client and calls no `fetch`.
 - ⚠️ **`LOJA_INTEGRADA_MODO_PRECO=dry-run`, functions only, is the one value allowed before the
   window** — decided by the owner (2026-11-27): the staging measurement path, and carried by the
-  deploy that opens operations (`preco/README.md`, "Environment and valves").
+  deploy that opens operations (`preco/README.md`, "Environment and valves"). Since PR 13-f1 it
+  also makes EVERY nightly reconcile carry the price arm's ERP side, and starts the nightly even
+  with the stock valve unset ("Stock sync", the both-valve gate).
+- ⚠️ **The nightly's price arm, ERP side (PR 13-f1), calls nothing and enqueues nothing.** One
+  walk for both flows: each page's produtos read ONCE (the stock mask widened by the three price
+  fields — never the custo; a price-only read without stock), a PURE arm per priced conta
+  (`estoque/reconcile/armaPrecoErp.ts`) contained per (page, conta) by a narrow catch
+  (`TypeError`, `RangeError`, `ZodError`; a Firestore failure is never contained), the stock
+  state complete before it runs. The run's contas stay the stock list; a conta naming a normal
+  tabela at the take is priced, its tabelas FOLDED and fixed for the run in
+  `sincPrecoLojaIntegrada/{conta}`. Price counters and samples live in that root, never in the
+  run document. Each parent is read ONCE per conta per run (`pais-preco`, ≤ 300 a masked
+  `getAll`, no `snapshot/paisErp` state), every target is `precoAlvoLi` itself, and the price end
+  writes `ultimoReconcilePreco` with the RUN's tabelas and `lojaIntegradaPrecoSemErp` only under
+  `on`. A conta's stock and price ends never split across slices. Every price write is tier 1 in
+  the slice's ONE batch (create when absent, else update under the slice's own read); no
+  transaction, no new index. `estrutura.test.ts` walks its modules with the trigger's rules.
 
 ## Notification pipeline (step 3)
 
@@ -1279,11 +1316,22 @@ firebase.loja-integrada.tasks.json --only firestore,functions,tasks` (ports 8085
   runs (which write nothing), and only for a produto whose anchor names an ACTIVE conta with a
   NORMAL tabela. So a suite that writes produtos seeds them by a CREATE and never updates
   `precos`, `propagatePriceToChildren` or `paiId` on a produto anchored to a conta with a normal
-  tabela; only the two price suites seed such a conta, under ids no other suite uses
-  (`vitest.tasks.config.ts`). The trigger's own suite, `preco/gatilhoPreco.tasks.test.ts`, drives
-  its work IN PROCESS (the map's cache reset per case, each event's before and after handed in):
-  the real conta-map query, the masked parent read, the family query and the enqueues through the
-  real price producer root.
+  tabela; only the price suites (the two above and, since PR 13-f1, the reconcile's below) seed
+  such a conta, under ids no other suite uses (`vitest.tasks.config.ts`). The trigger's own suite,
+  `preco/gatilhoPreco.tasks.test.ts`, drives its work IN PROCESS (the map's cache reset per case,
+  each event's before and after handed in): the real conta-map query, the masked parent read, the
+  family query and the enqueues through the real price producer root.
+- Since step 13 (PR 13-f1) the daily reconcile carries the PRICE arm, and at the lane's `dry-run`
+  price valve every DISPATCHED reconcile run (the stock suite's depósito-arm case) prices each of
+  its contas that names a normal tabela. `estoque/reconcile/reconcilePreco.tasks.test.ts` drives it
+  IN PROCESS (the valves as PARAMETERS, the hand-offs recorded, a Proxy recording each `getAll`'s
+  field mask and the fields the server answered): a price-only run (the walk through the price
+  mask, every bucket and the price root on the server, the parents' one masked read, the targets,
+  `ultimoReconcilePreco`, no stock document) and a run carrying both arms (the union mask). Its
+  conta has a depósito AND a normal tabela, created by a create and deleted at its teardown (so the
+  stock suite's exact `run.contas` holds); it wipes the run document and the price slot
+  `reconcileEstoqueLojaIntegrada/slot-preco` before and after each case and deletes its price
+  documents first (`vitest.tasks.config.ts`, the seventh rule set).
 - The lane cannot prove: Cloud Scheduler firing (`onSchedule` is ignored),
   `scheduleDelaySeconds` and `scheduleTime` (firebase-tools#8254), index declarations, rules,
   that the emulator honours `maxConcurrentDispatches` or the instance limits, named-task dedup

@@ -2,32 +2,43 @@
 
 One chain of time-boxed reads-queue slices covers every Loja Integrada conta: the ERP side
 (`erp`), the store's stock list (`li`), the sends (`fila`), the avisos (`fim`). There is no light
-mode: every run is FULL. This is the reconcile in depth; the whole stock sync, and how this part
-fits it, is [`../README.md`](../README.md). The invariants an agent must not break are in
+mode: every run is FULL. Since step 13 the same run carries the PRICE arm too — one schedule, one
+lease and run document, one ERP key walk — behind its own valve (section 14); with the price valve
+unset, everything below is exactly the stock-only reconcile. This is the reconcile in depth; the
+whole stock sync, and how this part fits it, is [`../README.md`](../README.md), and the whole
+price sync is [`../../preco/README.md`](../../preco/README.md). The invariants an agent must not break are in
 [`apps/loja-integrada/CLAUDE.md`](../../../../CLAUDE.md), "Stock sync (step 12)"; the operator
 notes are in [`functions/DEPLOY.md`](../../../../functions/DEPLOY.md) ("The daily stock reconcile
 … stops at the valve").
 
 ## 0. Files
 
-| File                      | Role                                                                                                             |
-| ------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `agendamentoReconcile.ts` | The nightly start: valve, then ONE named first slice.                                                            |
-| `agendadorReconcile.ts`   | The reads-queue producer, pure: tasks `li-<execucaoId>-<seq>`, the three delays.                                 |
-| `despachoReconcile.ts`    | ONE slice: payload, valve, cap, the decision, the phase machine, the checkpoint, the hand-off, the last attempt. |
-| `execucaoReconcile.ts`    | The run document: the decision, the take, every batch, the lease.                                                |
-| `orcamentoReconcile.ts`   | The slice's time budget: the import's 70 + 30 s, one rule (`cabeNoOrcamentoMsLi`).                               |
-| `caminhadaVinculos.ts`    | One page of the key walk over every link document.                                                               |
-| `faseErp.ts`              | One page of links evaluated for every conta at once.                                                             |
-| `snapshotReconcile.ts`    | A slice's per-conta state, and the snapshot entries' precedence.                                                 |
-| `mapaKitsReconcile.ts`    | The kits map writer (headers, shards, the sweep of another run's).                                               |
-| `faseLi.ts`               | The store phase, one unit at a time: the list walk, the lookups, the confirmations.                              |
-| `candidatosReconcile.ts`  | The run's candidate list and its byte budget.                                                                    |
-| `filaReconcile.ts`        | The queue phase and the safety gate.                                                                             |
-| `fimReconcile.ts`         | The end: avisos and `ultimoReconcile`.                                                                           |
-| `contasReconcile.ts`      | The uncached re-read of the run's contas, and the release's depósito revision.                                   |
-| `gatilhoDepositoLi.ts`    | The depósito-change arm of the conta trigger.                                                                    |
-| `reconcileManualLi.ts`    | The operator's "reconcile now" (PR 12-h), the core of `POST …/conta/[id]/estoque/reconciliar`.                   |
+| File                         | Role                                                                                                                             |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `agendamentoReconcile.ts`    | The nightly start: both valves, then ONE named first slice.                                                                      |
+| `agendadorReconcile.ts`      | The reads-queue producer, pure: tasks `li-<execucaoId>-<seq>`, the three delays.                                                 |
+| `despachoReconcile.ts`       | ONE slice: payload, both valves, cap and forma, the decision, the phase machine, the checkpoint, the hand-off, the last attempt. |
+| `execucaoReconcile.ts`       | The run document: the decision, the take, every batch, the lease.                                                                |
+| `orcamentoReconcile.ts`      | The slice's time budget: the import's 70 + 30 s, one rule (`cabeNoOrcamentoMsLi`).                                               |
+| `caminhadaVinculos.ts`       | One page of the key walk over every link document.                                                                               |
+| `faseErp.ts`                 | One page of links evaluated for every conta at once.                                                                             |
+| `snapshotReconcile.ts`       | A slice's per-conta state, and the snapshot entries' precedence.                                                                 |
+| `mapaKitsReconcile.ts`       | The kits map writer (headers, shards, the sweep of another run's).                                                               |
+| `faseLi.ts`                  | The store phase, one unit at a time: the list walk, the lookups, the confirmations.                                              |
+| `candidatosReconcile.ts`     | The run's candidate list and its byte budget.                                                                                    |
+| `filaReconcile.ts`           | The queue phase and the safety gate.                                                                                             |
+| `fimReconcile.ts`            | The end: avisos and `ultimoReconcile`.                                                                                           |
+| `contasReconcile.ts`         | The uncached re-read of the run's contas, and the release's depósito revision.                                                   |
+| `gatilhoDepositoLi.ts`       | The depósito-change arm of the conta trigger.                                                                                    |
+| `reconcileManualLi.ts`       | The operator's "reconcile now" (PR 12-h), the core of `POST …/conta/[id]/estoque/reconciliar`.                                   |
+| `armasReconcile.ts`          | Step 13: the both-valve gate, which arms a slice can run, and which arms a run carries (section 14).                             |
+| `estadoPrecoReconcile.ts`    | Step 13: a priced conta's price root and 32 buckets for one slice; a bucket of another run replaced at load.                     |
+| `armaPrecoErp.ts`            | Step 13: the PURE price arm of one walk page, per priced conta.                                                                  |
+| `paginaErpReconcile.ts`      | Step 13: one walk page for both arms over ONE produto read (the union mask); the price arm contained.                            |
+| `paisPrecoReconcile.ts`      | Step 13: the parents phase (`pais-preco`): each parent read once, every child's target.                                          |
+| `contasPrecoReconcile.ts`    | Step 13: the uncached conta re-read with the folded tabelas, and whether a conta is still the run's.                             |
+| `fimPrecoReconcile.ts`       | Step 13: the price end: `ultimoReconcilePreco` and the "no ERP price" aviso.                                                     |
+| `orcamentoPrecoReconcile.ts` | Step 13: the price units' time budget, beside the stock one.                                                                     |
 
 In `functions/src/`: `reconciliarEstoque.ts` (`onSchedule('23 4 * * *')`, America/Sao_Paulo,
 `retryCount: 3`, 60 s), `depsReconcileEstoque.ts` (the ONE place a slice's deps are bound: the
@@ -35,7 +46,8 @@ environment passed whole and live, the clock, `inicioMs`, the pacer's sleep, the
 `increment`, both producer roots built only when an enqueue is due, the logger), the
 `estoque-reconcile` arm of `filaLeitura.ts` and the producer root in `agendador.ts`. The run
 document's schema is `packages/schemas/src/reconcileEstoqueLojaIntegrada.ts`; the per-conta
-documents' is `sincEstoqueLojaIntegrada.ts`.
+documents' is `sincEstoqueLojaIntegrada.ts`, and the price arm's per-conta documents'
+`sincPrecoLojaIntegrada.ts`.
 
 ## 1. How a run starts
 
@@ -49,7 +61,8 @@ on the reads queue `filaLeituraLojaIntegrada`, delay 0:
 | The operator route (PR 12-h, App Hosting)        | `estoque-reconcile-manual-<minute ms>`         | the conta (uncached) and the run document's lease, masked to 4 fields |
 | A release that saw a depósito change (section 9) | `estoque-reconcile-redeposito-<µs>`            | the release's one listing                                             |
 
-- **The nightly start** (`agendamentoReconcile.ts`): valve `off` ⇒ nothing; else ONE task
+- **The nightly start** (`agendamentoReconcile.ts`): BOTH valves `off` — the stock valve and,
+  since step 13, the price valve (section 14) — ⇒ nothing; with either one set, ONE task
   `estoque-reconcile-<AAAAMMDD>` seq 0, the date being the SCHEDULE TIME's civil date in São
   Paulo, so a Cloud Scheduler retry of the same night names the same run and the same task (one
   run per night); only a schedule time that does not parse falls back to the clock, with ONE
@@ -129,14 +142,21 @@ own. At most 400 writes a batch. When the precondition is lost:
 
 1. The payload, strict (`tarefaReconcileEstoqueLiSchema`): one that does not parse is DROPPED,
    zero reads.
-2. The valve `LOJA_INTEGRADA_MODO_ESTOQUE`: `off` — unset, blank, a typo (one WARNING) — returns
-   with zero reads. `dry-run` and `on` run alike up to the queue phase.
-3. The cap `LOJA_INTEGRADA_ESTOQUE_MAX`: unreadable ⇒ ONE ERROR and zero reads (the diff applies
-   it, and every send would refuse it).
+2. The valves: the stock valve `LOJA_INTEGRADA_MODO_ESTOQUE` AND, since step 13, the price valve
+   `LOJA_INTEGRADA_MODO_PRECO` both `off` — unset, blank, a typo (one WARNING each) — return with
+   zero reads. `dry-run` and `on` run alike up to the queue phase. With one flow on, the slice goes
+   on with that flow alone (section 14).
+3. The settings, zero reads. With no price arm able to run, exactly the stock-only rule: the cap
+   `LOJA_INTEGRADA_ESTOQUE_MAX` unreadable ⇒ ONE ERROR and zero reads (the diff applies it, and
+   every send would refuse it). With a price arm able to run, an unreadable cap only keeps stock out
+   of the run; an unreadable clear forma `LOJA_INTEGRADA_PRECO_PROMO_LIMPO` keeps price out
+   (section 14).
 4. The run document and the decision (section 2).
 5. The PHASE MACHINE, one unit at a time while its worst case fits the budget
    (`orcamentoReconcile.ts`): `erp` (section 4; then, per conta, the kits map, section 5), `li`
-   (section 6), `fila` (section 8), `fim` (section 9).
+   (section 6), `fila` (section 8), `fim` (section 9). A run carrying the price arm also runs the
+   parents phase `pais-preco` after the stock queue phase, and its end runs each conta's stock end
+   and price end as one pair (section 14).
 6. ONE end-of-slice checkpoint: the run document (`seq + 1`, the lease extended by 1 h, or
    released at `fim`) and every per-conta document the slice changed, in ONE batch; then the NAMED
    continuation `(execucaoId, seq + 1)`, 2 s later — 60 s after a 429 PAUSE of the store phase.
@@ -333,7 +353,7 @@ listing and the release.
 **The depósito-change arm** (`gatilhoDepositoLi.ts`, bound by
 `functions/src/onIntegracaoLojaIntegradaChanged.ts`): an UPDATE of a Loja Integrada conta, not
 inactive after it, whose folded depósito (`depositoDaContaLi`, either stored form) becomes another
-one — none → D included — with the valve not `off` ⇒ ONE named first slice
+one — none → D included — with the two valves not BOTH `off` (section 14) ⇒ ONE named first slice
 (`estoque-reconcile-deposito-<µs of the AFTER side's update time>`, so an Eventarc redelivery names
 the same task), zero reads, no read-switch check (that is how the ERP side runs before the window).
 It never fires on a create (the nightly run bootstraps a new conta, and every emulator suite that
@@ -393,5 +413,189 @@ the run.
 ## 13. Operating it
 
 `functions/DEPLOY.md` ("The daily stock reconcile … stops at the valve") carries the operator
-notes: how to stop a running chain (the stock valve `off`; the lease frees within an hour), a
-crashed chain, `recusa-da-loja`, `falha-nao-retentavel`, the backlog horizon and the page size.
+notes: how to stop a running chain (since step 13, BOTH valves `off`; the lease frees within an
+hour), a crashed chain, `recusa-da-loja`, `falha-nao-retentavel`, the backlog horizon and the page
+size.
+
+## 14. The price arm (step 13)
+
+The price reconcile is FOLDED into this one: one schedule, one lease and run document, one ERP key
+walk, one batch per slice. What is built today is its ERP side — the gate, the arms a run carries,
+the price state, the walk arm, the parents phase and the price end. The store read by id and the
+queue phase come in the next PRs of step 13. Nothing on this side calls the store or enqueues a
+price send, so under the price valve `dry-run` a run makes ERP reads and price-state writes only.
+
+⚠️ **With the price valve unset, the reconcile is the stock-only one, read for read and write for
+write.** `reconcileEstoque.golden.test.ts` replays scenarios against file snapshots recorded
+before the price arm existed: every read path, `getAll` field mask, query, write, enqueue and log
+line (`testing/reconcilePrecoLi.ts` is the harness; Vitest refuses to write a missing snapshot
+under CI, so a regenerated one shows in the diff). The price valve exactly `off` and an
+unrecognised value reproduce the same trace. Every shipped stock suite stays as it was.
+
+### The both-valve gate (`armasReconcile.ts`)
+
+An arm is ACTIVE in a slice when its valve is not `off` and its setting reads: for stock the cap
+`LOJA_INTEGRADA_ESTOQUE_MAX`, for price the clear's forma `LOJA_INTEGRADA_PRECO_PROMO_LIMPO`
+(unset or blank = `nulo`; exactly `zero` or `igual-cheio` otherwise). A setting is read only when
+its valve is not `off`, so an `off` valve never reports a misspelt setting.
+
+- **Both valves `off`** ⇒ a slice, the nightly start and the depósito arm return at ZERO reads
+  (each unrecognised value one WARNING). With either one set they run, and the run carries
+  whichever flow can run. So stopping a running chain takes BOTH valves `off`.
+- **Price not active** ⇒ the stock-only path, exactly: an unreadable cap is ONE ERROR and
+  `teto-invalido`, zero reads. A price valve set over an unreadable forma adds ONE ERROR
+  `forma-promo-invalida`; with the stock valve `off` too the slice returns `forma-invalida`, zero
+  reads.
+- **Price active, stock not** (its valve `off`, or the cap unreadable) ⇒ the run is price-only. An
+  unreadable cap is logged ONCE per run — at the take, or by the slice that drops a carried stock
+  arm — never every slice.
+
+### The arms a run carries
+
+Fixed at the take and recorded in the run document's counters, with no schema change:
+`precoNoRun: 1` (the take carried price), `estoqueForaDoRun: 1` (stock not carried, or dropped
+later), `precoAbandonado: 1` (price dropped later). None of them is ever written with the price
+valve unset. A later slice that finds a carried arm inactive DROPS it — ONE WARNING `arma-parada`
+(for an unreadable cap, the cap's ERROR) — and goes on with the other; an arm is never added
+mid-run. Without stock: no stock state, no kits map, no `li`, no stock `fila`, no stock `fim`, no
+depósito revision at the release.
+
+### Which contas are priced, and the take
+
+The run's conta list stays the stock list: the active Loja Integrada contas with a depósito, in the
+listing's order. Of those, a conta naming a normal tabela at the take is PRICED: the take writes its
+price root `sincPrecoLojaIntegrada/{conta}` with this run's `execucaoPreco` — its tabelas FOLDED
+(`promocional` `null` when absent or equal to the normal one) and fixed for the whole run — in the
+take's own batch, `create`d when absent, else `update`d under the take's read. Lines: ONE INFO per
+conta with no normal tabela (nothing price-side for it), ONE WARNING per conta whose promotional
+tabela is its normal one (`promoIgualNormal`: the promotion will be cleared). A conta with a normal
+tabela but NO depósito is not priced by the nightly (its event sends still price it; the take's
+existing WARNING names it).
+
+The take writes the run's price fields (`fasePreco` and the operator's `precoSolicitado`) only when
+either could be non-null: the run carries price, the task carries a request, or the STORED run
+document holds either key — so a dead price run's values are always erased, and a stock-only take
+writes exactly what it wrote before. A request naming a conta outside the run is ONE WARNING.
+
+### The price state (`estadoPrecoReconcile.ts`)
+
+Per priced conta: the root and its 32 buckets `snapshot/{'00'..'31'}`, bucketed by the stock
+snapshot's own function, loaded lazily and at most once per slice. A conta whose root holds ANOTHER
+run's `execucaoPreco` is not priced by this run (skipped, never a stop: a price problem never stops
+the stock flow). A bucket of another run, off its schema or absent is REPLACED at first load — so
+the first ERP slice writes all 32, and by the end of the walk every bucket carries this run's id —
+and each of its valid entries' previous target `a` and deferral `t` moves into the bucket's
+`anteriores`; the walk takes them back as `ap` / `tp` when it writes that id again, and the parents
+phase's end clears what is left. Buckets are written WHOLE, `anteriores` always included (an
+`update` keeps a field it omits). Two produtos on one store id meet as `dup`, as in the stock
+snapshot.
+
+The price counters and samples live in the conta's ROOT (`execucaoPreco.contadores`, `.amostras`),
+never in the run document: the stock `ultimoReconcile` never picks one up, and the run document
+keeps the stock's byte budget. `snapshot/paisErp` is reserved: nothing reads or writes it.
+
+### The walk arm (`paginaErpReconcile.ts`, `armaPrecoErp.ts`)
+
+Each walk page is read ONCE for both arms. With stock carried, the stock evaluator's produtos
+`getAll` takes the UNION mask — the stock fields plus `paiId`, `precos` and
+`propagatePriceToChildren` — and hands the price arm the masked raw data; without stock, a
+price-only `getAll` (≤ 300, the price fields alone) of the produtos a priced conta links as a
+child. The ERP custo is in neither mask. Then, per priced conta, the PURE arm (no I/O, no clock),
+through the link reader stock and the send run use:
+
+| Link verdict                                  | Entry per store id                       | Counter         |
+| --------------------------------------------- | ---------------------------------------- | --------------- |
+| `pai`                                         | `{ p, f: 'pai' }`                        | `pais`          |
+| `nao-suportado`                               | `{ p, f: 'ns' }`                         | `naoSuportados` |
+| `vinculo-ambiguo`                             | `{ p, f: 'amb' }`                        | `ambiguos`      |
+| `vinculado`, the produto absent               | none (never asked)                       | `ausentes`      |
+| `vinculado`, a parent id no document can have | `{ p, f: 'v', a: { r: 'pai-ausente' } }` | `paiInvalido`   |
+| `vinculado` otherwise                         | `{ p, f: 'v', pai?, n, pr? }`            | `validos`       |
+
+`n` and `pr` are the produto's OWN `precos` at the run's normal and promotional tabelas, in integer
+centavos (`'il'` when unreadable) — read even under propagation, because whether the parent
+propagates is known only once the parents phase reads it. Every entry is parsed by its schema
+INSIDE the arm.
+
+**Containment.** The stock evaluation completes in memory before the price arm runs, the arm only
+returns values, and only an infallible apply touches the price state. So a `TypeError`,
+`RangeError` or `ZodError` in the arm is contained per (page, conta) — the conta's `armaFalhou`
+counted, ONE ERROR `arma-preco-falhou` — and can neither move the stock state nor leave a partial
+page; a Firestore failure is not contained. A conta with `armaFalhou` runs no further price phase
+and raises or resolves no price aviso (its end still writes `ultimoReconcilePreco`). The parents
+phase and the price end follow the same rule per conta; a failure a retry may change is
+checkpointed at the same `seq` and rethrown, and on the queue's last attempt contained the same way
+(`tentativas-esgotadas`). ⚠️ A price failure never releases the lease: the stock end and the
+release always run. `reconcilePreco.espelho.test.ts` (MIRROR) injects faults into the arm and holds
+every stock write, enqueue, aviso and counter equal to the run without them.
+
+### The parents phase (`pais-preco`, `paisPrecoReconcile.ts`)
+
+After the stock queue phase — or right after the walk, without stock — `fase` stays `fila` and
+`fasePreco` is `pais-preco`. Per priced conta, one unit at a time:
+
+1. the valid ROOTS' targets, with no read;
+2. the next ≤ 300 distinct parents of the children still without a target, in ONE `getAll` masked
+   to the three price fields (`paisLidos`, `paisAusentes`);
+3. every child of those parents priced in the same unit: `precoAlvoLi` itself over the child
+   rebuilt from its stored readings and the parent's raw masked data — a propagating parent prices
+   it from the parent's entries, a parent that does not propagate leaves it its own, a missing one
+   holds it `pai-ausente`;
+4. none left ⇒ the conta's counters (`alvos`, `limpezas`, `promoNaoMenor`, `retidos`,
+   `retidosSemPreco`, `retidosIlegiveis`, `retidosSemPai`), the `retido` sample, `anteriores`
+   cleared, `paisConcluido: 1`, and ONE INFO `alvos da conta calculados`.
+
+Incremental, so it keeps no state of its own: a resumed slice re-derives what is pending from the
+buckets, each parent is read once per conta per run, and no parents document can grow toward 1 MiB
+and stall the slice's one batch — which carries the stock writes too.
+
+### The end (`fimPrecoReconcile.ts`)
+
+Entering `fim` clears `fasePreco` in the same patch. Per conta, the stock end unit and then the
+price end unit run as ONE pair against a 40 s budget, so a conta's two ends never split across
+slices. The price end:
+
+- not priced by this run ⇒ nothing; the conta GONE (re-read uncached, `contasPrecoReconcile.ts`) ⇒
+  nothing written;
+- otherwise `ultimoReconcilePreco = { execucaoId, iniciadoEmMs, concluidoEmMs, tabelas, contadores }`
+  — `tabelas` the RUN's, never the conta's current ones — and the store read's cursor cleared, in
+  the slice's batch under the root's own read;
+- the aviso `lojaIntegradaPrecoSemErp` (count `retidos`; params `produtos`, `ilegiveis`, `semPai`,
+  `amostra`), once the conta's parents phase finished: raised or resolved ONLY under the price
+  valve exactly `on` and live for the conta, the conta still the one the run priced (active, its
+  tabelas unchanged since the take) and no contained fault. Clocked by the run's start; 0 resolves
+  only an OPEN row. Not live ⇒ ONE INFO `achado de preço da conta (sem aviso)` per non-zero row,
+  which is what a dry-run review reads.
+
+### Budget and cost
+
+| Unit          | What                                                                                          | Worst case                    |
+| ------------- | --------------------------------------------------------------------------------------------- | ----------------------------- |
+| `paisPreco`   | one parents unit: ONE masked `getAll` of at most 300 parents, the targets computed in memory  | 20 s, nominal                 |
+| `fimPreco`    | one conta's price end: its aviso (one read, a write when it moves) and `ultimoReconcilePreco` | 20 s, nominal                 |
+| `fimComPreco` | one conta's WHOLE end with price carried: the stock end unit and the price end unit           | the stock `fim` + 20 s = 40 s |
+
+With price carried (C run contas, Cp priced): an ERP slice reads the C price roots and the 32·Cp
+buckets once, no extra produto document (the same `getAll`, three more masked fields), and writes
+at most 33·Cp more documents in its batch; a price-only run pays the walk's key queries and the
+price-masked produto reads itself. A parents unit reads at most 300 parent documents; the end reads
+the price roots and makes one uncached contas `getAll` per slice. No new index (point reads,
+`getAll`s by id and the shared key walk), no rules change, and the run document keeps the stock's
+600 000-byte candidate budget. The costs and the staging measurements are in
+[`../../preco/README.md`](../../preco/README.md).
+
+### Persistence (root `CLAUDE.md` rule 7)
+
+Every price write is tier 1 and rides the slice's ONE batch under the run document's
+`lastUpdateTime`: a price root or bucket `create`d when absent, else `update`d under the slice's
+own read of it. The run document's price fields and counters ride the same patch. No transaction.
+
+### The emulator lane
+
+`reconcilePreco.tasks.test.ts` drives the chain IN PROCESS (the valves as parameters, the
+hand-offs recorded) on the real emulators: a price-only run — the key walk over the real collection
+group, the produtos through the price mask with the server answering those fields only, a price
+root of another run updated at the take, all 32 buckets of this run with the carry taken back, the
+parents' ONE masked read, every target, `ultimoReconcilePreco`, no stock document, the lease
+released — and a run carrying both arms, whose walk reads each produto once through the union mask.
+Its isolation rules are in `vitest.tasks.config.ts`.
