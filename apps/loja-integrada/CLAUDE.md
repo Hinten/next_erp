@@ -1016,8 +1016,8 @@ package's (PR 13-b); the two write kinds the engine's (PR 13-c). What must never
   root a leaf) reaches no context loader, park, pacer, write engine or send run — the price send
   run banned on top — names no client and calls no `fetch`.
 - ⚠️ **`LOJA_INTEGRADA_MODO_PRECO=dry-run`, functions only, is the one value allowed before the
-  window** — the recommended default, for the owner to confirm: the staging measurement path, and
-  carried by the deploy that opens operations (`preco/README.md`, "Environment and valves").
+  window** — decided by the owner (2026-11-27): the staging measurement path, and carried by the
+  deploy that opens operations (`preco/README.md`, "Environment and valves").
 
 ## Notification pipeline (step 3)
 

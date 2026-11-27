@@ -704,9 +704,9 @@ the wipe. Create `apps/loja-integrada/functions/.env.deploy` (gitignored):
 # surfaces (the daily reconcile's staging measurement path, above), and
 # LOJA_INTEGRADA_MODO_PRECO=dry-run, functions only (the App Hosting backend
 # reads no price variable yet): the price trigger's staging measurement path,
-# set first in `.env.deploy.<staging-project-id>` only, and — the recommended
-# default, for the owner to confirm (the alternative: unset until the valve's
-# ramp in the window) — carried by the deploy that opens operations, so the
+# set first in `.env.deploy.<staging-project-id>` only, and — decided by the
+# owner (2026-11-27), rather than leaving it unset until the valve's ramp in
+# the window — carried by the deploy that opens operations, so the
 # first-deploy check below sees a real price edit enqueue. With the read switch
 # off and no token saved neither calls anything nor writes to a store; `on`, any
 # canary entry, the clear forma and the read switch stay window decisions.
@@ -1380,7 +1380,7 @@ of this section passes.
     Firestore service-agent grants serving the other five serve it too. A
     trigger bound to `(default)` deploys fine and never fires, and then no ERP
     price edit reaches the price queue. With the price valve at `dry-run` (the
-    recommended default for this deploy, the owner to confirm; "Runtime env"),
+    owner's decision for this deploy, 2026-11-27; "Runtime env"),
     watch the next real price edit of a linked produto (never hand-edit a real
     price), and expect what its family shape gives — not always a task:
     - a ROOT whose children are anchored to the conta (propagating, the

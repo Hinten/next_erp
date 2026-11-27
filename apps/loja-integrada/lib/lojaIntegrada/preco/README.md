@@ -379,7 +379,7 @@ block.
 The App Hosting backend reads none of the price variables yet; the operator's routes (a later PR)
 will, and both surfaces are then set alike.
 
-**Before the window — the recommended default, for the owner to confirm.**
+**Before the window — decided by the owner (2026-11-27).**
 `LOJA_INTEGRADA_MODO_PRECO=dry-run`, functions only, is the ONE price value allowed before the
 window: set first in `.env.deploy.<staging-project-id>` for the staging measurements (section 14),
 and carried by the deploy that opens operations, so the first-deploy check (`functions/DEPLOY.md`,
@@ -387,8 +387,8 @@ and carried by the deploy that opens operations, so the first-deploy check (`fun
 is flipped. That mirrors the stock valve. With the read switch off and no token saved it calls
 nothing and writes nothing to a store: each relevant event enqueues tasks that stop at their write
 context. With the read switch on, each such task makes one deciding GET (reads only) and sends
-nothing. The alternative is to leave the price valve unset until its ramp in the window. `on`, any
-canary entry, the clear forma and the read switch stay window decisions either way.
+nothing. The alternative, leaving the price valve unset until its ramp in the window, was not
+taken. `on`, any canary entry, the clear forma and the read switch stay window decisions.
 
 ## 11. The emulator lane
 
@@ -492,9 +492,8 @@ seeded produtos and no token saved:
 - the consumer (this functions codebase) deploys before any price producer ships;
 - the migrated links' anchor census runs before the valve reaches `on`: the trigger pre-filters on
   `integracoesComProduto` (section 7);
-- whether the deploy that opens operations carries `LOJA_INTEGRADA_MODO_PRECO=dry-run` (functions
-  only) is the owner's decision (section 10 recommends it); if it does, the next real price edit of
-  a linked produto enqueues what its family shape gives (`functions/DEPLOY.md`, item 11): a
+- the deploy that opens operations carries `LOJA_INTEGRADA_MODO_PRECO=dry-run` (functions only,
+  the owner's decision, section 10), so the next real price edit of a linked produto enqueues what its family shape gives (`functions/DEPLOY.md`, item 11): a
   propagating root one task per child anchored to the conta, a simple produto its own task, a
   non-propagating root with anchored children none, the ERP's echo onto the children of an
   anchored propagating parent none (one parent read and one INFO line each), and a child's own
