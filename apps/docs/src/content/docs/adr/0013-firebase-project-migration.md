@@ -56,7 +56,10 @@ Do this weeks early. Nothing here is reversible in a hurry, and one item
    and alert thresholds on day one. Cost visibility is the point of the exercise;
    wiring it after the first invoice is wiring it too late.
 2. **Create the database**:
-   `gcloud firestore databases create --database=default --edition=enterprise --location=<region>`.
+   `gcloud firestore databases create --database=default --edition=enterprise --location=<region> --enable-firestore-data-access --enable-realtime-updates --no-enable-mongodb-compatible-data-access`.
+   ⚠️ *Corrected 2026-11-26* — the three data-access flags were missing, and
+   without them the database is unusable from the Firebase SDKs. See the
+   Amendment, correction 7.
    The id is literally `default`, not `(default)` — see the root `CLAUDE.md`
    Critical rule 1, and everything that passes it explicitly to `getFirestore()`.
    ⚠️ **`<region>` is a placeholder, not shorthand for a value already agreed.
@@ -401,4 +404,279 @@ describing an arrangement that no longer exists.
 
 ## Status
 
-Accepted.
+Accepted. Amended 2026-11-26 — see below.
+
+## Amendment (2026-11-26): seed + one-way mirror, tested first
+
+The original text above stands as the record of what was decided in August. This
+section changes the **Phase 1/2 mechanics**, adds a **full test migration**
+before the real one, and corrects seven facts. Everything it does not mention —
+the custom domains, the drain valve, Auth, the URL rewrite, the Phase 3 order,
+the rollback — is unchanged. The region is still open in #1115 (direction
+`us-central1`).
+
+### The decision change
+
+The alternative **"Dual-write or live replication during the window"** is
+reopened, for a **one-way mirror only: legacy → new**. Dual-write stays rejected.
+
+- **Flutter stays the sole writer** of the real data. The mirror copies what
+  Flutter already wrote. It derives nothing, decides nothing and never writes
+  back to legacy. So root `CLAUDE.md` rule 8 still holds: there is no dual run,
+  and the cutover is still one switch that turns Flutter off.
+- **Why:** it takes the export/import out of the freeze. The original freeze was
+  bounded by the export → import wall clock. Now the **seed runs days early**, a
+  Cloud Functions trigger deployed **into the legacy project**
+  (`apps/legacy-mirror`, built in a separate PR) keeps the destination current,
+  and the freeze shrinks to **drain the mirror + the final Storage delta + the
+  app deploys**.
+- **It runs twice.** First a **test migration** into a throwaway project, with
+  the **full stack** deployed against the mirrored data. It is deleted afterwards.
+  Then the **real migration** into the final project, with the same mechanics
+  plus what the test taught. The test replaces Phase 0 step 9's dress rehearsal
+  and goes further: it exercises Phases 0–4 end to end, not only the data copy.
+
+The original objection — "no first-party Firestore-to-Firestore CDC" — is still
+true. A Firestore trigger is not CDC either: delivery is at-least-once and
+unordered. The mechanics below are what make that safe.
+
+### Mirror mechanics
+
+- **Triggers.** `onDocumentWritten` on every path at depths 1–3
+  (`{c}/{d}`, `{c}/{d}/{s}/{e}`, `{c}/{d}/{s}/{e}/{t}/{f}`) on the legacy
+  database `(default)`. **One destination at a time**: the mirror's target
+  project is configuration, and moving from the test run to the real run is a
+  redeploy that changes it.
+- **The handler never trusts the event payload.** It re-reads the source
+  document and applies **what is there now**: a `set` of the current data, or a
+  `delete` when the document is absent. A late or duplicate event then carries
+  no stale state; it re-applies the latest one.
+- **Per-path watermark, ADR 0011 tier 2.** Inside a transaction on the
+  destination, the handler reads `_mirrorWatermarks/<encoded path>` and compares
+  the stored clock with the incoming one. The clock is the source document's
+  **`updateTime`**, or the re-read's **`readTime`** when the document is absent.
+  It **applies if incoming `>=` stored**, and the write that wins always advances
+  the watermark. `>=` and not `>` because a retry of the same event must still be
+  able to apply: the re-read makes the retry idempotent.
+- **A path deny-list.** Paths the destination must not receive are skipped (see
+  *The test migration* below). Empty for the real run unless the test says
+  otherwise.
+- **The replay script.** The import writes the T0 version of every document over
+  whatever is there, including documents the mirror had already brought past T0.
+  So a `tools/migrations` script runs **after the import** and re-applies every
+  path whose watermark is newer than T0: re-read the source, apply it under the
+  same watermark rule. It follows the package contract (`--project` required,
+  dry run by default, JSONL log, a pure `transform.ts` with tests) and is
+  idempotent by construction. It is built in its own PR.
+- `_mirrorWatermarks` is mirror bookkeeping, not business data. It needs no
+  schema. The generated rules do not list it, so clients are denied by default,
+  and the mirror writes with Admin credentials. It is deleted after the switch.
+
+### Order (both runs)
+
+The mirror must already be running when T0 is taken.
+
+1. Create the destination project and database, with the data-access flags of
+   correction 7:
+
+   ```bash
+   gcloud firestore databases create --project=<destination> \
+     --database=default --edition=enterprise --location=<region> \
+     --enable-firestore-data-access --enable-realtime-updates \
+     --no-enable-mongodb-compatible-data-access
+   gcloud firestore databases describe --project=<destination> --database=default
+   ```
+
+   The `describe` output must show Firestore data access **enabled**, realtime
+   updates **enabled** and MongoDB-compatible data access **disabled**. Check it
+   before anything else lands, because a wrong mode means deleting the database.
+   Then **indexes and rules** — the move-data page says to create indexes before
+   importing "to avoid having to process each document multiple times".
+2. **Deploy the mirror into legacy**, targeting the destination. It starts
+   writing at once.
+3. **Take T0 after the deploy** and export with `--snapshot-time=T0`. Every write
+   after T0 is then caught by the mirror, so nothing falls between the export and
+   the mirror.
+4. Copy the export to a bucket in the destination's location (correction 3
+   below), import it, then run the replay script.
+5. Storage seed and the event-driven job (*Storage* below).
+6. The freeze (real run) or its simulation (test run): Flutter read-only → the
+   mirror drains (the newest watermark stops moving and the trigger backlog is
+   empty) → final Storage batch → Phase 3.
+
+### The test migration
+
+A throwaway Enterprise project receives the seed and the mirror exactly as the
+real one will. Then **all eight functions codebases and all eleven App Hosting
+backends are deployed against it**. Its purpose is to make every step of this
+ADR fail once where failing is free, and to turn each freeze step into a measured
+number: mirror drain time, final Storage batch, functions deploy, App Hosting
+rebuilds. It can also sit in the candidate region, so latency for #1115 is
+measured instead of estimated.
+
+Running the full stack on a live copy of production data has hazards the real
+run does not have, because there nothing runs before the switch. Each needs a
+decision **before** the first deploy into the test project:
+
+1. ⚠️ **The data carries live provider credentials.** Legacy stores OAuth refresh
+   tokens in Firestore — see the Flutter token pages under
+   `.old/lib/canaisDeVenda/*/pages/` and `.old/lib/pagamento_integracoes/`, and
+   the shapes `packages/schemas/src/{integracao,intFrete,credenciaisMetodoPgto}.ts`
+   model. A function in the test project that refreshes one **spends the refresh
+   token the legacy app is using**: Shopee's refresh token is single-use, so one
+   refresh there breaks the production integration. A function that calls a
+   provider with them acts on the **real** seller account — stock, prices,
+   messages to real customers. So every credential path goes on the mirror's
+   deny-list for this run, the seed's copies are deleted right after the import
+   and **before any functions deploy**, and the test project gets sandbox or
+   homologação credentials of its own. Inventory those collections against the
+   legacy data first; the schema files are a starting point, not the list.
+2. **No production secrets, no production endpoints.** Secret Manager in the
+   test project holds test values only. NF-e stays in homologação. No provider
+   webhook or custom domain points at it.
+3. **Triggers fire on every mirrored write.** That is part of what the test
+   observes: how each trigger behaves on legacy-shaped data. Expect
+   trigger-derived fields (the pedido audit trails, for example) to differ from
+   legacy, so verification compares source-owned fields only. With hazard 1
+   handled, a trigger with a side effect fails closed instead of reaching a
+   provider.
+4. **Orphan sweeps.** The `storage` codebase's sweeps can delete transferred
+   objects whose `arquivos` documents have not arrived yet. Nothing real is lost
+   in a throwaway, but the result is falsified. Deploy that codebase, or resume
+   its Cloud Scheduler jobs, only after the Storage seed and the replay have both
+   converged.
+5. **Test writes are not durable.** The watermark compares source clocks only,
+   so a document edited in the test project is overwritten by the next change
+   Flutter makes to it. Test edits on documents Flutter is not touching, and
+   never treat the test database as data.
+6. **It is a full copy of production personal data.** Restrict IAM as tightly as
+   production, and keep the copy no longer than the test needs.
+
+**Teardown, in order:** retarget or remove the mirror in legacy, delete the STS
+jobs and the legacy bucket's Pub/Sub notification, then delete the test project.
+Nothing in legacy changes except the mirror deploy itself.
+
+### The real migration
+
+The same order into the final project, with one rule the test run breaks on
+purpose:
+
+⚠️ **No functions and no App Hosting in the final project until the switch.**
+Every mirrored write is a real write there, so any deployed trigger would fire on
+it: `onPedidoChanged` would re-derive history the export already carries, and
+every side effect would run once per mirrored change. The orphan sweeps could
+delete transferred objects before their `arquivos` documents arrive. So the
+Phase 0 items that need a deploy wait for Phase 3. Secrets, IAM and the custom
+domains can still go early, but not the deploy that creates the Cloud Tasks
+queues. Until the switch the final database is a **read-only replica** that no
+app reads or writes.
+
+### Storage
+
+1. **STS batch seed**, legacy bucket → destination bucket, days early. Preserve
+   custom metadata, as before.
+2. **STS event-driven job** until the switch, fed by a Pub/Sub notification on
+   the legacy bucket.
+3. ⚠️ Event-driven transfers **do not propagate deletes** — Google's page says
+   object deletions "are not detected". So the **final batch** inside the freeze
+   runs with `--delete-from=destination-if-unique`, which removes what legacy
+   deleted in the meantime.
+
+STS GCS → GCS has **no service fee**. You pay only for the Storage operations and
+the inter-region transfer.
+
+### Corrections to the original text
+
+1. **The legacy database id is `(default)`, not `default`.**
+   `.old/triggers_eventarc/*.yaml` names `databases/(default)`. The Phase 1
+   export command's `--database=default` is wrong for legacy: use
+   `--database='(default)'` (or omit the flag). `default` is right only for the
+   **new** databases.
+2. **The tie-break's "+15% on writes" is out of date.** The Enterprise price table
+   read on 2026-11-25 shows `us-east4` read and write units at the **same** price
+   as `us-central1`: `$0.05` / M reads, `$0.26` / M writes. Only storage
+   (~`$0.264` vs `$0.240` / GiB-month), PITR and backups are ~10% higher in
+   `us-east4`. The region choice now weighs latency against ~10% on storage
+   lines, not against the operations bill. The other `us-central1` arguments (the
+   #1108 task-queue fallback, earlier features) are unchanged.
+3. **A cross-region move needs a bucket copy.** Google's move-data page: if the
+   source bucket's location differs from the destination's Firestore location,
+   "you must move your data files to a Cloud Storage bucket in the same location
+   as your destination project". Legacy (`us-east1`) to `us-central1` is
+   cross-region, so the export is copied bucket-to-bucket (STS or
+   `gcloud storage cp`) before the import. The original Phase 1 step 4 grant
+   still applies, but to the bucket the import reads.
+4. **TTL, backups and PITR go on the destination after the copy.** Google
+   suggests configuring them after the data lands, for import speed. This moves
+   them out of Phase 0 step 3. **Indexes and rules still go first.**
+   ⚠️ TTL rides the indexes deploy (`fieldOverrides`), so either deploy the TTL
+   overrides as a second pass, or accept that the policy is active during the
+   import. That is harmless only because legacy documents carry no `expiraEm`
+   stamps.
+5. **`--snapshot-time` does not shorten the freeze.** It makes the export
+   consistent against stray writers during the export. That is all it does. The
+   original text said it "lets the freeze end before the export does", and that
+   was wrong. Writes after T0 are not in the export, so a freeze ending at T0
+   loses them. It was always the import that bounded the freeze. Under this
+   amendment the mirror, not the snapshot, is what carries post-T0 writes.
+6. **The legacy region is `us-east1`** (Lucas, 2026-11-26). This answers the
+   *Run this first* question: legacy has no App Hosting region, so its
+   inter-region transfer charge is structural, as the original text predicted.
+7. **Phase 0 step 2's create command made an unusable database.** Measured on
+   2026-11-26 on the test project: the original command (`--database=default
+   --edition=enterprise --location=us-central1`, nothing else) created the
+   Enterprise database in **MongoDB-compatible mode**. The Admin SDK then failed
+   on its first read with `9 FAILED_PRECONDITION ... 'firestore_data_access_mode'
+   is set to 'DATA_ACCESS_MODE_DISABLED'` (reason
+   `FIRESTORE_DATA_ACCESS_DISABLED`). `gcloud firestore databases create --help`
+   confirms the Enterprise defaults: MongoDB-compatible data access **on**,
+   Firestore API data access **off**, realtime updates **off**. The command needs
+   all three flags: `--enable-firestore-data-access`,
+   `--enable-realtime-updates` (the web app runs on `onSnapshot` listeners) and
+   `--no-enable-mongodb-compatible-data-access`. Phase 0 step 2 now carries
+   them, and *Order* step 1 adds the `describe` check.
+   ⚠️ **Data access modes cannot be changed after creation.** On the final
+   project, a wrong mode costs a delete and recreate of the database, plus
+   redeploying all 224 composite indexes in `firestore.indexes.json`. The test
+   project already paid that once.
+
+### Cost note
+
+Example, per run: 10 GiB / 5M documents in Firestore, 20k writes/day, a 2-week
+mirror, 50 GiB in Storage, legacy `us-east1` → destination `us-central1`.
+
+| Line | Rough cost |
+|---|---|
+| Seed export (one Standard read per document) | ~$1.50 |
+| Seed import (~2 write units per ~2 KiB document at `$0.26` / M) | ~$3 |
+| Export bucket copy across regions + its short-lived storage | < $0.50 |
+| Mirror, 2 weeks: ~280k events × (one Standard re-read + a watermark transaction: ~1 read unit and ~3 write units on Enterprise); invocations inside the free tier | < $1 |
+| Replay script (only paths newer than T0) | cents |
+| Storage: STS service fee | $0 |
+| Storage: 50 GiB inter-region transfer + destination operations | ~$1.50 |
+| Destination database and bucket at rest, legacy PITR retention | ~$4–5 |
+| **Total per run** | **≈ $15**, rounded up |
+
+So both runs together cost about $30 in data movement. The test run adds the
+full stack's running cost for as long as it lives: Cloud Functions, App Hosting,
+Cloud Scheduler and the data scanned by triggers firing on mirrored writes. Keep
+minimum instances at zero and the test short. That line depends on how long the
+test runs, so it is not estimated here. ⚠️ As with the tie-break, **confirm the
+rates in the pricing calculator** before each run. Sources: the Firestore
+pricing page for both editions (<https://cloud.google.com/firestore/pricing>),
+Cloud Storage pricing (<https://cloud.google.com/storage/pricing>) and Storage
+Transfer Service pricing (<https://cloud.google.com/storage-transfer/pricing>).
+
+### What changes in the consequences
+
+- The freeze no longer scales with the database size. It scales with the mirror's
+  drain time, the Storage delta and the deploys, and the test run measures all
+  three before the real window is scheduled.
+- New risk: the mirror runs in the legacy project, which this repo never deployed
+  to before. It is a deploy into the live source project, twice, and agents never
+  run it. Its blast radius is bounded: it only reads legacy and only writes the
+  destination.
+- New risk, test run only: a full stack on a copy of live data. The six hazards
+  above are the price of a rehearsal that covers more than the data copy.
+- Rollback is unchanged. Until the first operator write in the final project, the
+  final database is disposable: if the mirror misbehaves, stop it and re-seed.
