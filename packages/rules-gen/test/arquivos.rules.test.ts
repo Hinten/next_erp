@@ -5,7 +5,14 @@ import {
   assertSucceeds,
   type RulesTestEnvironment,
 } from '@firebase/rules-unit-testing';
-import { deleteField, doc, setDoc, updateDoc, type Firestore } from 'firebase/firestore';
+import {
+  deleteField,
+  doc,
+  setDoc,
+  updateDoc,
+  writeBatch,
+  type Firestore,
+} from 'firebase/firestore';
 import { PERM, rulesClaimsFromBits } from '@delfrance/auth';
 import {
   chatArquivoId,
@@ -228,6 +235,27 @@ describe.skipIf(!EMULATED)('arquivos: storage path bound to the doc id', () => {
       await seed(H3, anchor(mediaPath(H3, 'png')));
       await assertFails(create(H3, anchor(chatMediaPath(H3, 'png')))); // H3 exists: an update, path frozen
       await assertSucceeds(create(chatArquivoId(H3), anchor(chatMediaPath(H3, 'png'))));
+    });
+
+    it('one batch cannot create BOTH chat anchors for the same object', async () => {
+      // exists()/get() would see the pre-write state and pass both writes; the
+      // guard reads the sibling with existsAfter()/getAfter() (Codex, #2238).
+      await assertFails(
+        (() => {
+          const fs = db();
+          const batch = writeBatch(fs);
+          batch.set(doc(fs, `arquivos/${H}`), anchor(chatMediaPath(H, 'png')));
+          batch.set(doc(fs, `arquivos/${chatArquivoId(H)}`), anchor(chatMediaPath(H, 'png')));
+          return batch.commit();
+        })(),
+      );
+      // Near-miss: a batch with one chat anchor plus an unrelated media/ upload
+      // of the same bytes is fine.
+      const fs = db();
+      const ok = writeBatch(fs);
+      ok.set(doc(fs, `arquivos/${H}`), anchor(mediaPath(H, 'png')));
+      ok.set(doc(fs, `arquivos/${chatArquivoId(H)}`), anchor(chatMediaPath(H, 'png')));
+      await assertSucceeds(ok.commit());
     });
 
     it('still needs the arquivo write bit', async () => {

@@ -70,6 +70,9 @@ const arquivoDoc = (idExpr: string): string =>
  * which both `<hash>` and `chat_<hash>` may name. `arquivoChatFree` closes that:
  * a chat doc can only be created while its sibling id does not ALSO name `chat`,
  * so one doc can never be created to delete the object the other owns. ⚠️ It
+ * reads the sibling AFTER the write (`existsAfter`/`getAfter`): with plain
+ * `exists`/`get`, one batch creating `<hash>` and `chat_<hash>` together passes
+ * both checks against the pre-write state (Codex review on #2238). And it
  * has to read the sibling's `filepath`, not just test that it exists: a bare
  * `<hash>` under `media/` (a generic upload of the same bytes) owns a DIFFERENT
  * object, and `uploadChatFile` falls through to `chat_<hash>` precisely then.
@@ -99,10 +102,11 @@ export const ARQUIVO_PATH_GUARD: WriteGuard = {
     `        || (parts[0] == ${q(STORAGE_ROOT.tabMedi)} && parts[2] == ${q(PRODUTO_SUBDIR.originals)})));`,
     '}',
     '',
-    '// True unless the sibling id already names the shared chat/ object.',
+    '// True unless the sibling id names the shared chat/ object once this write',
+    '// lands — post-write state, so one batch cannot create both chat anchors.',
     'function arquivoChatFree(siblingId) {',
-    `  return !exists(${arquivoDoc('siblingId')})`,
-    `    || get(${arquivoDoc('siblingId')}).data.get('filepath', null) != ${q(STORAGE_ROOT.chat)};`,
+    `  return !existsAfter(${arquivoDoc('siblingId')})`,
+    `    || getAfter(${arquivoDoc('siblingId')}).data.get('filepath', null) != ${q(STORAGE_ROOT.chat)};`,
     '}',
   ],
   create: 'arquivoPathOk(docId, request.resource.data)',

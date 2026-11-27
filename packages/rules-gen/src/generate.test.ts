@@ -180,6 +180,11 @@ describe.each([
     // The chat sibling check reads the sibling's PATH — an existence test alone
     // would refuse chat_<hash> beside a same-bytes generic upload under media/.
     expect(out).toContain(".data.get('filepath', null) != 'chat';");
+    // …and reads it AFTER the write: a pre-write `exists`/`get` lets one batch
+    // create both chat anchors (Codex review on #2238).
+    expect(out).toContain('!existsAfter(/databases/$(database)/documents/arquivos/$(siblingId))');
+    expect(out).toContain('getAfter(/databases/$(database)/documents/arquivos/$(siblingId))');
+    expect(out).not.toMatch(/[^A-Za-z](exists|get)\(\/databases/);
     expect(out).toContain(
       "parts[0] == 'produtos' && parts[2] in ['originals', 'videos', 'anexos']",
     );

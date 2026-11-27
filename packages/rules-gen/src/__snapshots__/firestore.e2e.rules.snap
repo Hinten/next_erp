@@ -184,10 +184,11 @@ service cloud.firestore {
             || (parts[0] == 'tabMedi' && parts[2] == 'originals')));
     }
 
-    // True unless the sibling id already names the shared chat/ object.
+    // True unless the sibling id names the shared chat/ object once this write
+    // lands — post-write state, so one batch cannot create both chat anchors.
     function arquivoChatFree(siblingId) {
-      return !exists(/databases/$(database)/documents/arquivos/$(siblingId))
-        || get(/databases/$(database)/documents/arquivos/$(siblingId)).data.get('filepath', null) != 'chat';
+      return !existsAfter(/databases/$(database)/documents/arquivos/$(siblingId))
+        || getAfter(/databases/$(database)/documents/arquivos/$(siblingId)).data.get('filepath', null) != 'chat';
     }
 
     match /arquivos/{docId} {
