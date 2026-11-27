@@ -360,8 +360,19 @@ async function decidirRaiz(
   return { leiturasDoPai: 0, consultas: alvos.length, familiasAcimaDoLimite, tarefas };
 }
 
-/** The tasks deduplicated by `(conta, produto, baixar)` and sorted by conta, then produto. */
-function tarefasOrdenadas(tarefas: readonly TarefaPrecoSemJanelaLi[]): TarefaPrecoSemJanelaLi[] {
+/**
+ * The tasks deduplicated by `(conta, produto, baixar)` and sorted by conta, then produto, then
+ * `baixar` (`false` first). Both paths already hand it duplicate-free tasks in that order (the
+ * concerned contas come sorted, a family query answers in document-id order, and a root's own
+ * task appears only for a conta with no child), so through an event it changes nothing; it is
+ * the guard that keeps the enqueue order and the dedup independent of how a path builds its list,
+ * and its scope is pinned directly: the same triple is ONE task, while the same `(conta, produto)`
+ * with the two `baixar` values stays TWO (they are two task names, and a task that may not lower
+ * never swallows one that may).
+ */
+export function tarefasOrdenadasPrecoLi(
+  tarefas: readonly TarefaPrecoSemJanelaLi[],
+): TarefaPrecoSemJanelaLi[] {
   const porChave = new Map<string, TarefaPrecoSemJanelaLi>();
   for (const t of tarefas) porChave.set(JSON.stringify([t.contaId, t.produtoId, t.baixar]), t);
   const comparar = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
@@ -431,7 +442,7 @@ export async function tratarEventoPrecoLi(
   };
 
   // ---- The enqueues, after every read. ----
-  const envios = tarefasOrdenadas(decisao.tarefas);
+  const envios = tarefasOrdenadasPrecoLi(decisao.tarefas);
   if (envios.length > 0) {
     const agendador = deps.agendador();
     for (let i = 0; i < envios.length; i += CONCORRENCIA_ENFILEIRAMENTO_GATILHO_PRECO_LI) {

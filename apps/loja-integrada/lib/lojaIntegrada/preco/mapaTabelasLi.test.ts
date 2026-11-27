@@ -280,6 +280,20 @@ describe('lerMapaTabelasLi — one enumeration per TTL per instance', () => {
     expect(db.consultas).toHaveLength(2);
   });
 
+  it('the shared cache’s stats sampler is OFF: 600 warm reads write no console line (it would log at the wrong severity, on every ERP produto write past it)', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'a');
+    const aviso = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      // The shared sampler's default fires on every 500th get of a cache instance.
+      for (let i = 0; i < 600; i += 1) await lerMapaTabelasLi(asDb(db));
+      expect(aviso).not.toHaveBeenCalled();
+    } finally {
+      aviso.mockRestore();
+    }
+    expect(db.consultas).toHaveLength(1);
+  });
+
   it('it is its OWN cache: the stock trigger’s depósito map and this one never share an entry', async () => {
     const { lerMapaDepositosLi } = await import('../estoque/depositosLi');
     const db = new FakeDb();

@@ -32,6 +32,7 @@ import {
   type FilaPrecoLi,
   LiTarefasTransitoriasError,
   type OpcoesEnfileiramentoPrecoLi,
+  type TarefaPrecoSemJanelaLi,
   criarAgendadorPrecoLi,
   idDaTarefaPrecoLi,
   janelaPrecoLi,
@@ -44,6 +45,7 @@ import {
   type EventoPrecoLi,
   MAX_FILHOS_GATILHO_PRECO_LI,
   __reiniciarGatilhoPrecoParaTestes,
+  tarefasOrdenadasPrecoLi,
   tratarEventoPrecoLi,
 } from './gatilhoPreco';
 import { __setRelogioDoMapaTabelasParaTestes } from './mapaTabelasLi';
@@ -412,14 +414,32 @@ describe('the valve', () => {
   );
 
   it.each([['dry-run'], ['on']])(
-    '⚠️ NEAR-MISS: %s goes on to the conta map alike (the trigger reads no canary and no read switch)',
+    '⚠️ NEAR-MISS: %s goes on to the conta map alike (the trigger reads no canary and no read switch), and writes NO run-start line: two events, two INFO lines through the injected logger, nothing on stdout',
     async (valor) => {
       const h = montar({ ambiente: { [VALVULA_ENV_LI.preco]: valor } });
       seedPai(h.db, { propagatePriceToChildren: false });
       await tratarEventoPrecoLi(h.deps, movimento());
       expect(custos(h)).toEqual({ mapa: 1, pai: 1, familia: 0, tarefas: 1, baixar: [true] });
+      await tratarEventoPrecoLi(h.deps, evento(filho({ [TN1]: 22.22 }), filho({ [TN1]: 33.33 })));
+      expect(h.linhas.map((l) => l[0])).toEqual(['INFO', 'INFO']);
+      expect(stdout.escritas()).toEqual([]);
     },
   );
+
+  it('the valve comes BEFORE the anchor: an empty anchor with the valve off is desligado (no line), and with an UNRECOGNISED value still writes its ONE WARNING', async () => {
+    const semAncora = () =>
+      evento(filho({ [TN1]: 11.11 }, {}, []), filho({ [TN1]: 22.22 }, {}, []));
+    const h = montar({ ambiente: { [VALVULA_ENV_LI.preco]: 'off' } });
+    expect(await tratarEventoPrecoLi(semDb(h), semAncora())).toEqual({ tipo: 'desligado' });
+    expect(stdout.escritas()).toEqual([]);
+
+    const h2 = montar({ ambiente: { [VALVULA_ENV_LI.preco]: 'ON' } });
+    expect(await tratarEventoPrecoLi(semDb(h2), semAncora())).toEqual({ tipo: 'desligado' });
+    const linhas = stdout.escritas().map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(linhas).toEqual([
+      expect.objectContaining({ severity: 'WARNING', evento: 'valvula', fluxo: 'preco' }),
+    ]);
+  });
 });
 
 /* -------------------------------------------------------------------------- */
@@ -483,6 +503,18 @@ describe('the anchor and the conta map', () => {
       evento(filho({ [TN1]: 11.11 }, {}, [C1]), filho({ [TN1]: 22.22 }, {}, [])),
     );
     expect(tarefasDe(h)).toEqual([tarefa(C1, P, true)]);
+  });
+
+  it('the result and the INFO line name the CONCERNED contas only — never the anchor’s inactive, tabela-less or foreign contas', async () => {
+    const h = montar();
+    seedPai(h.db, { propagatePriceToChildren: false });
+    const ancora = [C1, C3, C4, 'conta-shopee-x'];
+    const r = await tratarEventoPrecoLi(
+      h.deps,
+      evento(filho({ [TN1]: 11.11 }, {}, ancora), filho({ [TN1]: 22.22 }, {}, ancora)),
+    );
+    expect(r).toMatchObject({ tipo: 'processado', contas: [C1], tarefas: 1 });
+    expect(linhasDe(h, 'INFO').map((l) => l[2]?.contas)).toEqual([[C1]]);
   });
 
   it('the map is cached: a second relevant event in the TTL costs no map query', async () => {
@@ -562,9 +594,17 @@ describe('a child — at most ONE masked parent read', () => {
 
   it('a MISSING parent ⇒ ONE read (not found), ONE task baixar:true — the run holds pai-ausente', async () => {
     const h = montar();
-    await tratarEventoPrecoLi(h.deps, evento(filho({ [TN1]: 11.11 }), filho({ [TN1]: 22.22 })));
+    const r = await tratarEventoPrecoLi(
+      h.deps,
+      evento(filho({ [TN1]: 11.11 }), filho({ [TN1]: 22.22 })),
+    );
     expect(custos(h)).toEqual({ mapa: 1, pai: 1, familia: 0, tarefas: 1, baixar: [true] });
     expect(h.db.leituras).toEqual([`produtos/${PAI}`]);
+    // The result and the line report the read it MADE, whatever it answered.
+    expect(r).toMatchObject({ tipo: 'processado', caminho: 'filho', leiturasDoPai: 1, tarefas: 1 });
+    expect(linhasDe(h, 'INFO').map((l) => l[2])).toEqual([
+      expect.objectContaining({ leiturasDoPai: 1, tarefas: 1 }),
+    ]);
   });
 
   it.each([['a/b'], ['__x__'], ['.']])(
@@ -803,6 +843,28 @@ describe('a root — ONE family query per concerned conta', () => {
     ]);
   });
 
+  it('two concerned contas, each over the limit ⇒ familiasAcimaDoLimite 2, ONE WARNING per conta', async () => {
+    const h = montar();
+    for (let i = 0; i < MAX_FILHOS_GATILHO_PRECO_LI + 1; i += 1) {
+      seedFilhoDe(h.db, R, `f-${String(i).padStart(2, '0')}`, [C1, C2]);
+    }
+    const r = await tratarEventoPrecoLi(
+      h.deps,
+      evento(
+        raiz({ [TN1]: 55.56, [TN2]: 55.56 }, {}, [C1, C2]),
+        raiz({ [TN1]: 66.66, [TN2]: 66.66 }, {}, [C1, C2]),
+        R,
+      ),
+    );
+    expect(r).toMatchObject({
+      tipo: 'processado',
+      consultas: 2,
+      tarefas: 2 * MAX_FILHOS_GATILHO_PRECO_LI,
+      familiasAcimaDoLimite: 2,
+    });
+    expect(linhasDe(h, 'WARNING').map((l) => l[2]?.contaId)).toEqual([C1, C2]);
+  });
+
   it(`⚠️ NEAR-MISS: exactly ${String(MAX_FILHOS_GATILHO_PRECO_LI)} children ⇒ ${String(MAX_FILHOS_GATILHO_PRECO_LI)} tasks, NO WARNING`, async () => {
     const h = montar();
     for (let i = 0; i < 50; i += 1) seedFilhoDe(h.db, R, `f-${String(i).padStart(2, '0')}`, [C1]);
@@ -868,6 +930,36 @@ describe('two contas are isolated', () => {
 /* -------------------------------------------------------------------------- */
 /*                         Names, the window, the clock                         */
 /* -------------------------------------------------------------------------- */
+
+describe('tarefasOrdenadasPrecoLi — the enqueue order and the dedup, pinned directly', () => {
+  const t = (contaId: string, produtoId: string, baixar: boolean): TarefaPrecoSemJanelaLi => ({
+    contaId,
+    produtoId,
+    origem: ORIGEM_TAREFA_PRECO_LI.evento,
+    geracao: 0,
+    baixar,
+  });
+
+  it('EQUAL: the same (conta, produto, baixar) twice is ONE task; unsorted input comes out by conta, then produto', () => {
+    expect(
+      tarefasOrdenadasPrecoLi([
+        t(C2, 'f-01', true),
+        t(C1, 'f-02', true),
+        t(C1, 'f-01', true),
+        t(C2, 'f-01', true),
+        t(C1, 'f-02', true),
+      ]),
+    ).toEqual([t(C1, 'f-01', true), t(C1, 'f-02', true), t(C2, 'f-01', true)]);
+  });
+
+  it('⚠️ NEAR-MISS: the same (conta, produto) with the two baixar values stays TWO tasks, false first — and a different produto or conta is never folded in', () => {
+    expect(
+      tarefasOrdenadasPrecoLi([t(C1, 'f-01', true), t(C1, 'f-01', false), t(C1, 'f-1', true)]),
+    ).toEqual([t(C1, 'f-01', false), t(C1, 'f-01', true), t(C1, 'f-1', true)]);
+    expect(tarefasOrdenadasPrecoLi([t(C1, 'f-01', true), t(C2, 'f-01', true)])).toHaveLength(2);
+    expect(tarefasOrdenadasPrecoLi([])).toEqual([]);
+  });
+});
 
 describe('names and the clock', () => {
   it('a baixar:false task and a baixar:true one for the same child in ONE window have two names; the same event repeated has the same name', async () => {
@@ -1016,17 +1108,76 @@ describe('enqueue rejections, through the REAL producer', () => {
   });
 
   it('a transient Cloud Tasks failure is RETHROWN once its round settled; the next round is never attempted', async () => {
-    const f = filaQue((t) =>
-      t.produtoId === 'f-00' ? falhaDoFunctions('unknown-error', 503) : null,
-    );
+    // The failing enqueue rejects at once; the round's others settle LATER, so a rethrow that
+    // did not wait for them would be observed with none of them done.
+    let concluidas = 0;
+    const chamadas: string[] = [];
+    const fila: FilaPrecoLi = {
+      async enqueue(t) {
+        chamadas.push(t.produtoId);
+        if (t.produtoId === 'f-00') throw falhaDoFunctions('unknown-error', 503);
+        await new Promise((r) => setTimeout(r, 5));
+        concluidas += 1;
+      },
+    };
     const h = montar({
-      agendador: criarAgendadorPrecoLi({ fila: () => f.fila, desligado: false }),
+      agendador: criarAgendadorPrecoLi({ fila: () => fila, desligado: false }),
     });
     await expect(tratarEventoPrecoLi(h.deps, familia(h, 12))).rejects.toBeInstanceOf(
       LiTarefasTransitoriasError,
     );
-    expect(f.chamadas).toHaveLength(CONCORRENCIA_ENFILEIRAMENTO_GATILHO_PRECO_LI);
+    expect(concluidas).toBe(CONCORRENCIA_ENFILEIRAMENTO_GATILHO_PRECO_LI - 1);
+    expect(chamadas).toHaveLength(CONCORRENCIA_ENFILEIRAMENTO_GATILHO_PRECO_LI);
     expect(linhasDe(h, 'INFO')).toEqual([]);
+  });
+
+  it('the sweep-only valve closed in a round that ALSO holds a schema refusal ⇒ still ONE desligadas WARNING, and the event RESOLVES (never rethrown into a retry)', async () => {
+    const h = montar({
+      agendador: criarAgendadorPrecoLi({
+        fila: () => {
+          throw new Error('teste: a fila nunca é resolvida com a válvula fechada');
+        },
+        desligado: true,
+      }),
+    });
+    seedConta(h.db, 'conta.li', { tabelaNormalOuterRef: `listaDePrecos/${TN1}` });
+    // A parent move: one task per concerned conta, one of them outside the conta grammar (the
+    // producer parses before it checks the valve, so that one is a schema refusal).
+    const lado = (paiId: string) => filho({ [TN1]: 11.11 }, { paiId }, ['conta.li', C1]);
+    const r = await tratarEventoPrecoLi(h.deps, evento(lado(PAI), lado('prod-li-outro-pai')));
+    expect(r).toMatchObject({ tipo: 'processado', tarefas: 0, tarefasDesligadas: true });
+    expect(linhasDe(h, 'WARNING').map((l) => l[1])).toEqual([
+      '[loja-integrada/preco] gatilho tarefa fora do formato da fila de preço — não enfileirada',
+      '[loja-integrada/preco] gatilho tarefas desligadas — o resto do evento não foi enfileirado',
+    ]);
+    expect(linhasDe(h, 'INFO')).toEqual([]);
+  });
+
+  it('a schema refusal on the ROOT path names the refused task’s CHILD as alvoId, beside the event’s root', async () => {
+    const f = filaQue(() => null);
+    const h = montar({
+      agendador: criarAgendadorPrecoLi({ fila: () => f.fila, desligado: false }),
+    });
+    // A conta whose id the strict task schema refuses, priced at TN1, anchoring the root's child.
+    seedConta(h.db, 'conta.li', { tabelaNormalOuterRef: `listaDePrecos/${TN1}` });
+    seedFilhoDe(h.db, R, 'f-01', ['conta.li', C1]);
+    const r = await tratarEventoPrecoLi(
+      h.deps,
+      evento(
+        raiz({ [TN1]: 55.56 }, {}, ['conta.li', C1]),
+        raiz({ [TN1]: 66.66 }, {}, ['conta.li', C1]),
+        R,
+      ),
+    );
+    expect(r).toMatchObject({ tipo: 'processado', caminho: 'raiz', tarefas: 1, recusadas: 1 });
+    expect(f.chamadas.map((c) => [c.tarefa.contaId, c.tarefa.produtoId])).toEqual([[C1, 'f-01']]);
+    expect(linhasDe(h, 'WARNING')).toEqual([
+      [
+        'WARNING',
+        '[loja-integrada/preco] gatilho tarefa fora do formato da fila de preço — não enfileirada',
+        { produtoId: R, alvoId: 'f-01', contaId: 'conta.li', campos: ['contaId'] },
+      ],
+    ]);
   });
 
   it('anything else (a broken deploy) is rethrown UNTOUCHED, never read as a schema refusal', async () => {
@@ -1058,6 +1209,9 @@ describe('enqueue rejections, through the REAL producer', () => {
     expect(feitas).toBe(50);
     expect(maximo).toBe(CONCORRENCIA_ENFILEIRAMENTO_GATILHO_PRECO_LI);
     expect(CONCORRENCIA_ENFILEIRAMENTO_GATILHO_PRECO_LI).toBe(8);
+    // The producer (and the sweep-only valve it reads at construction) is built ONCE per event,
+    // however many rounds it enqueues.
+    expect(h.agendadores).toBe(1);
   });
 });
 
