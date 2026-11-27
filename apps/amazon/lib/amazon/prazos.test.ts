@@ -39,6 +39,23 @@ const ROTA_ENVIO_MANUAL_ESTOQUE = 'app/api/marketplace/amazon/enviar-estoque/rou
 const CORPO_DO_ENVIO_MANUAL_ESTOQUE = 'lib/amazon/estoque/envioManualEstoque.ts';
 
 /**
+ * The four price routes (step 13, PR 13-g) — the manual push and the conta
+ * run's start, status and cancel —, their ONE body, and the run's claim,
+ * status and cancel that body calls: enqueue-only, one tier-1 write, or a read.
+ */
+const ROTAS_DE_PRECO = [
+  'app/api/marketplace/amazon/enviar-precos/route.ts',
+  'app/api/marketplace/amazon/atualizar-precos/route.ts',
+  'app/api/marketplace/amazon/atualizar-precos/status/route.ts',
+  'app/api/marketplace/amazon/atualizar-precos/cancelar/route.ts',
+] as const;
+const CORPO_DAS_ROTAS_DE_PRECO = 'lib/amazon/preco/envioManualPreco.ts';
+const CORPO_DA_EXECUCAO_DE_PRECO = 'lib/amazon/preco/inicioExecucaoPreco.ts';
+
+/** The shared manual selection read both manual pushes go through (step 13, PR 13-b). */
+const SELECAO_MANUAL = 'lib/amazon/listings/selecaoManual.ts';
+
+/**
  * The routes, and how many code exchanges each may make: status / start /
  * callback / the NF-e re-drive (step 14, PR 14-d — ZERO Amazon calls of any
  * kind, below) / the label route (step 15, PR 15-d — through its body, never an
@@ -52,18 +69,47 @@ const ROTAS: readonly (readonly [string, number])[] = [
   ['app/api/marketplace/amazon/enviar-nfe/route.ts', 0],
   [ROTA_ETIQUETA, 0],
   [ROTA_ENVIO_MANUAL_ESTOQUE, 0],
+  // The four price routes (step 13, PR 13-g — ZERO Amazon calls of any kind, below).
+  ...ROTAS_DE_PRECO.map((rota) => [rota, 0] as const),
   // The callback's body lives in `conectar.ts`; the ONE exchange is counted there.
   ['lib/amazon/conta/conectar.ts', 1],
 ];
 
-/** The bodies of the other five routes, which call neither the context nor the scheduling run. */
+/** The bodies of the other ROTAS (all but the label route's): none calls the context or the scheduling run. */
 const CORPOS_SEM_CONTEXTO = [
   'lib/amazon/conta/status.ts',
   'lib/amazon/conta/iniciar.ts',
   'lib/amazon/conta/conectar.ts',
   'lib/amazon/nfe/reenvioNfe.ts',
   CORPO_DO_ENVIO_MANUAL_ESTOQUE,
+  CORPO_DAS_ROTAS_DE_PRECO,
+  CORPO_DA_EXECUCAO_DE_PRECO,
 ];
+
+/**
+ * The route files OUTSIDE {@link ROTAS}, each with why: the push receiver
+ * (its own ZERO-call test below) and the health check (step 1: no body, no
+ * read). Every other `route.ts` under `app/` must be in `ROTAS`, so a new
+ * route reds until it says how many code exchanges it makes.
+ */
+const ROTAS_FORA_DE_ROTAS = ['app/api/webhooks/amazon/route.ts', 'app/api/health/route.ts'];
+
+/** Every production `route.ts` under `app/`, relative to the APP root. */
+function arquivosDeRota(dir = path.join(APP_DIR, 'app')): string[] {
+  const saida: string[] = [];
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    const caminho = path.join(dir, e.name);
+    if (e.isDirectory()) saida.push(...arquivosDeRota(caminho));
+    else if (e.name === 'route.ts') {
+      saida.push(path.relative(APP_DIR, caminho).split(path.sep).join('/'));
+    }
+  }
+  return saida.sort();
+}
+
+/** The discovered route files no registry names (fail closed). */
+const rotasSemRegistro = (descobertas: readonly string[], registradas: readonly string[]) =>
+  descobertas.filter((r) => !registradas.includes(r)).sort();
 
 function pinsDeTimeout(textos: string[]): { pinados: number[]; ilegiveis: string[] } {
   const pinados: number[] = [];
@@ -124,9 +170,9 @@ describe('the OAuth routes fit inside the backend ceiling', () => {
     expect(contar(ler(CORPO_DA_ETIQUETA), 'trocarRefreshToken(')).toBe(0);
   });
 
-  it('★ the six route files are thin (no context, no client, no raw fetch); the five other bodies call neither the context nor the run, and the label route’s body calls each once', () => {
+  it('★ the ten route files are thin (no context, no client, no raw fetch); the seven other bodies call neither the context nor the run, and the label route’s body calls each once', () => {
     const rotas = ROTAS.map(([arquivo]) => arquivo).filter((a) => a.startsWith('app/'));
-    expect(rotas).toHaveLength(6);
+    expect(rotas).toHaveLength(10);
     expect(rotas).toContain(ROTA_ENVIO_MANUAL_ESTOQUE);
     expect(rotas).toContain(ROTA_ETIQUETA);
     for (const arquivo of rotas) {
@@ -183,6 +229,48 @@ describe('the OAuth routes fit inside the backend ceiling', () => {
     }
     // Anti-vacuity: the body is the one that enqueues, through the producer's batch.
     expect(ler(CORPO_DO_ENVIO_MANUAL_ESTOQUE)).toContain('.enfileirarLote(');
+  });
+
+  it('★ the price routes (route files and bodies, the run’s claim module and the shared selection read) make ZERO Amazon calls of any kind: they only enqueue, claim, read or cancel (step 13, PR 13-g)', () => {
+    for (const arquivo of [
+      ...ROTAS_DE_PRECO,
+      CORPO_DAS_ROTAS_DE_PRECO,
+      CORPO_DA_EXECUCAO_DE_PRECO,
+      SELECAO_MANUAL,
+    ]) {
+      const fonte = ler(arquivo);
+      expect(contar(fonte, 'trocarCodigoAutorizacao('), arquivo).toBe(0);
+      expect(contar(fonte, 'trocarRefreshToken('), arquivo).toBe(0);
+      expect(fonte, arquivo).not.toMatch(
+        /loadAmazonContext|criarClienteSpApi|criarClienteEscritaSpApi|executarEscritaAmazon|executarLoteEscritaAmazon|lerListingAmazon|buscarListingsAmazon|enviarDisponibilidadeAmazon|enviarOfertaAmazon|lerListingNaAmazon|lerListingComTaxaNaAmazon|buscarListingsNaAmazon|enviarOfertaNaAmazon|enviarOfertaComTaxaNaAmazon|listingsAmazon|feedsAmazon|vezFeedFirestore|processarPreco|provedorLotePreco|backstopPreco|['/]execucaoPreco['"]|fetch\(/,
+      );
+    }
+    // Anti-vacuity: the manual push enqueues through the producer's batch, and
+    // the run's start through the page producer.
+    expect(ler(CORPO_DAS_ROTAS_DE_PRECO)).toContain('.enfileirarLote(');
+    expect(ler(CORPO_DA_EXECUCAO_DE_PRECO)).toContain('.enfileirarPagina(');
+    // NEAR-MISS: the scan sees a run page's module by its specifier, and not the
+    // run's one write, whose name starts the same way.
+    const pagina = /['/]execucaoPreco['"]/;
+    expect(pagina.test("import { p } from './execucaoPreco';")).toBe(true);
+    expect(pagina.test("import { e } from './execucaoPrecoFirestore';")).toBe(false);
+  });
+
+  it('★ every route file under app/ is registered — in ROTAS, or named with why it is not — so a new route reds until it says how many code exchanges it makes', () => {
+    const descobertas = arquivosDeRota();
+    const registradas = [
+      ...ROTAS.map(([arquivo]) => arquivo).filter((a) => a.startsWith('app/')),
+      ...ROTAS_FORA_DE_ROTAS,
+    ];
+    expect(rotasSemRegistro(descobertas, registradas)).toEqual([]);
+    // The reverse: every registered route exists, once.
+    expect(registradas.filter((r) => !descobertas.includes(r))).toEqual([]);
+    expect(new Set(registradas).size).toBe(registradas.length);
+    // Anti-vacuity: the walk found the price routes, nested folders included.
+    expect(descobertas).toEqual(expect.arrayContaining([...ROTAS_DE_PRECO]));
+    // NEAR-MISS: a route file the registry does not name is reported.
+    const nova = 'app/api/marketplace/amazon/teste/route.ts';
+    expect(rotasSemRegistro([...descobertas, nova], registradas)).toEqual([nova]);
   });
 
   it('the reader parses a pin, ignores a comment, and fails closed on an unreadable one', () => {

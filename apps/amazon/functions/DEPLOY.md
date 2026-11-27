@@ -123,9 +123,11 @@ Firestore reads); a PATCH also needs the read switch and a hit of
 `AMAZON_CANARIO_PRECO`, and the preview flag below makes it a validation only.
 Since PR 13-e it also walks a price run's pages (`preco-pagina`), and since PR
 13-f the run's decision step names the run's block batches (`feed-enviar`, fluxo
-`preco`), sent like a stock feed and also behind the preview flag below. Until
-something enqueues one (the price routes come later), the handler holds the
-binding and nothing runs.
+`preco`), sent like a stock feed and also behind the preview flag below. Since
+PR 13-g the apps/amazon App Hosting price routes enqueue onto it too (a manual
+push's `preco-sku` tasks, a price run's page 0), so this codebase deploys BEFORE
+that rollout (W9): an older handler drops a kind it does not know with one ERROR
+line, behind the route's own 200 or 202.
 
 ⚠️ **The stock queue has its own switch too** (master-plan step 12, PR 12-e1).
 `processAmazonStockPatch` sends ONE `patchListingsItem` of a SKU's available
@@ -472,8 +474,9 @@ maxDispatchesPerSecond: 1 }` — concurrency 1 orders this queue's avisos and
   `src/index.test.ts`); `secrets: AMAZON_LWA_CLIENT_SECRET`. Enqueued by ITSELF
   through `src/agendadorEstoque.ts` (the functions runtime SA: the poll rungs,
   the uncertain wait, the recoveries, a turned-away batch's wait) and by the App
-  Hosting push receiver's `FEED_PROCESSING_FINISHED` wake-up (the App Hosting
-  runtime SA). Writes `feedsAmazon` (the record) and `feedsAmazonEmCurso` (the
+  Hosting push receiver's `FEED_PROCESSING_FINISHED` wake-up and, since PR 13-g,
+  its price routes (a manual push's `preco-sku` tasks, a price run's page 0; the
+  App Hosting runtime SA). Writes `feedsAmazon` (the record) and `feedsAmazonEmCurso` (the
   lease), both Admin-only, plus avisos through the shared seam. Since step 13
   (PR 13-d) it also dispatches `preco-sku`, the price task (P0–P11: the price
   valve first, ONE live read, at most ONE offer PATCH after a write-ahead
@@ -708,7 +711,8 @@ below stays COMMENTED OUT until the window:**
 # ~3-minute status lag most likely submits the NF-e again — wait ~5 minutes, or
 # for the aviso to change. This copy stops THIS codebase's producers (the
 # trigger, the task's re-enqueues); the App Hosting copy stops only that
-# backend's (the receiver, the re-drive, since step 12 the manual stock push).
+# backend's (the receiver, the re-drive, since step 12 the manual stock push,
+# since step 13 the price routes).
 # ⚠️ Since step 15 it ALSO stops every
 # Easy Ship scheduling enqueue of this codebase (the acceptance entry, the
 # import entry, the scheduling task's own re-enqueues), with NO sweep behind it:
@@ -720,7 +724,9 @@ below stays COMMENTED OUT until the window:**
 # so a feed's chain ends where the valve refused it; in App Hosting the push
 # receiver's `FEED_PROCESSING_FINISHED` wake-up (one WARNING
 # `feed-nao-enfileirado`, 200, nothing persisted: the feed's own poll chain still
-# reads it). ⚠️ Since step 12 it ALSO stops every stock-queue enqueue of this
+# reads it) and, since step 13, the price routes' enqueues (the manual price
+# push answers its listings `nao-tentado`; a price run's start answers 503
+# `fila-desligada`, nothing claimed). ⚠️ Since step 12 it ALSO stops every stock-queue enqueue of this
 # codebase (the stock task's read-back and its 429 pause), with NO sweep behind
 # it: the task names each loss in its WARNING dispatch line, and a refused pause
 # falls back to the queue's own retry (one attempt spent). The stock tick's
@@ -892,7 +898,10 @@ And the same two onto `processAmazonListingsJob` (step 12a), each needing
   `src/agendadorEstoque.ts`;
 - the **App Hosting runtime service account** — the push receiver
   (`POST /api/webhooks/amazon`), whose `FEED_PROCESSING_FINISHED` wake-up is its
-  SECOND producer (through `lib/firebase/filaLeitura.ts`, beside the reads one).
+  SECOND producer (through `lib/firebase/filaLeitura.ts`, beside the reads one),
+  and since PR 13-g the price routes (`POST /api/marketplace/amazon/enviar-precos`:
+  one named `preco-sku` task per SKU; `POST /api/marketplace/amazon/atualizar-precos`:
+  a price run's page 0 or a stalled run's re-kick), through the same root.
 
 And the same two onto `processAmazonStockPatch` (step 12):
 
@@ -959,7 +968,9 @@ gcloud tasks queues add-iam-policy-binding filaLeituraAmazon \
 # `enfileiramento-falhou` with its cursor kept; the manual stock push route
 # answers 500 after one ERROR line naming the SDK class and code, the error
 # sanitized of the answered body - only a selection that passes every check of
-# the route reaches that enqueue).
+# the route reaches that enqueue; the manual price push route answers the same
+# way, and a price run's start closes that run `falhou` and answers 503
+# `enfileiramento-incerto`).
 gcloud iam service-accounts add-iam-policy-binding <enqueuing-sa> \
   --project=<project-id> \
   --member="serviceAccount:<enqueuing-sa>" \

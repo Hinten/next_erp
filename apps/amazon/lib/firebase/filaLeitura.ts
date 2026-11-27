@@ -1,14 +1,16 @@
 /**
- * The App Hosting COMPOSITION ROOT of this backend's four Cloud Tasks
- * producers: the reads queue (`filaLeituraAmazon`, the push receiver's), the
+ * The App Hosting COMPOSITION ROOT of this backend's Cloud Tasks producers, on
+ * four queues: the reads queue (`filaLeituraAmazon`, the push receiver's), the
  * NF-e queue (`processAmazonNfeUpload`, since step 14, PR 14-d: the re-drive
  * route `POST /api/marketplace/amazon/enviar-nfe`'s), the jobs queue
  * (`processAmazonListingsJob`, since step 12a, PR 12-c: the receiver's
- * `FEED_PROCESSING_FINISHED` wake-up) and the stock queue
- * (`processAmazonStockPatch`, since step 12, PR 12-g: the manual push route
- * `POST /api/marketplace/amazon/enviar-estoque`'s per-SKU tasks). All four are
- * bound to the real Cloud Tasks transport through the file's ONE
- * `getFunctions(` call ({@link filaDoAppHosting}). Outside `lib/amazon` on
+ * `FEED_PROCESSING_FINISHED` wake-up; since step 13, PR 13-g, also the price
+ * routes' per-SKU price tasks and a price run's pages, each through its own
+ * producer) and the stock queue (`processAmazonStockPatch`, since step 12, PR
+ * 12-g: the manual push route `POST /api/marketplace/amazon/enviar-estoque`'s
+ * per-SKU tasks). All six producers are bound to the real Cloud Tasks
+ * transport through the file's ONE `getFunctions(` call
+ * ({@link filaDoAppHosting}). Outside `lib/amazon` on
  * purpose — it reads `process.env` and calls `getFunctions(`, and `lib/amazon`
  * does neither (`estrutura.test.ts`, which also pins this file as one of the
  * app's `getFunctions(` roots, pinned to its queue set — its four path builders
@@ -64,6 +66,12 @@ import {
   criarAgendadorNfeAmazon,
 } from '../amazon/nfe/agendadorNfe';
 import type { TarefaNfeAmazon } from '../amazon/nfe/tarefaNfe';
+import {
+  type ProdutorExecucaoPrecoAmazon,
+  criarProdutorExecucaoPrecoAmazon,
+} from '../amazon/preco/inicioExecucaoPreco';
+import { type ProdutorPrecoAmazon, criarProdutorPrecoAmazon } from '../amazon/preco/produtorPreco';
+import type { TarefaPaginaPrecoAmazon, TarefaPrecoSkuAmazon } from '../amazon/preco/tarefaPreco';
 import { getAdminApp } from './admin';
 
 /**
@@ -98,7 +106,9 @@ export function filaNfeDesligadaAmazon(): boolean {
 /**
  * Is the jobs queue's valve closed? The SAME variable as the other two queues'.
  * The receiver's wake-up is then dropped with a WARNING (nothing persisted): the
- * feed's own poll chain still reads its outcome.
+ * feed's own poll chain still reads its outcome. Since step 13 (PR 13-g) the
+ * price routes read it too: the manual price push answers its listings
+ * `nao-tentado`, and a price run is never claimed (503).
  */
 export function filaLotesDesligadaAmazon(): boolean {
   return valvulaDasFilasFechada();
@@ -176,6 +186,40 @@ export function produtorDaFilaEstoqueAmazon(): ProdutorEstoqueAmazon {
     fila: () =>
       filaDoAppHosting<TarefaEstoqueAmazon>(
         caminhoDaFilaEstoqueAmazon(regiaoDaFilaLeituraAmazon()),
+      ),
+  });
+}
+
+/**
+ * The manual price push route's producer (step 13, PR 13-g): the JOBS queue,
+ * for ONE NAMED price task per SKU (`tipo: 'preco-sku'`, `origem: 'manual'`,
+ * named by the request's reference and the SKU), at most 16 in flight. No
+ * queue of its own: the jobs queue's path, its valve, the same region. The
+ * valve read now, the queue — and so the region — resolved per enqueue and
+ * never while the valve is closed. What a rejection means and the names are
+ * the pure producer's (`lib/amazon/preco/produtorPreco.ts`).
+ */
+export function produtorDaFilaPrecoAmazon(): ProdutorPrecoAmazon {
+  return criarProdutorPrecoAmazon({
+    desligado: filaLotesDesligadaAmazon(),
+    fila: () =>
+      filaDoAppHosting<TarefaPrecoSkuAmazon>(caminhoDaFilaLotesAmazon(regiaoDaFilaLeituraAmazon())),
+  });
+}
+
+/**
+ * The price run route's producer (step 13, PR 13-g): the JOBS queue again, for
+ * a claimed run's page 0 (named by conta, run and page) and a stalled run's
+ * re-kick (named by the stall). The valve read now, the queue — and so the
+ * region — resolved per enqueue and never while the valve is closed
+ * (`lib/amazon/preco/inicioExecucaoPreco.ts`, "The page producer").
+ */
+export function produtorDaExecucaoPrecoAmazon(): ProdutorExecucaoPrecoAmazon {
+  return criarProdutorExecucaoPrecoAmazon({
+    desligado: filaLotesDesligadaAmazon(),
+    fila: () =>
+      filaDoAppHosting<TarefaPaginaPrecoAmazon>(
+        caminhoDaFilaLotesAmazon(regiaoDaFilaLeituraAmazon()),
       ),
   });
 }

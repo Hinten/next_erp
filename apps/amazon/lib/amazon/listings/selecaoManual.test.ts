@@ -3,6 +3,9 @@
  * anchor, the label reads, the families' SKUs of the conta in both ref forms,
  * every read masked; and the two partition helpers it is built on.
  */
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { FakeDb, asDb } from '../testing/fakeDb';
@@ -13,7 +16,10 @@ import {
   CAMPOS_VINCULO_SELECAO_MANUAL_AMAZON,
   LARGURA_LEITURAS_SELECAO_MANUAL_AMAZON,
   lerSelecaoManualAmazon,
+  skuAlvoAmazon,
 } from './selecaoManual';
+import { FLUXO_LISTING_AMAZON } from './fluxoListing';
+import { FLUXO_AMAZON, alvoValido } from '../core/valvulas';
 import { skusDaConta, sondasDoProduto } from './sondasVinculos';
 
 const CONTA = 'conta-selecao';
@@ -216,5 +222,84 @@ describe('the partition helpers', () => {
       ),
     ).toEqual(['A', 'B']);
     expect(() => skusDaConta([], 'a/b')).toThrow(RangeError);
+  });
+});
+
+describe('skuAlvoAmazon — the write valves’ own target grammar (step 13, PR 13-g)', () => {
+  /** `n` code points of one character. */
+  const de = (caractere: string, n: number) => caractere.repeat(n);
+  const ASTRAL = String.fromCodePoint(0x1f600);
+
+  it.each([FLUXO_LISTING_AMAZON.estoque, FLUXO_LISTING_AMAZON.preco])(
+    '★ %s: 40 code points ⇒ a target; 41 ⇒ none (NEAR-MISS pair), counted in CODE POINTS, never UTF-16 units',
+    (fluxo) => {
+      expect(skuAlvoAmazon(fluxo, de('A', 40))).toBe(true);
+      expect(skuAlvoAmazon(fluxo, de('A', 41))).toBe(false);
+      // 40 astral characters are 80 UTF-16 units and still 40 code points.
+      expect(de(ASTRAL, 40)).toHaveLength(80);
+      expect(skuAlvoAmazon(fluxo, de(ASTRAL, 40))).toBe(true);
+      expect(skuAlvoAmazon(fluxo, de(ASTRAL, 41))).toBe(false);
+    },
+  );
+
+  it('★ empty, a control character or a lone surrogate ⇒ no target; a space, a comma, a slash or a non-ASCII letter IS one (only not listable, or pathless)', () => {
+    const preco = FLUXO_LISTING_AMAZON.preco;
+    const SURROGATE_SOLTO = String.fromCharCode(0xd800);
+    for (const fora of ['', 'SKU\t1', 'SKU\n1', '\u0000', `SKU-${SURROGATE_SOLTO}`]) {
+      expect(skuAlvoAmazon(preco, fora), JSON.stringify(fora)).toBe(false);
+    }
+    for (const dentro of ['SKU 1', 'SKU,1', 'a/b', 'CAMISETA-AÇAÍ', '*', '1']) {
+      expect(skuAlvoAmazon(preco, dentro), dentro).toBe(true);
+    }
+  });
+
+  it('★ it IS the valves’ predicate, called: the same answer as `alvoValido` for every SKU and both flows (no second copy of the grammar)', () => {
+    const corpus = [
+      '',
+      'A',
+      'SKU-1',
+      de('A', 40),
+      de('A', 41),
+      de(ASTRAL, 40),
+      de(ASTRAL, 41),
+      'SKU\t1',
+      'SKU 1',
+      'a/b',
+      `SKU-${String.fromCharCode(0xd800)}`,
+    ];
+    for (const fluxo of [FLUXO_LISTING_AMAZON.estoque, FLUXO_LISTING_AMAZON.preco]) {
+      for (const sku of corpus) {
+        expect(skuAlvoAmazon(fluxo, sku), `${fluxo} ${JSON.stringify(sku)}`).toBe(
+          alvoValido(fluxo, sku),
+        );
+      }
+    }
+    // The listings flows ARE the valves' flows of the same name.
+    expect(FLUXO_LISTING_AMAZON.preco).toBe(FLUXO_AMAZON.preco);
+    expect(FLUXO_LISTING_AMAZON.estoque).toBe(FLUXO_AMAZON.estoque);
+  });
+
+  it('pure: it reads no Firestore (the counting fake sees no operation)', () => {
+    expect(skuAlvoAmazon(FLUXO_LISTING_AMAZON.preco, 'SKU-1')).toBe(true);
+    expect(db.operacoes).toBe(0);
+  });
+
+  it('★ its body IS the call, in the source: exactly `return alvoValido(fluxo, sku);`, the predicate imported from the valves (an answer-equal copy of the grammar is still a second copy, which the corpus above cannot tell apart)', () => {
+    const fonte = readFileSync(
+      fileURLToPath(new URL('./selecaoManual.ts', import.meta.url)),
+      'utf8',
+    );
+    const corpoDe = (texto: string) =>
+      /export function skuAlvoAmazon\([^)]*\): boolean \{\r?\n([\s\S]*?)\r?\n\}/
+        .exec(texto)?.[1]
+        ?.trim();
+    expect(corpoDe(fonte)).toBe('return alvoValido(fluxo, sku);');
+    expect(fonte).toContain("import { alvoValido } from '../core/valvulas';");
+    // NEAR-MISS: a copy that keeps the import alive is seen.
+    expect(
+      corpoDe(
+        'export function skuAlvoAmazon(fluxo: F, sku: string): boolean {\n  void alvoValido;\n  return /^.{1,40}$/u.test(sku);\n}\n',
+      ),
+    ).not.toBe('return alvoValido(fluxo, sku);');
   });
 });
