@@ -1,11 +1,13 @@
 /**
  * The price TRIGGER as deployed (master plan step 13, PR 13-e): what it listens on, which
  * database, with which options — and what one event binds: the LIVE environment, the codebase's
- * Firestore handle and the price producer's root, the last two LAZILY. The gates themselves are
+ * Firestore handle and the price producer's root (the last two LAZILY), the live clock and the
+ * functions logger; and that a create and a delete each hand over `null`. The gates themselves are
  * pinned by `lib/lojaIntegrada/preco/gatilhoPreco.test.ts`; this file drives the exported function
  * through its `run`, with the two roots mocked. No call to the store before the cutover: the
  * global `fetch` throws. Every id and price is invented.
  */
+import { logger as loggerDoFunctions } from 'firebase-functions/v2';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
 import { produtoCollection } from '@delfrance/data/admin/collections';
@@ -16,9 +18,10 @@ import {
   type TarefaPrecoLi,
 } from '@delfrance/schemas';
 
-import type {
-  AgendadorPrecoLi,
-  OpcoesEnfileiramentoPrecoLi,
+import {
+  type AgendadorPrecoLi,
+  type OpcoesEnfileiramentoPrecoLi,
+  janelaPrecoLi,
 } from '../../lib/lojaIntegrada/preco/agendadorPreco';
 import { __reiniciarGatilhoPrecoParaTestes } from '../../lib/lojaIntegrada/preco/gatilhoPreco';
 import { FakeDb, asDb, type DocData } from '../../lib/lojaIntegrada/testing/fakeDb';
@@ -202,6 +205,44 @@ describe('onPrecoLojaIntegrada — what one event binds', () => {
     expect(await disparar(filho(49.99), null)).toEqual({ tipo: 'irrelevante' });
     expect(h.dbs).toBe(0);
     expect(h.agendadores).toBe(0);
+  });
+
+  it('a create arrives as after-only: irrelevant, nothing built — its absent before side is null, never an empty object', async () => {
+    vi.stubEnv(VALVULA, 'dry-run');
+    semear();
+    // A create naming a parent, a price and an anchored conta: relevant (a parent move) if the
+    // missing before side were read as an empty object.
+    expect(await disparar(null, filho(50))).toEqual({ tipo: 'irrelevante' });
+    expect(h.dbs).toBe(0);
+    expect(h.agendadores).toBe(0);
+    expect(enfileirados).toEqual([]);
+  });
+
+  it('the clock is the LIVE Date.now(): the task is named by the window of the moment it was enqueued', async () => {
+    vi.stubEnv(VALVULA, 'dry-run');
+    semear();
+    const antes = Date.now();
+    await disparar(filho(49.99), filho(50));
+    const depois = Date.now();
+    const janelas = enfileirados.map((e) => e.tarefa.janela);
+    expect(janelas).toHaveLength(1);
+    expect(janelas[0]).toBeGreaterThanOrEqual(janelaPrecoLi(antes));
+    expect(janelas[0]).toBeLessThanOrEqual(janelaPrecoLi(depois));
+  });
+
+  it('the event’s lines go to the functions logger: ONE INFO "decidido" for a processed event, nothing else', async () => {
+    const info = vi.spyOn(loggerDoFunctions, 'info').mockImplementation(() => undefined);
+    const warn = vi.spyOn(loggerDoFunctions, 'warn').mockImplementation(() => undefined);
+    try {
+      vi.stubEnv(VALVULA, 'dry-run');
+      semear();
+      await disparar(filho(49.99), filho(50));
+      expect(info.mock.calls.map((c) => c[0])).toEqual(['[loja-integrada/preco] gatilho decidido']);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      info.mockRestore();
+      warn.mockRestore();
+    }
   });
 
   it('the live environment is read PER EVENT: a value set after the module loaded takes effect, both ways', async () => {
