@@ -60,6 +60,31 @@ function loadServiceAccount(serviceAccountPath?: string): ServiceAccount {
  * `FIREBASE_DATABASE_ID` (default `'default'`), matching the rest of the repo.
  */
 export function migrationDb(projectId: string, serviceAccountPath?: string): Firestore {
+  const databaseId = process.env.FIREBASE_DATABASE_ID?.trim() || 'default';
+  return projectBoundDb({
+    projectId,
+    serviceAccountPath,
+    appName: MIGRATIONS_APP_NAME,
+    databaseId,
+  });
+}
+
+/**
+ * The same project-bound handle for a script that talks to TWO projects at once
+ * (the legacy-mirror replay reads the legacy project and writes the new one).
+ * Each project gets its own named app, its own credentials and its own explicit
+ * database id, and each service account is matched against its own project — so
+ * swapping the two flags fails instead of reading and writing the wrong sides.
+ * The database id is never taken from the environment here: the legacy database
+ * is `(default)` and the new one is `default`, and one env var cannot name both.
+ */
+export function projectBoundDb(opts: {
+  projectId: string;
+  serviceAccountPath?: string;
+  appName: string;
+  databaseId: string;
+}): Firestore {
+  const { projectId, serviceAccountPath, appName, databaseId } = opts;
   const credentials = loadServiceAccount(serviceAccountPath);
   if (credentials.projectId && credentials.projectId !== projectId) {
     throw new Error(
@@ -70,9 +95,12 @@ export function migrationDb(projectId: string, serviceAccountPath?: string): Fir
   // Select OUR named app, never `getApps()[0]` — a stray default app
   // (possibly another project) must not be reused, which would defeat the
   // explicit `--project` guard.
-  const app: App =
-    getApps().find((a) => a.name === MIGRATIONS_APP_NAME) ??
-    initializeApp({ credential: cert(credentials), projectId }, MIGRATIONS_APP_NAME);
-  const databaseId = process.env.FIREBASE_DATABASE_ID?.trim() || 'default';
+  const existing = getApps().find((a) => a.name === appName);
+  if (existing && existing.options.projectId !== projectId) {
+    throw new Error(
+      `App "${appName}" is already bound to project "${existing.options.projectId}", not "${projectId}".`,
+    );
+  }
+  const app: App = existing ?? initializeApp({ credential: cert(credentials), projectId }, appName);
   return getFirestore(app, databaseId);
 }

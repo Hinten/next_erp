@@ -496,6 +496,45 @@ describe('the backend cross-check note', () => {
   });
 });
 
+describe('a codebase with no task functions', () => {
+  it('passes with only its region — TASKS_INVOKER_SA is not required there', () => {
+    const { errors, rows } = runBare({ FUNCTIONS_REGION: 'us-east1' }, 'legacy-mirror');
+
+    expect(errors).toEqual([]);
+    expect(rows.find((r) => r.name === 'TASKS_INVOKER_SA')).toMatchObject({
+      value: '(not used — no task functions)',
+      source: 'n/a',
+    });
+  });
+
+  it('still refuses its missing region', () => {
+    const { errors } = runBare({}, 'legacy-mirror');
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain('FUNCTIONS_REGION is not set, and it has NO default');
+  });
+
+  it('does not exempt a codebase that HAS task functions (near-miss)', () => {
+    const { errors } = runBare({ FUNCTIONS_REGION: 'us-east1' }, 'whatsapp');
+
+    expect(errors.some((e) => e.startsWith('TASKS_INVOKER_SA is not set'))).toBe(true);
+  });
+
+  it('is granted only to the migration-only mirror', () => {
+    // The flag turns a guard OFF. It must not spread to a codebase that later
+    // gains an onTaskDispatched and deploys it with no invoker.
+    const exempt = Object.entries(CODEBASES)
+      .filter(([, spec]) => spec.taskFunctions === false)
+      .map(([name]) => name);
+    expect(exempt).toEqual(['legacy-mirror']);
+    const source = readFileSync(
+      resolve(REPO_ROOT, 'apps/legacy-mirror/functions/src/index.ts'),
+      'utf8',
+    );
+    expect(source).not.toMatch(/onTaskDispatched|onSchedule/);
+  });
+});
+
 describe('every deploy config runs the preflight', () => {
   // The guard is only real if it is wired. A codebase whose predeploy forgets it
   // deploys exactly as before — silently.

@@ -1,0 +1,29 @@
+{
+  "name": "@delfrance/legacy-mirror",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "//": "TEMPORARY, migration-only. Owns the `legacy-mirror` Cloud Functions codebase in ./functions — a one-way mirror deployed INTO the LEGACY Flutter project that keeps the new Enterprise project current between the seed import and the cutover (ADR 0013, amendment 2026-11-26). Not a Next app and not an App Hosting backend. This package exists so the nested codebase gets lint/typecheck/test from the workspace graph; the deploy artifact is built from functions/package.json (see functions/DEPLOY.md). Delete the whole directory after the cutover.",
+  "exports": {
+    "./mirror": "./functions/src/mirror.ts"
+  },
+  "scripts": {
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "clean": "rm -rf dist .turbo *.tsbuildinfo coverage functions/dist"
+  },
+  "dependencies": {
+    "firebase-admin": "catalog:",
+    "firebase-functions": "catalog:"
+  },
+  "devDependencies": {
+    "@delfrance/config-eslint": "workspace:*",
+    "@delfrance/config-tsconfig": "workspace:*",
+    "@types/node": "catalog:",
+    "esbuild": "catalog:",
+    "eslint": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

@@ -370,6 +370,37 @@ importers:
         specifier: 'catalog:'
         version: 4.1.6(@opentelemetry/api@1.9.1)(@types/node@24.12.4)(jsdom@29.1.1(@noble/hashes@1.8.0))(vite@7.3.3(@types/node@24.12.4)(tsx@4.21.0)(yaml@2.9.0))
 
+  apps/legacy-mirror:
+    dependencies:
+      firebase-admin:
+        specifier: 'catalog:'
+        version: 14.5.0
+      firebase-functions:
+        specifier: 'catalog:'
+        version: 7.4.0(firebase-admin@14.5.0)
+    devDependencies:
+      '@delfrance/config-eslint':
+        specifier: workspace:*
+        version: link:../../packages/config-eslint
+      '@delfrance/config-tsconfig':
+        specifier: workspace:*
+        version: link:../../packages/config-tsconfig
+      '@types/node':
+        specifier: 'catalog:'
+        version: 24.12.4
+      esbuild:
+        specifier: 'catalog:'
+        version: 0.25.12
+      eslint:
+        specifier: 'catalog:'
+        version: 9.39.4
+      typescript:
+        specifier: 'catalog:'
+        version: 6.0.3
+      vitest:
+        specifier: 'catalog:'
+        version: 4.1.6(@opentelemetry/api@1.9.1)(@types/node@24.12.4)(jsdom@29.1.1(@noble/hashes@1.8.0))(vite@7.3.3(@types/node@24.12.4)(tsx@4.21.0)(yaml@2.9.0))
+
   apps/legal:
     dependencies:
       next:
@@ -1802,6 +1833,9 @@ importers:
       '@delfrance/integrations-nfe':
         specifier: workspace:*
         version: link:../../packages/integrations/nfe
+      '@delfrance/legacy-mirror':
+        specifier: workspace:*
+        version: link:../../apps/legacy-mirror
       '@delfrance/schemas':
         specifier: workspace:*
         version: link:../../packages/schemas

@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json.schemastore.org/firebase",
+  "//": "Deploy-ISOLATED config for the TEMPORARY apps/legacy-mirror/functions (codebase `legacy-mirror`). ⚠️ This one deploys into the LEGACY Flutter project, never into staging or the new project: it is the one-way mirror that copies every legacy write into the new Enterprise database until the cutover (ADR 0013, amendment 2026-11-26). It contains ONLY a functions block — no firestore/storage/emulators keys — so a deploy with it can never push rules or indexes over the legacy project. Deploy: firebase deploy --only functions:legacy-mirror --config firebase.legacy-mirror.deploy.json --project <legacy-id>. A human runs it, inside the migration runbook (#1208) — see apps/legacy-mirror/functions/DEPLOY.md. Delete this file with the codebase after the cutover.",
+  "functions": [
+    {
+      "source": ".deploy/legacy-mirror-functions",
+      "codebase": "legacy-mirror",
+      "runtime": "nodejs22",
+      "predeploy": [
+        "node tools/deploy-env/preflight.mjs legacy-mirror",
+        "node apps/legacy-mirror/functions/scripts/prepare-deploy.mjs"
+      ],
+      "ignore": ["node_modules"]
+    }
+  ]
+}
